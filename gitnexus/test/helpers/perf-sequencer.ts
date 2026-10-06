@@ -17,7 +17,19 @@ export default class PerfSequencer extends BaseSequencer {
   override async shard(specs: TestSpecification[]): Promise<TestSpecification[]> {
     const shard = this.ctx.config.shard;
     if (!shard) return specs;
-    const groups = assignShards(specs, shard.count, specWeight, (spec) => spec.moduleId);
+    const groups = assignShards(
+      specs,
+      shard.count,
+      (spec) => {
+        const config = spec.project.config;
+        const fileParallelism =
+          'fileParallelism' in config && typeof config.fileParallelism === 'boolean'
+            ? config.fileParallelism
+            : undefined;
+        return specWeight({ moduleId: spec.moduleId, project: { config: { fileParallelism } } });
+      },
+      (spec) => spec.moduleId,
+    );
     return groups[shard.index - 1] ?? [];
   }
 }

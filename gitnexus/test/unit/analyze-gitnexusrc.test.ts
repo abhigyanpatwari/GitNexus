@@ -22,8 +22,12 @@ const {
   getDefaultBranchMock,
 } = vi.hoisted(() => ({
   runFullAnalysisMock: vi.fn(),
-  generateAIContextFilesMock: vi.fn(async () => ({ files: [] as string[] })),
-  refreshBaseRefLineMock: vi.fn(async () => ({ files: [] as string[] })),
+  generateAIContextFilesMock: vi.fn<
+    typeof import('../../src/cli/ai-context.js').generateAIContextFiles
+  >(async () => ({ files: [] as string[] })),
+  refreshBaseRefLineMock: vi.fn<typeof import('../../src/cli/ai-context.js').refreshBaseRefLine>(
+    async () => ({ files: [] as string[] }),
+  ),
   generateSkillFilesMock: vi.fn(async () => ({
     skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
     outputPath: '/repo/.claude/skills',

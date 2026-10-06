@@ -9,10 +9,12 @@ import type { GroupConfig } from '../../../src/core/group/types.js';
 import { GroupService } from '../../../src/core/group/service.js';
 import type { GroupToolPort } from '../../../src/core/group/service.js';
 
-const initLbugMock = vi.fn(async () => {});
+const initLbugMock = vi.fn<typeof import('../../../src/core/lbug/pool-adapter.js').initLbug>(
+  async () => true,
+);
 
 vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
-  initLbug: (...args: unknown[]) => initLbugMock(...args),
+  initLbug: (...args: Parameters<typeof initLbugMock>) => initLbugMock(...args),
   executeParameterized: vi.fn(async () => []),
   pinRepo: vi.fn(() => () => {}),
   getMaxResidentRepos: vi.fn(() => 5),

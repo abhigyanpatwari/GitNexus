@@ -45,7 +45,9 @@ describe('BM25 search', () => {
       // One SHOW_INDEXES call returns a catalog row per configured index, each
       // covering exactly its expected properties.
       const showIndexesRows = FTS_INDEXES.map((i) => ({
+        table_name: i.table,
         index_name: i.indexName,
+        index_type: 'FTS',
         property_names: [...i.properties],
       }));
       const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
@@ -62,7 +64,9 @@ describe('BM25 search', () => {
       // missing `description`. Every other index covers its columns.
       const staleIndex = 'function_fts';
       const showIndexesRows = FTS_INDEXES.map((i) => ({
+        table_name: i.table,
         index_name: i.indexName,
+        index_type: 'FTS',
         property_names: i.indexName === staleIndex ? ['name', 'content'] : [...i.properties],
       }));
       const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
@@ -77,7 +81,9 @@ describe('BM25 search', () => {
       // Every configured index present and covering, except const_fts is missing.
       const absentIndex = 'const_fts';
       const showIndexesRows = FTS_INDEXES.filter((i) => i.indexName !== absentIndex).map((i) => ({
+        table_name: i.table,
         index_name: i.indexName,
+        index_type: 'FTS',
         property_names: [...i.properties],
       }));
       const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
@@ -646,4 +652,126 @@ describe('BM25 search', () => {
       }
     });
   });
+});
+
+describe('FTS index completeness', () => {
+  beforeEach(async () => {
+    resetExtensionState();
+    mockExecuteParameterized.mockReset();
+    const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+    vi.mocked(queryFTS).mockReset();
+  });
+
+  const missing = (table: string, indexName: string) =>
+    new Error(`Binder exception: Table ${table} doesn't have an index with name ${indexName}.`);
+
+  for (const pooled of [false, true]) {
+    const mode = pooled ? 'pool' : 'core';
+    const repo = pooled ? 'completeness-test' : undefined;
+
+    async function useOutcome(outcome: (table: string, indexName: string) => Promise<any[]>) {
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockImplementation((table, indexName) => outcome(table, indexName));
+      mockExecuteParameterized.mockImplementation(async (_repo: string, cypher: string) => {
+        const match = cypher.match(/QUERY_FTS_INDEX\('([^']+)', '([^']+)'/);
+        return outcome(match![1], match![2]);
+      });
+    }
+
+    it(`${mode}: distinguishes healthy zero matches from missing indexes`, async () => {
+      await useOutcome(async () => []);
+      const result = await searchFTSFromLbug('no matches', 5, repo);
+      expect(result).toEqual({ results: [], ftsAvailable: true });
+    });
+
+    it(`${mode}: reports one missing index while retaining successful matches`, async () => {
+      await useOutcome(async (table, indexName) => {
+        if (table === 'Function') throw missing(table, indexName);
+        if (table !== 'File') return [];
+        return pooled
+          ? [{ node: { filePath: 'src/auth.ts', id: 'file:auth' }, score: 3 }]
+          : [{ filePath: 'src/auth.ts', nodeId: 'file:auth', score: 3 }];
+      });
+      const result = await searchFTSFromLbug('auth', 5, repo);
+      expect(result.ftsAvailable).toBe(true);
+      expect(result.results[0]).toMatchObject({ filePath: 'src/auth.ts', score: 3 });
+      expect(result.missingIndexes).toEqual(['Function.function_fts']);
+      expect(result.nonBenignErrors).toBeUndefined();
+    });
+
+    it(`${mode}: reports all missing indexes without claiming FTS is available`, async () => {
+      await useOutcome(async (table, indexName) => {
+        throw missing(table, indexName);
+      });
+      const result = await searchFTSFromLbug('auth', 5, repo);
+      expect(result.ftsAvailable).toBe(false);
+      expect(result.results).toEqual([]);
+      if (!pooled) {
+        const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+        for (const { table, indexName } of FTS_INDEXES) {
+          expect(queryFTS).toHaveBeenCalledWith(table, indexName, 'auth', 5, false, 'throw');
+        }
+      }
+      expect(result.missingIndexes).toEqual(
+        FTS_INDEXES.map(({ table, indexName }) => `${table}.${indexName}`),
+      );
+      expect(result.nonBenignErrors).toBeUndefined();
+    });
+
+    it(`${mode}: preserves redacted real errors alongside missing-index diagnostics`, async () => {
+      await useOutcome(async (table, indexName) => {
+        if (table === 'Function') throw missing(table, indexName);
+        if (table === 'Class')
+          throw new Error('connection reset at /home/alice/private/index.lbug');
+        return [];
+      });
+      const result = await searchFTSFromLbug('auth', 5, repo);
+      expect(result.ftsAvailable).toBe(true);
+      expect(result.missingIndexes).toEqual(['Function.function_fts']);
+      expect(result.nonBenignErrors).toHaveLength(1);
+      expect(result.nonBenignErrors![0]).toContain('connection reset');
+      expect(JSON.stringify(result)).not.toContain('/home/alice');
+    });
+
+    it(`${mode}: retains both failure causes when no configured index query succeeds`, async () => {
+      await useOutcome(async (table, indexName) => {
+        if (table === 'Function') throw missing(table, indexName);
+        throw new Error('connection reset at /home/alice/private/index.lbug');
+      });
+
+      const result = await searchFTSFromLbug('auth', 5, repo);
+
+      expect(result.ftsAvailable).toBe(false);
+      expect(result.results).toEqual([]);
+      expect(result.missingIndexes).toEqual(['Function.function_fts']);
+      expect(result.nonBenignErrors).toEqual(
+        Array(FTS_INDEXES.length - 1).fill('connection reset at <path>'),
+      );
+    });
+
+    it(`${mode}: clears missing-index diagnostics after a repaired query`, async () => {
+      await useOutcome(async (table, indexName) => {
+        if (table === 'Function') throw missing(table, indexName);
+        return [];
+      });
+      expect((await searchFTSFromLbug('auth', 5, repo)).missingIndexes).toEqual([
+        'Function.function_fts',
+      ]);
+      await useOutcome(async () => []);
+      expect(await searchFTSFromLbug('auth', 5, repo)).toEqual({ results: [], ftsAvailable: true });
+    });
+
+    it(`${mode}: explicit opt-out makes no queries and emits no missing-index diagnosis`, async () => {
+      await useOutcome(async (table, indexName) => {
+        throw missing(table, indexName);
+      });
+      expect(await searchFTSFromLbug('auth', 5, repo, 'disabled-by-flag')).toEqual({
+        results: [],
+        ftsAvailable: false,
+      });
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      expect(queryFTS).not.toHaveBeenCalled();
+      expect(mockExecuteParameterized).not.toHaveBeenCalled();
+    });
+  }
 });

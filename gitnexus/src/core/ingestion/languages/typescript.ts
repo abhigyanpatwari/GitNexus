@@ -130,6 +130,7 @@ import { extractDataRouteTableRoutes } from '../route-extractors/data-route-tabl
 import { extractNestRoutes } from '../route-extractors/nest.js';
 import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
 import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
+import { extractToolDefinitions } from './typescript/tool-definitions.js';
 
 const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes>) => [
   ...extractDispatchGuardRoutes(...args),
@@ -494,6 +495,7 @@ export const typescriptProvider = defineLanguage({
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   // Path-gate lives here (language provider), not in the shared parse worker.
   extractTextRoutes: extractJsTsTextRoutes,
+  extractToolDefinitions,
 });
 
 export const javascriptProvider = defineLanguage({
@@ -577,4 +579,5 @@ export const javascriptProvider = defineLanguage({
   extractDecoratorRoutes: extractJsTsRoutes,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   extractTextRoutes: extractJsTsTextRoutes,
+  extractToolDefinitions,
 });

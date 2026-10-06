@@ -1367,7 +1367,7 @@ describe('worker pool integration', () => {
       ]);
 
       // Deterministically: a.ts crashes round 1, b.ts crashes round 2.
-      const quarantine = (pool.getQuarantinedPaths?.() ?? []).sort();
+      const quarantine = [...(pool.getQuarantinedPaths?.() ?? [])].sort();
       expect(quarantine).toEqual(['a.ts', 'b.ts']);
       // All non-quarantined files eventually parsed by the survivor slot.
       const allPaths = results.flatMap((r) => r.paths).sort();

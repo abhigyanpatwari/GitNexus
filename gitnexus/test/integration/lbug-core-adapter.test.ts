@@ -11,6 +11,8 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
+import { PassThrough } from 'node:stream';
+import type { Response } from 'express';
 import type { GraphRelationship } from 'gitnexus-shared';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { skipUnlessFtsAvailable } from '../helpers/fts-availability.js';
@@ -59,6 +61,39 @@ withTestLbugDB(
 
         const folderRows = await coreExecuteQuery('MATCH (n:Folder) RETURN n.id AS id');
         expect(folderRows).toHaveLength(1);
+      });
+
+      it('serializes CSV-loaded empty relationship reasons as strings in both graph APIs', async () => {
+        const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');
+        const { buildGraph, streamGraphNdjson } = await import('../../src/server/api.js');
+        const stored = await executeQuery(
+          'MATCH ()-[r:CodeRelation]->() RETURN r.reason AS reason',
+        );
+        expect(stored).toEqual(Array.from({ length: 4 }, () => ({ reason: null })));
+
+        const buffered = JSON.parse(JSON.stringify(await buildGraph()));
+        const response = new PassThrough();
+        let ndjson = '';
+        response.on('data', (chunk: Buffer) => {
+          ndjson += chunk.toString();
+        });
+        try {
+          await streamGraphNdjson(response as unknown as Response);
+        } finally {
+          response.destroy();
+        }
+        const streamed = ndjson
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+          .filter((record) => record.type === 'relationship')
+          .map((record) => record.data);
+        expect(buffered.relationships).toHaveLength(4);
+        expect({
+          buffered: buffered.relationships.map((rel: GraphRelationship) => rel.reason),
+          streamed: streamed.map((rel: GraphRelationship) => rel.reason),
+        }).toEqual({ buffered: ['', '', '', ''], streamed: ['', '', '', ''] });
+        expect(streamed).toEqual(expect.arrayContaining(buffered.relationships));
       });
 
       it('createFTSIndex: creates FTS index on Function table without error', async (ctx) => {

@@ -1,8 +1,10 @@
+import type { ScopeResolutionIndexes } from '../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { describe, it, expect } from 'vitest';
 import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';
 import { goScopeResolver } from '../../../../src/core/ingestion/languages/go/scope-resolver.js';
 import { populateGoRangeBindings } from '../../../../src/core/ingestion/languages/go/range-binding.js';
-import type { ParsedFile, ScopeResolutionIndexes } from 'gitnexus-shared';
+import type { ParsedFile } from 'gitnexus-shared';
+import { finalizeScopeModel } from '../../../../src/core/ingestion/finalize-orchestrator.js';
 
 function parseGo(src: string, path = 'main.go'): ParsedFile {
   const p = extractParsedFile(goScopeResolver.languageProvider, src, path);
@@ -12,13 +14,7 @@ function parseGo(src: string, path = 'main.go'): ParsedFile {
 }
 
 function makeEmptyIndexes(): ScopeResolutionIndexes {
-  return {
-    bindings: new Map(),
-    imports: [],
-    scopeTree: { roots: [] } as any,
-    methodDispatch: new Map(),
-    sccs: [],
-  } as ScopeResolutionIndexes;
+  return finalizeScopeModel([]);
 }
 
 describe('Go range binding — null guard (#1346, #1366)', () => {

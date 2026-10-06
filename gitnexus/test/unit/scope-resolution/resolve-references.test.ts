@@ -79,6 +79,11 @@ function makeIndexes(
     }),
     imports: new Map(),
     bindings: new Map(),
+    workspaceFqnBindings: new Map(),
+    workspaceTypeBindings: new Map(),
+    namespaceFqnBindings: new Map(),
+    namespaceTypeBindings: new Map(),
+    accessibleNamespacesByScope: new Map(),
     bindingAugmentations: new Map(),
     referenceSites,
     sccs: [],
@@ -89,6 +94,7 @@ function makeIndexes(
       unresolvedEdges: 0,
       sccCount: 0,
       largestSccSize: 0,
+      ambiguousWildcardExports: [],
     },
   };
 }

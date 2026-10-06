@@ -367,8 +367,14 @@ describe('FTS opt-out analysis lifecycle (#3091)', () => {
         });
         expect(response.status).toBe(200);
         const body = await response.json();
-        expect(body.warning).toContain('FTS disabled for this index');
-        expect(body.warning).not.toMatch(/failed to load|indexes missing|repair-fts/);
+        expect(body).toHaveProperty(
+          'warning',
+          expect.stringContaining('FTS disabled for this index'),
+        );
+        expect(body).toHaveProperty(
+          'warning',
+          expect.not.stringMatching(/failed to load|indexes missing|repair-fts/),
+        );
       }
     } finally {
       if (server.exitCode === null) server.kill('SIGTERM');

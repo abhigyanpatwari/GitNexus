@@ -822,28 +822,32 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // `handlerReceiver` hint. Warm v123 Go worker results carry no routes.
 // v125 (#3402): Go route hints now honor lexical declarations and captured writes;
 // namespace imports retain whether their local name comes from the package clause.
-// v126: R scope queries now anchor a `@scope.function`
-// on every named-function assignment and named function-valued argument (the
-// same nodes the `@declaration.function`/`@declaration.method` anchors use),
-// so each def is owned by its own Function scope instead of the module/Class
-// scope. Warm ParsedFiles and durable stores hold the pre-fix scope tree, where
-// every R call is credited to the first callable in its file; both stores must
-// re-extract.
-// v127: R scope queries now capture the `pkg::`/`pkg:::`
-// qualifier of namespaced calls as `@reference.qualified-name`, so it reaches
-// `site.rawQualifiedName`. Warm ParsedFiles hold the pre-capture site shape without the
-// qualifier, so both stores must re-extract.
-// v128: the R provider keeps only the argument that names an S4 definition
+// v126 (#3446): SDK positional tool registrations now emit tool definitions,
+// exact handler identities, and an opt-out from unrelated file-level flows.
+// Warm v125 worker results omit these definitions and must be re-extracted.
+// v127 (#3450): Destructured member writes invalidate SDK registration evidence.
+// Warm v126 worker results can retain false tools after a method replacement.
+// v128 (#3450): SDK namespace imports now prove positional tool receivers.
+// Warm v127 worker results omit these definitions and must be re-extracted.
+// v129: R provider fixes, collapsed into one bump because none of them has
+// shipped. R scope queries anchor a `@scope.function` on every named-function
+// assignment and named function-valued argument (the same nodes the
+// `@declaration.function`/`@declaration.method` anchors use), so each def is
+// owned by its own Function scope instead of the module/Class scope, and
+// capture the `pkg::`/`pkg:::` qualifier of namespaced calls as
+// `@reference.qualified-name` so it reaches `site.rawQualifiedName`. The R
+// provider also keeps only the argument that names an S4 definition
 // (shouldSkipDefinitionCapture), so `setClass("A", contains = "VIRTUAL")` no
 // longer defines a Class `VIRTUAL`, `setGeneric(..., valueClass = "numeric")` a
-// Function `numeric`, nor `setMethod("show", "Foo", ...)` a Method `Foo`. The R
+// Function `numeric`, nor `setMethod("show", "Foo", ...)` a Method `Foo`; the R
 // scope emitter likewise keeps only the argument that names a `setClass` class
 // or a `library`/`require`/`source` import, so `library(lib.loc = libO, pkgP)`
 // no longer imports `libO` and a comment before the first argument no longer
 // hides the class or import. Definitions and scope captures are parse-time
-// facts replayed verbatim from the warm cache, so stale ones would persist on
-// unchanged files. (One bump covers both: v128 has not shipped.)
-const SCHEMA_BUMP = 128;
+// facts replayed verbatim from the warm cache, so stale ones (the pre-fix scope
+// tree, the unqualified call-site shape, the mis-selected arguments) would
+// persist on unchanged files; both stores must re-extract.
+const SCHEMA_BUMP = 129;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

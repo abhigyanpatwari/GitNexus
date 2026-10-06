@@ -31,6 +31,7 @@ npm-debug.log*
 
 # Testing
 coverage/
+.vitest/
 .tmp-test/
 gitnexus/.tmp-test/
 
@@ -130,6 +131,14 @@ local_docs/
 !.agents/plugins/marketplace.json
 .context/
 gitnexus/web/
+
+# Local copies of CI execution receipts.
+gitnexus/benchmarks.json
+gitnexus/preflight.json
+gitnexus/test-results.json
+gitnexus/windows-latest-*.json
+gitnexus/macos-latest-*.json
+gitnexus-web/web-test-results.json
 
 # Machine-local skill-evolution evidence (consumed by eval/workflow_bench/evolve.py)
 eval/workflow_bench/learnings.jsonl

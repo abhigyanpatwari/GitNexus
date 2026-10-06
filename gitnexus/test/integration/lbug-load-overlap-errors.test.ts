@@ -81,6 +81,52 @@ afterAll(async () => {
 });
 
 describe('loadGraphToLbug overlap error paths (#2226 F1)', () => {
+  it.each([1000, 0])(
+    'retains COPY failures and rejects skipped rows with warning_limit=%i',
+    async (warningLimit) => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const { _captureLogger } = await import('../../src/core/logger.js');
+      const graph = buildTestGraph([], []);
+      emitMock.mockImplementation(
+        async (_g: unknown, _r: unknown, dir: string, onNodes?: (n: NodeFiles) => void) => {
+          await fs.mkdir(dir, { recursive: true });
+          const csvPath = path.join(dir, 'function.csv');
+          await fs.writeFile(
+            csvPath,
+            'id,name,filePath,startLine,endLine,isExported,content,description,convexEndpointFactory\n' +
+              '"Function:bad.ts:copy","copy","bad.ts",bad,2,false,"","",""\n',
+          );
+          const nodeFiles = new Map([['Function', { csvPath, rows: 1 }]]) as NodeFiles;
+          onNodes?.(nodeFiles);
+          return { ...emptyResult(), nodeFiles };
+        },
+      );
+      const capture = _captureLogger();
+      try {
+        await adapter.executeQuery(`CALL warning_limit=${warningLimit}`);
+        await expect(adapter.loadGraphToLbug(graph, tmpBase, storagePath)).rejects.toThrow(
+          /skipped/i,
+        );
+        const records = capture.records();
+        expect(records.some((r) => /first COPY failure/i.test(String(r.msg)))).toBe(true);
+        expect(records).toContainEqual(
+          expect.objectContaining({
+            expectedRows: 1,
+            copiedRows: 0,
+            skippedRows: 1,
+            retainedWarnings: warningLimit === 0 ? 0 : 1,
+          }),
+        );
+      } finally {
+        try {
+          await adapter.executeQuery('CALL warning_limit=1000');
+        } finally {
+          capture.restore();
+        }
+      }
+    },
+  );
+
   it('relationship-emit failure with node COPY in flight surfaces the emit error and leaks no unhandled rejection', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     const graph = buildTestGraph(

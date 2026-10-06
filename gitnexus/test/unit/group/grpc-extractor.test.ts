@@ -1391,6 +1391,7 @@ service Foo { rpc Bar (Req) returns (Res); }`;
 describe('resolveProtoConflict', () => {
   const makeInfo = (pkg: string, protoPath: string): ProtoServiceInfo => ({
     package: pkg,
+    javaPackage: '',
     serviceName: 'Svc',
     methods: ['Do'],
     protoPath,

@@ -61,7 +61,7 @@ const describeKotlin = Kotlin && KOTLIN_HTTP_PLUGIN ? describe : describe.skip;
 const plugin = KOTLIN_HTTP_PLUGIN as HttpLanguagePlugin;
 
 const parseSource = (p: Parser, src: string): Parser.Tree => {
-  p.setLanguage(Kotlin as Parser.Language);
+  p.setLanguage(Kotlin);
   return p.parse(src);
 };
 

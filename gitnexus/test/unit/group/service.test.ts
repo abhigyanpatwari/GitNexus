@@ -2,13 +2,17 @@ import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import {
   GroupService,
   type GroupToolPort,
   type GroupRepoHandle,
 } from '../../../src/core/group/service.js';
 import { writeContractRegistry } from '../../../src/core/group/storage.js';
-import { formatIndexStatusCell } from '../../../src/cli/group-status-format.js';
+import {
+  formatIndexStatusCell,
+  type GroupRepoIndexRow,
+} from '../../../src/cli/group-status-format.js';
 import type { ContractRegistry, StoredContract, CrossLink } from '../../../src/core/group/types.js';
 
 function makeTmpGroup(): { tmpDir: string; groupDir: string; cleanup: () => void } {
@@ -299,7 +303,7 @@ describe('GroupService', () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const query = vi.fn(async () => ({ processes: [] }));
+        const query = vi.fn<GroupToolPort['query']>(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
         await svc.groupQuery({ name: 'test-group', query: 'auth flow' });
         expect(query).toHaveBeenCalled();
@@ -316,7 +320,7 @@ describe('GroupService', () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const query = vi.fn(async () => ({ processes: [] }));
+        const query = vi.fn<GroupToolPort['query']>(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
         await svc.groupQuery({
           name: 'test-group',
@@ -338,7 +342,7 @@ describe('GroupService', () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const query = vi.fn(async () => ({ processes: [] }));
+        const query = vi.fn<GroupToolPort['query']>(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
 
         const infiniteLimit = await svc.groupQuery({
@@ -399,7 +403,7 @@ describe('GroupService', () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const query = vi.fn(async () => ({ processes: [] }));
+        const query = vi.fn<GroupToolPort['query']>(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
         await svc.groupQuery({ name: 'test-group', query: 'auth flow', chain_depth: 2 });
         expect(query).toHaveBeenCalled();
@@ -571,7 +575,7 @@ repos:
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const context = vi.fn(async () => ({ status: 'found' }));
+        const context = vi.fn<GroupToolPort['context']>(async () => ({ status: 'found' }));
         const svc = new GroupService(makePort({ context }));
         const r = await svc.groupContext({
           name: 'test-group',
@@ -590,7 +594,7 @@ repos:
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const context = vi.fn(async () => ({
+        const context = vi.fn<GroupToolPort['context']>(async () => ({
           status: 'found',
           symbol: { filePath: 'services/auth/x.ts', uid: 'u1', name: 'X' },
         }));
@@ -717,10 +721,7 @@ repos:
 
         const svc = new GroupService(port);
         const result = (await svc.groupStatus({ name: 'test-group' })) as {
-          repos: Record<
-            string,
-            { indexStale: boolean; commitsBehind?: number; status?: string; missing: boolean }
-          >;
+          repos: Record<string, GroupRepoIndexRow & { missing: boolean }>;
         };
 
         const row = result.repos['app/backend'];
@@ -731,6 +732,68 @@ repos:
           status: 'unknown',
         });
         expect(formatIndexStatusCell(row)).toBe('STALE     (? commits behind)');
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('renders a real rollback as an index that differs from HEAD', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const repoPath = path.join(tmpDir, 'rollback');
+        fs.mkdirSync(repoPath);
+        const git = (...args: string[]): string =>
+          execFileSync(
+            'git',
+            [
+              '-c',
+              'user.email=t@example.com',
+              '-c',
+              'user.name=T',
+              '-c',
+              'commit.gpgsign=false',
+              ...args,
+            ],
+            { cwd: repoPath, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+          ).trim();
+        git('init', '-q', '--initial-branch=main');
+        git('commit', '--allow-empty', '-qm', 'first');
+        const firstCommit = git('rev-parse', 'HEAD');
+        git('commit', '--allow-empty', '-qm', 'indexed');
+        const indexedCommit = git('rev-parse', 'HEAD');
+        git('checkout', '-q', '--detach', firstCommit);
+
+        const storagePath = path.join(repoPath, '.gitnexus');
+        fs.mkdirSync(storagePath);
+        fs.writeFileSync(
+          path.join(storagePath, 'gitnexus.json'),
+          JSON.stringify({ lastCommit: indexedCommit, indexedAt: '2026-01-01T00:00:00.000Z' }),
+        );
+        const port = makePort({
+          resolveRepo: vi.fn(
+            async (name?: string): Promise<GroupRepoHandle> => ({
+              id: name || 'test',
+              name: name || 'test',
+              repoPath,
+              storagePath,
+            }),
+          ),
+        });
+
+        const svc = new GroupService(port);
+        const result = (await svc.groupStatus({ name: 'test-group' })) as {
+          repos: Record<string, GroupRepoIndexRow & { missing: boolean }>;
+        };
+        const row = result.repos['app/backend'];
+        expect(row).toMatchObject({
+          missing: false,
+          indexStale: true,
+          commitsBehind: 0,
+          status: 'diverged',
+        });
+        expect(formatIndexStatusCell(row)).toBe('STALE     (index differs from HEAD)');
       } finally {
         vi.unstubAllEnvs();
         cleanup();

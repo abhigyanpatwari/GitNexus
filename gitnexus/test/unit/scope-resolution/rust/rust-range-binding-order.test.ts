@@ -1,5 +1,7 @@
+import type { ScopeResolutionIndexes } from '../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { describe, expect, it } from 'vitest';
-import type { ParsedFile, ScopeResolutionIndexes } from 'gitnexus-shared';
+import type { ParsedFile } from 'gitnexus-shared';
+import { finalizeScopeModel } from '../../../../src/core/ingestion/finalize-orchestrator.js';
 import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';
 import { rustScopeResolver } from '../../../../src/core/ingestion/languages/rust/scope-resolver.js';
 import { populateRustRangeBindings } from '../../../../src/core/ingestion/languages/rust/range-binding.js';
@@ -25,14 +27,7 @@ function parse(src: string, path: string): ParsedFile {
 }
 
 function makeEmptyIndexes(): ScopeResolutionIndexes {
-  return {
-    bindings: new Map(),
-    bindingAugmentations: new Map(),
-    imports: [],
-    scopeTree: { roots: [] },
-    methodDispatch: new Map(),
-    sccs: [],
-  } as unknown as ScopeResolutionIndexes;
+  return finalizeScopeModel([]);
 }
 
 function boundTypeOf(parsed: ParsedFile, variableName: string): string | undefined {

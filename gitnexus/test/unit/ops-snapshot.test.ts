@@ -27,8 +27,8 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(view.durationMs).toBe(5_000);
     expect(view.lane).toBe('analyze');
     expect(view.repoName).toBe('repo');
-    expect(view.repoUrl).toBeUndefined();
-    expect(view.repoPath).toBeUndefined();
+    expect(view).not.toHaveProperty('repoUrl');
+    expect(view).not.toHaveProperty('repoPath');
     expect(view.branch).toBeUndefined();
   });
 
@@ -72,7 +72,7 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
     expect(view.repoName).toBe('repo');
     expect(view.repoName).not.toContain('access_token');
-    expect(view.repoUrl).toBeUndefined();
+    expect(view).not.toHaveProperty('repoUrl');
   });
 
   it('redacts the full repository URL from job.error on the public ops view', () => {

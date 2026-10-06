@@ -29,7 +29,7 @@ function unescapeCSVField(cell: string): string {
 const roundTrip = (hops: readonly TaintPathHopInput[]) => {
   const { reason } = encodeTaintPath(hops);
   const decoded = decodeTaintPath(reason);
-  if (!decoded.ok) throw new Error(`decode failed: ${decoded.error}`);
+  if (decoded.ok === false) throw new Error(`decode failed: ${decoded.error}`);
   return { reason, decoded };
 };
 
@@ -293,7 +293,7 @@ describe('typed parse failures (never a throw)', () => {
     it(`fails typed on ${label}`, () => {
       const decoded = decodeTaintPath(input);
       expect(decoded.ok).toBe(false);
-      if (!decoded.ok) expect(decoded.error.length).toBeGreaterThan(0);
+      if (decoded.ok === false) expect(decoded.error.length).toBeGreaterThan(0);
     });
   }
 

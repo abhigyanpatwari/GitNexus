@@ -99,6 +99,12 @@ function makeIndexes(scopes: Scope[], allDefs: SymbolDefinition[]): ScopeResolut
     }),
     imports: new Map(),
     bindings: new Map(),
+    bindingAugmentations: new Map(),
+    workspaceFqnBindings: new Map(),
+    workspaceTypeBindings: new Map(),
+    namespaceFqnBindings: new Map(),
+    namespaceTypeBindings: new Map(),
+    accessibleNamespacesByScope: new Map(),
     referenceSites: [],
     sccs: [],
     stats: {
@@ -108,6 +114,7 @@ function makeIndexes(scopes: Scope[], allDefs: SymbolDefinition[]): ScopeResolut
       unresolvedEdges: 0,
       sccCount: 0,
       largestSccSize: 0,
+      ambiguousWildcardExports: [],
     },
   };
 }

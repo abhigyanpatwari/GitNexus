@@ -110,9 +110,13 @@ export const sanitizeUTF8 = (str: string): string => {
 };
 
 export const escapeCSVField = (value: string | number | undefined | null): string => {
-  if (value === undefined || value === null) return '""';
+  if (value === undefined || value === null) return '';
   let str = String(value);
   str = sanitizeUTF8(str);
+  // Preserve the NULL meaning of absent strings from the 0.18.3 writer.
+  // Newer LadybugDB readers retain a quoted empty field as a STRING value;
+  // it must stay unquoted or unresolved destination addresses can join.
+  if (str.length === 0) return '';
   return `"${str.replace(/"/g, '""')}"`;
 };
 

@@ -14,7 +14,7 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
-import { isBladeTemplateFilename } from 'gitnexus-shared';
+import { isTemplateRouteCandidate } from '../utils/template-file.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
@@ -41,6 +41,8 @@ import { readFileContents } from '../filesystem-walker.js';
 import { isDev } from '../utils/env.js';
 
 import { logger } from '../../logger.js';
+export { isTemplateRouteCandidate } from '../utils/template-file.js';
+
 const EXPO_NAV_PATTERNS = [
   /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
   /<Link\s+[^>]*href=\s*['"`]([^'"`]+)['"`]/g,
@@ -120,17 +122,6 @@ const TEMPLATE_NAMED_ROUTE_PATTERNS: readonly RegExp[] = [
 function hasRouteParameters(routeUrl: string): boolean {
   return /\{[^}]+\}/.test(routeUrl);
 }
-
-export const isTemplateRouteCandidate = (filePath: string): boolean => {
-  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-  return (
-    normalized.endsWith('.html') ||
-    normalized.endsWith('.htm') ||
-    normalized.endsWith('.ejs') ||
-    normalized.endsWith('.hbs') ||
-    isBladeTemplateFilename(normalized)
-  );
-};
 
 export function extractTemplateStaticFetchCalls(
   filePath: string,

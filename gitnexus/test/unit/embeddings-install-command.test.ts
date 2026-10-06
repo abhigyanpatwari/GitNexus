@@ -13,13 +13,15 @@ import type { LoggerCapture } from '../../src/core/logger.js';
 
 const resolveEmbeddingRuntimeMock = vi.fn<() => { source: string } | null>();
 const isPrefixRuntimeLoadableMock = vi.fn(() => true);
-const installEmbeddingRuntimeMock = vi.fn(async () => undefined);
+const installEmbeddingRuntimeMock = vi.fn<
+  typeof import('../../src/core/embeddings/runtime-install.js').installEmbeddingRuntime
+>(async () => undefined);
 
 vi.mock('../../src/core/embeddings/runtime-install.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/core/embeddings/runtime-install.js')>()),
   resolveEmbeddingRuntime: () => resolveEmbeddingRuntimeMock(),
   isPrefixRuntimeLoadable: () => isPrefixRuntimeLoadableMock(),
-  installEmbeddingRuntime: (opts?: unknown) => installEmbeddingRuntimeMock(opts),
+  installEmbeddingRuntime: installEmbeddingRuntimeMock,
   getEmbeddingRuntimeDir: () => '/fake/embedding-runtime',
   getEmbeddingStackSpecs: () => ({ '@huggingface/transformers': '^4.1.0' }),
 }));

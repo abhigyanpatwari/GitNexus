@@ -71,7 +71,7 @@ describe('indexCommand', () => {
   const storageFailure = (
     state: 'empty' | 'owned' | 'unowned',
     hasCodeIndexDB: boolean,
-  ): StorageRequirementError =>
+  ): InstanceType<typeof StorageRequirementError> =>
     new StorageRequirementError(
       {
         repoPath: resolvedRepo,

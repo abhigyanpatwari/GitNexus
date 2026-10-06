@@ -10,7 +10,12 @@ import { resolveGraphPath } from '../../storage/shared-store.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
-import { scoreImpactRisk, unusedAxesForImpactWalk, type ImpactRiskResult } from 'gitnexus-shared';
+import {
+  scoreImpactRisk,
+  unusedAxesForImpactWalk,
+  getLanguageFromFilename,
+  type ImpactRiskResult,
+} from 'gitnexus-shared';
 import {
   initLbug,
   executeQuery,
@@ -23,6 +28,15 @@ import {
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
+import {
+  SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
+  SymbolIdentityError,
+  assertSymbolIdentity,
+  queryRowValue,
+  assertIdentityFields,
+  assertQueryIdentity,
+  rethrowSymbolIdentityError,
+} from './query-result-integrity.js';
 import { queryConvexDispatchMetadata } from './convex-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
@@ -30,8 +44,10 @@ import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
+import { isCobolFile, isJclFile } from '../../core/ingestion/cobol/file-types.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
+import { isTemplateRouteCandidate } from '../../core/ingestion/utils/template-file.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -315,6 +331,70 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
  */
 function nonBlankUid(value: unknown): string | undefined {
   return typeof value === 'string' ? value.trim() || undefined : undefined;
+}
+
+function assertSymbolRowIdentity(row: unknown): void {
+  assertQueryIdentity(row, 'id', 0, [
+    ['name', 1],
+    ['type', 2],
+    ['filePath', 3],
+  ]);
+}
+
+function assertContextRefs(rows: unknown[]): void {
+  for (const row of rows) {
+    assertQueryIdentity(row, 'uid', 1, [
+      ['name', 2],
+      ['filePath', 3],
+      ['kind', 4],
+    ]);
+    assertSymbolIdentity(queryRowValue(row, 'relType', 0));
+  }
+}
+
+const RESPONSE_IDENTITY_FIELDS = new Set([
+  'id',
+  'uid',
+  'name',
+  'filePath',
+  'label',
+  'kind',
+  'type',
+  'relationType',
+  'processType',
+  'url',
+  'method',
+  'sourceId',
+  'targetId',
+  'symbolId',
+  'symbolName',
+  'symbolFilePath',
+  'adviceId',
+  'adviceName',
+  'adviceFilePath',
+  'advisedId',
+  'advisedName',
+  'advisedFilePath',
+  'evidenceId',
+]);
+
+/** Cover nested additive identity fields while leaving source/metadata text alone. */
+function assertResponseIdentities(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const item of value) assertResponseIdentities(item);
+  } else if (value !== null && typeof value === 'object') {
+    for (const [key, field] of Object.entries(value)) {
+      if (key === 'seedBlocks' || key === 'reachableBlocks' || key === 'intraReachableBlocks') {
+        if (!Array.isArray(field)) throw new SymbolIdentityError();
+        for (const id of field) assertSymbolIdentity(id);
+        continue;
+      }
+      if (RESPONSE_IDENTITY_FIELDS.has(key)) assertIdentityFields(field);
+      if (key !== 'content' && key !== 'methodMetadata' && key !== 'bean') {
+        assertResponseIdentities(field);
+      }
+    }
+  }
 }
 
 interface StringAliasDefinition {
@@ -3143,6 +3223,7 @@ export class LocalBackend {
     // regardless of whether OTHER tables succeeded — previously a real error
     // on N-1 of N tables while one succeeded left zero diagnostic trail.
     const ftsQueryErrors = bm25SearchResult?.nonBenignErrors;
+    const ftsMissingIndexes = bm25SearchResult?.missingIndexes;
     if (ftsQueryErrors) {
       // tri-review NEW-5: these strings are already classified non-benign by
       // classifyFtsQueryError — do NOT route them through logQueryError,
@@ -3632,13 +3713,15 @@ export class LocalBackend {
         branch: repo.branch,
         indexedAt: this.lastObservedPoolState.get(repo.lbugPath)?.indexedAt ?? repo.indexedAt,
       };
-      // tri-review NEW-1: every table failing for a REAL error (timeout,
-      // connection reset) is not a missing-index condition — `ftsDegradedWarning`'s
-      // "run --repair-fts" headline won't fix it. Route to a dedicated message
-      // instead of burying the real cause as a trailing suffix on bad advice.
+      // Real errors (timeout, connection reset) need their own diagnosis.
+      // When some indexes are also missing, preserve both causes and append
+      // their repair guidance below even though no FTS query succeeded.
       warnings.push(
         ftsQueryErrors
-          ? ftsQueryFailedWarning({ ...warningContext, lastErrorRedacted: ftsQueryErrors[0] })
+          ? ftsQueryFailedWarning(
+              { ...warningContext, lastErrorRedacted: ftsQueryErrors[0] },
+              !!ftsMissingIndexes?.length,
+            )
           : ftsDegradedWarning(warningContext, ftsDisabledReason),
       );
     } else if (ftsQueryErrors) {
@@ -3649,6 +3732,12 @@ export class LocalBackend {
       // that convention instead of only logging server-side.
       warnings.push(
         `FTS keyword search partially failed — ${ftsQueryErrors.length} of the configured indexes hit a query error and were skipped; results may be missing matches from those node types (see server logs).`,
+      );
+    }
+    if (ftsMissingIndexes?.length && (ftsUsed || ftsQueryErrors)) {
+      warnings.push(
+        `FTS keyword search is incomplete: missing configured indexes (${ftsMissingIndexes.join(', ')}). ` +
+          'Results may be missing matches from those node types. Run `gitnexus analyze --repair-fts`.',
       );
     }
     // #2331: a CJK query against a server process resolving
@@ -3782,7 +3871,7 @@ export class LocalBackend {
     // #2767: a partial FTS failure (some tables ok, one or more real errors)
     // is as much a "results may be incomplete" signal as enrichmentDegraded —
     // flag it the same way rather than only via the warning string.
-    const ftsPartial = ftsUsed && !!ftsQueryErrors;
+    const ftsPartial = ftsUsed && (!!ftsQueryErrors || !!ftsMissingIndexes?.length);
 
     return {
       processes,
@@ -3803,7 +3892,12 @@ export class LocalBackend {
     query: string,
     limit: number,
     disabledReason?: FtsDisabledReason,
-  ): Promise<{ results: any[]; ftsUsed: boolean; nonBenignErrors?: string[] }> {
+  ): Promise<{
+    results: any[];
+    ftsUsed: boolean;
+    nonBenignErrors?: string[];
+    missingIndexes?: string[];
+  }> {
     if (disabledReason) return { results: [], ftsUsed: false };
     let searchFTSFromLbug;
     try {
@@ -3837,6 +3931,7 @@ export class LocalBackend {
     const bm25Results = ftsResponse?.results ?? [];
     const ftsUsed = ftsResponse?.ftsAvailable ?? false;
     const nonBenignErrors = ftsResponse?.nonBenignErrors;
+    const missingIndexes = ftsResponse?.missingIndexes;
 
     const results: any[] = [];
 
@@ -3910,7 +4005,12 @@ export class LocalBackend {
       }
     }
 
-    return { results, ftsUsed, ...(nonBenignErrors && { nonBenignErrors }) };
+    return {
+      results,
+      ftsUsed,
+      ...(nonBenignErrors && { nonBenignErrors }),
+      ...(missingIndexes && { missingIndexes }),
+    };
   }
 
   /**
@@ -4344,9 +4444,10 @@ export class LocalBackend {
    * "unknown kind" and, worse, makes the `kind` disambiguation hint unable to
    * filter it out (#2687).
    *
-   * Failures are swallowed: label enrichment is an optimisation for
+   * Ordinary query failures are swallowed: label enrichment is an optimisation for
    * downstream scoring and #480 Class/Interface BFS seeding; if it fails
    * the symbol still resolves, just without the kind-priority bonus.
+   * Corrupt identities propagate to the context/impact error envelope.
    */
   private async enrichCandidateLabels(
     repo: RepoHandle,
@@ -4380,6 +4481,7 @@ export class LocalBackend {
       );
       const labelById = new Map<string, string>();
       for (const r of rows as any[]) {
+        assertQueryIdentity(r, 'id', 0, [['label', 1]]);
         const id = (r.id ?? r[0]) as string;
         const label = (r.label ?? r[1]) as string;
         if (id && label && !labelById.has(id)) labelById.set(id, label);
@@ -4387,7 +4489,8 @@ export class LocalBackend {
       for (const c of candidates) {
         if (c.type === '' && labelById.has(c.id)) c.type = labelById.get(c.id) as string;
       }
-    } catch {
+    } catch (error) {
+      rethrowSymbolIdentityError(error);
       /* best-effort — downstream resolvers still work without the label */
     }
   }
@@ -4512,6 +4615,7 @@ export class LocalBackend {
         { uid },
       );
       if (rows.length === 0) return { kind: 'not_found' };
+      assertSymbolRowIdentity(rows[0]);
       const r = rows[0] as any;
       const symbol = {
         id: (r.id ?? r[0]) as string,
@@ -4522,6 +4626,7 @@ export class LocalBackend {
         endLine: (r.endLine ?? r[5]) as number,
         ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
       };
+      assertSymbolIdentity(symbol.id, uid);
       // Same LadybugDB label-enrichment as the name-based path: a UID
       // pointing at a Class must still surface `type: 'Class'` so impact's
       // Class/Interface BFS seed fires. No-op when type is already set.
@@ -4645,6 +4750,10 @@ export class LocalBackend {
 
     if (rows.length === 0) return { kind: 'not_found' };
 
+    // Reject every raw candidate before narrowing/scoring can hide a corrupt row.
+    for (const row of rows) {
+      assertSymbolRowIdentity(row);
+    }
     // Normalise row shape across object / tuple returns from LadybugDB.
     let normalized = rows.map((r: any) => ({
       id: (r.id ?? r[0]) as string,
@@ -4655,7 +4764,6 @@ export class LocalBackend {
       endLine: (r.endLine ?? r[5]) as number,
       ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
     }));
-
     // An exact File path wins over anchored suffix candidates. Without this,
     // `lib/a.ts` and `src/lib/a.ts` both score as File candidates and turn an
     // otherwise unambiguous exact target into `ambiguous` (#3084 review P2).
@@ -4805,9 +4913,14 @@ export class LocalBackend {
     },
   ): Promise<any> {
     try {
-      return await this._contextImpl(repo, params);
+      const result = await this._contextImpl(repo, params);
+      if (!result.error) assertResponseIdentities(result);
+      return result;
     } catch (err: any) {
       const msg = (err instanceof Error ? err.message : String(err)) || 'Context query failed';
+      if (err instanceof SymbolIdentityError) {
+        return { error: msg, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION };
+      }
       if (isWalCorruptionError(err)) {
         return {
           error: msg,
@@ -4922,6 +5035,8 @@ export class LocalBackend {
         { symId },
       ),
     ]);
+    assertContextRefs(incomingRows);
+    assertContextRefs(incomingAdvisedRows);
     incomingRows.push(...incomingAdvisedRows);
     let typedPropertyRows: any[] = [];
 
@@ -5026,6 +5141,16 @@ export class LocalBackend {
               },
             ),
           ]);
+        assertContextRefs(ctorIncoming);
+        assertContextRefs(fileIncoming);
+        assertContextRefs(typedPropertyIncoming);
+        for (const row of typedProperties) {
+          assertQueryIdentity(row, 'uid', 0, [
+            ['name', 1],
+            ['filePath', 2],
+            ['kind', 3],
+          ]);
+        }
         typedPropertyRows = typedProperties;
 
         // Deduplicate by (relType, uid) — a caller can have multiple relation
@@ -5042,6 +5167,7 @@ export class LocalBackend {
           }
         }
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('context:class-incoming-expansion', e);
       }
     }
@@ -5072,6 +5198,8 @@ export class LocalBackend {
         { symId },
       ),
     ]);
+    assertContextRefs(outgoingRows);
+    assertContextRefs(outgoingAdvisedRows);
     outgoingRows.push(...outgoingAdvisedRows);
 
     // Process participation.
@@ -5095,7 +5223,14 @@ export class LocalBackend {
       `,
         { symId },
       );
+      for (const row of processRows) {
+        assertQueryIdentity(row, 'pid', 0, [
+          ['label', 1],
+          ['entryPointId', 4],
+        ]);
+      }
     } catch (e) {
+      rethrowSymbolIdentityError(e);
       logQueryError('context:process-participation', e);
     }
 
@@ -5132,6 +5267,7 @@ export class LocalBackend {
       // (GET/POST pair). URL-only dedup would drop the second endpoint.
       const seenRoutes = new Set<string>();
       for (const r of routeRows) {
+        assertIdentityFields(queryRowValue(r, 'url', 0), queryRowValue(r, 'method', 1));
         const url = r.url ?? r[0];
         const method = r.method ?? r[1];
         const dedupKey = routeEnrichmentKey(method ? String(method) : undefined, url);
@@ -5141,7 +5277,8 @@ export class LocalBackend {
         }
       }
     } catch (e) {
-      // Best-effort enrichment — never fail the context call.
+      rethrowSymbolIdentityError(e);
+      // Ordinary query failures leave this best-effort enrichment unavailable.
       logQueryError('context:route-lookup', e);
     }
 
@@ -5191,6 +5328,7 @@ export class LocalBackend {
     );
     const beanMetadataPromise = queryClassBeanMetadata(repo.lbugPath, symId, epistemicSymType);
     const aopMetadataPromise = querySpringAopMetadata(repo.lbugPath, symId, epistemicSymType);
+    void aopMetadataPromise.catch(() => undefined);
 
     // R3-1. A `Property` whose name the analyzer declined to link — because
     // every definition of it lives in another language — otherwise returns an
@@ -5285,6 +5423,7 @@ export class LocalBackend {
       try {
         chain = await this._computeContextChain(repo, symId, requestedDepth);
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('context:chain-bfs', e);
       }
     }
@@ -5325,8 +5464,8 @@ export class LocalBackend {
       processes: processRows.map((r: any) => ({
         id: r.pid || r[0],
         name: r.label || r[1],
-        step_index: r.step || r[2],
-        step_count: r.stepCount || r[3],
+        step_index: r.step ?? r[2],
+        step_count: r.stepCount ?? r[3],
       })),
     };
   }
@@ -5407,6 +5546,13 @@ export class LocalBackend {
           visited: Array.from(visited),
         });
         if (rows.length === 0) return { nextFrontier: [] };
+        for (const row of rows) {
+          assertQueryIdentity(row, 'uid', 0, [
+            ['name', 1],
+            ['filePath', 2],
+            ['kind', 3],
+          ]);
+        }
         // MATCH is one row per CALLS edge. Cypher `WITH DISTINCT` applies
         // LIMIT 50 to unique neighbors; this second pass still collapses
         // twins if a driver/engine ever returns duplicate rows.
@@ -5426,6 +5572,7 @@ export class LocalBackend {
         for (const r of fresh) visited.add(r.uid);
         return { nodes, nextFrontier: fresh.map((r: any) => r.uid) };
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError(logLabel, e);
         return { nextFrontier: [] };
       }
@@ -6445,6 +6592,7 @@ export class LocalBackend {
     // throwaway arrays the size of the row set (40k rows 11.4ms → 4.5ms, 200k
     // rows 71.3ms → 26.6ms).
     const exactlyMatchedPaths = new Set<string>();
+    const mappedPaths = new Set<string>();
     for (const row of symbolRows) {
       if (row.filePath === row.diffPath) exactlyMatchedPaths.add(row.diffPath);
     }
@@ -6454,6 +6602,8 @@ export class LocalBackend {
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
       const hunks = hunksByPath.get(diffPath) ?? [];
       if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
+      // A suffix fallback is a hint, not proof that this is the changed file.
+      if (sym.filePath === diffPath) mappedPaths.add(diffPath);
       if (changedSymbols.has(sym.id)) continue;
 
       changedSymbols.set(sym.id, {
@@ -6464,6 +6614,27 @@ export class LocalBackend {
         change_type: 'touched',
       });
     }
+
+    // An empty successful query cannot prove a source diff is safe: its rows
+    // may be missing, outside indexed spans, or not yet indexed. Keep ordinary
+    // docs/config diffs measurable, but withhold a ranked source-risk verdict.
+    const isSourceFile = (file: string): boolean =>
+      getLanguageFromFilename(file) !== null ||
+      isCobolFile(file) ||
+      isJclFile(file) ||
+      isTemplateRouteCandidate(file);
+    const unmappedFiles = [
+      ...new Set(
+        fileDiffs
+          .filter(
+            ({ filePath, oldFilePath }) =>
+              !mappedPaths.has(filePath) &&
+              (isSourceFile(filePath) || (oldFilePath !== undefined && isSourceFile(oldFilePath))),
+          )
+          .map(({ filePath }) => filePath),
+      ),
+    ];
+    if (unmappedFiles.length > 0) queryDegraded = true;
 
     // Find affected processes -- batched queries instead of N+1
     const affectedProcesses = new Map<string, any>();
@@ -6565,8 +6736,9 @@ export class LocalBackend {
       },
       changed_symbols: listedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
-      // A swallowed query failure makes the counts/risk above incomplete — tell
-      // the caller so the safety gate isn't trusted as a clean result (#2283).
+      ...(unmappedFiles.length > 0 && { unmapped_files: unmappedFiles }),
+      // Failed queries or unmapped source files leave counts/risk incomplete;
+      // the safety gate must not treat that as a clean result (#2283).
       ...(queryDegraded && { partial: true }),
       ...(listedSymbols.length < changedSymbols.size && { truncated: true }),
     };
@@ -7082,13 +7254,23 @@ export class LocalBackend {
 
   private async impact(repo: RepoHandle, params: ImpactParams): Promise<any> {
     try {
-      return await this._impactImpl(repo, params);
+      const result = await this._impactImpl(repo, params);
+      if (!result.error) assertResponseIdentities(result);
+      return result;
     } catch (err: any) {
       // Return structured error instead of crashing (#321)
       const message =
         (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed';
-      const suggestion = 'The graph query failed — try gitnexus context <symbol> as a fallback';
-      const recoverySuggestion = isWalCorruptionError(err) ? WAL_RECOVERY_SUGGESTION : undefined;
+      const recoverySuggestion =
+        err instanceof SymbolIdentityError
+          ? SYMBOL_IDENTITY_RECOVERY_SUGGESTION
+          : isWalCorruptionError(err)
+            ? WAL_RECOVERY_SUGGESTION
+            : undefined;
+      const suggestion =
+        err instanceof SymbolIdentityError
+          ? SYMBOL_IDENTITY_RECOVERY_SUGGESTION
+          : 'The graph query failed — try gitnexus context <symbol> as a fallback';
       if (params.mode === 'pdg') {
         // Symbol resolution never reached the catch with a resolved symbol (the
         // throw can originate before/within resolution), so the envelope carries
@@ -7392,6 +7574,7 @@ export class LocalBackend {
           } catch (e) {
             probeFailed = true;
             candidateProbeFailed = true;
+            rethrowSymbolIdentityError(e);
             logQueryError('impact:ambiguous-candidate', e);
           }
           return {
@@ -7649,6 +7832,7 @@ export class LocalBackend {
         });
         return composeUnifiedPdgImpactResult(pdgResult, interproceduralResult);
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('impact:pdg-interprocedural-reach', e);
         return composeUnifiedPdgImpactResult(pdgResult, null, e);
       }
@@ -7686,10 +7870,12 @@ export class LocalBackend {
         { ids: blockIds },
       );
       for (const r of rows as any[]) {
+        assertIdentityFields(r.callees ?? r[0]);
         const raw = String(r.callees ?? r[0] ?? '');
         for (const n of raw.split(' ')) if (n) names.add(n);
       }
     } catch (e) {
+      rethrowSymbolIdentityError(e);
       logQueryError('impact:pdg-slice-callees', e);
     }
     return names;
@@ -7725,6 +7911,7 @@ export class LocalBackend {
         for (const id of splitCalleeIds(r.calleeIds ?? r[0])) ids.add(id);
       }
     } catch (e) {
+      rethrowSymbolIdentityError(e);
       logQueryError('impact:pdg-slice-callee-ids', e);
     }
     return ids;
@@ -7878,7 +8065,10 @@ export class LocalBackend {
        ORDER BY id
        LIMIT 25`,
       { symId, heritage: HERITAGE_TYPES },
-    ).catch(() => []);
+    ).catch((error) => {
+      rethrowSymbolIdentityError(error);
+      return [];
+    });
     const undecidedSummary = meta?.undecidedInterfaceSatisfaction;
     const undecidedDrops =
       undecidedSummary === undefined
@@ -7917,6 +8107,10 @@ export class LocalBackend {
       }
       const ifaceRows = await interfaceRowsPromise;
       for (const r of ifaceRows) {
+        assertQueryIdentity(r, 'id', 0, [
+          ['name', 1],
+          ['label', 2],
+        ]);
         const id = (r.id ?? r[0]) as string;
         if (id && !boundary.has(id)) {
           boundary.set(id, {
@@ -7942,7 +8136,10 @@ export class LocalBackend {
                WHERE iface.id = $ifaceId AND r.type IN $types
                RETURN COUNT(DISTINCT other.id) AS cnt`,
               { ifaceId, types },
-            ).catch(() => []);
+            ).catch((error) => {
+              rethrowSymbolIdentityError(error);
+              return [];
+            });
             const cnt =
               rows.length > 0 ? Number((rows[0] as any).cnt ?? (rows[0] as any)[0] ?? 0) : 0;
             m.set(ifaceId, cnt);
@@ -8001,7 +8198,8 @@ export class LocalBackend {
           callableValueReferences: droppedBoundaries.callableValueReferences,
         },
       };
-    } catch {
+    } catch (error) {
+      rethrowSymbolIdentityError(error);
       // Never let the heritage probe's failure suppress a drop we already know
       // about — the whole point is that silence must not read as certainty.
       return epistemicFrom(droppedBoundaries);
@@ -8093,6 +8291,7 @@ export class LocalBackend {
         `Impact target '${sym.name || sym[1] || '?'}' resolved without a node id; refusing to report a blast radius`,
       );
     }
+    assertSymbolRowIdentity(sym);
 
     // #1858 — kick off the epistemic boundary probe concurrently with the BFS.
     // It depends only on symId/symType/symName (all known now) and touches no
@@ -8128,6 +8327,7 @@ export class LocalBackend {
       opts.skipEpistemic || summaryOnly
         ? Promise.resolve(undefined)
         : querySpringAopMetadata(repo.lbugPath, symId, symType);
+    void aopMetadataPromise.catch(() => undefined);
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
     const pdgBridgeEvidenceById = new Map<string, PdgBridgeEvidenceInfo>();
@@ -8172,6 +8372,7 @@ export class LocalBackend {
         ]);
 
         for (const r of ctorRows) {
+          assertSymbolRowIdentity(r);
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
@@ -8179,6 +8380,7 @@ export class LocalBackend {
           }
         }
         for (const r of fileRows) {
+          assertSymbolRowIdentity(r);
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
@@ -8203,6 +8405,7 @@ export class LocalBackend {
         );
 
         for (const r of typedPropertyRows) {
+          assertSymbolRowIdentity(r);
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
@@ -8210,6 +8413,7 @@ export class LocalBackend {
           }
         }
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('impact:class-node-expansion', e);
         traversalComplete = false;
       }
@@ -8247,6 +8451,9 @@ export class LocalBackend {
         `,
           { symId },
         );
+        for (const row of memberRows) {
+          assertSymbolRowIdentity(row);
+        }
         memberRows.sort((a, b) => compareCodeUnits(String(a.id ?? a[0]), String(b.id ?? b[0])));
         if (memberRows.length > OBJECT_CALLABLE_MEMBER_CAP) traversalComplete = false;
         for (const row of memberRows.slice(0, OBJECT_CALLABLE_MEMBER_CAP)) {
@@ -8266,6 +8473,7 @@ export class LocalBackend {
           }
         }
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('impact:object-callable-expansion', e);
         traversalComplete = false;
       }
@@ -8322,6 +8530,17 @@ export class LocalBackend {
           relTypes: relationTypes,
           ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
         });
+        // Validate before filtering/deduplication; a discarded corrupt edge is
+        // still evidence that this result's counts cannot be trusted.
+        for (const row of related) {
+          assertQueryIdentity(row, 'id', 1, [
+            ['sourceId', 0],
+            ['name', 2],
+            ['type', 3],
+            ['filePath', 4],
+          ]);
+          assertSymbolIdentity(queryRowValue(row, 'relType', 5));
+        }
 
         const edges: ImpactFrontierEdge[] = related.map((rel) => ({
           id: rel.id || rel[1],
@@ -8421,6 +8640,7 @@ export class LocalBackend {
           });
         }
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('impact:depth-traversal', e);
         // Break out of depth loop on query failure but return partial results
         // collected so far, rather than silently swallowing the error (#321)
@@ -8546,6 +8766,7 @@ export class LocalBackend {
           `,
             { ids },
           ).catch((err) => {
+            rethrowSymbolIdentityError(err);
             processQueryFailed = true;
             enrichmentDegraded = true;
             logQueryError('impact:process-chunk', err);
@@ -8553,6 +8774,14 @@ export class LocalBackend {
           });
 
           for (const row of rows) {
+            assertQueryIdentity(row, 'pId', 0, [
+              ['name', 1],
+              ['processType', 2],
+              ['entryPointId', 3],
+              ['epName', 7],
+              ['epType', 8],
+              ['epFilePath', 9],
+            ]);
             const pId = row.pId ?? row[0];
             const epId = row.entryPointId ?? row[3] ?? row.pId ?? row[0];
             // Track mapping from process -> entryPoint so we can backfill missing minStep
@@ -8601,6 +8830,7 @@ export class LocalBackend {
             ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep ?? Infinity);
           }
         } catch (e) {
+          rethrowSymbolIdentityError(e);
           processQueryFailed = true;
           enrichmentDegraded = true;
           logQueryError('impact:process-chunk', e);
@@ -8623,12 +8853,14 @@ export class LocalBackend {
           `,
             { pIds, ids: allImpactedIds },
           ).catch((err) => {
+            rethrowSymbolIdentityError(err);
             enrichmentDegraded = true;
             logQueryError('impact:process-chunk-backfill', err);
             return [];
           });
 
           for (const mr of missingRows) {
+            assertQueryIdentity(mr, 'pid', 0, []);
             const pid = mr.pid ?? mr[0];
             const minStep = mr.minStep ?? mr[1];
             const epId = processToEntryPoint.get(String(pid));
@@ -8640,6 +8872,7 @@ export class LocalBackend {
             }
           }
         } catch (e) {
+          rethrowSymbolIdentityError(e);
           enrichmentDegraded = true;
           logQueryError('impact:process-chunk-backfill', e);
         }
@@ -8702,6 +8935,7 @@ export class LocalBackend {
           `,
             { ids: idsChunk },
           ).catch((err) => {
+            rethrowSymbolIdentityError(err);
             moduleQueryFailed = true;
             enrichmentDegraded = true;
             logQueryError('impact:module-chunk', err);
@@ -8709,12 +8943,14 @@ export class LocalBackend {
           });
 
           for (const r of rows) {
+            assertIdentityFields(queryRowValue(r, 'name', 0));
             const name = r.name ?? r[0] ?? null;
             const hits = (r.hits ?? r[1]) || 0;
             if (!name) continue;
             moduleHitsMap.set(name, (moduleHitsMap.get(name) || 0) + hits);
           }
         } catch (e) {
+          rethrowSymbolIdentityError(e);
           moduleQueryFailed = true;
           enrichmentDegraded = true;
           logQueryError('impact:module-chunk', e);
@@ -8743,16 +8979,19 @@ export class LocalBackend {
           `,
             { ids: idsChunk },
           ).catch((err) => {
+            rethrowSymbolIdentityError(err);
             enrichmentDegraded = true;
             moduleClassificationFailed = true;
             logQueryError('impact:direct-module-chunk', err);
             return [];
           });
           for (const r of rows) {
+            assertIdentityFields(queryRowValue(r, 'name', 0));
             const name = r.name ?? r[0] ?? null;
             if (name) directModuleSet.add(name);
           }
         } catch (e) {
+          rethrowSymbolIdentityError(e);
           enrichmentDegraded = true;
           moduleClassificationFailed = true;
           logQueryError('impact:direct-module-chunk', e);
@@ -8814,11 +9053,14 @@ export class LocalBackend {
         `,
           { ids: chunkIds },
         ).catch((err) => {
+          rethrowSymbolIdentityError(err);
           enrichmentDegraded = true;
           logQueryError('impact:route-chunk', err);
           return [];
         });
         for (const row of rows) {
+          assertSymbolIdentity(queryRowValue(row, 'hid', 0));
+          assertIdentityFields(queryRowValue(row, 'url', 1), queryRowValue(row, 'method', 2));
           const hid = String(row.hid ?? row[0] ?? '');
           const url = row.url ?? row[1];
           if (!hid || typeof url !== 'string') continue;
@@ -8975,8 +9217,16 @@ export class LocalBackend {
                    p.processType AS pType, MIN(r.step) AS step
           `,
             { ids: chunkIds },
-          ).catch(() => []);
+          ).catch((err) => {
+            rethrowSymbolIdentityError(err);
+            return [];
+          });
           for (const row of rows) {
+            assertQueryIdentity(row, 'sid', 0, []);
+            assertQueryIdentity(row, 'pid', 1, [
+              ['pName', 2],
+              ['pType', 3],
+            ]);
             const sid = row.sid ?? row[0];
             if (!sid) continue;
             const procEntry = {
@@ -8990,6 +9240,7 @@ export class LocalBackend {
             else perSymbolProcesses.set(String(sid), [procEntry]);
           }
         } catch (e) {
+          rethrowSymbolIdentityError(e);
           logQueryError('impact:per-symbol-process-chunk', e);
         }
       }
@@ -9106,6 +9357,7 @@ export class LocalBackend {
           ];
 
     try {
+      assertSymbolIdentity(sym.id ?? sym[0], uid);
       // skipPerSymbolEnrichment suppresses ONLY the per-symbol STEP_IN_PROCESS
       // enrichment pass while preserving byDepth. Group-mode cross-repo fan-out
       // may fan across many repos; the per-symbol pass adds up to MAX_CHUNKS

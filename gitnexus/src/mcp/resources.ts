@@ -351,7 +351,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
 
   // Check staleness using the current on-disk lastCommit (not the cached handle)
   const repoPath = repo.repoPath;
-  const lastCommit = freshMeta?.lastCommit ?? repo.lastCommit ?? 'HEAD';
+  const lastCommit = freshMeta?.lastCommit ?? repo.lastCommit ?? '';
   const staleness = repoPath
     ? checkStaleness(repoPath, lastCommit)
     : { isStale: false, commitsBehind: 0 };

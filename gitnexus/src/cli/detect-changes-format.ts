@@ -1,5 +1,6 @@
 import { t } from './i18n/index.js';
 import { formatSymbolLine } from './format-symbol.js';
+import { formatPathForTerminal } from './format-path.js';
 
 type DetectChangesSummary = {
   changed_files?: number;
@@ -32,6 +33,7 @@ type DetectChangesResult = {
   summary?: DetectChangesSummary;
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
+  unmapped_files?: string[];
 };
 
 export function formatDetectChangesResult(result: unknown): string {
@@ -47,6 +49,13 @@ export function formatDetectChangesResult(result: unknown): string {
   // Both lead the output — a caveat printed after the summary is read too late.
   const notes: string[] = [];
   if (payload.partial) notes.push(t('tool.detectChanges.partial'));
+  if (payload.unmapped_files?.length) {
+    notes.push(
+      t('tool.detectChanges.unmappedSource', {
+        files: payload.unmapped_files.map(formatPathForTerminal).join(', '),
+      }),
+    );
+  }
   // The plain truncation note reassures that the counts are whole. That is only
   // true when the run did NOT also degrade — `changed_count` sums the batches
   // that succeeded — so the two flags together get a different sentence.

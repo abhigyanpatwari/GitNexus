@@ -30,13 +30,13 @@ const { lbugMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
 // Re-export shim must resolve to the same mocks
 vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/mcp/core/lbug-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
@@ -181,6 +181,16 @@ function setupMultipleRepos() {
 
 function setupNoRepos() {
   (listRegisteredRepos as any).mockResolvedValue([]);
+}
+
+/** Seed resolver rows without inventing relationship/process rows for other projections. */
+function mockSymbolRows(rows: Record<string, unknown>[]) {
+  (executeParameterized as any).mockImplementation(
+    async (_repo: string, query: string, params: Record<string, unknown>) => {
+      if (query.includes('COUNT(*) AS total')) return [{ total: rows.length }];
+      return params?.symName || params?.uid ? rows : [];
+    },
+  );
 }
 
 const duplicateFixtureDirs: string[] = [];
@@ -565,14 +575,17 @@ describe('LocalBackend.callTool', () => {
     ['impact', { name: 'validate', symbol: 'login', direction: 'upstream' }],
     ['impact', { target: 'validate', direction: 'upstream', maxDepth: 3, depth: 1 }],
     ['context', { name: 'validate', file_path: 'src/auth.ts', file: 'src/login.ts' }],
-  ])('rejects conflicting %s aliases before repository resolution', async (method, params) => {
-    const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
+  ])(
+    'rejects conflicting %s aliases before repository resolution (case %#)',
+    async (method, params) => {
+      const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
 
-    const result = await backend.callTool(method, params);
+      const result = await backend.callTool(method, params);
 
-    expect(result.error).toMatch(/conflicting mcp parameters/i);
-    expect(resolveSpy).not.toHaveBeenCalled();
-  });
+      expect(result.error).toMatch(/conflicting mcp parameters/i);
+      expect(resolveSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ['impact', { name: 42, direction: 'upstream' }],
@@ -624,8 +637,8 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('reports UNKNOWN instead of a blast radius when the target resolves without a node id (#3354)', async () => {
-    // Every query returns the same id-less row: the resolver picks it as the
-    // single match, and the frontier query would answer for no symbol at all.
+    // Every query returns the same id-less row: resolution must reject it
+    // before a frontier query could answer for no symbol at all.
     (executeParameterized as any).mockResolvedValue([{ name: 'runSweep', type: 'Function' }]);
 
     const result = await backend.callTool('impact', { target: 'runSweep', direction: 'upstream' });
@@ -635,7 +648,8 @@ describe('LocalBackend.callTool', () => {
       impactedCount: null,
       risk: 'UNKNOWN',
     });
-    expect(result.error).toMatch(/without a node id/);
+    expect(result.error).toMatch(/invalid symbol identity/);
+    expect(result.recoverySuggestion).toContain('gitnexus analyze --force');
     expect(result).not.toHaveProperty('byDepthCounts');
   });
 
@@ -1320,7 +1334,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('dispatches context tool', async () => {
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:main',
         name: 'main',
@@ -1662,27 +1676,22 @@ describe('LocalBackend.callTool', () => {
     });
 
     it('exact File path wins over suffixed matches during qualified resolution (#3084 review P2)', async () => {
-      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
-        if (query.startsWith('MATCH (n)')) {
-          return [
-            {
-              id: 'File:src/lib/a.ts',
-              name: 'a.ts',
-              filePath: 'src/lib/a.ts',
-              kind: 'File',
-              total_hits: 1,
-            },
-            {
-              id: 'File:lib/a.ts',
-              name: 'a.ts',
-              filePath: 'lib/a.ts',
-              kind: 'File',
-              total_hits: 1,
-            },
-          ];
-        }
-        return [{ total: 2 }];
-      });
+      mockSymbolRows([
+        {
+          id: 'File:src/lib/a.ts',
+          name: 'a.ts',
+          filePath: 'src/lib/a.ts',
+          kind: 'File',
+          total_hits: 1,
+        },
+        {
+          id: 'File:lib/a.ts',
+          name: 'a.ts',
+          filePath: 'lib/a.ts',
+          kind: 'File',
+          total_hits: 1,
+        },
+      ]);
 
       const result = await backend.callTool('context', { name: 'lib/a.ts' });
       expect(result).toMatchObject({
@@ -2004,7 +2013,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('context tool ranks file_path match higher than non-match (#470)', async () => {
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:handleConnect:1',
         name: 'handleConnect',
@@ -2043,7 +2052,7 @@ describe('LocalBackend.callTool', () => {
     // review): both candidates satisfy the file_path hint (so DB
     // pre-filter would return both in production), and promotion is
     // determined purely by the combined file_path + kind score.
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'fn:App:1',
         name: 'render',
@@ -2134,7 +2143,7 @@ describe('LocalBackend.callTool', () => {
   it('impact tool returns ambiguous shape with ranked candidates when target has multiple matches (#470)', async () => {
     // resolveSymbolCandidates issues a single name query; mock it to return
     // two Function rows in different files with no hints.
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:login:1',
         name: 'login',
@@ -2221,7 +2230,7 @@ describe('LocalBackend.callTool', () => {
     // Resolver returns target; BFS returns one frontier caller; no STEP_IN_PROCESS rows.
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
       // BFS frontier query is now parameterized (#1907 U3).
-      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+      if (cypher.includes('$frontierIds')) {
         return Promise.resolve([
           {
             id: 'func:caller',
@@ -2233,10 +2242,12 @@ describe('LocalBackend.callTool', () => {
           },
         ]);
       }
-      // Symbol resolution.
-      return Promise.resolve([
-        { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
-      ]);
+      // Symbol resolution; unseeded enrichment queries return no rows.
+      return Promise.resolve(
+        cypher.includes('$symName')
+          ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+          : [],
+      );
     });
     (executeQuery as any).mockResolvedValue([]);
 
@@ -2466,7 +2477,7 @@ describe('LocalBackend.callTool', () => {
       },
     ]);
 
-    const result = await backend.impactByUid('test-project', 'uid:main', 'upstream', {
+    const result = await backend.impactByUid('test-project', 'func:main', 'upstream', {
       maxDepth: 5,
       relationTypes: ['CALLS'],
       minConfidence: 0,
@@ -2552,9 +2563,7 @@ describe('LocalBackend.callTool', () => {
     // `oldName` must sit on the file's 0-based line 1 for the definition edit to
     // fire. (#2380: the mock previously put it on line 0, which stopped matching
     // once context() went 1-based.)
-    const readSpy = vi
-      .spyOn(fsPromises, 'readFile')
-      .mockResolvedValue('\nfunction oldName() {}\n' as unknown as Buffer);
+    const readSpy = vi.spyOn(fsPromises, 'readFile').mockResolvedValue('\nfunction oldName() {}\n');
     const writeSpy = vi
       .spyOn(fsPromises, 'writeFile')
       .mockRejectedValue(new Error('EACCES: permission denied'));
@@ -2973,7 +2982,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('dispatches "explore" as alias for context', async () => {
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:main',
         name: 'main',
@@ -3006,9 +3015,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
   // dispatch (callgraph BFS or the PDG traversal). The callgraph BFS then issues
   // executeQuery for its frontier; the PDG path delegates to runImpactPDG.
   function resolveSingleTarget() {
-    (executeParameterized as any).mockResolvedValue([
-      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
-    ]);
+    mockSymbolRows([{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]);
     (executeQuery as any).mockResolvedValue([]);
   }
 
@@ -3028,7 +3035,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it('mode absent → callgraph result (target populated, no mode-error, BFS runs)', async () => {
     resolveSingleTarget();
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
     // A clean callgraph result carries no mode error and runs the BFS.
     expect(result.error ?? '').not.toMatch(/Invalid "mode"/);
@@ -3056,7 +3066,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' routes to the PDG traversal and attaches interprocedural symbol reach", async () => {
     resolveSingleTarget();
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'upstream',
@@ -3073,7 +3086,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' labels interprocedural symbols as a callgraph bridge", async () => {
     resolveSingleTarget();
-    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+    vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    ).mockResolvedValueOnce({
       target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
       direction: 'downstream',
       impactedCount: 1,
@@ -3112,7 +3128,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' preserves unproven bridge evidence when call-site proof is unavailable", async () => {
     resolveSingleTarget();
-    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+    vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    ).mockResolvedValueOnce({
       target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
       direction: 'downstream',
       impactedCount: 1,
@@ -3153,7 +3172,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     'invalid mode %j → structured {error}, never a callgraph result (KTD5 anti-silent-fallback)',
     async (bad) => {
       resolveSingleTarget();
-      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const bfsSpy = vi.spyOn(
+        backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+        '_runImpactBFS',
+      );
       const result = await backend.callTool('impact', {
         target: 'main',
         direction: 'upstream',
@@ -3170,7 +3192,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     'line param with mode:%j → structured {error} (line is PDG-only), never a callgraph result',
     async (mode) => {
       resolveSingleTarget();
-      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const bfsSpy = vi.spyOn(
+        backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+        '_runImpactBFS',
+      );
       const result = await backend.callTool('impact', {
         target: 'main',
         direction: 'upstream',
@@ -3193,7 +3218,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     'mode:%j + adapter-materialized line:0 is treated as omitted and runs the BFS (#2279)',
     async (mode) => {
       resolveSingleTarget();
-      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const bfsSpy = vi.spyOn(
+        backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+        '_runImpactBFS',
+      );
       const result = await backend.callTool('impact', {
         target: 'main',
         direction: 'upstream',
@@ -3265,18 +3293,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' + downstream line:8 routes to the PDG traversal and seeds bridge evidence", async () => {
     resolveSingleTarget();
-    // The target-resolution row doubles as the calleesOfBlocks row: `callees`
-    // ('callee') is the leaf name persisted on the slice's BasicBlock, the
-    // statement-precise substrate the bridge keys on.
-    (executeParameterized as any).mockResolvedValue([
-      {
-        id: 'func:main',
-        name: 'main',
-        type: 'Function',
-        filePath: 'src/index.ts',
-        callees: 'callee',
-      },
-    ]);
+    // BasicBlock callees and symbol lookup use distinct native projections.
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.callees')) return [{ callees: 'callee' }];
+      return query.includes('$symName')
+        ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+        : [];
+    });
     // A line-seeded downstream slice with one reachable block → the dispatch
     // queries that block's callees and seeds the bridge with them.
     const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
@@ -3295,7 +3318,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 1,
       criterionLine: 8,
     });
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'downstream',
@@ -3348,7 +3374,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 0,
       criterionLine: 8,
     });
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     await backend.callTool('impact', {
       target: 'main',
       direction: 'downstream',
@@ -3401,11 +3430,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     // is not built and the inter-procedural reach falls back to callgraph-equal —
     // never surfacing the error or producing a partial proven/unproven labeling.
     resolveSingleTarget();
-    // The slice-callees query (RETURN b.callees) throws; every other query (target
-    // resolution) returns the resolved symbol row.
+    // The slice-callees query throws; lookup returns the target and unseeded
+    // relationship/process projections return no rows.
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.callees')) throw new Error('slice-callees query failed');
-      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+      return query.includes('$symName')
+        ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+        : [];
     });
     // A line-seeded downstream slice so calleesOfBlocks is attempted.
     vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
@@ -3423,7 +3454,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 1,
       criterionLine: 8,
     });
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const cap = _captureLogger();
     try {
       const result = await backend.callTool('impact', {
@@ -3460,7 +3494,9 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     resolveSingleTarget();
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.callees')) throw new Error('Table BasicBlock does not exist');
-      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+      return query.includes('$symName')
+        ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+        : [];
     });
     vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
       mode: 'pdg',
@@ -3477,7 +3513,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 1,
       criterionLine: 8,
     });
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const cap = _captureLogger('debug');
     try {
       const result = await backend.callTool('impact', {
@@ -3524,7 +3563,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       affectedStatementCount: 1,
       criterionLine: 8,
     });
-    vi.spyOn(backend as any, '_runImpactBFS');
+    vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const cap = _captureLogger();
     try {
       await backend.callTool('impact', {
@@ -3543,7 +3585,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {
     resolveSingleTarget();
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'upstream',
@@ -3560,17 +3605,22 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     ['minConfidence', { minConfidence: 0.5 }, (opts: any) => opts.minConfidence],
   ])("mode:'pdg' + %s feeds the interprocedural symbol reach", async (_label, extra, readOpt) => {
     resolveSingleTarget();
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
-      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
-      direction: 'upstream',
-      impactedCount: 0,
-      risk: 'LOW',
-      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
-      byDepthCounts: {},
-      affected_processes: [],
-      affected_modules: [],
-      byDepth: {},
-    });
+    const bfsSpy = vi
+      .spyOn(
+        backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+        '_runImpactBFS',
+      )
+      .mockResolvedValueOnce({
+        target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+        direction: 'upstream',
+        impactedCount: 0,
+        risk: 'LOW',
+        summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+        byDepthCounts: {},
+        affected_processes: [],
+        affected_modules: [],
+        byDepth: {},
+      });
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'upstream',
@@ -3601,7 +3651,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
         startLine: 8,
       },
     ]);
-    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const bfsSpy = vi.spyOn(
+      backend as unknown as { _runImpactBFS: LocalBackend['_runImpactBFS'] },
+      '_runImpactBFS',
+    );
     const result = await backend.callTool('impact', {
       target: 'login',
       direction: 'upstream',

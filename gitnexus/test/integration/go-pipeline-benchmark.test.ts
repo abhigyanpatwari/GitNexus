@@ -32,7 +32,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import { makeScopeId, type ParsedFile, type SymbolDefinition } from 'gitnexus-shared';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
   emitGoScopeCaptures,
@@ -473,13 +473,10 @@ describe('Go scope-capture O(n^2) regression tripwire', () => {
  */
 function generateSyntheticInterfaceData(interfaceCount: number, structCount: number): ParsedFile[] {
   const defs: SymbolDefinition[] = [];
-  const ifaceIds: string[] = [];
-  const structIds: string[] = [];
 
   // Interfaces
   for (let i = 0; i < interfaceCount; i++) {
     const ifaceId = `iface:Repo${i}`;
-    ifaceIds.push(ifaceId);
     defs.push({
       nodeId: ifaceId,
       filePath: 'repo.go',
@@ -515,37 +512,34 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
   // Structs — each implements all interfaces
   for (let s = 0; s < structCount; s++) {
     const structId = `struct:Impl${s}`;
-    structIds.push(structId);
     defs.push({
       nodeId: structId,
       filePath: 'repo.go',
       type: 'Struct',
       qualifiedName: `Impl${s}`,
     });
-    for (let i = 0; i < interfaceCount; i++) {
-      defs.push({
-        nodeId: `struct:Impl${s}.Repo${i}.Find`,
-        filePath: 'repo.go',
-        type: 'Method',
-        qualifiedName: `Impl${s}.Find`,
-        ownerId: structId,
-        parameterCount: 1,
-        requiredParameterCount: 1,
-        parameterTypes: ['string'],
-        returnType: 'User',
-      });
-      defs.push({
-        nodeId: `struct:Impl${s}.Repo${i}.Save`,
-        filePath: 'repo.go',
-        type: 'Method',
-        qualifiedName: `Impl${s}.Save`,
-        ownerId: structId,
-        parameterCount: 1,
-        requiredParameterCount: 1,
-        parameterTypes: ['User'],
-        returnType: 'error',
-      });
-    }
+    defs.push({
+      nodeId: `struct:Impl${s}.Find`,
+      filePath: 'repo.go',
+      type: 'Method',
+      qualifiedName: `Impl${s}.Find`,
+      ownerId: structId,
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['string'],
+      returnType: 'User',
+    });
+    defs.push({
+      nodeId: `struct:Impl${s}.Save`,
+      filePath: 'repo.go',
+      type: 'Method',
+      qualifiedName: `Impl${s}.Save`,
+      ownerId: structId,
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['User'],
+      returnType: 'error',
+    });
   }
 
   // BadStructs — wrong Save signature (string instead of User), should NOT match
@@ -557,44 +551,45 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
       type: 'Struct',
       qualifiedName: `Bad${b}`,
     });
-    for (let i = 0; i < interfaceCount; i++) {
-      defs.push({
-        nodeId: `struct:Bad${b}.Repo${i}.Find`,
-        filePath: 'repo.go',
-        type: 'Method',
-        qualifiedName: `Bad${b}.Find`,
-        ownerId: badId,
-        parameterCount: 1,
-        requiredParameterCount: 1,
-        parameterTypes: ['string'],
-        returnType: 'User',
-      });
-      // Mismatched Save: string param instead of User
-      defs.push({
-        nodeId: `struct:Bad${b}.Repo${i}.Save`,
-        filePath: 'repo.go',
-        type: 'Method',
-        qualifiedName: `Bad${b}.Save`,
-        ownerId: badId,
-        parameterCount: 1,
-        requiredParameterCount: 1,
-        parameterTypes: ['string'],
-        returnType: 'error',
-      });
-    }
+    defs.push({
+      nodeId: `struct:Bad${b}.Find`,
+      filePath: 'repo.go',
+      type: 'Method',
+      qualifiedName: `Bad${b}.Find`,
+      ownerId: badId,
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['string'],
+      returnType: 'User',
+    });
+    // Mismatched Save: string param instead of User
+    defs.push({
+      nodeId: `struct:Bad${b}.Save`,
+      filePath: 'repo.go',
+      type: 'Method',
+      qualifiedName: `Bad${b}.Save`,
+      ownerId: badId,
+      parameterCount: 1,
+      requiredParameterCount: 1,
+      parameterTypes: ['string'],
+      returnType: 'error',
+    });
   }
 
   return [
     {
       filePath: 'repo.go',
-      language: 'go',
+      moduleScope: makeScopeId({
+        filePath: 'repo.go',
+        range: { startLine: 0, startCol: 0, endLine: 0, endCol: 0 },
+        kind: 'Module',
+      }),
       scopes: [],
-      imports: [],
       parsedImports: [],
       localDefs: defs,
       referenceSites: [],
     },
-  ] as ParsedFile[];
+  ];
 }
 
 /**
@@ -603,6 +598,15 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
  * path (structIdsByMethodName intersection) keeps this well under budget.
  */
 describe('Go structural interface detection O(n²) regression tripwire', () => {
+  it('uses legal Go method sets with one declaration per receiver and method name', () => {
+    const [parsed] = generateSyntheticInterfaceData(3, 3);
+    const methods = parsed.localDefs.filter((def) => def.type === 'Method');
+    const identities = methods.map((def) => `${def.ownerId}:${def.qualifiedName}`);
+    expect(new Set(identities).size).toBe(methods.length);
+    // Three interfaces, three matching structs and three negative controls.
+    expect(methods).toHaveLength(18);
+  });
+
   it('detects implementations for 100 interfaces × 100 structs within budget', () => {
     const IFACE_COUNT = 100;
     const STRUCT_COUNT = 100;
@@ -776,7 +780,7 @@ describe.skipIf(!BENCH_ENABLED)('Go structural interface detection split-phase b
     console.log('\nScaling analysis (total time ratio / pair-count ratio):');
     // We can't split phases without exporting internals, but we can report
     // how total time scales relative to pair count.
-    // The detection loop is O(I×C×M×O_a) where O_a grows with I in this
-    // synthetic case, so pair-count ratio alone underestimates expected growth.
+    // Each receiver declares Find and Save once, as real Go requires.
+    // Required signatures stay constant while interface/struct pairs grow.
   }, 300_000);
 });

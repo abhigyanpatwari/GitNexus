@@ -1,3 +1,4 @@
+import type { GraphNode } from 'gitnexus-shared';
 /**
  * Streamed structural graph emit — config gate and pruner integration (#2680).
  *
@@ -98,7 +99,7 @@ describe('buildPhaseList under streamGraphEmit', () => {
     // The sink answers a complete relationship read, so these phases work
     // unchanged. If this ever regresses to filtering them out, streaming can no
     // longer be the default.
-    const streamed = names({ streamGraphEmit: true, pdg: true, force: true });
+    const streamed = names({ streamGraphEmit: true, pdg: true });
 
     expect(streamed).toContain('communities');
     expect(streamed).toContain('processes');
@@ -107,7 +108,7 @@ describe('buildPhaseList under streamGraphEmit', () => {
   });
 
   it('keeps mro and di, whose reads are all in the retained set', () => {
-    const streamed = names({ streamGraphEmit: true, pdg: true, force: true });
+    const streamed = names({ streamGraphEmit: true, pdg: true });
 
     expect(streamed).toContain('mro');
     expect(streamed).toContain('di');
@@ -119,7 +120,7 @@ describe('buildPhaseList under streamGraphEmit', () => {
   it('leaves the phase list untouched when the flag is off', () => {
     // Guards the default path: the gating predicates must not filter anything
     // for existing (flag-off) users.
-    const withPdg = names({ pdg: true, force: true });
+    const withPdg = names({ pdg: true });
 
     expect(withPdg).toContain('communities');
     expect(withPdg).toContain('processes');

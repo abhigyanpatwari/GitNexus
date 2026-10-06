@@ -49,7 +49,7 @@ try {
   Dart = requireVendoredGrammar('tree-sitter-dart');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
-  testParser.setLanguage(Dart as Parser.Language);
+  testParser.setLanguage(Dart);
 } catch {
   Dart = null;
 }
@@ -59,7 +59,7 @@ try {
   Swift = requireVendoredGrammar('tree-sitter-swift');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
-  testParser.setLanguage(Swift as Parser.Language);
+  testParser.setLanguage(Swift);
 } catch {
   Swift = null;
 }
@@ -73,7 +73,7 @@ const parseJava = (code: string) => {
 
 const parseKotlin = (code: string) => {
   if (!Kotlin) throw new Error('tree-sitter-kotlin not available');
-  parser.setLanguage(Kotlin as Parser.Language);
+  parser.setLanguage(Kotlin);
   return parser.parse(code);
 };
 
@@ -3783,7 +3783,7 @@ end
 
 const parseDart = (code: string) => {
   if (!Dart) throw new Error('tree-sitter-dart not available');
-  parser.setLanguage(Dart as Parser.Language);
+  parser.setLanguage(Dart);
   return parser.parse(code);
 };
 
@@ -4043,7 +4043,7 @@ extension StringExt on String {
 // ---------------------------------------------------------------------------
 
 const parsePHP = (code: string) => {
-  parser.setLanguage(PHP.php_only as Parser.Language);
+  parser.setLanguage(PHP.php_only);
   return parser.parse(code);
 };
 
@@ -4683,7 +4683,7 @@ describe('Rust MethodExtractor', () => {
 
 const parseSwift = (code: string) => {
   if (!Swift) throw new Error('tree-sitter-swift not available');
-  parser.setLanguage(Swift as Parser.Language);
+  parser.setLanguage(Swift);
   return parser.parse(code);
 };
 
