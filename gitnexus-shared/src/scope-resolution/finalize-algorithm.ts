@@ -1622,18 +1622,15 @@ function materializeBindings(
         const existing = scopeBindings.get(name) ?? [];
         scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
       }
-      // Some language enrichers synthesize owned members after scope
-      // extraction (for example Lombok accessors). They have no lexical scope
-      // binding to project, but existing dispatch/index consumers still need
-      // them in the finalized lookup surface. Nested free declarations have
-      // neither ownership nor synthetic provenance and remain excluded.
+      // Some language enrichers synthesize members after scope extraction
+      // (for example Lombok accessors). They have no lexical scope binding to
+      // project, but existing dispatch/index consumers still need them in the
+      // finalized lookup surface. `ownerId` alone is not such provenance:
+      // ordinary class methods carry it too, and promoting them here makes an
+      // unrelated bare call resolve to a method. Language-specific visibility
+      // must be expressed by the provider's scope bindings instead.
       for (const def of file.localDefs) {
-        if (
-          def.ownerId === undefined &&
-          def.isSynthetic !== true &&
-          def.namespacePrefix === undefined
-        )
-          continue;
+        if (def.isSynthetic !== true && def.namespacePrefix === undefined) continue;
         const name = deriveSimpleName(def);
         if (name === null) continue;
         const incoming: BindingRef[] = [{ def, origin: 'local' }];

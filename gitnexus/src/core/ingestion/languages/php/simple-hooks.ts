@@ -28,6 +28,28 @@ export function phpBindingScopeFor(
   innermost: Scope,
   tree: ScopeTree,
 ): ScopeId | null {
+  // A named PHP function declared inside another function becomes globally
+  // callable once the outer declaration executes. Tree-sitter represents the
+  // declaration as its own Function scope, so the generic equal-range rule
+  // would bind it only to the enclosing Function. Hoist named declarations to
+  // the declaring namespace/module; keep anonymous functions and arrow
+  // functions lexical. The textual guard distinguishes `function name(...)`
+  // from closure captures such as `$handler = function (...) {}` without
+  // teaching the shared extractor PHP AST node types.
+  const functionDecl = decl['@declaration.function'];
+  if (
+    functionDecl !== undefined &&
+    /^\s*function\s*&?\s*[A-Za-z_\u0080-\uFFFF]/u.test(functionDecl.text)
+  ) {
+    let cur: Scope | undefined = innermost;
+    while (cur !== undefined && cur.kind !== 'Namespace' && cur.kind !== 'Module') {
+      const parentId: ScopeId | null = cur.parent ?? null;
+      if (parentId === null) break;
+      cur = tree.getScope(parentId);
+    }
+    if (cur !== undefined && (cur.kind === 'Namespace' || cur.kind === 'Module')) return cur.id;
+  }
+
   if (decl['@type-binding.return'] !== undefined) {
     let cur: Scope | undefined = innermost;
     while (cur !== undefined && cur.kind !== 'Module') {

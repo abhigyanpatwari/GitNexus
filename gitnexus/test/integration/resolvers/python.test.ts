@@ -107,6 +107,29 @@ describe('Python nested declarations stay in their lexical scope (#3499)', () =>
     );
     expect(nestedCalls).toHaveLength(3);
   });
+
+  it('does not expose ordinary class methods to unqualified module callers', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const callers = new Set([
+      'method_unbound_caller',
+      'method_module_caller',
+      'method_function_caller',
+    ]);
+    const methodEdges = calls.filter(
+      (edge) => callers.has(edge.source) && edge.rel.targetId.includes('Box.target'),
+    );
+    expect(methodEdges).toEqual([]);
+  });
+
+  it('preserves module and function-local imports shadowed only by a class method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const importedCalls = calls.filter(
+      (edge) =>
+        ['method_module_caller', 'method_function_caller'].includes(edge.source) &&
+        edge.rel.targetId.includes('facade.py:target'),
+    );
+    expect(importedCalls).toHaveLength(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

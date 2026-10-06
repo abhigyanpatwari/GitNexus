@@ -639,6 +639,18 @@
     "captureGroups": 11,
     "digest": "c94d3b5d53fe000af4d1e6f6e746d86e5ce9dfbba4de03e9c26bc30df60c2e0d"
   },
+  "python-nested-def-scope/method_function_local.py": {
+    "captureGroups": 12,
+    "digest": "53cbe0eb710f8e1412b4942aa2eafc3e0242ad73f0802a6b481154576ee4c0cc"
+  },
+  "python-nested-def-scope/method_module_import.py": {
+    "captureGroups": 12,
+    "digest": "280e6d4f154cf0d3d29e947b191a4987b9748c6a6bb13c2612c81fcae4199273"
+  },
+  "python-nested-def-scope/method_unbound.py": {
+    "captureGroups": 11,
+    "digest": "4156064e89d213a389ebe6a1cd65d26e6083e5518ee5557c42528da428840464"
+  },
   "python-nested-def-scope/module_import.py": {
     "captureGroups": 11,
     "digest": "33af1ecde6841610a45f799ba68032cacb24eb0695eb4ba970979a5dac7b1427"
