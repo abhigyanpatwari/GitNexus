@@ -70,6 +70,16 @@ export interface FinalizeFile {
    * static input.
    */
   readonly localDefs: readonly SymbolDefinition[];
+  /**
+   * Declarations whose lexical binding belongs to {@link moduleScope}.
+   *
+   * `localDefs` is deliberately a flattened inventory and also contains
+   * methods and nested functions.  Consumers that model unqualified names
+   * must use this narrower surface so a nested declaration cannot become a
+   * file-wide binding.  Omitted only by legacy/direct callers, where finalize
+   * retains the historical `localDefs` behavior for compatibility.
+   */
+  readonly moduleDefs?: readonly SymbolDefinition[];
 }
 
 /** Input to `finalize`. */
@@ -1603,8 +1613,10 @@ function materializeBindings(
   for (const file of files) {
     const scopeBindings = new Map<string, readonly BindingRef[]>();
 
-    // Start with local defs as `origin: 'local'` bindings.
-    for (const def of file.localDefs) {
+    // Start with declarations genuinely bound at module scope. `localDefs`
+    // is a flattened inventory and includes nested functions and methods;
+    // seeding those here makes them visible to unrelated sibling scopes.
+    for (const def of file.moduleDefs ?? file.localDefs) {
       const name = deriveSimpleName(def);
       if (name === null) continue;
       const incoming: BindingRef[] = [{ def, origin: 'local' }];

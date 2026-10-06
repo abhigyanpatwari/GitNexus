@@ -165,15 +165,17 @@ export function finalizeScopeModel(
 
 // ─── Internal ───────────────────────────────────────────────────────────────
 
-/** Shape-reduce a `ParsedFile` to the narrower `FinalizeFile` the shared
- *  algorithm reads. The subset is stable — `FinalizeFile` is a proper
- *  subset of `ParsedFile`. */
+/** Project a `ParsedFile` into the narrower `FinalizeFile` shape. */
 function toFinalizeFile(file: ParsedFile): FinalizeFile {
+  const moduleScope = file.scopes.find((scope) => scope.id === file.moduleScope);
   return {
     filePath: file.filePath,
     moduleScope: file.moduleScope,
     parsedImports: file.parsedImports,
     localDefs: file.localDefs,
+    // The extractor always emits the module scope. Keep the flattened
+    // fallback for defensive compatibility with hand-built ParsedFiles.
+    moduleDefs: moduleScope?.ownedDefs ?? file.localDefs,
   };
 }
 

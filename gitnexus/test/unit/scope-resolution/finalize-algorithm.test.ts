@@ -797,6 +797,25 @@ describe('finalize', () => {
       expect(bindings[0]!.def.nodeId).toBe('def:a.X');
     });
 
+    it('does not flatten nested declarations into the module binding bucket', () => {
+      const topLevel = { ...def('def:a.outer', 'Function', 'a.outer'), filePath: 'a' };
+      const nested = {
+        ...def('def:a.outer.target', 'Function', 'a.outer.target'),
+        filePath: 'a',
+      };
+      const a: FinalizeFile = {
+        ...file('a', [topLevel, nested]),
+        moduleDefs: [topLevel],
+      };
+
+      const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
+
+      expect(bindingsFor(out, a.moduleScope, 'outer').map((binding) => binding.def.nodeId)).toEqual([
+        'def:a.outer',
+      ]);
+      expect(bindingsFor(out, a.moduleScope, 'target')).toEqual([]);
+    });
+
     it('layers imports on top of local defs via mergeBindings', () => {
       const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
       const a = file('a', [def('def:a.User', 'Class', 'a.User')], [named('User', 'User', 'b')]);

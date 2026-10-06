@@ -77,6 +77,41 @@ describe('Python relative import & heritage resolution', () => {
   });
 });
 
+describe('Python nested declarations stay in their lexical scope (#3499)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-nested-def-scope'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does not expose a nested function to sibling callers', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const siblingEdges = calls.filter(
+      (edge) => edge.source === 'caller' && edge.rel.targetId.includes('outer.target'),
+    );
+    expect(siblingEdges).toEqual([]);
+  });
+
+  it('preserves module and function-local imports shadowed only by a nested name', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const importedCalls = calls.filter(
+      (edge) => edge.source === 'caller' && edge.rel.targetId.includes('facade.py:target'),
+    );
+    expect(importedCalls).toHaveLength(2);
+  });
+
+  it('still resolves each call inside the enclosing function to its nested declaration', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const nestedCalls = calls.filter(
+      (edge) => edge.source === 'outer' && edge.rel.targetId.includes('outer.target'),
+    );
+    expect(nestedCalls).toHaveLength(3);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Qualified / generic bases (#1951). An earlier synth DROPPED these shapes —
 // only bare `identifier` bases emitted, so production silently omitted their
