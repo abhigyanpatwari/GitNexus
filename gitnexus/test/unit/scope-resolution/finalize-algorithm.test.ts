@@ -816,6 +816,24 @@ describe('finalize', () => {
       expect(bindingsFor(out, a.moduleScope, 'target')).toEqual([]);
     });
 
+    it('does not duplicate namespace definitions already projected into module bindings', () => {
+      const namespaced = {
+        ...def('def:a.ns.target', 'Function', 'a.ns.target'),
+        filePath: 'a',
+        namespacePrefix: 'ns',
+      };
+      const a: FinalizeFile = {
+        ...file('a.cpp', [namespaced]),
+        moduleBindings: new Map([['target', [{ def: namespaced, origin: 'local' as const }]]]),
+      };
+
+      const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
+
+      expect(
+        bindingsFor(out, a.moduleScope, 'target').map((binding) => binding.def.nodeId),
+      ).toEqual(['def:a.ns.target']);
+    });
+
     it('layers imports on top of local defs via mergeBindings', () => {
       const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
       const a = file('a', [def('def:a.User', 'Class', 'a.User')], [named('User', 'User', 'b')]);

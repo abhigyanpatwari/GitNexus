@@ -1633,11 +1633,7 @@ function materializeBindings(
       // project their implicit member surfaces explicitly.
       const allowOwnedCompatibility = !/\.pyi?$/i.test(file.filePath);
       for (const def of file.localDefs) {
-        if (
-          def.isSynthetic !== true &&
-          def.namespacePrefix === undefined &&
-          !(allowOwnedCompatibility && def.ownerId !== undefined)
-        )
+        if (def.isSynthetic !== true && !(allowOwnedCompatibility && def.ownerId !== undefined))
           continue;
         const name = deriveSimpleName(def);
         if (name === null) continue;
