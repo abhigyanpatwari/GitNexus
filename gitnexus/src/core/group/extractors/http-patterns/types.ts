@@ -59,6 +59,14 @@ export interface HttpDetection {
   /** Resolve only from the registration file or exact import target; never guess repo-wide. */
   strictHandlerResolution?: boolean;
   /**
+   * The handler was designated through a qualifier the plugin cannot tie to a
+   * declaration (`recv.name`, `pkg.name`): `name` alone does not prove the
+   * handler lives in the registration file. Skip the file-scoped name lookup
+   * — a same-named but unrelated local symbol would win it — and accept only
+   * a repo-wide unique match, else keep the file-level fallback.
+   */
+  qualifiedHandler?: boolean;
+  /**
    * The plugin saw a provider handler designator but could not prove its owner.
    * Prevents the orchestrator from treating it as an anonymous inline handler
    * and attributing it to the containing registrar function.

@@ -21,7 +21,7 @@ import * as os from 'node:os';
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import type { PipelineResult } from '../../types/pipeline.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
 import { PYTHON_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/python.js';
 import {
   loadParseCache,
@@ -141,6 +141,7 @@ describe('FastAPI composed route constants — ingestion↔group parity (#2391 R
       return p.parse(src);
     };
     const ctx = PYTHON_HTTP_PLUGIN.prepareRepo?.({
+      repoPath: '/test-repo',
       files: Object.keys(files),
       parser,
       readFile: (r) => files[r] ?? null,

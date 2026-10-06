@@ -331,8 +331,8 @@ const respondOk = (_req, res) => {
 //
 //   upstream       request handler, replaceable mid-test via `ctx.handler`;
 //                  null points the proxy at a port nothing ever listens on
-//   listenAfterMs  bind the upstream this late, so the first attempt(s) hit
-//                  ECONNREFUSED (a single-instance restart window)
+//   listenAfterMs  bind the upstream this late after the first refused attempt
+//                  (a single-instance restart window)
 //   schemeless     drop http:// from GITNEXUS_UPSTREAM_URL, the way Render's
 //                  `fromService: { property: hostport }` yields it
 //   env            extra environment for docker-server.mjs
@@ -366,18 +366,15 @@ async function withProxy(
       })
     : null;
 
-  // A late (or never) bind needs its port reserved up front; otherwise let the
-  // OS assign one at listen time.
-  const upstreamPort =
-    server && listenAfterMs === 0
-      ? await new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port)))
-      : await getFreePort();
-  const bindTimer =
-    server && listenAfterMs > 0
-      ? setTimeout(() => server.listen(upstreamPort, '127.0.0.1'), listenAfterMs)
-      : null;
-
+  // Keep the upstream port bound until the proxy port is chosen. Releasing it
+  // sooner lets the OS assign both services the same port and proxy to itself.
+  const reservation = server ?? createServer();
+  const upstreamPort = await new Promise((r) =>
+    reservation.listen(0, '127.0.0.1', () => r(reservation.address().port)),
+  );
   const port = await getFreePort();
+  let bindTimer = null;
+
   const target = `127.0.0.1:${upstreamPort}`;
   const proc = spawnServerWithEnv(dir, port, {
     GITNEXUS_UPSTREAM_URL: schemeless ? target : `http://${target}`,
@@ -390,18 +387,25 @@ async function withProxy(
     ...env,
   });
   proc.stderr.setEncoding('utf8');
-  proc.stderr.on('data', (chunk) => {
+  const collectStderr = (chunk) => {
     ctx.stderr += chunk;
-  });
+    // Process startup must not consume the restart window or skip the retry.
+    if (server && listenAfterMs > 0 && !bindTimer && ctx.stderr.includes('ECONNREFUSED; retry')) {
+      bindTimer = setTimeout(() => server.listen(upstreamPort, '127.0.0.1'), listenAfterMs);
+    }
+  };
+  proc.stderr.on('data', collectStderr);
   try {
     await waitForServer(port);
+    if (!server || listenAfterMs > 0) await new Promise((r) => reservation.close(r));
     await fn(port, ctx);
   } finally {
+    proc.stderr.off('data', collectStderr);
     if (bindTimer) clearTimeout(bindTimer);
     await killAndWait(proc);
-    if (server?.listening) {
-      server.closeAllConnections?.();
-      await new Promise((r) => server.close(r));
+    if (reservation.listening) {
+      reservation.closeAllConnections?.();
+      await new Promise((r) => reservation.close(r));
     }
     await rm(dir, { recursive: true, force: true });
   }
@@ -661,8 +665,8 @@ it('returns 502 when the upstream is unreachable', async () => {
 
 // -- Connection-retry across an upstream restart window ---------------------
 //
-// `listenAfterMs: 400` binds the upstream late, so the first attempt hits
-// ECONNREFUSED and must be retried — a single-instance restart. The default 3
+// `listenAfterMs: 400` binds the upstream 400ms after the first ECONNREFUSED,
+// so the request must be retried — a single-instance restart. The default 3
 // attempts (backoff 250ms, 500ms) span ~750ms, so a retry lands after the bind.
 
 it('retries a connection-refused POST and succeeds once the upstream is up', async () => {
@@ -676,6 +680,7 @@ it('retries a connection-refused POST and succeeds once the upstream is up', asy
     assert.match(res.body, /"ok":true/);
     assert.equal(ctx.calls, 1, 'upstream must run the job exactly once (no double-execute)');
     assert.equal(ctx.body, '{"repo":"x"}', 'buffered body replayed intact');
+    assert.match(ctx.stderr, /ECONNREFUSED; retry/, 'the restart gap must exercise a retry');
   });
 });
 

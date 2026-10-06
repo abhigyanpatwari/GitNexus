@@ -389,7 +389,7 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
     ['src/a/b.rs', 'super::unique_helper_xyz', 'src/a.rs'],
     ['src/a/b/c.rs', 'super::super::unique_helper_xyz', 'src/a/mod.rs'],
     ['src/a/b.rs', 'self::child::unique_helper_xyz', 'src/a/b/child.rs'],
-  ])('resolves relative imports from %s', (caller, target, candidate) => {
+  ])('resolves relative imports from %s via %s', (caller, target, candidate) => {
     expect(
       rustIsGlobalNameFallbackPlausible({
         site: BARE_SITE,

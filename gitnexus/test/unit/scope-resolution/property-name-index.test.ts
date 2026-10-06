@@ -56,11 +56,13 @@ describe('buildPropertyNameIndex', () => {
       label: 'Function',
       properties: { name: 'run', filePath: 'a.js', startLine: 1, endLine: 2 },
     });
-    graph.addNode({
+    const noPathNode = {
       id: 'Property:a.js:noPath',
-      label: 'Property',
-      properties: { name: 'noPath', startLine: 1, endLine: 1 },
-    });
+      label: 'Property' as const,
+      properties: { name: 'noPath', filePath: '', startLine: 1, endLine: 1 },
+    };
+    Reflect.deleteProperty(noPathNode.properties, 'filePath');
+    graph.addNode(noPathNode);
 
     const index = buildPropertyNameIndex(graph);
     expect(index.get('run')).toBeUndefined();

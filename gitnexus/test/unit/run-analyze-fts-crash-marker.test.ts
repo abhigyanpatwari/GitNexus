@@ -99,7 +99,7 @@ const fileGraph = () => {
   graph.addNode({
     id: 'file:src/a.ts',
     label: 'File',
-    properties: { filePath: REL_FILE },
+    properties: { name: REL_FILE, filePath: REL_FILE },
   });
   return graph;
 };
@@ -117,7 +117,7 @@ const mockLbugAdapter = async () => {
     // that identity instead of trusting the synthetic node count alone.
     executeQuery: vi.fn(async (query: string) =>
       query.startsWith('MATCH (n:`File`) RETURN n.id AS id')
-        ? [{ id: 'file:src/a.ts', name: '', filePath: REL_FILE }]
+        ? [{ id: 'file:src/a.ts', name: REL_FILE, filePath: REL_FILE }]
         : [],
     ),
     executeWithReusedStatement: vi.fn(async () => []),

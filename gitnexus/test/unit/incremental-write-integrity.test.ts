@@ -105,7 +105,11 @@ describe('incremental graph identity before publication', () => {
       label: 'Tool',
       properties: { name: '王', filePath: 'src/Å.ts' },
     });
-    graph.addNode({ id: 'Destination:topic', label: 'Destination', properties: { name: 'topic' } });
+    graph.addNode({
+      id: 'Destination:topic',
+      label: 'Destination',
+      properties: { name: 'topic', filePath: '' },
+    });
     graph.addNode({
       id: 'Function:src/Å.ts:王\u0000\uD800',
       label: 'Function',
@@ -244,7 +248,7 @@ describe('incremental graph identity before publication', () => {
           const recovered = await runFullAnalysis(repo.dbPath, options, callbacks);
           expect(recovered.incrementalStats).toBeUndefined();
           expect((await loadMeta(storagePath))?.incrementalInProgress).toBeUndefined();
-          await adapter.initLbug(lbugPath, { readOnly: true });
+          await adapter.initLbug(lbugPath);
           await expect(
             reconcileGraphNodeIdentities(
               recovered.pipelineResult.graph,

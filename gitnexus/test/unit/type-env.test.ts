@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildTypeEnv, type TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
-import { type SymbolDefinition } from 'gitnexus-shared';
+import { SupportedLanguages, type SymbolDefinition } from 'gitnexus-shared';
 import {
   createSemanticModel,
   type SemanticModel,
@@ -29,7 +29,7 @@ let Dart: unknown;
 try {
   Dart = requireVendoredGrammar('tree-sitter-dart');
   const testParser = new Parser();
-  testParser.setLanguage(Dart as Parser.Language);
+  testParser.setLanguage(Dart);
 } catch {
   Dart = null;
 }
@@ -38,27 +38,27 @@ let Swift: unknown;
 try {
   Swift = requireVendoredGrammar('tree-sitter-swift');
   const testParser = new Parser();
-  testParser.setLanguage(Swift as Parser.Language);
+  testParser.setLanguage(Swift);
 } catch {
   Swift = null;
 }
 
 const parser = new Parser();
 
-const parse = (code: string, lang: any) => {
+const parse = (code: string, lang: unknown) => {
   parser.setLanguage(lang);
   return parser.parse(code);
 };
 
 const parseDart = (code: string) => {
   if (!Dart) throw new Error('tree-sitter-dart not available');
-  parser.setLanguage(Dart as Parser.Language);
+  parser.setLanguage(Dart);
   return parser.parse(code);
 };
 
 const parseSwift = (code: string) => {
   if (!Swift) throw new Error('tree-sitter-swift not available');
-  parser.setLanguage(Swift as Parser.Language);
+  parser.setLanguage(Swift);
   return parser.parse(code);
 };
 
@@ -95,56 +95,56 @@ describe('buildTypeEnv', () => {
   describe('TypeScript', () => {
     it('extracts type from const declaration', () => {
       const tree = parse('const user: User = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from let declaration', () => {
       const tree = parse('let repo: Repository;', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
     it('extracts type from function parameters', () => {
       const tree = parse('function save(user: User, repo: Repository) {}', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
     it('extracts type from arrow function parameters', () => {
       const tree = parse('const fn = (user: User) => user.save();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('ignores variables without type annotations', () => {
       const tree = parse('const x = 5; let y = "hello";', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatSize(typeEnv)).toBe(0);
     });
 
     it('extracts type from nullable union User | null', () => {
       const tree = parse('const user: User | null = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from optional union User | undefined', () => {
       const tree = parse('let user: User | undefined;', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from triple nullable union User | null | undefined', () => {
       const tree = parse('const user: User | null | undefined = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('ignores non-nullable unions like User | Repo', () => {
       const tree = parse('const entity: User | Repo = getEntity();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'entity')).toBeUndefined();
     });
   });
@@ -162,7 +162,7 @@ describe('buildTypeEnv', () => {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
@@ -176,7 +176,7 @@ describe('buildTypeEnv', () => {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
@@ -190,7 +190,7 @@ describe('buildTypeEnv', () => {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -207,7 +207,7 @@ describe('buildTypeEnv', () => {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -222,7 +222,7 @@ describe('buildTypeEnv', () => {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -235,7 +235,7 @@ describe('buildTypeEnv', () => {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
@@ -254,7 +254,7 @@ describe('buildTypeEnv', () => {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -270,7 +270,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -284,7 +284,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -298,7 +298,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -312,7 +312,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(flatGet(typeEnv, 'repo')).toBe('Repo');
     });
@@ -327,7 +327,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -341,7 +341,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
 
@@ -355,7 +355,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'sl')).toBe('User');
     });
 
@@ -369,7 +369,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'm')).toBe('User');
     });
 
@@ -384,7 +384,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -399,7 +399,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -411,7 +411,7 @@ describe('buildTypeEnv', () => {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       // Go parameter extraction depends on tree-sitter grammar structure
       // Parameters may or may not have 'name'/'type' fields
     });
@@ -427,7 +427,7 @@ describe('buildTypeEnv', () => {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -438,7 +438,7 @@ describe('buildTypeEnv', () => {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
@@ -452,7 +452,7 @@ describe('buildTypeEnv', () => {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -460,19 +460,19 @@ describe('buildTypeEnv', () => {
   describe('Python', () => {
     it('extracts type from annotated assignment (PEP 484)', () => {
       const tree = parse('user: User = get_user()', Python);
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
     it('extracts type from standalone annotation without value (file scope)', () => {
       const tree = parse('active_user: User', Python);
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'active_user')).toBe('User');
     });
 
     it('extracts type from function parameters', () => {
       const tree = parse('def process(user: User, repo: Repository): pass', Python);
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       // Python uses typed_parameter nodes, check if they match
     });
 
@@ -484,7 +484,7 @@ describe('buildTypeEnv', () => {
 `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'name')).toBe('str');
       expect(flatGet(typeEnv, 'age')).toBe('int');
     });
@@ -496,7 +496,7 @@ describe('buildTypeEnv', () => {
 `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
     });
 
@@ -512,7 +512,7 @@ describe('buildTypeEnv', () => {
 `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'name')).toBe('str');
       expect(flatGet(typeEnv, 'age')).toBe('int');
       expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
@@ -533,7 +533,7 @@ def process(x):
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
         expect(flatGet(typeEnv, 'u')).toBe('User');
       });
 
@@ -551,7 +551,7 @@ def process(x):
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
         // u is already bound from the annotation, pattern binding should not overwrite
         expect(flatGet(typeEnv, 'u')).toBe('User');
       });
@@ -574,7 +574,7 @@ def process(x):
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
         expect(flatGet(typeEnv, 'u')).toBe('User');
         expect(flatGet(typeEnv, 'r')).toBe('Repo');
       });
@@ -590,7 +590,7 @@ def process(x):
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
         // No class_pattern child — should return undefined
         expect(flatGet(typeEnv, 'n')).toBeUndefined();
       });
@@ -607,7 +607,7 @@ def process(x):
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -620,7 +620,7 @@ def process(x):
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -633,7 +633,7 @@ def process(x):
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -644,7 +644,7 @@ def process(x):
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
@@ -661,7 +661,7 @@ def process(x):
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -677,7 +677,7 @@ def process(x):
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -690,7 +690,7 @@ def process(x):
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       // PHP parameter type extraction
       expect(flatGet(typeEnv, '$user')).toBe('User');
       expect(flatGet(typeEnv, '$repo')).toBe('Repository');
@@ -704,7 +704,7 @@ class UserService {
   }
 }`;
       const tree = parse(code, PHP.php);
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
 
       // Find the call node ($this->save())
       const calls: any[] = [];
@@ -731,7 +731,7 @@ class User {
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       expect(flatGet(typeEnv, '$repo')).toBe('UserRepo');
     });
 
@@ -744,7 +744,7 @@ class UserService {
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       expect(flatGet(typeEnv, '$repo')).toBe('UserRepo');
     });
 
@@ -757,7 +757,7 @@ class UserService {
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       expect(flatGet(typeEnv, '$name')).toBe('string');
     });
 
@@ -774,7 +774,7 @@ function create($repo, $name) {
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       expect(flatGet(typeEnv, '$repo')).toBe('UserRepo');
       expect(flatGet(typeEnv, '$name')).toBe('string');
     });
@@ -792,7 +792,7 @@ function process($repo, $name) {
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       expect(flatGet(typeEnv, '$repo')).toBe('UserRepo');
       expect(flatGet(typeEnv, '$name')).toBe('string');
     });
@@ -812,7 +812,7 @@ end
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
       expect(flatGet(typeEnv, 'name')).toBe('String');
     });
@@ -826,7 +826,7 @@ end
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -839,7 +839,7 @@ end
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(flatGet(typeEnv, 'name')).toBe('String');
     });
 
@@ -852,7 +852,7 @@ end
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(flatGet(typeEnv, 'value')).toBeUndefined();
     });
 
@@ -865,7 +865,7 @@ end
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(flatSize(typeEnv)).toBe(0);
     });
 
@@ -881,7 +881,7 @@ end
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(flatGet(typeEnv, 'name')).toBe('String');
     });
 
@@ -894,7 +894,7 @@ end
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(flatGet(typeEnv, 'users')).toBe('Array');
     });
   });
@@ -912,7 +912,7 @@ class User extends BaseModel {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -942,7 +942,7 @@ class User extends BaseModel {
   }
 }`;
       const tree = parse(code, Java);
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -968,7 +968,7 @@ class User(BaseModel):
         return True
 `;
       const tree = parse(code, Python);
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -991,7 +991,7 @@ class Standalone {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
 
       // No calls in this code — test the resolution function directly
       // by using the class body as the context node
@@ -1009,7 +1009,7 @@ object AppConfig {
   }
 }`;
       const tree = parse(code, Kotlin);
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -1036,7 +1036,7 @@ object AppConfig {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
 
       // Each function has its own scope for 'user' (keyed by funcName@startIndex)
       // Find the scope keys that start with handleUser/handleRepo
@@ -1058,7 +1058,7 @@ function handleRepo(user: Repo) {
   user.save();
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
 
       // Find the call nodes inside each function
       const calls: any[] = [];
@@ -1090,7 +1090,7 @@ class RepoService {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
 
       // Find the call nodes inside each process method
       const calls: any[] = [];
@@ -1120,7 +1120,7 @@ class RepoService {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
 
       // config is at file-level scope
       const fileScope = typeEnv.fileScope();
@@ -1150,7 +1150,7 @@ class RepoService {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // The typed variable is captured
       expect(flatGet(typeEnv, 'user')).toBe('User');
       // Destructured bindings (name, email) would need type inference to resolve
@@ -1168,53 +1168,32 @@ class RepoService {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // Complex type annotation (object type) — extractSimpleTypeName returns undefined
       expect(flatSize(typeEnv)).toBe(0);
     });
   });
 
   describe('destructured call results', () => {
-    // Minimal mock SemanticModel for call-result return type lookup
-    // (SM-21 inversion — buildTypeEnv takes a SemanticModel via `model:`).
-    const makeSymbolTable = (callables: Array<{ name: string; returnType?: string }>) => ({
-      types: {
-        lookupClassByName: () => [],
-        lookupClassByQualifiedName: () => [],
-        lookupImplByName: () => [],
-      },
-      methods: {
-        lookupMethodByOwner: () => undefined,
-        lookupMethodByName: () => [],
-      },
-      fields: {
-        lookupFieldByOwner: () => undefined,
-      },
-      symbols: {
-        add: () => {},
-        lookupExact: () => undefined,
-        lookupExactFull: () => undefined,
-        lookupExactAll: () => [],
-        lookupCallableByName: (name: string) =>
-          callables
-            .filter((c) => c.name === name)
-            .map((c) => ({
-              nodeId: 'n1',
-              filePath: 'src.ts',
-              type: 'Function' as const,
-              returnType: c.returnType,
-            })),
-        getFiles: () => [][Symbol.iterator](),
-        getStats: () => ({ fileCount: 0 }),
-      },
-    });
+    // Register only the callable return types needed by these fixtures.
+    const makeSymbolTable = (
+      callables: Array<{ name: string; returnType?: string }>,
+    ): SemanticModel => {
+      const model = createSemanticModel();
+      for (const [index, callable] of callables.entries()) {
+        model.symbols.add('src.ts', callable.name, `function:${index}`, 'Function', {
+          returnType: callable.returnType,
+        });
+      }
+      return model;
+    };
 
     it('emits callResult + fieldAccess items for const { x } = fn()', () => {
       const symbolTable = makeSymbolTable([{ name: 'getUser', returnType: 'User' }]);
       const tree = parse('const { name } = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, { model: symbolTable });
       // callResult resolves __destr_getUser_N → User
-      // fieldAccess resolves name via User's properties (no Property nodes in mock → undefined)
+      // fieldAccess resolves name via User's properties (no Property nodes in model → undefined)
       // But the callResult itself IS emitted — verify constructorBindings is still empty
       expect(typeEnv.constructorBindings).toEqual([]);
     });
@@ -1225,14 +1204,14 @@ class RepoService {
         'async function f() { const { data } = await fetchData(); }',
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, { model: symbolTable });
       expect(typeEnv.constructorBindings).toEqual([]);
     });
 
     it('gracefully handles no return type (composable without annotation)', () => {
       const symbolTable = makeSymbolTable([{ name: 'useUserRole' }]); // no returnType
       const tree = parse('const { isMaker } = useUserRole();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', { model: symbolTable });
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, { model: symbolTable });
       // No return type → callResult unresolved → fieldAccess unresolved
       expect(flatGet(typeEnv, 'isMaker')).toBeUndefined();
     });
@@ -1240,7 +1219,7 @@ class RepoService {
     it('resolves destructured properties when return type has declared fields', () => {
       // importedReturnTypes provides the return type since no real SymbolTable
       const tree = parse('const { name } = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedReturnTypes: new Map([['getUser', 'User']]),
       });
       // callResult resolves __destr_getUser_N → User via importedReturnTypes
@@ -1264,7 +1243,7 @@ class RepoService {
         `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // repo is resolved to Repo via Tier 1 (constructor inference)
       expect(flatGet(typeEnv, 'repo')).toBe('Repo');
       // Destructured method call emits methodCallResult + fieldAccess
@@ -1274,7 +1253,7 @@ class RepoService {
 
     it('handles renamed destructuring: const { address: addr } = fn()', () => {
       const tree = parse('const { address: addr } = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedReturnTypes: new Map([['getUser', 'User']]),
       });
       // 'addr' should be the binding, not 'address'
@@ -1294,53 +1273,53 @@ class RepoService {
     describe('TypeScript', () => {
       it('infers type from new expression when no annotation', () => {
         const tree = parse('const user = new User();', TypeScript.typescript);
-        const typeEnv = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
       it('prefers explicit annotation over constructor inference', () => {
         const tree = parse('const user: BaseUser = new User();', TypeScript.typescript);
-        const typeEnv = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
         expect(flatGet(typeEnv, 'user')).toBe('BaseUser');
       });
 
       it('infers from namespaced constructor: new ns.Service()', () => {
         // extractSimpleTypeName handles member_expression via property_identifier
         const tree = parse('const svc = new ns.Service();', TypeScript.typescript);
-        const typeEnv = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
         expect(flatGet(typeEnv, 'svc')).toBe('Service');
       });
 
       it('infers type from new expression with as cast', () => {
         const tree = parse('const x = new User() as BaseUser;', TypeScript.typescript);
-        const typeEnv = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
         // Unwraps as_expression to find the inner new_expression → User
         expect(flatGet(typeEnv, 'x')).toBe('User');
       });
 
       it('infers type from new expression with non-null assertion', () => {
         const tree = parse('const x = new User()!;', TypeScript.typescript);
-        const typeEnv = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
         // Unwraps non_null_expression to find the inner new_expression → User
         expect(flatGet(typeEnv, 'x')).toBe('User');
       });
 
       it('infers type from double-cast (new X() as unknown as T)', () => {
         const tree = parse('const x = new User() as unknown as Admin;', TypeScript.typescript);
-        const typeEnv = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
         // Unwraps nested as_expression to find inner new_expression → User
         expect(flatGet(typeEnv, 'x')).toBe('User');
       });
 
       it('ignores non-new assignments', () => {
         const tree = parse('const x = getUser();', TypeScript.typescript);
-        const typeEnv = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
         expect(flatSize(typeEnv)).toBe(0);
       });
 
       it('handles mixed annotated + unannotated declarators', () => {
         const tree = parse('const a: A = getA(), b = new B();', TypeScript.typescript);
-        const typeEnv = buildTypeEnv(tree, 'typescript');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
         expect(flatGet(typeEnv, 'a')).toBe('A');
         expect(flatGet(typeEnv, 'b')).toBe('B');
       });
@@ -1358,7 +1337,7 @@ class RepoService {
         `,
           Java,
         );
-        const typeEnv = buildTypeEnv(tree, 'java');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1373,7 +1352,7 @@ class RepoService {
         `,
           Java,
         );
-        const typeEnv = buildTypeEnv(tree, 'java');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1388,7 +1367,7 @@ class RepoService {
         `,
           Java,
         );
-        const typeEnv = buildTypeEnv(tree, 'java');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
         expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
     });
@@ -1403,7 +1382,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1416,7 +1395,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'config')).toBe('Config');
       });
 
@@ -1429,7 +1408,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         // ::default() should be excluded from scanConstructorBinding just like ::new()
         // extractInitializer already resolves it, so a scanner binding would be redundant
         const defaultBinding = typeEnv.constructorBindings.find((b) => b.calleeName === 'default');
@@ -1445,7 +1424,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         const newBinding = typeEnv.constructorBindings.find((b) => b.calleeName === 'new');
         expect(newBinding).toBeUndefined();
       });
@@ -1460,7 +1439,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'user')).toBe('BaseUser');
       });
 
@@ -1473,7 +1452,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1489,7 +1468,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'instance')).toBe('User');
       });
 
@@ -1505,7 +1484,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'cfg')).toBe('Config');
       });
 
@@ -1518,7 +1497,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
 
@@ -1531,7 +1510,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'user')).toBeUndefined();
       });
 
@@ -1544,7 +1523,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1557,7 +1536,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'config')).toBe('Config');
       });
 
@@ -1570,7 +1549,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'user')).toBe('BaseUser');
       });
 
@@ -1586,7 +1565,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'fresh')).toBe('User');
       });
 
@@ -1599,7 +1578,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
     });
@@ -1616,7 +1595,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1631,7 +1610,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1646,7 +1625,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         expect(flatGet(typeEnv, 'item')).toBe('Config');
       });
 
@@ -1661,7 +1640,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         // Option<User> is unwrapped to "User" in TypeEnv via NULLABLE_WRAPPER_TYPES.
         // extractPatternBinding maps `user` → "User" from the scopeEnv lookup for `opt`.
         expect(flatGet(typeEnv, 'user')).toBe('User');
@@ -1678,7 +1657,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         // 'name' is a field of User — we don't know its type without field-type resolution
         expect(flatGet(typeEnv, 'name')).toBeUndefined();
         // 'val' should still be extracted from the parameter annotation
@@ -1696,7 +1675,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         // scoped_type_identifier: Message::Data — extractSimpleTypeName returns "Data"
         expect(flatGet(typeEnv, 'msg')).toBe('Data');
       });
@@ -1712,7 +1691,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         // Option<User> unwraps to User (nullable wrapper unwrapping)
         expect(flatGet(typeEnv, 'opt')).toBe('User');
         expect(flatGet(typeEnv, 'user')).toBe('User');
@@ -1729,7 +1708,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         // opt: Option<User> → scopeEnv stores "User" (NULLABLE_WRAPPER_TYPES unwrapping)
         // extractPatternBinding maps user → opt's type → "User"
         expect(flatGet(typeEnv, 'user')).toBe('User');
@@ -1746,7 +1725,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         // unknown_var is not in scopeEnv — conservative, produces no binding
         expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
@@ -1762,7 +1741,7 @@ class RepoService {
         `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
         // SomeOtherVariant is not a known unwrap wrapper — no binding
         expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
@@ -1782,7 +1761,7 @@ class RepoService {
         `,
           Java,
         );
-        const typeEnv = buildTypeEnv(tree, 'java');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1797,7 +1776,7 @@ class RepoService {
         `,
           Java,
         );
-        const typeEnv = buildTypeEnv(tree, 'java');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
         // No pattern variable — b gets its declared type 'boolean', not 'User'
         expect(flatGet(typeEnv, 'b')).toBe('boolean');
       });
@@ -1818,7 +1797,7 @@ class RepoService {
         `,
           Java,
         );
-        const typeEnv = buildTypeEnv(tree, 'java');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
         expect(flatGet(typeEnv, 'user')).toBe('User');
         expect(flatGet(typeEnv, 'repo')).toBe('Repo');
       });
@@ -1832,7 +1811,7 @@ class RepoService {
         `,
           PHP.php,
         );
-        const typeEnv = buildTypeEnv(tree, 'php');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
         expect(flatGet(typeEnv, '$user')).toBe('User');
       });
 
@@ -1848,7 +1827,7 @@ class RepoService {
         `,
           PHP.php,
         );
-        const typeEnv = buildTypeEnv(tree, 'php');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
         expect(flatGet(typeEnv, '$a')).toBe('Foo');
         expect(flatGet(typeEnv, '$b')).toBe('Foo');
       });
@@ -1865,7 +1844,7 @@ class RepoService {
         `,
           PHP.php,
         );
-        const typeEnv = buildTypeEnv(tree, 'php');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
         expect(flatGet(typeEnv, '$p')).toBe('Bar');
       });
 
@@ -1876,7 +1855,7 @@ class RepoService {
         `,
           PHP.php,
         );
-        const typeEnv = buildTypeEnv(tree, 'php');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
         expect(flatGet(typeEnv, '$a')).toBeUndefined();
       });
 
@@ -1887,7 +1866,7 @@ class RepoService {
         `,
           PHP.php,
         );
-        const typeEnv = buildTypeEnv(tree, 'php');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
         expect(flatGet(typeEnv, '$user')).toBeUndefined();
       });
     });
@@ -1902,7 +1881,7 @@ class RepoService {
         `,
           CPP,
         );
-        const typeEnv = buildTypeEnv(tree, 'cpp');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1916,7 +1895,7 @@ class RepoService {
         `,
           CPP,
         );
-        const typeEnv = buildTypeEnv(tree, 'cpp');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1929,7 +1908,7 @@ class RepoService {
         `,
           CPP,
         );
-        const typeEnv = buildTypeEnv(tree, 'cpp');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1944,7 +1923,7 @@ class RepoService {
         `,
           CPP,
         );
-        const typeEnv = buildTypeEnv(tree, 'cpp');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
         // getUser is an identifier but NOT a known class — no inference
         expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
@@ -1959,7 +1938,7 @@ class RepoService {
         `,
           CPP,
         );
-        const typeEnv = buildTypeEnv(tree, 'cpp');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -1973,7 +1952,7 @@ class RepoService {
         `,
           CPP,
         );
-        const typeEnv = buildTypeEnv(tree, 'cpp');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
         expect(flatGet(typeEnv, 'cfg')).toBe('Config');
       });
 
@@ -1987,7 +1966,7 @@ class RepoService {
         `,
           CPP,
         );
-        const typeEnv = buildTypeEnv(tree, 'cpp');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
     });
@@ -2002,7 +1981,7 @@ class RepoService {
         `,
           Kotlin,
         );
-        const typeEnv = buildTypeEnv(tree, 'kotlin');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -2016,7 +1995,7 @@ class RepoService {
         `,
           Kotlin,
         );
-        const typeEnv = buildTypeEnv(tree, 'kotlin');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -2030,7 +2009,7 @@ class RepoService {
         `,
           Kotlin,
         );
-        const typeEnv = buildTypeEnv(tree, 'kotlin');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
         // getUser is not a class name — should NOT produce a binding
         expect(flatGet(typeEnv, 'user')).toBeUndefined();
       });
@@ -2047,7 +2026,7 @@ class RepoService {
         // User is NOT defined in this file, but SemanticModel knows it's a Class
         const model = createSemanticModel();
         model.symbols.add('models.kt', 'User', 'n1', 'Class');
-        const typeEnv = buildTypeEnv(tree, 'kotlin', { model });
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin, { model });
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -2061,7 +2040,7 @@ class RepoService {
           Kotlin,
         );
         const model = createSemanticModel();
-        const typeEnv = buildTypeEnv(tree, 'kotlin', { model });
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin, { model });
         expect(flatGet(typeEnv, 'result')).toBeUndefined();
       });
 
@@ -2075,7 +2054,7 @@ class RepoService {
         `,
           Kotlin,
         );
-        const typeEnv = buildTypeEnv(tree, 'kotlin');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
         // Tier 0 (explicit annotation) wins over Tier 1 (constructor inference)
         expect(flatGet(typeEnv, 'user')).toBe('BaseEntity');
       });
@@ -2093,7 +2072,7 @@ def main():
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -2108,7 +2087,7 @@ def main():
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
         // extractSimpleTypeName extracts "User" from attribute node "models.User"
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
@@ -2121,7 +2100,7 @@ def main():
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
         expect(flatGet(typeEnv, 'user')).toBeUndefined();
       });
     });
@@ -2145,7 +2124,7 @@ def main():
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python, {
           model: makeClassLookupTable({
             User: [createClassDef('User', 'Class', 'models.py')],
           }),
@@ -2161,7 +2140,7 @@ def main():
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python, {
           model: makeClassLookupTable({}),
         });
         expect(flatGet(typeEnv, 'result')).toBeUndefined();
@@ -2175,7 +2154,7 @@ def main():
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python, {
           model: makeClassLookupTable({
             User: [createClassDef('User', 'Class', 'models.py')],
           }),
@@ -2192,7 +2171,7 @@ void run() {
 `,
           CPP,
         );
-        const typeEnv = buildTypeEnv(tree, 'cpp', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus, {
           model: makeClassLookupTable({
             User: [createClassDef('User', 'Class', 'models.h')],
           }),
@@ -2209,7 +2188,7 @@ void run() {
 `,
           CPP,
         );
-        const typeEnv = buildTypeEnv(tree, 'cpp', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus, {
           model: makeClassLookupTable({}),
         });
         expect(flatGet(typeEnv, 'result')).toBeUndefined();
@@ -2224,7 +2203,7 @@ end
 `,
           Ruby,
         );
-        const typeEnv = buildTypeEnv(tree, 'ruby', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby, {
           model: makeClassLookupTable({
             User: [createClassDef('User', 'Class', 'models/user.rb')],
           }),
@@ -2241,7 +2220,7 @@ end
 `,
           Ruby,
         );
-        const typeEnv = buildTypeEnv(tree, 'ruby', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby, {
           model: makeClassLookupTable({
             UserService: [createClassDef('UserService', 'Class', 'models/user_service.rb')],
           }),
@@ -2258,7 +2237,7 @@ end
 `,
           Ruby,
         );
-        const typeEnv = buildTypeEnv(tree, 'ruby', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby, {
           model: makeClassLookupTable({}),
         });
         expect(flatGet(typeEnv, 'result')).toBeUndefined();
@@ -2273,7 +2252,7 @@ void run() {
 }
 `,
           );
-          const typeEnv = buildTypeEnv(tree, 'dart', {
+          const typeEnv = buildTypeEnv(tree, SupportedLanguages.Dart, {
             model: makeClassLookupTable({
               User: [createClassDef('User', 'Class', 'models.dart')],
             }),
@@ -2289,7 +2268,7 @@ void run() {
 }
 `,
           );
-          const typeEnv = buildTypeEnv(tree, 'dart', {
+          const typeEnv = buildTypeEnv(tree, SupportedLanguages.Dart, {
             model: makeClassLookupTable({
               User: [createClassDef('User', 'Class', 'models.dart')],
             }),
@@ -2305,7 +2284,7 @@ void run() {
 }
 `,
           );
-          const typeEnv = buildTypeEnv(tree, 'dart', {
+          const typeEnv = buildTypeEnv(tree, SupportedLanguages.Dart, {
             model: makeClassLookupTable({}),
           });
           expect(flatGet(typeEnv, 'result')).toBeUndefined();
@@ -2321,7 +2300,7 @@ fn run() {
 `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust, {
           model: makeClassLookupTable({
             UserService: [createClassDef('UserService', 'Struct', 'models.rs')],
           }),
@@ -2338,7 +2317,7 @@ fn run() {
 `,
           Rust,
         );
-        const typeEnv = buildTypeEnv(tree, 'rust', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust, {
           model: makeClassLookupTable({}),
         });
         expect(flatGet(typeEnv, 'value')).toBeUndefined();
@@ -2353,7 +2332,7 @@ func run() {
 }
 `,
           );
-          const typeEnv = buildTypeEnv(tree, 'swift', {
+          const typeEnv = buildTypeEnv(tree, SupportedLanguages.Swift, {
             model: makeClassLookupTable({
               User: [createClassDef('User', 'Class', 'Models/User.swift')],
             }),
@@ -2369,7 +2348,7 @@ func run() {
 }
 `,
           );
-          const typeEnv = buildTypeEnv(tree, 'swift', {
+          const typeEnv = buildTypeEnv(tree, SupportedLanguages.Swift, {
             model: makeClassLookupTable({
               User: [createClassDef('User', 'Class', 'Models/User.swift')],
             }),
@@ -2385,7 +2364,7 @@ func run() {
 }
 `,
           );
-          const typeEnv = buildTypeEnv(tree, 'swift', {
+          const typeEnv = buildTypeEnv(tree, SupportedLanguages.Swift, {
             model: makeClassLookupTable({}),
           });
           expect(flatGet(typeEnv, 'result')).toBeUndefined();
@@ -2407,7 +2386,7 @@ function process(user: User) {
           ownerId: 'class:User',
           declaredType: 'Address',
         });
-        const typeEnv = buildTypeEnv(tree, 'typescript', { model });
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, { model });
         expect(flatGet(typeEnv, 'addr')).toBe('Address');
       });
 
@@ -2421,7 +2400,7 @@ function process(user: User) {
           TypeScript.typescript,
         );
         const model = createSemanticModel();
-        const typeEnv = buildTypeEnv(tree, 'typescript', { model });
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, { model });
         expect(flatGet(typeEnv, 'addr')).toBeUndefined();
       });
 
@@ -2441,7 +2420,7 @@ function process(repo: Repo) {
           returnType: 'Profile',
         });
         const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
-        const typeEnv = buildTypeEnv(tree, 'typescript', { model });
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, { model });
         expect(flatGet(typeEnv, 'profile')).toBe('Profile');
         expect(lookupCallableByName).not.toHaveBeenCalledWith('getProfile');
       });
@@ -2463,7 +2442,7 @@ function process(repo: Repo) {
           returnType: 'Profile',
         });
         const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
-        const typeEnv = buildTypeEnv(tree, 'typescript', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
           model,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
@@ -2488,7 +2467,7 @@ function process(repo: Repo) {
           returnType: 'Profile',
         });
         const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
-        const typeEnv = buildTypeEnv(tree, 'typescript', { model });
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, { model });
         expect(flatGet(typeEnv, 'profile')).toBe('Profile');
         expect(lookupCallableByName).not.toHaveBeenCalledWith('getProfile');
       });
@@ -2511,7 +2490,7 @@ function process(repo: Repo) {
           returnType: 'Profile',
         });
         const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
-        const typeEnv = buildTypeEnv(tree, 'typescript', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
           model,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
@@ -2540,7 +2519,7 @@ function process(repo: Repo) {
           returnType: 'Profile',
         });
         const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
-        const typeEnv = buildTypeEnv(tree, 'typescript', { model });
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, { model });
         expect(flatGet(typeEnv, 'profile')).toBeUndefined();
         expect(lookupCallableByName).not.toHaveBeenCalledWith('getProfile');
       });
@@ -2565,7 +2544,7 @@ function process(repo: Repo) {
           returnType: 'Profile',
         });
         const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
-        const typeEnv = buildTypeEnv(tree, 'typescript', { model });
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, { model });
         expect(flatGet(typeEnv, 'profile')).toBe('Profile');
         expect(lookupCallableByName).not.toHaveBeenCalledWith('getProfile');
       });
@@ -2595,7 +2574,7 @@ function process(repo: Repo) {
           returnType: 'Admin',
         });
         const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
-        const typeEnv = buildTypeEnv(tree, 'typescript', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
           model,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
@@ -2624,7 +2603,7 @@ function process(repo: Repo) {
           returnType: 'Profile',
         });
         const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
-        const typeEnv = buildTypeEnv(tree, 'typescript', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
           model,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
@@ -2657,7 +2636,7 @@ function process(repo: Repo) {
           returnType: 'Admin',
         });
         const lookupCallableByName = vi.spyOn(model.symbols, 'lookupCallableByName');
-        const typeEnv = buildTypeEnv(tree, 'typescript', {
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
           model,
           parentMap: new Map([['Repo', ['BaseRepo']]]),
         });
@@ -2679,7 +2658,7 @@ def main():
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
         expect(flatGet(typeEnv, 'user')).toBe('User');
       });
 
@@ -2692,7 +2671,7 @@ def main():
 `,
           Python,
         );
-        const typeEnv = buildTypeEnv(tree, 'python');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
         expect(flatGet(typeEnv, 'data')).toBeUndefined();
       });
     });
@@ -2701,7 +2680,7 @@ def main():
   describe('edge cases', () => {
     it('returns empty map for code without type annotations', () => {
       const tree = parse('const x = 5;', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatSize(typeEnv)).toBe(0);
     });
 
@@ -2713,7 +2692,7 @@ def main():
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // Both declarations are at file level; last one wins
       expect(flatGet(typeEnv, 'x')).toBeDefined();
     });
@@ -2732,7 +2711,7 @@ class User extends BaseModel<string> {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -2759,7 +2738,7 @@ class User extends BaseModel<String> {
   }
 }`;
       const tree = parse(code, Java);
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -2785,7 +2764,7 @@ class User(Model):
         super().save()
 `;
       const tree = parse(code, Python);
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -2811,7 +2790,7 @@ class User : BaseModel<string> {
   }
 }`;
       const tree = parse(code, CSharp);
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
 
       const calls: any[] = [];
       function findCalls(node: any) {
@@ -2840,7 +2819,7 @@ class User : BaseModel<string> {
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       // Should extract "HttpClient" from the scoped_identifier ns::HttpClient
       const binding = typeEnv.constructorBindings.find((b) => b.varName === 'client');
       expect(binding).toBeDefined();
@@ -2857,7 +2836,7 @@ class User : BaseModel<string> {
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       // User() with known class resolves via extractInitializer, not constructor bindings
       expect(flatGet(typeEnv, 'user')).toBe('User');
       // No unresolved bindings since User is locally known
@@ -2875,7 +2854,7 @@ class User : BaseModel<string> {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       // UnknownClass is not defined locally — should appear as unverified binding
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
       expect(typeEnv.constructorBindings.length).toBe(1);
@@ -2892,7 +2871,7 @@ class User : BaseModel<string> {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       // Explicit annotation resolves it — no unverified binding needed
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(typeEnv.constructorBindings.find((b) => b.varName === 'user')).toBeUndefined();
@@ -2905,7 +2884,7 @@ func run() {
   let user = User.init(name: "alice")
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'swift');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.Swift);
         expect(flatGet(typeEnv, 'user')).toBeUndefined();
         expect(typeEnv.constructorBindings).toEqual([
           expect.objectContaining({
@@ -2924,7 +2903,7 @@ def main():
 `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('user');
@@ -2939,7 +2918,7 @@ def main():
 `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('user');
       expect(typeEnv.constructorBindings[0].calleeName).toBe('User');
@@ -2954,7 +2933,7 @@ def main():
 `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('user');
@@ -2971,7 +2950,7 @@ def main():
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(typeEnv.constructorBindings).toEqual([]);
     });
 
@@ -2982,7 +2961,7 @@ REPO = Repo.new
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('REPO');
       expect(typeEnv.constructorBindings[0].calleeName).toBe('Repo');
@@ -2995,7 +2974,7 @@ service = Models::UserService.new
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('service');
       expect(typeEnv.constructorBindings[0].calleeName).toBe('UserService');
@@ -3008,7 +2987,7 @@ svc = App::Models::Service.new
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('svc');
       expect(typeEnv.constructorBindings[0].calleeName).toBe('Service');
@@ -3023,14 +3002,14 @@ svc = App::Models::Service.new
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].scope).toMatch(/^process@\d+$/);
     });
 
     it('returns constructor bindings for TypeScript const user = getUser()', () => {
       const tree = parse('const user = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('user');
@@ -3039,20 +3018,20 @@ svc = App::Models::Service.new
 
     it('does NOT emit constructor binding when TypeScript var has explicit type annotation', () => {
       const tree = parse('const user: User = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(typeEnv.constructorBindings.find((b) => b.varName === 'user')).toBeUndefined();
     });
 
     it('skips destructuring patterns (array_pattern) for TypeScript', () => {
       const tree = parse('const [a, b] = getPair();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(typeEnv.constructorBindings).toEqual([]);
     });
 
     it('skips destructuring patterns (object_pattern) for TypeScript', () => {
       const tree = parse('const { name, age } = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(typeEnv.constructorBindings).toEqual([]);
     });
 
@@ -3061,7 +3040,7 @@ svc = App::Models::Service.new
         'async function f() { const user = await fetchUser(); }',
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('user');
       expect(typeEnv.constructorBindings[0].calleeName).toBe('fetchUser');
@@ -3069,7 +3048,7 @@ svc = App::Models::Service.new
 
     it('handles qualified callee in TypeScript: const user = repo.getUser()', () => {
       const tree = parse('const user = repo.getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('user');
       expect(typeEnv.constructorBindings[0].calleeName).toBe('getUser');
@@ -3077,7 +3056,7 @@ svc = App::Models::Service.new
 
     it('does not emit binding for TypeScript new expression (handled by extractInitializer)', () => {
       const tree = parse('const user = new User();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(typeEnv.constructorBindings.find((b) => b.varName === 'user')).toBeUndefined();
     });
@@ -3094,7 +3073,7 @@ svc = App::Models::Service.new
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       const binding = typeEnv.constructorBindings.find((b) => b.varName === 'user');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('GetUser');
@@ -3109,7 +3088,7 @@ svc = App::Models::Service.new
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(typeEnv.constructorBindings.length).toBe(1);
       expect(typeEnv.constructorBindings[0].varName).toBe('user');
       expect(typeEnv.constructorBindings[0].calleeName).toBe('get_user');
@@ -3127,7 +3106,7 @@ svc = App::Models::Service.new
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       const binding = typeEnv.constructorBindings.find((b) => b.varName === 'user');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('GetUserAsync');
@@ -3144,7 +3123,7 @@ svc = App::Models::Service.new
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       const binding = typeEnv.constructorBindings.find((b) => b.varName === 'user');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('GetUser');
@@ -3160,7 +3139,7 @@ svc = App::Models::Service.new
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'a')).toBe('User');
       expect(flatGet(typeEnv, 'b')).toBe('User');
     });
@@ -3173,7 +3152,7 @@ svc = App::Models::Service.new
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'a')).toBe('User');
       expect(flatGet(typeEnv, 'b')).toBe('User');
     });
@@ -3190,7 +3169,7 @@ svc = App::Models::Service.new
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'a')).toBe('User');
       expect(flatGet(typeEnv, 'b')).toBe('User');
       expect(flatGet(typeEnv, 'c')).toBe('User');
@@ -3206,7 +3185,7 @@ svc = App::Models::Service.new
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // 'alias' should get User from the parameter 'user'
       const scopeKey = [...typeEnv.allScopes().keys()].find((k) => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
@@ -3224,7 +3203,7 @@ svc = App::Models::Service.new
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // cfg in process scope picks up Config from the file-level config binding
       const scopeKey = [...typeEnv.allScopes().keys()].find((k) => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
@@ -3238,7 +3217,7 @@ svc = App::Models::Service.new
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // getUser() is a call_expression — should not create a binding
       expect(flatGet(typeEnv, 'x')).toBeUndefined();
     });
@@ -3338,7 +3317,7 @@ svc = App::Models::Service.new
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const scopeKey = [...typeEnv.allScopes().keys()].find((k) => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
       expect(typeEnv.allScopes().get(scopeKey!)?.get('a')).toBe('User');
@@ -3360,7 +3339,7 @@ svc = App::Models::Service.new
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const scopeKey = [...typeEnv.allScopes().keys()].find((k) => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
       expect(typeEnv.allScopes().get(scopeKey!)?.get('c')).toBe('User');
@@ -3384,7 +3363,7 @@ svc = App::Models::Service.new
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'a')).toBe('User');
       expect(flatGet(typeEnv, 'b')).toBe('User');
     });
@@ -3403,7 +3382,7 @@ svc = App::Models::Service.new
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'u')).toBe('User');
       expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
@@ -3420,7 +3399,7 @@ svc = App::Models::Service.new
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'u')).toBe('User');
       expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
@@ -3437,7 +3416,7 @@ svc = App::Models::Service.new
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'u')).toBe('User');
       expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
@@ -3456,7 +3435,7 @@ svc = App::Models::Service.new
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'u')).toBe('User');
       expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
@@ -3472,7 +3451,7 @@ def process():
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'u')).toBe('User');
       expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
@@ -3487,7 +3466,7 @@ def process():
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'u')).toBe('User');
       expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
@@ -3504,7 +3483,7 @@ def process():
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'u')).toBe('User');
       expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
@@ -3521,7 +3500,7 @@ def process():
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       expect(flatGet(typeEnv, '$u')).toBe('User');
       expect(flatGet(typeEnv, '$alias')).toBe('User');
     });
@@ -3542,7 +3521,7 @@ end
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       // Without a known type for 'user' (no annotation in Ruby), alias_user stays undefined.
       // This verifies the extractor doesn't crash or produce false bindings.
       expect(flatGet(typeEnv, 'alias_user')).toBeUndefined();
@@ -3558,7 +3537,7 @@ end
 `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
       // get_user() is a call — user has no resolved type, so alias_user should not resolve either
       expect(flatGet(typeEnv, 'alias_user')).toBeUndefined();
     });
@@ -3576,7 +3555,7 @@ end
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // Find the call node for .save()
       const scopeKey = [...typeEnv.allScopes().keys()].find((k) => k.startsWith('process@'));
       expect(scopeKey).toBeDefined();
@@ -3592,7 +3571,7 @@ def process():
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       // Python 3.10+ union syntax is stored as raw text "User | None"
       // which stripNullable resolves at lookup time
       const rawVal = flatGet(typeEnv, 'user');
@@ -3616,7 +3595,7 @@ def process():
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -3629,7 +3608,7 @@ def process():
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -3644,7 +3623,7 @@ def process():
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'users')).toBe('List');
     });
 
@@ -3659,7 +3638,7 @@ def process():
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'lookup')).toBe('Map');
     });
 
@@ -3674,7 +3653,7 @@ def process():
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'future')).toBe('CompletableFuture');
     });
 
@@ -3705,7 +3684,7 @@ def process():
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       expect(flatGet(typeEnv, 'u')).toBe('User');
       expect(flatGet(typeEnv, 'alias')).toBe('User');
     });
@@ -3725,7 +3704,7 @@ def process():
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -3740,7 +3719,7 @@ def process():
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -3755,7 +3734,7 @@ def process():
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // for...in yields string keys — extractor must NOT bind 'key' to User
       expect(flatGet(typeEnv, 'key')).toBeUndefined();
     });
@@ -3771,7 +3750,7 @@ def process():
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
 
@@ -3787,7 +3766,7 @@ def process():
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // Note: users itself is stored with no binding (extractSimpleTypeName returns undefined
       // for array_type), but the for-loop extractor uses AST walking to resolve the element type.
       expect(flatGet(typeEnv, 'user')).toBe('User');
@@ -3804,7 +3783,7 @@ def process():
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -3819,7 +3798,7 @@ def process(users: List[User]):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -3832,7 +3811,7 @@ def process(users: Sequence[User]):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -3845,7 +3824,7 @@ def process(users):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
 
@@ -3859,7 +3838,7 @@ def process():
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       // List[User] → extractSimpleTypeName returns 'List' (base name), stored as 'List'
       // extractElementTypeFromString('List') → undefined (no brackets in the string)
       // So user is unresolved unless users is stored as 'List[User]' raw.
@@ -3883,7 +3862,7 @@ func process(users []User) {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -3899,7 +3878,7 @@ func process(users []User) {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       // In Go, `for v := range slice` gives the INDEX (int), not the element.
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
@@ -3916,7 +3895,7 @@ func process(myMap map[string]User) {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       expect(flatGet(typeEnv, 'v')).toBe('User');
     });
 
@@ -3932,7 +3911,7 @@ func process(myMap map[string]User) {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       // Single-var map range gives the KEY, not the value
       expect(flatGet(typeEnv, 'k')).toBeUndefined();
     });
@@ -3948,7 +3927,7 @@ func process() {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       // C-style for loop has no range_clause — extractor must return early
       expect(flatGet(typeEnv, 'i')).toBeUndefined();
     });
@@ -3966,7 +3945,7 @@ func process() {
       `,
         Go,
       );
-      const typeEnv = buildTypeEnv(tree, 'go');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Go);
       // users has no type annotation — only a constructor binding candidate
       // Without a resolved type for users, user cannot be inferred
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
@@ -3985,7 +3964,7 @@ fn process(users: Vec<User>) {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4000,7 +3979,7 @@ fn process(users: &[User]) {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4015,7 +3994,7 @@ fn process() {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'i')).toBeUndefined();
     });
 
@@ -4031,7 +4010,7 @@ fn process() {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
@@ -4051,7 +4030,7 @@ class Foo {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4068,7 +4047,7 @@ class Foo {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4086,7 +4065,7 @@ class Foo {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
@@ -4103,7 +4082,7 @@ fun process(users: List<User>) {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4118,7 +4097,7 @@ fun process(users: List<User>) {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4134,7 +4113,7 @@ fun process() {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
@@ -4153,7 +4132,7 @@ class Foo {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4171,7 +4150,7 @@ class Foo {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
@@ -4190,7 +4169,7 @@ function process(entries: Map<string, User>) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4206,7 +4185,7 @@ def process(data: dict[str, User]):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4222,7 +4201,7 @@ def process(data: dict[str, User]):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'v')).toBe('User');
       // i is the int index from enumerate — must NOT be bound to User
       expect(flatGet(typeEnv, 'i')).toBeUndefined();
@@ -4240,7 +4219,7 @@ def process(data: dict[str, User]):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'v')).toBe('User');
       expect(flatGet(typeEnv, 'i')).toBeUndefined();
     });
@@ -4257,7 +4236,7 @@ def process(users: List[User]):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       // enumerate yields (index, element) — k is int (unbound), v is User
       expect(flatGet(typeEnv, 'v')).toBe('User');
       expect(flatGet(typeEnv, 'k')).toBeUndefined();
@@ -4277,7 +4256,7 @@ function process(x) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'x')).toBe('User');
     });
 
@@ -4294,7 +4273,7 @@ fn process(users: Vec<User>) {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -4311,7 +4290,7 @@ function process(data: Map<string, User>) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4326,7 +4305,7 @@ function process(data: Map<string, User>) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'key')).toBe('string');
     });
 
@@ -4339,7 +4318,7 @@ def process(data: dict[str, User]):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'key')).toBe('str');
     });
 
@@ -4352,7 +4331,7 @@ def process(data: dict[str, User]):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4367,7 +4346,7 @@ fn process(data: HashMap<String, User>) {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'key')).toBe('String');
     });
 
@@ -4382,7 +4361,7 @@ fn process(data: HashMap<String, User>) {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -4399,7 +4378,7 @@ fn process(data: HashMap<String, User>) {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'key')).toBe('String');
     });
 
@@ -4414,7 +4393,7 @@ fn process(data: HashMap<String, User>) {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4429,7 +4408,7 @@ fn process(users: Vec<User>) {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4445,7 +4424,7 @@ function process(cache: MyCache<string, User>) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'key')).toBe('string');
     });
   });
@@ -4462,7 +4441,7 @@ function process(users: User[]) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // Object destructuring should NOT produce bindings — field types are unknown
       expect(flatGet(typeEnv, 'id')).toBeUndefined();
       expect(flatGet(typeEnv, 'name')).toBeUndefined();
@@ -4479,7 +4458,7 @@ function process(users: User[]) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4492,7 +4471,7 @@ def process(users: List[User]):
       `,
         Python,
       );
-      const typeEnv = buildTypeEnv(tree, 'python');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Python);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4507,7 +4486,7 @@ void process(std::map<std::string, User>& map) {
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       expect(flatGet(typeEnv, 'value')).toBe('User');
     });
 
@@ -4534,17 +4513,16 @@ void processRepoMap(std::map<std::string, Repo> repoMap) {
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       expect(flatGet(typeEnv, 'repo')).toBe('Repo');
     });
   });
 
-  describe('known limitations (documented skip tests)', () => {
-    it.skip('Ruby block parameter: users.each { |user| } — closure param inference, different feature', () => {
-      // Not a for-loop; .each { |user| } is a method call with a block.
-      // Requires closure parameter inference — a different feature category
-      // applicable to Ruby, Swift closures, Kotlin lambdas, and Java lambdas.
+  describe('unknown Ruby block parameter types', () => {
+    it('does not invent a type for a block parameter from an untyped receiver', () => {
+      // Neither the parameter name nor calling `save` proves users contains
+      // User instances. Inferring User here would introduce false call edges.
       const tree = parse(
         `
 def process(users)
@@ -4553,8 +4531,8 @@ end
       `,
         Ruby,
       );
-      const typeEnv = buildTypeEnv(tree, 'ruby');
-      expect(flatGet(typeEnv, 'user')).toBe('User');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
 
@@ -4570,7 +4548,7 @@ fun process(x: Any) {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'x')).toBe('User');
     });
 
@@ -4586,7 +4564,7 @@ fun process(x: Any) {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       // allowPatternBindingOverwrite means each arm overwrites — last one wins
       expect(flatGet(typeEnv, 'x')).toBe('Admin');
     });
@@ -4603,7 +4581,7 @@ fun process() {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       // x has type String from its declaration — no pattern binding should narrow it
       // (else branch has no type_test node, so extractKotlinPatternBinding never fires)
       expect(flatGet(typeEnv, 'x')).toBe('String');
@@ -4622,7 +4600,7 @@ fun processValues(data: HashMap<String, User>) {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4637,7 +4615,7 @@ fun processList(users: List<User>) {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -4656,7 +4634,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'u')).toBe('User');
     });
 
@@ -4674,7 +4652,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'u')).toBe('User');
       expect(flatGet(typeEnv, 'a')).toBe('Admin');
     });
@@ -4692,7 +4670,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       // Only the parameter x:Object should exist, no extra bindings from case 42
       expect(flatGet(typeEnv, 'x')).toBe('Object');
     });
@@ -4710,7 +4688,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -4730,7 +4708,7 @@ public class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4745,7 +4723,7 @@ fun process(data: MutableMap<String, User>) {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4760,7 +4738,7 @@ fun process(users: MutableList<User>) {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4778,7 +4756,7 @@ public class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4795,7 +4773,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -4814,7 +4792,7 @@ public class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'u')).toBe('User');
     });
 
@@ -4832,7 +4810,7 @@ public class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'r')).toBe('Repo');
     });
 
@@ -4848,7 +4826,7 @@ public class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       // obj → object from the parameter, but no pattern binding
       expect(flatGet(typeEnv, 'obj')).toBe('object');
       expect(flatSize(typeEnv)).toBe(1); // only the parameter binding
@@ -4870,7 +4848,7 @@ public class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -4889,7 +4867,7 @@ public class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       // Verify lookup works from the call site (user.Save())
       const saveCall = tree.rootNode.descendantsOfType('invocation_expression')[0];
@@ -4912,7 +4890,7 @@ class UserService {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // User[] is an array_type — extractSimpleTypeName returns undefined (no simple base name).
       // But declarationTypeNodes captures the raw AST node, so for-loop resolution
       // uses Strategy 1 (extractTsElementTypeFromAnnotation) to resolve the element type.
@@ -4928,7 +4906,7 @@ class RepoService {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'repos')).toBe('Map');
     });
   });
@@ -4949,7 +4927,7 @@ class App {
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       expect(flatGet(typeEnv, '$user')).toBe('User');
     });
 
@@ -4967,7 +4945,7 @@ class App {
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       expect(flatGet(typeEnv, '$item')).toBeUndefined();
     });
 
@@ -4995,7 +4973,7 @@ class B {
       `,
         PHP.php,
       );
-      const typeEnv = buildTypeEnv(tree, 'php');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.PHP);
       // Both $item bindings exist but may share the same key if scoped to method name
       // Conservative: just verify at least one resolves correctly
       expect(flatGet(typeEnv, '$item')).toBeDefined();
@@ -5015,7 +4993,7 @@ fn process(opt: Option<User>) {
       `,
         Rust,
       );
-      const typeEnv = buildTypeEnv(tree, 'rust');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Rust);
       // user should be typed from the first arm (Some unwrap)
       // Known limitation: binding leaks across arms (first-writer-wins)
       expect(flatGet(typeEnv, 'user')).toBe('User');
@@ -5025,7 +5003,7 @@ fn process(opt: Option<User>) {
   describe('performance optimizations — coverage for new code paths', () => {
     it('fastStripNullable: passes through simple identifier without stripping', () => {
       const tree = parse('function f(user: User) { user.save(); }', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // lookup exercises fastStripNullable — "User" has no | or ? markers
       const callNode = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('save'));
       expect(typeEnv.lookup('user', callNode)).toBe('User');
@@ -5033,14 +5011,14 @@ fn process(opt: Option<User>) {
 
     it('fastStripNullable: strips nullable union type via full stripNullable', () => {
       const tree = parse('function f(user: User | null) { user.save(); }', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const callNode = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('save'));
       expect(typeEnv.lookup('user', callNode)).toBe('User');
     });
 
     it('fastStripNullable: rejects bare nullable keyword', () => {
       const tree = parse('function f(x: null) { x.save(); }', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const callNode = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('save'));
       expect(typeEnv.lookup('x', callNode)).toBeUndefined();
     });
@@ -5056,7 +5034,7 @@ class Foo {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const callNode = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('save'));
       expect(typeEnv.lookup('user', callNode)).toBe('User');
     });
@@ -5071,7 +5049,7 @@ function f(user: User) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -5087,7 +5065,7 @@ function calculate(service: Service) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'service')).toBe('Service');
     });
   });
@@ -5101,7 +5079,7 @@ function process(x: User | null) {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // Inside the if-body, x should resolve to User (nullable stripped)
       const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
       expect(typeEnv.lookup('x', saveCall)).toBe('User');
@@ -5115,7 +5093,7 @@ function process(x: User | undefined) {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
       expect(typeEnv.lookup('x', saveCall)).toBe('User');
     });
@@ -5128,7 +5106,7 @@ function process(x: User | null) {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
       expect(typeEnv.lookup('x', saveCall)).toBe('User');
     });
@@ -5143,7 +5121,7 @@ function process(x: User | null) {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // Inside else branch, x should retain original nullable type (User via fastStripNullable)
       const fallbackCall = tree.rootNode.descendantForIndex(
         tree.rootNode.text.indexOf('x.fallback'),
@@ -5165,7 +5143,7 @@ function process(x: User | null) {
   x.other();
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // After the if-block, x should use the flat scopeEnv (User | null → User via fastStripNullable)
       const otherCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.other'));
       expect(typeEnv.lookup('x', otherCall)).toBe('User');
@@ -5179,7 +5157,7 @@ function process(x: User) {
   }
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // x is already non-nullable — no narrowing override is emitted, but lookup still works
       const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
       expect(typeEnv.lookup('x', saveCall)).toBe('User');
@@ -5196,7 +5174,7 @@ function process(x) {
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'x')).toBe('User');
     });
 
@@ -5208,7 +5186,7 @@ fun process(x: User?) {
     }
 }`;
       const tree = parse(code, Kotlin);
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.save'));
       expect(typeEnv.lookup('x', saveCall)).toBe('User');
     });
@@ -5224,7 +5202,7 @@ fun process(x: Any) {
       `,
         Kotlin,
       );
-      const typeEnv = buildTypeEnv(tree, 'kotlin');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Kotlin);
       expect(flatGet(typeEnv, 'x')).toBe('User');
     });
 
@@ -5238,7 +5216,7 @@ class App {
     }
 }`;
       const tree = parse(code, CSharp);
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       const saveCall = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf('x.Save'));
       expect(typeEnv.lookup('x', saveCall)).toBe('User');
     });
@@ -5256,7 +5234,7 @@ class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
   });
@@ -5275,7 +5253,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'a')).toBe('User');
       expect(flatGet(typeEnv, 'b')).toBe('User');
     });
@@ -5295,7 +5273,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBe('User');
       // x should NOT have a type binding (it's untyped via var)
       expect(flatGet(typeEnv, 'x')).toBeUndefined();
@@ -5314,7 +5292,7 @@ class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       expect(flatGet(typeEnv, 'a')).toBe('User');
       expect(flatGet(typeEnv, 'b')).toBe('User');
     });
@@ -5331,7 +5309,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
@@ -5351,7 +5329,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       expect(flatGet(typeEnv, 'users')).toBe('List');
       expect(flatGet(typeEnv, 'admins')).toBe('List');
       expect(flatGet(typeEnv, 'u')).toBe('User');
@@ -5372,7 +5350,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       // Find the entry for variable 'a'
       let ctorType: string | undefined;
       for (const [key, value] of typeEnv.constructorTypeMap) {
@@ -5396,7 +5374,7 @@ class App {
       `,
         Java,
       );
-      const typeEnv = buildTypeEnv(tree, 'java');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.Java);
       let found = false;
       for (const [key] of typeEnv.constructorTypeMap) {
         if (key.endsWith('\0u')) {
@@ -5419,7 +5397,7 @@ const a: Animal = new Dog();
       `,
         TypeScript.typescript,
       );
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       expect(flatGet(typeEnv, 'a')).toBe('Animal');
       let found = false;
       for (const [key] of typeEnv.constructorTypeMap) {
@@ -5442,7 +5420,7 @@ void run() {
       `,
         CPP,
       );
-      const typeEnv = buildTypeEnv(tree, 'cpp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CPlusPlus);
       let ctorType: string | undefined;
       for (const [key, value] of typeEnv.constructorTypeMap) {
         if (key.endsWith('\0a')) {
@@ -5466,7 +5444,7 @@ class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       let ctorType: string | undefined;
       for (const [key, value] of typeEnv.constructorTypeMap) {
         if (key.endsWith('\0a')) {
@@ -5489,7 +5467,7 @@ class App {
       `,
         CSharp,
       );
-      const typeEnv = buildTypeEnv(tree, 'csharp');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.CSharp);
       // d should be bound via declared type path
       expect(flatGet(typeEnv, 'd')).toBe('Dog');
       // constructorTypeMap should NOT have an entry (same type, no override needed)
@@ -5508,7 +5486,7 @@ class App {
     it('seeds imported bindings into file scope for unbound names', () => {
       // Source has no local declaration of 'config', so the imported binding wins
       const tree = parse('', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedBindings: new Map([['config', 'Config']]),
       });
       const fileScope = typeEnv.fileScope();
@@ -5518,7 +5496,7 @@ class App {
     it('local declarations take precedence over imported bindings', () => {
       // Source declares config: AppConfig — imported binding for 'config' must not overwrite it
       const tree = parse('const config: AppConfig = getConfig();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedBindings: new Map([['config', 'Config']]),
       });
       const fileScope = typeEnv.fileScope();
@@ -5528,8 +5506,8 @@ class App {
 
     it('does nothing when importedBindings is empty', () => {
       const tree = parse('const user: User = getUser();', TypeScript.typescript);
-      const typeEnvWithout = buildTypeEnv(tree, 'typescript');
-      const typeEnvWith = buildTypeEnv(tree, 'typescript', {
+      const typeEnvWithout = buildTypeEnv(tree, SupportedLanguages.TypeScript);
+      const typeEnvWith = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedBindings: new Map(),
       });
       // Both envs should produce the same file-scope content
@@ -5541,7 +5519,7 @@ class App {
 
     it('seeds multiple bindings', () => {
       const tree = parse('', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedBindings: new Map([
           ['user', 'User'],
           ['config', 'Config'],
@@ -5559,7 +5537,7 @@ function process() {
   config.validate();
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedBindings: new Map([['config', 'Config']]),
       });
 
@@ -5577,7 +5555,7 @@ function process() {
     it('seeds bindings with no conflict when local file has unrelated declarations', () => {
       // File has 'user' declared locally; 'config' comes from importedBindings
       const tree = parse('const user: User = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedBindings: new Map([['config', 'Config']]),
       });
       const fileScope = typeEnv.fileScope();
@@ -5609,7 +5587,7 @@ function process() {
       // importedReturnTypes says getConfig → WrongType — SymbolTable must win
       const symbolTable = makeSymbolTable([{ name: 'getConfig', returnType: 'Config' }]);
       const tree = parse('const c = getConfig();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         model: symbolTable,
         importedReturnTypes: new Map([['getConfig', 'WrongType']]),
       });
@@ -5621,7 +5599,7 @@ function process() {
       // SymbolTable knows nothing about getConfig
       const symbolTable = makeSymbolTable([]);
       const tree = parse('const c = getConfig();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         model: symbolTable,
         importedReturnTypes: new Map([['getConfig', 'Config']]),
       });
@@ -5636,7 +5614,7 @@ function process() {
         { name: 'process', returnType: 'Admin' },
       ]);
       const tree = parse('const r = process();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         model: symbolTable,
         importedReturnTypes: new Map([['process', 'User']]),
       });
@@ -5646,7 +5624,7 @@ function process() {
 
     it('no SymbolTable → uses cross-file return types directly', () => {
       const tree = parse('const c = getConfig();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedReturnTypes: new Map([['getConfig', 'Config']]),
       });
       expect(flatGet(typeEnv, 'c')).toBe('Config');
@@ -5656,7 +5634,7 @@ function process() {
       // SymbolTable provides the authoritative return type; cross-file entry is ignored
       const symbolTable = makeSymbolTable([{ name: 'getUser', returnType: 'User' }]);
       const tree = parse('const u = getUser();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         model: symbolTable,
         importedReturnTypes: new Map([['getUser', 'CrossFileUser']]),
       });
@@ -5666,7 +5644,7 @@ function process() {
 
     it('does nothing when importedReturnTypes is absent', () => {
       const tree = parse('const c = getConfig();', TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       // No annotation, no SymbolTable, no cross-file → no binding
       expect(flatGet(typeEnv, 'c')).toBeUndefined();
     });
@@ -5681,7 +5659,7 @@ function process() {
   c.validate();
 }`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript', {
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript, {
         importedReturnTypes: new Map([['getConfig', 'Config']]),
       });
 
@@ -5704,7 +5682,7 @@ function process() {
     it('flushes file-scope bindings into accumulator', () => {
       const code = `const user: User = getUser();\nconst count: number = 0;`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const acc = new BindingAccumulator();
 
       typeEnv.flush('/src/test.ts', acc);
@@ -5726,7 +5704,7 @@ function process() {
     it('does NOT flush function-scoped bindings into accumulator (file-scope narrowing)', () => {
       const code = `function process() {\n  const result: Response = fetch();\n}`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const acc = new BindingAccumulator();
 
       typeEnv.flush('/src/test.ts', acc);
@@ -5746,7 +5724,7 @@ function process() {
       // the primary narrowing-contract assertion for the sequential path.
       const code = `const dbClient: Database = connectDb();\nfunction handleRequest() {\n  const localRequest: Request = parseRequest();\n  const localUser: User = loadUser();\n}`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const acc = new BindingAccumulator();
 
       typeEnv.flush('/src/service.ts', acc);
@@ -5767,7 +5745,7 @@ function process() {
     it('flushes nothing for an empty TypeEnv', () => {
       const code = `// empty file`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const acc = new BindingAccumulator();
 
       typeEnv.flush('/src/empty.ts', acc);
@@ -5780,8 +5758,8 @@ function process() {
       const code2 = `const b: B = makeB();`;
       const tree1 = parse(code1, TypeScript.typescript);
       const tree2 = parse(code2, TypeScript.typescript);
-      const typeEnv1 = buildTypeEnv(tree1, 'typescript');
-      const typeEnv2 = buildTypeEnv(tree2, 'typescript');
+      const typeEnv1 = buildTypeEnv(tree1, SupportedLanguages.TypeScript);
+      const typeEnv2 = buildTypeEnv(tree2, SupportedLanguages.TypeScript);
       const acc = new BindingAccumulator();
 
       typeEnv1.flush('/src/a.ts', acc);
@@ -5795,7 +5773,7 @@ function process() {
     it('throws on second flush of the same TypeEnv (single-use)', () => {
       const code = `const x: X = makeX();`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const acc = new BindingAccumulator();
 
       typeEnv.flush('/src/a.ts', acc);
@@ -5829,7 +5807,7 @@ function internal() {
 }
 `;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const acc = new BindingAccumulator();
 
       // Real flush — exercises the narrowed FILE_SCOPE-only iteration.
@@ -5883,7 +5861,7 @@ function internal() {
 
       const code = `export const helper: WorkerInferredType = makeHelper();`;
       const tree = parse(code, TypeScript.typescript);
-      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.TypeScript);
       const acc = new BindingAccumulator();
       typeEnv.flush('src/utils.ts', acc);
       acc.finalize();

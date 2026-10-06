@@ -12,7 +12,16 @@ import os from 'os';
 import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
-import { parseTree, modify, applyEdits, ParseError, parse as parseJsonc } from 'jsonc-parser';
+import {
+  parseTree,
+  findNodeAtLocation,
+  getNodeValue,
+  modify,
+  applyEdits,
+  ParseError,
+  parse as parseJsonc,
+} from 'jsonc-parser';
+import { parse as parseToml, TomlError } from 'smol-toml';
 import { packageVersion } from '../core/package-version.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
 import {
@@ -214,7 +223,8 @@ async function mergeJsoncFile(
   filePath: string,
   keyPath: string[],
   value: unknown,
-): Promise<boolean> {
+  options?: { preserveHttpEntry?: boolean },
+): Promise<boolean | 'preserved-http'> {
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');
@@ -240,6 +250,15 @@ async function mergeJsoncFile(
   const tree = parseTree(raw, parseErrors);
 
   if (tree && tree.type === 'object' && parseErrors.length === 0) {
+    const existingNode = options?.preserveHttpEntry ? findNodeAtLocation(tree, keyPath) : undefined;
+    const existingEntry = existingNode === undefined ? undefined : getNodeValue(existingNode);
+    if (
+      existingEntry !== null &&
+      typeof existingEntry === 'object' &&
+      typeof (existingEntry as Record<string, unknown>).url === 'string'
+    ) {
+      return 'preserved-http';
+    }
     const formattingOptions = detectIndentation(raw);
     const edits = modify(raw, keyPath, value, { formattingOptions });
     const result = applyEdits(raw, edits);
@@ -306,8 +325,12 @@ async function setupCursor(result: SetupResult): Promise<void> {
 
   const { file: mcpPath, keyPath } = mcpTarget('cursor');
   try {
-    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry());
-    if (ok) {
+    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry(), {
+      preserveHttpEntry: true,
+    });
+    if (ok === 'preserved-http') {
+      result.configured.push('Cursor (existing HTTP MCP entry kept)');
+    } else if (ok) {
       result.configured.push('Cursor');
     } else {
       result.errors.push('Cursor: mcp.json is corrupt — skipping to preserve existing content');
@@ -327,8 +350,12 @@ async function setupClaudeCode(result: SetupResult): Promise<void> {
   // Claude Code stores MCP config in ~/.claude.json
   const { file: mcpPath, keyPath } = mcpTarget('claude');
   try {
-    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry());
-    if (ok) {
+    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry(), {
+      preserveHttpEntry: true,
+    });
+    if (ok === 'preserved-http') {
+      result.configured.push('Claude Code (existing HTTP MCP entry kept)');
+    } else if (ok) {
       result.configured.push('Claude Code');
     } else {
       result.errors.push(
@@ -1044,10 +1071,44 @@ async function upsertCodexConfigToml(configPath: string): Promise<void> {
   await fs.writeFile(configPath, `${nextContent.trimEnd()}\n`, 'utf-8');
 }
 
+async function codexHasHttpMcpEntry(configPath: string): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(configPath, 'utf-8');
+  } catch (err) {
+    if (isEnoent(err)) return false;
+    throw err;
+  }
+  const config = parseToml(raw);
+  const servers = config.mcp_servers;
+  if (servers === null || typeof servers !== 'object') return false;
+  const entry = (servers as Record<string, unknown>).gitnexus;
+  return (
+    entry !== null &&
+    typeof entry === 'object' &&
+    typeof (entry as Record<string, unknown>).url === 'string'
+  );
+}
+
 async function setupCodex(result: SetupResult): Promise<void> {
-  const codexDir = path.join(os.homedir(), '.codex');
-  if (!(await dirExists(codexDir))) {
+  const configPath = getEditorTargets().codex.configFile;
+  const codexDir = path.dirname(configPath);
+  if (!process.env.CODEX_HOME && !(await dirExists(codexDir))) {
     result.skipped.push('Codex (not installed)');
+    return;
+  }
+
+  try {
+    if (await codexHasHttpMcpEntry(configPath)) {
+      result.configured.push('Codex (existing HTTP MCP entry kept)');
+      return;
+    }
+  } catch (err) {
+    result.errors.push(
+      err instanceof TomlError
+        ? `Codex: invalid config.toml (line ${err.line}, column ${err.column}); MCP entry unchanged`
+        : `Codex: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return;
   }
 
@@ -1064,9 +1125,8 @@ async function setupCodex(result: SetupResult): Promise<void> {
   }
 
   try {
-    const configPath = getEditorTargets().codex.configFile;
     await upsertCodexConfigToml(configPath);
-    result.configured.push('Codex (MCP added to ~/.codex/config.toml)');
+    result.configured.push('Codex (MCP added to active config.toml)');
   } catch (err: any) {
     result.errors.push(`Codex: ${err.message}`);
   }
@@ -1265,7 +1325,7 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
  * Install global Codex skills to ~/.agents/skills/gitnexus/
  */
 async function installCodexSkills(result: SetupResult): Promise<void> {
-  const codexDir = path.join(os.homedir(), '.codex');
+  const codexDir = path.dirname(getEditorTargets().codex.configFile);
   if (!(await dirExists(codexDir))) return;
 
   const skillsDir = skillTarget('codex').dir;

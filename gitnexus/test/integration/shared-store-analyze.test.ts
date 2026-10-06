@@ -186,9 +186,9 @@ describe('shared sibling store analyze (#3352)', () => {
     const conn = new lbug.Connection(db);
     let rows: { p: string }[];
     try {
-      rows = (await (
-        await conn.query('MATCH (f:File) RETURN f.filePath AS p ORDER BY p')
-      ).getAll()) as { p: string }[];
+      const result = await conn.query('MATCH (f:File) RETURN f.filePath AS p ORDER BY p');
+      if (Array.isArray(result)) throw new Error('Expected a single query result');
+      rows = (await result.getAll()) as { p: string }[];
     } finally {
       await conn.close();
       await db.close();

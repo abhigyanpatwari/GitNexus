@@ -189,7 +189,7 @@ function handler(req: { body: string; query: string }) {
     expect(new Set(tainted.map((t) => t.id)).size).toBe(2);
     const variables = tainted.map((t) => {
       const d = decodeTaintPath(t.reason);
-      if (!d.ok) throw new Error(d.error);
+      if (d.ok === false) throw new Error(d.error);
       return d.hops[d.hops.length - 1].variable;
     });
     expect(variables.sort()).toEqual(['a', 'b']);

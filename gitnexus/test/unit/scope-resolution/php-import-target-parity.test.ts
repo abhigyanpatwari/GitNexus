@@ -323,10 +323,14 @@ function parsedFilesFor(testCase: Case): readonly ParsedFile[] {
     (filePath) =>
       ({
         filePath,
+        moduleScope: `scope:${filePath}#module`,
+        scopes: [],
+        parsedImports: [],
+        referenceSites: [],
         localDefs: (testCase.defs?.get(filePath) ?? []).map(([type, name]) =>
           definition(filePath, type, name),
         ),
-      }) as ParsedFile,
+      }) satisfies ParsedFile,
   );
 }
 

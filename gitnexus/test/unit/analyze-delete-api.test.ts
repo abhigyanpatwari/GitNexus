@@ -152,7 +152,11 @@ const invokeDelete = (route: string, jobId: string): { statusCode: number; body:
       return this;
     },
   };
-  handler({ params: { jobId } }, res);
+  handler(
+    { params: { jobId } } as unknown as express.Request,
+    res as unknown as express.Response,
+    vi.fn(),
+  );
   return res;
 };
 

@@ -127,7 +127,7 @@ describe('Tool handler and process linking phases', () => {
 
     await processesPhase.execute(
       makeCtx(graph),
-      new Map([
+      new Map<string, PhaseResult<unknown>>([
         ['structure', phaseResult('structure', { totalFiles: 1 })],
         ['communities', phaseResult('communities', { communityResult: { memberships: [] } })],
         ['routes', phaseResult('routes', { routeRegistry: new Map() })],

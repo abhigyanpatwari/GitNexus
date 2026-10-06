@@ -122,6 +122,8 @@ describe('pool-adapter evict-then-reopen race (fire-and-forget close fix)', () =
 
     vi.mocked(createLbugDatabase).mockImplementationOnce(() => ({
       init: vi.fn().mockResolvedValue(undefined),
+      initSync: vi.fn(),
+      closeSync: vi.fn(),
       close: vi.fn().mockImplementation(async () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
         order.push('repo1-close-end');
@@ -155,6 +157,8 @@ describe('pool-adapter evict-then-reopen race (fire-and-forget close fix)', () =
 
     vi.mocked(createLbugDatabase).mockImplementationOnce(() => ({
       init: vi.fn().mockResolvedValue(undefined),
+      initSync: vi.fn(),
+      closeSync: vi.fn(),
       close: vi.fn().mockImplementation(async () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
         order.push('close-end');

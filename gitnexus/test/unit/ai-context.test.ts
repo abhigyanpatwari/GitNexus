@@ -1667,7 +1667,7 @@ describe('count-only reindex does not churn the committed block (#2907)', () => 
 
 describe('--no-stats drops the per-cluster symbol counts too (#2907)', () => {
   const stats = { nodes: 10, edges: 20, processes: 3 };
-  const skills = [{ label: 'ingestion', name: 'p-ingestion', symbolCount: 120 }];
+  const skills = [{ label: 'ingestion', name: 'p-ingestion', symbolCount: 120, fileCount: 10 }];
 
   it('omits the count under --no-stats and keeps it otherwise', () => {
     const lean = generateGitNexusContent('P', stats, { generatedSkills: skills, noStats: true });

@@ -11,7 +11,8 @@ import path from 'path';
 import os from 'os';
 import { generateSkillFiles } from '../../src/cli/skill-gen.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { GraphNode, GraphRelationship, KnowledgeGraph } from '../../src/core/graph/types.js';
+import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
+import type { KnowledgeGraph } from '../../src/core/graph/types.js';
 import type {
   CommunityNode,
   CommunityMembership,
@@ -125,6 +126,15 @@ function buildPipelineResult(opts: {
               ? opts.processes.reduce((s, p) => s + p.stepCount, 0) / opts.processes.length
               : 0,
           entryPointsFound: 0,
+          truncation: {
+            truncated: false,
+            entryPointCandidatesDropped: 0,
+            entryPointsUnexplored: 0,
+            walksCutByBudget: 0,
+            tracesDepthCapped: 0,
+            calleesDropped: 0,
+            processesDropped: 0,
+          },
         },
       }
     : undefined;
@@ -135,6 +145,11 @@ function buildPipelineResult(opts: {
     totalFileCount: 0,
     communityResult,
     processResult,
+    resolutionOutcomes: [],
+    usedWorkerPool: false,
+    reparsedFileCount: 0,
+    scopeExtractionFailures: [],
+    unavailableScopeLanguageFiles: 0,
   };
 }
 
@@ -627,6 +642,11 @@ describe('generateSkillFiles — return values', () => {
         stats: { totalCommunities: 1, modularity: 0.5, nodesProcessed: 4 },
       },
       processResult: undefined,
+      resolutionOutcomes: [],
+      usedWorkerPool: false,
+      reparsedFileCount: 0,
+      scopeExtractionFailures: [],
+      unavailableScopeLanguageFiles: 0,
     };
 
     const result = await generateSkillFiles(tmpDir, 'TestProject', pipeline);

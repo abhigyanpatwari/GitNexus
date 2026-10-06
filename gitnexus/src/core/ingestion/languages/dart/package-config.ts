@@ -39,6 +39,11 @@ export interface DartPackageConfigOptions {
    * is listed and before its entries are opened.
    */
   readonly beforeEntryOpen?: (relativePath: string) => void | Promise<void>;
+  /**
+   * Test seam. Production calls omit it. Invoked after the directory is
+   * opened and before it is listed.
+   */
+  readonly beforeDirectoryList?: (relativePath: string) => void | Promise<void>;
 }
 
 type ManifestRead =
@@ -123,12 +128,13 @@ function directoryIdentity(stat: BigIntStats): string {
 
 /**
  * Path that lists the directory inode already open on `fd`.
- * Linux uses `/proc/self/fd/N` and macOS uses `/dev/fd/N`.
- * Other platforms have no such path; callers refuse instead of listing by name.
+ * Only Linux has one: `/proc/self/fd/N`. macOS refuses `opendir` on
+ * `/dev/fd/N` for a directory (ENOTDIR) and Node has no `fdopendir`, so the
+ * walker lists the lexical path and verifies the pinned chain around it.
+ * Every other platform returns null and is not walked.
  */
 export function descriptorDirectoryPath(fd: number): string | null {
   if (process.platform === 'linux') return `/proc/self/fd/${fd}`;
-  if (process.platform === 'darwin') return `/dev/fd/${fd}`;
   return null;
 }
 
@@ -264,11 +270,33 @@ async function openChildFile(
   throw Object.assign(new Error('no descriptor anchor'), { code: 'ENOTSUP' });
 }
 
-async function listOpenedDirectory(handle: FileHandle, entryLimit: number): Promise<Dirent[]> {
-  const listing = descriptorDirectoryPath(handle.fd);
-  if (listing === null) {
+/**
+ * List the directory open on the last frame of `frames`. Linux lists the
+ * pinned inode through its descriptor. macOS re-checks the pinned chain, lists
+ * the lexical path, then re-checks the chain, so a path replaced around the
+ * listing fails the walk instead of being listed.
+ */
+async function listOpenedDirectory(
+  frames: readonly WalkFrame[],
+  entryLimit: number,
+  beforeList?: () => void | Promise<void>,
+): Promise<Dirent[]> {
+  const frame = frames[frames.length - 1];
+  if (frame === undefined) {
+    throw Object.assign(new Error('no directory to list'), { code: 'EINVAL' });
+  }
+  const anchored = descriptorDirectoryPath(frame.handle.fd);
+  if (anchored === null && process.platform !== 'darwin') {
     throw Object.assign(new Error('no descriptor listing'), { code: 'ENOTSUP' });
   }
+  if (anchored === null) await assertPinnedChain(frames);
+  if (beforeList) await beforeList();
+  const entries = await readDirectoryBounded(anchored ?? frame.absolute, entryLimit);
+  if (anchored === null) await assertPinnedChain(frames);
+  return entries;
+}
+
+async function readDirectoryBounded(listing: string, entryLimit: number): Promise<Dirent[]> {
   const dir = await opendir(listing);
   const entries: Dirent[] = [];
   try {
@@ -295,8 +323,16 @@ async function listOpenedDirectory(handle: FileHandle, entryLimit: number): Prom
  */
 export async function readDirectoryNoFollow(directory: string): Promise<Dirent[]> {
   const opened = await openVerifiedDirectory(directory);
+  const frame: WalkFrame = {
+    relative: '',
+    absolute: directory,
+    handle: opened.handle,
+    identity: opened.identity,
+    entries: [],
+    next: 0,
+  };
   try {
-    return await listOpenedDirectory(opened.handle, DART_PUBSPEC_DIRECTORY_ENTRY_LIMIT);
+    return await listOpenedDirectory([frame], DART_PUBSPEC_DIRECTORY_ENTRY_LIMIT);
   } finally {
     await opened.handle.close();
   }
@@ -345,7 +381,12 @@ export async function loadDartPackageConfig(
   const fillFrame = async (frame: WalkFrame): Promise<void> => {
     if (++visited > directoryLimit) return incomplete('directory-limit', frame.relative || '.');
     try {
-      frame.entries = await listOpenedDirectory(frame.handle, directoryEntryLimit);
+      const beforeList = options?.beforeDirectoryList;
+      frame.entries = await listOpenedDirectory(
+        stack,
+        directoryEntryLimit,
+        beforeList ? () => beforeList(frame.relative) : undefined,
+      );
     } catch (error) {
       const reason =
         (error as NodeJS.ErrnoException).code === 'E2BIG' ? 'directory-entries' : 'read-directory';

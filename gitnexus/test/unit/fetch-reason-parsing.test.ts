@@ -84,7 +84,8 @@ describe('fetch reason field parsing', () => {
 
 describe('confidence derivation from fetchCount', () => {
   it('high confidence when fetchCount is undefined (single fetch)', () => {
-    const isMultiFetch = (undefined ?? 1) > 1;
+    const fetchCount: number | undefined = undefined;
+    const isMultiFetch = (fetchCount ?? 1) > 1;
     expect(isMultiFetch).toBe(false);
   });
 

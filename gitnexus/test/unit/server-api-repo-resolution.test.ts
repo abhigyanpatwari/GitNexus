@@ -142,7 +142,7 @@ describe('resolveOmittedRepoSelection', () => {
     const second = entry({ name: 'beta', path: '/tmp/beta', storagePath: '/tmp/beta/.gitnexus' });
     const result = resolveOmittedRepoSelection([first, second]);
     expect(result.ok).toBe(false);
-    if (result.ok) return;
+    if (result.ok !== false) throw new Error('expected ambiguous repository selection');
     expect(result.status).toBe(400);
     expect(result.error).toMatch(/Multiple repositories indexed/);
     expect(result.error).toContain('alpha');

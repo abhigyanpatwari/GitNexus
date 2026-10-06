@@ -490,6 +490,7 @@ describe('U4 (#2085 M5) — emitFileCdg', () => {
     const unsound: FunctionCfg = {
       filePath: 'spin.ts',
       functionStartLine: 1,
+      functionEndLine: 4,
       functionStartColumn: 0,
       entryIndex: 0,
       exitIndex: 3,

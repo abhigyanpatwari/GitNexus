@@ -92,7 +92,7 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
     await tmpHandle.cleanup();
   });
 
-  it.each(['all', 'Function'] as const)(
+  it.for(['all', 'Function'] as const)(
     'a warm session repairs missing %s indexes without restarting',
     { timeout: 60_000 },
     async (missing, ctx) => {

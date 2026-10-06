@@ -98,6 +98,7 @@ function indexes(scopes: readonly Scope[]): ScopeResolutionIndexes {
       unresolvedEdges: 0,
       sccCount: 1,
       largestSccSize: 1,
+      ambiguousWildcardExports: [],
     },
   };
 }
@@ -115,8 +116,8 @@ function operand(name: string, line: number): CallableFlowOperand {
 
 function runReverseChain(length: number) {
   const moduleBindings = new Map<string, readonly BindingRef[]>([
-    ['target', [{ def: targetDef }]],
-    ['entry', [{ def: entryDef }]],
+    ['target', [{ def: targetDef, origin: 'local' }]],
+    ['entry', [{ def: entryDef, origin: 'local' }]],
   ]);
   const scopes = [
     scope(MODULE, null, 'Module', [targetDef, entryDef], moduleBindings),

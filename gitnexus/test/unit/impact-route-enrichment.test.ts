@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const executeParameterizedMock = vi.fn();
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return {
     ...(actual as object),
     initLbug: vi.fn(),
@@ -22,7 +22,7 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
   };
 });
 vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/mcp/core/lbug-adapter.js')>();
   return {
     ...(actual as object),
     initLbug: vi.fn(),
@@ -33,7 +33,7 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
   };
 });
 
-import { LocalBackend } from '../../src/mcp/local/local-backend';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 const REPO = {
   id: 'repo',
@@ -80,7 +80,10 @@ async function runImpact(routeRows: readonly RouteRow[], routeQueryFails = false
         : [];
     }
     if (query.includes('STEP_IN_PROCESS') || query.includes('MEMBER_OF')) return [];
-    return [{ id: 'svc', name: 'UnfinalizeRound', filePath: 'svc.go', type: 'Method' }];
+    if (query.includes('n.id AS id')) {
+      return [{ id: 'svc', name: 'UnfinalizeRound', filePath: 'svc.go', type: 'Method' }];
+    }
+    return [];
   });
 
   const backend = new LocalBackend();

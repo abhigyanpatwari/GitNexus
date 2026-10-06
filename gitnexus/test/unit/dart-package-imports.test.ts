@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { constants } from 'node:fs';
 import {
   mkdtemp,
@@ -463,47 +463,52 @@ describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => 
     },
   );
 
-  it('does not follow a listed directory replaced by a symlink on macOS', async () => {
-    if (process.platform !== 'darwin') return;
-    const outside = await fixture({
-      'pubspec.yaml': 'name: foreign',
-      'nested/pubspec.yaml': 'name: foreign',
-    });
-    const root = await fixture({
-      'pkg/pubspec.yaml': 'name: data',
-      'pkg/nested/pubspec.yaml': 'name: nested_data',
-    });
-    const pkg = path.join(root, 'pkg');
-    await expect(
-      loadDartPackageConfig(root, {
-        beforeEntryOpen: async (relative) => {
-          if (relative !== 'pkg') return;
-          await rename(pkg, path.join(root, 'pkg-moved'));
-          await symlink(outside, pkg, 'dir');
-        },
-      }),
-    ).rejects.toThrow(/Dart pubspec discovery failed \((read-directory|read-pubspec)\)/);
-  });
+  it.skipIf(process.platform !== 'darwin')(
+    'does not follow a listed directory replaced by a symlink on macOS',
+    async () => {
+      const outside = await fixture({
+        'pubspec.yaml': 'name: foreign',
+        'nested/pubspec.yaml': 'name: foreign',
+      });
+      const root = await fixture({
+        'pkg/pubspec.yaml': 'name: data',
+        'pkg/nested/pubspec.yaml': 'name: nested_data',
+      });
+      const pkg = path.join(root, 'pkg');
+      await expect(
+        loadDartPackageConfig(root, {
+          beforeEntryOpen: async (relative) => {
+            if (relative !== 'pkg') return;
+            await rename(pkg, path.join(root, 'pkg-moved'));
+            await symlink(outside, pkg, 'dir');
+          },
+        }),
+      ).rejects.toThrow(/Dart pubspec discovery failed \((read-directory|read-pubspec)\)/);
+    },
+  );
 
-  it('reads listed manifests from the opened directory inode after that path is replaced', async () => {
-    if (descriptorEntryPath(0, 'pubspec.yaml') === null) return;
-    const outside = await fixture({
-      'pubspec.yaml': 'name: foreign',
-      'nested/pubspec.yaml': 'name: foreign',
-    });
+  // Linux lists the opened inode through /proc/self/fd/N. macOS cannot list a
+  // descriptor (opendir on /dev/fd/N is ENOTDIR), so it lists the path and
+  // re-checks the pinned chain afterwards; the swap must fail that check.
+  it('lists the opened directory, or refuses, when its path is replaced before listing', async () => {
+    const outside = await fixture({ 'pubspec.yaml': 'name: foreign' });
     const root = await fixture({
       'pkg/pubspec.yaml': 'name: data',
       'pkg/nested/pubspec.yaml': 'name: nested_data',
     });
     const pkg = path.join(root, 'pkg');
-    const loaded = await loadDartPackageConfig(root, {
-      beforeEntryOpen: async (relative) => {
+    const load = loadDartPackageConfig(root, {
+      beforeDirectoryList: async (relative) => {
         if (relative !== 'pkg') return;
         await rename(pkg, path.join(root, 'pkg-moved'));
         await symlink(outside, pkg, 'dir');
       },
     });
-    expect(loaded.packages).toEqual(
+    if (process.platform === 'darwin') {
+      await expect(load).rejects.toThrow('Dart pubspec discovery failed (read-directory): pkg');
+      return;
+    }
+    expect((await load).packages).toEqual(
       new Map([
         ['data', 'pkg/lib'],
         ['nested_data', 'pkg/nested/lib'],
@@ -511,26 +516,55 @@ describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => 
     );
   });
 
-  it('lists the opened directory inode after its path becomes a symlink', async () => {
-    const listingRoot = descriptorDirectoryPath(0);
-    if (listingRoot === null) return;
-    const outside = await fixture({ 'outside.txt': 'out' });
-    const root = await fixture({});
-    const real = path.join(root, 'real');
-    await mkdir(real);
-    await writeFile(path.join(real, 'inside.txt'), 'in');
-    const handle = await open(real, directoryOpenFlags());
-    try {
-      const listed = descriptorDirectoryPath(handle.fd);
-      if (listed === null) throw new Error('descriptor listing path missing');
-      await rename(real, path.join(root, 'real-moved'));
-      await symlink(outside, real, process.platform === 'win32' ? 'junction' : 'dir');
-      await expect(readDirectoryNoFollow(real)).rejects.toThrow();
-      expect(await readdir(listed)).toEqual(['inside.txt']);
-    } finally {
-      await handle.close();
-    }
-  });
+  it.skipIf(descriptorEntryPath(0, 'pubspec.yaml') === null)(
+    'reads listed manifests from the opened directory inode after that path is replaced',
+    async () => {
+      const outside = await fixture({
+        'pubspec.yaml': 'name: foreign',
+        'nested/pubspec.yaml': 'name: foreign',
+      });
+      const root = await fixture({
+        'pkg/pubspec.yaml': 'name: data',
+        'pkg/nested/pubspec.yaml': 'name: nested_data',
+      });
+      const pkg = path.join(root, 'pkg');
+      const loaded = await loadDartPackageConfig(root, {
+        beforeEntryOpen: async (relative) => {
+          if (relative !== 'pkg') return;
+          await rename(pkg, path.join(root, 'pkg-moved'));
+          await symlink(outside, pkg, 'dir');
+        },
+      });
+      expect(loaded.packages).toEqual(
+        new Map([
+          ['data', 'pkg/lib'],
+          ['nested_data', 'pkg/nested/lib'],
+        ]),
+      );
+    },
+  );
+
+  it.skipIf(descriptorDirectoryPath(0) === null)(
+    'lists the opened directory inode after its path becomes a symlink',
+    async () => {
+      const outside = await fixture({ 'outside.txt': 'out' });
+      const root = await fixture({});
+      const real = path.join(root, 'real');
+      await mkdir(real);
+      await writeFile(path.join(real, 'inside.txt'), 'in');
+      const handle = await open(real, directoryOpenFlags());
+      try {
+        const listed = descriptorDirectoryPath(handle.fd);
+        if (listed === null) throw new Error('descriptor listing path missing');
+        await rename(real, path.join(root, 'real-moved'));
+        await symlink(outside, real, process.platform === 'win32' ? 'junction' : 'dir');
+        await expect(readDirectoryNoFollow(real)).rejects.toThrow();
+        expect(await readdir(listed)).toEqual(['inside.txt']);
+      } finally {
+        await handle.close();
+      }
+    },
+  );
 });
 
 describe('directory symlink refusal', () => {
@@ -549,13 +583,18 @@ describe('directory symlink refusal', () => {
     await expect(readDirectoryNoFollow(link)).rejects.toThrow();
   });
 
-  it.skipIf(pubspecWalkAnchored())(
-    'does not discover packages when the walk cannot honor no-follow',
-    async () => {
-      const root = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-dart-pubspec-'));
-      roots.push(root);
-      await writeFile(path.join(root, 'pubspec.yaml'), 'name: app\n');
+  it('does not discover packages when the walk cannot honor no-follow', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-dart-pubspec-'));
+    roots.push(root);
+    await writeFile(path.join(root, 'pubspec.yaml'), 'name: app\n');
+    // Exercise the unsupported-platform branch on every host. The real
+    // capability check must refuse before attempting any directory walk.
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    try {
+      expect(pubspecWalkAnchored()).toBe(false);
       expect((await loadDartPackageConfig(root)).packages.size).toBe(0);
-    },
-  );
+    } finally {
+      platform.mockRestore();
+    }
+  });
 });

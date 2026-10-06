@@ -13,7 +13,7 @@ const fswCtx = vi.hoisted(() => ({
 
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
-  const d = actual.default;
+  const d = actual;
   fswCtx.realWrite = d.writeFile.bind(d);
   fswCtx.writeFileMock.mockImplementation((...args) => fswCtx.realWrite!(...args));
   return {

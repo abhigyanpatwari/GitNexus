@@ -130,7 +130,11 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
     const logs: string[] = [];
 
     rmCtx.adoptMock.mockRejectedValueOnce(new Error('mock adopt failure'));
-    const first = await runFullAnalysis(tmpRepo.dbPath, {}, { onLog: (m) => logs.push(m) });
+    const first = await runFullAnalysis(
+      tmpRepo.dbPath,
+      {},
+      { onProgress: () => {}, onLog: (m) => logs.push(m) },
+    );
 
     expect(first.alreadyUpToDate).toBe(true);
     expect(logs.some((m) => m.includes('could not restamp the workspace branch label'))).toBe(true);
@@ -140,7 +144,7 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
     await expect(fs.access(branchMetaDir)).resolves.toBeUndefined();
 
     // …and the next same-commit run retries and completes the whole sync.
-    const second = await runFullAnalysis(tmpRepo.dbPath, {}, {});
+    const second = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
     expect(second.alreadyUpToDate).toBe(true);
     const healed = await loadMeta(flatStorage);
     expect(healed?.branch).toBe('feature/x');
@@ -152,7 +156,7 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
     rmCtx.adoptMock.mockClear();
     rmCtx.saveMetaMock.mockClear();
 
-    const result = await runFullAnalysis(tmpRepo.dbPath, {}, {});
+    const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
 
     expect(result.alreadyUpToDate).toBe(true);
     expect(rmCtx.adoptMock).toHaveBeenCalledTimes(1);
@@ -171,7 +175,11 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
       const logs: string[] = [];
 
       rmCtx.saveMetaMock.mockRejectedValueOnce(Object.assign(new Error('mock ro'), { code }));
-      const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onLog: (m) => logs.push(m) });
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        {},
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
 
       expect(result.alreadyUpToDate).toBe(true);
       expect(logs.some((m) => m.includes('read-only') && m.includes('#1549'))).toBe(true);
@@ -187,7 +195,7 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
       Object.assign(new Error('mock read-only storage'), { code: 'EROFS' }),
     );
 
-    const result = await runFullAnalysis(tmpRepo.dbPath, {}, {});
+    const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
 
     expect(result.alreadyUpToDate).toBe(true);
     expect(rmCtx.writableMock).not.toHaveBeenCalled();
@@ -199,7 +207,9 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
     const readOnly = Object.assign(new Error('mock read-only storage'), { code: 'EROFS' });
     rmCtx.writableMock.mockRejectedValueOnce(readOnly);
 
-    await expect(runFullAnalysis(tmpRepo.dbPath, {}, {})).rejects.toBe(readOnly);
+    await expect(runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} })).rejects.toBe(
+      readOnly,
+    );
     expect(rmCtx.writableMock).toHaveBeenCalledWith(flatStorage);
   });
 });

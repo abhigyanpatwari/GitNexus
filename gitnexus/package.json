@@ -52,12 +52,14 @@
     "serve": "tsx src/cli/index.ts serve",
     "dev": "tsx watch src/cli/index.ts",
     "test": "vitest run",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
     "test:unit": "vitest run test/unit",
     "pretest:integration": "node scripts/build.js",
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
+    "test:benchmarks": "node --import tsx scripts/run-benchmarks.ts",
     "postinstall": "node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
@@ -126,11 +128,11 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.0.0",
     "@types/proxy-addr": "^2.0.3",
-    "@vitest/coverage-v8": "^4.0.18",
+    "@vitest/coverage-v8": "^5.0.0",
     "gitnexus-shared": "file:../gitnexus-shared",
     "tsx": "^4.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^4.0.18"
+    "vitest": "^5.0.0"
   },
   "overrides": {
     "adm-zip": ">=0.6.0",

@@ -413,6 +413,7 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
 });
 
 interface PropNode {
+  readonly id: string;
   readonly label: string;
   readonly properties: Record<string, unknown>;
 }

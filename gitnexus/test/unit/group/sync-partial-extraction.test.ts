@@ -54,10 +54,12 @@ const grpcExtract = vi.fn();
 // Bound through an arrow so the test body can read its calls: which repos the
 // deferred manifest phase re-opens is the observable side of dropping a failed
 // repo's handle, and a `vi.fn()` created inside the factory is unreachable here.
-const initLbugMock = vi.fn(async () => {});
+const initLbugMock = vi.fn<typeof import('../../../src/core/lbug/pool-adapter.js').initLbug>(
+  async () => true,
+);
 
 vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
-  initLbug: (...args: unknown[]) => initLbugMock(...args),
+  initLbug: initLbugMock,
   executeParameterized: vi.fn(async () => []),
   pinRepo: vi.fn(() => () => {}),
   getMaxResidentRepos: vi.fn(() => 5),

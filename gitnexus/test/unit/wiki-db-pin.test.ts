@@ -84,6 +84,8 @@ describe('WikiGenerator DB pinning', () => {
         model: 'test-model',
         baseUrl: 'http://127.0.0.1:1/v1',
         apiKey: 'test',
+        maxTokens: 1024,
+        temperature: 0,
       },
       { force: true, reviewOnly: true },
     );

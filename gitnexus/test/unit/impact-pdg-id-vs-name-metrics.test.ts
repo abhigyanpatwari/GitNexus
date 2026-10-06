@@ -9,7 +9,6 @@
 // `node --import tsx bench/impact-pdg/name-collision.mjs`, never in `npm test`.
 
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — .mjs pure-JS module, no types; intentional (build-free harness).
 import * as M from '../../bench/impact-pdg/name-collision.mjs';
 
 interface ReachedItem {

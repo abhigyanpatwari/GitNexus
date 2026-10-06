@@ -323,7 +323,12 @@ function callableTargetQualifiedNames(
 ): string[] {
   return getRelationships(result, 'CALLS')
     .filter((edge) => edge.source === source && edge.rel.reason === 'callable-value-flow')
-    .map((edge) => result.graph.getNode(edge.rel.targetId)?.properties.qualifiedName ?? edge.target)
+    .map((edge) => {
+      const qualifiedName = result.graph.getNode(edge.rel.targetId)?.properties.qualifiedName;
+      if (qualifiedName == null) return edge.target;
+      if (typeof qualifiedName !== 'string') throw new Error('Expected a string qualified name');
+      return qualifiedName;
+    })
     .sort();
 }
 
@@ -347,7 +352,10 @@ describe('callable value flow', () => {
   it('does not overstate Objective-C callable-value-flow coverage', () => {
     expect(CALLABLE_FLOW_PROVIDER_COVERAGE[SupportedLanguages.ObjectiveC]).toBe('not-applicable');
     expect(
-      PROVIDER_FLOW_CASES.some(({ language }) => language === SupportedLanguages.ObjectiveC),
+      PROVIDER_FLOW_CASES.some(
+        ({ language }: { language: SupportedLanguages }) =>
+          language === SupportedLanguages.ObjectiveC,
+      ),
     ).toBe(false);
   });
 

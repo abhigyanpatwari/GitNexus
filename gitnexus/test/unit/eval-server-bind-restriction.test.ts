@@ -22,7 +22,7 @@ describe('isEvalServerBindRestriction', () => {
       ['Error: listen EADDRNOTAVAIL: address not available 192.168.1.99:0'],
       ['something then bind EACCES: permission denied'],
       ['LISTEN EACCES: permission denied'],
-    ])('matches %p', (stderr) => {
+    ])('matches %s', (stderr) => {
       expect(isEvalServerBindRestriction(stderr)).toBe(true);
     });
   });
@@ -35,7 +35,7 @@ describe('isEvalServerBindRestriction', () => {
       ['GITNEXUS_EVAL_SERVER_READY:127.0.0.1:5173'],
       [''],
       ['unknown option --host'],
-    ])('does not match %p', (stderr) => {
+    ])('does not match %s', (stderr) => {
       expect(isEvalServerBindRestriction(stderr)).toBe(false);
     });
   });

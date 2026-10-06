@@ -216,10 +216,11 @@ describe('pythonMissingReceiverSubtypeDecision', () => {
 
   it('declines class receivers without suppressing their ordinary resolution path', () => {
     expect(
-      pythonMissingReceiverSubtypeDecision(
-        { ...selfType, source: 'cls' },
-        { receiverBindingIsStatic: true, memberName: 'hook', callArity: 0 },
-      ),
+      pythonMissingReceiverSubtypeDecision(selfType, {
+        receiverBindingIsStatic: true,
+        memberName: 'hook',
+        callArity: 0,
+      }),
     ).toBe(false);
   });
 });

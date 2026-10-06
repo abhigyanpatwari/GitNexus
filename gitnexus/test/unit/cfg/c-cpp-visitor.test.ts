@@ -1,3 +1,4 @@
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { requireVendoredGrammar } from '../../../src/core/tree-sitter/vendored-grammars.js';

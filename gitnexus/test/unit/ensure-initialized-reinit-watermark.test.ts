@@ -29,7 +29,7 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   };
 });
 
-import { LocalBackend } from '../../src/mcp/local/local-backend';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 describe('ensureInitialized reinit watermark (tri-review NEW-7)', () => {
   const poolKey = '/tmp/nonexistent-repo/.gitnexus/lbug';

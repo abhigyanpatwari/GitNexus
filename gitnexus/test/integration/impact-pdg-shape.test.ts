@@ -279,6 +279,7 @@ withTestLbugDB(
         const result = await downstream();
         const localRisk = String(result.risk);
         expect(localRisk).toBe('UNKNOWN');
+        if (localRisk !== 'UNKNOWN') throw new Error(`Expected UNKNOWN risk, got ${localRisk}`);
         // No cross-repo hits → mergeRisk returns localRisk verbatim: 'UNKNOWN',
         // NEVER coerced to a confident 'LOW' (the false-safe this guards).
         expect(mergeRisk(localRisk, [])).toBe('UNKNOWN');

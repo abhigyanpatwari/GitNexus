@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { emitTsScopeCaptures } from '../../../src/core/ingestion/languages/typescript/captures.js';
 import { emitJsScopeCaptures } from '../../../src/core/ingestion/languages/javascript/captures.js';
 import { extract } from '../../../src/core/ingestion/scope-extractor.js';
-import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
+import { typescriptProvider } from '../../../src/core/ingestion/languages/typescript.js';
 
 type Emit = typeof emitTsScopeCaptures;
 
@@ -309,7 +309,7 @@ describe('SymbolDefinition.isExported through the extractor', () => {
     const esm = extract(
       emitTsScopeCaptures('export function a() {}\nfunction b() {}\n', 'x.ts'),
       'x.ts',
-      typescriptScopeResolver,
+      typescriptProvider,
     );
     const byName = new Map(esm.localDefs.map((d) => [d.qualifiedName, d.isExported]));
     expect(byName.get('a')).toBe(true);
@@ -317,7 +317,7 @@ describe('SymbolDefinition.isExported through the extractor', () => {
     const cjs = extract(
       emitTsScopeCaptures('function a() {}\nmodule.exports = a;\n', 'y.ts'),
       'y.ts',
-      typescriptScopeResolver,
+      typescriptProvider,
     );
     expect(cjs.localDefs.find((d) => d.qualifiedName === 'a')?.isExported).toBeUndefined();
     expect('isExported' in cjs.localDefs.find((d) => d.qualifiedName === 'a')!).toBe(false);

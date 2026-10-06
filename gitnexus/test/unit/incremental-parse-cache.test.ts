@@ -26,10 +26,8 @@ const minimalResult = (overrides: Partial<ParseWorkerResult> = {}): ParseWorkerR
   nodes: [],
   relationships: [],
   symbols: [],
-  imports: [],
   calls: [],
   assignments: [],
-  heritage: [],
   routes: [],
   fetchCalls: [],
   fetchWrapperDefs: [],
@@ -897,15 +895,12 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
         ['k2', 'v2'],
       ]);
       const innerSet = new Set<string>(['s1', 's2']);
-      const fake = minimalResult({
-        fileCount: 9,
-        imports: [
-          {
-            typeBindings: innerMap,
-            extras: innerSet,
-          } as unknown as ParseWorkerResult['imports'][number],
-        ],
-      });
+      // Exercise opaque structured-clone data without relying on a removed
+      // worker field (ParsedFiles intentionally live in a separate store).
+      const fake = {
+        ...minimalResult({ fileCount: 9 }),
+        serializationProbe: { typeBindings: innerMap, extras: innerSet },
+      };
       const key = 'f'.repeat(64);
       const cache: ParseCache = {
         version: PARSE_CACHE_VERSION,
@@ -920,17 +915,29 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       expect(names.some((n) => n.endsWith('.json') && n !== 'index.json')).toBe(false);
       const loaded = await loadParseCacheChunk(cache, key);
       expect(loaded?.[0]?.fileCount).toBe(9);
-      const smuggled = loaded?.[0]?.imports[0] as unknown as {
-        typeBindings?: unknown;
-        extras?: unknown;
-      };
+      const restored = loaded?.[0];
+      if (!restored || !('serializationProbe' in restored)) {
+        throw new Error('Missing serialized probe');
+      }
+      const smuggled = restored.serializationProbe;
+      if (
+        typeof smuggled !== 'object' ||
+        smuggled === null ||
+        !('typeBindings' in smuggled) ||
+        !('extras' in smuggled)
+      ) {
+        throw new Error('Invalid serialized probe');
+      }
       expect(smuggled.typeBindings).toBeInstanceOf(Map);
-      expect([...(smuggled.typeBindings as Map<string, string>)]).toEqual([
+      expect(smuggled.extras).toBeInstanceOf(Set);
+      if (!(smuggled.typeBindings instanceof Map) || !(smuggled.extras instanceof Set)) {
+        throw new Error('Structured-clone collections were not preserved');
+      }
+      expect([...smuggled.typeBindings]).toEqual([
         ['k1', 'v1'],
         ['k2', 'v2'],
       ]);
-      expect(smuggled.extras).toBeInstanceOf(Set);
-      expect([...(smuggled.extras as Set<string>)].sort()).toEqual(['s1', 's2']);
+      expect([...smuggled.extras].sort()).toEqual(['s1', 's2']);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

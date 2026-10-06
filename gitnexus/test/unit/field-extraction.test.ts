@@ -62,7 +62,8 @@ const createMockContext = (): FieldExtractorContext => ({
     fileScope: () => new Map(),
     allScopes: () => new Map(),
     constructorTypeMap: new Map(),
-  } as TypeEnvironment,
+    flush: () => {},
+  } satisfies TypeEnvironment,
   symbolTable: createSemanticModel().symbols,
   filePath: 'test.ts',
   language: SupportedLanguages.TypeScript,
@@ -1327,7 +1328,7 @@ describeKotlin('GenericFieldExtractor — Kotlin (F52 companion)', () => {
 
   /** The first companion_object node in `src`. */
   function companion(src: string): Parser.SyntaxNode {
-    parser.setLanguage(Kotlin as Parser.Language);
+    parser.setLanguage(Kotlin);
     const tree = parser.parse(src);
     let found: Parser.SyntaxNode | undefined;
     const walk = (n: Parser.SyntaxNode) => {
@@ -1401,7 +1402,7 @@ describeKotlin('GenericFieldExtractor — Kotlin (F52 companion)', () => {
 
   /** Parse `src` and return the first node of the given type (depth-first). */
   function firstNodeOfType(src: string, type: string): Parser.SyntaxNode {
-    parser.setLanguage(Kotlin as Parser.Language);
+    parser.setLanguage(Kotlin);
     const tree = parser.parse(src);
     let found: Parser.SyntaxNode | undefined;
     const walk = (n: Parser.SyntaxNode) => {
@@ -1436,7 +1437,7 @@ describeSwift('GenericFieldExtractor — Swift (F75 protocol property requiremen
 
   /** Parse `src` and return the first class/protocol declaration node. */
   function declNode(src: string): Parser.SyntaxNode {
-    parser.setLanguage(Swift as Parser.Language);
+    parser.setLanguage(Swift);
     const tree = parser.parse(src);
     const node = tree.rootNode.child(0);
     if (!node) throw new Error('no declaration node');
