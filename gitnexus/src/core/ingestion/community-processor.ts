@@ -462,7 +462,12 @@ const runCommunityEngine = async (
       35,
     );
     const fallback = await runGraphologyLeiden(graph, projection.isLarge, engineRequested);
-    return { ...fallback, fallbackReason };
+    return {
+      ...fallback,
+      fallbackReason: fallback.fallbackReason
+        ? `${fallbackReason}; ${fallback.fallbackReason}`
+        : fallbackReason,
+    };
   }
 };
 
