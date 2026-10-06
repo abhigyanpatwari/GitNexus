@@ -4519,11 +4519,10 @@ void processRepoMap(std::map<std::string, Repo> repoMap) {
     });
   });
 
-  describe('known limitations (documented skip tests)', () => {
-    it.skip('Ruby block parameter: users.each { |user| } — closure param inference, different feature', () => {
-      // Not a for-loop; .each { |user| } is a method call with a block.
-      // Requires closure parameter inference — a different feature category
-      // applicable to Ruby, Swift closures, Kotlin lambdas, and Java lambdas.
+  describe('unknown Ruby block parameter types', () => {
+    it('does not invent a type for a block parameter from an untyped receiver', () => {
+      // Neither the parameter name nor calling `save` proves users contains
+      // User instances. Inferring User here would introduce false call edges.
       const tree = parse(
         `
 def process(users)
@@ -4533,7 +4532,7 @@ end
         Ruby,
       );
       const typeEnv = buildTypeEnv(tree, SupportedLanguages.Ruby);
-      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
   });
 

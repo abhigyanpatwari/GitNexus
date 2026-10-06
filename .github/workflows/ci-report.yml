@@ -287,6 +287,7 @@ jobs:
           # ── Locate test results ──
           RESULTS_FILE=$(find_first "$DIR/test-reports" "test-results.json")
           WEB_RESULTS_FILE=$(find_first "$DIR/test-reports" "web-test-results.json")
+          PYTEST_RESULTS_FILE=$(find_first "$DIR/test-reports" "pytest-results.json")
 
           sum_results() {
             local file=$1
@@ -303,12 +304,21 @@ jobs:
           # framework, not as a top-line metric).
           read -r CLI_T CLI_P CLI_F CLI_S _ CLI_D <<< "$(sum_results "$RESULTS_FILE")"
           read -r WEB_T WEB_P WEB_F WEB_S _ WEB_D <<< "$(sum_results "$WEB_RESULTS_FILE")"
+          read -r PY_T PY_P PY_F PY_S _ PY_D <<< "$(sum_results "$PYTEST_RESULTS_FILE")"
 
-          TOTAL=$((CLI_T + WEB_T))
-          PASSED=$((CLI_P + WEB_P))
-          FAILED=$((CLI_F + WEB_F))
-          SKIPPED=$((CLI_S + WEB_S))
+          TOTAL=$((CLI_T + WEB_T + PY_T))
+          PASSED=$((CLI_P + WEB_P + PY_P))
+          FAILED=$((CLI_F + WEB_F + PY_F))
+          SKIPPED=$((CLI_S + WEB_S + PY_S))
           DURATION=$((CLI_D > WEB_D ? CLI_D : WEB_D))
+          DURATION=$((DURATION > PY_D ? DURATION : PY_D))
+          EXECUTION_ERRORS=0
+          for rf in "$RESULTS_FILE" "$WEB_RESULTS_FILE" "$PYTEST_RESULTS_FILE"; do
+            if [ -n "$rf" ] && [ -f "$rf" ]; then
+              errors=$(jq -r '(.executionFailures // []) | length' "$rf")
+              EXECUTION_ERRORS=$((EXECUTION_ERRORS + errors))
+            fi
+          done
 
           # ── Status helpers ──
           status_icon() {
@@ -385,22 +395,22 @@ jobs:
             if [ "$TOTAL" -gt 0 ] 2>/dev/null; then
               echo "### Test Results"
               echo ""
-              echo "| Tests | Passed | Failed | Skipped | Duration |"
+              echo "| Tests | Passed | Failed | Unverified | Duration |"
               echo "|-------|--------|--------|---------|----------|"
               echo "| ${TOTAL} | ${PASSED} | ${FAILED} | ${SKIPPED} | ${DURATION}s |"
               echo ""
 
-              if [ "$FAILED" = "0" ]; then
+              if [[ "$FAILED" == "0" && "$SKIPPED" == "0" && "$EXECUTION_ERRORS" == "0" && "$TESTS" == "success" ]]; then
                 echo "✅ All **${PASSED}** tests passed"
               else
-                echo "❌ **${FAILED}** failed / **${PASSED}** passed"
+                echo "❌ Test execution is incomplete or failed: **${FAILED}** failed, **${SKIPPED}** unverified, **${EXECUTION_ERRORS}** runner/suite errors."
               fi
               if [ "$SKIPPED" != "0" ]; then
                 echo ""
                 echo "<details>"
-                echo "<summary>${SKIPPED} test(s) skipped — expand for details</summary>"
+                echo "<summary>${SKIPPED} test(s) have no recorded pass — expand for details</summary>"
                 echo ""
-                for rf in "$RESULTS_FILE" "$WEB_RESULTS_FILE"; do
+                for rf in "$RESULTS_FILE" "$WEB_RESULTS_FILE" "$PYTEST_RESULTS_FILE"; do
                   if [ -n "$rf" ] && [ -f "$rf" ]; then
                     jq -r '
                       .testResults[]
