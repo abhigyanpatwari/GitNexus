@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { constants } from 'node:fs';
-import {
+import fs, {
   mkdtemp,
   mkdir,
   rm,
@@ -11,7 +11,9 @@ import {
   rename,
   open,
   readdir,
+  lstat,
 } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { dartScopeResolver } from '../../src/core/ingestion/languages/dart/scope-resolver.js';
@@ -514,6 +516,70 @@ describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => 
         ['nested_data', 'pkg/nested/lib'],
       ]),
     );
+  });
+
+  it.each([
+    { scope: 'root', listed: '', replaced: '', restoreDuringRead: false },
+    { scope: 'nested directory', listed: 'pkg', replaced: 'pkg', restoreDuringRead: true },
+    { scope: 'ancestor', listed: 'pkg/nested', replaced: '', restoreDuringRead: true },
+  ])('rejects a changed $scope restored during macOS listing', async (scenario) => {
+    const root = await fixture({ 'pkg/nested/pubspec.yaml': 'name: data' });
+    const outside = await fixture({});
+    const listed = path.join(root, scenario.listed);
+    const replaced = path.join(root, scenario.replaced);
+    const moved = `${replaced}-moved`;
+    await mkdir(path.join(outside, path.relative(replaced, listed)), { recursive: true });
+    const before = await lstat(replaced, { bigint: true });
+    let swapped = false;
+    let restored = false;
+    let readForeignDirectory = false;
+    const restorePath = async (): Promise<void> => {
+      await rm(replaced, { force: true });
+      await rename(moved, replaced);
+      restored = true;
+    };
+    const realOpendir = fs.opendir;
+    // Exercise the macOS branch on Linux too; the directory operations stay real.
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+    const listing = vi.spyOn(fs, 'opendir').mockImplementation(async (directory, options) => {
+      if (directory !== listed) return realOpendir(directory, options);
+      await rename(replaced, moved);
+      swapped = true;
+      await symlink(outside, replaced, 'dir');
+      const dir = await realOpendir(directory, options);
+      const realRead = dir.read.bind(dir);
+      vi.spyOn(dir, 'read').mockImplementationOnce(async () => {
+        try {
+          const entry = await realRead();
+          readForeignDirectory = true;
+          return entry;
+        } finally {
+          if (scenario.restoreDuringRead) await restorePath();
+        }
+      });
+      if (!scenario.restoreDuringRead) await restorePath();
+      return dir;
+    });
+    syncBuiltinESMExports();
+    try {
+      const result = await loadDartPackageConfig(root).catch((error: unknown) => error);
+      expect(swapped).toBe(true);
+      expect(restored).toBe(true);
+      expect(readForeignDirectory).toBe(true);
+      const after = await lstat(replaced, { bigint: true });
+      expect(after).toMatchObject({ dev: before.dev, ino: before.ino, mode: before.mode });
+      expect(after.ctimeNs).not.toBe(before.ctimeNs);
+      expect(result).toBeInstanceOf(Error);
+      expect(result).toHaveProperty(
+        'message',
+        `Dart pubspec discovery failed (read-directory): ${scenario.listed || '.'}`,
+      );
+    } finally {
+      listing.mockRestore();
+      platform.mockRestore();
+      syncBuiltinESMExports();
+      if (swapped && !restored) await restorePath();
+    }
   });
 
   it.skipIf(descriptorEntryPath(0, 'pubspec.yaml') === null)(
