@@ -97,7 +97,7 @@
     "fixture_count": 202
   },
   "php": {
-    "fingerprint": "b213a872342da2d866b04681dede988770e4d3dfdc0d6e9f62212ec5b59cdc2c",
+    "fingerprint": "421cbd318c8857f840aa60904a675cbde32c6bb57b01e6c0f970d10db572b99e",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior df7b1565f9115d66b1ae32e4a408d651afb2521b14e5ca615f3be426c29af618 -> 4a688fa5a7016546f7f3c6d44de023608ae80c5b0e3670c16f6e61b3632608fd; scaling 1.078 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: PHP first-class callable and variable-invocation flow facts with invocation-result suppression. Prior 31c9e3f3cb7094a2bf9021cf9db859036e002f8b44605cd993b470fc600e97cb -> df7b1565f9115d66b1ae32e4a408d651afb2521b14e5ca615f3be426c29af618; scaling 1.074 < 1.5.",

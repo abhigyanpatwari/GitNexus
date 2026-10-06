@@ -1625,12 +1625,20 @@ function materializeBindings(
       // Some language enrichers synthesize members after scope extraction
       // (for example Lombok accessors). They have no lexical scope binding to
       // project, but existing dispatch/index consumers still need them in the
-      // finalized lookup surface. `ownerId` alone is not such provenance:
-      // ordinary class methods carry it too, and promoting them here makes an
-      // unrelated bare call resolve to a method. Language-specific visibility
-      // must be expressed by the provider's scope bindings instead.
+      // finalized lookup surface. Legacy non-Python resolvers also depend on
+      // class-owned definitions for implicit receiver, constructor, inherited,
+      // and partial-class lookup. Python is the exception: a bare name never
+      // means an arbitrary class method, so ownerId must not widen its module
+      // bucket. This compatibility split can disappear once those providers
+      // project their implicit member surfaces explicitly.
+      const allowOwnedCompatibility = !/\.pyi?$/i.test(file.filePath);
       for (const def of file.localDefs) {
-        if (def.isSynthetic !== true && def.namespacePrefix === undefined) continue;
+        if (
+          def.isSynthetic !== true &&
+          def.namespacePrefix === undefined &&
+          !(allowOwnedCompatibility && def.ownerId !== undefined)
+        )
+          continue;
         const name = deriveSimpleName(def);
         if (name === null) continue;
         const incoming: BindingRef[] = [{ def, origin: 'local' }];

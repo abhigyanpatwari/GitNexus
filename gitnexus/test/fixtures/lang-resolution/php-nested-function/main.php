@@ -1,7 +1,7 @@
 <?php
 
 function boot(): void {
-    function target(): void {}
+    FUNCTION target(): void {}
 }
 
 function caller(): void {
