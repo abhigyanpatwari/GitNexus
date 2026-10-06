@@ -1135,6 +1135,7 @@ jobs:
           tests/test_ce_plugin_runtime.py
           tests/test_offline_sweep_integration.py
           tests/test_mock_provider.py
+          tests/test_release_evaluation_smoke.py
           tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant
           tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
           tests/test_oracle_assets.py::test_shipped_oracles_reject_task_base_and_accept_reference_fixes

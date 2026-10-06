@@ -250,6 +250,9 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
         # set only on this job. Omitted from this list it skipped everywhere.
         "tests/test_mock_provider.py",
+        # Paired prepare/session/oracle/report composition uses that same native
+        # CLI and containment; it must execute here rather than skip everywhere.
+        "tests/test_release_evaluation_smoke.py",
         # These also need runtime dependencies absent from the locked pytest job.
         "tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant",
         "tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout",

@@ -243,6 +243,49 @@ already-running instance therefore exits in-process instead of vanishing when
 the box stops — a cancelled GitHub job skips even `if: always()`, which is
 how run 33962002890 lost 51 finished sessions. Local runs are uncapped.
 
+The skill-evolution workflow boots its existing EC2 runner from a hosted job
+while a small self-hosted pickup probe waits. Configure these settings on the main-only
+protected `gitnexus-evolution` environment; keep actual infrastructure values
+out of this public repository:
+
+| Setting | Storage | Value |
+| --- | --- | --- |
+| `GITNEXUS_EVOLUTION_AWS_REGION` | Environment variable | Region containing the dedicated instance |
+| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN` | Environment secret | OIDC role scoped to this environment |
+| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID` | Environment secret | The existing instance, never an instance to create |
+| `GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC` | Environment variable | Actual weekly EventBridge stop, as `DAY HH:MM` in UTC, for example `SUN 03:00` |
+
+The role needs `ec2:StartInstances` and `ec2:StopInstances` on **only that
+instance ARN**, plus `ec2:DescribeInstances` and `ec2:DescribeInstanceStatus`
+on `*`, constrained to its region. Trust GitHub's OIDC audience
+`sts.amazonaws.com` and this repository's exact protected-environment subject;
+match the subject format actually emitted by the repository, including
+immutable IDs if enabled. Keep the environment's server-side main-only branch
+rule. No long-lived AWS keys, instance provisioning, SSH or IAM changes are
+performed by the workflow. AWS credentials stay on the hosted bootstrap and
+cleanup jobs, outside the model sessions.
+
+Use a main-branch dispatch with `runner_only=true` to prove EC2 health and
+runner-service pickup without paid model calls. The runner service must start
+on boot; the evolve job provisions the pinned toolchain. A stopped instance is started once; running or
+pending instances are left running. The hosted job requires the native pickup
+probe to finish successfully within five minutes after EC2 health passes.
+Failed bootstrap blocks the paid job, attempts to stop any instance it started,
+and cancels its own run to clear the queued probe. Only this hosted bootstrap
+job has Actions write permission for that cancellation. Hosted cleanup stops only an
+instance this run started, after evidence upload; an already-running instance
+is left alone. Keep the external stop watchdog enabled for cancellation or
+GitHub outages. Verify its actual schedule before setting the stop variable;
+starting EC2 does not postpone a fixed EventBridge stop. The sweep takes the
+smaller of the remaining uptime budget and the bootstrap's absolute deadline,
+with a 90-minute evidence-upload reserve.
+
+CI separately runs a six-cell paired evaluator canary using the real pinned
+Claude CLI, Bubblewrap, built MCP runtime, hidden grading and public report
+commands. Only its small corpus and local model replies are scripted. One
+failed repair must stay in the report. This proves execution and accounting;
+the canary is not paid-model performance evidence for a stable release.
+
 A review generation is 6 tasks × 3 arms × 3 runs. Serial workers=1 at ~19
 minutes per session is a 16-hour job (run 33962002890). Two harness changes
 cut that without shrinking the gate:

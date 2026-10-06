@@ -1277,6 +1277,26 @@ def test_instance_window_budget_leaves_upload_reserve() -> None:
         instance_window_budget_seconds(float("nan"))
 
 
+def test_manual_boot_cannot_extend_an_absolute_eventbridge_stop(monkeypatch):
+    monkeypatch.setenv("EVENTBRIDGE_STOP_DEADLINE_EPOCH", "1800000000")
+    assert evolve.instance_window_budget_from_uptime(60, now_epoch_seconds=1799990000) == 4600
+    # Even a new boot has to stop before the same absolute deadline.
+    with pytest.raises(ValueError, match="configured EventBridge stop"):
+        evolve.instance_window_budget_from_uptime(0, now_epoch_seconds=1799995000)
+
+
+@pytest.mark.parametrize("deadline", ["", "nan", "-1", "1800000000.5"])
+def test_instance_window_rejects_malformed_stop_deadlines(monkeypatch, deadline):
+    monkeypatch.setenv("EVENTBRIDGE_STOP_DEADLINE_EPOCH", deadline)
+    with pytest.raises(ValueError, match="positive epoch"):
+        evolve.instance_window_budget_from_uptime(60, now_epoch_seconds=1799990000)
+
+
+def test_instance_window_keeps_the_earlier_uptime_limit(monkeypatch):
+    monkeypatch.setenv("EVENTBRIDGE_STOP_DEADLINE_EPOCH", "1800100000")
+    assert evolve.instance_window_budget_from_uptime(80000, now_epoch_seconds=1800000000) == 1000
+
+
 
 
 def test_capped_timeout_clamps_to_leftover_window(monkeypatch) -> None:

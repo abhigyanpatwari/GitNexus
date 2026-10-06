@@ -28,6 +28,9 @@ const workflowDocument = load(workflow) as {
     string,
     {
       environment?: unknown;
+      needs?: string | string[];
+      permissions?: Record<string, string>;
+      'runs-on'?: string | string[];
       env?: Record<string, string>;
       if?: unknown;
       'timeout-minutes'?: unknown;
@@ -57,6 +60,56 @@ function stepRun(stepName: string): string {
   const step = findStep(stepName);
   return typeof step?.run === 'string' ? step.run : '';
 }
+
+describe('dedicated EC2 runner bootstrap', () => {
+  it('starts from trusted hosted main before allowing paid self-hosted work', () => {
+    const boot = workflowDocument.jobs?.['start-runner'];
+    expect(boot?.['runs-on']).toBe('ubuntu-latest');
+    expect(boot?.environment).toBe('gitnexus-evolution');
+    expect(boot?.permissions).toEqual({ contents: 'read', 'id-token': 'write', actions: 'write' });
+    expect(boot?.['timeout-minutes']).toBe(25);
+    expect(String(boot?.if)).toContain("github.ref == 'refs/heads/main'");
+    expect(String(boot?.if)).toContain("github.repository == 'abhigyanpatwari/GitNexus'");
+    expect(evolveJob?.needs).toEqual(['start-runner', 'runner-ready']);
+    expect(evolveJob?.env?.EVENTBRIDGE_STOP_DEADLINE_EPOCH).toBe(
+      '${{ needs.start-runner.outputs.stop_deadline_epoch }}',
+    );
+    expect(evolveJob?.permissions).not.toHaveProperty('id-token');
+    expect(evolveJob?.env).not.toHaveProperty('AWS_ACCESS_KEY_ID');
+    for (const job of [boot, workflowDocument.jobs?.['stop-runner']]) {
+      expect(job?.env?.GITNEXUS_EVOLUTION_AWS_ROLE_ARN).toBe(
+        '${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}',
+      );
+      expect(job?.env?.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID).toBe(
+        '${{ secrets.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID }}',
+      );
+    }
+    const start = boot?.steps?.find(
+      (step) => step.name === 'Start and verify EC2 and runner pickup',
+    );
+    expect(start?.run).toBe('python3 .github/scripts/evolution-runner.py start');
+    expect(start?.env?.GH_TOKEN).toBe('${{ github.token }}');
+    const cancel = boot?.steps?.at(-1);
+    expect(cancel?.if).toBe('failure()');
+    expect(cancel?.run).toBe(
+      'gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"',
+    );
+  });
+
+  it('can verify runner pickup without paid work and cleans up only its own boot', () => {
+    const ready = workflowDocument.jobs?.['runner-ready'];
+    expect(ready?.needs).toBeUndefined();
+    expect(ready?.if).toBe(workflowDocument.jobs?.['start-runner']?.if);
+    expect(ready?.permissions).toEqual({});
+    expect(ready?.steps?.some((step) => String(step.run).includes('git --version'))).toBe(true);
+    expect(String(evolveJob?.if)).toContain('inputs.runner_only != true');
+    const cleanup = workflowDocument.jobs?.['stop-runner'];
+    expect(cleanup?.['runs-on']).toBe('ubuntu-latest');
+    expect(String(cleanup?.if)).toContain('always()');
+    expect(String(cleanup?.if)).toContain("needs.start-runner.outputs.started == 'true'");
+    expect(cleanup?.steps?.at(-1)?.run).toBe('python3 .github/scripts/evolution-runner.py stop');
+  });
+});
 
 // The seed step's usability check is the proposer's OWN preflight
 // (select_evidence + proposer_evidence_entries), invoked through uv. Stubbing
