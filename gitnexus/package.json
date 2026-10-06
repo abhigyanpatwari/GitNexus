@@ -59,6 +59,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
+    "test:benchmarks": "node --import tsx scripts/run-benchmarks.ts",
     "postinstall": "node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
