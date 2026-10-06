@@ -310,16 +310,15 @@ const FILESYSTEM = [
   // The deletion-guard cases in this file require real Windows path semantics.
   'test/unit/canonicalize-path-long-path-prefix.test.ts',
   'test/unit/storage-resolver.test.ts',
-  'test/unit/dart-package-imports.test.ts',
-  // Cargo membership uses path normalization, descriptor validation, symlinks,
-  // and Rust native parsing (including long Windows source strings).
-  'test/unit/scope-resolution/rust-cargo-targets.test.ts',
   // Dart pubspec discovery walks with a per-platform backend: Linux lists and
   // opens through /proc/self/fd, macOS lists lexical paths and verifies the
   // pinned descriptor chain around each step, and every other platform skips
   // discovery. The macOS backend shipped listing /dev/fd/N, which macOS rejects
   // with ENOTDIR, and stayed broken because this file only ran on Ubuntu.
   'test/unit/dart-package-imports.test.ts',
+  // Cargo membership uses path normalization, descriptor validation, symlinks,
+  // and Rust native parsing (including long Windows source strings).
+  'test/unit/scope-resolution/rust-cargo-targets.test.ts',
   // The durable ParsedFile store's prune tolerates a chunk directory it cannot
   // delete (#3204). The failures that motivate it — held handles, read-only
   // mounts — are Windows- and macOS-flavored, and the permission-based case
