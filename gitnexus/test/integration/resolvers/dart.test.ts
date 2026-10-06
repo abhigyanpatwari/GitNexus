@@ -6,7 +6,7 @@
  * All Dart pipeline features are covered: Property nodes, HAS_PROPERTY edges,
  * CALLS chain resolution, IMPORTS, call attribution, and ACCESSES field reads.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
@@ -23,7 +23,7 @@ import {
   loadLanguage,
 } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
-import { pubspecWalkAnchored } from '../../../src/core/ingestion/languages/dart/package-config.js';
+import { dartScopeResolver } from '../../../src/core/ingestion/languages/dart/scope-resolver.js';
 
 // isLanguageAvailable only checks whether the module loaded — it does NOT verify
 // that the native binary works at runtime (tree-sitter-dart can fail on setLanguage).
@@ -38,42 +38,55 @@ if (dartAvailable) {
   }
 }
 
-describe.skipIf(!dartAvailable || !pubspecWalkAnchored())(
-  'Dart pubspec package identity (#2963)',
-  () => {
-    let result: PipelineResult;
+describe.skipIf(!dartAvailable)('Dart pubspec package identity (#2963)', () => {
+  let result: PipelineResult;
+  let captureCount = 0;
+  let reloadCount = 0;
 
-    beforeAll(async () => {
+  beforeAll(async () => {
+    const capture = vi.spyOn(dartScopeResolver, 'captureResolutionConfig');
+    const reload = vi.spyOn(dartScopeResolver, 'loadResolutionConfig');
+    try {
       result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-package-imports'), () => {});
-    }, 60000);
+      captureCount = capture.mock.calls.length;
+      reloadCount = reload.mock.calls.length;
+    } finally {
+      capture.mockRestore();
+      reload.mockRestore();
+    }
+  }, 60000);
 
-    it('emits declared imports and their package identity dependencies', () => {
-      const imports = getRelationships(result, 'IMPORTS')
-        .filter((edge) => edge.sourceFilePath === 'lib/main.dart')
-        .map((edge) => edge.targetFilePath)
-        .sort();
-      expect(imports).toEqual([
-        'lib/models.dart',
-        'lib/relative.dart',
-        'packages/data/lib/models.dart',
-        'packages/data/pubspec.yaml',
-        'pubspec.yaml',
-      ]);
-    });
+  it('captures package metadata once and reuses it through parsing and resolution', () => {
+    expect(captureCount).toBe(1);
+    expect(reloadCount).toBe(0);
+  });
 
-    it.each([
-      ['loadOwn', 'lib/models.dart'],
-      ['loadData', 'packages/data/lib/models.dart'],
-      ['loadRelative', 'lib/relative.dart'],
-    ])('resolves %s in the correct library', (name, file) => {
-      const calls = getRelationships(result, 'CALLS').filter(
-        (edge) => edge.sourceFilePath === 'lib/main.dart' && edge.target === name,
-      );
-      expect(calls).toHaveLength(1);
-      expect(calls[0]?.targetFilePath).toBe(file);
-    });
-  },
-);
+  it('emits declared imports and their package identity dependencies', () => {
+    const imports = getRelationships(result, 'IMPORTS')
+      .filter((edge) => edge.sourceFilePath === 'lib/main.dart')
+      .map((edge) => edge.targetFilePath)
+      .sort();
+    expect(imports).toEqual([
+      'lib/models.dart',
+      'lib/relative.dart',
+      'packages/data/lib/models.dart',
+      'packages/data/pubspec.yaml',
+      'pubspec.yaml',
+    ]);
+  });
+
+  it.each([
+    ['loadOwn', 'lib/models.dart'],
+    ['loadData', 'packages/data/lib/models.dart'],
+    ['loadRelative', 'lib/relative.dart'],
+  ])('resolves %s in the correct library', (name, file) => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.sourceFilePath === 'lib/main.dart' && edge.target === name,
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.targetFilePath).toBe(file);
+  });
+});
 
 // ── Phase 8: Field-type resolution ──────────────────────────────────────
 
