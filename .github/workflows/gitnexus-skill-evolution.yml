@@ -145,7 +145,7 @@ on:
         default: true
         type: boolean
       runner_only:
-        description: 'Boot and verify the EC2 runner without making paid model calls'
+        description: 'Verify the existing runner is online without making paid model calls'
         required: false
         default: false
         type: boolean
@@ -157,8 +157,8 @@ concurrency:
 permissions: {}
 
 jobs:
-  start-runner:
-    name: Start the dedicated evolution runner
+  check-runner:
+    name: Bound the wait for the evolution runner
     if: >-
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
@@ -166,40 +166,23 @@ jobs:
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ubuntu-latest
     environment: gitnexus-evolution
-    timeout-minutes: 25
+    timeout-minutes: 10
     permissions:
       contents: read
-      id-token: write
-      actions: write
-    env:
-      GITNEXUS_EVOLUTION_AWS_REGION: ${{ vars.GITNEXUS_EVOLUTION_AWS_REGION }}
-      GITNEXUS_EVOLUTION_AWS_ROLE_ARN: ${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}
-      GITNEXUS_EVOLUTION_EC2_INSTANCE_ID: ${{ secrets.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID }}
-      GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC: ${{ vars.GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC }}
-    outputs:
-      started: ${{ steps.boot.outputs.started }}
-      stop_deadline_epoch: ${{ steps.boot.outputs.stop_deadline_epoch }}
+      actions: write # Cancel only this run if its dedicated runner stays offline.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Validate protected EC2 configuration
-        run: python3 .github/scripts/evolution-runner.py check
-      - name: Obtain scoped AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.GITNEXUS_EVOLUTION_AWS_REGION }}
-          role-duration-seconds: 1800
-          mask-aws-account-id: true
-      - name: Start and verify EC2 and runner pickup
-        id: boot
+      # Existing private EventBridge automation controls EC2 power. This probe
+      # checks actual runner pickup without adding AWS credentials or settings.
+      - name: Verify the current run's native pickup probe
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/evolution-runner.py start
-      # A queued self-hosted job has no pickup timeout. On bootstrap failure,
-      # cancel this run so the offline probe cannot remain queued indefinitely.
-      - name: Cancel this run when runner bootstrap fails
+        run: python3 .github/scripts/evolution-runner-ready.py
+      # A queued self-hosted job has no pickup timeout. Cancel this run so an
+      # offline probe cannot remain queued indefinitely and block later runs.
+      - name: Cancel this run when runner readiness fails
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -237,7 +220,7 @@ jobs:
           vars.GITNEXUS_EVOLUTION_WORKERS == '3'
         )
       )
-    needs: [start-runner, runner-ready]
+    needs: [check-runner, runner-ready]
     runs-on: [self-hosted, linux, x64, gitnexus-evolution]
     # Gate promotion runs on a protected Environment. An admin must attach a
     # deployment-branch rule (main only) and ideally scope the model and App
@@ -277,7 +260,6 @@ jobs:
       EFFORT: ${{ inputs.effort || 'xhigh' }}
       PROVIDER: ${{ inputs.provider || 'openai' }}
       INCLUDE_EXPENSIVE: ${{ inputs.include_expensive && '1' || '' }}
-      EVENTBRIDGE_STOP_DEADLINE_EPOCH: ${{ needs.start-runner.outputs.stop_deadline_epoch }}
     steps:
       - name: Require the benchmark auth secret
         env:
@@ -701,34 +683,3 @@ jobs:
             --head "${branch}" \
             --title 'feat(skills): promoted evolution overlay' \
             --body-file "${RUNNER_TEMP}/pr-body.md"
-
-  stop-runner:
-    name: Stop the instance started by this run
-    needs: [start-runner, runner-ready, evolve]
-    if: >-
-      always() && github.repository == 'abhigyanpatwari/GitNexus' &&
-      github.ref == 'refs/heads/main' && needs.start-runner.outputs.started == 'true'
-    runs-on: ubuntu-latest
-    environment: gitnexus-evolution
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      GITNEXUS_EVOLUTION_AWS_REGION: ${{ vars.GITNEXUS_EVOLUTION_AWS_REGION }}
-      GITNEXUS_EVOLUTION_AWS_ROLE_ARN: ${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}
-      GITNEXUS_EVOLUTION_EC2_INSTANCE_ID: ${{ secrets.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID }}
-      GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC: ${{ vars.GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Obtain scoped AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: ${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.GITNEXUS_EVOLUTION_AWS_REGION }}
-          role-duration-seconds: 900
-          mask-aws-account-id: true
-      - name: Stop only the instance this workflow started
-        run: python3 .github/scripts/evolution-runner.py stop

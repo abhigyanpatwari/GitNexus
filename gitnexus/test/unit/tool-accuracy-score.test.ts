@@ -91,15 +91,18 @@ describe('deterministic tool-accuracy scoring and release gate', () => {
     expect(formatAccuracyMarkdown(report)).toContain('path' + '\\'.repeat(5) + '|column');
   });
 
-  it.each([undefined, null, 'exact', [null], [1]])(
-    'cannot use an allowance to hide malformed/missing observations (%j)',
-    (value) => {
-      const actual: Record<string, unknown> = { ...perfect(), 'python.module-chain': value };
-      const report = scoreAccuracy(actual, known('python.module-chain', []), SOURCE);
-      expect(report.gate.passed).toBe(false);
-      expect(report.gate.errors).toContain('Missing or malformed observation: python.module-chain');
-    },
-  );
+  it.each([
+    { label: 'missing', value: undefined },
+    { label: 'null', value: null },
+    { label: 'scalar string', value: 'exact' },
+    { label: 'array containing null', value: [null] },
+    { label: 'array containing a number', value: [1] },
+  ])('cannot use an allowance to hide malformed/missing observations ($label)', ({ value }) => {
+    const actual: Record<string, unknown> = { ...perfect(), 'python.module-chain': value };
+    const report = scoreAccuracy(actual, known('python.module-chain', []), SOURCE);
+    expect(report.gate.passed).toBe(false);
+    expect(report.gate.errors).toContain('Missing or malformed observation: python.module-chain');
+  });
 
   it('rejects tool execution errors even with known failures', () => {
     const report = scoreAccuracy(

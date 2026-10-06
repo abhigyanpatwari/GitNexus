@@ -73,14 +73,14 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
-          DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: |
           set -euo pipefail
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           # Reusable calls inherit the caller's event. An explicit tag is what
           # distinguishes an RC publish call from a direct manual dry run.
           if [[ "$EVENT_NAME" == 'pull_request' ]] || \
-             [[ "$EVENT_NAME" == 'workflow_dispatch' && -z "$INPUT_TAG" && "$DRY_RUN" == 'true' ]]; then
+             [[ "$EVENT_NAME" == 'workflow_dispatch' && -z "$INPUT_TAG" && "$INPUT_DRY_RUN" == 'true' ]]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi

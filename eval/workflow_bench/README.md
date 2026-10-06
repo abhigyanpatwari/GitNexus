@@ -104,9 +104,12 @@ RCs attach the cheap accuracy evidence; stable releases also attach and include
 the paired agent report. The gate requires valid measurements, without assuming
 GitNexus must win or claiming that four tasks establish general improvements.
 
-After a successful dispatch confirms containment and the session budget, set
-the repository variable `GITNEXUS_RELEASE_EVAL_ENABLED=true` to enable the
-Wednesday schedule. Scheduled runs resolve the newest published RC to its
+The Wednesday release comparison reuses the existing schedule controls:
+`GITNEXUS_EVOLUTION_ENABLED=true` and `GITNEXUS_EVOLUTION_WORKERS=3` enable
+both weekly workflows; disabling evolution also disables scheduled release
+comparisons. No additional opt-in variable or model credential is required.
+Manual release evaluation remains available independently. Scheduled runs
+resolve the newest published RC to its
 commit before execution. The protected `gitnexus-evolution` environment remains
 restricted to main and supplies the existing model secrets. The paid step has
 a five-hour limit inside a six-hour hosted job, leaving time to upload summaries
@@ -243,42 +246,20 @@ already-running instance therefore exits in-process instead of vanishing when
 the box stops — a cancelled GitHub job skips even `if: always()`, which is
 how run 33962002890 lost 51 finished sessions. Local runs are uncapped.
 
-The skill-evolution workflow boots its existing EC2 runner from a hosted job
-while a small self-hosted pickup probe waits. Configure these settings on the main-only
-protected `gitnexus-evolution` environment; keep actual infrastructure values
-out of this public repository:
+The skill-evolution workflow uses the existing dedicated runner and private
+EventBridge start/stop automation. A hosted readiness check requires this run's
+native pickup probe to finish within five minutes. If the runner stays offline
+or its probe fails, the hosted check cancels its own run to clear the queued
+self-hosted job; paid evolution cannot start. Only this readiness job has
+Actions write permission for cancellation. A main-branch dispatch with
+`runner_only=true` checks pickup without paid model calls.
 
-| Setting | Storage | Value |
-| --- | --- | --- |
-| `GITNEXUS_EVOLUTION_AWS_REGION` | Environment variable | Region containing the dedicated instance |
-| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN` | Environment secret | OIDC role scoped to this environment |
-| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID` | Environment secret | The existing instance, never an instance to create |
-| `GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC` | Environment variable | Actual weekly EventBridge stop, as `DAY HH:MM` in UTC, for example `SUN 03:00` |
-
-The role needs `ec2:StartInstances` and `ec2:StopInstances` on **only that
-instance ARN**, plus `ec2:DescribeInstances` and `ec2:DescribeInstanceStatus`
-on `*`, constrained to its region. Trust GitHub's OIDC audience
-`sts.amazonaws.com` and this repository's exact protected-environment subject;
-match the subject format actually emitted by the repository, including
-immutable IDs if enabled. Keep the environment's server-side main-only branch
-rule. No long-lived AWS keys, instance provisioning, SSH or IAM changes are
-performed by the workflow. AWS credentials stay on the hosted bootstrap and
-cleanup jobs, outside the model sessions.
-
-Use a main-branch dispatch with `runner_only=true` to prove EC2 health and
-runner-service pickup without paid model calls. The runner service must start
-on boot; the evolve job provisions the pinned toolchain. A stopped instance is started once; running or
-pending instances are left running. The hosted job requires the native pickup
-probe to finish successfully within five minutes after EC2 health passes.
-Failed bootstrap blocks the paid job, attempts to stop any instance it started,
-and cancels its own run to clear the queued probe. Only this hosted bootstrap
-job has Actions write permission for that cancellation. Hosted cleanup stops only an
-instance this run started, after evidence upload; an already-running instance
-is left alone. Keep the external stop watchdog enabled for cancellation or
-GitHub outages. Verify its actual schedule before setting the stop variable;
-starting EC2 does not postpone a fixed EventBridge stop. The sweep takes the
-smaller of the remaining uptime budget and the bootstrap's absolute deadline,
-with a 90-minute evidence-upload reserve.
+This PR adds no AWS credentials, role references, instance/region settings, or
+configuration environment variables. The readiness check does **not** start a
+stopped EC2 instance. Manual pipeline startup remains blocked until the existing
+private AWS startup mechanism can be identified and reused. Keep the existing
+external stop watchdog and uptime budget in place; verify the actual EventBridge
+stop window before dispatching on an already-running instance.
 
 CI separately runs a six-cell paired evaluator canary using the real pinned
 Claude CLI, Bubblewrap, built MCP runtime, hidden grading and public report

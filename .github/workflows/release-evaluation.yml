@@ -1,5 +1,5 @@
 # Paid release comparisons run trusted main's harness against a separately
-# pinned runtime. Enable the weekly schedule only after a successful dispatch.
+# pinned runtime. Reuse the evolution pipeline's existing schedule controls.
 name: Release evaluation
 
 on:
@@ -32,7 +32,8 @@ jobs:
     if: >-
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' || vars.GITNEXUS_RELEASE_EVAL_ENABLED == 'true')
+      (github.event_name == 'workflow_dispatch' ||
+       (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ubuntu-latest
     # Reuse the main-only protected model-secret environment. No tag/fork code
     # runs as the harness, and no release or PR write token is available here.
@@ -41,7 +42,7 @@ jobs:
     permissions:
       contents: read
     env:
-      CANDIDATE_REF: ${{ inputs.candidate_ref || 'latest-rc' }}
+      INPUT_REF: ${{ inputs.candidate_ref || 'latest-rc' }}
       MODEL: ${{ inputs.model || 'gpt-5.6-sol' }}
       EFFORT: ${{ inputs.effort || 'xhigh' }}
     steps:
@@ -55,7 +56,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          ref="$CANDIDATE_REF"
+          ref="$INPUT_REF"
           if [[ "$ref" == 'latest-rc' ]]; then
             ref="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \
               '[.[] | select(.prerelease and (.draft | not)) | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$"))] | sort_by(.published_at) | last | .tag_name // empty')"

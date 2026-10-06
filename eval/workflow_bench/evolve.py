@@ -933,7 +933,6 @@ def instance_window_budget_from_uptime(
     *,
     window_seconds: int | None = None,
     reserve_seconds: int | None = None,
-    now_epoch_seconds: float | None = None,
 ) -> int:
     """Apply the EventBridge window env overrides to an already-read uptime.
 
@@ -953,19 +952,7 @@ def instance_window_budget_from_uptime(
         if reserve_seconds is not None
         else int(os.environ.get("EVENTBRIDGE_STOP_RESERVE_SECONDS", str(EVENTBRIDGE_STOP_RESERVE_SECONDS)))
     )
-    budget = instance_window_budget_seconds(uptime_seconds, window_seconds=window, reserve_seconds=reserve)
-    deadline = os.environ.get("EVENTBRIDGE_STOP_DEADLINE_EPOCH")
-    if deadline is not None:
-        if not re.fullmatch(r"[0-9]{1,12}", deadline):
-            raise ValueError("EVENTBRIDGE_STOP_DEADLINE_EPOCH must be a positive epoch timestamp")
-        now = time.time() if now_epoch_seconds is None else now_epoch_seconds
-        if not math.isfinite(now) or now < 0:
-            raise ValueError("current UTC timestamp must be finite and non-negative")
-        leftover = int(int(deadline) - now - reserve)
-        if leftover < MIN_INSTANCE_SWEEP_SECONDS:
-            raise ValueError("insufficient time before the configured EventBridge stop and upload reserve")
-        budget = min(budget, leftover)
-    return budget
+    return instance_window_budget_seconds(uptime_seconds, window_seconds=window, reserve_seconds=reserve)
 
 
 

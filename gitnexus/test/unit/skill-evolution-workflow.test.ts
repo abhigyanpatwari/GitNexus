@@ -61,53 +61,74 @@ function stepRun(stepName: string): string {
   return typeof step?.run === 'string' ? step.run : '';
 }
 
-describe('dedicated EC2 runner bootstrap', () => {
-  it('starts from trusted hosted main before allowing paid self-hosted work', () => {
-    const boot = workflowDocument.jobs?.['start-runner'];
-    expect(boot?.['runs-on']).toBe('ubuntu-latest');
-    expect(boot?.environment).toBe('gitnexus-evolution');
-    expect(boot?.permissions).toEqual({ contents: 'read', 'id-token': 'write', actions: 'write' });
-    expect(boot?.['timeout-minutes']).toBe(25);
-    expect(String(boot?.if)).toContain("github.ref == 'refs/heads/main'");
-    expect(String(boot?.if)).toContain("github.repository == 'abhigyanpatwari/GitNexus'");
-    expect(evolveJob?.needs).toEqual(['start-runner', 'runner-ready']);
-    expect(evolveJob?.env?.EVENTBRIDGE_STOP_DEADLINE_EPOCH).toBe(
-      '${{ needs.start-runner.outputs.stop_deadline_epoch }}',
+describe('dedicated runner readiness', () => {
+  it('bounds offline runner pickup from trusted hosted main before paid work', () => {
+    const check = workflowDocument.jobs?.['check-runner'];
+    expect(check?.['runs-on']).toBe('ubuntu-latest');
+    expect(check?.environment).toBe('gitnexus-evolution');
+    expect(check?.permissions).toEqual({ contents: 'read', actions: 'write' });
+    expect(check?.['timeout-minutes']).toBe(10);
+    expect(String(check?.if)).toContain("github.ref == 'refs/heads/main'");
+    expect(String(check?.if)).toContain("github.repository == 'abhigyanpatwari/GitNexus'");
+    expect(evolveJob?.needs).toEqual(['check-runner', 'runner-ready']);
+    const pickup = check?.steps?.find(
+      (step) => step.name === "Verify the current run's native pickup probe",
     );
-    expect(evolveJob?.permissions).not.toHaveProperty('id-token');
-    expect(evolveJob?.env).not.toHaveProperty('AWS_ACCESS_KEY_ID');
-    for (const job of [boot, workflowDocument.jobs?.['stop-runner']]) {
-      expect(job?.env?.GITNEXUS_EVOLUTION_AWS_ROLE_ARN).toBe(
-        '${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}',
-      );
-      expect(job?.env?.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID).toBe(
-        '${{ secrets.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID }}',
-      );
-    }
-    const start = boot?.steps?.find(
-      (step) => step.name === 'Start and verify EC2 and runner pickup',
-    );
-    expect(start?.run).toBe('python3 .github/scripts/evolution-runner.py start');
-    expect(start?.env?.GH_TOKEN).toBe('${{ github.token }}');
-    const cancel = boot?.steps?.at(-1);
+    expect(pickup?.run).toBe('python3 .github/scripts/evolution-runner-ready.py');
+    expect(pickup?.env).toEqual({ GH_TOKEN: '${{ github.token }}' });
+    const cancel = check?.steps?.at(-1);
     expect(cancel?.if).toBe('failure()');
     expect(cancel?.run).toBe(
       'gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"',
     );
-  });
-
-  it('can verify runner pickup without paid work and cleans up only its own boot', () => {
     const ready = workflowDocument.jobs?.['runner-ready'];
     expect(ready?.needs).toBeUndefined();
-    expect(ready?.if).toBe(workflowDocument.jobs?.['start-runner']?.if);
+    expect(ready?.if).toBe(check?.if);
     expect(ready?.permissions).toEqual({});
     expect(ready?.steps?.some((step) => String(step.run).includes('git --version'))).toBe(true);
     expect(String(evolveJob?.if)).toContain('inputs.runner_only != true');
-    const cleanup = workflowDocument.jobs?.['stop-runner'];
-    expect(cleanup?.['runs-on']).toBe('ubuntu-latest');
-    expect(String(cleanup?.if)).toContain('always()');
-    expect(String(cleanup?.if)).toContain("needs.start-runner.outputs.started == 'true'");
-    expect(cleanup?.steps?.at(-1)?.run).toBe('python3 .github/scripts/evolution-runner.py stop');
+  });
+
+  it('reuses the existing credentials and schedule variables without adding AWS configuration', () => {
+    const release = readFileSync(
+      path.join(REPO_ROOT, '.github/workflows/release-evaluation.yml'),
+      'utf8',
+    );
+    const existingSecrets = new Set([
+      'GITNEXUS_BENCH_ANTHROPIC_API_KEY',
+      'GITNEXUS_BENCH_AUTH_TOKEN',
+      'GITNEXUS_BENCH_OPENAI_API_KEY',
+      'RELEASE_APP_ID',
+      'RELEASE_APP_PRIVATE_KEY',
+    ]);
+    const existingVariables = new Set(['GITNEXUS_EVOLUTION_ENABLED', 'GITNEXUS_EVOLUTION_WORKERS']);
+    for (const text of [workflow, release]) {
+      for (const match of text.matchAll(/secrets\.([A-Z_][A-Z_0-9]*)/g)) {
+        expect(existingSecrets.has(match[1]), match[1]).toBe(true);
+      }
+      for (const match of text.matchAll(/vars\.([A-Z_][A-Z_0-9]*)/g)) {
+        expect(existingVariables.has(match[1]), match[1]).toBe(true);
+      }
+      expect(text).not.toContain('configure-aws-credentials');
+    }
+    for (const job of ['check-runner', 'runner-ready']) {
+      expect(workflowDocument.jobs?.[job]?.env).toBeUndefined();
+      for (const step of workflowDocument.jobs?.[job]?.steps ?? []) {
+        expect(Object.keys(step.env ?? {}).every((key) => key === 'GH_TOKEN')).toBe(true);
+      }
+    }
+    const releaseDocument = load(release) as typeof workflowDocument;
+    expect(Object.keys(releaseDocument.jobs?.evaluate?.env ?? {}).sort()).toEqual([
+      'EFFORT',
+      'INPUT_REF',
+      'MODEL',
+    ]);
+    expect(String(releaseDocument.jobs?.evaluate?.if)).toContain(
+      "vars.GITNEXUS_EVOLUTION_ENABLED == 'true'",
+    );
+    expect(String(releaseDocument.jobs?.evaluate?.if)).toContain(
+      "vars.GITNEXUS_EVOLUTION_WORKERS == '3'",
+    );
   });
 });
 

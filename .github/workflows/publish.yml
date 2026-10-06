@@ -857,10 +857,8 @@ jobs:
         env:
           MODE: ${{ needs.route.outputs.mode }}
           RC_VERSION: ${{ steps.rc-version.outputs.rc_version }}
-          BASE: ${{ steps.rc-version.outputs.base }}
-          RC_N: ${{ steps.rc-version.outputs.rc_n }}
-          SOURCE_SHA: ${{ needs.rc-guard.outputs.head_sha }}
-          RELEASE_SHA: ${{ steps.rc-tags.outputs.release_sha }}
+          BEFORE_SHA: ${{ needs.rc-guard.outputs.head_sha }}
+          HEAD_SHA: ${{ steps.rc-tags.outputs.release_sha }}
         run: |
           set -euo pipefail
           if [[ "$MODE" == 'rc' ]]; then
@@ -869,9 +867,8 @@ jobs:
 
           **npm:** \`npm install gitnexus@rc\`
           **Version:** \`$RC_VERSION\`
-          **Target base:** \`$BASE\` (rc #$RC_N)
-          **Source commit (main):** $SOURCE_SHA
-          **Release commit (versioned tree):** $RELEASE_SHA
+          **Source commit (main):** $BEFORE_SHA
+          **Release commit (versioned tree):** $HEAD_SHA
 
           Release candidates are pre-stable builds intended for early testing. Stable releases remain on the latest dist-tag.
           EOF

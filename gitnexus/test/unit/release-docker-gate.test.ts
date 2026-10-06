@@ -81,7 +81,7 @@ function classify({
       EVENT_NAME: event,
       GITHUB_REF: ref,
       INPUT_TAG: tag,
-      DRY_RUN: String(dryRun),
+      INPUT_DRY_RUN: String(dryRun),
       GITHUB_OUTPUT: output,
     },
   });
