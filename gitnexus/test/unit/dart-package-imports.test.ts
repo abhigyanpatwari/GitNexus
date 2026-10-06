@@ -366,6 +366,37 @@ describe('Dart pubspec package discovery', () => {
     await expect(loadDartPackageConfig(root)).rejects.toThrow('(scan-inputs)');
   });
 
+  for (const ignoreFile of ['.gitignore', '.gitnexusignore']) {
+    it(`applies linked ${ignoreFile} to TypeScript scans while keeping Dart capture strict`, async (context) => {
+      const root = await fixture({ 'main.ts': 'export {};', 'ignored.ts': 'export {};' });
+      const outside = await fixture({ rules: 'ignored.ts\n' });
+      try {
+        await symlink(path.join(outside, 'rules'), path.join(root, ignoreFile), 'file');
+      } catch (error) {
+        if (
+          process.platform === 'win32' &&
+          ['EPERM', 'EACCES', 'ENOSYS'].includes((error as NodeJS.ErrnoException).code ?? '')
+        ) {
+          context.skip('Windows file symlinks are unavailable');
+        }
+        throw error;
+      }
+      const scanContext = {
+        repoPath: root,
+        graph: createKnowledgeGraph(),
+        onProgress: () => {},
+        pipelineStart: Date.now(),
+      };
+      const scanned = await scanPhase.execute(scanContext, new Map());
+      expect(scanned.allPaths).toEqual(['main.ts']);
+      expect(scanned.resolutionConfigs?.has(SupportedLanguages.Dart)).toBe(false);
+
+      // Dart capture validates its scan inputs even when no pubspec was discovered.
+      await writeFile(path.join(root, 'main.dart'), 'void main() {}');
+      await expect(scanPhase.execute(scanContext, new Map())).rejects.toThrow('(scan-inputs)');
+    });
+  }
+
   it('fails when the repository root is missing', async () => {
     const root = await fixture({});
     await expect(loadDartPackageConfig(path.join(root, 'missing'))).rejects.toThrow(
