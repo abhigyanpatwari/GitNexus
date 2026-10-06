@@ -125,10 +125,45 @@ GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
 | `ci-scope-parity.yml` | discover, parity                                                  | Scope-resolution parity for all migrated languages                    |
 | `ci-e2e.yml`          | e2e (chromium)                                                    | Playwright E2E, gated on `gitnexus-web/**` changes                    |
 
-The `CI Gate` job in `ci.yml` is the single required check for branch protection. It requires quality, tests, e2e, and scope-parity to all pass.
+The `CI Gate` job in `ci.yml` requires the quality and test workflows to pass.
+The browser E2E workflow must pass or be skipped because no web files changed.
+
+Branch protection also requires six platform check names from the former
+three-shard matrix. These names remain as aggregate gates: all native shards
+and the `every test executed` audit must succeed before any of them passes.
+Failed, cancelled, skipped, or missing dependency results fail these gates.
+The actual native tests run in the current Windows/macOS shard matrix.
 
 The `typecheck` job runs both the production compiler check and
 `npm run typecheck:tests`. A type error in either check fails the job and the CI gate.
+
+### Complete execution, including platform and benchmark tests
+
+The required `every test executed` job reconciles execution receipts from Ubuntu
+coverage, every Windows/macOS shard, the serial benchmark run, and the real Python
+workflow preflight. It requires a recorded pass for every collected test. A skip
+on Linux is satisfied only by a pass of that exact test in another required job.
+Test identities include the file, suite/title and source location; ambiguous
+parameterized cases must have unique titles. Missing receipts, missing test files,
+unhandled runner errors, failed hooks, failed assertions, and tests with no pass
+all fail the gate. Web tests are checked separately with the same rules.
+
+The locked pytest suite and Linux/Windows containment jobs also upload JUnit
+receipts. The same gate checks every Python test file was collected and every
+case passed in at least one job, while preserving failures from any job. The
+Linux containment job supplies Bubblewrap, the pinned CLI, and built Vitest
+dependencies for tests that cannot run in the basic Python job. Python results
+are included in the combined PR report.
+
+The PR report shows the reconciled result as **Unverified**. Zero means every test
+has execution evidence; individual OS logs still show tests that require another
+OS as skipped. Failed executions remain failures even if another job passes.
+
+`npm run test:benchmarks` discovers all tests gated by `GITNEXUS_BENCH` and runs
+them serially. Keep timing measurements out of parallel coverage workers. The
+`eval-tests` job installs the locked Python dependencies and runs the workflow
+preflight Vitest tests as well as pytest; those tests must exercise real Python
+validation, never a stubbed success.
 
 ## Regression testing
 

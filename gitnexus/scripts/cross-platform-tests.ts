@@ -167,6 +167,7 @@ const LBUG_NATIVE = [
   'test/integration/lbug-close-handle-release.test.ts',
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
   'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
+  'test/integration/lbug-incremental-search.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
   'test/integration/lbug-non-ascii-path.test.ts',
   // Cross-repo trace e2e: builds two real lbug indexes + a real bridge and
@@ -205,9 +206,8 @@ const LBUG_NATIVE = [
   // (the same reason fts-extension-e2e.test.ts is registered below), so the
   // FTS-unavailable branch has to run on a real Windows/macOS runner rather
   // than only on Ubuntu where FTS always loads. And its both-blocked case is
-  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml sets ONLY on this
-  // job — everywhere else an unavailable VECTOR extension skips instead of
-  // failing. Budget: four real analyze runs, so expect it to sit alongside the
+  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml requires in both
+  // coverage and platform jobs so an unavailable VECTOR fails loudly. Budget: four real analyze runs, so expect it to sit alongside the
   // VECTOR sibling's ~87s Windows measurement.
   'test/unit/incremental-index-extension-dml-gate.test.ts',
 ];
@@ -289,6 +289,7 @@ const SPAWN_CLI = [
 // Worker threads tests — exercise real worker_threads which have
 // platform-specific behavior (thread spawning, IPC, exit handling)
 const WORKER_THREADS = [
+  'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
 ];
@@ -307,6 +308,13 @@ const NATIVE_ADDON_SMOKE = [
 // Filesystem behavior tests — exercise operations that vary across
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
+  // The deletion-guard cases in this file require real Windows path semantics.
+  'test/unit/canonicalize-path-long-path-prefix.test.ts',
+  'test/unit/storage-resolver.test.ts',
+  // Dart package metadata is captured during the shared scan on every platform.
+  'test/unit/dart-package-imports.test.ts',
+  // Verify the same capture is reused by native parsing and scope resolution.
+  'test/integration/resolvers/dart.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',

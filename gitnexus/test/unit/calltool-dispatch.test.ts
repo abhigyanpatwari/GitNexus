@@ -575,14 +575,17 @@ describe('LocalBackend.callTool', () => {
     ['impact', { name: 'validate', symbol: 'login', direction: 'upstream' }],
     ['impact', { target: 'validate', direction: 'upstream', maxDepth: 3, depth: 1 }],
     ['context', { name: 'validate', file_path: 'src/auth.ts', file: 'src/login.ts' }],
-  ])('rejects conflicting %s aliases before repository resolution', async (method, params) => {
-    const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
+  ])(
+    'rejects conflicting %s aliases before repository resolution (case %#)',
+    async (method, params) => {
+      const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
 
-    const result = await backend.callTool(method, params);
+      const result = await backend.callTool(method, params);
 
-    expect(result.error).toMatch(/conflicting mcp parameters/i);
-    expect(resolveSpy).not.toHaveBeenCalled();
-  });
+      expect(result.error).toMatch(/conflicting mcp parameters/i);
+      expect(resolveSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ['impact', { name: 42, direction: 'upstream' }],

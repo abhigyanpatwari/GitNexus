@@ -1,6 +1,20 @@
 import type { SyntaxNode } from 'tree-sitter';
 
 /**
+ * Framework import paths, matched EXACTLY on both layers (ingestion's
+ * `go-gin-echo.ts` and the group-mode `http-patterns/go.ts`): a substring
+ * test would classify `example.com/labstack/echo-wrapper` as echo on one
+ * side only, flipping the handler-argument order and splitting contracts.
+ */
+export function isGinImportPath(importPath: string): boolean {
+  return importPath === 'github.com/gin-gonic/gin';
+}
+
+export function isEchoImportPath(importPath: string): boolean {
+  return /^github\.com\/labstack\/echo(\/v\d+)?$/.test(importPath);
+}
+
+/**
  * Go string-literal decoding shared by the Go route extractors on both
  * layers: the ingestion extractor (`go-gin-echo.ts`, Strategy A) and the
  * group-mode HTTP plugin (`group/extractors/http-patterns/go.ts`,

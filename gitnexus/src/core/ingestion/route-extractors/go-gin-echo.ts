@@ -26,7 +26,7 @@
 import type Parser from 'tree-sitter';
 import { goImportPackageName } from '../languages/go/import-package-name.js';
 import { GoRouteBindings, type GoRouteBinding } from '../languages/go/route-bindings.js';
-import { stringLiteral } from './go-shared.js';
+import { isEchoImportPath, isGinImportPath, stringLiteral } from './go-shared.js';
 import { normalizeExtractedRoutePath } from './route-path.js';
 import type { SyntaxNode } from 'tree-sitter';
 import type { ExtractedDecoratorRoute, RouteHandlerReceiver } from '../workers/parse-worker.js';
@@ -77,8 +77,8 @@ function readImports(root: SyntaxNode): {
     if (explicit === '_' || explicit === '.') continue;
     const local = explicit ?? goImportPackageName(importPath);
     if (!local) continue;
-    if (importPath === 'github.com/gin-gonic/gin') gin = local;
-    if (/^github\.com\/labstack\/echo(\/v\d+)?$/.test(importPath)) echo = local;
+    if (isGinImportPath(importPath)) gin = local;
+    if (isEchoImportPath(importPath)) echo = local;
   }
   // Both, or neither: no way to tell which argument is the handler.
   if (gin !== null && echo === null) {

@@ -1,5 +1,8 @@
 # Incremental node identity reconciliation
 
+For the native cause of #3421/#3423 and regressions covering both missing
+context results and Unicode Property FTS, see [search-root-cause.md](search-root-cause.md).
+
 From `gitnexus/`:
 
 ```sh

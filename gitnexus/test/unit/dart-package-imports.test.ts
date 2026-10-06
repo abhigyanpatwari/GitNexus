@@ -1,28 +1,18 @@
 import { execFileSync } from 'node:child_process';
-import { afterEach, describe, expect, it } from 'vitest';
-import { constants } from 'node:fs';
-import {
-  mkdtemp,
-  mkdir,
-  rm,
-  symlink,
-  writeFile,
-  chmod,
-  rename,
-  open,
-  readdir,
-} from 'node:fs/promises';
+import nodeFs from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs, { mkdtemp, mkdir, rm, symlink, writeFile, chmod, rename } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { SupportedLanguages } from 'gitnexus-shared';
 import { dartScopeResolver } from '../../src/core/ingestion/languages/dart/scope-resolver.js';
 import {
   loadDartPackageConfig,
-  readDirectoryNoFollow,
-  directoryOpenFlags,
-  descriptorDirectoryPath,
-  descriptorEntryPath,
-  pubspecWalkAnchored,
+  captureDartPackageConfig,
 } from '../../src/core/ingestion/languages/dart/package-config.js';
+import { scanPhase } from '../../src/core/ingestion/pipeline-phases/scan.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { CountingSet } from '../helpers/counting-file-set.js';
 import { _captureLogger } from '../../src/core/logger.js';
 
@@ -183,25 +173,7 @@ describe('Dart package identity (#2963)', () => {
   });
 });
 
-describe('directory no-follow flags', () => {
-  it('does not drop O_NOFOLLOW from directory opens', () => {
-    if (typeof constants.O_NOFOLLOW !== 'number' || constants.O_NOFOLLOW === 0) {
-      expect(() => directoryOpenFlags()).toThrow(/O_NOFOLLOW is unavailable/);
-      return;
-    }
-    expect(directoryOpenFlags() & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
-  });
-
-  it('anchors pubspec discovery only where a no-follow walk exists', () => {
-    const canAnchor =
-      (process.platform === 'linux' || process.platform === 'darwin') &&
-      typeof constants.O_NOFOLLOW === 'number' &&
-      constants.O_NOFOLLOW !== 0;
-    expect(pubspecWalkAnchored()).toBe(canAnchor);
-  });
-});
-
-describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => {
+describe('Dart pubspec package discovery', () => {
   const roots: string[] = [];
   afterEach(async () => {
     for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -378,184 +350,391 @@ describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => 
     );
   });
 
-  it('refuses an incomplete scan rather than persisting untracked identity changes', async () => {
+  it('discovers declared packages on Windows', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    try {
+      expect((await loadDartPackageConfig(root)).packages).toEqual(config.packages);
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
+  it('fails when repository ignore rules cannot be read', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    await mkdir(path.join(root, '.gitignore'));
+    await expect(loadDartPackageConfig(root)).rejects.toThrow('(scan-inputs)');
+  });
+
+  for (const ignoreFile of ['.gitignore', '.gitnexusignore']) {
+    it(`applies linked ${ignoreFile} to TypeScript scans while keeping Dart capture strict`, async (context) => {
+      const root = await fixture({ 'main.ts': 'export {};', 'ignored.ts': 'export {};' });
+      const outside = await fixture({ rules: 'ignored.ts\n' });
+      try {
+        await symlink(path.join(outside, 'rules'), path.join(root, ignoreFile), 'file');
+      } catch (error) {
+        if (
+          process.platform === 'win32' &&
+          ['EPERM', 'EACCES', 'ENOSYS'].includes((error as NodeJS.ErrnoException).code ?? '')
+        ) {
+          context.skip('Windows file symlinks are unavailable');
+        }
+        throw error;
+      }
+      const scanContext = {
+        repoPath: root,
+        graph: createKnowledgeGraph(),
+        onProgress: () => {},
+        pipelineStart: Date.now(),
+      };
+      const scanned = await scanPhase.execute(scanContext, new Map());
+      expect(scanned.allPaths).toEqual(['main.ts']);
+      expect(scanned.resolutionConfigs?.has(SupportedLanguages.Dart)).toBe(false);
+
+      // Dart capture validates its scan inputs even when no pubspec was discovered.
+      await writeFile(path.join(root, 'main.dart'), 'void main() {}');
+      await expect(scanPhase.execute(scanContext, new Map())).rejects.toThrow('(scan-inputs)');
+    });
+  }
+
+  it('fails when the repository root is missing', async () => {
     const root = await fixture({});
     await expect(loadDartPackageConfig(path.join(root, 'missing'))).rejects.toThrow(
-      'Dart pubspec discovery failed (read-directory)',
+      '(scan-inputs)',
     );
   });
 
-  it('fails closed when the directory walk exceeds its budget', async () => {
+  it('fails metadata capture when glob cannot enumerate a nonignored directory', async () => {
+    const root = await fixture({
+      'pubspec.yaml': 'name: app',
+      'packages/duplicate/pubspec.yaml': 'name: app',
+    });
+    const realReaddir = nodeFs.readdir;
+    let denied = 0;
+    const spy = vi.spyOn(nodeFs, 'readdir').mockImplementation((directory, options, callback) => {
+      if (directory === path.join(root, 'packages')) {
+        denied++;
+        callback(Object.assign(new Error('directory denied'), { code: 'EACCES' }), []);
+      } else {
+        realReaddir(directory, options, callback);
+      }
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(loadDartPackageConfig(root)).rejects.toThrow('(scan-inputs)');
+      expect(denied).toBe(1);
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('fails instead of returning a partial map when a captured candidate is missing', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app', 'nested/keep.txt': '' });
+    await expect(
+      captureDartPackageConfig(root, ['pubspec.yaml', 'nested/pubspec.yaml']),
+    ).rejects.toThrow('Dart pubspec discovery failed (read-pubspec): nested/pubspec.yaml');
+  });
+
+  it('fails closed at the manifest budget', async () => {
     const root = await fixture({
       'pubspec.yaml': 'name: app',
       'nested/pubspec.yaml': 'name: data',
     });
-    await expect(loadDartPackageConfig(root, { directoryLimit: 1 })).rejects.toThrow(
-      'Dart pubspec discovery failed (directory-limit)',
+    await expect(loadDartPackageConfig(root, { manifestLimit: 1 })).rejects.toThrow(
+      'Dart pubspec discovery failed (manifest-limit)',
     );
   });
 
-  it('fails closed before one directory listing is unbounded', async () => {
-    const root = await fixture({ 'pubspec.yaml': 'name: app', 'extra.txt': 'x' });
-    await expect(loadDartPackageConfig(root, { directoryEntryLimit: 1 })).rejects.toThrow(
-      'Dart pubspec discovery failed (directory-entries)',
+  it('captures a deep package without holding directory descriptors', async () => {
+    const manifest = `${'a/'.repeat(70)}pubspec.yaml`;
+    const root = await fixture({ [manifest]: 'name: data' });
+    expect((await captureDartPackageConfig(root, [manifest])).packages.get('data')).toBe(
+      `${'a/'.repeat(70)}lib`,
     );
   });
 
-  it('fails closed before a deep chain holds one descriptor per level', async () => {
-    const root = await fixture({ 'a/b/pubspec.yaml': 'name: data' });
-    await expect(loadDartPackageConfig(root, { directoryDepthLimit: 2 })).rejects.toThrow(
-      'Dart pubspec discovery failed (directory-depth): a/b',
-    );
-  });
-
-  it('still reads a manifest when the open-directory cap is exactly the nesting', async () => {
-    const root = await fixture({ 'a/pubspec.yaml': 'name: data' });
-    expect((await loadDartPackageConfig(root, { directoryDepthLimit: 2 })).packages).toEqual(
-      new Map([['data', 'a/lib']]),
-    );
-  });
-
-  it('fails closed when ignore rules cannot be read', async () => {
+  it('does not treat the same candidate twice as a duplicate package', async () => {
     const root = await fixture({ 'pubspec.yaml': 'name: app' });
-    await mkdir(path.join(root, '.gitignore'));
-    await expect(loadDartPackageConfig(root)).rejects.toThrow(
-      'Dart pubspec discovery failed (ignore-rules)',
+    expect(
+      (await captureDartPackageConfig(root, ['pubspec.yaml', 'pubspec.yaml'])).packages,
+    ).toEqual(config.packages);
+  });
+
+  it.each(['../pubspec.yaml', '/pubspec.yaml', 'C:/pubspec.yaml', 'a/../pubspec.yaml'])(
+    'rejects a non-repository manifest path: %s',
+    async (candidate) => {
+      const root = await fixture({ 'pubspec.yaml': 'name: app' });
+      await expect(captureDartPackageConfig(root, [candidate])).rejects.toThrow('(manifest-path)');
+    },
+  );
+
+  it('rejects an enumerated nonregular manifest', async () => {
+    const root = await fixture({});
+    await mkdir(path.join(root, 'pubspec.yaml'));
+    await expect(captureDartPackageConfig(root, ['pubspec.yaml'])).rejects.toThrow(
+      '(read-pubspec)',
     );
   });
 
-  // Windows does not enforce POSIX mode bits, and root bypasses them, so chmod
-  // cannot make this read fail on either.
+  it.skipIf(process.platform === 'win32')(
+    'does not block on a FIFO manifest',
+    async () => {
+      const root = await fixture({});
+      execFileSync('mkfifo', [path.join(root, 'pubspec.yaml')]);
+      await expect(captureDartPackageConfig(root, ['pubspec.yaml'])).rejects.toThrow(
+        '(read-pubspec)',
+      );
+    },
+    3_000,
+  );
+
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'fails closed when a pubspec cannot be read',
     async () => {
       const root = await fixture({ 'pubspec.yaml': 'name: app' });
       await chmod(path.join(root, 'pubspec.yaml'), 0o000);
-      await expect(loadDartPackageConfig(root)).rejects.toThrow(
-        'Dart pubspec discovery failed (read-pubspec)',
-      );
+      await expect(loadDartPackageConfig(root)).rejects.toThrow('(read-pubspec)');
     },
   );
 
-  it('does not block when a listed pubspec is replaced by a fifo', async () => {
-    const root = await fixture({ 'pubspec.yaml': 'name: app' });
-    const manifest = path.join(root, 'pubspec.yaml');
-    await expect(
-      loadDartPackageConfig(root, {
-        beforeEntryOpen: async (relative) => {
-          if (relative !== '') return;
-          await rm(manifest);
-          execFileSync('mkfifo', [manifest]);
-        },
-      }),
-    ).rejects.toThrow('Dart pubspec discovery failed (read-pubspec)');
-  }, 3_000);
+  it.skipIf(process.platform === 'win32')('does not follow a symlinked manifest', async () => {
+    const outside = await fixture({ 'pubspec.yaml': 'name: foreign' });
+    const root = await fixture({ 'nested/pubspec.yaml': 'name: data' });
+    await symlink(path.join(outside, 'pubspec.yaml'), path.join(root, 'pubspec.yaml'));
+    expect(
+      (await captureDartPackageConfig(root, ['pubspec.yaml', 'nested/pubspec.yaml'])).packages,
+    ).toEqual(new Map([['data', 'nested/lib']]));
+  });
 
   it.skipIf(process.platform === 'win32')(
-    'does not follow a symlinked pubspec into another tree',
+    'closes a symlinked manifest without reading when no-follow is unavailable',
     async () => {
       const outside = await fixture({ 'pubspec.yaml': 'name: foreign' });
-      const root = await fixture({ 'packages/data/pubspec.yaml': 'name: data' });
-      await symlink(path.join(outside, 'pubspec.yaml'), path.join(root, 'pubspec.yaml'));
-      expect((await loadDartPackageConfig(root)).packages).toEqual(
-        new Map([['data', 'packages/data/lib']]),
-      );
+      const root = await fixture({ 'nested/pubspec.yaml': 'name: data' });
+      const manifest = path.join(root, 'pubspec.yaml');
+      await symlink(path.join(outside, 'pubspec.yaml'), manifest);
+      const realOpen = fs.open;
+      let opened: Awaited<ReturnType<typeof fs.open>> | undefined;
+      const read = vi.fn();
+      let restoreRead = () => {};
+      const spy = vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+        if (file !== manifest) return realOpen(file, flags, mode);
+        const handle = await realOpen(
+          file,
+          typeof flags === 'number' ? flags & ~(fs.constants.O_NOFOLLOW ?? 0) : flags,
+          mode,
+        );
+        opened = handle;
+        const readSpy = vi.spyOn(handle, 'read').mockImplementation(read);
+        restoreRead = () => readSpy.mockRestore();
+        return handle;
+      });
+      syncBuiltinESMExports();
+      try {
+        expect(
+          (await captureDartPackageConfig(root, ['pubspec.yaml', 'nested/pubspec.yaml'])).packages,
+        ).toEqual(new Map([['data', 'nested/lib']]));
+        expect(read).not.toHaveBeenCalled();
+        expect(spy.mock.calls.filter(([file]) => file === manifest)).toHaveLength(1);
+        expect(opened?.fd).toBe(-1);
+      } finally {
+        restoreRead();
+        spy.mockRestore();
+        syncBuiltinESMExports();
+      }
     },
   );
 
-  it('does not follow a listed directory replaced by a symlink on macOS', async () => {
-    if (process.platform !== 'darwin') return;
-    const outside = await fixture({
-      'pubspec.yaml': 'name: foreign',
-      'nested/pubspec.yaml': 'name: foreign',
-    });
-    const root = await fixture({
-      'pkg/pubspec.yaml': 'name: data',
-      'pkg/nested/pubspec.yaml': 'name: nested_data',
-    });
-    const pkg = path.join(root, 'pkg');
-    await expect(
-      loadDartPackageConfig(root, {
-        beforeEntryOpen: async (relative) => {
-          if (relative !== 'pkg') return;
-          await rename(pkg, path.join(root, 'pkg-moved'));
-          await symlink(outside, pkg, 'dir');
-        },
-      }),
-    ).rejects.toThrow(/Dart pubspec discovery failed \((read-directory|read-pubspec)\)/);
-  });
-
-  it('reads listed manifests from the opened directory inode after that path is replaced', async () => {
-    if (descriptorEntryPath(0, 'pubspec.yaml') === null) return;
-    const outside = await fixture({
-      'pubspec.yaml': 'name: foreign',
-      'nested/pubspec.yaml': 'name: foreign',
-    });
-    const root = await fixture({
-      'pkg/pubspec.yaml': 'name: data',
-      'pkg/nested/pubspec.yaml': 'name: nested_data',
-    });
-    const pkg = path.join(root, 'pkg');
-    const loaded = await loadDartPackageConfig(root, {
-      beforeEntryOpen: async (relative) => {
-        if (relative !== 'pkg') return;
-        await rename(pkg, path.join(root, 'pkg-moved'));
-        await symlink(outside, pkg, 'dir');
-      },
-    });
-    expect(loaded.packages).toEqual(
-      new Map([
-        ['data', 'pkg/lib'],
-        ['nested_data', 'pkg/nested/lib'],
-      ]),
+  it('excludes candidates below directory symlinks or Windows junctions', async () => {
+    const outside = await fixture({ 'nested/pubspec.yaml': 'name: foreign' });
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    await symlink(
+      outside,
+      path.join(root, 'linked'),
+      process.platform === 'win32' ? 'junction' : 'dir',
     );
+    expect(
+      (await captureDartPackageConfig(root, ['pubspec.yaml', 'linked/nested/pubspec.yaml']))
+        .packages,
+    ).toEqual(config.packages);
   });
 
-  it('lists the opened directory inode after its path becomes a symlink', async () => {
-    const listingRoot = descriptorDirectoryPath(0);
-    if (listingRoot === null) return;
-    const outside = await fixture({ 'outside.txt': 'out' });
-    const root = await fixture({});
-    const real = path.join(root, 'real');
-    await mkdir(real);
-    await writeFile(path.join(real, 'inside.txt'), 'in');
-    const handle = await open(real, directoryOpenFlags());
+  it('pins the manifest before pathname validation can race with replacement', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    const manifest = path.join(root, 'pubspec.yaml');
+    const original = await fs.lstat(manifest, { bigint: true });
+    const realOpen = fs.open;
+    const realLstat = fs.lstat;
+    let replaced = false;
+    let openedInode: bigint | undefined;
+    const statSpy = vi.spyOn(fs, 'lstat').mockImplementation(async (file, options) => {
+      const info = await realLstat(file, options);
+      if (file === manifest && !replaced) {
+        replaced = true;
+        await rename(manifest, path.join(root, 'old.yaml'));
+        await fs.utimes(path.join(root, 'old.yaml'), 1, 1);
+        await writeFile(manifest, 'name: foreign');
+      }
+      return info;
+    });
+    const spy = vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await realOpen(file, flags, mode);
+      if (file === manifest) openedInode = (await handle.stat({ bigint: true })).ino;
+      return handle;
+    });
+    syncBuiltinESMExports();
     try {
-      const listed = descriptorDirectoryPath(handle.fd);
-      if (listed === null) throw new Error('descriptor listing path missing');
-      await rename(real, path.join(root, 'real-moved'));
-      await symlink(outside, real, process.platform === 'win32' ? 'junction' : 'dir');
-      await expect(readDirectoryNoFollow(real)).rejects.toThrow();
-      expect(await readdir(listed)).toEqual(['inside.txt']);
+      await expect(captureDartPackageConfig(root, ['pubspec.yaml'])).rejects.toThrow(
+        '(read-pubspec)',
+      );
+      expect(replaced).toBe(true);
+      expect(openedInode).toBe(original.ino);
     } finally {
-      await handle.close();
+      spy.mockRestore();
+      statSpy.mockRestore();
+      syncBuiltinESMExports();
     }
   });
-});
 
-describe('directory symlink refusal', () => {
-  const roots: string[] = [];
-  afterEach(async () => {
-    for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  it('closes a descriptor without reading when its pathname is replaced after open', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    const manifest = path.join(root, 'pubspec.yaml');
+    const realOpen = fs.open;
+    let opened: Awaited<ReturnType<typeof fs.open>> | undefined;
+    const read = vi.fn();
+    const spy = vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await realOpen(file, flags, mode);
+      if (file === manifest) {
+        opened = handle;
+        vi.spyOn(handle, 'read').mockImplementation(read);
+        await rename(manifest, path.join(root, 'old.yaml'));
+        await writeFile(manifest, 'name: foreign');
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(captureDartPackageConfig(root, ['pubspec.yaml'])).rejects.toThrow(
+        '(read-pubspec)',
+      );
+      expect(read).not.toHaveBeenCalled();
+      expect(opened?.fd).toBe(-1);
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
 
-  it('refuses a directory symlink instead of listing its target', async () => {
-    const outside = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-dart-pubspec-'));
-    const root = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-dart-pubspec-'));
-    roots.push(outside, root);
-    await writeFile(path.join(outside, 'secret.txt'), 'name: foreign');
-    const link = path.join(root, 'linked');
-    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
-    await expect(readDirectoryNoFollow(link)).rejects.toThrow();
+  it('rejects a same-size manifest edit after the initial descriptor check', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    const manifest = path.join(root, 'pubspec.yaml');
+    const realOpen = fs.open;
+    let changed = false;
+    const spy = vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await realOpen(file, flags, mode);
+      if (file === manifest) {
+        const realStat = handle.stat.bind(handle);
+        vi.spyOn(handle, 'stat').mockImplementationOnce(async () => {
+          const before = await realStat({ bigint: true });
+          await writeFile(manifest, 'name: new');
+          // Force an observable change even on a filesystem with coarse timestamps.
+          await fs.utimes(manifest, 1, 1);
+          changed = true;
+          return before;
+        });
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(captureDartPackageConfig(root, ['pubspec.yaml'])).rejects.toThrow(
+        '(read-pubspec)',
+      );
+      expect(changed).toBe(true);
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
 
-  it.skipIf(pubspecWalkAnchored())(
-    'does not discover packages when the walk cannot honor no-follow',
-    async () => {
-      const root = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-dart-pubspec-'));
-      roots.push(root);
-      await writeFile(path.join(root, 'pubspec.yaml'), 'name: app\n');
-      expect((await loadDartPackageConfig(root)).packages.size).toBe(0);
-    },
-  );
+  it('uses only captured package identity after the repository path is replaced', async () => {
+    const root = await fixture({
+      'pubspec.yaml': 'name: app',
+      'lib/models.dart': 'class Model {}',
+    });
+    const captured = await scanPhase.execute(
+      {
+        repoPath: root,
+        graph: createKnowledgeGraph(),
+        onProgress: () => {},
+        pipelineStart: Date.now(),
+      },
+      new Map(),
+    );
+    const resolutionConfig = captured.resolutionConfigs?.get(SupportedLanguages.Dart);
+    expect(resolutionConfig).toBeDefined();
+    const moved = `${root}-moved`;
+    await rename(root, moved);
+    roots.push(moved);
+    await mkdir(root);
+    await writeFile(path.join(root, 'pubspec.yaml'), 'name: foreign');
+    expect(
+      dartScopeResolver.resolveImportTarget(
+        'package:app/models.dart',
+        'lib/main.dart',
+        new Set(captured.allPaths),
+        resolutionConfig,
+      ),
+    ).toBe('lib/models.dart');
+    expect(
+      dartScopeResolver.resolveImportTarget(
+        'package:foreign/models.dart',
+        'lib/main.dart',
+        new Set(captured.allPaths),
+        resolutionConfig,
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects oversized captured metadata before the shared scanner can filter it away', async () => {
+    const root = await fixture({
+      'pubspec.yaml': `name: app\n#${'x'.repeat(1024 * 1024)}`,
+      'lib/main.dart': 'void main() {}',
+    });
+    await expect(
+      scanPhase.execute(
+        {
+          repoPath: root,
+          graph: createKnowledgeGraph(),
+          onProgress: () => {},
+          pipelineStart: Date.now(),
+        },
+        new Map(),
+      ),
+    ).rejects.toThrow('(manifest-size)');
+  });
+
+  it('opens only manifest candidates and checks each shared parent once', async () => {
+    const root = await fixture({
+      'packages/a/pubspec.yaml': 'name: a',
+      'packages/b/pubspec.yaml': 'name: b',
+    });
+    const paths = Array.from({ length: 10_000 }, (_, i) => `other/file${i}.dart`);
+    paths.push('packages/a/pubspec.yaml', 'packages/b/pubspec.yaml');
+    const openSpy = vi.spyOn(fs, 'open');
+    const statSpy = vi.spyOn(fs, 'lstat');
+    syncBuiltinESMExports();
+    try {
+      expect((await captureDartPackageConfig(root, paths)).packages.size).toBe(2);
+      expect(openSpy).toHaveBeenCalledTimes(2);
+      expect(
+        statSpy.mock.calls.filter(([file]) => file === path.join(root, 'packages')),
+      ).toHaveLength(1);
+    } finally {
+      openSpy.mockRestore();
+      statSpy.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
 });
