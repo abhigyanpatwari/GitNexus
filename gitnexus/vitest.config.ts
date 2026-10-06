@@ -8,6 +8,8 @@ export default defineConfig({
     hookTimeout: 120000,
     pool: 'forks',
     globals: true,
+    // Keep the Vitest 4 mock lifecycle while upgrading the runner to Vitest 5.
+    clearMocks: false,
     // Stable test identity across the Linux/macOS/Windows execution receipts.
     includeTaskLocation: true,
     teardownTimeout: 3000,
