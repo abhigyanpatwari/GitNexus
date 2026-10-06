@@ -469,7 +469,7 @@ describe('Dart pubspec package discovery', () => {
     },
   );
 
-  it('rejects an enumerated special file before opening it', async () => {
+  it('rejects an enumerated nonregular manifest', async () => {
     const root = await fixture({});
     await mkdir(path.join(root, 'pubspec.yaml'));
     await expect(captureDartPackageConfig(root, ['pubspec.yaml'])).rejects.toThrow(
@@ -507,6 +507,45 @@ describe('Dart pubspec package discovery', () => {
     ).toEqual(new Map([['data', 'nested/lib']]));
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'closes a symlinked manifest without reading when no-follow is unavailable',
+    async () => {
+      const outside = await fixture({ 'pubspec.yaml': 'name: foreign' });
+      const root = await fixture({ 'nested/pubspec.yaml': 'name: data' });
+      const manifest = path.join(root, 'pubspec.yaml');
+      await symlink(path.join(outside, 'pubspec.yaml'), manifest);
+      const realOpen = fs.open;
+      let opened: Awaited<ReturnType<typeof fs.open>> | undefined;
+      const read = vi.fn();
+      let restoreRead = () => {};
+      const spy = vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+        if (file !== manifest) return realOpen(file, flags, mode);
+        const handle = await realOpen(
+          file,
+          typeof flags === 'number' ? flags & ~(fs.constants.O_NOFOLLOW ?? 0) : flags,
+          mode,
+        );
+        opened = handle;
+        const readSpy = vi.spyOn(handle, 'read').mockImplementation(read);
+        restoreRead = () => readSpy.mockRestore();
+        return handle;
+      });
+      syncBuiltinESMExports();
+      try {
+        expect(
+          (await captureDartPackageConfig(root, ['pubspec.yaml', 'nested/pubspec.yaml'])).packages,
+        ).toEqual(new Map([['data', 'nested/lib']]));
+        expect(read).not.toHaveBeenCalled();
+        expect(spy.mock.calls.filter(([file]) => file === manifest)).toHaveLength(1);
+        expect(opened?.fd).toBe(-1);
+      } finally {
+        restoreRead();
+        spy.mockRestore();
+        syncBuiltinESMExports();
+      }
+    },
+  );
+
   it('excludes candidates below directory symlinks or Windows junctions', async () => {
     const outside = await fixture({ 'nested/pubspec.yaml': 'name: foreign' });
     const root = await fixture({ 'pubspec.yaml': 'name: app' });
@@ -521,18 +560,28 @@ describe('Dart pubspec package discovery', () => {
     ).toEqual(config.packages);
   });
 
-  it('rejects a manifest replaced between stat and open without relying on parent timestamps', async () => {
+  it('pins the manifest before pathname validation can race with replacement', async () => {
     const root = await fixture({ 'pubspec.yaml': 'name: app' });
     const manifest = path.join(root, 'pubspec.yaml');
+    const original = await fs.lstat(manifest, { bigint: true });
     const realOpen = fs.open;
+    const realLstat = fs.lstat;
     let replaced = false;
-    const spy = vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+    let openedInode: bigint | undefined;
+    const statSpy = vi.spyOn(fs, 'lstat').mockImplementation(async (file, options) => {
+      const info = await realLstat(file, options);
       if (file === manifest && !replaced) {
         replaced = true;
         await rename(manifest, path.join(root, 'old.yaml'));
+        await fs.utimes(path.join(root, 'old.yaml'), 1, 1);
         await writeFile(manifest, 'name: foreign');
       }
-      return realOpen(file, flags, mode);
+      return info;
+    });
+    const spy = vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await realOpen(file, flags, mode);
+      if (file === manifest) openedInode = (await handle.stat({ bigint: true })).ino;
+      return handle;
     });
     syncBuiltinESMExports();
     try {
@@ -540,6 +589,37 @@ describe('Dart pubspec package discovery', () => {
         '(read-pubspec)',
       );
       expect(replaced).toBe(true);
+      expect(openedInode).toBe(original.ino);
+    } finally {
+      spy.mockRestore();
+      statSpy.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('closes a descriptor without reading when its pathname is replaced after open', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    const manifest = path.join(root, 'pubspec.yaml');
+    const realOpen = fs.open;
+    let opened: Awaited<ReturnType<typeof fs.open>> | undefined;
+    const read = vi.fn();
+    const spy = vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await realOpen(file, flags, mode);
+      if (file === manifest) {
+        opened = handle;
+        vi.spyOn(handle, 'read').mockImplementation(read);
+        await rename(manifest, path.join(root, 'old.yaml'));
+        await writeFile(manifest, 'name: foreign');
+      }
+      return handle;
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(captureDartPackageConfig(root, ['pubspec.yaml'])).rejects.toThrow(
+        '(read-pubspec)',
+      );
+      expect(read).not.toHaveBeenCalled();
+      expect(opened?.fd).toBe(-1);
     } finally {
       spy.mockRestore();
       syncBuiltinESMExports();
