@@ -1,0 +1,171 @@
+# Paid release comparisons run trusted main's harness against a separately
+# pinned runtime. Enable the weekly schedule only after a successful dispatch.
+name: Release evaluation
+
+on:
+  schedule:
+    - cron: '0 5 * * 3' # Wednesday 05:00 UTC
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: 'Full commit SHA or version tag to evaluate; latest-rc resolves the newest published RC'
+        type: string
+        default: latest-rc
+      model:
+        description: 'Named model for both arms'
+        type: string
+        default: gpt-5.6-sol
+      effort:
+        description: 'Reasoning effort for both arms'
+        type: choice
+        default: xhigh
+        options: [low, medium, high, xhigh, max]
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  evaluate:
+    if: >-
+      github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.GITNEXUS_RELEASE_EVAL_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    # Reuse the main-only protected model-secret environment. No tag/fork code
+    # runs as the harness, and no release or PR write token is available here.
+    environment: gitnexus-evolution
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    env:
+      CANDIDATE_REF: ${{ inputs.candidate_ref || 'latest-rc' }}
+      MODEL: ${{ inputs.model || 'gpt-5.6-sol' }}
+      EFFORT: ${{ inputs.effort || 'xhigh' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Resolve immutable runtime revision
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref="$CANDIDATE_REF"
+          if [[ "$ref" == 'latest-rc' ]]; then
+            ref="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \
+              '[.[] | select(.prerelease and (.draft | not)) | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$"))] | sort_by(.published_at) | last | .tag_name // empty')"
+          fi
+          if ! [[ "$ref" =~ ^[0-9a-f]{40}$ || "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo '::error::No published RC found, or candidate_ref is not a full SHA/version tag.'
+            exit 1
+          fi
+          sha="$(git rev-parse --verify "$ref^{commit}")"
+          if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            # Manual stable candidates must already be reviewed on main.
+            git merge-base --is-ancestor "$sha" HEAD
+          else
+            # Versioned RC trees are published descendants, not ancestors of
+            # main. Accept their official published release rather than PR refs.
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$ref" --jq '.draft == false' | grep -qx true
+          fi
+          echo "Runtime: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.sha }}
+          path: candidate
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: candidate/gitnexus/package-lock.json
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.11.23'
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: eval/uv.lock
+      - name: Install sandbox runtime and pinned Claude CLI
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap ripgrep socat
+          apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [[ -r "$apparmor_userns" ]] && [[ "$(<"$apparmor_userns")" == '1' ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          cli="$RUNNER_TEMP/claude-canary"
+          install -d -m 0700 "$cli"
+          install -m 0600 .github/claude-canary-runtime/package{,-lock}.json "$cli/"
+          npm ci --prefix "$cli" --audit=false --fund=false
+          test "$("$cli/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = '2.1.214 (Claude Code)'
+      - name: Build pinned runtime and task dependencies
+        run: |
+          set -euo pipefail
+          npm ci --prefix candidate
+          npm ci --prefix candidate/gitnexus
+          npm run build --prefix candidate/gitnexus
+          mkdir -p candidate/gitnexus-shared/node_modules
+      - name: Prepare pinned task set
+        working-directory: eval
+        run: |
+          uv run --locked --extra dev python -m workflow_bench.release_report prepare \
+            --repo "$GITHUB_WORKSPACE/candidate" --out "$RUNNER_TEMP/release-evaluation" \
+            --model "$MODEL" --effort "$EFFORT" --runs 3
+      - name: Require real containment before paid sessions
+        working-directory: eval
+        env:
+          GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
+          GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
+          CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+        run: uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py -q
+      - name: Run repeated paired agent sessions
+        timeout-minutes: 300
+        working-directory: eval
+        env:
+          GITNEXUS_BENCH_OPENAI_API_KEY: ${{ secrets.GITNEXUS_BENCH_OPENAI_API_KEY }}
+          GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
+        run: |
+          uv run --locked --extra dev python -m workflow_bench.runner \
+            --tasks "$RUNNER_TEMP/release-evaluation/tasks.yaml" \
+            --gitnexus-root "$GITHUB_WORKSPACE/candidate" \
+            --arms baseline_nomcp baseline --runs 3 --include-expensive \
+            --workers 3 --timeout 1800 --model "$MODEL" --effort "$EFFORT" \
+            --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
+            --out "$RUNNER_TEMP/release-evaluation/raw"
+      - name: Summarize complete or incomplete measurements
+        if: ${{ always() && steps.resolve.outputs.sha != '' }}
+        working-directory: eval
+        run: |
+          if [[ -f "$RUNNER_TEMP/release-evaluation/metadata.json" ]]; then
+            uv run --locked --extra dev python -m workflow_bench.release_report summarize \
+              --results "$RUNNER_TEMP/release-evaluation/raw/results.jsonl" \
+              --metadata "$RUNNER_TEMP/release-evaluation/metadata.json" \
+              --out "$RUNNER_TEMP/release-evaluation/public"
+          else
+            echo '::error::Evaluation preparation failed; no measurements exist.'
+            exit 1
+          fi
+      - name: Publish agent summary
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/release-evaluation/public/agent-evaluation.md" ]]; then
+            cat "$RUNNER_TEMP/release-evaluation/public/agent-evaluation.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload sanitized release evidence
+        if: ${{ always() && steps.resolve.outputs.sha != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-agent-evaluation-${{ steps.resolve.outputs.sha }}
+          path: |
+            ${{ runner.temp }}/release-evaluation/public/agent-evaluation.json
+            ${{ runner.temp }}/release-evaluation/public/agent-evaluation.md
+          if-no-files-found: error
+          retention-days: 30

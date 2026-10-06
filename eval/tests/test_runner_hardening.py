@@ -486,6 +486,7 @@ def _stub_cell_dependencies(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "ce_plugin_mounts_for_arm", lambda *_a, **_k: [])
     monkeypatch.setattr(runner, "ce_plugin_dir_for_arm", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "prepare_sandbox", lambda **_k: nullcontext(SimpleNamespace(run=None)))
+    monkeypatch.setattr(runner, "seed_evaluated_skills", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "skill_fingerprint", lambda *_a, **_k: "skill-digest")
     monkeypatch.setattr(runner, "require_skill_fingerprint", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "_sandbox_git", lambda *_a, **_k: "c" * 40)

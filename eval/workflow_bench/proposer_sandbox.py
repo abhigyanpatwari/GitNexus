@@ -54,6 +54,12 @@ SANDBOX_GITNEXUS_SHARED = "/opt/gitnexus-shared"
 SANDBOX_GITNEXUS_REGISTRY = "/opt/gitnexus-registry"
 SANDBOX_USER_SKILLS = f"{SANDBOX_HOME}/.claude/skills"
 SANDBOX_EVIDENCE = "/evidence"
+GITNEXUS_UNAVAILABLE_NOTE = (
+    "GitNexus tools are unavailable in this baseline_nomcp arm. "
+    "No GitNexus graph, repository registry, MCP server, or harness CLI is supplied; "
+    "the Skill tool is disabled. Use source reads, search, and repository tests "
+    "to complete the task. Do not invoke or bootstrap GitNexus with npx or .gitnexus/run.cjs.\n"
+)
 
 # Claude Code's weaker nested sandbox overlays these absent root paths with
 # /dev/null devices. They are tool-created mount noise, not model-authored
@@ -536,8 +542,8 @@ def build_sandbox_environment(
         token = auth_token.strip()
         if not token:
             raise SandboxError("model auth token must not be blank")
-        # Every benchmark/proposer invocation uses Claude's --bare mode,
-        # which intentionally ignores OAuth/keychain/AUTH_TOKEN credentials.
+        # Explicit API-key auth works for normal benchmark startup and the
+        # proposer's --bare mode; private HOME carries no OAuth/keychain state.
         env["ANTHROPIC_API_KEY"] = token
     if base_url is not None:
         env["ANTHROPIC_BASE_URL"] = _validated_base_url(base_url)
@@ -547,12 +553,9 @@ def build_sandbox_environment(
 def build_claude_settings(*, sandbox_enabled: bool = True) -> str:
     """Inline settings that keep every Bash sandboxed and pre-approve the tools.
 
-    Deliberately hook-free: headless ``claude -p`` (2.1.247) never dispatches
-    ``PreToolUse``, whatever source the hook is declared in — inline
-    ``--settings``, a settings file, project/user/local ``--setting-sources``,
-    or a trusted project entry in ``~/.claude.json``. Confinement therefore
-    rests only on mechanisms the CLI honors in this mode: the sandbox policy
-    below, ``--tools``/``--allowedTools``, and the bwrap mounts.
+    Inline settings disable repository/plugin hooks even when ordinary
+    CLAUDE.md startup context is loaded. Confinement rests on the sandbox
+    policy below, ``--tools``/``--allowedTools``, and the bwrap mounts.
     """
 
     permissions = {
@@ -561,6 +564,7 @@ def build_claude_settings(*, sandbox_enabled: bool = True) -> str:
     if sandbox_enabled:
         permissions["disableBypassPermissionsMode"] = "disable"
     settings = {
+        "disableAllHooks": True,
         "sandbox": {
             "enabled": sandbox_enabled,
             "failIfUnavailable": sandbox_enabled,
@@ -687,10 +691,11 @@ def _runtime_mount_args() -> list[str]:
     return args
 
 
-def _create_shell_prefix_wrapper(private_root: Path) -> Path:
+def _create_shell_prefix_wrapper(private_root: Path, *, gitnexus_available: bool = True) -> Path:
     """Create Claude's immutable clean-environment command adapter."""
 
     wrapper = private_root / "shell-prefix"
+    gitnexus_invocation = "GITNEXUS_INVOCATION=gitnexus " if gitnexus_available else ""
     wrapper.write_text(
         "#!/bin/bash\n"
         "set -eu\n"
@@ -699,7 +704,7 @@ def _create_shell_prefix_wrapper(private_root: Path) -> Path:
         f"HOME={SANDBOX_HOME} USER=agent LOGNAME=agent TMPDIR={SANDBOX_TMP} "
         f"PATH={SANDBOX_PATH} LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=dumb "
         f"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.excludesFile GIT_CONFIG_VALUE_0={SANDBOX_GIT_EXCLUDES} "
-        "GITNEXUS_INVOCATION=gitnexus "
+        f"{gitnexus_invocation}"
         '/bin/bash -c "$1"\n'
     )
     wrapper.chmod(0o500)
@@ -731,6 +736,81 @@ def _create_gitnexus_wrapper(private_root: Path) -> Path:
     wrapper.write_text(f'#!/bin/bash\nset -eu\nexec {SANDBOX_NODE} {SANDBOX_GITNEXUS}/dist/cli/index.js "$@"\n')
     wrapper.chmod(0o500)
     return wrapper
+
+
+_GITNEXUS_TOOL_GUIDANCE = re.compile(
+    r"(?:\.gitnexus/run\.cjs|\b(?:npx|bunx|pnpm\s+dlx)\s+(?:--?[\w-]+(?:=[^\s`]+)?\s+)*gitnexus(?:@|\b)|"
+    r"\bmcp__gitnexus(?:__|\b)|\bgitnexus:(?:start|end)\b|"
+    r"\bgitnexus-(?:plan|work|review|lfg|exploring|impact-analysis|debugging|refactoring|guide|cli)\b|"
+    r"\b(?:use|run|bootstrap|invoke)\s+(?:\*\*|`)?gitnexus\b|"
+    r"\bgitnexus\s+(?:setup|analyze|query|context|impact|detect-changes)\b)",
+    re.IGNORECASE,
+)
+
+
+def _ordinary_repository_guidance(text: str) -> str:
+    """Remove marked/tool-specific instructions, preserving development guidance."""
+
+    kept: list[str] = []
+    marked = False
+    section_level: int | None = None
+    skip_continuation = False
+    for line in text.splitlines(keepends=True):
+        marker = re.fullmatch(r"\s*<!--\s*gitnexus:(start|end)\s*-->\s*", line, re.IGNORECASE)
+        if marker is not None:
+            starts = marker.group(1).lower() == "start"
+            if starts == marked:
+                raise SandboxError("repository guidance contains unbalanced GitNexus markers")
+            marked = starts
+            continue
+        if marked:
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+)", line)
+        if heading is not None:
+            level = len(heading.group(1))
+            if section_level is not None and level <= section_level:
+                section_level = None
+            skip_continuation = False
+            if section_level is None and (
+                _GITNEXUS_TOOL_GUIDANCE.search(line)
+                or re.fullmatch(r"GitNexus(?:\s+rules|\s+[—-]\s+Code Intelligence)\s*", heading.group(2), re.IGNORECASE)
+            ):
+                section_level = level
+            if section_level is not None:
+                continue
+        elif section_level is not None:
+            continue
+        if not line.strip():
+            skip_continuation = False
+        elif skip_continuation:
+            if line[:1].isspace():
+                continue
+            skip_continuation = False
+        if _GITNEXUS_TOOL_GUIDANCE.search(line):
+            skip_continuation = bool(re.match(r"^\s*[-*]\s", line))
+            continue
+        kept.append(line)
+    if marked:
+        raise SandboxError("repository guidance contains unbalanced GitNexus markers")
+    return "".join(kept)
+
+
+def _baseline_gitnexus_mounts(clone: Path, private_root: Path) -> tuple[ReadOnlyMount, ...]:
+    """Hide inherited index/bootstrap bytes and graph-first startup guidance."""
+
+    empty_index = private_root / "empty-gitnexus"
+    empty_index.mkdir(mode=0o500)
+    _prepare_clone_target(clone, PurePosixPath(".gitnexus"), directory=True, label="baseline index mask")
+    mounts = [ReadOnlyMount(empty_index, f"{SANDBOX_WORKSPACE}/.gitnexus")]
+    for index, name in enumerate(("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md")):
+        if os.path.lexists(clone / name):
+            _prepare_clone_target(clone, PurePosixPath(name), directory=False, label="baseline guidance")
+            ordinary = _ordinary_repository_guidance(_evidence_bytes(clone / name, ()).decode("utf-8"))
+            guidance = private_root / f"repository-guidance-{index}.md"
+            guidance.write_text(ordinary.rstrip() + "\n\n" + GITNEXUS_UNAVAILABLE_NOTE)
+            guidance.chmod(0o400)
+            mounts.append(ReadOnlyMount(guidance, f"{SANDBOX_WORKSPACE}/{name}"))
+    return tuple(mounts)
 
 
 def _create_git_excludes(private_root: Path) -> Path:
@@ -1150,6 +1230,7 @@ def prepare_sandbox(
     read_only_mounts: Sequence[ReadOnlyMount] = (),
     preflight: bool = True,
     backend: str = "bwrap",
+    gitnexus_available: bool = True,
 ) -> Iterator[SandboxSession]:
     """Create private host backing dirs and one virtualized command."""
 
@@ -1158,6 +1239,20 @@ def prepare_sandbox(
     clone = _real_directory(clone, label="sandbox clone")
     if backend not in ("bwrap", "host-unsafe"):
         raise SandboxError(f"unknown sandbox backend: {backend}")
+    if not gitnexus_available:
+        if backend != "bwrap":
+            raise SandboxError("baseline_nomcp requires Bubblewrap; host-unsafe cannot isolate GitNexus access")
+        forbidden = (
+            SANDBOX_GITNEXUS,
+            SANDBOX_GITNEXUS_SHARED,
+            SANDBOX_GITNEXUS_REGISTRY,
+            SANDBOX_GITNEXUS_CLI,
+            f"{SANDBOX_WORKSPACE}/.gitnexus",
+        )
+        for mount in read_only_mounts:
+            target = PurePosixPath(mount.target)
+            if any(target.is_relative_to(path) for path in forbidden):
+                raise SandboxError(f"baseline_nomcp cannot mount GitNexus tools or graph assets: {mount.target}")
     if preflight:
         bwrap = preflight_bubblewrap(bwrap_bin) if backend == "bwrap" else preflight_unsafe_host()
         if backend == "bwrap":
@@ -1172,9 +1267,8 @@ def prepare_sandbox(
     for directory in (home, temp):
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)
-    shell_prefix = _create_shell_prefix_wrapper(private_root)
+    shell_prefix = _create_shell_prefix_wrapper(private_root, gitnexus_available=gitnexus_available)
     python3_wrapper = _create_python3_wrapper(private_root)
-    gitnexus_wrapper = _create_gitnexus_wrapper(private_root)
     git_excludes = _create_git_excludes(private_root)
     # Claude may discover user-level skills below HOME.  Keep the rest of HOME
     # writable for normal CLI state, but overlay an immutable empty skills root
@@ -1182,16 +1276,20 @@ def prepare_sandbox(
     user_skills = home / ".claude" / "skills"
     user_skills.mkdir(parents=True, mode=0o500)
     user_skills.chmod(0o500)
-    protected_mounts = (
-        *read_only_mounts,
-        ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
-        ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
-        ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
-        ReadOnlyMount(source=gitnexus_wrapper, target=SANDBOX_GITNEXUS_CLI),
-        ReadOnlyMount(source=git_excludes, target=SANDBOX_GIT_EXCLUDES),
-    )
     primary: BaseException | None = None
     try:
+        protected_mounts = (
+            *read_only_mounts,
+            ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
+            ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
+            ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
+            *(
+                (ReadOnlyMount(source=_create_gitnexus_wrapper(private_root), target=SANDBOX_GITNEXUS_CLI),)
+                if gitnexus_available
+                else _baseline_gitnexus_mounts(clone, private_root)
+            ),
+            ReadOnlyMount(source=git_excludes, target=SANDBOX_GIT_EXCLUDES),
+        )
         command_prefix = (
             _sandbox_command_prefix(
                 bwrap=bwrap,

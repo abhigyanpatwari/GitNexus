@@ -18,6 +18,7 @@ import pytest
 
 from workflow_bench import runner, runner_artifacts
 from workflow_bench import proposer_sandbox
+from workflow_bench.mock_provider import MockProvider, Reply
 
 from workflow_bench.process_control import ManagedProcessResult, run_managed
 
@@ -54,6 +55,277 @@ from workflow_bench.proposer_sandbox import (
 )
 from workflow_bench.review_scoring import REVIEW_OUTPUT, parse_review_output
 from workflow_bench.task_assets import TaskAssetCache, stage_task_assets as stage_immutable_task_assets
+
+
+def test_nomcp_sandbox_hides_graph_and_guidance_without_exposing_the_cli(tmp_path):
+    clone = tmp_path / "clone"
+    (clone / ".gitnexus").mkdir(parents=True)
+    (clone / ".gitnexus" / "lbug").write_text("prebuilt graph")
+    (clone / ".gitnexus" / "run.cjs").write_text("supplied CLI fallback")
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        (clone / name).write_text("MUST use GitNexus before editing; bootstrap with npx gitnexus.")
+    bwrap = tmp_path / "bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o755)
+
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=sys.executable,
+        bwrap_bin=bwrap,
+        preflight=False,
+        gitnexus_available=False,
+    ) as sandbox:
+        mounts = {mount.target: mount.source for mount in sandbox.read_only_mounts}
+        assert SANDBOX_GITNEXUS_CLI not in mounts
+        assert not (sandbox.private_root / "gitnexus").exists()
+        assert not list(mounts["/workspace/.gitnexus"].iterdir())
+        for name in ("AGENTS.md", "CLAUDE.md"):
+            note = mounts[f"/workspace/{name}"].read_text()
+            assert "GitNexus tools are unavailable" in note
+            assert "MUST use GitNexus" not in note
+        assert "GITNEXUS_INVOCATION=gitnexus" not in mounts[SANDBOX_SHELL_PREFIX].read_text()
+
+    # Mounts alter the model's view, never the credited task source or patch.
+    assert (clone / ".gitnexus" / "lbug").read_text() == "prebuilt graph"
+    assert "MUST use GitNexus" in (clone / "AGENTS.md").read_text()
+
+
+def test_nomcp_sandbox_preserves_mixed_repository_guidance_in_each_file(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    ordinary = (
+        "# GitNexus\n\n## Repo reference\n\n"
+        "| CLI/Core | `gitnexus/` | TypeScript CLI, indexing pipeline, MCP server. |\n\n"
+        "- Shared code in `gitnexus/src/core/ingestion/` must not name languages; "
+        "use `LanguageProvider` / `ScopeResolver` hooks.\n"
+        "- `cd gitnexus && npm test` and `npx tsc --noEmit` verify the change.\n"
+    )
+    original = {}
+    for name in ("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"):
+        path = clone / name
+        path.parent.mkdir(exist_ok=True)
+        original[name] = (
+            f"Ordinary guidance from {name}.\n\n"
+            + ordinary
+            + "\n<!-- gitnexus:start -->\nMUST run impact analysis before editing.\n<!-- gitnexus:end -->\n"
+            + "\n## Engineering planning (`/gitnexus-plan`)\nRead `.claude/skills/gitnexus-plan/SKILL.md`.\n"
+            + "\n## Further validation\nRun the package's tests in the foreground.\n"
+            + "MUST use GitNexus before editing; bootstrap with npx gitnexus.\n"
+            + "Run mcp__gitnexus__impact before editing, or bootstrap with npx --yes gitnexus.\n"
+        )
+        path.write_text(original[name])
+    bwrap = tmp_path / "bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o755)
+
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=sys.executable,
+        bwrap_bin=bwrap,
+        preflight=False,
+        gitnexus_available=False,
+    ) as sandbox:
+        mounts = {mount.target: mount.source for mount in sandbox.read_only_mounts}
+        for name in original:
+            guidance = mounts[f"/workspace/{name}"].read_text()
+            assert f"Ordinary guidance from {name}." in guidance
+            assert ordinary in guidance
+            assert "Run the package's tests in the foreground." in guidance
+            assert "GitNexus tools are unavailable" in guidance
+            assert "MUST run impact" not in guidance
+            assert "MUST use GitNexus" not in guidance
+            assert "gitnexus-plan" not in guidance
+            assert "mcp__gitnexus__impact" not in guidance
+            assert "npx --yes gitnexus" not in guidance
+    for name, content in original.items():
+        assert (clone / name).read_text() == content
+
+
+def test_nomcp_sandbox_requires_containment(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with pytest.raises(SandboxError, match="baseline_nomcp requires Bubblewrap"):
+        with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe", gitnexus_available=False):
+            pass
+
+
+@pytest.mark.parametrize(
+    "target", ["/opt/gitnexus/dist", "/opt/gitnexus-shared/dist", "/opt/gitnexus-registry", "/workspace/.gitnexus/lbug"]
+)
+def test_nomcp_sandbox_refuses_supplied_graph_or_runtime_mounts(tmp_path, target):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with pytest.raises(SandboxError, match="baseline_nomcp cannot mount GitNexus"):
+        with prepare_sandbox(
+            clone=clone,
+            claude_bin=sys.executable,
+            gitnexus_available=False,
+            read_only_mounts=(ReadOnlyMount(tmp_path / "runtime", target),),
+        ):
+            pass
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_nomcp_denies_graph_cli_and_fallbacks_but_allows_task_tests(tmp_path):
+    clone = tmp_path / "clone"
+    (clone / ".gitnexus").mkdir(parents=True)
+    (clone / ".gitnexus" / "lbug").write_text("prebuilt graph")
+    (clone / ".gitnexus" / "run.cjs").write_text("require('fs').writeFileSync('/workspace/cli-ran', 'leaked')")
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        (clone / name).write_text("MUST use GitNexus before editing; bootstrap with npx gitnexus.")
+    source = clone / "gitnexus" / "src" / "task.js"
+    source.parent.mkdir(parents=True)
+    source.write_text("task source")
+    modules = clone / "gitnexus" / "node_modules"
+    (modules / ".bin").mkdir(parents=True)
+    check = modules / "fixture-check.js"
+    check.write_text("#!/usr/bin/env node\nconsole.log('task tests passed')\n")
+    check.chmod(0o755)
+    (modules / ".bin" / "fixture-check").symlink_to("../fixture-check.js")
+
+    script = """
+import os, shutil, subprocess
+from pathlib import Path
+for path in (
+    '/workspace/.gitnexus/lbug', '/workspace/.gitnexus/run.cjs',
+    '/opt/gitnexus', '/opt/gitnexus-shared', '/opt/gitnexus-registry', '/opt/claude/gitnexus',
+):
+    assert not Path(path).exists(), path
+assert shutil.which('gitnexus') is None
+for name in ('AGENTS.md', 'CLAUDE.md'):
+    assert 'GitNexus tools are unavailable' in Path('/workspace', name).read_text()
+assert subprocess.run(['node', '/workspace/.gitnexus/run.cjs', 'query', 'task'], capture_output=True).returncode != 0
+assert subprocess.run(['npx', '--offline', '--no', '--package', 'gitnexus', 'gitnexus', '--version'], capture_output=True).returncode != 0
+assert not Path('/workspace/cli-ran').exists()
+Path('/workspace/gitnexus/src/task.js').write_text('edited task source')
+test = subprocess.run(['npx', '--offline', '--no', 'fixture-check'], cwd='/workspace/gitnexus', capture_output=True, text=True)
+assert test.returncode == 0, test.stderr
+assert 'task tests passed' in test.stdout
+print('no GitNexus access; task source and npx tests available')
+"""
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, gitnexus_available=False) as sandbox:
+        result = run_managed(
+            [*sandbox.command_prefix_for(unshare_network=True), "/usr/bin/python3", "-c", script],
+            timeout=30,
+            env=sandbox.environment(),
+            require_pid_namespace=True,
+        )
+    assert result.ok, result.stderr_tail
+    assert "no GitNexus access" in result.stdout_tail
+    assert source.read_text() == "edited task source"
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") != "1",
+    reason="real Claude no-MCP canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_claude_nomcp_loads_ordinary_context_without_skills_hooks_or_gitnexus(tmp_path):
+    """Use run_arm's actual no-MCP flags, with only the model scripted."""
+
+    claude = Path(os.environ["CLAUDE_CANARY_BIN"]).resolve()
+    assert claude.is_file()
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "AGENTS.md").write_text("# GitNexus\nordinary-provider-guidance-canary: use LanguageProvider hooks.\n")
+    (clone / "CLAUDE.md").write_text(
+        "@AGENTS.md\nordinary-npm-test-guidance-canary: run npm test.\n"
+        "<!-- gitnexus:start -->\nMUST run impact before editing.\n<!-- gitnexus:end -->\n"
+    )
+    skill = clone / ".claude" / "skills" / "gitnexus-work"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: gitnexus-work\ndescription: forbidden-skill-discovery-canary\n---\nUse graph tools.\n"
+    )
+    (clone / ".claude" / "settings.json").write_text(
+        json.dumps(
+            {
+                "disableAllHooks": False,
+                "hooks": {
+                    event: [{"hooks": [{"type": "command", "command": "printf hook > /workspace/startup-hook-ran"}]}]
+                    for event in ("SessionStart", "PreToolUse")
+                },
+            }
+        )
+    )
+    (clone / "unexpected_mcp.py").write_text(
+        "from pathlib import Path; Path('/workspace/mcp-started').write_text('leaked')"
+    )
+    (clone / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {"gitnexus": {"command": "/usr/bin/python3", "args": ["/workspace/unexpected_mcp.py"]}},
+            }
+        )
+    )
+    (clone / ".gitnexus").mkdir()
+    (clone / ".gitnexus" / "lbug").write_text("supplied graph")
+    (clone / ".gitnexus" / "run.cjs").write_text("require('fs').writeFileSync('/workspace/cli-ran', 'leaked')")
+    (clone / "canary.txt").write_text("ordinary source is available")
+    bash_probe = (
+        'test -z "${ANTHROPIC_API_KEY:-}" && test -z "${GITHUB_TOKEN:-}" && '
+        "test ! -e /workspace/.gitnexus/lbug && test ! -e /workspace/.gitnexus/run.cjs && "
+        "test ! -e /opt/gitnexus && test ! -e /opt/gitnexus-shared && test ! -e /opt/gitnexus-registry && "
+        "! command -v gitnexus && "
+        "printf 'task source and Bash available' > /workspace/bash-called"
+    )
+    reply = Reply(
+        tools=[
+            {"name": "Read", "input": {"file_path": "/workspace/canary.txt"}},
+            {"name": "Skill", "input": {"skill": "gitnexus-work"}},
+            {"name": "mcp__gitnexus__list_repos", "input": {}},
+            {"name": "Bash", "input": {"command": bash_probe}},
+        ]
+    )
+    with prepare_sandbox(clone=clone, claude_bin=claude, gitnexus_available=False) as sandbox:
+        with MockProvider(replies=[reply]) as provider:
+            args = SimpleNamespace(
+                claude_bin=str(claude),
+                timeout=60,
+                model="claude-canary-20260718",
+                effort="high",
+                auth_token="offline-canary-key",
+                base_url=provider.base_url,
+            )
+            record = runner.run_arm(
+                "baseline_nomcp",
+                {
+                    "prompt": "Inspect the source, attempt the requested tools, and finish.",
+                    "verify": "test -s /workspace/bash-called",
+                },
+                clone,
+                args,
+                sandbox=sandbox,
+            )
+        assert record["ok"] is True, record.get("error_detail")
+        assert record["authored_tests_passed"] is True, record.get("authored_test_output")
+        first = provider.requests[0].body
+        context = json.dumps(first.get("system", ""))
+        assert "ordinary-npm-test-guidance-canary" in context
+        assert "ordinary-provider-guidance-canary" in context
+        assert "forbidden-skill-discovery-canary" not in context
+        advertised = {tool["name"] for tool in first.get("tools", [])}
+        assert "Read" in advertised and "Bash" in advertised
+        assert advertised <= {tool for tool in runner.BUILTIN_AGENT_TOOLS if tool != "Skill"}
+        assert "Skill" not in advertised
+        assert not any(name.startswith("mcp__") for name in advertised)
+        results = {
+            block["tool_use_id"]: block
+            for request in provider.requests
+            for message in request.body.get("messages", [])
+            if isinstance(message.get("content"), list)
+            for block in message["content"]
+            if block.get("type") == "tool_result"
+        }
+        assert results["toolu_mock_0"].get("is_error") is not True
+        assert results["toolu_mock_1"].get("is_error") is True
+        assert results["toolu_mock_2"].get("is_error") is True
+        assert results["toolu_mock_3"].get("is_error") is not True
+    assert (clone / "bash-called").read_text() == "task source and Bash available"
+    for marker in ("startup-hook-ran", "mcp-started", "cli-ran"):
+        assert not (clone / marker).exists(), marker
 
 
 @pytest.mark.parametrize("entry", ["directory", "relative-link", "absolute-link"])

@@ -8,19 +8,19 @@ report.
 
 ## What it compares
 
-| Arm                         | Sessions                                                               | Notes                                                                                               |
-| --------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `workflow`                  | `gitnexus-plan` on the task, then `gitnexus-work` on the produced plan | The skills must be installed (`gitnexus setup`, or repo-local `.claude/skills/`)                    |
-| `candidate_workflow`        | same sessions as `workflow`, with a candidate skill overlay            | Paired with `workflow` on the same task/ref/model                                                   |
-| `workflow_direct`           | one `gitnexus-work` direct-mode session                                | The middle option — execution discipline without a planning pass                                    |
-| `candidate_workflow_direct` | same session as `workflow_direct`, with a candidate skill overlay      | Paired with `workflow_direct` on the same task/ref/model                                            |
-| `ce_workflow`               | `ce-plan` on the task, then `ce-work` on the produced plan             | External comparator: the explicitly supplied, pinned compound-engineering plugin's plan→work family |
-| `ce_workflow_direct`        | one `ce-work` direct-mode session                                      | External comparator paired with `workflow_direct`                                                   |
-| `review`                    | one `gitnexus-review` session over an immutable historical PR snapshot | Emits strict `review-output.json`; hidden human labels score quality after the session              |
-| `candidate_review`          | the same review with a `gitnexus-review` candidate overlay             | Paired with `review` on the same case/ref/model/runtime                                             |
-| `ce_review`                 | one pinned `ce-code-review` session over the same changes              | External comparator paired with both review arms                                                    |
-| `baseline`                  | one session with the identical task text                               | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools               |
-| `baseline_nomcp`            | like baseline, graph tools also disallowed                             | Separates the workflow-discipline question from the GitNexus-tools question (off by default)        |
+| Arm                         | Sessions                                                                | Notes                                                                                               |
+| --------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `workflow`                  | `gitnexus-plan` on the task, then `gitnexus-work` on the produced plan  | The skills must be installed (`gitnexus setup`, or repo-local `.claude/skills/`)                    |
+| `candidate_workflow`        | same sessions as `workflow`, with a candidate skill overlay             | Paired with `workflow` on the same task/ref/model                                                   |
+| `workflow_direct`           | one `gitnexus-work` direct-mode session                                 | The middle option — execution discipline without a planning pass                                    |
+| `candidate_workflow_direct` | same session as `workflow_direct`, with a candidate skill overlay       | Paired with `workflow_direct` on the same task/ref/model                                            |
+| `ce_workflow`               | `ce-plan` on the task, then `ce-work` on the produced plan              | External comparator: the explicitly supplied, pinned compound-engineering plugin's plan→work family |
+| `ce_workflow_direct`        | one `ce-work` direct-mode session                                       | External comparator paired with `workflow_direct`                                                   |
+| `review`                    | one `gitnexus-review` session over an immutable historical PR snapshot  | Emits strict `review-output.json`; hidden human labels score quality after the session              |
+| `candidate_review`          | the same review with a `gitnexus-review` candidate overlay              | Paired with `review` on the same case/ref/model/runtime                                             |
+| `ce_review`                 | one pinned `ce-code-review` session over the same changes               | External comparator paired with both review arms                                                    |
+| `baseline`                  | one session with the identical task text                                | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools               |
+| `baseline_nomcp`            | one session without installed GitNexus tools, graph, or workflow skills | Separates the workflow-discipline question from the GitNexus-tools question (off by default)        |
 
 Every arm runs in a fresh detached git worktree of the task's `ref`, once per
 `--runs`. The model-visible `verify` command is recorded as
@@ -69,6 +69,68 @@ Output: `results/wfbench-<timestamp>/results.jsonl` (every run, with session
 ids for transcript drill-down) and `report.md` (medians per task per arm,
 plus a savings row: input / cache / output tokens, cost, wall time).
 
+## Release evaluation
+
+Following [discussion #3493](https://github.com/abhigyanpatwari/GitNexus/discussions/3493#discussioncomment-18772530),
+release evidence has two levels:
+
+1. Every CI run, RC and stable release runs the offline
+   [tool-accuracy corpus](../../gitnexus/bench/tool-accuracy/README.md) against
+   the real ingestion pipeline and tools. Its fixed answers cover #3486–3491
+   and #3497–3499. `accuracy.json` and `accuracy.md` report every failing answer,
+   precision/recall and source/fixture revisions. The initial reviewed gaps
+   remain failures in the accuracy total. The gate rejects new/worsened failures,
+   missing outputs and repaired allowances that have not been removed.
+2. **Release evaluation** runs three fresh paired repetitions of every scenario,
+   including the expensive task, using `baseline_nomcp` and MCP `baseline`.
+   Every task starts at the immutable v1.6.12 commit; all four tasks remain
+   unsolved there. The hidden graders have tested negative/positive controls,
+   including retry implementations in either the pipeline or worker pool.
+
+Run **Release evaluation** from `main` before cutting a stable tag. Set
+`candidate_ref` to the full, already-reviewed stable commit SHA. The workflow
+uses main's trusted harness and `--gitnexus-root` to select a separate immutable
+runtime checkout. It records runtime/harness SHAs, task and oracle digests,
+model/effort, every repetition, solve counts, cost and agent wall time. Failed
+solutions stay in the denominator. Infrastructure/session failures, missing
+costs, incomplete pairs or failed containment make evidence incomplete.
+
+Stable publishing requires a successful default-branch evaluation for that
+**exact commit and current task/oracle set**, no more than seven days old.
+It validates individual cells and recomputes totals before publishing to npm
+or either Docker registry. Docker publication also runs the cheap accuracy
+gate once before both image builds, then builds the verified immutable commit.
+RCs attach the cheap accuracy evidence; stable releases also attach and include
+the paired agent report. The gate requires valid measurements, without assuming
+GitNexus must win or claiming that four tasks establish general improvements.
+
+After a successful dispatch confirms containment and the session budget, set
+the repository variable `GITNEXUS_RELEASE_EVAL_ENABLED=true` to enable the
+Wednesday schedule. Scheduled runs resolve the newest published RC to its
+commit before execution. The protected `gitnexus-evolution` environment remains
+restricted to main and supplies the existing model secrets. The paid step has
+a five-hour limit inside a six-hour hosted job, leaving time to upload summaries
+when a benchmark step fails. Raw transcripts, internal instructions, local
+paths and session files are never uploaded or attached to releases.
+
+The no-GitNexus arm receives no indexed graph, registry, runtime mounts or CLI
+wrapper, and inherited graph-first directives are removed while ordinary
+repository development and test guidance is preserved. Both arms load that
+guidance through the same startup mode. Skills/commands and GitNexus MCP tools
+are disabled in the no-tool arm, and repository/plugin hooks are disabled in
+both arms. It fails closed when Bubblewrap is unavailable. It retains the repository source and
+ordinary test dependencies required by the tasks; rebuilding tools from that
+source is not prevented. The comparison therefore measures access to the
+provided GitNexus tools and their readable compiled runtime on these GitNexus
+development tasks. That runtime can contain later fixes absent from a task's
+historical base, so the comparison cannot isolate tool assistance from access
+to those implementations.
+
+This corpus uses a **fresh index at each task base**. A nightly stale Hermes
+index is a separate condition and must not be pooled with it. Import the
+reporter's sanitized task bundle and Hermes fresh/stale fixtures when available;
+private repositories and raw transcripts are outside the current corpus.
+
 ## Trust model — fail-closed Linux containment
 
 Task files and candidate prose remain untrusted executable inputs. Every
@@ -77,8 +139,10 @@ preflighted Bubblewrap boundary with a private home/config/temp, a
 self-contained clone, a PID namespace, bounded process-tree ownership, and a
 deny-by-default environment. Task-declared dependency roots are mounted
 read-only, while graph assets are rebuilt by the harness as described below.
-Claude runs in bare,
-`dontAsk` mode with strict clone-local MCP configuration; Bash children do
+Claude uses `dontAsk` mode with strict clone-local MCP configuration and
+repository/plugin hooks disabled. Both implementation baselines load ordinary
+repository instructions; the no-tool arm disables skills and uses an empty
+MCP configuration. Bash children do
 not inherit the model credential and their network sandbox denies all
 domains.
 
@@ -120,8 +184,8 @@ redacts the event objects, and stores the canonical redacted JSONL with a
 digest. Files written beneath the agent's `$HOME` are never trusted as
 evidence.
 
-Bare mode is deliberately non-interactive: it does not consult a stored
-Claude login/keychain or `ANTHROPIC_AUTH_TOKEN`. Supply an Anthropic API key
+Sessions use a private home without stored Claude login/keychain state, and
+do not inherit `ANTHROPIC_AUTH_TOKEN`. Supply an Anthropic API key
 through `GITNEXUS_BENCH_ANTHROPIC_API_KEY` (preferred) or `--anthropic-api-key`;
 the harness maps it to `ANTHROPIC_API_KEY` only for the trusted Claude parent
 and scrubs it from agent-launched tools. `GITNEXUS_BENCH_AUTH_TOKEN` and

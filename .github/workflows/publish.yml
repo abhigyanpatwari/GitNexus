@@ -287,6 +287,7 @@ jobs:
       # id-token: write — npm provenance attestation.
       contents: write
       id-token: write
+      actions: read # Fetch exact-revision agent evidence from the trusted main workflow.
     outputs:
       # Two distinct step IDs feed this output; exactly one fires per run.
       vtag: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
@@ -820,6 +821,15 @@ jobs:
       #   Repository:  GitNexus
       #   Workflow:    publish.yml
       #   Environment: (none)
+      - name: Download this release's tool accuracy
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-tool-accuracy
+          path: ${{ runner.temp }}/release-evidence
+      - name: Require paired agent evidence for this stable commit
+        if: needs.route.outputs.mode == 'stable'
+        uses: ./.github/actions/require-agent-release-evidence
+
       - name: Publish to npm
         shell: bash
         working-directory: gitnexus
@@ -843,6 +853,36 @@ jobs:
             echo "fallback=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Append measured release evidence
+        env:
+          MODE: ${{ needs.route.outputs.mode }}
+          RC_VERSION: ${{ steps.rc-version.outputs.rc_version }}
+          BASE: ${{ steps.rc-version.outputs.base }}
+          RC_N: ${{ steps.rc-version.outputs.rc_n }}
+          SOURCE_SHA: ${{ needs.rc-guard.outputs.head_sha }}
+          RELEASE_SHA: ${{ steps.rc-tags.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$MODE" == 'rc' ]]; then
+            cat > /tmp/release-notes.md <<EOF
+          Automated release candidate build from main.
+
+          **npm:** \`npm install gitnexus@rc\`
+          **Version:** \`$RC_VERSION\`
+          **Target base:** \`$BASE\` (rc #$RC_N)
+          **Source commit (main):** $SOURCE_SHA
+          **Release commit (versioned tree):** $RELEASE_SHA
+
+          Release candidates are pre-stable builds intended for early testing. Stable releases remain on the latest dist-tag.
+          EOF
+          fi
+          printf '\n' >> /tmp/release-notes.md
+          cat "$RUNNER_TEMP/release-evidence/accuracy.md" >> /tmp/release-notes.md
+          if [[ "$MODE" == 'stable' ]]; then
+            printf '\n' >> /tmp/release-notes.md
+            cat "$RUNNER_TEMP/release-evidence/agent-evaluation.md" >> /tmp/release-notes.md
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
         with:
@@ -853,24 +893,12 @@ jobs:
                 || steps.vtag-gate.outputs.vtag }}
           prerelease: ${{ needs.route.outputs.mode == 'rc' }}
           make_latest: ${{ needs.route.outputs.mode == 'stable' && 'true' || 'false' }}
-          # Stable: prefer CHANGELOG body, fall back to auto-generated.
-          # RC: always auto-generated + the prerelease body block below.
-          body_path: >-
-            ${{ needs.route.outputs.mode == 'stable' && steps.changelog.outputs.fallback == 'false'
-                && '/tmp/release-notes.md' || '' }}
+          body_path: /tmp/release-notes.md
+          files: ${{ runner.temp }}/release-evidence/*
+          fail_on_unmatched_files: true
           generate_release_notes: >-
             ${{ needs.route.outputs.mode == 'rc'
                 || steps.changelog.outputs.fallback == 'true' }}
-          body: >-
-            ${{ needs.route.outputs.mode == 'rc' && format(
-              'Automated release candidate build from `main`.{0}{0}**npm:** `npm install gitnexus@rc`{0}**Version:** `{1}`{0}**Target base:** `{2}` (rc #{3}){0}**Source commit (main):** {4}{0}**Release commit (versioned tree):** {5}{0}{0}Release candidates are pre-stable builds intended for early testing. Stable releases remain on the `latest` dist-tag.',
-              '\n',
-              steps.rc-version.outputs.rc_version,
-              steps.rc-version.outputs.base,
-              steps.rc-version.outputs.rc_n,
-              needs.rc-guard.outputs.head_sha,
-              steps.rc-tags.outputs.release_sha
-            ) || '' }}
 
       # ── RC partial-failure cleanup ───────────────────────────────────────
       # If anything after the atomic tag-push step failed (npm publish
@@ -928,6 +956,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     permissions:
       contents: read
+      actions: read
       packages: write
       id-token: write
       attestations: write
