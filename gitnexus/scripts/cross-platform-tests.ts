@@ -206,9 +206,8 @@ const LBUG_NATIVE = [
   // (the same reason fts-extension-e2e.test.ts is registered below), so the
   // FTS-unavailable branch has to run on a real Windows/macOS runner rather
   // than only on Ubuntu where FTS always loads. And its both-blocked case is
-  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml sets ONLY on this
-  // job — everywhere else an unavailable VECTOR extension skips instead of
-  // failing. Budget: four real analyze runs, so expect it to sit alongside the
+  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml requires in both
+  // coverage and platform jobs so an unavailable VECTOR fails loudly. Budget: four real analyze runs, so expect it to sit alongside the
   // VECTOR sibling's ~87s Windows measurement.
   'test/unit/incremental-index-extension-dml-gate.test.ts',
 ];
@@ -308,6 +307,10 @@ const NATIVE_ADDON_SMOKE = [
 // Filesystem behavior tests — exercise operations that vary across
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
+  // The deletion-guard cases in this file require real Windows path semantics.
+  'test/unit/canonicalize-path-long-path-prefix.test.ts',
+  'test/unit/storage-resolver.test.ts',
+  'test/unit/dart-package-imports.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',

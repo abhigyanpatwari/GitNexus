@@ -8,6 +8,8 @@ export default defineConfig({
     hookTimeout: 120000,
     pool: 'forks',
     globals: true,
+    // Stable test identity across the Linux/macOS/Windows execution receipts.
+    includeTaskLocation: true,
     teardownTimeout: 3000,
     // E2E harnesses pin a small NODE_OPTIONS heap so spawned CLI children
     // stay light; without this opt-out the #2649 auto-heap override would

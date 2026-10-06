@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import fs from 'fs/promises';
 import { basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   getStoragePaths,
@@ -2747,6 +2748,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     vi.doUnmock('../../src/core/embeddings/embedding-identity.js');
     vi.doUnmock('../../src/core/embeddings/embedding-pipeline.js');
     vi.doUnmock('../../src/core/embeddings/staged-embedding-recovery.js');
+    vi.doUnmock('../../src/core/analyzer-identity.js');
     vi.restoreAllMocks();
     vi.resetModules();
     vi.clearAllMocks();
@@ -3404,30 +3406,58 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
           await fs.writeFile(`${storagePath}/${source.filename}`, source.contents);
         }
         await fs.writeFile(lbugPath, 'previous published index');
+        // This unit fixture switches process.platform to exercise Windows
+        // recovery. Hash an immutable, test-owned analyzer runtime instead of
+        // the shared checkout under concurrent CI activity. Keep the real
+        // identity validation and finalization.
+        const identity = await import('../../src/core/analyzer-identity.js');
+        const runtimeRoot = `${tmpRepo.dbPath}/analyzer-runtime`;
+        await fs.mkdir(`${runtimeRoot}/src`, { recursive: true });
+        await fs.writeFile(
+          `${runtimeRoot}/package.json`,
+          '{"name":"recovery-fixture","version":"1.0.0"}',
+        );
+        await fs.writeFile(`${runtimeRoot}/package-lock.json`, '{"lockfileVersion":3}');
+        await fs.writeFile(`${runtimeRoot}/src/analyzer.ts`, 'export const analyzer = 1;');
+        const runtimeUrl = pathToFileURL(`${runtimeRoot}/src/analyzer.ts`).href;
+        const identityOptions = { cacheDirectory: `${tmpRepo.dbPath}/identity-cache` };
+        const resolveRunnerIdentity = vi.fn(() =>
+          identity.resolveAnalyzerRunnerIdentity(runtimeUrl, identityOptions),
+        );
+        vi.doMock('../../src/core/analyzer-identity.js', () => ({
+          ...identity,
+          resolveAnalyzerRunnerIdentity: resolveRunnerIdentity,
+          finalizeAnalyzerRunnerIdentity: (
+            _url: string,
+            startedWith: NonNullable<RepoMeta['runnerIdentity']>,
+          ) => identity.finalizeAnalyzerRunnerIdentity(runtimeUrl, startedWith, identityOptions),
+        }));
         const { normalizeCachedEmbeddings } =
           await import('../../src/core/embeddings/embedding-restore-spill.js');
-        vi.doMock(
-          '../../src/core/embeddings/staged-embedding-recovery.js',
-          async (importActual) => ({
-            ...(await importActual<
-              typeof import('../../src/core/embeddings/staged-embedding-recovery.js')
-            >()),
-            recoverStagedEmbeddings: vi.fn(async () =>
-              normalizeCachedEmbeddings({
-                embeddings: [
-                  {
-                    nodeId: RESILIENCE_NODE_ID,
-                    chunkIndex: 0,
-                    startLine: 1,
-                    endLine: 2,
-                    contentHash: 'current-hash',
-                    embedding: new Array(EMBEDDING_DIMS).fill(0),
-                  },
-                ],
-              }),
-            ),
+        // Resolve the real merge implementation on the host, before selecting
+        // the Windows branch. A lazy importActual factory otherwise loads and
+        // transforms real modules while process.platform is temporarily win32.
+        const recovery = await vi.importActual<
+          typeof import('../../src/core/embeddings/staged-embedding-recovery.js')
+        >('../../src/core/embeddings/staged-embedding-recovery.js');
+        const recoverStagedEmbeddings = vi.fn(async () =>
+          normalizeCachedEmbeddings({
+            embeddings: [
+              {
+                nodeId: RESILIENCE_NODE_ID,
+                chunkIndex: 0,
+                startLine: 1,
+                endLine: 2,
+                contentHash: 'current-hash',
+                embedding: new Array(EMBEDDING_DIMS).fill(0),
+              },
+            ],
           }),
         );
+        vi.doMock('../../src/core/embeddings/staged-embedding-recovery.js', () => ({
+          ...recovery,
+          recoverStagedEmbeddings,
+        }));
         const snapshots: Array<RepoMeta | null> = [];
         const rename = fs.rename.bind(fs);
         const { batchInsertEmbeddings } = mockResilienceHarness({
@@ -3463,16 +3493,25 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         // branch. The native adapter is mocked; source files and lock cleanup are real.
         await import('../../src/core/run-analyze.js');
         vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
+        const logs: string[] = [];
         Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
         const error = await runAnalyze(
           tmpRepo.dbPath,
           { force: true, embeddings: true, skipAgentsMd: true, skipSkills: true },
-          [],
+          logs,
         );
         if (actualPlatformDescriptor) {
           Object.defineProperty(process, 'platform', actualPlatformDescriptor);
         }
-        expect(batchInsertEmbeddings).toHaveBeenCalled();
+        expect(error, logs.join('\n')).toEqual(
+          outcome === 'success' ? null : expect.objectContaining({ message: outcome }),
+        );
+        expect(resolveRunnerIdentity, logs.join('\n')).toHaveBeenCalledOnce();
+        expect(recoverStagedEmbeddings, logs.join('\n')).toHaveBeenCalledOnce();
+        expect(logs).toContain(
+          'Recovered 1 complete staged embedding chunk(s) for 1 node(s); unchanged content can reuse them.',
+        );
+        expect(batchInsertEmbeddings, logs.join('\n')).toHaveBeenCalled();
         expect(vi.mocked(adapter.initLbug).mock.calls.at(-1)?.[0]).toBe(lbugPath);
         const finalMeta = await loadMeta(storagePath);
         // Reacquiring the real lock performs the next retry's orphan sweep.
@@ -3481,7 +3520,6 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         const lock = await acquireIndexLock(storagePath, { timeoutMs: 1000 });
         try {
           if (outcome === 'success') {
-            expect(error).toBeNull();
             expect(finalMeta?.embeddingCheckpoint).toBeUndefined();
             expect(finalMeta?.stats?.embeddings).toBe(9);
             expect(await fs.readFile(lbugPath, 'utf8')).toBe('in-place replacement');
@@ -3491,7 +3529,6 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
               });
             }
           } else {
-            expect(error).toMatchObject({ message: outcome });
             for (const source of sourceFiles) {
               expect(await fs.readFile(`${storagePath}/${source.filename}`, 'utf8')).toBe(
                 source.contents,
