@@ -39,15 +39,29 @@ type ManifestRead =
   | { readonly ok: true; readonly content: string }
   | { readonly ok: false; readonly reason: 'manifest-size' | 'read-pubspec' };
 
-/** Read one bounded regular file, rejecting observed replacement or modification. */
+/** Open once, validate and read that descriptor. Null excludes a symbolic link. */
 async function readManifestBounded(
-  handle: FileHandle,
-  expected: BigIntStats,
+  absolute: string,
   maxManifestSize: number,
-): Promise<ManifestRead> {
+): Promise<ManifestRead | null> {
+  let handle: FileHandle;
+  try {
+    handle = await open(
+      absolute,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    // O_NOFOLLOW rejects leaf symlinks on POSIX. Keep static links excluded,
+    // including dangling links, without retrying the pathname open.
+    if ((await lstat(absolute).catch(() => null))?.isSymbolicLink()) return null;
+    return { ok: false, reason: 'read-pubspec' };
+  }
   try {
     const before = await handle.stat({ bigint: true });
-    if (!before.isFile() || manifestIdentity(before) !== manifestIdentity(expected)) {
+    const current = await lstat(absolute, { bigint: true });
+    // Also exclude links before reading on platforms without O_NOFOLLOW.
+    if (current.isSymbolicLink()) return null;
+    if (!before.isFile() || manifestIdentity(before) !== manifestIdentity(current)) {
       return { ok: false, reason: 'read-pubspec' };
     }
     if (before.size > BigInt(maxManifestSize)) return { ok: false, reason: 'manifest-size' };
@@ -154,28 +168,8 @@ export async function captureDartPackageConfig(
     }
     if (linked) continue;
 
-    const absolute = path.join(repoPath, manifestPath);
-    let expected: BigIntStats;
-    try {
-      expected = await lstat(absolute, { bigint: true });
-    } catch {
-      return incomplete('read-pubspec', manifestPath);
-    }
-    if (expected.isSymbolicLink()) continue;
-    if (!expected.isFile()) return incomplete('read-pubspec', manifestPath);
-    if (expected.size > BigInt(maxManifestSize)) return incomplete('manifest-size', manifestPath);
-    let handle: FileHandle;
-    try {
-      // POSIX no-follow/nonblocking hardening when available. Windows uses the
-      // regular-file precheck and descriptor identity validation below.
-      handle = await open(
-        absolute,
-        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
-      );
-    } catch {
-      return incomplete('read-pubspec', manifestPath);
-    }
-    const read = await readManifestBounded(handle, expected, maxManifestSize);
+    const read = await readManifestBounded(path.join(repoPath, manifestPath), maxManifestSize);
+    if (read === null) continue;
     if (read.ok === false) return incomplete(read.reason, manifestPath);
     const name = packageName(read.content, manifestPath);
     if (name === null) continue;
