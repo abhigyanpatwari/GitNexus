@@ -80,8 +80,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-blob-${{ matrix.shard }}
-          path: gitnexus/.vitest-reports/
-          # .vitest-reports is a dotdir; upload-artifact excludes hidden files by
+          path: gitnexus/.vitest/blob/
+          # .vitest is a dotdir; upload-artifact excludes hidden files by
           # default, which would upload an empty artifact and break the merge.
           include-hidden-files: true
           retention-days: 5
@@ -110,11 +110,11 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: coverage-blob-*
-          path: gitnexus/.vitest-reports
+          path: gitnexus/.vitest/blob
           merge-multiple: true
       - name: Merge coverage + enforce thresholds
         run: >-
-          npx vitest --mergeReports
+          npx vitest --mergeReports=.vitest/blob
           --reporter=default
           --reporter=./scripts/execution-reporter.ts
           --outputFile=test-results.json
@@ -122,7 +122,7 @@ jobs:
           --coverage.reporter=json-summary
           --coverage.reporter=json
           --coverage.reporter=text
-          --coverage.thresholdAutoUpdate=false
+          --coverage.thresholds.autoUpdate=false
         working-directory: gitnexus
       # gitnexus-shared already built by setup-gitnexus above
       - name: Install gitnexus-web dependencies

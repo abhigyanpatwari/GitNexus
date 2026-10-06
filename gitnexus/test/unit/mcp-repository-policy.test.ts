@@ -192,7 +192,7 @@ describe('MCP repository policy', () => {
     [{ GITNEXUS_MCP_ALLOWED_REPOS: 'Missing' }, 'invalid'],
     [{ GITNEXUS_MCP_ALLOWED_REPOS: 'Duplicate' }, 'ambiguous'],
     [{ GITNEXUS_MCP_DEFAULT_REPO: 'Duplicate' }, 'ambiguous'],
-  ])('fails startup with a sanitized %s configuration error', async (env, reason) => {
+  ])('fails startup with a sanitized %s configuration error (case %#)', async (env, reason) => {
     const backend = createBackend();
     let message = '';
     try {

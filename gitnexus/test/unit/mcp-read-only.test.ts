@@ -145,7 +145,7 @@ describe('MCP read-only mode', () => {
   it.each([
     ['impact', { target: 'auth', direction: 'upstream', crossDepth: 5 }],
     ['impact', { target: 'auth', direction: 'upstream', subgroup: 'services' }],
-  ])('rejects group-only arguments before backend dispatch: %s %o', async (name, args) => {
+  ])('rejects group-only arguments before dispatch #%#: %s %o', async (name, args) => {
     enableReadOnly();
     const session = await connect();
     try {
