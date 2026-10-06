@@ -283,7 +283,7 @@ describe('MCP repository policy', () => {
   );
 
   it.each([{ GITNEXUS_MCP_ALLOWED_REPOS: '   ' }, { GITNEXUS_MCP_DEFAULT_REPO: '   ' }])(
-    'fails closed for explicitly blank repository configuration',
+    'fails closed for explicitly blank repository configuration (case %#)',
     async (env) => {
       await expect(createMcpRepositoryPolicy(createBackend(), env)).rejects.toThrow(
         /must not be blank/i,

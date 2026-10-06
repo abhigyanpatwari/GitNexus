@@ -3,7 +3,7 @@
  *
  * This is the Linux-runnable guard for the `canonicalizePath` wiring. The
  * companion assertions in `repo-manager.test.ts` exercise the real
- * `realpathSync.native` and are therefore `it.skipIf(win32)`, so they only run on
+ * `realpathSync.native` and are therefore Windows-only, so they only run on
  * the windows-latest matrix leg — leaving the Ubuntu gate with no coverage of the
  * behaviour at all. This file closes that hole by injecting the two platform
  * primitives and nothing else:
@@ -26,8 +26,8 @@
  * and the realpath case passes, which is exactly the asymmetry the fix targets:
  * the realpath branch never leaked, because libuv strips the prefix itself.
  *
- * Deliberately NOT registered in `scripts/cross-platform-tests.ts`: it simulates
- * Windows rather than needing it, so its home is the Ubuntu suite.
+ * Registered in `scripts/cross-platform-tests.ts` as well: the injected Windows
+ * path rules must agree with the native Windows run.
  */
 import { describe, it, expect, vi } from 'vitest';
 
@@ -139,13 +139,10 @@ describe('canonicalizePath vs the `\\\\?\\` long-path prefix (#2667)', () => {
   });
 });
 
-// The guard in front of `fs.rm(recursive)` in remove.ts / clean.ts. It compares
-// `path.resolve` forms on both sides and deliberately does NOT canonicalize, so a
-// prefixed entry stays self-consistent while a mixed-form entry fails closed.
-// Pinned here because "complete the fix by stripping here too" is the tempting
-// follow-up refactor, and it would widen what the recursive delete accepts.
+// The storage resolver now compares canonical paths for repository-local slots.
+// Equivalent prefix spellings name the same .gitnexus directory; normalization
+// must still reject the repository itself, its parents, and unowned external paths.
 describe('assertSafeStoragePath vs the `\\\\?\\` prefix (#2667)', () => {
-  const itOnWindows = process.platform === 'win32' ? it : it.skip;
   const base: Omit<RegistryEntry, 'storagePath'> = {
     name: 'repo',
     path: '\\\\?\\D:\\Projects\\repo',
@@ -153,16 +150,29 @@ describe('assertSafeStoragePath vs the `\\\\?\\` prefix (#2667)', () => {
     lastCommit: 'deadbee',
   };
 
-  itOnWindows('accepts an entry whose path and storagePath share the prefix', async () => {
+  it('accepts an entry whose path and storagePath share the prefix', async () => {
     await expect(
       assertSafeStoragePath({ ...base, storagePath: '\\\\?\\D:\\Projects\\repo\\.gitnexus' }),
     ).resolves.toBeUndefined();
   });
 
-  itOnWindows('rejects a mixed-form entry instead of deleting through it', async () => {
+  it('accepts mixed prefix spellings of the same repository-local slot', async () => {
     await expect(
       assertSafeStoragePath({ ...base, storagePath: 'D:\\Projects\\repo\\.gitnexus' }),
-    ).rejects.toThrow();
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    'D:\\Projects\\repo',
+    '\\\\?\\D:\\Projects\\repo',
+    'D:\\Projects',
+    'D:\\',
+    'D:\\Projects\\other\\.gitnexus',
+    '\\\\?\\D:\\Projects\\other\\.gitnexus',
+  ])('rejects an unsafe deletion target despite prefix normalization: %s', async (storagePath) => {
+    await expect(assertSafeStoragePath({ ...base, storagePath })).rejects.toThrow(
+      /Refusing to remove storage path for safety/,
+    );
   });
 });
 

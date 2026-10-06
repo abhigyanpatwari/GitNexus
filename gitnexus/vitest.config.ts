@@ -8,6 +8,8 @@ export default defineConfig({
     hookTimeout: 120000,
     pool: 'forks',
     globals: true,
+    // Stable test identity across the Linux/macOS/Windows execution receipts.
+    includeTaskLocation: true,
     teardownTimeout: 3000,
     // E2E harnesses pin a small NODE_OPTIONS heap so spawned CLI children
     // stay light; without this opt-out the #2649 auto-heap override would
@@ -69,6 +71,7 @@ export default defineConfig({
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',
+            'test/integration/incremental-worktree-context.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -98,6 +101,7 @@ export default defineConfig({
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
+            'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             // Shared sibling store (#3352): each file runs real analyses and opens
             // the resulting LadybugDB graphs.
@@ -164,6 +168,7 @@ export default defineConfig({
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',
+            'test/integration/incremental-worktree-context.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -191,6 +196,7 @@ export default defineConfig({
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
+            'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',

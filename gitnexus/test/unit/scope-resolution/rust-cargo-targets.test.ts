@@ -150,7 +150,7 @@ describe('Cargo manifest target metadata', () => {
     `${PACKAGE}build=1\n`,
     `${PACKAGE}[[bin]]\npath="custom/entry.rs"\n`,
     `${PACKAGE}[[test]]\npath="custom/entry.rs"\n`,
-  ])('does not manufacture evidence from malformed metadata', (manifest) => {
+  ])('does not manufacture evidence from malformed metadata (case %#)', (manifest) => {
     expect(cargoTargetRoots('Cargo.toml', manifest, files)).toBeUndefined();
   });
 });

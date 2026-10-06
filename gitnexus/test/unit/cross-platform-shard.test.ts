@@ -13,6 +13,7 @@
  * reproduce the outage exactly.
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   shardFiles,
@@ -22,7 +23,12 @@ import {
 } from '../../scripts/cross-platform-shard.js';
 import { ALL_CROSS_PLATFORM } from '../../scripts/cross-platform-tests.js';
 
-const SHARD_TOTAL = 3;
+// Replay the actual CI partition, including shard-count changes as the suite grows.
+const workflow = readFileSync(
+  new URL('../../../.github/workflows/ci-tests.yml', import.meta.url),
+  'utf8',
+);
+const SHARD_TOTAL = Number(workflow.match(/^\s+TOTAL=(\d+)\b/m)?.[1]);
 
 /** Every shard of a split, as file lists. */
 const allShards = (files: readonly string[], total: number): readonly (readonly string[])[] =>
@@ -54,7 +60,7 @@ describe('cross-platform shard partition', () => {
       'test/unit/incremental-index-extension-dml-gate.test.ts',
     ].map((file) => shards.findIndex((files) => files.includes(file)));
     expect(heavyweightLocations).not.toContain(-1);
-    expect(new Set(heavyweightLocations).size).toBe(SHARD_TOTAL);
+    expect(new Set(heavyweightLocations).size).toBe(heavyweightLocations.length);
     expect(
       shards.filter(
         (s) =>
