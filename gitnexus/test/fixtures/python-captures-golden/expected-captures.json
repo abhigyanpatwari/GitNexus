@@ -631,6 +631,22 @@
     "captureGroups": 5,
     "digest": "df334f13bf7c81ba01c861c2b9a4ddc969645ccecbd536088c3556a2a2fb1f2b"
   },
+  "python-nested-def-scope/facade.py": {
+    "captureGroups": 4,
+    "digest": "6c0cf2efb52f47b3e7284f729d582c40ab4c09a5742caadb088d672a5f17587b"
+  },
+  "python-nested-def-scope/function_local.py": {
+    "captureGroups": 11,
+    "digest": "c94d3b5d53fe000af4d1e6f6e746d86e5ce9dfbba4de03e9c26bc30df60c2e0d"
+  },
+  "python-nested-def-scope/module_import.py": {
+    "captureGroups": 11,
+    "digest": "33af1ecde6841610a45f799ba68032cacb24eb0695eb4ba970979a5dac7b1427"
+  },
+  "python-nested-def-scope/unbound.py": {
+    "captureGroups": 10,
+    "digest": "9bd9cb68bf573c9da663409c72233f99b21b922c77b95b4d7cd1af94f106d105"
+  },
   "python-nullable-chain/app.py": {
     "captureGroups": 33,
     "digest": "b8fc05256ec1460896cec13f7c8675389aae795b2138b3fe8f4f352b9aea360f"

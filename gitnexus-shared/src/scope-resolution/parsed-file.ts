@@ -34,8 +34,9 @@
  *
  * `FinalizeFile` (defined in `./finalize-algorithm.ts`) is a projection of
  * `ParsedFile`: `filePath`, `moduleScope`, `parsedImports`, and `localDefs`
- * copy directly; `moduleDefs` is derived from the module scope's `ownedDefs`
- * so flattened nested declarations do not become module bindings.
+ * copy directly; `moduleBindings` is taken from the module scope's lexical
+ * binding map so flattened nested declarations do not become module bindings
+ * while hoisted top-level declarations remain visible.
  *
  * ## Source-of-truth invariant
  *

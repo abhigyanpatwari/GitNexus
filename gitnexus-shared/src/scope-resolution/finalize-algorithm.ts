@@ -71,15 +71,16 @@ export interface FinalizeFile {
    */
   readonly localDefs: readonly SymbolDefinition[];
   /**
-   * Declarations whose lexical binding belongs to {@link moduleScope}.
+   * The extractor's actual lexical bindings for {@link moduleScope}.
    *
    * `localDefs` is deliberately a flattened inventory and also contains
-   * methods and nested functions.  Consumers that model unqualified names
-   * must use this narrower surface so a nested declaration cannot become a
-   * file-wide binding.  Omitted only by legacy/direct callers, where finalize
-   * retains the historical `localDefs` behavior for compatibility.
+   * methods and nested functions. Structural `ownedDefs` is not equivalent
+   * either: scope-creating declarations are owned by their body scope while
+   * their names are hoisted into the parent binding map. Omitted only by
+   * legacy/direct callers, where finalize retains the historical `localDefs`
+   * behavior for compatibility.
    */
-  readonly moduleDefs?: readonly SymbolDefinition[];
+  readonly moduleBindings?: ReadonlyMap<string, readonly BindingRef[]>;
 }
 
 /** Input to `finalize`. */
@@ -1613,15 +1614,41 @@ function materializeBindings(
   for (const file of files) {
     const scopeBindings = new Map<string, readonly BindingRef[]>();
 
-    // Start with declarations genuinely bound at module scope. `localDefs`
-    // is a flattened inventory and includes nested functions and methods;
-    // seeding those here makes them visible to unrelated sibling scopes.
-    for (const def of file.moduleDefs ?? file.localDefs) {
-      const name = deriveSimpleName(def);
-      if (name === null) continue;
-      const incoming: BindingRef[] = [{ def, origin: 'local' }];
-      const existing = scopeBindings.get(name) ?? [];
-      scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+    // Start with declarations genuinely bound at module scope. Preserve the
+    // extractor's binding names and refs: structural ownership is different
+    // from lexical visibility for top-level functions/classes.
+    if (file.moduleBindings !== undefined) {
+      for (const [name, incoming] of file.moduleBindings) {
+        const existing = scopeBindings.get(name) ?? [];
+        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+      }
+      // Some language enrichers synthesize owned members after scope
+      // extraction (for example Lombok accessors). They have no lexical scope
+      // binding to project, but existing dispatch/index consumers still need
+      // them in the finalized lookup surface. Nested free declarations have
+      // neither ownership nor synthetic provenance and remain excluded.
+      for (const def of file.localDefs) {
+        if (
+          def.ownerId === undefined &&
+          def.isSynthetic !== true &&
+          def.namespacePrefix === undefined
+        )
+          continue;
+        const name = deriveSimpleName(def);
+        if (name === null) continue;
+        const incoming: BindingRef[] = [{ def, origin: 'local' }];
+        const existing = scopeBindings.get(name) ?? [];
+        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+      }
+    } else {
+      // Compatibility for direct/legacy callers that predate scope bindings.
+      for (const def of file.localDefs) {
+        const name = deriveSimpleName(def);
+        if (name === null) continue;
+        const incoming: BindingRef[] = [{ def, origin: 'local' }];
+        const existing = scopeBindings.get(name) ?? [];
+        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+      }
     }
 
     buckets.set(file.moduleScope, scopeBindings);

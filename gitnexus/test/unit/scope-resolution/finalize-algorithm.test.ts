@@ -805,7 +805,7 @@ describe('finalize', () => {
       };
       const a: FinalizeFile = {
         ...file('a', [topLevel, nested]),
-        moduleDefs: [topLevel],
+        moduleBindings: new Map([['outer', [{ def: topLevel, origin: 'local' as const }]]]),
       };
 
       const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
