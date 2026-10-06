@@ -125,10 +125,8 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     // nothing before parse produces bulk edge volume anyway.
     ctx.graphEmit?.beginStreaming();
 
-    const { scannedFiles, allPaths, allPathSet, totalFiles } = getPhaseOutput<StructureOutput>(
-      deps,
-      'structure',
-    );
+    const { scannedFiles, allPaths, allPathSet, totalFiles, resolutionConfigs } =
+      getPhaseOutput<StructureOutput>(deps, 'structure');
 
     const result = await runChunkedParseAndResolve(
       ctx.graph,
@@ -139,6 +137,7 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
       ctx.pipelineStart,
       ctx.onProgress,
       ctx.options,
+      resolutionConfigs,
     );
 
     return {
