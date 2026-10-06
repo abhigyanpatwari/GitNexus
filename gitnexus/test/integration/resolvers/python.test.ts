@@ -908,6 +908,25 @@ describe('Python re-export chain resolution', () => {
   });
 });
 
+describe('Python aliased package re-export resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-aliased-package-reexport'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves both aliased package member calls and direct re-export calls', () => {
+    const callers = getRelationships(result, 'CALLS')
+      .filter((call) => call.target === 'pf' && call.targetFilePath === 'app/services/bp/gp.py')
+      .map((call) => call.source)
+      .sort();
+    expect(callers).toEqual(['combo_caller', 'reexport_pkg_caller']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Local shadow: same-file definition takes priority over imported name
 // ---------------------------------------------------------------------------
