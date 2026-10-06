@@ -289,6 +289,7 @@ const SPAWN_CLI = [
 // Worker threads tests — exercise real worker_threads which have
 // platform-specific behavior (thread spawning, IPC, exit handling)
 const WORKER_THREADS = [
+  'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
 ];
