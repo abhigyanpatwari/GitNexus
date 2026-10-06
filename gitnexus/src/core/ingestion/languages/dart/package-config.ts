@@ -123,7 +123,9 @@ function fileOpenFlags(): number {
 }
 
 function directoryIdentity(stat: BigIntStats): string {
-  return `${stat.dev}:${stat.ino}:${stat.mode}`;
+  // ctime detects rename/restore even when the inode is unchanged. Timestamp
+  // granularity still prevents this from proving an atomic directory snapshot.
+  return `${stat.dev}:${stat.ino}:${stat.mode}:${stat.ctimeNs}`;
 }
 
 /**
@@ -184,7 +186,7 @@ interface WalkFrame {
   next: number;
 }
 
-/** Re-stat each pinned directory and its path. A replaced inode or a symlink fails the walk. */
+/** Reject changed pinned metadata and paths that no longer name the pinned directory. */
 async function assertPinnedChain(frames: readonly WalkFrame[]): Promise<void> {
   for (const frame of frames) {
     const pinned = await frame.handle.stat({ bigint: true });
@@ -272,9 +274,10 @@ async function openChildFile(
 
 /**
  * List the directory open on the last frame of `frames`. Linux lists the
- * pinned inode through its descriptor. macOS re-checks the pinned chain, lists
- * the lexical path, then re-checks the chain, so a path replaced around the
- * listing fails the walk instead of being listed.
+ * pinned inode through its descriptor. macOS lists the lexical path and checks
+ * the pinned chain, including ctime, on either side. Observed replacements or
+ * metadata changes fail the walk. This is not atomic: if filesystem timestamps
+ * coalesce, transient swaps can still silently omit entries.
  */
 async function listOpenedDirectory(
   frames: readonly WalkFrame[],
@@ -317,7 +320,8 @@ async function readDirectoryBounded(listing: string, entryLimit: number): Promis
 }
 
 /**
- * Open `directory` without following a final symlink, then list that inode.
+ * Open `directory` without following a final symlink, then use the platform's
+ * listing strategy above.
  * A path swapped for a symlink after the parent listing fails this open
  * (`ENOTDIR` / `ELOOP`) instead of being traversed.
  */
