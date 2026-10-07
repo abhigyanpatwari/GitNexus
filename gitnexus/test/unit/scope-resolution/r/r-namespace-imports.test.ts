@@ -27,7 +27,10 @@ import {
   rPackageDirForFile,
   rRecordedPackageTopLevelNames,
 } from '../../../../src/core/ingestion/languages/r/namespace-imports.js';
-import { compileRExportPattern } from '../../../../src/core/ingestion/languages/r/export-pattern.js';
+import {
+  compileRExportPattern,
+  type RExportMatcher,
+} from '../../../../src/core/ingestion/languages/r/export-pattern.js';
 import { resolveRImportTarget } from '../../../../src/core/ingestion/import-resolvers/r.js';
 import { CountingSet } from '../../../helpers/counting-file-set.js';
 
@@ -42,7 +45,7 @@ function parse(src: string, filePath: string): ParsedFile {
 
 interface NsSpec {
   readonly exports?: readonly string[];
-  readonly exportPatterns?: readonly RegExp[];
+  readonly exportPatterns?: readonly RExportMatcher[];
   readonly importFrom?: readonly (readonly [pkg: string, name: string])[];
   /** Omit the NAMESPACE entry altogether (package without a NAMESPACE file). */
   readonly none?: boolean;
@@ -599,7 +602,7 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
       expect([ask('f'), ask('hidden')]).toEqual([['R/s.R'], null]);
     });
 
-    const compiled = (pattern: string): RegExp => {
+    const compiled = (pattern: string): RExportMatcher => {
       const re = compileRExportPattern(pattern);
       if (!re) throw new Error(`exportPattern did not compile: ${pattern}`);
       return re;

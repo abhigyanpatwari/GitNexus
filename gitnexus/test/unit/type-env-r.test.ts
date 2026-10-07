@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildTypeEnv } from '../../src/core/ingestion/type-env.js';
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
+import { SupportedLanguages } from 'gitnexus-shared';
 
 const parser = new Parser();
 
@@ -69,7 +70,7 @@ AddOutlierStatuses <- function(data, outliers) {
   data
 }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'data')).toBe('DataFrame');
       expect(flatGet(typeEnv, 'outliers')).toBe('DataFrame');
     });
@@ -82,7 +83,7 @@ process <- function(x, name) {
   x
 }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'x')).toBeUndefined();
       expect(flatGet(typeEnv, 'name')).toBeUndefined();
     });
@@ -93,7 +94,7 @@ process <- function(x, y) {
   x + y
 }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatSize(typeEnv)).toBe(0);
     });
 
@@ -108,7 +109,7 @@ UserRepo <- R6::R6Class("UserRepo", public = list(save = function() 1))
 #' @param repo UserRepo
 ${definition}
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
       expect(lookupIn(tree, typeEnv, 'helper', 'repo')).toBe('UserRepo');
       expect(typeEnv.fileScope().get('repo')).toBeUndefined();
@@ -118,7 +119,7 @@ ${definition}
       const tree = parse(`
 rs <- ResultSet$new(items)
 `);
-      const { constructorBindings } = buildTypeEnv(tree, 'r');
+      const { constructorBindings } = buildTypeEnv(tree, SupportedLanguages.R);
       const binding = constructorBindings.find((b) => b.varName === 'rs');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('ResultSet');
@@ -128,7 +129,7 @@ rs <- ResultSet$new(items)
       const tree = parse(`
 model <- new("DataModel", name = "test")
 `);
-      const { constructorBindings } = buildTypeEnv(tree, 'r');
+      const { constructorBindings } = buildTypeEnv(tree, SupportedLanguages.R);
       const binding = constructorBindings.find((b) => b.varName === 'model');
       expect(binding).toBeDefined();
       expect(binding!.calleeName).toBe('DataModel');
@@ -149,7 +150,7 @@ process <- function(data, config) {
   data
 }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'data')).toBe('DataFrame');
       expect(flatGet(typeEnv, 'config')).toBe('Config');
     });
@@ -162,7 +163,7 @@ DataFrame <- R6::R6Class("DataFrame", public = list(rows = function() 1))
 # TODO: refactor this later
 compute <- function(x) { x }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'x')).toBe('DataFrame');
     });
 
@@ -174,7 +175,7 @@ process <- function(data, name) {
   data
 }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'data')).toBeUndefined();
       expect(flatGet(typeEnv, 'name')).toBeUndefined();
     });
@@ -186,7 +187,7 @@ setClass("repo", representation(name = "character"))
 #' @param r repo
 save <- function(r) { r }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'r')).toBeUndefined();
     });
 
@@ -213,7 +214,7 @@ run <- function(${param}) {
   ${param}
 }
 `);
-          const typeEnv = buildTypeEnv(tree, 'r');
+          const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
           expect(flatGet(typeEnv, param)).toBeUndefined();
         },
       );
@@ -225,7 +226,7 @@ A <- R6::R6Class("A", public = list(go = function() 1))
 #' @param x A numeric vector
 f <- function(x) { x }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });
 
@@ -239,7 +240,7 @@ run <- function(df) {
   df$fit()
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(flatGet(typeEnv, 'df')).toBeUndefined();
       });
 
@@ -253,7 +254,7 @@ run <- function(df) {
   df$fit()
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(flatGet(typeEnv, 'df')).toBe('Data');
       });
     });
@@ -267,7 +268,7 @@ save <- function(repo) {
   repo
 }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'repo')).toBeUndefined();
     });
 
@@ -280,7 +281,7 @@ save <- function(repo) {
   repo
 }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'repo')).toBeUndefined();
     });
 
@@ -293,7 +294,7 @@ save <- function(repo) {
   repo
 }
 `);
-      const typeEnv = buildTypeEnv(tree, 'r');
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
       expect(flatGet(typeEnv, 'repo')).toBeUndefined();
     });
 
@@ -314,7 +315,7 @@ h <- function() {
   repo$save()
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(lookupIn(tree, typeEnv, 'f', 'x')).toBeUndefined();
         expect(lookupIn(tree, typeEnv, 'g', 'repo')).toBeUndefined();
         expect(lookupIn(tree, typeEnv, 'h', 'repo')).toBeUndefined();
@@ -336,7 +337,7 @@ h <- function() {
   repo$save()
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(lookupIn(tree, typeEnv, 'f', 'repo')).toBe('UserRepo');
         expect(lookupIn(tree, typeEnv, 'g', 'repo')).toBeUndefined();
         expect(lookupIn(tree, typeEnv, 'h', 'repo')).toBeUndefined();
@@ -352,7 +353,7 @@ f <- function(x, repo = NULL) { repo$save() }
 
 g <- function(repo) { repo$save() }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(lookupIn(tree, typeEnv, 'f', 'repo')).toBe('UserRepo');
         expect(lookupIn(tree, typeEnv, 'g', 'repo')).toBeUndefined();
         expect(typeEnv.fileScope().get('repo')).toBeUndefined();
@@ -366,7 +367,7 @@ ${userRepo}
 #' @param repo UserRepo
 f <- function(..., repo) { repo$save() }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(lookupIn(tree, typeEnv, 'f', 'repo')).toBe('UserRepo');
         expect(flatGet(typeEnv, '...')).toBeUndefined();
         expect(typeEnv.fileScope().get('repo')).toBeUndefined();
@@ -384,7 +385,7 @@ ${statement}
 
 g <- function(repo) { repo$save() }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(lookupIn(tree, typeEnv, 'g', 'repo')).toBeUndefined();
         expect(typeEnv.fileScope().get('repo')).toBeUndefined();
       });
@@ -399,7 +400,7 @@ outer <- function(repo) {
   repo$save()
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(lookupIn(tree, typeEnv, 'outer', 'repo')).toBe('UserRepo');
         expect(lookupIn(tree, typeEnv, 'inner', 'repo')).toBeUndefined();
       });
@@ -414,7 +415,7 @@ outer <- function(x) {
   y
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(lookupIn(tree, typeEnv, 'inner', 'y')).toBe('Data');
         expect(lookupIn(tree, typeEnv, 'outer', 'y')).toBeUndefined();
         expect(typeEnv.fileScope().get('y')).toBeUndefined();
@@ -439,7 +440,7 @@ save <- function(repo) {
 
 ${definition}
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
       });
 
@@ -453,7 +454,7 @@ save <- function(repo, backup) {
   repo
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
         expect(flatGet(typeEnv, 'backup')).toBe('UserRepo');
       });
@@ -475,7 +476,7 @@ run <- function(x, y, df, ..., na.rm = FALSE) {
   x
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         for (const name of names) expect(flatGet(typeEnv, name)).toBeUndefined();
       });
     });
