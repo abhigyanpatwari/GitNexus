@@ -132,6 +132,21 @@ describe('Python nested declarations stay in their lexical scope (#3499)', () =>
   });
 });
 
+describe('Python global nested declarations bind at module scope (#3502)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-global-nested-def'), () => {});
+  }, 60000);
+
+  it('resolves a sibling caller to the global declaration, not a same-name method', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'caller' && edge.target === 'target',
+    );
+    expect(calls.map((edge) => edge.targetFilePath)).toEqual(['main.py']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Qualified / generic bases (#1951). An earlier synth DROPPED these shapes —
 // only bare `identifier` bases emitted, so production silently omitted their

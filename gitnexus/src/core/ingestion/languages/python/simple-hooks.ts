@@ -38,14 +38,16 @@ export function pythonFunctionDefinitionLabel(
 
 /** Python has no block scope, so the central extractor's "innermost
  *  enclosing scope" default is already correct for ordinary bindings.
- *  Constructor-injected instance fields are the exception: their marker is
- *  anchored inside `__init__`, but compound receiver resolution needs the
- *  field type on the enclosing Class scope. */
+ *  Explicit `global` declarations and constructor-injected instance fields
+ *  are the exceptions. */
 export function pythonBindingScopeFor(
   decl: CaptureMatch,
   innermost: Scope,
   tree: ScopeTree,
 ): ScopeId | null {
+  if (decl['@declaration.global'] !== undefined) {
+    return walkToScope(innermost, tree, 'Module');
+  }
   if (decl['@type-binding.instance-field'] !== undefined) {
     return walkToScope(innermost, tree, 'Class');
   }
