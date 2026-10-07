@@ -220,10 +220,7 @@ export function emitPythonScopeCaptures(
       const fnNode = anchorNode.type === 'function_definition' ? anchorNode : null;
       if (fnNode !== null) {
         const declarationName = grouped['@declaration.name']?.text;
-        if (
-          declarationName !== undefined &&
-          isGlobalInEnclosingFunction(fnNode, declarationName)
-        ) {
+        if (declarationName !== undefined && isGlobalInEnclosingFunction(fnNode, declarationName)) {
           grouped['@declaration.global'] = syntheticCapture(
             '@declaration.global',
             fnNode,
