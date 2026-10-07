@@ -70,7 +70,7 @@ describe('dedicated runner readiness', () => {
     expect(check?.['timeout-minutes']).toBe(10);
     expect(String(check?.if)).toContain("github.ref == 'refs/heads/main'");
     expect(String(check?.if)).toContain("github.repository == 'abhigyanpatwari/GitNexus'");
-    expect(evolveJob?.needs).toEqual(['check-runner', 'runner-ready']);
+    expect(evolveJob?.needs).toEqual(['start-runner', 'check-runner', 'runner-ready']);
     const pickup = check?.steps?.find(
       (step) => step.name === "Verify the current run's native pickup probe",
     );
@@ -82,14 +82,14 @@ describe('dedicated runner readiness', () => {
       'gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"',
     );
     const ready = workflowDocument.jobs?.['runner-ready'];
-    expect(ready?.needs).toBeUndefined();
+    expect(ready?.needs).toEqual(['start-runner']);
     expect(ready?.if).toBe(check?.if);
     expect(ready?.permissions).toEqual({});
     expect(ready?.steps?.some((step) => String(step.run).includes('git --version'))).toBe(true);
     expect(String(evolveJob?.if)).toContain('inputs.runner_only != true');
   });
 
-  it('reuses the existing credentials and schedule variables without adding AWS configuration', () => {
+  it('reuses the existing credentials and schedule variables with only the historical AWS configuration', () => {
     const release = readFileSync(
       path.join(REPO_ROOT, '.github/workflows/release-evaluation.yml'),
       'utf8',
@@ -98,10 +98,17 @@ describe('dedicated runner readiness', () => {
       'GITNEXUS_BENCH_ANTHROPIC_API_KEY',
       'GITNEXUS_BENCH_AUTH_TOKEN',
       'GITNEXUS_BENCH_OPENAI_API_KEY',
+      'GITNEXUS_EVOLUTION_AWS_ROLE_ARN',
+      'GITNEXUS_EVOLUTION_EC2_INSTANCE_ID',
       'RELEASE_APP_ID',
       'RELEASE_APP_PRIVATE_KEY',
     ]);
-    const existingVariables = new Set(['GITNEXUS_EVOLUTION_ENABLED', 'GITNEXUS_EVOLUTION_WORKERS']);
+    const existingVariables = new Set([
+      'GITNEXUS_EVOLUTION_ENABLED',
+      'GITNEXUS_EVOLUTION_WORKERS',
+      'GITNEXUS_EVOLUTION_AWS_REGION',
+      'GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC',
+    ]);
     for (const text of [workflow, release]) {
       for (const match of text.matchAll(/secrets\.([A-Z_][A-Z_0-9]*)/g)) {
         expect(existingSecrets.has(match[1]), match[1]).toBe(true);

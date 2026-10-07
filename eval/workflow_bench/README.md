@@ -71,6 +71,40 @@ plus a savings row: input / cache / output tokens, cost, wall time).
 
 ## Release evaluation
 
+### RC regression decision
+
+`workflow_bench.release_gate` compares a candidate report with a freshly
+measured stable-runtime report. Both reports must use the same trusted harness,
+task/oracle pins, model, reasoning effort and repetition count. Each task must
+solve at least as many repetitions with the candidate as with stable; gains on
+one task cannot offset losses on another. Invalid, stale or incomplete evidence
+fails closed. Cost, duration and both no-GitNexus comparisons remain descriptive
+measurements, not additional pass criteria or claims of statistical significance.
+
+```bash
+uv run --locked --extra dev python -m workflow_bench.release_gate \
+  --candidate candidate/agent-evaluation.json --candidate-sha <full-rc-sha> \
+  --stable stable/agent-evaluation.json --stable-sha <full-stable-sha> \
+  --out public
+```
+
+The command writes `release-quality-gate.json` and `release-quality-gate.md`
+and exits nonzero on rejection. Its caller must authenticate the reports and
+resolve the published stable and exact candidate revisions independently;
+self-reported metadata does not establish provenance. The publishing workflow
+prepares a versioned RC commit without pushing it, transfers it in a current-run
+Git bundle, and invokes the reusable evaluator. The evaluator verifies that the
+candidate has exactly the triggering main commit as its parent and measures it
+against the latest published stable release. Only a successful comparison and
+runner shutdown permit publication. The publisher verifies the same commit and
+passing receipt before pushing a tag or publishing npm; it never rebuilds a new
+versioned commit after evaluation. RC and stable publication share a short
+publication lock. Inside that lock, the publisher checks that the measured
+stable SHA still identifies the latest stable release; if stable advanced
+during evaluation, publication fails and a fresh comparison is required.
+
+### Current workflow
+
 Following [discussion #3493](https://github.com/abhigyanpatwari/GitNexus/discussions/3493#discussioncomment-18772530),
 release evidence has two levels:
 
@@ -81,8 +115,9 @@ release evidence has two levels:
    precision/recall and source/fixture revisions. The initial reviewed gaps
    remain failures in the accuracy total. The gate rejects new/worsened failures,
    missing outputs and repaired allowances that have not been removed.
-2. **Release evaluation** runs three fresh paired repetitions of every scenario,
-   including the expensive task, using `baseline_nomcp` and MCP `baseline`.
+2. **Release evaluation** runs three fresh paired repetitions of every scenario
+   on both candidate and stable runtimes, including the expensive task, using
+   `baseline_nomcp` and MCP `baseline`.
    Every task starts at the immutable v1.6.12 commit; all four tasks remain
    unsolved there. The hidden graders have tested negative/positive controls,
    including retry implementations in either the pipeline or worker pool.
@@ -104,9 +139,11 @@ Stable publishing requires a successful default-branch evaluation for that
 It validates individual cells and recomputes totals before publishing to npm
 or either Docker registry. Docker publication also runs the cheap accuracy
 gate once before both image builds, then builds the verified immutable commit.
-RCs attach the cheap accuracy evidence; stable releases also attach and include
-the paired agent report. The gate requires valid measurements, without assuming
-GitNexus must win or claiming that four tasks establish general improvements.
+RCs attach the cheap accuracy evidence, both agent reports and the quality-gate
+receipt; stable releases also attach and include their paired agent report.
+Every RC must preserve each covered task's MCP solve count relative to stable.
+The comparison does not require GitNexus to beat the no-MCP arm or claim that
+four tasks establish general improvements.
 
 The Wednesday release comparison reuses the existing schedule controls:
 `GITNEXUS_EVOLUTION_ENABLED=true` and `GITNEXUS_EVOLUTION_WORKERS=3` enable
@@ -115,9 +152,10 @@ comparisons. No additional opt-in variable or model credential is required.
 Manual release evaluation remains available independently. Scheduled runs
 resolve the newest published RC to its
 commit before execution. The protected `gitnexus-evolution` environment remains
-restricted to main and supplies the existing model secrets. The paid step has
-a five-hour limit inside a six-hour hosted job, leaving time to upload summaries
-when a benchmark step fails. Raw transcripts, internal instructions, local
+restricted to main and supplies the existing model secrets. Evaluation runs on
+the dedicated self-hosted EC2 runner. The paid step has a 19-hour cap inside a
+21-hour job and also stops 90 minutes before the configured external shutdown,
+leaving time to upload summaries when a benchmark step fails. Raw transcripts, internal instructions, local
 paths and session files are never uploaded or attached to releases.
 
 The no-GitNexus arm receives no indexed graph, registry, runtime mounts or CLI
@@ -250,22 +288,49 @@ already-running instance therefore exits in-process instead of vanishing when
 the box stops — a cancelled GitHub job skips even `if: always()`, which is
 how run 33962002890 lost 51 finished sessions. Local runs are uncapped.
 
-The skill-evolution workflow uses the existing dedicated runner and private
-EventBridge start/stop automation. A hosted readiness check requires this run's
-native pickup probe to finish within five minutes. If the runner stays offline
-or its probe fails, the hosted check cancels its own run to clear the queued
-self-hosted job; paid evolution cannot start. A second hosted watchdog bounds
-pickup of the actual paid job after the native probe, so a runner shutdown
-between those jobs also clears the queue. Only these readiness jobs have
-Actions write permission for cancellation. A main-branch dispatch with
-`runner_only=true` checks pickup without paid model calls.
+Both skill evolution and release evaluation manage the existing dedicated EC2
+runner through hosted startup and cleanup jobs. They share a concurrency group
+for the whole run, so neither can stop the instance during the other's work.
+Startup waits for EC2 running and both health checks, then a native pickup probe
+must finish within five minutes. If the probe fails, the hosted check cancels
+its own run to clear the queued job. A second hosted watchdog bounds pickup of
+the paid job. Only these watchdogs have Actions write permission.
 
-This PR adds no AWS credentials, role references, instance/region settings, or
-configuration environment variables. The readiness check does **not** start a
-stopped EC2 instance. Manual pipeline startup remains blocked until the existing
-private AWS startup mechanism can be identified and reused. Keep the existing
-external stop watchdog and uptime budget in place; verify the actual EventBridge
-stop window before dispatching on an already-running instance.
+The protected `gitnexus-evolution` environment is assumed to retain the four
+names from the earlier workflow revision. Their live values and IAM access
+have **not** been verified:
+
+| Setting | Kind | Purpose |
+| --- | --- | --- |
+| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN` | Secret | Existing AWS OIDC role |
+| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID` | Secret | Existing dedicated instance |
+| `GITNEXUS_EVOLUTION_AWS_REGION` | Variable | Instance region |
+| `GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC` | Variable | Actual weekly EventBridge stop, `DAY HH:MM` UTC |
+
+No new stored credential or alternative configuration name is introduced. The
+AWS action obtains short-lived credentials using GitHub OIDC. The existing role
+must trust this repository's protected environment and permit EC2 DescribeInstances,
+DescribeInstanceStatus, StartInstances and StopInstances, with power changes
+scoped to the dedicated instance. Missing configuration or access fails closed.
+The workflow does not create IAM roles, instances, secrets or schedules.
+
+A main-branch dispatch of either workflow with `runner_only=true` starts the
+instance, proves native runner pickup, then stops it without paid model calls.
+Cleanup runs on a hosted runner after success or failure and verifies EC2 is
+actually `stopped`; an accepted StopInstances response alone does not pass.
+Startup failures also attempt immediate cleanup. Keep the existing EventBridge
+stop watchdog enabled because interrupted or force-cancelled GitHub cleanup
+cannot guarantee shutdown. Paid work respects the earlier of the configured
+weekly stop and a 24-hour cap, with a 90-minute evidence reserve.
+
+Choose **Re-run all jobs** after a failed run to repeat startup and pickup.
+Partial retries cannot reuse a previous attempt's startup: the affected probe
+or paid job runs on a hosted runner and fails promptly with that instruction,
+instead of waiting on the stopped instance.
+
+PR tests use a fake AWS CLI to cover transitions, denial, lost responses,
+timeouts, cleanup and workflow wiring. Live startup/shutdown still requires a
+trusted main-branch smoke dispatch with the existing private environment.
 
 CI separately runs a six-cell paired evaluator canary using the real pinned
 Claude CLI, Bubblewrap, built MCP runtime, hidden grading and public report

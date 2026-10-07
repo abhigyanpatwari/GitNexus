@@ -10,7 +10,9 @@ import sys
 import time
 
 
-def wait_for_runner(*, timeout: float = 300, evolve: bool = False) -> None:
+def wait_for_runner(
+    *, timeout: float = 300, evolve: bool = False, job_name: str | None = None
+) -> None:
     """Require probe success or bound pickup of the actual paid job."""
     repository = os.environ.get("GITHUB_REPOSITORY", "")
     run_id = os.environ.get("GITHUB_RUN_ID", "")
@@ -19,7 +21,8 @@ def wait_for_runner(*, timeout: float = 300, evolve: bool = False) -> None:
             "runner pickup requires this repository's current workflow run"
         )
     until = time.monotonic() + timeout
-    job_name = (
+    paid = evolve or job_name is not None
+    job_name = job_name or (
         "Propose, benchmark, and gate skill candidates"
         if evolve
         else "Verify the runner service is online"
@@ -41,18 +44,16 @@ def wait_for_runner(*, timeout: float = 300, evolve: bool = False) -> None:
             )
         jobs = json.loads(result.stdout).get("jobs", [])
         probes = [
-            job
-            for job in jobs
-            if job.get("name") == job_name
+            job for job in jobs if job.get("name", "").split(" / ")[-1] == job_name
         ]
         if len(probes) > 1:
             raise RuntimeError("current run has multiple runner pickup probes")
-        if evolve and probes:
+        if paid and probes:
             if probes[0].get("status") == "in_progress":
                 return
             if probes[0].get("status") == "completed":
                 if probes[0].get("conclusion") in ("skipped", "cancelled"):
-                    raise RuntimeError("evolution job did not run")
+                    raise RuntimeError("paid job did not run")
                 return
         if probes and probes[0].get("status") == "completed":
             if probes[0].get("conclusion") != "success":
@@ -66,9 +67,13 @@ def wait_for_runner(*, timeout: float = 300, evolve: bool = False) -> None:
 
 if __name__ == "__main__":
     try:
-        if sys.argv[1:] not in ([], ["--evolve"]):
-            raise ValueError("expected no arguments or --evolve")
-        wait_for_runner(evolve=sys.argv[1:] == ["--evolve"])
+        args = sys.argv[1:]
+        if len(args) == 2 and args[0] == "--job-name" and args[1].strip():
+            wait_for_runner(job_name=args[1])
+        elif args in ([], ["--evolve"]):
+            wait_for_runner(evolve=args == ["--evolve"])
+        else:
+            raise ValueError("expected no arguments, --evolve, or --job-name NAME")
         print("The dedicated runner picked up this run's requested job.")
     except (
         ValueError,

@@ -85,11 +85,14 @@ def evolution(status, conclusion=None):
 
 
 def test_evolution_watchdog_waits_for_actual_job_after_successful_probe(monkeypatch):
-    calls = pickup_driver(monkeypatch, [
-        [probe("completed", "success")],
-        [probe("completed", "success"), evolution("queued")],
-        [probe("completed", "success"), evolution("in_progress")],
-    ])
+    calls = pickup_driver(
+        monkeypatch,
+        [
+            [probe("completed", "success")],
+            [probe("completed", "success"), evolution("queued")],
+            [probe("completed", "success"), evolution("in_progress")],
+        ],
+    )
     bootstrap.wait_for_runner(timeout=40, evolve=True)
     assert len(calls) == 3
 
@@ -113,3 +116,33 @@ def test_evolution_watchdog_rejects_job_that_never_ran(monkeypatch, conclusion):
     pickup_driver(monkeypatch, [[evolution("completed", conclusion)]])
     with pytest.raises(RuntimeError, match="did not run"):
         bootstrap.wait_for_runner(timeout=20, evolve=True)
+
+
+def test_reusable_workflow_probe_accepts_github_job_prefix(monkeypatch):
+    pickup_driver(
+        monkeypatch, [[dict(probe("completed", "success"), name="rc-evaluation / Verify the runner service is online")]]
+    )
+    bootstrap.wait_for_runner(timeout=20)
+
+
+def test_release_watchdog_waits_for_named_paid_job(monkeypatch):
+    name = "Evaluate candidate and stable quality"
+    calls = pickup_driver(
+        monkeypatch, [[probe("completed", "success")], [{"name": f"rc-evaluation / {name}", "status": "in_progress"}]]
+    )
+    bootstrap.wait_for_runner(timeout=20, job_name=name)
+    assert len(calls) == 2
+
+
+def test_reusable_probe_rejects_ambiguous_matching_jobs(monkeypatch):
+    pickup_driver(
+        monkeypatch,
+        [
+            [
+                probe("completed", "success"),
+                dict(probe("completed", "success"), name="rc-evaluation / Verify the runner service is online"),
+            ]
+        ],
+    )
+    with pytest.raises(RuntimeError, match="multiple"):
+        bootstrap.wait_for_runner(timeout=20)

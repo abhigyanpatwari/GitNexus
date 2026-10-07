@@ -1,12 +1,32 @@
-# Paid release comparisons run trusted main's harness against a separately
-# pinned runtime. Reuse the evolution pipeline's existing schedule controls.
+# Compare the exact candidate with the last stable release using trusted main's
+# harness. Share the existing evolution runner, protected settings, and power lock.
 name: Release evaluation
 
 on:
+  workflow_call:
+    inputs:
+      candidate_sha:
+        description: Exact prepared RC commit from this run
+        required: true
+        type: string
+      candidate_artifact:
+        description: This run's immutable candidate bundle artifact
+        required: true
+        type: string
+      model:
+        type: string
+        default: gpt-5.6-sol
+      effort:
+        type: string
+        default: xhigh
   schedule:
     - cron: '0 5 * * 3' # Wednesday 05:00 UTC
   workflow_dispatch:
     inputs:
+      runner_only:
+        description: Start, probe, and stop EC2 without paid model calls
+        type: boolean
+        default: false
       candidate_ref:
         description: 'Full commit SHA or version tag to evaluate; latest-rc resolves the newest published RC'
         type: string
@@ -22,30 +42,152 @@ on:
         options: [low, medium, high, xhigh, max]
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: gitnexus-evolution-runner
   cancel-in-progress: false
 
 permissions: {}
 
 jobs:
-  evaluate:
+  start-runner:
+    name: Start the dedicated EC2 runner
     if: >-
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' ||
+      (inputs.candidate_artifact != '' || github.event_name == 'workflow_dispatch' ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ubuntu-latest
+    environment: gitnexus-evolution
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      run_attempt: ${{ github.run_attempt }}
+      cleanup_required: ${{ steps.boot.outputs.cleanup_required }}
+      stop_deadline_epoch: ${{ steps.boot.outputs.stop_deadline_epoch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ec2-runner
+        id: boot
+        with:
+          operation: start
+          role-arn: ${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}
+          instance-id: ${{ secrets.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID }}
+          region: ${{ vars.GITNEXUS_EVOLUTION_AWS_REGION }}
+          stop-schedule: ${{ vars.GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC }}
+
+  check-runner:
+    needs: [start-runner]
+    name: Bound the wait for the evaluation runner
+    if: >-
+      github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      (inputs.candidate_artifact != '' || github.event_name == 'workflow_dispatch' ||
+       (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
+    runs-on: ubuntu-latest
+    environment: gitnexus-evolution
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # Cancel only this run if its dedicated runner stays offline.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # EC2 health does not prove the Actions service can accept a job.
+      - name: Verify the current run's native pickup probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/evolution-runner-ready.py
+      # A queued self-hosted job has no pickup timeout. Cancel this run so an
+      # offline probe cannot remain queued indefinitely and block later runs.
+      - name: Cancel this run when runner readiness fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"
+
+  runner-ready:
+    needs: [start-runner]
+    name: Verify the runner service is online
+    if: >-
+      github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      (inputs.candidate_artifact != '' || github.event_name == 'workflow_dispatch' ||
+       (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
+    # Partial reruns reuse successful startup outputs after cleanup stopped EC2.
+    runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
+    environment: gitnexus-evolution
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require startup in this run attempt
+        run: |
+          set -euo pipefail
+          if [[ '${{ needs.start-runner.outputs.run_attempt }}' != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo '::error::The EC2 startup belongs to an earlier attempt. Select Re-run all jobs to start the runner again.'
+            exit 1
+          fi
+      - name: Verify runner pickup
+        run: |
+          set -euo pipefail
+          test -r /proc/uptime
+          git --version
+          uname -sm
+
+  watch-evaluate-pickup:
+    name: Bound pickup of the paid evaluation job
+    needs: [start-runner, check-runner, runner-ready]
+    if: inputs.runner_only != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # Cancel this run if evaluate stays queued after the probe.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require pickup of this run's paid evaluation job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/evolution-runner-ready.py --job-name "Evaluate candidate and stable quality"
+      - name: Cancel this run when evaluation pickup fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"
+
+  evaluate:
+    name: Evaluate candidate and stable quality
+    needs: [start-runner, check-runner, runner-ready]
+    if: >-
+      github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.runner_only != true &&
+      (inputs.candidate_artifact != '' || github.event_name == 'workflow_dispatch' ||
+       (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
+    runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
     # Reuse the main-only protected model-secret environment. No tag/fork code
     # runs as the harness, and no release or PR write token is available here.
     environment: gitnexus-evolution
-    timeout-minutes: 360
+    timeout-minutes: 1260
     permissions:
       contents: read
     env:
-      INPUT_REF: ${{ inputs.candidate_ref || 'latest-rc' }}
+      INPUT_REF: ${{ inputs.candidate_sha || inputs.candidate_ref || 'latest-rc' }}
       MODEL: ${{ inputs.model || 'gpt-5.6-sol' }}
       EFFORT: ${{ inputs.effort || 'xhigh' }}
     steps:
+      - name: Require startup in this run attempt
+        run: |
+          set -euo pipefail
+          if [[ '${{ needs.start-runner.outputs.run_attempt }}' != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo '::error::The EC2 startup belongs to an earlier attempt. Select Re-run all jobs to start the runner again.'
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -56,7 +198,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Resolve last stable once; both runtimes use the same trusted tasks.
+          stable="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
+          [[ "$stable" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo '::error::No stable release found.'; exit 1; }
+          stable_sha="$(git rev-parse --verify "$stable^{commit}")"
+          echo "stable_sha=$stable_sha" >> "$GITHUB_OUTPUT"
           ref="$INPUT_REF"
+          if [[ '${{ inputs.candidate_artifact != '' }}' == 'true' ]]; then
+            [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Candidate must be a full commit SHA.'; exit 1; }
+            echo "sha=$ref" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [[ "$ref" == 'latest-rc' ]]; then
             ref="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \
               '[.[] | select(.prerelease and (.draft | not)) | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$"))] | sort_by(.published_at) | last | .tag_name // empty')"
@@ -78,10 +230,32 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.resolve.outputs.sha }}
+          ref: ${{ inputs.candidate_artifact != '' && github.sha || steps.resolve.outputs.sha }}
           path: candidate
           persist-credentials: false
           fetch-depth: 0
+      - name: Download this run's prepared candidate
+        if: inputs.candidate_artifact != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.candidate_artifact }}
+          path: ${{ runner.temp }}/rc-candidate
+      - name: Restore the exact unpublished candidate
+        if: inputs.candidate_artifact != ''
+        run: |
+          python3 eval/workflow_bench/release_candidate.py restore \
+            --repo "$GITHUB_WORKSPACE/candidate" --source-sha "$GITHUB_SHA" \
+            --candidate-sha "$INPUT_REF" --bundle "$RUNNER_TEMP/rc-candidate/candidate.bundle"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.stable_sha }}
+          path: stable
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Initialize this run's measurement directory
+        run: |
+          rm -rf "$RUNNER_TEMP/release-evaluation"
+          mkdir -p "$RUNNER_TEMP/release-evaluation/public"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.18.0'
@@ -96,8 +270,8 @@ jobs:
       - name: Install sandbox runtime and pinned Claude CLI
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap ripgrep socat
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install --yes --no-install-recommends bubblewrap ripgrep socat
           apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [[ -r "$apparmor_userns" ]] && [[ "$(<"$apparmor_userns")" == '1' ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -111,14 +285,19 @@ jobs:
         working-directory: eval
         run: |
           set -euo pipefail
-          uv run --locked --extra dev python -m workflow_bench.release_build \
-            --repo "$GITHUB_WORKSPACE/candidate"
+          for runtime in stable candidate; do
+            uv run --locked --extra dev python -m workflow_bench.release_build \
+              --repo "$GITHUB_WORKSPACE/$runtime"
+          done
       - name: Prepare pinned task set
         working-directory: eval
         run: |
-          uv run --locked --extra dev python -m workflow_bench.release_report prepare \
-            --repo "$GITHUB_WORKSPACE/candidate" --out "$RUNNER_TEMP/release-evaluation" \
-            --model "$MODEL" --effort "$EFFORT" --runs 3
+          set -euo pipefail
+          for runtime in stable candidate; do
+            uv run --locked --extra dev python -m workflow_bench.release_report prepare \
+              --repo "$GITHUB_WORKSPACE/$runtime" --out "$RUNNER_TEMP/release-evaluation/$runtime" \
+              --model "$MODEL" --effort "$EFFORT" --runs 3
+          done
       - name: Require real containment before paid sessions
         working-directory: eval
         env:
@@ -127,38 +306,67 @@ jobs:
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
         run: uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py -q
       - name: Run repeated paired agent sessions
-        timeout-minutes: 300
+        timeout-minutes: 1140
         working-directory: eval
         env:
           GITNEXUS_BENCH_OPENAI_API_KEY: ${{ secrets.GITNEXUS_BENCH_OPENAI_API_KEY }}
           GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
         run: |
-          uv run --locked --extra dev python -m workflow_bench.runner \
-            --tasks "$RUNNER_TEMP/release-evaluation/tasks.yaml" \
-            --gitnexus-root "$GITHUB_WORKSPACE/candidate" \
-            --arms baseline_nomcp baseline --runs 3 --include-expensive \
-            --workers 3 --timeout 1800 --model "$MODEL" --effort "$EFFORT" \
-            --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
-            --out "$RUNNER_TEMP/release-evaluation/raw"
+          set -euo pipefail
+          for runtime in stable candidate; do
+            remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
+            (( remaining > 0 )) || { echo '::error::No time remains before the stop and evidence reserve.'; exit 1; }
+            timeout --signal=TERM --kill-after=60 "${remaining}s" \
+              uv run --locked --extra dev python -m workflow_bench.runner \
+              --tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml" \
+              --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
+              --arms baseline_nomcp baseline --runs 3 --include-expensive \
+              --workers 3 --timeout 1800 --model "$MODEL" --effort "$EFFORT" \
+              --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
+              --out "$RUNNER_TEMP/release-evaluation/$runtime/raw"
+          done
       - name: Summarize complete or incomplete measurements
         if: ${{ always() && steps.resolve.outputs.sha != '' }}
         working-directory: eval
         run: |
-          if [[ -f "$RUNNER_TEMP/release-evaluation/metadata.json" ]]; then
-            uv run --locked --extra dev python -m workflow_bench.release_report summarize \
-              --results "$RUNNER_TEMP/release-evaluation/raw/results.jsonl" \
-              --metadata "$RUNNER_TEMP/release-evaluation/metadata.json" \
-              --out "$RUNNER_TEMP/release-evaluation/public"
-          else
-            echo '::error::Evaluation preparation failed; no measurements exist.'
-            exit 1
-          fi
-      - name: Publish agent summary
-        if: always()
+          failed=0
+          for runtime in stable candidate; do
+            if [[ -f "$RUNNER_TEMP/release-evaluation/$runtime/metadata.json" ]]; then
+              uv run --locked --extra dev python -m workflow_bench.release_report summarize \
+                --results "$RUNNER_TEMP/release-evaluation/$runtime/raw/results.jsonl" \
+                --metadata "$RUNNER_TEMP/release-evaluation/$runtime/metadata.json" \
+                --out "$RUNNER_TEMP/release-evaluation/$runtime/public" || failed=1
+            else
+              echo "::error::$runtime evaluation preparation failed; no measurements exist."
+              failed=1
+            fi
+          done
+          exit "$failed"
+      - name: Require complete paired evidence and no task regression
+        if: ${{ always() && steps.resolve.outputs.sha != '' }}
+        working-directory: eval
         run: |
-          if [[ -f "$RUNNER_TEMP/release-evaluation/public/agent-evaluation.md" ]]; then
-            cat "$RUNNER_TEMP/release-evaluation/public/agent-evaluation.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          uv run --locked --extra dev python -m workflow_bench.release_gate \
+            --candidate "$RUNNER_TEMP/release-evaluation/candidate/public/agent-evaluation.json" \
+            --candidate-sha '${{ steps.resolve.outputs.sha }}' \
+            --stable "$RUNNER_TEMP/release-evaluation/stable/public/agent-evaluation.json" \
+            --stable-sha '${{ steps.resolve.outputs.stable_sha }}' \
+            --out "$RUNNER_TEMP/release-evaluation/public"
+      - name: Collect sanitized evidence and publish summary
+        if: ${{ always() && steps.resolve.outputs.sha != '' }}
+        run: |
+          set -euo pipefail
+          public="$RUNNER_TEMP/release-evaluation/public"
+          mkdir -p "$public"
+          for extension in json md; do
+            candidate="$RUNNER_TEMP/release-evaluation/candidate/public/agent-evaluation.$extension"
+            stable="$RUNNER_TEMP/release-evaluation/stable/public/agent-evaluation.$extension"
+            if [[ -f "$candidate" ]]; then cp "$candidate" "$public/agent-evaluation.$extension"; fi
+            if [[ -f "$stable" ]]; then cp "$stable" "$public/stable-agent-evaluation.$extension"; fi
+          done
+          for report in release-quality-gate agent-evaluation; do
+            if [[ -f "$public/$report.md" ]]; then cat "$public/$report.md" >> "$GITHUB_STEP_SUMMARY"; fi
+          done
       - name: Upload sanitized release evidence
         if: ${{ always() && steps.resolve.outputs.sha != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -167,5 +375,34 @@ jobs:
           path: |
             ${{ runner.temp }}/release-evaluation/public/agent-evaluation.json
             ${{ runner.temp }}/release-evaluation/public/agent-evaluation.md
+            ${{ runner.temp }}/release-evaluation/public/stable-agent-evaluation.json
+            ${{ runner.temp }}/release-evaluation/public/stable-agent-evaluation.md
+            ${{ runner.temp }}/release-evaluation/public/release-quality-gate.json
+            ${{ runner.temp }}/release-evaluation/public/release-quality-gate.md
           if-no-files-found: error
           retention-days: 30
+
+  stop-runner:
+    name: Stop and verify the dedicated EC2 runner
+    needs: [start-runner, check-runner, runner-ready, watch-evaluate-pickup, evaluate]
+    if: >-
+      always() && github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.ref == 'refs/heads/main' &&
+      needs.start-runner.outputs.cleanup_required == 'true'
+    runs-on: ubuntu-latest
+    environment: gitnexus-evolution
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ec2-runner
+        with:
+          operation: stop
+          role-arn: ${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}
+          instance-id: ${{ secrets.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID }}
+          region: ${{ vars.GITNEXUS_EVOLUTION_AWS_REGION }}
+          stop-schedule: ${{ vars.GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC }}
