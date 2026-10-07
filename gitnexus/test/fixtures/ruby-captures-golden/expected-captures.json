@@ -231,6 +231,14 @@
     "captureGroups": 16,
     "digest": "34e07387fece6c1d2deb49c39fc2bfe0badfe8015dd1f7ae956d57ac98322a1d"
   },
+  "ruby-nested-method/main.rb": {
+    "captureGroups": 9,
+    "digest": "aa8f6691b6b8228812ab86611a5cc6c1537178074a2689d23ce1b3a90c50a3cc"
+  },
+  "ruby-nested-method/other.rb": {
+    "captureGroups": 6,
+    "digest": "cc780687136d95e47b818e59d6e7a1eec184e1d4485cbe7a7a3ec91084e6282f"
+  },
   "ruby-nested-mixin-shortname/app.rb": {
     "captureGroups": 11,
     "digest": "dfa494facc56b5e07a12befc77cd1e3788f0494f1373960cd9fe88715750e590"

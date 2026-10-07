@@ -31,18 +31,13 @@ export function phpBindingScopeFor(
   // A named PHP function declared inside another function becomes globally
   // callable once the outer declaration executes. Tree-sitter represents the
   // declaration as its own Function scope, so the generic equal-range rule
-  // would bind it only to the enclosing Function. Hoist named declarations to
-  // the declaring namespace/module; keep anonymous functions and arrow
-  // functions lexical. The textual guard distinguishes `function name(...)`
-  // from closure captures such as `$handler = function (...) {}` without
-  // teaching the shared extractor PHP AST node types.
+  // would bind it only to the enclosing Function. Named declarations carry an
+  // unsigilled @declaration.name; closures and arrows use the assigned variable
+  // name, including its `$` sigil. Classify the existing captures instead of
+  // reparsing declaration text, which may begin with attributes or comments.
   const functionDecl = decl['@declaration.function'];
-  if (
-    functionDecl !== undefined &&
-    /^\s*function\b(?:(?:\s+)|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$)|#[^\r\n]*(?:\r?\n|$))*&?(?:(?:\s+)|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$)|#[^\r\n]*(?:\r?\n|$))*[A-Za-z_\u0080-\uFFFF]/iu.test(
-      functionDecl.text,
-    )
-  ) {
+  const functionName = decl['@declaration.name']?.text;
+  if (functionDecl !== undefined && functionName !== undefined && !functionName.startsWith('$')) {
     let cur: Scope | undefined = innermost;
     while (cur !== undefined && cur.kind !== 'Namespace' && cur.kind !== 'Module') {
       const parentId: ScopeId | null = cur.parent ?? null;

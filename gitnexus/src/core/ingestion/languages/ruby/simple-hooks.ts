@@ -20,6 +20,31 @@ export function rubyBindingScopeFor(
   if (decl['@type-binding.self'] !== undefined) {
     return innermost.id;
   }
+  // A plain Ruby `def` creates a method on the enclosing class/module (or
+  // Object at top level), even when it appears textually inside another
+  // method. It is not a lexical closure. In the provider capture, an ordinary
+  // method starts with its declared name immediately after `def`; singleton
+  // methods carry a receiver first (`def self.foo` / `def Obj.foo`), while
+  // lambda/proc anchors do not start with `def` at all.
+  const functionDecl = decl['@declaration.function'];
+  const functionName = decl['@declaration.name']?.text;
+  const afterDef = functionDecl?.text.trimStart().startsWith('def')
+    ? functionDecl.text.trimStart().slice(3).trimStart()
+    : null;
+  if (
+    functionName !== undefined &&
+    afterDef !== null &&
+    afterDef.startsWith(functionName) &&
+    !/[A-Za-z0-9_!?=]/u.test(afterDef[functionName.length] ?? '')
+  ) {
+    let cur: Scope | undefined = innermost;
+    while (cur !== undefined && cur.kind !== 'Class' && cur.kind !== 'Module') {
+      const parentId: ScopeId | null = cur.parent ?? null;
+      if (parentId === null) break;
+      cur = tree.getScope(parentId);
+    }
+    if (cur !== undefined && (cur.kind === 'Class' || cur.kind === 'Module')) return cur.id;
+  }
   // `@ivar = Foo.new` in `initialize` (or any method) declares a FIELD of the
   // enclosing class, so its type binding belongs on the Class scope — the only
   // place `typeOfMemberOnClass` reads it. Left on the method's own Function

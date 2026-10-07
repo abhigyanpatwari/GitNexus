@@ -17,6 +17,23 @@ import {
   type PipelineResult,
 } from './helpers.js';
 
+describe('Ruby nested method declarations remain visible on the outer method surface', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-nested-method'), () => {});
+  }, 60000);
+
+  it('resolves a sibling caller to the nested method despite a same-name method elsewhere', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find(
+      (candidate) =>
+        candidate.source === 'caller' && candidate.rel.targetId.includes('boot.target'),
+    );
+    expect(edge).toBeDefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Heritage: require_relative imports + include heritage + attr_* properties + calls
 // ---------------------------------------------------------------------------

@@ -344,8 +344,8 @@
     "digest": "c372e232faf99874eff46877b71f70b533b496832b762833f2b266ca9939978f"
   },
   "php-nested-function/main.php": {
-    "captureGroups": 9,
-    "digest": "71261f32537e730cd310002b2a238edc85a44953af1420ce53f055ada496188b"
+    "captureGroups": 13,
+    "digest": "7fab180036a0224560d1be1f980e720aed1f0ac145b31bdda2db3ff30dd2df4f"
   },
   "php-nested-function/other.php": {
     "captureGroups": 5,
