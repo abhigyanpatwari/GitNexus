@@ -39,7 +39,9 @@ export function phpBindingScopeFor(
   const functionDecl = decl['@declaration.function'];
   if (
     functionDecl !== undefined &&
-    /^\s*function\s*&?\s*[A-Za-z_\u0080-\uFFFF]/iu.test(functionDecl.text)
+    /^\s*function\b(?:(?:\s+)|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$)|#[^\r\n]*(?:\r?\n|$))*&?(?:(?:\s+)|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$)|#[^\r\n]*(?:\r?\n|$))*[A-Za-z_\u0080-\uFFFF]/iu.test(
+      functionDecl.text,
+    )
   ) {
     let cur: Scope | undefined = innermost;
     while (cur !== undefined && cur.kind !== 'Namespace' && cur.kind !== 'Module') {
