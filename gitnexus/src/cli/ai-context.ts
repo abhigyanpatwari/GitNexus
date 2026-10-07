@@ -117,6 +117,11 @@ export function markdownSafeBranch(branch: string): string {
   return branch.replace(/`/g, '');
 }
 
+function regressionReviewGuidance(defaultBranch: string, runner: string): string {
+  const target = JSON.stringify(markdownSafeBranch(defaultBranch));
+  return `For regression review of target branch ${target}, pass the merge-base SHA resolved by \`gitnexus-review\`: \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\`.`;
+}
+
 /** Options for {@link generateGitNexusContent} (collapsed from positional
  *  params, #2188 review — six `undefined`s to reach `hasPdg` was the smell). */
 export interface GitNexusContentOptions {
@@ -129,9 +134,9 @@ export interface GitNexusContentOptions {
    *  the available runner (global `gitnexus` → `pnpm dlx` → `bunx` → `npx`) at
    *  call time. */
   runnerPath?: string;
-  /** Default branch for the regression-compare example (#243). Configurable so
-   *  projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
-   *  back over their fix on every analyze. The value is embedded inside a
+  /** Default target branch for the regression-review guidance (#243, #3509).
+   *  This is a target hint only: compare scope must receive the exact merge-base
+   *  SHA, never the moving branch tip. The value is embedded inside a
    *  Markdown inline-code span: validateBranchName rejects backticks upstream,
    *  and `markdownSafeBranch` strips any remaining backtick here as defense in
    *  depth, so JSON.stringify's quote/escape handling is sufficient and the
@@ -232,7 +237,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
       ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
       : ''
   }
-- **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\` or \`${runner} detect-changes --scope compare --base-ref ${JSON.stringify(markdownSafeBranch(defaultBranch))} --repo .\`.
+- **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. ${regressionReviewGuidance(defaultBranch, runner)}
 - MUST warn on HIGH/CRITICAL \`risk\` pre-edit; never use \`riskSharedAxes\` to waive a HIGH/CRITICAL \`risk\` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
 - **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
 - **MUST use \`query({search_query: "concept"})\` for concepts/flows, \`context({name: "symbolName"})\` for a named symbol, or \`impact\` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/\`UNKNOWN\`/literals.${
@@ -726,8 +731,8 @@ export async function generateAIContextFiles(
 }
 
 /**
- * Refresh only the `base_ref: "..."` value inside the GitNexus block of an
- * already-generated AGENTS.md / CLAUDE.md, in place (#1996 tri-review P2).
+ * Refresh the regression-review target inside the GitNexus block of an
+ * already-generated AGENTS.md / CLAUDE.md, in place (#1996 P2, #3509).
  *
  * The `alreadyUpToDate` analyze fast path returns before the normal
  * {@link generateAIContextFiles} call, so a changed `.gitnexusrc` defaultBranch
@@ -736,8 +741,10 @@ export async function generateAIContextFiles(
  * block — including community-skill rows written by a prior `--skills` run —
  * rather than regenerating (which would drop those rows on a no-`--skills` run).
  *
- * Best-effort: missing files, a missing/blank block, or a block with no
- * `base_ref` line (e.g. a user-trimmed keep block) are silently skipped. Writes
+ * Legacy blocks that passed the branch tip as `base_ref` are migrated to the
+ * merge-base guidance at the same time. Best-effort: missing files, a
+ * missing/blank block, or a block with no generated regression sentence are
+ * silently skipped. Writes
  * only when the value actually changes, so a routine up-to-date run is a no-op.
  */
 export async function refreshBaseRefLine(
@@ -746,7 +753,7 @@ export async function refreshBaseRefLine(
   options?: { skipAgentsMd?: boolean },
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
-  const replacement = `base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}`;
+  const targetReplacement = `For regression review of target branch ${JSON.stringify(markdownSafeBranch(defaultBranch))}`;
   const updated: string[] = [];
   for (const name of ['AGENTS.md', 'CLAUDE.md']) {
     const filePath = path.join(repoPath, name);
@@ -763,9 +770,24 @@ export async function refreshBaseRefLine(
     if (endIdx === -1 || endIdx <= startIdx) continue;
     const blockEnd = endIdx + GITNEXUS_END_MARKER.length;
     const block = content.substring(startIdx, blockEnd);
-    // Only the generated regression example carries a base_ref line, and only
-    // one per block; replace its quoted value while leaving the rest untouched.
-    const newBlock = block.replace(/base_ref: "(?:[^"\\]|\\.)*"/, replacement);
+    // Preserve the runner emitted with the block. Its location follows the
+    // configured storage path, so assuming `.gitnexus/run.cjs` would break the
+    // CLI fallback when migrating guidance generated for an external store.
+    const legacyRunner =
+      block.match(/or `([^`\n]+?) detect-changes --scope compare --base-ref\b/)?.[1] ??
+      '.gitnexus/run.cjs';
+    const mergeBaseGuidance = regressionReviewGuidance(defaultBranch, legacyRunner);
+    let newBlock = block.replace(
+      /For regression review of target branch "(?:[^"\\]|\\.)*"/,
+      targetReplacement,
+    );
+    if (newBlock === block) {
+      // Migrate the legacy generated sentence.
+      newBlock = block.replace(
+        /For regression review:(?=[^\n]*base_ref:)[^\n]*/,
+        mergeBaseGuidance,
+      );
+    }
     if (newBlock === block) continue; // no base_ref line present, or already current
     const newContent = content.substring(0, startIdx) + newBlock + content.substring(blockEnd);
     try {
