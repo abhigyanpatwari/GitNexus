@@ -835,7 +835,7 @@ def test_resolved_implementation_without_repository_work_fails_closed():
 
 
 @pytest.mark.skipif(os.name == "nt", reason="sandbox patch streaming uses POSIX executable paths")
-def test_capture_patch_materializes_only_the_bounded_prefix(tmp_path):
+def test_capture_patch_materializes_only_the_bounded_prefix(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
@@ -890,11 +890,19 @@ def test_capture_patch_materializes_only_the_bounded_prefix(tmp_path):
                 duration_s=0.0,
             )
 
+    read_bytes = runner_artifacts._bounded_regular_bytes
+    materialized_sizes = []
+
+    def inspect_bounded_sink(path, *, limit):
+        materialized_sizes.append(path.stat().st_size)
+        return read_bytes(path, limit=limit)
+
+    monkeypatch.setattr(runner_artifacts, "_bounded_regular_bytes", inspect_bounded_sink)
     patch = runner.capture_patch(LocalSandbox(), repo, orig_sha)
 
     assert len(patch) == runner.MAX_PATCH_BYTES
-    materialized = next(repo.glob(".wfbench-artifact-*/final.patch"))
-    assert materialized.stat().st_size == runner.MAX_PATCH_BYTES
+    assert materialized_sizes == [runner.MAX_PATCH_BYTES]
+    assert not list(repo.glob(".wfbench-artifact-*"))
 
 
 def test_workflow_never_starts_work_after_failed_or_invalid_planning(monkeypatch, tmp_path):

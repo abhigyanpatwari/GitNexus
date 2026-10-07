@@ -604,10 +604,15 @@ if returncode:
         ":(exclude).wfbench-artifact-*",
         *_synthetic_guidance_exclusions(sandbox),
     ]
-    result = sandbox.run(command, timeout=60, env=build_sandbox_environment())
-    if not result.ok:
-        raise ManagedProcessError(command, result)
-    return _bounded_regular_bytes(patch, limit=MAX_PATCH_BYTES)
+    try:
+        result = sandbox.run(command, timeout=60, env=build_sandbox_environment())
+        if not result.ok:
+            raise ManagedProcessError(command, result)
+        return _bounded_regular_bytes(patch, limit=MAX_PATCH_BYTES)
+    finally:
+        # The returned bytes are the evidence; this temporary sink must not
+        # become an agent edit in later Git diffs or repeated captures.
+        shutil.rmtree(artifact_dir)
 
 
 def enforce_work_evidence(

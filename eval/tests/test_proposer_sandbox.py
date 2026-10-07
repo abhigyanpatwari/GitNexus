@@ -122,7 +122,11 @@ def test_filtered_guidance_is_excluded_from_all_agent_work_evidence(tmp_path):
             "diff_files": 0, "diff_insertions": 0, "diff_deletions": 0,
         }
         assert runner_artifacts.capture_patch(local, clone, sha) == b""
-        shutil.rmtree(next(clone.glob(".wfbench-artifact-*")))
+        assert runner_artifacts.diff_churn(local, sha) == {
+            "diff_files": 0, "diff_insertions": 0, "diff_deletions": 0,
+        }
+        assert runner_artifacts.implementation_diff_digest(local, sha) == before
+        assert runner_artifacts.capture_patch(local, clone, sha) == b""
         (clone / "source.txt").write_text("agent change\n")
         assert runner_artifacts.implementation_diff_digest(local, sha) != before
         assert runner_artifacts.diff_churn(local, sha) == {
