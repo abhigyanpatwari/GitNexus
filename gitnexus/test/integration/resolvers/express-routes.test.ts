@@ -77,7 +77,7 @@ describe('Express route identity and source priority', () => {
         .filter((edge) => edge.target === route)
         .map((edge) => edge.sourceFilePath);
       expect(sources).toContain('src/server.ts');
-      expect(sources).not.toContain('test/stubs.test.ts');
+      expect(sources).not.toContain('test/stubs.ts');
     }
   });
 
