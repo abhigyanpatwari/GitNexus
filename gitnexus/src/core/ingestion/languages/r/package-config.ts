@@ -383,7 +383,8 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
               }
             }
           } catch {
-            // Can't read DESCRIPTION
+            // Can't read DESCRIPTION: the package it declares was not discovered.
+            truncated = true;
           }
         }
       }

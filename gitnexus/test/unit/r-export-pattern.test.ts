@@ -73,6 +73,12 @@ describe('compileRExportPattern', () => {
   });
 
   it('does not treat an escaped bracket as a bracket expression', () => {
+    // `\[` is a literal bracket; the rest is an ordinary one-character class of `:alph`,
+    // so the pattern compiles (to itself) and matches `[` plus exactly one of those characters.
+    expect(compileRExportPattern('^\\[[:alpha:]$')?.source).toBe('^\\[[:alpha:]$');
+    expect(matches('^\\[[:alpha:]$', '[a')).toBe(true);
+    expect(matches('^\\[[:alpha:]$', '[:')).toBe(true);
+    expect(matches('^\\[[:alpha:]$', '[b')).toBe(false);
     expect(matches('^\\[[:alpha:]$', '[:alpha:')).toBe(false);
   });
 

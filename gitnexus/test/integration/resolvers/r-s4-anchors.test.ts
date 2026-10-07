@@ -58,8 +58,8 @@ describe('R S4/RefClass definitions are named by their first argument only', () 
 
   it('defines the generics once, with no Function from valueClass = "numeric"', () => {
     const functions = getNodesByLabel(result, 'Function');
-    expect(functions).toContain('describe');
-    expect(functions).toContain('summarise');
+    expect(functions.filter((n) => n === 'describe')).toHaveLength(1);
+    expect(functions.filter((n) => n === 'summarise')).toHaveLength(1);
     expect(functions).not.toContain('numeric');
   });
 

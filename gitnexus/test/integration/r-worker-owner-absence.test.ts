@@ -74,7 +74,7 @@ describe.skipIf(!hasDistWorker)('R worker never emits an owner id (before post-p
       let hintedMembers = 0;
       graph.forEachNode((n) => {
         if (n.properties.language !== 'r') return;
-        if (typeof n.properties.ownerId === 'string') ownedNodes++;
+        if (n.properties.ownerId !== undefined) ownedNodes++;
         if (
           (n.label === 'Method' || n.label === 'Property') &&
           typeof n.properties.ownerNameHint === 'string'
@@ -88,7 +88,7 @@ describe.skipIf(!hasDistWorker)('R worker never emits an owner id (before post-p
       for (const result of raw) {
         for (const symbol of result.symbols) {
           symbols++;
-          if (symbol.ownerId) ownedSymbols++;
+          if (symbol.ownerId !== undefined) ownedSymbols++;
         }
       }
 

@@ -369,6 +369,30 @@ describe('loadRPackageConfig: truncation only when a skipped subtree hides an un
       if (locked) await fs.chmod(locked, 0o755).catch(() => undefined);
     }
   });
+
+  it('an unreadable DESCRIPTION is truncated, so its qualifier stays unknown', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return; // root reads anything
+    let locked = '';
+    try {
+      const cfg = await withRepo(async (root) => {
+        locked = path.join(root, 'sub', 'DESCRIPTION');
+        await writePkg(path.join(root, 'sub'), 'hiddenpkg');
+        await fs.chmod(locked, 0o000);
+        // Guard: a platform that still reads a mode-000 file cannot exercise the catch.
+        await fs.readFile(locked).then(
+          () => {
+            throw new Error('DESCRIPTION is still readable; cannot simulate an I/O error');
+          },
+          () => undefined,
+        );
+      });
+      expect(cfg?.packages.has('hiddenpkg')).toBe(false);
+      expect(cfg?.truncated).toBe(true);
+      expect(rQualifierLocality('hiddenpkg', cfg as RPackageConfig, new Set())).toBe('unknown');
+    } finally {
+      if (locked) await fs.chmod(locked, 0o644).catch(() => undefined);
+    }
+  });
 });
 
 describe('hidesUndiscoveredPackage', () => {
