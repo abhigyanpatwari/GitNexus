@@ -311,7 +311,10 @@ const FILESYSTEM = [
   // The deletion-guard cases in this file require real Windows path semantics.
   'test/unit/canonicalize-path-long-path-prefix.test.ts',
   'test/unit/storage-resolver.test.ts',
+  // Dart package metadata is captured during the shared scan on every platform.
   'test/unit/dart-package-imports.test.ts',
+  // Verify the same capture is reused by native parsing and scope resolution.
+  'test/integration/resolvers/dart.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',

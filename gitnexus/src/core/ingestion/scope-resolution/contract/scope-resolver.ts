@@ -472,6 +472,19 @@ export interface ScopeResolver {
   loadResolutionConfig?(repoPath: string): Promise<unknown> | unknown;
 
   /**
+   * Capture metadata from the scan's complete, nonignored candidate paths,
+   * before unreadable/large source files are filtered out. Called once for a
+   * language present in the scan. The compact result is shared by every
+   * resolution pass instead of calling loadResolutionConfig again.
+   * Capture failures must throw; consumers must not mutate the result.
+   * This is a stable-workspace input boundary, not an atomic filesystem snapshot.
+   */
+  captureResolutionConfig?(
+    repoPath: string,
+    filePaths: readonly string[],
+  ): Promise<unknown> | unknown;
+
+  /**
    * Per-scope binding-merge precedence. The shared finalize pass
    * collects bindings from multiple sources (local declarations,
    * imports, namespace, wildcard, reexport) and asks the language
