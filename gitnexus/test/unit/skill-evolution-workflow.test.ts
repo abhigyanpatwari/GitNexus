@@ -111,7 +111,7 @@ describe('dedicated runner readiness', () => {
       }
       expect(text).not.toContain('configure-aws-credentials');
     }
-    for (const job of ['check-runner', 'runner-ready']) {
+    for (const job of ['check-runner', 'runner-ready', 'watch-evolve-pickup']) {
       expect(workflowDocument.jobs?.[job]?.env).toBeUndefined();
       for (const step of workflowDocument.jobs?.[job]?.steps ?? []) {
         expect(Object.keys(step.env ?? {}).every((key) => key === 'GH_TOKEN')).toBe(true);
@@ -128,6 +128,26 @@ describe('dedicated runner readiness', () => {
     );
     expect(String(releaseDocument.jobs?.evaluate?.if)).toContain(
       "vars.GITNEXUS_EVOLUTION_WORKERS == '3'",
+    );
+  });
+
+  it('watches actual paid pickup concurrently after the readiness gate', () => {
+    const watch = workflowDocument.jobs?.['watch-evolve-pickup'];
+    expect(watch?.needs).toEqual(evolveJob?.needs);
+    expect(watch?.['runs-on']).toBe('ubuntu-latest');
+    expect(watch?.environment).toBeUndefined();
+    expect(watch?.['timeout-minutes']).toBe(10);
+    expect(watch?.permissions).toEqual({ contents: 'read', actions: 'write' });
+    expect(watch?.if).toBe('inputs.runner_only != true');
+    expect(evolveJob?.needs).not.toContain('watch-evolve-pickup');
+    expect(
+      watch?.steps?.some(
+        (step) => step.run === 'python3 .github/scripts/evolution-runner-ready.py --evolve',
+      ),
+    ).toBe(true);
+    expect(watch?.steps?.at(-1)?.if).toBe('failure()');
+    expect(watch?.steps?.at(-1)?.run).toBe(
+      'gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"',
     );
   });
 });

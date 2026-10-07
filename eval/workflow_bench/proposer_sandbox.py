@@ -214,6 +214,8 @@ class SandboxSession:
     claude_host_bin: Path
     command_prefix: list[str]
     read_only_mounts: tuple[ReadOnlyMount, ...]
+    # Harness-authored, immutable overlays must not appear as agent work.
+    synthetic_guidance_paths: tuple[str, ...] = ()
 
     @property
     def require_pid_namespace(self) -> bool:
@@ -1278,6 +1280,7 @@ def prepare_sandbox(
     user_skills.chmod(0o500)
     primary: BaseException | None = None
     try:
+        baseline_mounts = () if gitnexus_available else _baseline_gitnexus_mounts(clone, private_root)
         protected_mounts = (
             *read_only_mounts,
             ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
@@ -1286,7 +1289,7 @@ def prepare_sandbox(
             *(
                 (ReadOnlyMount(source=_create_gitnexus_wrapper(private_root), target=SANDBOX_GITNEXUS_CLI),)
                 if gitnexus_available
-                else _baseline_gitnexus_mounts(clone, private_root)
+                else baseline_mounts
             ),
             ReadOnlyMount(source=git_excludes, target=SANDBOX_GIT_EXCLUDES),
         )
@@ -1312,6 +1315,11 @@ def prepare_sandbox(
             claude_host_bin=claude,
             command_prefix=command_prefix,
             read_only_mounts=protected_mounts,
+            synthetic_guidance_paths=tuple(
+                PurePosixPath(mount.target).relative_to(SANDBOX_WORKSPACE).as_posix()
+                for mount in baseline_mounts
+                if mount.target != f"{SANDBOX_WORKSPACE}/.gitnexus"
+            ),
         )
     except BaseException as exc:
         primary = exc

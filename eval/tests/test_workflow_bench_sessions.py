@@ -867,6 +867,8 @@ def test_capture_patch_materializes_only_the_bounded_prefix(tmp_path):
     changed.write_text("changed line\n" * 100_000)
 
     class LocalSandbox:
+        synthetic_guidance_paths = ()
+
         def run(self, command, **kwargs):
             translated = [
                 str(repo) + item.removeprefix("/workspace") if item.startswith("/workspace/") else item

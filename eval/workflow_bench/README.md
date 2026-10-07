@@ -90,8 +90,12 @@ release evidence has two levels:
 Run **Release evaluation** from `main` before cutting a stable tag. Set
 `candidate_ref` to the full, already-reviewed stable commit SHA. The workflow
 uses main's trusted harness and `--gitnexus-root` to select a separate immutable
-runtime checkout. It records runtime/harness SHAs, task and oracle digests,
-model/effort, every repetition, solve counts, cost and agent wall time. Failed
+runtime checkout.
+Candidate install and build scripts run in Bubblewrap with only that checkout
+writable, system tools read-only, and a cleared environment. The trusted harness
+and host command files are not mounted into the candidate build.
+The report records runtime/harness SHAs, task and oracle digests, model/effort,
+every repetition, solve counts, cost and agent wall time. Failed
 solutions stay in the denominator. Infrastructure/session failures, missing
 costs, incomplete pairs or failed containment make evidence incomplete.
 
@@ -250,7 +254,9 @@ The skill-evolution workflow uses the existing dedicated runner and private
 EventBridge start/stop automation. A hosted readiness check requires this run's
 native pickup probe to finish within five minutes. If the runner stays offline
 or its probe fails, the hosted check cancels its own run to clear the queued
-self-hosted job; paid evolution cannot start. Only this readiness job has
+self-hosted job; paid evolution cannot start. A second hosted watchdog bounds
+pickup of the actual paid job after the native probe, so a runner shutdown
+between those jobs also clears the queue. Only these readiness jobs have
 Actions write permission for cancellation. A main-branch dispatch with
 `runner_only=true` checks pickup without paid model calls.
 

@@ -18,6 +18,7 @@ import pytest
 
 from workflow_bench import runner, runner_artifacts
 from workflow_bench import proposer_sandbox
+from workflow_bench import release_build
 from workflow_bench.mock_provider import MockProvider, Reply
 
 from workflow_bench.process_control import ManagedProcessResult, run_managed
@@ -88,6 +89,106 @@ def test_nomcp_sandbox_hides_graph_and_guidance_without_exposing_the_cli(tmp_pat
     # Mounts alter the model's view, never the credited task source or patch.
     assert (clone / ".gitnexus" / "lbug").read_text() == "prebuilt graph"
     assert "MUST use GitNexus" in (clone / "AGENTS.md").read_text()
+
+
+def test_filtered_guidance_is_excluded_from_all_agent_work_evidence(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        (clone / name).write_text("Run repository tests.\nMUST use GitNexus before editing.\n")
+    (clone / "source.txt").write_text("original\n")
+    subprocess.run(["git", "init", "--quiet", str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "add", "."], check=True)
+    subprocess.run([
+        "git", "-C", str(clone), "-c", "user.name=test", "-c", "user.email=test@invalid",
+        "commit", "--quiet", "-m", "base",
+    ], check=True)
+    sha = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
+    bwrap = tmp_path / "fake-bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o700)
+    with prepare_sandbox(
+        clone=clone, claude_bin=sys.executable, bwrap_bin=bwrap, preflight=False, gitnexus_available=False,
+    ) as session:
+        assert set(session.synthetic_guidance_paths) == {"AGENTS.md", "CLAUDE.md"}
+        # Materialize the overlay in this private fixture to exercise real Git
+        # even on hosts that cannot create user namespaces.
+        for mount in session.read_only_mounts:
+            if mount.target.removeprefix('/workspace/') in session.synthetic_guidance_paths:
+                (clone / mount.target.removeprefix('/workspace/')).write_bytes(mount.source.read_bytes())
+        local = replace(session, backend="host-unsafe", command_prefix=[])
+        before = runner_artifacts.implementation_diff_digest(local, sha)
+        assert runner_artifacts.diff_churn(local, sha) == {
+            "diff_files": 0, "diff_insertions": 0, "diff_deletions": 0,
+        }
+        assert runner_artifacts.capture_patch(local, clone, sha) == b""
+        shutil.rmtree(next(clone.glob(".wfbench-artifact-*")))
+        (clone / "source.txt").write_text("agent change\n")
+        assert runner_artifacts.implementation_diff_digest(local, sha) != before
+        assert runner_artifacts.diff_churn(local, sha) == {
+            "diff_files": 1, "diff_insertions": 1, "diff_deletions": 1,
+        }
+        patch = runner_artifacts.capture_patch(local, clone, sha)
+        assert b"source.txt" in patch and b"AGENTS.md" not in patch and b"CLAUDE.md" not in patch
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_guidance_overlays_produce_no_agent_patch_or_churn(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "CLAUDE.md").write_text("Run tests.\nMUST use GitNexus before editing.\n")
+    subprocess.run(["git", "init", "--quiet", str(clone)], check=True)
+    subprocess.run(["git", "-C", str(clone), "add", "."], check=True)
+    subprocess.run([
+        "git", "-C", str(clone), "-c", "user.name=test", "-c", "user.email=test@invalid",
+        "commit", "--quiet", "-m", "base",
+    ], check=True)
+    sha = subprocess.check_output(["git", "-C", str(clone), "rev-parse", "HEAD"], text=True).strip()
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, gitnexus_available=False) as sandbox:
+        assert runner_artifacts.capture_patch(sandbox, clone, sha) == b""
+        assert runner_artifacts.diff_churn(sandbox, sha) == {
+            "diff_files": 0, "diff_insertions": 0, "diff_deletions": 0,
+        }
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_candidate_lifecycle_cannot_replace_harness_or_read_tokens(tmp_path, monkeypatch):
+    candidate = tmp_path / "candidate"
+    core = candidate / "gitnexus"
+    core.mkdir(parents=True)
+    harness = tmp_path / "trusted-harness.py"
+    harness.write_text("trusted main evaluator\n")
+    monkeypatch.setenv("GITNEXUS_BENCH_OPENAI_API_KEY", "canary-token")
+    attack = (
+        "const fs=require('fs');\n"
+        f"const target={json.dumps(str(harness))};\n"
+        "const visible=fs.existsSync(target);\n"
+        "try { fs.writeFileSync(target,'forged evaluator'); } catch {}\n"
+        "fs.writeFileSync('receipt.json', JSON.stringify({visible, token:"
+        "process.env.GITNEXUS_BENCH_OPENAI_API_KEY ?? null}));\n"
+    )
+    (candidate / "attack.cjs").write_text(attack)
+    for folder, name, scripts in (
+        (candidate, "candidate-root", {"preinstall": "node attack.cjs"}),
+        (core, "candidate-core", {"build": "node -e \"require('fs').writeFileSync('built.txt','runtime')\""}),
+    ):
+        package = {"name": name, "version": "1.0.0", "scripts": scripts}
+        (folder / "package.json").write_text(json.dumps(package))
+        (folder / "package-lock.json").write_text(json.dumps({
+            "name": name, "version": "1.0.0", "lockfileVersion": 3,
+            "packages": {"": {"name": name, "version": "1.0.0"}},
+        }))
+    release_build.build_candidate(candidate)
+    assert harness.read_text() == "trusted main evaluator\n"
+    assert json.loads((candidate / "receipt.json").read_text()) == {"visible": False, "token": None}
+    assert (core / "built.txt").read_text() == "runtime"
+    assert (candidate / "gitnexus-shared/node_modules").is_dir()
 
 
 def test_nomcp_sandbox_preserves_mixed_repository_guidance_in_each_file(tmp_path):

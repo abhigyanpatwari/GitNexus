@@ -78,3 +78,38 @@ def test_pickup_refuses_another_repository_or_non_numeric_run(monkeypatch):
     with pytest.raises(ValueError, match="current workflow run"):
         bootstrap.wait_for_runner()
     assert calls == []
+
+
+def evolution(status, conclusion=None):
+    return {"name": "Propose, benchmark, and gate skill candidates", "status": status, "conclusion": conclusion}
+
+
+def test_evolution_watchdog_waits_for_actual_job_after_successful_probe(monkeypatch):
+    calls = pickup_driver(monkeypatch, [
+        [probe("completed", "success")],
+        [probe("completed", "success"), evolution("queued")],
+        [probe("completed", "success"), evolution("in_progress")],
+    ])
+    bootstrap.wait_for_runner(timeout=40, evolve=True)
+    assert len(calls) == 3
+
+
+def test_evolution_watchdog_bounds_offline_runner_after_successful_probe(monkeypatch):
+    calls = pickup_driver(monkeypatch, [[probe("completed", "success"), evolution("queued")]])
+    with pytest.raises(RuntimeError, match="before the deadline"):
+        bootstrap.wait_for_runner(timeout=20, evolve=True)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("conclusion", ["success", "failure", "timed_out"])
+def test_evolution_watchdog_accepts_already_finished_job_pickup(monkeypatch, conclusion):
+    calls = pickup_driver(monkeypatch, [[evolution("completed", conclusion)]])
+    bootstrap.wait_for_runner(timeout=20, evolve=True)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "cancelled"])
+def test_evolution_watchdog_rejects_job_that_never_ran(monkeypatch, conclusion):
+    pickup_driver(monkeypatch, [[evolution("completed", conclusion)]])
+    with pytest.raises(RuntimeError, match="did not run"):
+        bootstrap.wait_for_runner(timeout=20, evolve=True)

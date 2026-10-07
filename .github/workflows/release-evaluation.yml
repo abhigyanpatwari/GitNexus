@@ -108,12 +108,11 @@ jobs:
           npm ci --prefix "$cli" --audit=false --fund=false
           test "$("$cli/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = '2.1.214 (Claude Code)'
       - name: Build pinned runtime and task dependencies
+        working-directory: eval
         run: |
           set -euo pipefail
-          npm ci --prefix candidate
-          npm ci --prefix candidate/gitnexus
-          npm run build --prefix candidate/gitnexus
-          mkdir -p candidate/gitnexus-shared/node_modules
+          uv run --locked --extra dev python -m workflow_bench.release_build \
+            --repo "$GITHUB_WORKSPACE/candidate"
       - name: Prepare pinned task set
         working-directory: eval
         run: |

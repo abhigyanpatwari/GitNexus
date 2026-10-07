@@ -1,4 +1,4 @@
-"""Require this workflow run's dedicated runner probe to finish within five minutes."""
+"""Bound this run's native probe or paid job pickup to five minutes."""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 
-def wait_for_runner(*, timeout: float = 300) -> None:
-    """Require this run's queued native probe to finish; runner labels alone are insufficient."""
+def wait_for_runner(*, timeout: float = 300, evolve: bool = False) -> None:
+    """Require probe success or bound pickup of the actual paid job."""
     repository = os.environ.get("GITHUB_REPOSITORY", "")
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     if repository != "abhigyanpatwari/GitNexus" or not re.fullmatch(r"\d+", run_id):
@@ -18,6 +19,11 @@ def wait_for_runner(*, timeout: float = 300) -> None:
             "runner pickup requires this repository's current workflow run"
         )
     until = time.monotonic() + timeout
+    job_name = (
+        "Propose, benchmark, and gate skill candidates"
+        if evolve
+        else "Verify the runner service is online"
+    )
     while time.monotonic() < until:
         result = subprocess.run(
             [
@@ -37,10 +43,17 @@ def wait_for_runner(*, timeout: float = 300) -> None:
         probes = [
             job
             for job in jobs
-            if job.get("name") == "Verify the runner service is online"
+            if job.get("name") == job_name
         ]
         if len(probes) > 1:
             raise RuntimeError("current run has multiple runner pickup probes")
+        if evolve and probes:
+            if probes[0].get("status") == "in_progress":
+                return
+            if probes[0].get("status") == "completed":
+                if probes[0].get("conclusion") in ("skipped", "cancelled"):
+                    raise RuntimeError("evolution job did not run")
+                return
         if probes and probes[0].get("status") == "completed":
             if probes[0].get("conclusion") != "success":
                 raise RuntimeError("runner pickup probe failed")
@@ -53,8 +66,10 @@ def wait_for_runner(*, timeout: float = 300) -> None:
 
 if __name__ == "__main__":
     try:
-        wait_for_runner()
-        print("The dedicated runner completed this run's native pickup probe.")
+        if sys.argv[1:] not in ([], ["--evolve"]):
+            raise ValueError("expected no arguments or --evolve")
+        wait_for_runner(evolve=sys.argv[1:] == ["--evolve"])
+        print("The dedicated runner picked up this run's requested job.")
     except (
         ValueError,
         RuntimeError,

@@ -35,9 +35,9 @@
 #     security group, and IAM setup are documented privately, not in this
 #     repo — publishing the exact topology of a real, live AWS account
 #     isn't safe to do in a public repo even without literal secrets.
-#     The hosted start-runner job also wakes this existing instance for manual
-#     dispatches. Configure its protected settings and scoped OIDC role
-#     per eval/workflow_bench/README.md. Keep the external stop watchdog enabled;
+#     Hosted readiness checks observe pickup only. The existing private
+#     EventBridge mechanism must start the instance before dispatch.
+#     Keep the external stop watchdog enabled;
 #     it remains the fallback if GitHub cleanup is interrupted.
 #     Accepted tradeoff: the box is stopped between runs (an EventBridge
 #     schedule starts it ~15min before the Saturday cron and stops it 24h
@@ -206,6 +206,29 @@ jobs:
           test -r /proc/uptime
           git --version
           uname -sm
+
+  watch-evolve-pickup:
+    name: Bound pickup of the paid evolution job
+    needs: [check-runner, runner-ready]
+    if: inputs.runner_only != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # Cancel this run if evolve stays queued after the probe.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require pickup of this run's paid evolution job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/evolution-runner-ready.py --evolve
+      - name: Cancel this run when evolution pickup fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"
 
   evolve:
     name: Propose, benchmark, and gate skill candidates
