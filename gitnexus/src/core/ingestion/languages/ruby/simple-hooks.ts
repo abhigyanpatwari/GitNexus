@@ -39,6 +39,11 @@ export function rubyBindingScopeFor(
   ) {
     let cur: Scope | undefined = innermost;
     while (cur !== undefined && cur.kind !== 'Class' && cur.kind !== 'Module') {
+      // A block's receiver can rebind Ruby's default definee (`class_eval`,
+      // `Class.new`, or a user helper forwarding the block). Its target is not
+      // recoverable from lexical scope alone, so do not project a method across
+      // this boundary onto an unrelated enclosing class/module.
+      if (cur.kind === 'Block') return null;
       const parentId: ScopeId | null = cur.parent ?? null;
       if (parentId === null) break;
       cur = tree.getScope(parentId);

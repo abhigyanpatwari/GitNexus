@@ -32,6 +32,13 @@ describe('Ruby nested method declarations remain visible on the outer method sur
     );
     expect(edge).toBeDefined();
   });
+
+  it('does not project a receiver-rebinding block method onto the lexical class', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (candidate) => candidate.source === 'class_eval_caller' && candidate.target === 'rebound',
+    );
+    expect(calls).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

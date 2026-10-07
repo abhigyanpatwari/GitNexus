@@ -368,12 +368,12 @@
     "digest": "efe8b8af2d4e7f547a659aecc00399091af2597b47adc7b296bddb10cab2da69"
   },
   "python-global-nested-def/main.py": {
-    "captureGroups": 9,
-    "digest": "58ae81c23fa0c0a5d9a63407b1d661ae03e87e8c827ded6d0770ddd70a264248"
+    "captureGroups": 20,
+    "digest": "11a383f646a4b215d92ef9c0d1b54d4bc9b463e7675cfdbb6f6439ffb6cf6672"
   },
   "python-global-nested-def/other.py": {
-    "captureGroups": 7,
-    "digest": "4611ff1026634e0ba20e286d0b0ebf66a5b19ed6d7f00ae0d141f3db376cb3e7"
+    "captureGroups": 11,
+    "digest": "a32972aa5bf2030414ab3a80b96277d4b15fa6c11fea38ca375c65876d5b2fcf"
   },
   "python-grandparent-resolution/app.py": {
     "captureGroups": 9,

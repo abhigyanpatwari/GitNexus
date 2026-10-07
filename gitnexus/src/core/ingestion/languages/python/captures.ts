@@ -291,10 +291,14 @@ export function emitPythonScopeCaptures(
  * functions: Python applies them only to the code block where they occur. */
 function isGlobalInEnclosingFunction(fnNode: SyntaxNode, name: string): boolean {
   let enclosing = fnNode.parent;
-  while (enclosing !== null && enclosing.type !== 'function_definition') {
+  while (
+    enclosing !== null &&
+    enclosing.type !== 'function_definition' &&
+    enclosing.type !== 'class_definition'
+  ) {
     enclosing = enclosing.parent;
   }
-  if (enclosing === null) return false;
+  if (enclosing === null || enclosing.type === 'class_definition') return false;
 
   return enclosing.descendantsOfType('global_statement').some((statement) => {
     let owner = statement.parent;

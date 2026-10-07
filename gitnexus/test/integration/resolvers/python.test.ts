@@ -145,6 +145,13 @@ describe('Python global nested declarations bind at module scope (#3502)', () =>
     );
     expect(calls.map((edge) => edge.targetFilePath)).toEqual(['main.py']);
   });
+
+  it('does not carry an outer global declaration across a class body', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'class_boundary_caller' && edge.target === 'leaked',
+    );
+    expect(calls).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

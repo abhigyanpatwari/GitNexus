@@ -232,12 +232,12 @@
     "digest": "34e07387fece6c1d2deb49c39fc2bfe0badfe8015dd1f7ae956d57ac98322a1d"
   },
   "ruby-nested-method/main.rb": {
-    "captureGroups": 9,
-    "digest": "aa8f6691b6b8228812ab86611a5cc6c1537178074a2689d23ce1b3a90c50a3cc"
+    "captureGroups": 20,
+    "digest": "93818ef7253558dfd59ad9a6a03e30fa1eefc381ff2f23c374a403c7aa8c1cb3"
   },
   "ruby-nested-method/other.rb": {
-    "captureGroups": 6,
-    "digest": "cc780687136d95e47b818e59d6e7a1eec184e1d4485cbe7a7a3ec91084e6282f"
+    "captureGroups": 9,
+    "digest": "59a444f9791d2f7ddd00f55eced6a5bb207a70d1015a8d5b54a419e10b8f75fc"
   },
   "ruby-nested-mixin-shortname/app.rb": {
     "captureGroups": 11,
