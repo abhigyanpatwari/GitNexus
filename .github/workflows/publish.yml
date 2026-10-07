@@ -1018,14 +1018,16 @@ jobs:
           Release candidates are pre-stable builds intended for early testing. Stable releases remain on the latest dist-tag.
           EOF
           fi
-          printf '\n' >> /tmp/release-notes.md
-          cat "$RUNNER_TEMP/release-evidence/accuracy.md" >> /tmp/release-notes.md
-          printf '\n' >> /tmp/release-notes.md
-          cat "$RUNNER_TEMP/release-evidence/agent-evaluation.md" >> /tmp/release-notes.md
-          if [[ "$MODE" == 'rc' ]]; then
-            printf '\n' >> /tmp/release-notes.md
-            cat "$RUNNER_TEMP/release-evidence/release-quality-gate.md" >> /tmp/release-notes.md
-          fi
+          {
+            printf '\n'
+            cat "$RUNNER_TEMP/release-evidence/accuracy.md"
+            printf '\n'
+            cat "$RUNNER_TEMP/release-evidence/agent-evaluation.md"
+            if [[ "$MODE" == 'rc' ]]; then
+              printf '\n'
+              cat "$RUNNER_TEMP/release-evidence/release-quality-gate.md"
+            fi
+          } >> /tmp/release-notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2

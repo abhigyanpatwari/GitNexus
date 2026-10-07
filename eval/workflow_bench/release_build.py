@@ -49,11 +49,15 @@ def build_candidate(repo: Path) -> None:
         "--noprofile",
         "--norc",
         "-c",
-        "set -euo pipefail\n"
-        "npm ci --audit=false --fund=false\n"
-        "npm ci --prefix gitnexus --audit=false --fund=false\n"
-        "npm run build --prefix gitnexus\n"
-        "mkdir -p gitnexus-shared/node_modules",
+        "\n".join(
+            [
+                "set -euo pipefail",
+                "npm ci --audit=false --fund=false",
+                "npm ci --prefix gitnexus --audit=false --fund=false",
+                "npm run build --prefix gitnexus",
+                "mkdir -p gitnexus-shared/node_modules",
+            ]
+        ),
     ]
     # Network is available for locked dependency downloads. No host home,
     # evaluator checkout, GitHub command files, or inherited tokens are mounted.
