@@ -1,7 +1,7 @@
-<!-- version: 1.17.0 -->
-<!-- Last updated: 2026-09-24 -->
+<!-- version: 1.18.0 -->
+<!-- Last updated: 2026-10-07 -->
 
-Last reviewed: 2026-09-24
+Last reviewed: 2026-10-07
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -92,6 +92,7 @@ mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Toke
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-10-07 | 1.18.0 | Added the R provider guide as the required reference before changing R parsing or resolution. |
 | 2026-09-24 | 1.17.0 | Clones with the same `origin` URL now share a store automatically; `--no-share` records a lasting opt-out (#3352). |
 | 2026-09-24 | 1.16.0 | Documented the shared worktree index store (`<GITNEXUS_HOME>/stores/`, `analyze --share-with`, `GITNEXUS_SHARED_STORE=off`) in the storage notes (#3352). |
 | 2026-09-07 | 1.15.0 | Added the Objective-C provider guide as the required reference before changing Objective-C parsing or resolution. |
