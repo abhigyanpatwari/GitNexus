@@ -14,6 +14,7 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { BaseFieldExtractor } from '../field-extractor.js';
+import { isRNamingArgument } from '../languages/r/naming-argument.js';
 import type {
   FieldExtractorContext,
   ExtractedFields,
@@ -108,18 +109,8 @@ export class RFieldExtractor extends BaseFieldExtractor {
     const args = node.childForFieldName('arguments');
     if (!args) return null;
 
-    // First string argument is the class name
-    let ownerFqn: string | undefined;
-    for (let i = 0; i < args.namedChildCount; i++) {
-      const arg = args.namedChild(i);
-      if (!arg || arg.type !== 'argument') continue;
-      const val = arg.childForFieldName('value');
-      if (val?.type === 'string') {
-        const content = val.namedChildren.find((c) => c.type === 'string_content');
-        ownerFqn = content?.text ?? val.text.replace(/^["']|["']$/g, '');
-        break;
-      }
-    }
+    // The class name is the `Class` argument (by name, else the first unnamed one).
+    const ownerFqn = getRClassNameArgument(args);
     if (!ownerFqn) return null;
 
     const fields: FieldInfo[] = [];
@@ -168,6 +159,25 @@ export class RFieldExtractor extends BaseFieldExtractor {
 // AST helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * The class name of a `setClass` / `setRefClass` argument list: the string value of
+ * the argument that takes the `Class` formal. Uses the same selection as the scope
+ * query and definition hook (`isRNamingArgument`), so `contains = "Base"` or
+ * `representation(...)` ahead of `Class = "A"` never names the owner.
+ */
+function getRClassNameArgument(args: SyntaxNode): string | null {
+  for (let i = 0; i < args.namedChildCount; i++) {
+    const arg = args.namedChild(i);
+    if (!arg || arg.type !== 'argument') continue;
+    if (!isRNamingArgument(arg, 'Class')) continue;
+    const value = arg.childForFieldName('value');
+    if (value?.type !== 'string') continue;
+    const name = extractQuotedTypeName(value);
+    if (name) return name;
+  }
+  return null;
+}
+
 export function findRFieldOwnerNode(node: SyntaxNode): SyntaxNode | null {
   let current: SyntaxNode | null = node;
   while (current) {
@@ -187,14 +197,7 @@ export function getRTopLevelPropertyOwnerName(node: SyntaxNode): string | null {
 
   const args = ownerNode.childForFieldName('arguments');
   if (!args) return null;
-  for (let i = 0; i < args.namedChildCount; i++) {
-    const arg = args.namedChild(i);
-    if (!arg || arg.type !== 'argument') continue;
-    const value = arg.childForFieldName('value');
-    if (value?.type !== 'string') continue;
-    return extractQuotedTypeName(value);
-  }
-  return null;
+  return getRClassNameArgument(args);
 }
 
 /** Check if a binary_operator node is an R6 class assignment. */
