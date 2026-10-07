@@ -310,20 +310,18 @@ describe('loadRPackageConfig shares one work budget across every package it disc
   };
 
   // Per-pattern budgets alone allow 200 patterns x 40M visits (~77 s); the shared budget
-  // allows ~100M in total. The bound below is generous for slow runners and still far
-  // below the unbounded cost.
+  // allows ~100M in total. The bound is asserted on the work counters below, not on wall-clock
+  // time, which varies with the runner and with coverage instrumentation.
   it('bounds a NAMESPACE with 200 distinct hostile patterns', async () => {
     const root = pool.dir();
     const patterns = Array.from({ length: 200 }, (_, i) => `(a?){${600 + (i % 7) * 100}}c${i}`);
     writePackage(root, '', 'hostilepkg', patterns);
     const names = distinctNames(2_000);
 
-    const t0 = performance.now();
     const config = await loadRPackageConfig(root);
     const graph = nodesFor(names, 'R/a.R');
     refineRExportStatus(graph, config);
     const messages = captured(() => reportRExportPatternProblems(config));
-    const ms = performance.now() - t0;
 
     const all = matchers(config);
     const info = config.namespaceInfoByPackageDir.get('');
@@ -347,7 +345,6 @@ describe('loadRPackageConfig shares one work budget across every package it disc
     expect(messages.some((m) => m.includes('further exportPattern() arguments exceeded'))).toBe(
       all.length > MAX_LISTED_DROPPED_PATTERNS,
     );
-    expect(ms).toBeLessThan(20_000);
   }, 60_000);
 
   it('spends the same work and drops the same patterns on every load', async () => {
@@ -448,13 +445,11 @@ describe('loadRPackageConfig shares one work budget across every package it disc
     writePackage(root, '', 'manypkg', patterns);
     const names = distinctNames(2_000, 30);
 
-    const t0 = performance.now();
     const config = await loadRPackageConfig(root);
     const info = config.namespaceInfoByPackageDir.get('');
     const graph = nodesFor(names, 'R/a.R');
     refineRExportStatus(graph, config);
     const messages = captured(() => reportRExportPatternProblems(config));
-    const ms = performance.now() - t0;
 
     // What was compiled fits the package's allowance of states; the rest was refused
     // without being compiled, listed (a few) and counted (the rest), never 50,000 warnings.
@@ -471,7 +466,6 @@ describe('loadRPackageConfig shares one work budget across every package it disc
     expect(messages.length).toBeLessThanOrEqual(2 * MAX_LISTED_DROPPED_PATTERNS + 4);
     expect(messages.some((m) => m.includes('further exportPattern()'))).toBe(true);
     expect(exportedNames(graph)).toEqual([]);
-    expect(ms).toBeLessThan(20_000);
   }, 60_000);
 
   it('bounds the NFA states many packages of maximum-size patterns may keep', async () => {
