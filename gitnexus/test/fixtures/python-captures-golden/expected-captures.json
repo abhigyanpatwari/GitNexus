@@ -19,6 +19,30 @@
     "captureGroups": 13,
     "digest": "cec30bb7577edfb751bcd4f5026a0c9d77ed235071421a2a46f87580c7bcdf47"
   },
+  "python-aliased-package-reexport/app/__init__.py": {
+    "captureGroups": 1,
+    "digest": "532aee1a4b67f99b8d843a235afd851cdab275de0b6cb02dbdcf6f7670f264aa"
+  },
+  "python-aliased-package-reexport/app/combo.py": {
+    "captureGroups": 5,
+    "digest": "1c33bce592afba5a30b510ca69204b62e03b44c66716cae5cde318b348b909fe"
+  },
+  "python-aliased-package-reexport/app/reex.py": {
+    "captureGroups": 5,
+    "digest": "f55df8dd034b73c8d2c45a3eb97fb4244ec37bf6be28a78586627ba76ec419e6"
+  },
+  "python-aliased-package-reexport/app/services/__init__.py": {
+    "captureGroups": 1,
+    "digest": "532aee1a4b67f99b8d843a235afd851cdab275de0b6cb02dbdcf6f7670f264aa"
+  },
+  "python-aliased-package-reexport/app/services/bp/__init__.py": {
+    "captureGroups": 3,
+    "digest": "7cd93974ed3d3d31451ce9e5e9bb0dd68f6a015f24e865658045d50d0c031fc7"
+  },
+  "python-aliased-package-reexport/app/services/bp/gp.py": {
+    "captureGroups": 3,
+    "digest": "89564bb524c12295365d65a304418c519b4910f29c53cfe2b755bc55a5d25474"
+  },
   "python-ambiguous/models/__init__.py": {
     "captureGroups": 0,
     "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
