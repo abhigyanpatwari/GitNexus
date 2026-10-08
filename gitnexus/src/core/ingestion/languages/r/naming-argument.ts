@@ -87,6 +87,37 @@ function namingUnnamedArgumentId(argumentList: SyntaxNode, formal: string): numb
 }
 
 /**
+ * The argument R would match to `target` in a call to a function whose formals are
+ * `formals`, in order. R matches named arguments first (a name that spells a formal
+ * binds it) and then fills the formals that remain from the unnamed arguments, in
+ * order. Partial matching of abbreviated names (`sig =`) is not modelled. Returns
+ * null when no argument reaches `target`. Linear in the argument count; meant for
+ * the one call a definition hook is looking at, not for every call in a file.
+ */
+export function getRMatchedArgument(
+  argumentList: SyntaxNode,
+  formals: readonly string[],
+  target: string,
+): SyntaxNode | null {
+  const unnamed: SyntaxNode[] = [];
+  const named = new Set<string>();
+  for (const child of argumentList.namedChildren) {
+    if (child.type !== 'argument') continue; // comment, comma
+    const name = child.childForFieldName('name');
+    if (name === null) {
+      unnamed.push(child);
+      continue;
+    }
+    const text = argumentNameText(name);
+    if (text === target) return child;
+    named.add(text);
+  }
+  const remaining = formals.filter((formal) => !named.has(formal));
+  const index = remaining.indexOf(target);
+  return index === -1 ? null : (unnamed[index] ?? null);
+}
+
+/**
  * True when `argument` (an `argument` node) is the one that names the call's
  * definition, given the call's first `formal`.
  */

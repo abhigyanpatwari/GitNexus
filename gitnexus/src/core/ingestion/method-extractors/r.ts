@@ -12,6 +12,8 @@
 
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { getRMatchedArgument } from '../languages/r/naming-argument.js';
+import { getRClassNameArgument } from '../field-extractors/r.js';
 import type {
   MethodExtractor,
   MethodExtractorContext,
@@ -20,6 +22,16 @@ import type {
   MethodVisibility,
   ParameterInfo,
 } from '../method-types.js';
+
+/** `setMethod`'s formals, in order (methods package). */
+const SET_METHOD_FORMALS: readonly string[] = [
+  'f',
+  'signature',
+  'definition',
+  'where',
+  'valueClass',
+  'sealed',
+];
 
 export const rMethodExtractor: MethodExtractor = {
   language: SupportedLanguages.R,
@@ -41,24 +53,9 @@ export function getRTopLevelMethodOwnerName(node: SyntaxNode): string | null {
   const args = node.childForFieldName('arguments');
   if (!args) return null;
 
-  let stringArgIndex = 0;
-  for (let i = 0; i < args.namedChildCount; i++) {
-    const arg = args.namedChild(i);
-    if (!arg || arg.type !== 'argument') continue;
-    const argName = arg.childForFieldName('name')?.text;
-    const value = arg.childForFieldName('value');
-    if (argName === 'signature') {
-      const namedSignature = extractQuotedString(value);
-      if (namedSignature) return namedSignature;
-    }
-    if (value?.type !== 'string') continue;
-    stringArgIndex++;
-    if (stringArgIndex === 2) {
-      return extractQuotedString(value);
-    }
-  }
-
-  return null;
+  // The owner is the `signature` argument, as R matches it (named first, then by position).
+  const signature = getRMatchedArgument(args, SET_METHOD_FORMALS, 'signature');
+  return extractQuotedString(signature?.childForFieldName('value') ?? null);
 }
 
 // ---------------------------------------------------------------------------
@@ -134,18 +131,9 @@ function extractRefClassMethods(
   const args = node.childForFieldName('arguments');
   if (!args) return null;
 
-  // First string argument is the class name
-  let ownerName: string | undefined;
-  for (let i = 0; i < args.namedChildCount; i++) {
-    const arg = args.namedChild(i);
-    if (!arg || arg.type !== 'argument') continue;
-    const val = arg.childForFieldName('value');
-    if (val?.type === 'string') {
-      const content = val.namedChildren.find((c) => c.type === 'string_content');
-      ownerName = content?.text ?? val.text.replace(/^["']|["']$/g, '');
-      break;
-    }
-  }
+  // The class name is the argument that takes the `Class` formal (by name, else the
+  // first unnamed one), not the first string: `contains = "Base"` may precede it.
+  const ownerName = getRClassNameArgument(args);
   if (!ownerName) return null;
 
   const methods: MethodInfo[] = [];
