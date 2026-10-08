@@ -180,6 +180,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       allExtractedRoutes,
       allDecoratorRoutes,
       routeHandlerSymbols,
+      selectedRoutes,
     } = getPhaseOutput<ParseOutput>(deps, 'parse');
 
     // Local copy — routes phase must not mutate upstream ParseOutput
@@ -295,11 +296,14 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
       const routeUrl = normalizeExtractedRoutePath(route.routePath, route.prefix);
-      addRoute(routeUrl, {
-        filePath: route.filePath,
-        source: 'framework-route',
-        method: normalizeRouteMethod(route.httpMethod),
-      });
+      if (!selectedRoutes || selectedRoutes.has(route)) {
+        addRoute(routeUrl, {
+          filePath: route.filePath,
+          source: 'framework-route',
+          method: normalizeRouteMethod(route.httpMethod),
+        });
+      }
+      // Losing declarations may still provide distinct named aliases.
       if (route.routeName && !namedRouteRegistry.has(route.routeName)) {
         namedRouteRegistry.set(route.routeName, routeUrl);
       }
@@ -309,6 +313,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     // idiom, which no single file can reconcile. Framework routes are untouched;
     // their verb-less form is a declaration, not a weaker observation.
     for (const dr of reconcileDispatchGuardRoutes(allDecoratorRoutes)) {
+      if (selectedRoutes && !selectedRoutes.has(dr)) continue;
       const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
       const method = normalizeRouteMethod(dr.httpMethod);
       const routeKey = routeNodeKey(method, url);

@@ -1,3 +1,5 @@
+import { isTestFilePath } from '../utils/test-file-path.js';
+
 /**
  * Shared route-path normalization.
  *
@@ -70,5 +72,5 @@ export function routeNodeKey(method: string | undefined, url: string): string {
 /** Keep test registrations available, but let production files win duplicate route identities. */
 export function isTestRouteFile(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/');
-  return /(^|\/)(?:test|tests|__tests__|e2e)(\/|$)|\.(?:spec|test)\.[^/]+$/i.test(normalized);
+  return isTestFilePath(normalized) || /(^|\/)e2e(\/|$)/i.test(normalized);
 }

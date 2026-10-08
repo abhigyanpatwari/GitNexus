@@ -124,7 +124,11 @@ import {
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
-import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
+import {
+  countCallArguments,
+  extractCallArgTypes,
+  type MixedChainStep,
+} from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
@@ -2042,8 +2046,10 @@ const processFileGroup = (
           // HTTP client calls like axios.get('/api/users') that match the same pattern
           // as Express route registrations.
           const callNode = captureMap['express_route'];
-          const argumentsNode = callNode.childForFieldName?.('arguments');
-          if ((argumentsNode?.namedChildCount ?? 0) < 2) continue;
+          // route(path) returns a builder; verb registrations need a handler.
+          // Count arguments without comments, which are also named AST children.
+          const minimumArguments = method === 'route' ? 1 : 2;
+          if ((countCallArguments(callNode) ?? 0) < minimumArguments) continue;
           const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
           // Walk through nested member_expressions and call_expressions to
           // reach the innermost receiver identifier.  Handles chains like:

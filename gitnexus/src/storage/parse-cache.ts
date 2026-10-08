@@ -831,7 +831,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Warm v127 worker results omit these definitions and must be re-extracted.
 // v129 (#3487): Express route captures require a handler and preserve app.all
 // as method-agnostic. Warm v128 worker results can carry false GET routes.
-const SCHEMA_BUMP = 129;
+// v130 (#3505): count semantic call arguments and retain route(path) builders.
+// Warm v129 results can include commented lookups and omit chained routes.
+const SCHEMA_BUMP = 130;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
