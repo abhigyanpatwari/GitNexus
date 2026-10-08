@@ -70,6 +70,9 @@ export interface FinalizeFile {
    * static input.
    */
   readonly localDefs: readonly SymbolDefinition[];
+  /** Exact module bindings when the provider can distinguish them from nested
+   * declarations. Absent preserves the legacy definition-name lookup. */
+  readonly localExports?: ReadonlyMap<string, SymbolDefinition>;
 }
 
 /** Input to `finalize`. */
@@ -118,6 +121,14 @@ export interface FinalizeHooks {
    * matching export are dropped.
    */
   expandsWildcardTo(targetModuleScope: ScopeId, workspaceIndex: WorkspaceIndex): readonly string[];
+
+  /** Opt into wildcard expansion over local and transitively imported exports.
+   * The same filter governs closure propagation and binding materialization. */
+  readonly filterWildcardNames?: (
+    targetModuleScope: ScopeId,
+    availableNames: readonly string[],
+    workspaceIndex: WorkspaceIndex,
+  ) => readonly string[];
 
   /**
    * Does this language make two `wildcard` re-exports that both DECLARE the
@@ -302,6 +313,8 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     moduleEdgeIndex,
     ambiguousByFile,
     topLevelOnly,
+    hooks.filterWildcardNames,
+    input.workspaceIndex,
   );
 
   // ── Phase 3: process SCCs in reverse-topological order (leaves first).
@@ -389,7 +402,13 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
       }
       if (d.source.kind === 'wildcard' && edge.linkStatus !== 'unresolved') {
         // Produce one `wildcard-expanded` ImportEdge per exported name.
-        const expanded = expandWildcard(edge, byFilePath, hooks, input.workspaceIndex);
+        const expanded = expandWildcard(
+          edge,
+          byFilePath,
+          hooks,
+          input.workspaceIndex,
+          reexportClosures,
+        );
         for (const e of expanded) {
           if (
             d.fromScope === file.moduleScope &&
@@ -672,7 +691,7 @@ function tryFinalize(
   // a failure.
   if (draft.base.kind === 'namespace') {
     const moduleDef = findExportByName(
-      targetModule.localDefs,
+      targetModule,
       extractExportedName(draft.source),
       topLevelOnly,
     );
@@ -687,7 +706,7 @@ function tryFinalize(
   // local defs. Multi-hop re-export chains settle iteratively — each hop
   // resolves once its prior hop is finalized.
   const importedName = extractExportedName(draft.source);
-  const exported = findExportByName(targetModule.localDefs, importedName, topLevelOnly);
+  const exported = findExportByName(targetModule, importedName, topLevelOnly);
 
   if (exported !== undefined) {
     const transitiveVia =
@@ -816,6 +835,8 @@ function buildReexportClosures(
   edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
   ambiguous: ReadonlyMap<string, ReadonlySet<string>>,
   topLevelOnly: boolean,
+  filterWildcardNames: FinalizeHooks['filterWildcardNames'],
+  workspace: WorkspaceIndex,
 ): ReadonlyMap<string, FileReexportClosure> {
   const closures = new Map<string, Map<string, ReexportClosureEntry>>();
   for (const file of files) closures.set(file.filePath, new Map());
@@ -851,7 +872,16 @@ function buildReexportClosures(
     if (!scc.isCycle) {
       const filePath = scc.files[0];
       if (filePath !== undefined) {
-        populateFileClosure(filePath, byFilePath, edgeIndex, closures, ambiguous, topLevelOnly);
+        populateFileClosure(
+          filePath,
+          byFilePath,
+          edgeIndex,
+          closures,
+          ambiguous,
+          topLevelOnly,
+          filterWildcardNames,
+          workspace,
+        );
       }
       continue;
     }
@@ -866,7 +896,16 @@ function buildReexportClosures(
       iter++;
       for (const filePath of scc.files) {
         if (
-          populateFileClosure(filePath, byFilePath, edgeIndex, closures, ambiguous, topLevelOnly)
+          populateFileClosure(
+            filePath,
+            byFilePath,
+            edgeIndex,
+            closures,
+            ambiguous,
+            topLevelOnly,
+            filterWildcardNames,
+            workspace,
+          )
         ) {
           progressed = true;
         }
@@ -1006,7 +1045,7 @@ function namedReexportCandidates(
     if (targetFile === null) continue;
     const target = byFilePath.get(targetFile);
     if (target === undefined) continue;
-    const def = findExportByName(target.localDefs, draft.source.importedName, topLevelOnly);
+    const def = findExportByName(target, draft.source.importedName, topLevelOnly);
     if (def !== undefined && !ids.includes(def.nodeId)) ids.push(def.nodeId);
   }
   return Object.freeze(ids);
@@ -1201,6 +1240,8 @@ function populateFileClosure(
   closures: Map<string, Map<string, ReexportClosureEntry>>,
   ambiguousByFile: ReadonlyMap<string, ReadonlySet<string>>,
   topLevelOnly: boolean,
+  filterWildcardNames: FinalizeHooks['filterWildcardNames'],
+  workspace: WorkspaceIndex,
 ): boolean {
   const myClosure = closures.get(filePath);
   if (myClosure === undefined) return false;
@@ -1225,7 +1266,7 @@ function populateFileClosure(
     if (ambiguous.has(localName) || myClosure.has(localName)) continue;
 
     const importedName = draft.source.importedName;
-    const direct = findExportByName(targetModule.localDefs, importedName, topLevelOnly);
+    const direct = findExportByName(targetModule, importedName, topLevelOnly);
     if (direct !== undefined) {
       myClosure.set(localName, { def: direct, via: Object.freeze([targetFile]) });
       continue;
@@ -1268,15 +1309,26 @@ function populateFileClosure(
     // named-import path: only a language that opted in (ECMAScript, where
     // `export *` cannot publish a class member) narrows; every other language's
     // wildcard keeps the wide index, whose members are legitimately reachable.
-    for (const [name, def] of (topLevelOnly ? indexTopLevelExportsByName : indexExportsByName)(
-      targetModule.localDefs,
-    )) {
+    const localExports = localExportsByName(targetModule, topLevelOnly);
+    const targetClosure = closures.get(targetFile);
+    const allowedNames =
+      filterWildcardNames === undefined
+        ? undefined
+        : new Set(
+            filterWildcardNames(
+              targetModule.moduleScope,
+              [...new Set([...localExports.keys(), ...(targetClosure?.keys() ?? [])])],
+              workspace,
+            ),
+          );
+    for (const [name, def] of localExports) {
+      if (allowedNames !== undefined && !allowedNames.has(name)) continue;
       if (ambiguous.has(name) || myClosure.has(name)) continue;
       myClosure.set(name, { def, via: Object.freeze([targetFile]) });
     }
-    const targetClosure = closures.get(targetFile);
     if (targetClosure !== undefined) {
       for (const [name, entry] of targetClosure) {
+        if (allowedNames !== undefined && !allowedNames.has(name)) continue;
         if (ambiguous.has(name) || myClosure.has(name)) continue;
         myClosure.set(name, {
           def: entry.def,
@@ -1351,7 +1403,7 @@ function deriveSimpleName(def: SymbolDefinition): string | null {
 }
 
 function findExportByName(
-  defs: readonly SymbolDefinition[],
+  file: FinalizeFile,
   name: string,
   /**
    * `true` (a `namedImportsBindTopLevelOnly` language): consult only
@@ -1385,7 +1437,17 @@ function findExportByName(
   //
   // See `gitnexus/test/integration/resolvers/typescript-hof-callbacks.test.ts`
   // for the cross-file regression this rule prevents.
-  return (topLevelOnly ? indexTopLevelExportsByName(defs) : indexExportsByName(defs)).get(name);
+  return localExportsByName(file, topLevelOnly).get(name);
+}
+
+function localExportsByName(
+  file: FinalizeFile,
+  topLevelOnly: boolean,
+): ReadonlyMap<string, SymbolDefinition> {
+  return (
+    file.localExports ??
+    (topLevelOnly ? indexTopLevelExportsByName(file.localDefs) : indexExportsByName(file.localDefs))
+  );
 }
 
 /**
@@ -1516,6 +1578,7 @@ function expandWildcard(
   byFilePath: Map<string, FinalizeFile>,
   hooks: FinalizeHooks,
   workspace: WorkspaceIndex,
+  reexportClosures: ReadonlyMap<string, FileReexportClosure>,
 ): readonly ImportEdge[] {
   if (edge.targetModuleScope === undefined || edge.targetFile === null) {
     return [edge]; // unresolvable wildcard survives as a single unlinked edge
@@ -1523,7 +1586,14 @@ function expandWildcard(
   const target = byFilePath.get(edge.targetFile);
   if (target === undefined) return [edge];
 
-  const names = hooks.expandsWildcardTo(edge.targetModuleScope, workspace);
+  const targetClosure =
+    hooks.filterWildcardNames === undefined ? undefined : reexportClosures.get(edge.targetFile);
+  const names =
+    hooks.filterWildcardNames?.(
+      edge.targetModuleScope,
+      [...new Set([...localExportsByName(target, false).keys(), ...(targetClosure?.keys() ?? [])])],
+      workspace,
+    ) ?? hooks.expandsWildcardTo(edge.targetModuleScope, workspace);
   if (names.length === 0) {
     // Resolved wildcard with zero propagating names is still a real file-
     // level dependency (e.g. a C++ header that only declares classes —
@@ -1536,8 +1606,10 @@ function expandWildcard(
   }
 
   const expanded: ImportEdge[] = [];
+  const localExports = localExportsByName(target, false);
   for (const name of names) {
-    const def = findExportByName(target.localDefs, name);
+    const inherited = targetClosure?.get(name);
+    const def = localExports.get(name) ?? inherited?.def;
     if (def === undefined) continue;
     expanded.push({
       localName: name,
@@ -1546,6 +1618,9 @@ function expandWildcard(
       kind: 'wildcard-expanded',
       targetModuleScope: edge.targetModuleScope,
       targetDefId: def.nodeId,
+      ...(localExports.has(name) || inherited === undefined
+        ? {}
+        : { transitiveVia: extendVia(edge.targetFile, inherited.via) }),
       // Every expanded edge inherits the presence facts of the ONE statement it
       // came from. They are built fresh rather than spread from `edge` because
       // `localName`, `targetExportedName` and `targetDefId` all differ per name
