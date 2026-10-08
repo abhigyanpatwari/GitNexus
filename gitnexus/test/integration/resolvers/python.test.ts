@@ -4082,11 +4082,10 @@ describe('Python function-local namespace import feeds receiver-bound call', () 
 
 // ---------------------------------------------------------------------------
 // Class-body namespace import: `class A: import mod; def use(): mod.helper()`
-// Pins the existing class-scope lookup behavior while import edges retain
-// their declaring scope instead of being published at module scope.
+// Class namespaces are not enclosing lexical environments for method bodies.
 // ---------------------------------------------------------------------------
 
-describe('Python class-body namespace import feeds method receiver-bound call', () => {
+describe('Python class-body namespace import is invisible to methods', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -4096,11 +4095,10 @@ describe('Python class-body namespace import feeds method receiver-bound call', 
     );
   }, 60000);
 
-  it('emits CALLS edge A.use -> mod.helper via class-body `import mod`', () => {
+  it('does not emit A.use -> mod.helper for a class-body-only import', () => {
     const calls = getRelationships(result, 'CALLS');
     const callEdge = calls.find((c) => c.source === 'use' && c.target === 'helper');
-    expect(callEdge).toBeDefined();
-    expect(callEdge!.rel.targetId).toContain('mod.py:helper');
+    expect(callEdge).toBeUndefined();
   });
 });
 
