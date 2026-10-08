@@ -126,24 +126,22 @@ function collectLuaImportCaptures(root: Parser.SyntaxNode): readonly CaptureMatc
         .filter((name): name is Parser.SyntaxNode => name?.type === 'identifier');
 
       // Pair by source position. Never reuse an RHS for multiple LHS names.
+      const pairedRequires = new Set<Parser.SyntaxNode>();
       for (let i = 0; i < Math.min(names.length, expressions.length); i++) {
         const expression = expressions[i];
         if (!isRequireCall(expression)) continue;
         const source = requireStringNode(expression);
-        if (source !== undefined) out.push(importCapture(node, source, names[i]));
+        if (source !== undefined) {
+          pairedRequires.add(expression);
+          out.push(importCapture(node, source, names[i]));
+        }
       }
 
       // Keep walking all initializer descendants. Direct require calls are
       // suppressed because they already have their positional local binding;
       // nested calls (function bodies, wrappers, and other expressions) still
       // need their own IMPORTS edge.
-      const directRequires = new Set<Parser.SyntaxNode>();
-      for (const expression of expressions) {
-        if (isRequireCall(expression) && requireStringNode(expression) !== undefined) {
-          directRequires.add(expression);
-        }
-      }
-      for (const child of node.namedChildren) visit(child, directRequires);
+      for (const child of node.namedChildren) visit(child, pairedRequires);
       return;
     }
 
@@ -254,18 +252,23 @@ function collectLuaAssignmentMethodCaptures(root: Parser.SyntaxNode): readonly C
   const out: CaptureMatch[] = [];
   const visit = (node: Parser.SyntaxNode): void => {
     if (node.type === 'variable_assignment') {
-      const variable = node.namedChildren.find((child) => child.type === 'variable_list')
-        ?.namedChildren[0];
-      const value = node.namedChildren.find((child) => child.type === 'expression_list')
-        ?.namedChildren[0];
-      const owner = variable?.childForFieldName('table');
-      const method = variable?.childForFieldName('field');
-      if (
-        variable?.type === 'variable' &&
-        owner?.type === 'identifier' &&
-        (method?.type === 'identifier' || method?.type === 'string') &&
-        value?.type === 'function_definition'
-      ) {
+      const variables =
+        node.namedChildren.find((child) => child.type === 'variable_list')?.namedChildren ?? [];
+      const values =
+        node.namedChildren.find((child) => child.type === 'expression_list')?.namedChildren ?? [];
+      for (let index = 0; index < Math.min(variables.length, values.length); index++) {
+        const variable = variables[index];
+        const value = values[index];
+        const owner = variable?.childForFieldName('table');
+        const method = variable?.childForFieldName('field');
+        if (
+          variable?.type !== 'variable' ||
+          owner?.type !== 'identifier' ||
+          (method?.type !== 'identifier' && method?.type !== 'string') ||
+          value?.type !== 'function_definition'
+        ) {
+          continue;
+        }
         let enclosing = node.parent;
         let nestedInFunction = false;
         while (enclosing !== null) {
@@ -280,8 +283,7 @@ function collectLuaAssignmentMethodCaptures(root: Parser.SyntaxNode): readonly C
           enclosing = enclosing.parent;
         }
         if (nestedInFunction) {
-          for (const child of node.namedChildren) visit(child);
-          return;
+          continue;
         }
         const match: Record<string, Capture> = {
           '@scope.function': nodeToCapture('@scope.function', value),
@@ -313,33 +315,33 @@ function collectLuaCallableAliases(root: Parser.SyntaxNode): readonly LuaCallabl
       !nextInFunction &&
       (node.type === 'local_variable_declaration' || node.type === 'variable_assignment')
     ) {
-      const destination = node.namedChildren.find((child) => child.type === 'variable_list')
-        ?.namedChildren[0];
-      const source = node.namedChildren.find((child) => child.type === 'expression_list')
-        ?.namedChildren[0];
-      const destinationName =
-        destination?.type === 'variable' &&
-        destination.childForFieldName('name')?.type === 'identifier' &&
-        destination.childForFieldName('table') === null &&
-        destination.childForFieldName('field') === null
-          ? destination.childForFieldName('name')?.text
-          : undefined;
-      const sourceIsStaticMember =
-        source?.type === 'variable' &&
-        source.childForFieldName('table')?.type === 'identifier' &&
-        (source.childForFieldName('field')?.type === 'identifier' ||
-          source.childForFieldName('method')?.type === 'identifier');
-      const sourceIsSimple =
-        source?.type === 'variable' &&
-        source.childForFieldName('name')?.type === 'identifier' &&
-        source.childForFieldName('table') === null &&
-        source.childForFieldName('field') === null;
-      if (
-        destinationName !== undefined &&
-        source !== undefined &&
-        (sourceIsStaticMember || sourceIsSimple)
-      ) {
-        aliases.push({ destination: destinationName, source: source.text });
+      const destinations =
+        node.namedChildren.find((child) => child.type === 'variable_list')?.namedChildren ?? [];
+      const sources =
+        node.namedChildren.find((child) => child.type === 'expression_list')?.namedChildren ?? [];
+      for (let index = 0; index < Math.min(destinations.length, sources.length); index++) {
+        const destination = destinations[index];
+        const source = sources[index];
+        const destinationName =
+          destination?.type === 'variable' &&
+          destination.childForFieldName('name')?.type === 'identifier' &&
+          destination.childForFieldName('table') === null &&
+          destination.childForFieldName('field') === null
+            ? destination.childForFieldName('name')?.text
+            : undefined;
+        const sourceIsStaticMember =
+          source?.type === 'variable' &&
+          source.childForFieldName('table')?.type === 'identifier' &&
+          (source.childForFieldName('field')?.type === 'identifier' ||
+            source.childForFieldName('method')?.type === 'identifier');
+        const sourceIsSimple =
+          source?.type === 'variable' &&
+          source.childForFieldName('name')?.type === 'identifier' &&
+          source.childForFieldName('table') === null &&
+          source.childForFieldName('field') === null;
+        if (destinationName !== undefined && (sourceIsStaticMember || sourceIsSimple)) {
+          aliases.push({ destination: destinationName, source: source.text });
+        }
       }
     }
     for (const child of node.namedChildren) visit(child, nextInFunction);

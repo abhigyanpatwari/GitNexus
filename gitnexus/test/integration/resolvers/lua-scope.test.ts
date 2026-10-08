@@ -113,6 +113,32 @@ describe('Lua scope resolver require syntax and positional bindings', () => {
     }
   }, 60000);
 
+  it('keeps unpaired RHS requires as wildcard imports', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-extra-require-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'x.lua': 'return {}\n',
+        'y.lua': 'return {}\n',
+        'main.lua': 'local x = require("x"), require("y")\n',
+      });
+      const captures = emitLuaScopeCaptures(
+        'local x = require("x"), require("y")\n',
+        'main.lua',
+      ).filter((capture) => capture['@import.source'] !== undefined);
+      expect(captures.map((capture) => capture['@import.source']?.text).sort()).toEqual([
+        '"x"',
+        '"y"',
+      ]);
+      expect(
+        captures.find((capture) => capture['@import.source']?.text === '"y"')?.[
+          '@import.localName'
+        ],
+      ).toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('recognizes parenthesis-free short and long-bracket requires', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-require-forms-'));
     try {
@@ -560,6 +586,32 @@ return Dog
     }
   }, 60000);
 
+  it('pairs assignment-form methods by position', async () => {
+    const tmpDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'lua-scope-assignment-method-positional-'),
+    );
+    try {
+      writeFixtureRepo(tmpDir, {
+        'dog.lua': `local Dog = class("Dog")
+local ignored
+ignored, Dog.run = nil, function(self)
+  return "run"
+end
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'HAS_METHOD').some(
+          (edge) => edge.source === 'Dog' && edge.target === 'run',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('captures static string-key assignment-form methods', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-string-method-'));
     try {
@@ -811,6 +863,34 @@ second()
       const calls = getRelationships(result, 'CALLS');
       expect(
         calls.some(
+          (edge) =>
+            edge.sourceFilePath?.endsWith('main.lua') &&
+            edge.target === 'answer' &&
+            edge.targetFilePath?.endsWith('util.lua'),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('pairs callable aliases by position in multi-assignment', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-callable-alias-positional-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'util.lua': `function answer()
+  return 42
+end
+return { answer = answer }
+`,
+        'main.lua': `local util = require("util")
+local ignored, answer = nil, util.answer
+answer()
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').some(
           (edge) =>
             edge.sourceFilePath?.endsWith('main.lua') &&
             edge.target === 'answer' &&
