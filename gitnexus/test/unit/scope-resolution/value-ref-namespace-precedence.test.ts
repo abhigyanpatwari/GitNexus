@@ -27,7 +27,14 @@
 
 import { describe, it, expect } from 'vitest';
 import { resolveValueRefTarget } from '../../../src/core/ingestion/scope-resolution/passes/property-dispatch.js';
-import type { BindingRef, ReferenceSite, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  BindingRef,
+  ImportEdge,
+  ReferenceSite,
+  Scope,
+  ScopeId,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
 
@@ -171,5 +178,78 @@ describe('findNamespaceValueRefTarget — local declarations outrank re-publishe
         false,
       ),
     ).toBeUndefined();
+  });
+});
+
+describe('namespace value references follow lexical visibility', () => {
+  const INNER = 'scope:inner';
+  const SIBLING = 'scope:sibling';
+  const CLASS = 'scope:class';
+  const METHOD = 'scope:method';
+  const OTHER = 'scope:other:module';
+  const OTHER_FILE = 'src/other.zig';
+  const OTHER_FN = def('Function:src/other.zig:scale', 'Function', OTHER_FILE);
+
+  function fixture(edge: Partial<ImportEdge> = {}, importScope = INNER) {
+    const base = indexes({ local: [ref(LOCAL_FN, 'local')] });
+    const extraScopes = new Map<ScopeId, Scope>([
+      [INNER, { ...moduleScope(INNER, CONSUMER_FILE), kind: 'Function', parent: CONSUMER }],
+      [SIBLING, { ...moduleScope(SIBLING, CONSUMER_FILE), kind: 'Function', parent: CONSUMER }],
+      [CLASS, { ...moduleScope(CLASS, CONSUMER_FILE), kind: 'Class', parent: INNER }],
+      [METHOD, { ...moduleScope(METHOD, CONSUMER_FILE), kind: 'Function', parent: CLASS }],
+      [OTHER, moduleScope(OTHER, OTHER_FILE)],
+    ]);
+    return {
+      ...base,
+      scopeTree: { getScope: (id: ScopeId) => extraScopes.get(id) ?? base.scopeTree.getScope(id) },
+      moduleScopes: {
+        get: (file: string) => (file === OTHER_FILE ? OTHER : base.moduleScopes.get(file)),
+      },
+      imports: new Map([
+        ...base.imports,
+        [
+          importScope,
+          [
+            {
+              localName: 'hub',
+              targetExportedName: 'other',
+              targetFile: OTHER_FILE,
+              kind: 'namespace',
+              ...edge,
+            } as ImportEdge,
+          ],
+        ],
+      ]),
+      bindings: new Map([
+        ...base.bindings,
+        [OTHER, new Map([['scale', [ref(OTHER_FN, 'local')]]])],
+      ]),
+    } as unknown as ScopeResolutionIndexes;
+  }
+
+  function at(scope: ScopeId, scopes: ScopeResolutionIndexes) {
+    return resolveValueRefTarget({ ...SITE, inScope: scope }, CONSUMER_FILE, scopes, MODEL, true, {
+      skipEnclosingClasses: true,
+    });
+  }
+
+  it('selects the nearest import for a registration without leaking it to a sibling', () => {
+    const scopes = fixture();
+    expect(at(INNER, scopes)?.nodeId).toBe(OTHER_FN.nodeId);
+    expect(at(METHOD, scopes)?.nodeId).toBe(OTHER_FN.nodeId);
+    expect(at(SIBLING, scopes)?.nodeId).toBe(LOCAL_FN.nodeId);
+  });
+
+  it.each([{ kind: 'named' as const }, { targetFile: null, linkStatus: 'unresolved' as const }])(
+    'does not revive the outer namespace under a shadowing import: %j',
+    (edge) => {
+      expect(at(INNER, fixture(edge))).toBeUndefined();
+    },
+  );
+
+  it('skips an enclosing class import but retains it for class-body registrations', () => {
+    const scopes = fixture({}, CLASS);
+    expect(at(CLASS, scopes)?.nodeId).toBe(OTHER_FN.nodeId);
+    expect(at(METHOD, scopes)?.nodeId).toBe(LOCAL_FN.nodeId);
   });
 });
