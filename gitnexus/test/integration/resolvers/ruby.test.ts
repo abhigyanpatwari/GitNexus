@@ -39,6 +39,27 @@ describe('Ruby nested method declarations remain visible on the outer method sur
     );
     expect(calls).toEqual([]);
   });
+
+  it.each([
+    ['commented_caller', 'commented_target', 'boot_commented.commented_target'],
+    ['class_caller', 'class_target', 'Host.boot_class.class_target'],
+  ])(
+    'resolves %s to its nested method despite a competing class member',
+    (caller, target, owner) => {
+      const calls = getRelationships(result, 'CALLS').filter(
+        (candidate) => candidate.source === caller && candidate.target === target,
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.rel.targetId).toContain(owner);
+    },
+  );
+
+  it('does not project a method through an unknown helper that rebinds the block definee', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (candidate) => candidate.source === 'helper_caller' && candidate.target === 'helper_target',
+    );
+    expect(calls).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
