@@ -197,6 +197,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'normalizeTypeArgument'
   | 'markConstructionSites'
   | 'namespaceExportsIncludeImportedNames'
+  | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
 >;
 
@@ -1033,20 +1034,28 @@ export function emitReceiverBoundCalls(
   };
 
   for (const parsed of parsedFiles) {
-    const namespaceTargets = collectNamespaceTargets(parsed, scopes, {
-      receiverPaths: provider.namespaceReceiverPaths,
-      moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
-    });
-    const fileCompoundOpts = {
-      ...compoundOpts,
-      namespaceTargets,
-      ...(walkChains
-        ? {
-            resolveQualifiedClass: (qualifiedName: string, inScope: ScopeId) =>
-              resolveNamespaceQualifiedClass(qualifiedName, inScope, namespaceTargets),
-          }
-        : {}),
+    const namespaceContext = (inScope?: ScopeId) => {
+      const namespaceTargets = collectNamespaceTargets(parsed, scopes, {
+        receiverPaths: provider.namespaceReceiverPaths,
+        moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
+        inScope,
+      });
+      return {
+        namespaceTargets,
+        fileCompoundOpts: {
+          ...compoundOpts,
+          namespaceTargets,
+          ...(walkChains
+            ? {
+                resolveQualifiedClass: (qualifiedName: string, scopeId: ScopeId) =>
+                  resolveNamespaceQualifiedClass(qualifiedName, scopeId, namespaceTargets),
+              }
+            : {}),
+        },
+      };
     };
+    const fileNamespaces = namespaceContext();
+    const namespacesByScope = new Map<ScopeId, ReturnType<typeof namespaceContext>>();
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
     // capture is a no-op and emission stays byte-identical (R4).
@@ -1058,6 +1067,17 @@ export function emitReceiverBoundCalls(
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
       if (site.explicitReceiver === undefined) continue;
+
+      let namespaces = fileNamespaces;
+      if (provider.importsBindAtLexicalScope === true) {
+        let scoped = namespacesByScope.get(site.inScope);
+        if (scoped === undefined) {
+          scoped = namespaceContext(site.inScope);
+          namespacesByScope.set(site.inScope, scoped);
+        }
+        namespaces = scoped;
+      }
+      const { namespaceTargets, fileCompoundOpts } = namespaces;
 
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
@@ -1544,7 +1564,7 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 1: namespace receiver ───────────────────────────────
-      // `namespaceTargets` is collected per FILE, so a local declaration that
+      // `namespaceTargets` contains imports, so a local declaration that
       // shadows the import must suppress it — `def f(pkg): pkg.db.query()`
       // calls a method on the PARAMETER, and resolving it through the import
       // emits a wrong edge, not a missing one. The compound-receiver
