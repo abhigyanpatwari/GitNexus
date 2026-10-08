@@ -1,28 +1,12 @@
 #!/usr/bin/env python3
 """Enforce the GitHub Actions concurrency convention.
 
-See CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention" for the rules.
-
-Invoked from .github/workflows/ci-quality.yml. Runs locally too:
-    python3 .github/scripts/check-workflow-concurrency.py .github/workflows
-
-Rules:
-  1. Every entry-point (non-reusable) workflow declares a top-level
-     `concurrency:` block.
-  2. Reusable workflows (on: workflow_call ONLY) do NOT declare one.
-  3. The `concurrency.group` expression MUST reference either
-     `${{ github.workflow }}` or one of the approved hardcoded literal prefixes
-     for workflows that are simultaneously entry-points AND reusable (on: push/
-     workflow_call). Two such exceptions are currently approved:
-       - `CI-` for ci.yml (the original canonical form)
-       - `docker-build-push-` for docker.yml
-     This is checked by substring containment rather than prefix match because
-     the group value is a conditional expression that resolves to a `CI-…` or
-     `docker-build-push-…` literal at runtime.
-
-We deliberately do not use a YAML library — keeps the script dependency-free
-on any vanilla runner. `on:` block parsing is line-based and handles both the
-flat (`on: workflow_call`) and mapping (`on:\n  workflow_call:`) forms.
+Enhanced version with:
+- Colored terminal output
+- Summary report
+- File statistics
+- Cleaner helper utilities
+- Same validation logic preserved
 """
 
 from __future__ import annotations
@@ -30,11 +14,210 @@ from __future__ import annotations
 import pathlib
 import re
 import sys
+from dataclasses import dataclass
 
+# -------------------- Styling -------------------- #
+RED = "\033[91m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+CYAN = "\033[96m"
+RESET = "\033[0m"
 
+# -------------------- Constants -------------------- #
 REQUIRED_TOKENS = ("${{ github.workflow }}", "CI-", "docker-build-push-")
+CONCURRENCY_RE = re.compile(r"^concurrency:\s*$")
+GROUP_RE = re.compile(r"^\s+group:\s*(.+?)\s*$")
 
 
+@dataclass
+class Stats:
+    checked: int = 0
+    reusable: int = 0
+    passed: int = 0
+    failed: int = 0
+
+
+# -------------------- Utility Functions -------------------- #
+def banner() -> None:
+    print(f"{CYAN}{'=' * 60}")
+    print(" GitHub Workflow Concurrency Validator ")
+    print(f"{'=' * 60}{RESET}")
+
+
+def error(path: pathlib.Path, msg: str) -> None:
+    print(f"{RED}::error file={path}::{msg}{RESET}")
+
+
+def success(path: pathlib.Path) -> None:
+    print(f"{GREEN}✔ {path.name} passed validation{RESET}")
+
+
+def warn(msg: str) -> None:
+    print(f"{YELLOW}{msg}{RESET}")
+
+
+# -------------------- Workflow Logic -------------------- #
+def is_reusable(lines: list[str]) -> bool:
+    inside = False
+    base_indent = None
+    collected = []
+
+    for line in lines:
+        clean = line.strip()
+
+        if not clean or clean.startswith("#"):
+            continue
+
+        indent = len(line) - len(line.lstrip(" "))
+
+        if not inside:
+            if line.startswith("on:"):
+                remaining = line[3:].strip()
+
+                if not remaining:
+                    inside = True
+                    base_indent = indent
+                    continue
+
+                if remaining.startswith("[") and remaining.endswith("]"):
+                    events = [x.strip() for x in remaining[1:-1].split(",")]
+                    return events == ["workflow_call"]
+
+                return remaining == "workflow_call"
+
+            continue
+
+        if base_indent is not None and indent <= base_indent:
+            break
+
+        if ":" in clean:
+            key = clean.split(":", 1)[0].strip()
+            collected.append((indent, key))
+
+    if not collected:
+        return False
+
+    minimum = min(i for i, _ in collected)
+    events = [name for i, name in collected if i == minimum]
+
+    return events == ["workflow_call"]
+
+
+def has_top_level_concurrency(lines: list[str]) -> bool:
+    return any(CONCURRENCY_RE.match(line) for line in lines)
+
+
+def extract_group_key(lines: list[str]) -> str | None:
+    active = False
+
+    for line in lines:
+        if CONCURRENCY_RE.match(line):
+            active = True
+            continue
+
+        if active:
+            if line and not line.startswith(" ") and line.rstrip().endswith(":"):
+                break
+
+            found = GROUP_RE.match(line)
+            if found:
+                return found.group(1).strip().strip("'").strip('"')
+
+    return None
+
+
+def validate_file(path: pathlib.Path, stats: Stats) -> bool:
+    lines = path.read_text(encoding="utf-8").splitlines()
+
+    stats.checked += 1
+    reusable = is_reusable(lines)
+
+    if reusable:
+        stats.reusable += 1
+
+    present = has_top_level_concurrency(lines)
+
+    if reusable:
+        if present:
+            error(
+                path,
+                "Reusable workflow must not define concurrency. "
+                "It inherits from caller.",
+            )
+            stats.failed += 1
+            return False
+
+        success(path)
+        stats.passed += 1
+        return True
+
+    if not present:
+        error(path, "Missing top-level concurrency block.")
+        stats.failed += 1
+        return False
+
+    group = extract_group_key(lines)
+
+    if group is None:
+        error(path, "concurrency block missing `group:` key.")
+        stats.failed += 1
+        return False
+
+    if not any(token in group for token in REQUIRED_TOKENS):
+        error(
+            path,
+            f"Invalid concurrency.group `{group}`. "
+            f"Must include one of {REQUIRED_TOKENS}.",
+        )
+        stats.failed += 1
+        return False
+
+    success(path)
+    stats.passed += 1
+    return True
+
+
+def scan(directory: pathlib.Path) -> int:
+    stats = Stats()
+
+    files = sorted(directory.glob("*.yml")) + sorted(directory.glob("*.yaml"))
+
+    if not files:
+        warn("No workflow files found.")
+        return 0
+
+    banner()
+
+    for workflow in files:
+        validate_file(workflow, stats)
+
+    print(f"\n{CYAN}{'-' * 60}{RESET}")
+    print(f"Checked Files : {stats.checked}")
+    print(f"Reusable     : {stats.reusable}")
+    print(f"Passed       : {stats.passed}")
+    print(f"Failed       : {stats.failed}")
+    print(f"{CYAN}{'-' * 60}{RESET}")
+
+    return 1 if stats.failed else 0
+
+
+# -------------------- Main -------------------- #
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print(f"usage: {argv[0]} <workflows-dir>", file=sys.stderr)
+        return 2
+
+    target = pathlib.Path(argv[1])
+
+    if not target.is_dir():
+        print(f"not a directory: {target}", file=sys.stderr)
+        return 2
+
+    return scan(target)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
 def is_reusable(lines: list[str]) -> bool:
     """Return True iff the workflow's `on:` block names only `workflow_call`."""
     in_on = False
