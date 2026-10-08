@@ -213,6 +213,7 @@ function collectReferenceSites(parsedFiles: readonly ParsedFile[]) {
  */
 function withDefaultHooks(partial: Partial<FinalizeHooks>): FinalizeHooks {
   return {
+    ownedMembersBindAtModuleScope: partial.ownedMembersBindAtModuleScope,
     importsBindAtLexicalScope: partial.importsBindAtLexicalScope === true,
     resolveImportTarget: partial.resolveImportTarget ?? (() => null),
     isNamespaceImport: partial.isNamespaceImport,
