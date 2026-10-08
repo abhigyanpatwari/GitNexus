@@ -132,6 +132,7 @@ interface ResolveCompoundReceiverOptions {
   /** A namespace member may be a name the target module imported and
    *  publishes (hub modules). See `ScopeResolver.namespaceExportsIncludeImportedNames`. */
   readonly namespaceExportsIncludeImportedNames?: boolean;
+  readonly namespaceSkipsEnclosingClasses?: boolean;
   /** Resolve a qualified CLASS name (`opmod.Op`, `hub.sub.Thing`,
    *  `mod.Outer.Inner`) through the language's namespace chain walk
    *  (`ScopeResolver.resolveNamespaceChains`). Seeds the dotted-chain walk
@@ -254,7 +255,15 @@ function resolveConstructionExpressionClass(
     // A verified namespace is authoritative: do not fall through to the
     // workspace-wide simple-name heuristics on either a miss or ambiguity.
     if (namespaceFiles.length > 0) {
-      if (isNamespaceNameShadowed(namespaceName, inScope, scopes)) return undefined;
+      if (
+        isNamespaceNameShadowed(
+          namespaceName,
+          inScope,
+          scopes,
+          options.namespaceSkipsEnclosingClasses,
+        )
+      )
+        return undefined;
       const namespaceMatches = namespaceFiles
         .map((targetFile) =>
           options.namespaceExportsIncludeImportedNames === true
