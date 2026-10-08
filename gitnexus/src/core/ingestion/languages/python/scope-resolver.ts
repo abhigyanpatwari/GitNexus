@@ -22,10 +22,11 @@ import type {
 } from '../../scope-resolution/contract/scope-resolver.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { pythonProvider } from '../python.js';
-import { expandPythonWildcardNames } from './expand-wildcards.js';
+import { expandPythonWildcardNames, pythonModuleExports } from './expand-wildcards.js';
 import {
   isPythonImportedModule,
   pythonNamespaceReceiverPaths,
+  pythonNamespaceBindingIdentity,
   pythonArityCompatibility,
   pythonMergeBindings,
   resolvePythonImportTarget,
@@ -81,7 +82,10 @@ const pythonScopeResolver: ScopeResolver = {
   // Imported names on a package's __init__.py are addressable as module members.
   namespaceExportsIncludeImportedNames: true,
   importsBindAtLexicalScope: true,
-  expandsWildcardTo: expandPythonWildcardNames,
+  moduleExports: pythonModuleExports,
+  filterWildcardNames: (scope, names, files) => expandPythonWildcardNames(scope, files, names),
+  namespaceBindingIdentity: pythonNamespaceBindingIdentity,
+  namespaceSkipsEnclosingClasses: true,
   suppressReceiverLookup: (typeRef) => typeRef.source === 'decorator-unknown',
   languageProvider: pythonProvider,
   importEdgeReason: 'python-scope: import',
