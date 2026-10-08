@@ -58,6 +58,7 @@ import {
   isOwnerNameShadowedBySomethingElse,
   lookupBindingsAt,
 } from '../scope/walkers.js';
+import { collectNamespaceTargets } from '../scope/namespace-targets.js';
 import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import { CALL_TARGET_TYPES } from '../../model/symbol-table.js';
@@ -274,12 +275,10 @@ function findNamespaceValueRefTarget(
 ): SymbolDefinition | 'owned' | undefined {
   const moduleScopeId = scopes.moduleScopes.get(filePath);
   if (moduleScopeId === undefined) return undefined;
-  const targetFiles: string[] = [];
-  for (const edge of scopes.imports.get(moduleScopeId) ?? []) {
-    if (edge.kind !== 'namespace' || edge.localName !== receiverName) continue;
-    if (edge.targetFile === null) continue;
-    if (!targetFiles.includes(edge.targetFile)) targetFiles.push(edge.targetFile);
-  }
+  const targetFiles =
+    collectNamespaceTargets({ moduleScope: moduleScopeId }, scopes, {
+      inScope: site.inScope,
+    }).get(receiverName) ?? [];
   if (targetFiles.length === 0) return undefined;
   if (isNamespaceNameShadowed(receiverName, site.inScope, scopes)) return undefined;
 
@@ -320,12 +319,11 @@ function findNamespaceValueRefTarget(
   // imported names for a name the file declares. Same rule here, so `x.f` and
   // `x.f()` cannot disagree about which module owns the name.
   //
-  // Not reachable through valid Zig today — a container cannot declare a name
-  // twice, so one target file cannot hold both spellings, and Zig is the only
-  // provider that sets `namespaceExportsIncludeImportedNames`. It becomes
-  // reachable the moment a second provider opts in, or a receiver binds more
-  // than one target file; the guard is one `some` and the alternative failure
-  // is a confident edge into the wrong module.
+  // Both Python and Zig set `namespaceExportsIncludeImportedNames`. Valid Zig
+  // cannot put both spellings in one container because it forbids duplicate
+  // declarations, but the shared guard also covers Python and receivers bound
+  // to more than one target file. The guard is one `some`; falling through
+  // would produce a confident edge into the wrong module.
   const declaredLocally = targetFiles.some((targetFile) => {
     const targetScopeId = scopes.moduleScopes.get(targetFile);
     return targetScopeId !== undefined && localRefs(targetScopeId).length > 0;
@@ -339,7 +337,11 @@ function findNamespaceValueRefTarget(
   // does for the CALL form.
   const published = uniqueMember((scope) =>
     lookupBindingsAt(scope, site.name, scopes).filter(
-      (ref) => ref.origin === 'import' || ref.origin === 'namespace' || ref.origin === 'reexport',
+      (ref) =>
+        ref.origin === 'import' ||
+        ref.origin === 'namespace' ||
+        ref.origin === 'reexport' ||
+        ref.origin === 'wildcard',
     ),
   );
   return published === 'ambiguous' || published === undefined ? 'owned' : published;
