@@ -2294,7 +2294,12 @@ export function findExportedDefIncludingImportedNames(
   if (moduleScope === undefined) return undefined;
   let picked: SymbolDefinition | undefined;
   for (const ref of lookupBindingsAt(moduleScope.id, memberName, scopes)) {
-    if (ref.origin !== 'import' && ref.origin !== 'namespace' && ref.origin !== 'reexport')
+    if (
+      ref.origin !== 'import' &&
+      ref.origin !== 'namespace' &&
+      ref.origin !== 'reexport' &&
+      ref.origin !== 'wildcard'
+    )
       continue;
     if (picked === undefined) {
       picked = ref.def;
