@@ -17,11 +17,12 @@
  *
  * WHY THE INDEXES ARE HAND-BUILT, stated so this is not read as a fixture that
  * "just happens" to be synthetic. Python and Zig both set
- * `namespaceExportsIncludeImportedNames`, but Zig forbids declaring a name
- * twice in one container. No valid Zig source can put a local non-callable
- * and a published callable under one name in one module. These hand-built
- * indexes pin the shared precedence rule independently of either provider's
- * extraction; the middle case below fails without the guard.
+ * `namespaceExportsIncludeImportedNames`; Zig forbids declaring a name twice
+ * in one container, so its source cannot express the overlapping bindings
+ * tested here. Building the indexes directly isolates the shared precedence
+ * contract from provider extraction and finalization, including receivers
+ * bound to more than one target file. The middle case below fails without
+ * the local-name guard.
  */
 
 import { describe, it, expect } from 'vitest';
