@@ -769,9 +769,10 @@ describe('compileRExportPattern is linear-time on catastrophic patterns', () => 
 
     it('reports a named group or look-behind as such', () => {
       for (const pattern of ['(?<=x)y', '(?<n>a)']) {
-        const result = compileLinearRegexDetailed(pattern);
-        expect(result.regex).toBeNull();
-        expect(result.reason).toContain('look-behind');
+        expect(compileLinearRegexDetailed(pattern)).toMatchObject({
+          regex: null,
+          reason: expect.stringContaining('look-behind'),
+        });
       }
     });
   });
