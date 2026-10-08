@@ -797,6 +797,71 @@ describe('finalize', () => {
       expect(bindings[0]!.def.nodeId).toBe('def:a.X');
     });
 
+    it('does not flatten nested declarations into the module binding bucket', () => {
+      const topLevel = { ...def('def:a.outer', 'Function', 'a.outer'), filePath: 'a' };
+      const nested = {
+        ...def('def:a.outer.target', 'Function', 'a.outer.target'),
+        filePath: 'a',
+      };
+      const a: FinalizeFile = {
+        ...file('a', [topLevel, nested]),
+        moduleBindings: new Map([['outer', [{ def: topLevel, origin: 'local' as const }]]]),
+      };
+
+      const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
+
+      expect(bindingsFor(out, a.moduleScope, 'outer').map((binding) => binding.def.nodeId)).toEqual(
+        ['def:a.outer'],
+      );
+      expect(bindingsFor(out, a.moduleScope, 'target')).toEqual([]);
+    });
+
+    it('does not duplicate namespace definitions already projected into module bindings', () => {
+      const namespaced = {
+        ...def('def:a.ns.target', 'Function', 'a.ns.target'),
+        filePath: 'a',
+        namespacePrefix: 'ns',
+      };
+      const a: FinalizeFile = {
+        ...file('a.cpp', [namespaced]),
+        moduleBindings: new Map([['target', [{ def: namespaced, origin: 'local' as const }]]]),
+      };
+
+      const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
+
+      expect(
+        bindingsFor(out, a.moduleScope, 'target').map((binding) => binding.def.nodeId),
+      ).toEqual(['def:a.ns.target']);
+    });
+
+    it('uses provider policy for owned members and retains synthetic dispatch entries', () => {
+      const method = { ...def('def:a.Box.target', 'Method', 'a.Box.target'), ownerId: 'def:a.Box' };
+      const synthetic = {
+        ...method,
+        nodeId: 'def:a.Box.generated',
+        qualifiedName: 'a.Box.generated',
+        isSynthetic: true,
+      };
+      const a: FinalizeFile = {
+        ...file('a.ipynb', [method, synthetic]),
+        moduleBindings: new Map(),
+      };
+      const input = { files: [a], workspaceIndex: undefined };
+      const lexical = finalize(input, {
+        ...defaultHooks([a]),
+        ownedMembersBindAtModuleScope: false,
+      });
+      expect(bindingsFor(lexical, a.moduleScope, 'target')).toEqual([]);
+      expect(
+        bindingsFor(lexical, a.moduleScope, 'generated').map((binding) => binding.def.nodeId),
+      ).toEqual(['def:a.Box.generated']);
+
+      const legacy = finalize(input, defaultHooks([a]));
+      expect(
+        bindingsFor(legacy, a.moduleScope, 'target').map((binding) => binding.def.nodeId),
+      ).toEqual(['def:a.Box.target']);
+    });
+
     it('layers imports on top of local defs via mergeBindings', () => {
       const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
       const a = file('a', [def('def:a.User', 'Class', 'a.User')], [named('User', 'User', 'b')]);

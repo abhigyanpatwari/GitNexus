@@ -829,11 +829,17 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Warm v126 worker results can retain false tools after a method replacement.
 // v128 (#3450): SDK namespace imports now prove positional tool receivers.
 // Warm v127 worker results omit these definitions and must be re-extracted.
-// v129 (#3487): Express route captures require a handler and preserve app.all
-// as method-agnostic. Warm v128 worker results can carry false GET routes.
-// v130 (#3505): count semantic call arguments and retain route(path) builders.
-// Warm v129 results can include commented lookups and omit chained routes.
-const SCHEMA_BUMP = 130;
+// v129 (#3499): Python/PHP/Ruby declaration bindings now preserve language-
+// specific module visibility. Warm v128 ParsedFiles retain the old binding
+// placement and can lose valid calls when finalized by the new projection.
+// v130 (#3502): Python globals use exact function/class block ownership and
+// Ruby ordinary-method binding uses AST markers. Warm v129 ParsedFiles retain
+// incorrect declaration scopes and must be re-extracted.
+// v131 (#3487, #3505): merge the parallel v129/v130 Express route changes.
+// Require semantic handler arguments, retain route(path) builders, and preserve
+// app.all as method-agnostic. Both branches used v130 for different captures,
+// so invalidate either branch's cache before reusing the combined schema.
+const SCHEMA_BUMP = 131;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
