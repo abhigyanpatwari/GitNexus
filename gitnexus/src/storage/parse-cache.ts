@@ -842,7 +842,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Require semantic handler arguments, retain route(path) builders, and preserve
 // app.all as method-agnostic. Both branches used v131 for different captures,
 // so invalidate either branch's cache before reusing the combined schema.
-const SCHEMA_BUMP = 132;
+// v133 (#3505): route(path) builders emit only chained verb registrations
+// with semantic handler arguments. Warm v132 caches can retain phantom GET
+// routes for bare builders and lose the actual methods of chained handlers.
+const SCHEMA_BUMP = 133;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
