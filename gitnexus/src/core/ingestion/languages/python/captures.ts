@@ -39,7 +39,7 @@ import { computePythonArityMetadata } from './arity-metadata.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
-import { pythonFunctionDefinitionLabel } from './simple-hooks.js';
+import { isPythonGlobalDeclaration, pythonFunctionDefinitionLabel } from './simple-hooks.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import {
@@ -153,6 +153,20 @@ export function emitPythonScopeCaptures(
 
     recordPythonSubtypeCallShape(grouped, nodeMap, filePath, subtypeLineMapper);
 
+    const declarationNode = nodeMap['@declaration.function'] ?? nodeMap['@declaration.class'];
+    const declarationName = grouped['@declaration.name']?.text;
+    if (
+      declarationNode !== undefined &&
+      declarationName !== undefined &&
+      isPythonGlobalDeclaration(declarationNode, declarationName)
+    ) {
+      grouped['@declaration.global'] = syntheticCapture(
+        '@declaration.global',
+        declarationNode,
+        declarationName,
+      );
+    }
+
     if (grouped['@import.statement'] !== undefined) {
       // `@import.statement` is captured directly ON the `import_statement` /
       // `import_from_statement` node (query: `(import_statement) @import.statement`
@@ -219,14 +233,6 @@ export function emitPythonScopeCaptures(
       const anchorNode = nodeMap['@declaration.function']!;
       const fnNode = anchorNode.type === 'function_definition' ? anchorNode : null;
       if (fnNode !== null) {
-        const declarationName = grouped['@declaration.name']?.text;
-        if (declarationName !== undefined && isGlobalInEnclosingFunction(fnNode, declarationName)) {
-          grouped['@declaration.global'] = syntheticCapture(
-            '@declaration.global',
-            fnNode,
-            declarationName,
-          );
-        }
         if (pythonFunctionDefinitionLabel(fnNode, 'Function') === 'Method') {
           delete grouped['@declaration.function'];
           grouped['@declaration.method'] = { ...anchorCap, name: '@declaration.method' };
@@ -284,28 +290,6 @@ export function emitPythonScopeCaptures(
     return out.map((match) => remapCaptureMatch(match, notebookSegments));
   }
   return out;
-}
-
-/** Whether a nested function's name is declared global by its immediate
- * enclosing function. Ignore `global` statements owned by deeper nested
- * functions: Python applies them only to the code block where they occur. */
-function isGlobalInEnclosingFunction(fnNode: SyntaxNode, name: string): boolean {
-  let enclosing = fnNode.parent;
-  while (
-    enclosing !== null &&
-    enclosing.type !== 'function_definition' &&
-    enclosing.type !== 'class_definition'
-  ) {
-    enclosing = enclosing.parent;
-  }
-  if (enclosing === null || enclosing.type === 'class_definition') return false;
-
-  return enclosing.descendantsOfType('global_statement').some((statement) => {
-    let owner = statement.parent;
-    while (owner !== null && owner.type !== 'function_definition') owner = owner.parent;
-    if (owner !== enclosing) return false;
-    return statement.descendantsOfType('identifier').some((identifier) => identifier.text === name);
-  });
 }
 
 function resolveNotebookCaptureSource(
