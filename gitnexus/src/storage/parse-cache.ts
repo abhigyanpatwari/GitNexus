@@ -829,7 +829,13 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Warm v126 worker results can retain false tools after a method replacement.
 // v128 (#3450): SDK namespace imports now prove positional tool receivers.
 // Warm v127 worker results omit these definitions and must be re-extracted.
-const SCHEMA_BUMP = 128;
+// v129 (#3499): Python/PHP/Ruby declaration bindings now preserve language-
+// specific module visibility. Warm v128 ParsedFiles retain the old binding
+// placement and can lose valid calls when finalized by the new projection.
+// v130 (#3502): Python globals use exact function/class block ownership and
+// Ruby ordinary-method binding uses AST markers. Warm v129 ParsedFiles retain
+// incorrect declaration scopes and must be re-extracted.
+const SCHEMA_BUMP = 130;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

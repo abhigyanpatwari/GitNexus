@@ -73,6 +73,17 @@ export interface FinalizeFile {
   /** Exact module bindings when the provider can distinguish them from nested
    * declarations. Absent preserves the legacy definition-name lookup. */
   readonly localExports?: ReadonlyMap<string, SymbolDefinition>;
+  /**
+   * The extractor's actual lexical bindings for {@link moduleScope}.
+   *
+   * `localDefs` is deliberately a flattened inventory and also contains
+   * methods and nested functions. Structural `ownedDefs` is not equivalent
+   * either: scope-creating declarations are owned by their body scope while
+   * their names are hoisted into the parent binding map. Omitted only by
+   * legacy/direct callers, where finalize retains the historical `localDefs`
+   * behavior for compatibility.
+   */
+  readonly moduleBindings?: ReadonlyMap<string, readonly BindingRef[]>;
 }
 
 /** Input to `finalize`. */
@@ -88,6 +99,10 @@ export interface FinalizeInput {
  * expects pure answers.
  */
 export interface FinalizeHooks {
+  /** Retain the legacy module lookup surface for class-owned definitions.
+   * Providers with strictly lexical bare-name lookup disable this, independently
+   * of the source container or file extension. Defaults to true. */
+  readonly ownedMembersBindAtModuleScope?: boolean;
   /** Bind imports at their extracted lexical scope. Missing provenance retains
    * the legacy module-scope behavior. Opt-in: lexical position and language
    * import-binding semantics are distinct facts. */
@@ -1678,13 +1693,41 @@ function materializeBindings(
   for (const file of files) {
     const scopeBindings = new Map<string, readonly BindingRef[]>();
 
-    // Start with local defs as `origin: 'local'` bindings.
-    for (const def of file.localDefs) {
-      const name = deriveSimpleName(def);
-      if (name === null) continue;
-      const incoming: BindingRef[] = [{ def, origin: 'local' }];
-      const existing = scopeBindings.get(name) ?? [];
-      scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+    // Start with declarations genuinely bound at module scope. Preserve the
+    // extractor's binding names and refs: structural ownership is different
+    // from lexical visibility for top-level functions/classes.
+    if (file.moduleBindings !== undefined) {
+      for (const [name, incoming] of file.moduleBindings) {
+        const existing = scopeBindings.get(name) ?? [];
+        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+      }
+      // Some language enrichers synthesize members after scope extraction
+      // (for example Lombok accessors). They have no lexical scope binding to
+      // project, but existing dispatch/index consumers still need them in the
+      // finalized lookup surface. Legacy resolvers also depend on
+      // class-owned definitions for implicit receiver, constructor, inherited,
+      // and partial-class lookup. Providers with strictly lexical bare-name
+      // lookup disable this compatibility surface. It can disappear once
+      // those providers project their implicit member surfaces explicitly.
+      const allowOwnedCompatibility = hooks.ownedMembersBindAtModuleScope !== false;
+      for (const def of file.localDefs) {
+        if (def.isSynthetic !== true && !(allowOwnedCompatibility && def.ownerId !== undefined))
+          continue;
+        const name = deriveSimpleName(def);
+        if (name === null) continue;
+        const incoming: BindingRef[] = [{ def, origin: 'local' }];
+        const existing = scopeBindings.get(name) ?? [];
+        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+      }
+    } else {
+      // Compatibility for direct/legacy callers that predate scope bindings.
+      for (const def of file.localDefs) {
+        const name = deriveSimpleName(def);
+        if (name === null) continue;
+        const incoming: BindingRef[] = [{ def, origin: 'local' }];
+        const existing = scopeBindings.get(name) ?? [];
+        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+      }
     }
 
     buckets.set(file.moduleScope, scopeBindings);

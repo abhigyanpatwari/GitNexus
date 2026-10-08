@@ -86,6 +86,7 @@ const pythonScopeResolver: ScopeResolver = {
   filterWildcardNames: (scope, names, files) => expandPythonWildcardNames(scope, files, names),
   namespaceBindingIdentity: pythonNamespaceBindingIdentity,
   namespaceSkipsEnclosingClasses: true,
+  ownedMembersBindAtModuleScope: false,
   suppressReceiverLookup: (typeRef) => typeRef.source === 'decorator-unknown',
   languageProvider: pythonProvider,
   importEdgeReason: 'python-scope: import',

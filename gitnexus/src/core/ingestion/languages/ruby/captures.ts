@@ -245,6 +245,30 @@ function isRubyInstanceIvarWrite(ivarNode: SyntaxNode | undefined): boolean {
   return false;
 }
 
+/** Whether an ordinary `def` has a provable lexical class/module definee. */
+function isRubyLexicalMethod(node: SyntaxNode): boolean {
+  if (node.type !== 'method') return false;
+  for (let ancestor = node.parent; ancestor !== null; ancestor = ancestor.parent) {
+    switch (ancestor.type) {
+      // Singleton bodies choose a different definee. A block's receiver can
+      // also rebind it, including through user helpers (see the ivar gate).
+      case 'singleton_method':
+      case 'singleton_class':
+      case 'do_block':
+      case 'block':
+      case 'lambda':
+      case 'begin_block':
+      case 'end_block':
+        return false;
+      case 'class':
+      case 'module':
+      case 'program':
+        return true;
+    }
+  }
+  return false;
+}
+
 export function emitRubyScopeCaptures(
   sourceText: string,
   _filePath: string,
@@ -363,6 +387,17 @@ export function emitRubyScopeCaptures(
           if (nameCap !== undefined) {
             grouped['@declaration.name'] = nameCap;
           }
+        }
+
+        // Preserve AST classification across declaration.function → method
+        // reclassification. Parsing the source prefix here would confuse
+        // `def target.target` with an ordinary def and miss comments after def.
+        if (isRubyLexicalMethod(fnNode)) {
+          grouped['@declaration.lexical-method'] = syntheticCapture(
+            '@declaration.lexical-method',
+            fnNode,
+            'true',
+          );
         }
 
         const arity = computeRubyDeclarationArity(fnNode);

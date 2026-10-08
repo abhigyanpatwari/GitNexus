@@ -823,6 +823,7 @@ export function runScopeResolution(
   const finalized = finalizeScopeModel(parsedFiles, {
     moduleExports: provider.moduleExports,
     hooks: {
+      ownedMembersBindAtModuleScope: provider.ownedMembersBindAtModuleScope,
       importsBindAtLexicalScope: provider.importsBindAtLexicalScope === true,
       resolveImportTarget: (targetRaw, fromFile, _workspaceIndex, parsedImport) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, {
