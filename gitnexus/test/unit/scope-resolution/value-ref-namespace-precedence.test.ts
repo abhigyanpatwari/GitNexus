@@ -16,14 +16,12 @@
  * about which module owns `scale`.
  *
  * WHY THE INDEXES ARE HAND-BUILT, stated so this is not read as a fixture that
- * "just happens" to be synthetic. Zig forbids declaring a name twice in one
- * container, and Zig is today the only provider that sets
- * `namespaceExportsIncludeImportedNames`, so no valid Zig source can put a
- * local non-callable and a published callable under one name in one module —
- * there is no source-level fixture to write. The shape becomes reachable the
- * moment a second provider opts in, or a receiver name binds more than one
- * target file. Building the indexes directly is what lets the guard be pinned
- * before that happens; the middle case below fails without it.
+ * "just happens" to be synthetic. Python and Zig both set
+ * `namespaceExportsIncludeImportedNames`, but Zig forbids declaring a name
+ * twice in one container. No valid Zig source can put a local non-callable
+ * and a published callable under one name in one module. These hand-built
+ * indexes pin the shared precedence rule independently of either provider's
+ * extraction; the middle case below fails without the guard.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -121,6 +119,12 @@ describe('findNamespaceValueRefTarget — local declarations outrank re-publishe
     // written as "decline whenever anything is bound in the target module",
     // this is what would break.
     expect(resolve(indexes({ published: [ref(PUBLISHED, 'reexport')] }))?.nodeId).toBe(
+      PUBLISHED.nodeId,
+    );
+  });
+
+  it('resolves a callable published through a wildcard import', () => {
+    expect(resolve(indexes({ published: [ref(PUBLISHED, 'wildcard')] }))?.nodeId).toBe(
       PUBLISHED.nodeId,
     );
   });
