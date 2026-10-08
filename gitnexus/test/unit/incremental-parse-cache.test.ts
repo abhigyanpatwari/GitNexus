@@ -303,8 +303,8 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 125 -> 126 for #3446: SDK positional tool definitions and attribution.
   // Moved 126 -> 127 for #3450: reject destructured SDK registration-method writes.
   // Moved 127 -> 128 for #3450: recognize SDK namespace imports.
-  it('pins SCHEMA_BUMP to 129 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399, #3414, #3408, #3402, #3446, #3450, #3499)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(129);
+  it('pins SCHEMA_BUMP to 130 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399, #3414, #3408, #3402, #3446, #3450, #3499, #3502)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(130);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
