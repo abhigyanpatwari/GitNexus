@@ -919,11 +919,103 @@ describe('Python aliased package re-export resolution', () => {
   }, 60000);
 
   it('resolves both aliased package member calls and direct re-export calls', () => {
-    const callers = getRelationships(result, 'CALLS')
-      .filter((call) => call.target === 'pf' && call.targetFilePath === 'app/services/bp/gp.py')
-      .map((call) => call.source)
+    const calls = getRelationships(result, 'CALLS')
+      .filter((call) => ['combo_caller', 'reexport_pkg_caller'].includes(call.source))
+      .map((call) => [call.source, call.target, call.targetFilePath])
       .sort();
-    expect(callers).toEqual(['combo_caller', 'reexport_pkg_caller']);
+    expect(calls).toEqual([
+      ['combo_caller', 'pf', 'app/services/bp/gp.py'],
+      ['reexport_pkg_caller', 'pf', 'app/services/bp/gp.py'],
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dotted imports: package prefixes must not borrow the leaf module's bindings
+// ---------------------------------------------------------------------------
+
+describe('Python dotted import package ownership', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-package-ownership-'));
+    writeFixtureRepo(repoDir, {
+      'app.py': `import pkg.db
+import hidden_pkg.leaf
+import deep.nested
+
+def construct():
+    return pkg.User().save()
+
+def hidden_on_package():
+    return hidden_pkg.hidden()
+
+def visible_on_leaf():
+    return hidden_pkg.leaf.hidden()
+
+def root_member():
+    return deep.marker()
+
+def nested_member():
+    return deep.nested.marker()
+
+def renamed_member():
+    return pkg.renamed()
+`,
+      'pkg/__init__.py': 'from .db import User\nfrom .bridge import renamed\n__all__ = []\n',
+      'pkg/db.py': 'class User:\n    def save(self):\n        return 1\n',
+      'pkg/bridge.py': 'from .service import original as renamed\n',
+      'pkg/service.py': 'def original():\n    return 2\n',
+      'hidden_pkg/__init__.py': '',
+      'hidden_pkg/leaf.py': 'from other import hidden\n',
+      'other.py': 'def hidden():\n    return 3\n',
+      'deep/__init__.py': 'from .root_service import marker\n',
+      'deep/root_service.py': 'def marker():\n    return 4\n',
+      'deep/nested/__init__.py': 'from .service import marker\n',
+      'deep/nested/service.py': 'def marker():\n    return 5\n',
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('keeps the method call on a class re-exported from the imported leaf', () => {
+    const calls = getRelationships(result, 'CALLS').filter((call) => call.source === 'construct');
+    expect(calls.map((call) => [call.target, call.targetFilePath]).sort()).toEqual([
+      ['User', 'pkg/db.py'],
+      ['save', 'pkg/db.py'],
+    ]);
+  });
+
+  it('does not publish leaf-only imports on the package', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((call) => call.source === 'hidden_on_package')).toEqual([]);
+    expect(
+      calls
+        .filter((call) => call.source === 'visible_on_leaf')
+        .map((call) => [call.target, call.targetFilePath]),
+    ).toEqual([['hidden', 'other.py']]);
+  });
+
+  it('keeps root and nested package re-exports in their own namespaces', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter((call) => ['root_member', 'nested_member'].includes(call.source))
+      .map((call) => [call.source, call.target, call.targetFilePath])
+      .sort();
+    expect(calls).toEqual([
+      ['nested_member', 'marker', 'deep/nested/service.py'],
+      ['root_member', 'marker', 'deep/root_service.py'],
+    ]);
+  });
+
+  it('follows renamed re-export chains for explicit access even outside __all__', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter((call) => call.source === 'renamed_member')
+      .map((call) => [call.target, call.targetFilePath]);
+    expect(calls).toEqual([['original', 'pkg/service.py']]);
   });
 });
 
