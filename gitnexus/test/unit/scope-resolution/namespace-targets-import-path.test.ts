@@ -105,12 +105,29 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
 
   it('does not key an alias import under the module path it does not bind', () => {
     // `import pkg.db as pdb` binds ONLY `pdb`; `pkg.db.f()` is a NameError.
-    const aliased = edge({ localName: 'pdb', targetExportedName: 'pkg.db' });
+    const aliased = edge({ localName: 'pdb', targetExportedName: 'pkg.db', explicitAlias: true });
     const targets = collectPython([aliased], ['pkg/__init__.py']);
     expect(targets.get('pdb')).toEqual(['pkg/db.py']);
     expect(targets.has('pkg.db')).toBe(false);
     expect(targets.has('pkg')).toBe(false);
   });
+
+  it.each(['pkg/db.py', 'pkg/db/__init__.py'])(
+    'keeps a root-spelled alias bound only to %s',
+    (targetFile) => {
+      const aliased = edge({ targetFile, explicitAlias: true });
+      const targets = collectPython([aliased], ['pkg/__init__.py', targetFile]);
+      expect([...targets]).toEqual([['pkg', [targetFile]]]);
+      expect(
+        pythonNamespaceBindingIdentity({
+          localName: 'pkg',
+          importPath: 'pkg.db',
+          targetFile,
+          explicitAlias: true,
+        }),
+      ).toBe(targetFile);
+    },
+  );
 
   it('keeps two same-package imports on separate keys', () => {
     const targets = collectPython(
@@ -263,5 +280,14 @@ describe('collectNamespaceTargets — lexical import scopes', () => {
     expect(compatibleTargets(edge({ targetFile: 'lib/pkg/db.py' }), nearest).get('pkg.db')).toEqual(
       ['lib/pkg/db.py'],
     );
+  });
+
+  it('does not retain outer root paths under an explicit alias to a submodule', () => {
+    const nearest = edge({
+      targetExportedName: 'pkg.cache',
+      targetFile: 'pkg/cache.py',
+      explicitAlias: true,
+    });
+    expect([...compatibleTargets(edge({}), nearest)]).toEqual([['pkg', ['pkg/cache.py']]]);
   });
 });
