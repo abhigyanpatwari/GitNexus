@@ -32,6 +32,7 @@ function collectPython(edges: readonly ImportEdge[], files: readonly string[] = 
   const present = new Set(files);
   return collectNamespaceTargets(parsed, scopes, {
     receiverPaths: pythonNamespaceReceiverPaths,
+    bindingIdentity: pythonNamespaceBindingIdentity,
     moduleFileExists: (filePath) => present.has(filePath),
   });
 }
@@ -289,5 +290,50 @@ describe('collectNamespaceTargets — lexical import scopes', () => {
       explicitAlias: true,
     });
     expect([...compatibleTargets(edge({}), nearest)]).toEqual([['pkg', ['pkg/cache.py']]]);
+  });
+});
+
+describe('collectNamespaceTargets — same-scope import ownership', () => {
+  const first = edge({ localName: 'mod', targetFile: 'alpha.py', explicitAlias: true });
+  const named = edge({ localName: 'mod', kind: 'named', targetFile: 'values.py' });
+  const other = edge({ localName: 'mod', targetFile: 'beta.py', explicitAlias: true });
+  const unresolved = edge({ localName: 'mod', targetFile: null, linkStatus: 'unresolved' });
+
+  it.each([
+    ['different namespaces', [first, other]],
+    ['namespace then named', [first, named]],
+    ['named then namespace', [named, first]],
+    ['namespace then unresolved', [first, unresolved]],
+    ['unresolved then namespace', [unresolved, first]],
+    ['repeated original after conflict', [first, other, first]],
+    ['named import between duplicates', [first, named, first]],
+  ] as const)('suppresses %s', (_name, imports) => {
+    expect([...collectPython(imports)]).toEqual([]);
+  });
+  it('deduplicates repeated imports of the same namespace', () => {
+    expect([...collectPython([first, first])]).toEqual([['mod', ['alpha.py']]]);
+  });
+  it('preserves multiple targets without a binding identity hook', () => {
+    expect([...collectDefault([first, named, other])]).toEqual([['mod', ['alpha.py', 'beta.py']]]);
+  });
+  it('keeps a lone namespace whose binding identity cannot be established', () => {
+    expect(collectPython([edge({ targetFile: 'db.py' })]).get('pkg.db')).toEqual(['db.py']);
+  });
+  it('does not revive an outer namespace after suppressing an inner conflict', () => {
+    const inner = 'scope:conflicting' as ScopeId;
+    const scopes = {
+      imports: new Map([
+        [MODULE_SCOPE, [first]],
+        [inner, [first, named]],
+      ]),
+      scopeTree: { getScope: () => ({ parent: MODULE_SCOPE }) },
+    } as unknown as ScopeResolutionIndexes;
+    expect([
+      ...collectNamespaceTargets({ moduleScope: MODULE_SCOPE }, scopes, {
+        inScope: inner,
+        receiverPaths: pythonNamespaceReceiverPaths,
+        bindingIdentity: pythonNamespaceBindingIdentity,
+      }),
+    ]).toEqual([]);
   });
 });
