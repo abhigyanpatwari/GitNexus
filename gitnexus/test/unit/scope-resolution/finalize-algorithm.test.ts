@@ -834,6 +834,34 @@ describe('finalize', () => {
       ).toEqual(['def:a.ns.target']);
     });
 
+    it('uses provider policy for owned members and retains synthetic dispatch entries', () => {
+      const method = { ...def('def:a.Box.target', 'Method', 'a.Box.target'), ownerId: 'def:a.Box' };
+      const synthetic = {
+        ...method,
+        nodeId: 'def:a.Box.generated',
+        qualifiedName: 'a.Box.generated',
+        isSynthetic: true,
+      };
+      const a: FinalizeFile = {
+        ...file('a.ipynb', [method, synthetic]),
+        moduleBindings: new Map(),
+      };
+      const input = { files: [a], workspaceIndex: undefined };
+      const lexical = finalize(input, {
+        ...defaultHooks([a]),
+        ownedMembersBindAtModuleScope: false,
+      });
+      expect(bindingsFor(lexical, a.moduleScope, 'target')).toEqual([]);
+      expect(
+        bindingsFor(lexical, a.moduleScope, 'generated').map((binding) => binding.def.nodeId),
+      ).toEqual(['def:a.Box.generated']);
+
+      const legacy = finalize(input, defaultHooks([a]));
+      expect(
+        bindingsFor(legacy, a.moduleScope, 'target').map((binding) => binding.def.nodeId),
+      ).toEqual(['def:a.Box.target']);
+    });
+
     it('layers imports on top of local defs via mergeBindings', () => {
       const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
       const a = file('a', [def('def:a.User', 'Class', 'a.User')], [named('User', 'User', 'b')]);
