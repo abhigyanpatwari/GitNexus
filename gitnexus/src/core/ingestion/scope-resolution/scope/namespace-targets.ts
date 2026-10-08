@@ -89,7 +89,8 @@ export function collectNamespaceTargets(
   for (const id of scopeIds) {
     const edges = scopes.imports.get(id) ?? [];
     const namesHere = new Map<string, string | undefined>();
-    for (const edge of edges) {
+    const conflictingNames = new Set<string>();
+    const candidates = edges.map((edge) => {
       const namespace =
         edge.targetFile !== null && edge.kind === 'namespace' && edge.linkStatus !== 'unresolved'
           ? {
@@ -101,7 +102,17 @@ export function collectNamespaceTargets(
           : undefined;
       const identity = namespace === undefined ? undefined : options?.bindingIdentity?.(namespace);
       if (!namesHere.has(edge.localName)) namesHere.set(edge.localName, identity);
-      else if (namesHere.get(edge.localName) !== identity) namesHere.set(edge.localName, undefined);
+      else if (identity === undefined || namesHere.get(edge.localName) !== identity) {
+        namesHere.set(edge.localName, undefined);
+        conflictingNames.add(edge.localName);
+      }
+      return { edge, namespace, identity };
+    });
+    // Resolve ownership before emitting: import order alone cannot distinguish
+    // rebinding from conditional alternatives. Providers without an identity
+    // hook retain their existing multi-target behavior within a scope.
+    for (const { edge, namespace, identity } of candidates) {
+      if (options?.bindingIdentity !== undefined && conflictingNames.has(edge.localName)) continue;
       if (
         claimedNames.has(edge.localName) &&
         (identity === undefined || claimedNames.get(edge.localName) !== identity)
