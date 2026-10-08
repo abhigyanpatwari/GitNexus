@@ -184,6 +184,8 @@ type ReceiverBoundProviderSubset = Pick<
   | 'stripTypePreservingDecoration'
   | 'resolveQualifiedReceiverMember'
   | 'namespaceReceiverPaths'
+  | 'namespaceBindingIdentity'
+  | 'namespaceSkipsEnclosingClasses'
   | 'resolveReceiverMember'
   | 'suppressReceiverLookup'
   | 'resolveThisViaEnclosingClass'
@@ -505,7 +507,8 @@ export function emitReceiverBoundCalls(
       const key = segments.slice(0, k).join('.');
       const files = namespaceTargets.get(key);
       if (files === undefined) continue;
-      if (isNamespaceNameShadowed(key, inScope, scopes)) return undefined;
+      if (isNamespaceNameShadowed(key, inScope, scopes, provider.namespaceSkipsEnclosingClasses))
+        return undefined;
       cursor = { files };
       rest = segments.slice(k);
       break;
@@ -559,13 +562,18 @@ export function emitReceiverBoundCalls(
         : uniqueClassAcross(cursor.files, tail);
     }
     const files = namespaceTargets.get(head);
-    if (files === undefined || isNamespaceNameShadowed(head, inScope, scopes)) return undefined;
+    if (
+      files === undefined ||
+      isNamespaceNameShadowed(head, inScope, scopes, provider.namespaceSkipsEnclosingClasses)
+    )
+      return undefined;
     return uniqueClassAcross(files, tail);
   };
   const compoundOpts = {
     fieldFallback,
     elementTypeOf: provider.elementTypeOf,
     namespaceExportsIncludeImportedNames: provider.namespaceExportsIncludeImportedNames === true,
+    namespaceSkipsEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
     hoistTypeBindingsToModule,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
@@ -1037,6 +1045,8 @@ export function emitReceiverBoundCalls(
     const namespaceContext = (inScope?: ScopeId) => {
       const namespaceTargets = collectNamespaceTargets(parsed, scopes, {
         receiverPaths: provider.namespaceReceiverPaths,
+        bindingIdentity: provider.namespaceBindingIdentity,
+        skipEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
         moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
         inScope,
       });
@@ -1579,7 +1589,12 @@ export function emitReceiverBoundCalls(
       const namespaceCandidates = namespaceTargets.get(receiverName);
       let targetFiles: readonly string[] | undefined =
         namespaceCandidates !== undefined &&
-        !isNamespaceNameShadowed(receiverName, site.inScope, scopes)
+        !isNamespaceNameShadowed(
+          receiverName,
+          site.inScope,
+          scopes,
+          provider.namespaceSkipsEnclosingClasses,
+        )
           ? namespaceCandidates
           : undefined;
       // Chain walk: `hub.sub.helper()` / `hub.sub.Thing{}` — the receiver is
