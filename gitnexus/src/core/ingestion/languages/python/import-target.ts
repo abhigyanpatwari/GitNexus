@@ -464,11 +464,12 @@ export function isPythonImportedModule(
  * `a.helper()` resolved into `a/b/c.py` whenever that module happened to export
  * `helper`, and `a.b.mid()` resolved to nothing.
  *
- * Returns `undefined` — meaning "use the shared default" — for every spelling
- * where the bound name is not the path's root:
+ * Returns `undefined` — meaning "use the shared default" — for aliases and
+ * spellings where the bound name is not the path's root:
  *   - `import single`            — no dotted path to expand;
  *   - `import a.b as x`          — binds only `x`; writing `a.b.f()` there is a
  *                                  NameError, so `a.b` must NOT become a key;
+ *   - `import a.b as a`          — also binds the leaf, despite the root spelling;
  *   - `from pkg import db`       — reclassified to a namespace edge whose
  *                                  importPath is the bare name `db`.
  *
@@ -477,9 +478,15 @@ export function isPythonImportedModule(
  * `__init__.py`) contributes no key rather than one pointing at a missing file.
  */
 export function pythonNamespaceReceiverPaths(
-  edge: { readonly localName: string; readonly importPath: string; readonly targetFile: string },
+  edge: {
+    readonly localName: string;
+    readonly importPath: string;
+    readonly targetFile: string;
+    readonly explicitAlias?: boolean;
+  },
   moduleFileExists: (filePath: string) => boolean,
 ): readonly (readonly [string, string])[] | undefined {
+  if (edge.explicitAlias === true) return undefined;
   const segments = edge.importPath.split('.');
   if (segments.length < 2) return undefined;
   if (segments[0] !== edge.localName) return undefined;
@@ -498,26 +505,37 @@ export function pythonNamespaceReceiverPaths(
   // POSIX-vs-Windows probing is needed: workspace paths are not normalized at
   // ingestion, and `moduleScopeByFile` is keyed by the raw `ParsedFile.filePath`.
   const dirs = edge.targetFile.split('/').slice(0, -1);
-  // The import's leading segments name the leaf's innermost directories.
-  const offset = dirs.length - (segments.length - 1);
+  // A package's final segment names its directory; a module's names its file.
+  const importedDirectoryCount = edge.targetFile.endsWith('/__init__.py')
+    ? segments.length
+    : segments.length - 1;
+  const offset = dirs.length - importedDirectoryCount;
   if (offset < 0) return out;
 
   for (let i = 1; i < segments.length; i++) {
     const spelling = segments.slice(0, i).join('.');
     const packageFile = dirs.slice(0, offset + i).join('/') + '/__init__.py';
-    // Package FIRST, then the leaf as a fallback — order is the whole point.
-    //
-    // `findExportedDef` only accepts a binding whose `origin === 'local'`, and
-    // the canonical package re-exports (`from .b.c import helper` in
-    // `__init__.py`) produce an IMPORT binding. Keying the prefix at the
-    // package alone therefore loses `a.helper()` entirely for the most common
-    // package shape — the fixtures here all define members locally in
-    // `__init__.py`, which is precisely the one layout where that mistake is
-    // invisible. Keeping the leaf behind the package restores that resolution
-    // while still letting a real definition in `__init__.py` win over a
-    // same-named decoy deeper in the package.
+    // Imported members resolve through the package's own bindings. The leaf
+    // must not publish its members under an intermediate package's name.
     if (moduleFileExists(packageFile)) out.push([spelling, packageFile]);
-    out.push([spelling, edge.targetFile]);
   }
   return out;
+}
+
+/** Unaliased dotted imports bind their root package object, including namespace packages
+ * without an __init__.py. Anchor identity on the resolved path, not spelling. */
+export function pythonNamespaceBindingIdentity(edge: {
+  readonly localName: string;
+  readonly importPath: string;
+  readonly targetFile: string;
+  readonly explicitAlias?: boolean;
+}): string | undefined {
+  if (edge.explicitAlias === true) return edge.targetFile;
+  const segments = edge.importPath.split('.');
+  if (segments.length < 2 || segments[0] !== edge.localName) return edge.targetFile;
+  const dirs = edge.targetFile.split('/').slice(0, -1);
+  const count = edge.targetFile.endsWith('/__init__.py') ? segments.length : segments.length - 1;
+  const offset = dirs.length - count;
+  if (offset < 0) return undefined;
+  return dirs.slice(0, offset + 1).join('/') + '/__init__.py';
 }

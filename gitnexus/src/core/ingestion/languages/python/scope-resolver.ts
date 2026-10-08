@@ -22,9 +22,11 @@ import type {
 } from '../../scope-resolution/contract/scope-resolver.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { pythonProvider } from '../python.js';
+import { expandPythonWildcardNames, pythonModuleExports } from './expand-wildcards.js';
 import {
   isPythonImportedModule,
   pythonNamespaceReceiverPaths,
+  pythonNamespaceBindingIdentity,
   pythonArityCompatibility,
   pythonMergeBindings,
   resolvePythonImportTarget,
@@ -77,6 +79,13 @@ const pythonScopeResolver: ScopeResolver = {
   // A free call naming a class constructs it: `Service(db).do_work()` (#2708).
   constructionSyntax: { bare: true },
   language: SupportedLanguages.Python,
+  // Imported names on a package's __init__.py are addressable as module members.
+  namespaceExportsIncludeImportedNames: true,
+  importsBindAtLexicalScope: true,
+  moduleExports: pythonModuleExports,
+  filterWildcardNames: (scope, names, files) => expandPythonWildcardNames(scope, files, names),
+  namespaceBindingIdentity: pythonNamespaceBindingIdentity,
+  namespaceSkipsEnclosingClasses: true,
   ownedMembersBindAtModuleScope: false,
   suppressReceiverLookup: (typeRef) => typeRef.source === 'decorator-unknown',
   languageProvider: pythonProvider,

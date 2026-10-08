@@ -47,12 +47,12 @@
  * set moved, which is a behaviour change to be explained, never re-baselined to
  * make CI green.
  *
- * WHY A ZIG CORPUS for a language-neutral pass. Zig is the only language whose
- * provider sets `namespaceExportsIncludeImportedNames`, so it is the only one
- * that can exercise channel 3 at all; and the file-as-struct idiom puts channels
- * 2 and 4 in one file, which is the shape #3399 was filed over. The corpus also
- * carries two DECLINE controls — a non-callable namespace member and a
- * non-callable bare argument — so a change that widened the callable gate would
+ * WHY A ZIG CORPUS for a language-neutral pass. Python and Zig both opt into
+ * imported-name namespace lookup. Zig's hub re-exports exercise channel 3,
+ * and its file-as-struct idiom puts channels 2 and 4 in one file, which is the
+ * shape #3399 was filed over. The corpus also carries two DECLINE controls —
+ * a non-callable namespace member and a non-callable bare argument — so a
+ * change that widened the callable gate would
  * move `declined` rather than hiding inside the timing.
  *
  * Container naming is load-bearing in the corpus: a Zig file-as-struct is minted

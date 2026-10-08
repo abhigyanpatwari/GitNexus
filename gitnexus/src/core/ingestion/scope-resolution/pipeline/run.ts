@@ -819,7 +819,9 @@ export function runScopeResolution(
       };
     }
   }
+  const filterWildcardNames = provider.filterWildcardNames;
   const finalized = finalizeScopeModel(parsedFiles, {
+    moduleExports: provider.moduleExports,
     hooks: {
       ownedMembersBindAtModuleScope: provider.ownedMembersBindAtModuleScope,
       importsBindAtLexicalScope: provider.importsBindAtLexicalScope === true,
@@ -832,6 +834,11 @@ export function runScopeResolution(
         provider.isNamespaceImport?.(parsedImport, targetFile, fromFile) ?? false,
       expandsWildcardTo: (targetModuleScope) =>
         provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
+      filterWildcardNames:
+        filterWildcardNames === undefined
+          ? undefined
+          : (targetModuleScope, names) =>
+              filterWildcardNames(targetModuleScope, names, parsedFiles),
       mergeBindings: (existing, incoming, scopeId) =>
         provider.mergeBindings(existing, incoming, scopeId),
       wildcardCollisionIsAmbiguous: provider.exclusiveWildcardReexports === true,
@@ -1412,6 +1419,12 @@ export function runScopeResolution(
         // member (Case 1). Without it a hub module's re-exported callable
         // resolves when CALLED and declines when REGISTERED.
         provider.namespaceExportsIncludeImportedNames === true,
+        {
+          receiverPaths: provider.namespaceReceiverPaths,
+          bindingIdentity: provider.namespaceBindingIdentity,
+          skipEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
+          moduleFileExists: (filePath) => indexes.moduleScopes.get(filePath) !== undefined,
+        },
       );
   if (propertyDispatch.skippedKeys > 0) {
     // Never drop dispatch coverage silently: a hook table larger than the

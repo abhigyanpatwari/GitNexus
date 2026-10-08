@@ -835,11 +835,14 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v130 (#3502): Python globals use exact function/class block ownership and
 // Ruby ordinary-method binding uses AST markers. Warm v129 ParsedFiles retain
 // incorrect declaration scopes and must be re-extracted.
-// v131 (#3487, #3505): merge the parallel v129/v130 Express route changes.
+// v131 (#3504): Python namespace imports retain explicit alias syntax. Warm
+// v130 ParsedFiles lack this fact and can bind a root-spelled alias to the
+// package root instead of the imported module.
+// v132 (#3487, #3505): merge the parallel Express route capture changes.
 // Require semantic handler arguments, retain route(path) builders, and preserve
-// app.all as method-agnostic. Both branches used v130 for different captures,
+// app.all as method-agnostic. Both branches used v131 for different captures,
 // so invalidate either branch's cache before reusing the combined schema.
-const SCHEMA_BUMP = 131;
+const SCHEMA_BUMP = 132;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
