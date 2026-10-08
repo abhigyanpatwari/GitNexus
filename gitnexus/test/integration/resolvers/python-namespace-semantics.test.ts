@@ -26,6 +26,7 @@ describe('Python wildcard definitions and lexical namespace visibility', () => {
       'pkg/__init__.py': 'from origin import helper as exported, Maker, _hidden\n',
       'pkg/a.py': 'def run():\n    return 3\n',
       'pkg/b.py': 'def other():\n    return 4\n',
+      'pkg/nested/__init__.py': 'def other():\n    return 11\n',
       'namespace_pkg/a.py': 'def run():\n    return 5\n',
       'namespace_pkg/b.py': 'def other():\n    return 6\n',
       'star.py': 'from pkg import *\n',
@@ -96,6 +97,24 @@ def unresolved_shadow():
 def different_package():
     import namespace_pkg.b as pkg
     return pkg.a.run()
+def root_named_module_alias():
+    import pkg.b as pkg
+    return pkg.other()
+def root_named_package_alias():
+    import pkg.nested as pkg
+    return pkg.other()
+def root_named_module_shadow():
+    import pkg.b as pkg
+    return pkg.a.run()
+def root_named_package_shadow():
+    import pkg.nested as pkg
+    return pkg.a.run()
+def root_named_module_path():
+    import pkg.b as pkg
+    return pkg.b.other()
+def root_named_package_path():
+    import pkg.nested as pkg
+    return pkg.nested.other()
 
 class ClassOnly:
     import class_target as class_mod
@@ -180,6 +199,26 @@ def enclosing():
 
   it('still suppresses outer paths under named, unresolved, and different namespace imports', () => {
     for (const name of ['named_shadow', 'unresolved_shadow', 'different_package']) {
+      expect(callsFrom(name), name).toEqual([]);
+    }
+  });
+
+  it('binds root-spelled aliases to the imported module or package', () => {
+    expect(callsFrom('root_named_module_alias').map((edge) => edge.rel.targetId)).toEqual([
+      'Function:pkg/b.py:other',
+    ]);
+    expect(callsFrom('root_named_package_alias').map((edge) => edge.rel.targetId)).toEqual([
+      'Function:pkg/nested/__init__.py:other',
+    ]);
+  });
+
+  it('does not expose original or outer package paths through root-spelled aliases', () => {
+    for (const name of [
+      'root_named_module_shadow',
+      'root_named_package_shadow',
+      'root_named_module_path',
+      'root_named_package_path',
+    ]) {
       expect(callsFrom(name), name).toEqual([]);
     }
   });
