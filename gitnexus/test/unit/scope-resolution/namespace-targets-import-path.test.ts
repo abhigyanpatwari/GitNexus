@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { ImportEdge, ParsedFile, ScopeId } from 'gitnexus-shared';
 import { collectNamespaceTargets } from '../../../src/core/ingestion/scope-resolution/scope/namespace-targets.js';
-import { pythonNamespaceReceiverPaths } from '../../../src/core/ingestion/languages/python/import-target.js';
+import {
+  pythonNamespaceReceiverPaths,
+  pythonNamespaceBindingIdentity,
+} from '../../../src/core/ingestion/languages/python/import-target.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 
 // The module-only cases need just a module scope and `scopes.imports`; the
@@ -227,6 +230,38 @@ describe('collectNamespaceTargets — lexical import scopes', () => {
   it('does not revive an outer namespace when the nearest import is unresolved', () => {
     expect(collect(inner, edge({ targetFile: null, linkStatus: 'unresolved' })).has('pkg')).toBe(
       false,
+    );
+  });
+
+  function compatibleTargets(outer: ImportEdge, nearest: ImportEdge) {
+    const scopes = {
+      imports: new Map([
+        [MODULE_SCOPE, [outer]],
+        [inner, [nearest]],
+      ]),
+      scopeTree: { getScope: (id: ScopeId) => ({ parent: parents.get(id) ?? null }) },
+    } as unknown as ScopeResolutionIndexes;
+    return collectNamespaceTargets(parsed, scopes, {
+      inScope: inner,
+      receiverPaths: pythonNamespaceReceiverPaths,
+      bindingIdentity: pythonNamespaceBindingIdentity,
+    });
+  }
+
+  it('retains sibling paths only when their resolved root package agrees', () => {
+    const nearest = edge({ targetExportedName: 'pkg.cache', targetFile: 'lib/pkg/cache.py' });
+    expect(compatibleTargets(edge({ targetFile: 'lib/pkg/db.py' }), nearest).get('pkg.db')).toEqual(
+      ['lib/pkg/db.py'],
+    );
+    expect(compatibleTargets(edge({ targetFile: 'other/pkg/db.py' }), nearest).has('pkg.db')).toBe(
+      false,
+    );
+  });
+
+  it('recognizes the same root object when the nearest import names the package directly', () => {
+    const nearest = edge({ targetExportedName: 'pkg', targetFile: 'lib/pkg/__init__.py' });
+    expect(compatibleTargets(edge({ targetFile: 'lib/pkg/db.py' }), nearest).get('pkg.db')).toEqual(
+      ['lib/pkg/db.py'],
     );
   });
 });
