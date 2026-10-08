@@ -84,6 +84,9 @@ Not supported:
 - Files in `R/` subdirectories are treated as package-owned, although R itself does not load them.
 - NAMESPACE is read from disk during analysis, but neither it nor `DESCRIPTION` is a parsed source file. After an edit to either alone, an incremental analyse (no `--force`) keeps stale manifest-derived data: the persisted `isExported` of symbols in unchanged `R/` files, a `CALLS` edge bound through an `importFrom()` whose target changed, and a `pkg::fn` edge after a `Package:` rename. A full analyse is correct and `analyze --force` recomputes it. This is a limitation of the shared incremental write path (only changed files are re-processed), not of R resolution; other language manifests that feed resolution can be affected in the same way. It is to be addressed in a follow-up.
 - Roxygen `@param` types live in the per-file type environment; no graph edge consumes them.
+- Argument matching follows R for named and reordered arguments but does not model partial argument names: `setClass(Cla = "D")`, `new(Cla = "E")`, `setRefClass(Cla = "A")` and `setMethod("show", sig = "Foo")` are not recognised, so no definition or owner is attached.
+- Members are read only from the named forms. The positional second argument of `setClass("A", representation(x = "numeric"))`, `R6Class("X", list(...))` and `setRefClass("A", list(...))` creates no field or slot nodes; use `slots=` / `representation=`, `public =` / `private =` / `active =` and `fields =`.
+- For `S3method(generic, class, method)` the positional third argument names the exported method. A named third argument such as `S3method(print, foo, method = impl)` is not read: R registers `impl`, but the export is recorded for `print.foo`.
 
 ### Bounds on NAMESPACE exportPattern matching
 
