@@ -319,11 +319,11 @@ function findNamespaceValueRefTarget(
   // imported names for a name the file declares. Same rule here, so `x.f` and
   // `x.f()` cannot disagree about which module owns the name.
   //
-  // Both Python and Zig set `namespaceExportsIncludeImportedNames`. Valid Zig
-  // cannot put both spellings in one container because it forbids duplicate
-  // declarations, but the shared guard also covers Python and receivers bound
-  // to more than one target file. The guard is one `some`; falling through
-  // would produce a confident edge into the wrong module.
+  // Providers that set `namespaceExportsIncludeImportedNames` can expose local
+  // and published bindings under one name; a receiver can also bind more than
+  // one target file. In either case, a local declaration owns the name even
+  // when it is not callable. The guard is one `some` and the alternative
+  // failure is a confident edge into the wrong module.
   const declaredLocally = targetFiles.some((targetFile) => {
     const targetScopeId = scopes.moduleScopes.get(targetFile);
     return targetScopeId !== undefined && localRefs(targetScopeId).length > 0;
