@@ -97,9 +97,29 @@ describe('loadRPackageConfig -> RNamespaceInfo exports', () => {
       expect(names).toEqual(['$.bar', '[.foo']);
     });
 
-    it('accepts the optional third S3method() argument', async () => {
+    // R registers the third argument (not `generic.class`) as the method for the class.
+    it('registers the optional third S3method() argument instead of generic.class', async () => {
       const { names } = await load('S3method(print, foo, print_foo_impl)\n');
-      expect(names).toEqual(['print.foo']);
+      expect(names).toEqual(['print_foo_impl']);
+    });
+
+    it('reads a quoted, backticked or wrapped third S3method() argument', async () => {
+      const { names } = await load(
+        'S3method(print, a, "print a")\nS3method(print, b, `print_b`)\nS3method(\n  print,\n  c,\n  print_c # impl\n)\n',
+      );
+      expect(names).toEqual(['print a', 'print_b', 'print_c']);
+    });
+
+    it('falls back to generic.class when the third S3method() argument is empty or not a name', async () => {
+      const { names } = await load(
+        'S3method(print, a, )\nS3method(print, b, f(x))\nS3method(print, c, m = impl)\n',
+      );
+      expect(names).toEqual(['print.a', 'print.b', 'print.c']);
+    });
+
+    it('keeps a two-argument S3method() as generic.class next to a three-argument one', async () => {
+      const { names } = await load('S3method(print, foo)\nS3method(summary, foo, sum_foo)\n');
+      expect(names).toEqual(['print.foo', 'sum_foo']);
     });
   });
 

@@ -337,7 +337,7 @@ export function parseRNamespaceImportFrom(text: string): RNamespaceImportFromEnt
 
 /** What a NAMESPACE file exports, as read by {@link parseRNamespaceExports}. */
 export interface RNamespaceExports {
-  /** Names from `export()`, `exportClasses()`, `exportMethods()` and `S3method()` (as `generic.class`), in file order. */
+  /** Names from `export()`, `exportClasses()`, `exportMethods()` and `S3method()` (the third argument, else `generic.class`), in file order. */
   readonly namedExports: readonly string[];
   /** `exportPattern()` arguments, R-unescaped (an R string `"\\."` yields the regex source `\.`), in file order. */
   readonly exportPatterns: readonly string[];
@@ -358,8 +358,8 @@ function exportPatternArg(raw: string): string {
 
 /**
  * Extract the export directives from NAMESPACE text: `export`, `exportClasses`
- * and `exportMethods` names, `S3method(generic, class[, method])` as
- * `generic.class`, and `exportPattern("…")` sources. Multi-line, quoted,
+ * and `exportMethods` names, `S3method(generic, class[, method])` as `method`
+ * (else `generic.class`), and `exportPattern("…")` sources. Multi-line, quoted,
  * backticked, commented and CRLF input is handled like {@link
  * parseRNamespaceImportFrom}. Non-simple arguments (named, nested calls) are
  * skipped. Never throws; returns empty lists for empty or garbled input.
@@ -376,7 +376,12 @@ export function parseRNamespaceExports(text: string): RNamespaceExports {
     } else if (head === 'S3method') {
       const generic = normaliseArg(args[0] ?? '');
       const cls = normaliseArg(args[1] ?? '');
-      if (generic && cls) namedExports.push(`${generic}.${cls}`);
+      if (generic && cls) {
+        // The optional third argument names the function registered as the method;
+        // without it the method is `generic.class`.
+        const method = normaliseArg(args[2] ?? '');
+        namedExports.push(method || `${generic}.${cls}`);
+      }
     } else {
       for (const raw of args) {
         const name = normaliseArg(raw);
