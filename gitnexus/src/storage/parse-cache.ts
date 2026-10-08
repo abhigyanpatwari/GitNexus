@@ -835,7 +835,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v130 (#3502): Python globals use exact function/class block ownership and
 // Ruby ordinary-method binding uses AST markers. Warm v129 ParsedFiles retain
 // incorrect declaration scopes and must be re-extracted.
-// v131: R provider fixes, collapsed into one bump because none of them has
+// v131 (#3504): Python namespace imports retain explicit alias syntax. Warm
+// v130 ParsedFiles lack this fact and can bind a root-spelled alias to the
+// package root instead of the imported module.
+// v132: R provider fixes, collapsed into one bump because none of them has
 // shipped. R scope queries anchor a `@scope.function` on every named-function
 // assignment and named function-valued argument (the same nodes the
 // `@declaration.function`/`@declaration.method` anchors use), so each def is
@@ -853,7 +856,7 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // facts replayed verbatim from the warm cache, so stale ones (the pre-fix scope
 // tree, the unqualified call-site shape, the mis-selected arguments) would
 // persist on unchanged files; both stores must re-extract.
-const SCHEMA_BUMP = 131;
+const SCHEMA_BUMP = 132;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

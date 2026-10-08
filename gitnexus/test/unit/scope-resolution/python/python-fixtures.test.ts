@@ -203,6 +203,7 @@ describe('Python imports — interpretImport', () => {
       {
         kind: 'namespace',
         localName: 'np',
+        explicitAlias: true,
         importedName: 'numpy',
         targetRaw: 'numpy',
         declaredAtScope: f.moduleScope,
@@ -223,6 +224,20 @@ describe('Python imports — interpretImport', () => {
     ]);
   });
 
+  it('keeps an explicit alias when it matches the imported path root', () => {
+    const f = parse('import a.b as a\n');
+    expect(f.parsedImports).toEqual([
+      {
+        kind: 'namespace',
+        localName: 'a',
+        explicitAlias: true,
+        importedName: 'a.b',
+        targetRaw: 'a.b',
+        declaredAtScope: f.moduleScope,
+      },
+    ]);
+  });
+
   it('case 13: `import a, b as c` decomposes into one ParsedImport per name', () => {
     const f = parse('import a, b as c\n');
     expect(f.parsedImports).toEqual([
@@ -236,6 +251,7 @@ describe('Python imports — interpretImport', () => {
       {
         kind: 'namespace',
         localName: 'c',
+        explicitAlias: true,
         importedName: 'b',
         targetRaw: 'b',
         declaredAtScope: f.moduleScope,
