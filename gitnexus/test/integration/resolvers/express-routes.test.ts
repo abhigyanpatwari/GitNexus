@@ -200,14 +200,20 @@ describe('Express route identity and source priority', () => {
             path: route.name,
             filePath: route.properties.filePath,
           }))
-          .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method)),
+          .sort(
+            (a, b) =>
+              a.path.localeCompare(b.path) || String(a.method).localeCompare(String(b.method)),
+          ),
         handled: getRelationships(pipeline, 'HANDLES_ROUTE')
           .map((edge) => ({
             method: pipeline.graph.getNode(edge.rel.targetId)?.properties.method,
             path: edge.target,
             filePath: edge.sourceFilePath,
           }))
-          .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method)),
+          .sort(
+            (a, b) =>
+              a.path.localeCompare(b.path) || String(a.method).localeCompare(String(b.method)),
+          ),
       });
       const expected = [
         { method: 'GET', path: '/api/chained', filePath: 'src/server.ts' },
