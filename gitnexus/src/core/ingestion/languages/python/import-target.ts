@@ -464,11 +464,12 @@ export function isPythonImportedModule(
  * `a.helper()` resolved into `a/b/c.py` whenever that module happened to export
  * `helper`, and `a.b.mid()` resolved to nothing.
  *
- * Returns `undefined` — meaning "use the shared default" — for every spelling
- * where the bound name is not the path's root:
+ * Returns `undefined` — meaning "use the shared default" — for aliases and
+ * spellings where the bound name is not the path's root:
  *   - `import single`            — no dotted path to expand;
  *   - `import a.b as x`          — binds only `x`; writing `a.b.f()` there is a
  *                                  NameError, so `a.b` must NOT become a key;
+ *   - `import a.b as a`          — also binds the leaf, despite the root spelling;
  *   - `from pkg import db`       — reclassified to a namespace edge whose
  *                                  importPath is the bare name `db`.
  *
@@ -477,9 +478,15 @@ export function isPythonImportedModule(
  * `__init__.py`) contributes no key rather than one pointing at a missing file.
  */
 export function pythonNamespaceReceiverPaths(
-  edge: { readonly localName: string; readonly importPath: string; readonly targetFile: string },
+  edge: {
+    readonly localName: string;
+    readonly importPath: string;
+    readonly targetFile: string;
+    readonly explicitAlias?: boolean;
+  },
   moduleFileExists: (filePath: string) => boolean,
 ): readonly (readonly [string, string])[] | undefined {
+  if (edge.explicitAlias === true) return undefined;
   const segments = edge.importPath.split('.');
   if (segments.length < 2) return undefined;
   if (segments[0] !== edge.localName) return undefined;
@@ -515,13 +522,15 @@ export function pythonNamespaceReceiverPaths(
   return out;
 }
 
-/** Dotted imports bind their root package object, including namespace packages
+/** Unaliased dotted imports bind their root package object, including namespace packages
  * without an __init__.py. Anchor identity on the resolved path, not spelling. */
 export function pythonNamespaceBindingIdentity(edge: {
   readonly localName: string;
   readonly importPath: string;
   readonly targetFile: string;
+  readonly explicitAlias?: boolean;
 }): string | undefined {
+  if (edge.explicitAlias === true) return edge.targetFile;
   const segments = edge.importPath.split('.');
   if (segments.length < 2 || segments[0] !== edge.localName) return edge.targetFile;
   const dirs = edge.targetFile.split('/').slice(0, -1);
