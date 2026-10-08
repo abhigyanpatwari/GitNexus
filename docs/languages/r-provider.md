@@ -18,7 +18,7 @@ Definitions:
 - S4 classes (`setClass`), generics (`setGeneric`), methods (`setMethod`) and slots (`representation`, `slots`).
 - R6 classes with their methods, fields and active bindings.
 - RefClass (`setRefClass`) classes with their methods and fields.
-- The argument that names an S4 or RefClass class, a generic or a method is the first formal (`Class=`, `name=`, `f=`), else the first unnamed argument. Other strings (`contains=`, `valueClass=`, a `setMethod` signature) create no node.
+- The argument that names an S4 or RefClass class, a generic or a method is the argument spelled with the first formal (`Class=`, `name=`, `f=`) wherever it sits, else the first unnamed argument (so a later `Class=` takes the formal from an earlier unnamed argument, as in R). Other strings (`contains=`, `valueClass=`, a `setMethod` signature) create no node.
 
 Types:
 
@@ -27,7 +27,7 @@ Types:
 
 Imports:
 
-- `library()` and `require()` resolve to local packages, and `source()` to local files. The argument is `package=` / `file=`, else the first unnamed argument after any named one; named-first arguments such as `lib.loc=` and `local=` are not imports.
+- `library()` and `require()` resolve to local packages, and `source()` to local files. The argument is `package=` / `file=` wherever it sits, else the first unnamed argument after any named one; named-first arguments such as `lib.loc=` and `local=` are not imports.
 - NAMESPACE `importFrom()` names bind to definitions in local packages.
 
 Calls:

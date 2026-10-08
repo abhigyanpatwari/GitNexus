@@ -12,19 +12,18 @@
  * comments and named arguments with a repeated sibling group, and that costs
  * time quadratic in the argument count on every call in the file (a single
  * `list(a0 = 0, ...)` with 16000 arguments took 18s). This check is linear: it
- * reads each argument list once, up to its first unnamed argument.
+ * reads each argument list once and caches the answer.
  *
  * R matches arguments by name first, then positionally. The naming argument is
  * therefore the argument spelled with the call's first formal (`Class = "A"`),
- * or, when no earlier argument is spelled that way, the first unnamed argument.
- * Comments, commas and other named arguments may precede it.
+ * or, when no argument anywhere in the list is spelled that way, the first
+ * unnamed argument. Comments, commas and other named arguments may precede it,
+ * and a `Class = ...` after an unnamed argument takes the formal from it, so
+ * `setClass(a = "Q", "B", Class = "A")` names `A` only.
  *
  * A formal may be spelled bare, in backticks or in quotes (`Class`, `` `Class` ``,
- * `"Class"`); all name the same argument.
- *
- * Known limit (not fixed): a later `Class = ...` does not retract an earlier
- * unnamed argument, so `setClass(a = "Q", "B", Class = "A")` names both `B` and
- * `A`.
+ * `"Class"`); all name the same argument. Partial matching of an abbreviated
+ * name (`Cl = "A"`) is not modelled.
  */
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
@@ -72,15 +71,18 @@ function namingUnnamedArgumentId(argumentList: SyntaxNode, formal: string): numb
   const cached = perTree.get(key);
   if (cached !== undefined) return cached;
 
+  // The first unnamed argument takes the formal, unless an argument anywhere in the
+  // list is spelled with it (R matches by name first), which retracts that choice.
   let found: number | null = null;
   for (const child of argumentList.namedChildren) {
     if (child.type !== 'argument') continue; // comment, comma
     const name = child.childForFieldName('name');
     if (name === null) {
-      found = child.id; // the first unnamed argument takes the formal ...
+      found ??= child.id;
+    } else if (argumentNameText(name) === formal) {
+      found = null;
       break;
     }
-    if (argumentNameText(name) === formal) break; // ... unless it is given by name
   }
   perTree.set(key, found);
   return found;

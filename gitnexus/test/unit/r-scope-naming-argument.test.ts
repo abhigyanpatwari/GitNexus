@@ -44,6 +44,11 @@ describe('R scope query: imports name only their first argument', () => {
     expect(importSources('library(package = pkg, "other")')).toEqual(['pkg']);
   });
 
+  it('does not import an unnamed argument once a later argument is spelled package = / file =', () => {
+    expect(importSources('library("other", package = pkg)')).toEqual(['pkg']);
+    expect(importSources('source("b.R", local = env, file = "a.R")')).toEqual(['"a.R"']);
+  });
+
   it('imports the first argument when a comment precedes it', () => {
     expect(importSources('library(\n  # the package\n  pkg, lib.loc = lib)')).toEqual(['pkg']);
     expect(importSources('source(\n  # c\n  "a.R", local = env)')).toEqual(['"a.R"']);
@@ -54,6 +59,11 @@ describe('R scope query: setClass declares only its naming argument', () => {
   it('declares the class from the first argument (positive control)', () => {
     expect(classNames('setClass("A", contains = "VIRTUAL")')).toEqual(['A']);
     expect(classNames('setRefClass("R", contains = "Base")')).toEqual(['R']);
+  });
+
+  it('declares only Class = when it follows an unnamed argument', () => {
+    expect(classNames('setClass(a = "Q", "B", Class = "A")')).toEqual(['A']);
+    expect(classNames('setRefClass("B", Class = "A")')).toEqual(['A']);
   });
 
   it('declares the class when a comment precedes it', () => {

@@ -244,12 +244,29 @@ describe('R naming argument: a backticked or quoted formal names the definition'
   });
 });
 
-describe('R naming argument: spelling of the formal and known limits', () => {
-  it('a later Class = does not retract an earlier unnamed argument', () => {
-    expect(definitions('setClass(a = "Q", "B", Class = "A")').sort()).toEqual([
-      'definition.class:A',
-      'definition.class:B',
+describe('R naming argument: a later Class = retracts an earlier unnamed argument', () => {
+  it('setClass(a = "Q", "B", Class = "A") defines A only', () => {
+    expect(definitions('setClass(a = "Q", "B", Class = "A")')).toEqual(['definition.class:A']);
+  });
+
+  it('retracts for every formal that names a definition', () => {
+    expect(definitions('setRefClass("B", Class = "A")')).toEqual(['definition.class:A']);
+    expect(definitions('setGeneric("g", name = "f", valueClass = "n")')).toEqual([
+      'definition.function:f',
     ]);
+    expect(definitions('setMethod("g", f = "show", signature = "Foo")')).toEqual([
+      'definition.method:show',
+    ]);
+  });
+
+  it('retracts through comments, backticks and quotes', () => {
+    expect(definitions('setClass("B", # c\n `Class` = "A")')).toEqual(['definition.class:A']);
+    expect(definitions('setClass("B", "Class" = "A")')).toEqual(['definition.class:A']);
+  });
+
+  it('keeps the first unnamed argument when no named argument spells the formal', () => {
+    expect(definitions('setClass(a = "Q", "B", contains = "A")')).toEqual(['definition.class:B']);
+    expect(definitions('setClass("B", "A")')).toEqual(['definition.class:B']);
   });
 });
 
