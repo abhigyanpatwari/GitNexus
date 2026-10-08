@@ -451,6 +451,7 @@ export async function runChunkedParseAndResolve(
   pipelineStart: number,
   onProgress: ProgressFn,
   options?: PipelineOptions,
+  capturedResolutionConfigs?: ReadonlyMap<SupportedLanguages, unknown>,
 ): Promise<{
   exportedTypeMap: ExportedTypeMap;
   allFetchCalls: ExtractedFetchCall[];
@@ -1853,9 +1854,11 @@ export async function runChunkedParseAndResolve(
     const resolver = SCOPE_RESOLVERS.get(language);
     routeResolutionConfigs.set(
       language,
-      resolver?.loadResolutionConfig === undefined
-        ? undefined
-        : await resolver.loadResolutionConfig(repoPath),
+      capturedResolutionConfigs?.has(language)
+        ? capturedResolutionConfigs.get(language)
+        : resolver?.loadResolutionConfig === undefined
+          ? undefined
+          : await resolver.loadResolutionConfig(repoPath),
     );
   }
   let routeResolutionFiles = allParsedFiles;
