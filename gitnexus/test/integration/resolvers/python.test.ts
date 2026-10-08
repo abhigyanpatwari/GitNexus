@@ -1013,6 +1013,281 @@ describe('Python re-export chain resolution', () => {
   });
 });
 
+describe('Python aliased package re-export resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-aliased-package-reexport'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves both aliased package member calls and direct re-export calls', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter((call) => ['combo_caller', 'reexport_pkg_caller'].includes(call.source))
+      .map((call) => [call.source, call.target, call.targetFilePath])
+      .sort();
+    expect(calls).toEqual([
+      ['combo_caller', 'pf', 'app/services/bp/gp.py'],
+      ['reexport_pkg_caller', 'pf', 'app/services/bp/gp.py'],
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dotted imports: package prefixes must not borrow the leaf module's bindings
+// ---------------------------------------------------------------------------
+
+describe('Python dotted import package ownership', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-package-ownership-'));
+    writeFixtureRepo(repoDir, {
+      'app.py': `import pkg.db
+import hidden_pkg.leaf
+import deep.nested
+
+def construct():
+    return pkg.User().save()
+
+def hidden_on_package():
+    return hidden_pkg.hidden()
+
+def visible_on_leaf():
+    return hidden_pkg.leaf.hidden()
+
+def root_member():
+    return deep.marker()
+
+def nested_member():
+    return deep.nested.marker()
+
+def renamed_member():
+    return pkg.renamed()
+`,
+      'pkg/__init__.py': 'from .db import User\nfrom .bridge import renamed\n__all__ = []\n',
+      'pkg/db.py': 'class User:\n    def save(self):\n        return 1\n',
+      'pkg/bridge.py': 'from .service import original as renamed\n',
+      'pkg/service.py': 'def original():\n    return 2\n',
+      'hidden_pkg/__init__.py': '',
+      'hidden_pkg/leaf.py': 'from other import hidden\n',
+      'other.py': 'def hidden():\n    return 3\n',
+      'deep/__init__.py': 'from .root_service import marker\n',
+      'deep/root_service.py': 'def marker():\n    return 4\n',
+      'deep/nested/__init__.py': 'from .service import marker\n',
+      'deep/nested/service.py': 'def marker():\n    return 5\n',
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('keeps the method call on a class re-exported from the imported leaf', () => {
+    const calls = getRelationships(result, 'CALLS').filter((call) => call.source === 'construct');
+    expect(calls.map((call) => [call.target, call.targetFilePath]).sort()).toEqual([
+      ['User', 'pkg/db.py'],
+      ['save', 'pkg/db.py'],
+    ]);
+  });
+
+  it('does not publish leaf-only imports on the package', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((call) => call.source === 'hidden_on_package')).toEqual([]);
+    expect(
+      calls
+        .filter((call) => call.source === 'visible_on_leaf')
+        .map((call) => [call.target, call.targetFilePath]),
+    ).toEqual([['hidden', 'other.py']]);
+  });
+
+  it('keeps root and nested package re-exports in their own namespaces', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter((call) => ['root_member', 'nested_member'].includes(call.source))
+      .map((call) => [call.source, call.target, call.targetFilePath])
+      .sort();
+    expect(calls).toEqual([
+      ['nested_member', 'marker', 'deep/nested/service.py'],
+      ['root_member', 'marker', 'deep/root_service.py'],
+    ]);
+  });
+
+  it('follows renamed re-export chains for explicit access even outside __all__', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter((call) => call.source === 'renamed_member')
+      .map((call) => [call.target, call.targetFilePath]);
+    expect(calls).toEqual([['original', 'pkg/service.py']]);
+  });
+});
+
+describe('Python namespace re-export visibility', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-reexport-visibility-'));
+    writeFixtureRepo(repoDir, {
+      'pkg/__init__.py': '',
+      'pkg/impl.py': `def run():
+    return 1
+
+class Service:
+    def work(self):
+        return 2
+
+def _hidden():
+    return 3
+`,
+      'pkg/named.py': `from .impl import run as renamed, Service, _hidden
+__all__ = []
+`,
+      'pkg/chain.py': 'from .named import renamed as again\n',
+      'pkg/star.py': 'from .impl import *\n',
+      'pkg/restricted_impl.py': '__all__ = []\ndef run():\n    return 5\n',
+      'pkg/restricted.py': 'from .restricted_impl import *\n',
+      'pkg/private.py': `def setup():
+    from .impl import run
+    return run()
+
+class Holder:
+    from .impl import Service
+`,
+      'pkg/local.py': `from .impl import run
+
+def run():
+    return 4
+`,
+      'inner.py': `from pkg import impl as api
+
+def inner_alias():
+    from pkg import local as api
+    return api.run()
+
+def sibling():
+    return api.run()
+
+def local_only():
+    from pkg import impl as scoped
+    return scoped.run()
+
+def absent_sibling():
+    return scoped.run()
+
+def outer():
+    from pkg import local as scoped
+    def closure():
+        return scoped.run()
+    return closure()
+`,
+      'consumer.py': `from pkg import named as ns, chain, star, private, local, restricted
+
+def alias():
+    return ns.renamed()
+
+def hidden():
+    return ns._hidden()
+
+def chained():
+    return chain.again()
+
+def wildcard():
+    return star.run()
+
+def wildcard_private():
+    return star._hidden()
+
+def wildcard_restricted():
+    return restricted.run()
+
+def wildcard_nested():
+    return star.work()
+
+def not_exported():
+    return private.run()
+
+def not_exported_class():
+    return private.Service().work()
+
+def receiver_shadow(ns):
+    return ns.renamed()
+
+def local_member():
+    return local.run()
+
+def compound():
+    return ns.Service().work()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('resolves named, aliased and transitive members regardless of __all__', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((call) => ['alias', 'hidden', 'chained', 'compound'].includes(call.source))
+      .map((call) => `${call.source}->${call.target}@${call.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual([
+      'alias->run@pkg/impl.py',
+      'chained->run@pkg/impl.py',
+      'compound->Service@pkg/impl.py',
+      'compound->work@pkg/impl.py',
+      'hidden->_hidden@pkg/impl.py',
+    ]);
+  });
+
+  it('exposes wildcard-imported names as module members', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((call) => call.source === 'wildcard')
+      .map((call) => `${call.target}@${call.targetFilePath}`);
+    expect(edges).toEqual(['run@pkg/impl.py']);
+    expect(
+      getRelationships(result, 'CALLS').filter((call) =>
+        ['wildcard_private', 'wildcard_restricted', 'wildcard_nested'].includes(call.source),
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not publish function-local or class-body imports as module members', () => {
+    const edges = getRelationships(result, 'CALLS').filter((call) =>
+      ['not_exported', 'not_exported_class'].includes(call.source),
+    );
+    expect(edges).toEqual([]);
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((call) => call.source === 'setup')
+        .map((call) => `${call.target}@${call.targetFilePath}`),
+    ).toEqual(['run@pkg/impl.py']);
+  });
+
+  it('keeps namespace imports local to their function and visible to closures', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((call) => call.sourceFilePath === 'inner.py' && call.target === 'run')
+      .map((call) => `${call.source}->${call.targetFilePath}`)
+      .sort();
+    expect(edges).toEqual([
+      'closure->pkg/local.py',
+      'inner_alias->pkg/local.py',
+      'local_only->pkg/impl.py',
+      'sibling->pkg/impl.py',
+    ]);
+  });
+
+  it('preserves local-member and receiver shadowing', () => {
+    const edges = getRelationships(result, 'CALLS')
+      .filter((call) => ['local_member', 'receiver_shadow'].includes(call.source))
+      .map((call) => `${call.source}->${call.target}@${call.targetFilePath}`);
+    expect(edges).toEqual(['local_member->run@pkg/local.py']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Local shadow: same-file definition takes priority over imported name
 // ---------------------------------------------------------------------------
@@ -3849,12 +4124,8 @@ describe('Python class-body attribute does NOT leak into module export index', (
 
 // ---------------------------------------------------------------------------
 // Function-local import + cross-file return-type propagation
-// Codex round-2 flagged this as potentially broken, but empirically the
-// finalize-algorithm hoists the `from svc import get_user` binding to
-// the app.py module scope (observed via indexes.bindings dump), so
-// `propagateImportedReturnTypes`'s module-scope pass already handles
-// it. These assertions pin that working behavior as a regression
-// guard against any future change to binding-scope routing.
+// The import stays in its function scope; return-type propagation must still
+// connect a call on the imported function's result to its defining method.
 // ---------------------------------------------------------------------------
 
 describe('Python function-local import feeds chained receiver-bound call', () => {
@@ -3885,13 +4156,8 @@ describe('Python function-local import feeds chained receiver-bound call', () =>
 
 // ---------------------------------------------------------------------------
 // Function-local namespace import: `def f(): import svc as s; s.call()`
-// Codex round-3 flagged this pattern as potentially broken because
-// collectNamespaceTargets reads only module-scope imports. Empirically
-// the edge IS emitted (finalize hoists ImportEdges onto the module
-// scope), so these assertions pin the working behavior. If finalize
-// routing ever changes to match pythonImportOwningScope's per-scope
-// contract, this block will flip red and signal the need to make
-// collectNamespaceTargets scope-chain-aware.
+// Namespace targets follow the lexical scope chain, so the local import is
+// visible inside its function without becoming a module export.
 // ---------------------------------------------------------------------------
 
 describe('Python function-local namespace import feeds receiver-bound call', () => {
@@ -3921,13 +4187,10 @@ describe('Python function-local namespace import feeds receiver-bound call', () 
 
 // ---------------------------------------------------------------------------
 // Class-body namespace import: `class A: import mod; def use(): mod.helper()`
-// Same theoretical concern as the function-local case above, same
-// empirical outcome — finalize hoists the ImportEdge to the module
-// scope so the namespace-receiver path finds it from inside A.use.
-// These assertions pin that working behavior.
+// Class namespaces are not enclosing lexical environments for method bodies.
 // ---------------------------------------------------------------------------
 
-describe('Python class-body namespace import feeds method receiver-bound call', () => {
+describe('Python class-body namespace import is invisible to methods', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -3937,11 +4200,10 @@ describe('Python class-body namespace import feeds method receiver-bound call', 
     );
   }, 60000);
 
-  it('emits CALLS edge A.use -> mod.helper via class-body `import mod`', () => {
+  it('does not emit A.use -> mod.helper for a class-body-only import', () => {
     const calls = getRelationships(result, 'CALLS');
     const callEdge = calls.find((c) => c.source === 'use' && c.target === 'helper');
-    expect(callEdge).toBeDefined();
-    expect(callEdge!.rel.targetId).toContain('mod.py:helper');
+    expect(callEdge).toBeUndefined();
   });
 });
 

@@ -305,6 +305,8 @@ type ParsedImportSyntax =
       readonly kind: 'namespace';
       /** The source omitted a local alias; the imported module declares its binding name. */
       readonly implicitLocalName?: boolean;
+      /** An explicit alias binds the imported module, even when it matches the path's root. */
+      readonly explicitAlias?: boolean;
       /** Scope-visible handle (e.g. `np` in `import numpy as np`; `numpy` when unaliased). */
       readonly localName: string;
       /** Module being aliased (e.g. `numpy` in `import numpy as np`). */
@@ -526,6 +528,8 @@ export interface Callsite {
 export interface ImportEdge {
   /** How this scope sees the imported name (after alias). */
   readonly localName: string;
+  /** Namespace-import alias syntax, retained for providers whose unaliased imports bind a path prefix. */
+  readonly explicitAlias?: boolean;
   /** Exporting file; `null` only when `kind === 'dynamic-unresolved'`. */
   readonly targetFile: string | null;
   /** The name under which the target exports this symbol. */

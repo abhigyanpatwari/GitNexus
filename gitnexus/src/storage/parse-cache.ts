@@ -835,7 +835,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v130 (#3502): Python globals use exact function/class block ownership and
 // Ruby ordinary-method binding uses AST markers. Warm v129 ParsedFiles retain
 // incorrect declaration scopes and must be re-extracted.
-const SCHEMA_BUMP = 130;
+// v131 (#3504): Python namespace imports retain explicit alias syntax. Warm
+// v130 ParsedFiles lack this fact and can bind a root-spelled alias to the
+// package root instead of the imported module.
+const SCHEMA_BUMP = 131;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
