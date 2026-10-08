@@ -47,6 +47,16 @@ describe('Python wildcard definitions and lexical namespace visibility', () => {
       'closure_target.py': 'def helper():\n    return 10\n',
       'decoy.py':
         'def run():\n    return 0\ndef exported():\n    return 0\ndef _hidden():\n    return 0\n',
+      'module_rebinding.py': `import module_target as mod
+from values import run as mod
+def module_rebound():
+    return mod.helper()
+`,
+      'module_rebinding_reverse.py': `from values import run as mod
+import module_target as mod
+def module_rebound_reverse():
+    return mod.helper()
+`,
       'app.py': `import definitions_star
 import values_star
 import star
@@ -129,6 +139,41 @@ class WithModule:
         return mod.helper()
     def parameter_shadow(self, mod):
         return mod.helper()
+
+def namespace_rebound():
+    import module_target as mod
+    import class_target as mod
+    return mod.helper()
+def named_rebound():
+    import module_target as mod
+    from values import run as mod
+    return mod.helper()
+def named_rebound_reverse():
+    from values import run as mod
+    import module_target as mod
+    return mod.helper()
+def conditional_rebound(flag):
+    if flag:
+        import module_target as mod
+    else:
+        from values import run as mod
+    return mod.helper()
+def conditional_namespaces(flag):
+    if flag:
+        import module_target as mod
+    else:
+        import class_target as mod
+    return mod.helper()
+def compatible_imports():
+    import pkg.a
+    import pkg.b
+    import pkg.a
+    pkg.a.run()
+    return pkg.b.other()
+def duplicate_imports():
+    import module_target as mod
+    import module_target as mod
+    return mod.helper()
 
 def enclosing():
     import closure_target as enclosed_mod
@@ -221,6 +266,31 @@ def enclosing():
     ]) {
       expect(callsFrom(name), name).toEqual([]);
     }
+  });
+
+  it('suppresses conflicting imports in module and function scopes regardless of order', () => {
+    for (const name of [
+      'module_rebound',
+      'module_rebound_reverse',
+      'namespace_rebound',
+      'named_rebound',
+      'named_rebound_reverse',
+      'conditional_rebound',
+      'conditional_namespaces',
+    ]) {
+      expect(callsFrom(name), name).toEqual([]);
+    }
+  });
+
+  it('preserves compatible dotted imports and repeated identical aliases in one scope', () => {
+    expect(
+      callsFrom('compatible_imports')
+        .map((edge) => edge.rel.targetId)
+        .sort(),
+    ).toEqual(['Function:pkg/a.py:run', 'Function:pkg/b.py:other']);
+    expect(callsFrom('duplicate_imports').map((edge) => edge.rel.targetId)).toEqual([
+      'Function:module_target.py:helper',
+    ]);
   });
 
   it('skips class imports when looking outward from methods', () => {
