@@ -22,6 +22,7 @@ import type {
 } from '../../scope-resolution/contract/scope-resolver.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { pythonProvider } from '../python.js';
+import { expandPythonWildcardNames } from './expand-wildcards.js';
 import {
   isPythonImportedModule,
   pythonNamespaceReceiverPaths,
@@ -79,6 +80,8 @@ const pythonScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Python,
   // Imported names on a package's __init__.py are addressable as module members.
   namespaceExportsIncludeImportedNames: true,
+  importsBindAtLexicalScope: true,
+  expandsWildcardTo: expandPythonWildcardNames,
   suppressReceiverLookup: (typeRef) => typeRef.source === 'decorator-unknown',
   languageProvider: pythonProvider,
   importEdgeReason: 'python-scope: import',
