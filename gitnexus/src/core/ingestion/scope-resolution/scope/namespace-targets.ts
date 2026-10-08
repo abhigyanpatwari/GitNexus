@@ -30,7 +30,8 @@
  * hook's contract note.
  *
  * Lexically scoped imports are collected from the reference's scope outward.
- * The nearest scope owning an import name wins; sibling imports are invisible.
+ * The nearest scope owns each import name. Providers may retain outer receiver
+ * paths that refer to that same namespace object; sibling scopes are invisible.
  */
 
 import type { ParsedFile, ScopeId } from 'gitnexus-shared';
@@ -44,6 +45,8 @@ export interface NamespaceTargetOptions {
    *  (or returning `undefined` per edge) keeps the local-name-only default:
    *  the extra spellings are opt-in, never inferred from the edge shape. */
   readonly receiverPaths?: ScopeResolver['namespaceReceiverPaths'];
+  readonly bindingIdentity?: ScopeResolver['namespaceBindingIdentity'];
+  readonly skipEnclosingClasses?: boolean;
   /** Whether a path is a module the workspace parsed. Lets a provider propose
    *  a prefix file and have it dropped when absent, instead of minting a key
    *  to a file that does not exist. Defaults to "nothing exists". */
@@ -61,9 +64,14 @@ export function collectNamespaceTargets(
   const visited = new Set<ScopeId>();
   while (scopeId !== null && !visited.has(scopeId)) {
     visited.add(scopeId);
-    scopeIds.push(scopeId);
+    const scope = scopeId === parsed.moduleScope ? undefined : scopes.scopeTree.getScope(scopeId);
+    if (
+      !(options?.skipEnclosingClasses && scope?.kind === 'Class' && scopeId !== options.inScope)
+    ) {
+      scopeIds.push(scopeId);
+    }
     if (scopeId === parsed.moduleScope) break;
-    scopeId = scopes.scopeTree.getScope(scopeId)?.parent ?? null;
+    scopeId = scope?.parent ?? null;
   }
 
   const addTarget = (key: string, targetFile: string): void => {
@@ -77,27 +85,36 @@ export function collectNamespaceTargets(
 
   const moduleFileExists = options?.moduleFileExists ?? ((): boolean => false);
 
-  const claimedNames = new Set<string>();
+  const claimedNames = new Map<string, string | undefined>();
   for (const id of scopeIds) {
     const edges = scopes.imports.get(id) ?? [];
-    const namesHere = new Set<string>();
+    const namesHere = new Map<string, string | undefined>();
     for (const edge of edges) {
-      namesHere.add(edge.localName);
-      if (claimedNames.has(edge.localName)) continue;
-      if (edge.targetFile === null || edge.kind !== 'namespace') continue;
+      const namespace =
+        edge.targetFile !== null && edge.kind === 'namespace' && edge.linkStatus !== 'unresolved'
+          ? {
+              localName: edge.localName,
+              importPath: edge.targetExportedName,
+              targetFile: edge.targetFile,
+            }
+          : undefined;
+      const identity = namespace === undefined ? undefined : options?.bindingIdentity?.(namespace);
+      if (!namesHere.has(edge.localName)) namesHere.set(edge.localName, identity);
+      else if (namesHere.get(edge.localName) !== identity) namesHere.set(edge.localName, undefined);
+      if (
+        claimedNames.has(edge.localName) &&
+        (identity === undefined || claimedNames.get(edge.localName) !== identity)
+      )
+        continue;
+      if (namespace === undefined) continue;
 
-      const spellings = options?.receiverPaths?.(
-        {
-          localName: edge.localName,
-          importPath: edge.targetExportedName,
-          targetFile: edge.targetFile,
-        },
-        moduleFileExists,
-      );
-      if (spellings === undefined) addTarget(edge.localName, edge.targetFile);
+      const spellings = options?.receiverPaths?.(namespace, moduleFileExists);
+      if (spellings === undefined) addTarget(edge.localName, namespace.targetFile);
       else for (const [spelling, targetFile] of spellings) addTarget(spelling, targetFile);
     }
-    for (const name of namesHere) claimedNames.add(name);
+    for (const [name, identity] of namesHere) {
+      if (!claimedNames.has(name)) claimedNames.set(name, identity);
+    }
   }
   return out;
 }
