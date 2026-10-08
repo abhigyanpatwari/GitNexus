@@ -8,7 +8,7 @@
  *    is unreadable); skipped subtrees without a package do not truncate;
  *  - the global-name-fallback veto's qualifier rule (`isRGlobalNameFallbackPlausible`).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -355,42 +355,51 @@ describe('loadRPackageConfig: truncation only when a skipped subtree hides an un
     expect(cfg?.truncated).toBe(true);
   }, 30000);
 
+  // The read failure is injected rather than provoked with chmod(0o000): permission bits are a
+  // POSIX concept (Windows ignores them, root bypasses them), whereas the behaviour under test is
+  // "an I/O error while walking means the package set is incomplete".
+  function eacces(target: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`EACCES: permission denied, '${target}'`), { code: 'EACCES' });
+  }
+
   it('an unreadable skipped directory is truncated', async () => {
-    if (typeof process.getuid === 'function' && process.getuid() === 0) return; // root reads anything
-    let locked = '';
+    const realReaddir = fs.readdir.bind(fs) as (...a: unknown[]) => Promise<unknown>;
+    const spy = vi
+      .spyOn(fs, 'readdir')
+      .mockImplementation(((dir: unknown, ...rest: unknown[]) =>
+        path.basename(String(dir)) === 'locked'
+          ? Promise.reject(eacces(String(dir)))
+          : realReaddir(dir, ...rest)) as unknown as typeof fs.readdir);
     try {
       const cfg = await withRepo(async (root) => {
-        locked = path.join(root, ...SKIP, 'locked');
-        await fs.mkdir(locked, { recursive: true });
-        await fs.chmod(locked, 0o000);
+        await fs.mkdir(path.join(root, ...SKIP, 'locked'), { recursive: true });
       });
+      expect(spy.mock.calls.some(([d]) => path.basename(String(d)) === 'locked')).toBe(true);
       expect(cfg?.truncated).toBe(true);
     } finally {
-      if (locked) await fs.chmod(locked, 0o755).catch(() => undefined);
+      spy.mockRestore();
     }
   });
 
   it('an unreadable DESCRIPTION is truncated, so its qualifier stays unknown', async () => {
-    if (typeof process.getuid === 'function' && process.getuid() === 0) return; // root reads anything
-    let locked = '';
+    const realReadFile = fs.readFile.bind(fs) as (...a: unknown[]) => Promise<unknown>;
+    const spy = vi
+      .spyOn(fs, 'readFile')
+      .mockImplementation(((file: unknown, ...rest: unknown[]) =>
+        path.basename(String(file)) === 'DESCRIPTION' &&
+        path.basename(path.dirname(String(file))) === 'sub'
+          ? Promise.reject(eacces(String(file)))
+          : realReadFile(file, ...rest)) as unknown as typeof fs.readFile);
     try {
       const cfg = await withRepo(async (root) => {
-        locked = path.join(root, 'sub', 'DESCRIPTION');
         await writePkg(path.join(root, 'sub'), 'hiddenpkg');
-        await fs.chmod(locked, 0o000);
-        // Guard: a platform that still reads a mode-000 file cannot exercise the catch.
-        await fs.readFile(locked).then(
-          () => {
-            throw new Error('DESCRIPTION is still readable; cannot simulate an I/O error');
-          },
-          () => undefined,
-        );
       });
+      expect(spy.mock.calls.some(([f]) => path.basename(String(f)) === 'DESCRIPTION')).toBe(true);
       expect(cfg?.packages.has('hiddenpkg')).toBe(false);
       expect(cfg?.truncated).toBe(true);
       expect(rQualifierLocality('hiddenpkg', cfg as RPackageConfig, new Set())).toBe('unknown');
     } finally {
-      if (locked) await fs.chmod(locked, 0o644).catch(() => undefined);
+      spy.mockRestore();
     }
   });
 });

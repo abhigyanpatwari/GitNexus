@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compileRExportPattern } from '../../src/core/ingestion/languages/r/export-pattern.js';
 import {
   compileLinearRegex,
@@ -671,7 +671,7 @@ describe('compileRExportPattern is linear-time on catastrophic patterns', () => 
 
   it('completes every hostile pattern in under 100 ms on 40 and 10,000 character names', () => {
     const script = `
-      const { compileRExportPattern } = await import(${JSON.stringify(modulePath)});
+      const { compileRExportPattern } = await import(${JSON.stringify(pathToFileURL(modulePath).href)});
       const out = [];
       for (const p of ${JSON.stringify(HOSTILE)}) {
         for (const len of [40, 10000]) {

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { refineRExportStatus } from '../../src/core/ingestion/languages/r/post-parse.js';
@@ -297,7 +297,7 @@ describe('a hostile exportPattern stays within its work budget', () => {
       '../../src/core/ingestion/languages/r/export-pattern.ts',
     );
     const script = `
-      const { compileRExportPattern } = await import(${JSON.stringify(modulePath)});
+      const { compileRExportPattern } = await import(${JSON.stringify(pathToFileURL(modulePath).href)});
       const names = Array.from({ length: 50000 }, (_, i) => 'a'.repeat(94) + String(i).padStart(5, '0') + 'a');
       const out = [];
       for (const p of ${JSON.stringify(HOSTILE)}) {
