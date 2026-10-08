@@ -452,6 +452,17 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
   ) => readonly string[];
 
+  /** Exact local module bindings, excluding definitions owned by nested scopes. */
+  readonly moduleExports?: (file: ParsedFile) => ReadonlyMap<string, SymbolDefinition>;
+
+  /** Filter local and transitive export names for wildcard imports. Opting in
+   * applies the filter both to re-export closures and imported bindings. */
+  readonly filterWildcardNames?: (
+    targetModuleScope: ScopeId,
+    availableNames: readonly string[],
+    parsedFiles: readonly ParsedFile[],
+  ) => readonly string[];
+
   /**
    * Optional one-shot loader for cross-file import-resolution config
    * (e.g. tsconfig path aliases for TypeScript, go.mod paths for Go,
@@ -1393,6 +1404,18 @@ export interface ScopeResolver {
     },
     moduleFileExists: (filePath: string) => boolean,
   ) => readonly (readonly [spelling: string, targetFile: string])[] | undefined;
+
+  /** Stable identity of the namespace object bound by an import. Equal identities
+   * allow distinct receiver paths to remain visible across lexical scopes. */
+  readonly namespaceBindingIdentity?: (edge: {
+    readonly localName: string;
+    readonly importPath: string;
+    readonly targetFile: string;
+  }) => string | undefined;
+
+  /** Enclosing class bodies are not lexical environments for namespace lookup.
+   * The reference's own class scope remains visible for class-body expressions. */
+  readonly namespaceSkipsEnclosingClasses?: boolean;
 
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved
