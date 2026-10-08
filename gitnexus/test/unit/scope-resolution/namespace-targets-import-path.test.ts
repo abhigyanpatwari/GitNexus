@@ -57,7 +57,7 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
   // happened to export `helper`, silently preferring a decoy over the real one.
   it('keys the package root at its own __init__, never at the leaf module', () => {
     const targets = collectPython([edge({})], ['pkg/__init__.py']);
-    expect(targets.get('pkg')).toEqual(['pkg/__init__.py', 'pkg/db.py']);
+    expect(targets.get('pkg')).toEqual(['pkg/__init__.py']);
     expect(targets.get('pkg.db')).toEqual(['pkg/db.py']);
   });
 
@@ -65,7 +65,7 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
     // PEP-420 namespace package: no __init__.py. Better no key than one
     // pointing at a file that does not exist — or at the wrong file.
     const targets = collectPython([edge({})], []);
-    expect(targets.get('pkg')).toEqual(['pkg/db.py']);
+    expect(targets.has('pkg')).toBe(false);
     expect(targets.get('pkg.db')).toEqual(['pkg/db.py']);
   });
 
@@ -76,8 +76,8 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
       targetFile: 'a/b/c.py',
     });
     const targets = collectPython([deep], ['a/__init__.py', 'a/b/__init__.py']);
-    expect(targets.get('a')).toEqual(['a/__init__.py', 'a/b/c.py']);
-    expect(targets.get('a.b')).toEqual(['a/b/__init__.py', 'a/b/c.py']);
+    expect(targets.get('a')).toEqual(['a/__init__.py']);
+    expect(targets.get('a.b')).toEqual(['a/b/__init__.py']);
     expect(targets.get('a.b.c')).toEqual(['a/b/c.py']);
   });
 
@@ -119,10 +119,9 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
     );
     expect(targets.get('pkg.db')).toEqual(['pkg/db.py']);
     expect(targets.get('pkg.cache')).toEqual(['pkg/cache.py']);
-    // The shared root LEADS with the package itself — not with whichever
-    // submodule happened to be imported first — and keeps both leaves behind it
-    // so a name merely re-exported by `__init__.py` still resolves.
-    expect(targets.get('pkg')).toEqual(['pkg/__init__.py', 'pkg/db.py', 'pkg/cache.py']);
+    // Both imports bind the same root package, without publishing either
+    // submodule's members on it.
+    expect(targets.get('pkg')).toEqual(['pkg/__init__.py']);
   });
 
   it('ignores non-namespace and unresolved edges', () => {
@@ -151,10 +150,7 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
       [offRoot],
       ['utils/__init__.py', 'libs/common/utils/__init__.py'],
     );
-    expect(targets.get('utils')).toEqual([
-      'libs/common/utils/__init__.py',
-      'libs/common/utils/db.py',
-    ]);
+    expect(targets.get('utils')).toEqual(['libs/common/utils/__init__.py']);
     expect(targets.get('utils.db')).toEqual(['libs/common/utils/db.py']);
   });
 
@@ -165,8 +161,8 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
       targetFile: 'src/a/b/c.py',
     });
     const targets = collectPython([srcLayout], ['src/a/__init__.py', 'src/a/b/__init__.py']);
-    expect(targets.get('a')).toEqual(['src/a/__init__.py', 'src/a/b/c.py']);
-    expect(targets.get('a.b')).toEqual(['src/a/b/__init__.py', 'src/a/b/c.py']);
+    expect(targets.get('a')).toEqual(['src/a/__init__.py']);
+    expect(targets.get('a.b')).toEqual(['src/a/b/__init__.py']);
     expect(targets.get('a.b.c')).toEqual(['src/a/b/c.py']);
   });
 
@@ -177,6 +173,21 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
       targetFile: 'single.py',
     });
     expect(collectPython([bare]).get('single')).toEqual(['single.py']);
+  });
+
+  it('keeps each prefix on its own package when the leaf is an __init__.py', () => {
+    const packageLeaf = edge({
+      localName: 'a',
+      targetExportedName: 'a.b.c',
+      targetFile: 'src/a/b/c/__init__.py',
+    });
+    const targets = collectPython(
+      [packageLeaf],
+      ['src/a/__init__.py', 'src/a/b/__init__.py', 'src/a/b/c/__init__.py'],
+    );
+    expect(targets.get('a')).toEqual(['src/a/__init__.py']);
+    expect(targets.get('a.b')).toEqual(['src/a/b/__init__.py']);
+    expect(targets.get('a.b.c')).toEqual(['src/a/b/c/__init__.py']);
   });
 });
 
