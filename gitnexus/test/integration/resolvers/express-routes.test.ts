@@ -109,17 +109,33 @@ describe('Express route identity and source priority', () => {
     },
   );
 
-  it('preserves one-argument route builders in chained registrations', () => {
+  it.each([
+    ['/api/chained', ['GET']],
+    ['/api/chained-post', ['POST']],
+    ['/api/chained-multi', ['GET', 'POST']],
+    ['/api/chained-all', ['*']],
+  ])('uses the registered verbs for route builder %s', (route, methods) => {
     const chainedRoutes = getNodesByLabelFull(result, 'Route').filter(
-      (node) => node.name === '/api/chained',
+      (node) => node.name === route,
     );
-    expect(chainedRoutes).toHaveLength(1);
-    expect(chainedRoutes[0].properties.method).toBe('GET');
-    expect(
-      getRelationships(result, 'HANDLES_ROUTE')
-        .filter((edge) => edge.target === '/api/chained')
-        .map((edge) => edge.sourceFilePath),
-    ).toEqual(['src/server.ts']);
+    expect(chainedRoutes.map((node) => node.properties.method).sort()).toEqual(methods);
+    const handled = getRelationships(result, 'HANDLES_ROUTE').filter(
+      (edge) => edge.target === route,
+    );
+    expect(handled).toHaveLength(methods.length);
+    expect(handled.every((edge) => edge.sourceFilePath === 'src/server.ts')).toBe(true);
+  });
+
+  it.each([
+    '/ghost-builder',
+    '/ghost-builder-empty',
+    '/ghost-builder-block-comment',
+    '/ghost-builder-line-comment',
+  ])('does not invent a route for builder %s without a handler', (route) => {
+    expect(getNodesByLabel(result, 'Route')).not.toContain(route);
+    expect(getRelationships(result, 'HANDLES_ROUTE').some((edge) => edge.target === route)).toBe(
+      false,
+    );
   });
 
   it('still indexes a test-only route when there is no production collision', () => {
@@ -178,21 +194,27 @@ describe('Express route identity and source priority', () => {
       expect(mixedResult.parseCacheHitFileCount).toBe(1);
 
       const project = (pipeline: PipelineResult) => ({
-        routes: getNodesByLabelFull(pipeline, 'Route').map((route) => ({
-          method: route.properties.method,
-          path: route.name,
-          filePath: route.properties.filePath,
-        })),
+        routes: getNodesByLabelFull(pipeline, 'Route')
+          .map((route) => ({
+            method: route.properties.method,
+            path: route.name,
+            filePath: route.properties.filePath,
+          }))
+          .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method)),
         handled: getRelationships(pipeline, 'HANDLES_ROUTE')
           .map((edge) => ({
             method: pipeline.graph.getNode(edge.rel.targetId)?.properties.method,
             path: edge.target,
             filePath: edge.sourceFilePath,
           }))
-          .sort((a, b) => a.path.localeCompare(b.path)),
+          .sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method)),
       });
       const expected = [
         { method: 'GET', path: '/api/chained', filePath: 'src/server.ts' },
+        { method: '*', path: '/api/chained-all', filePath: 'src/server.ts' },
+        { method: 'GET', path: '/api/chained-multi', filePath: 'src/server.ts' },
+        { method: 'POST', path: '/api/chained-multi', filePath: 'src/server.ts' },
+        { method: 'POST', path: '/api/chained-post', filePath: 'src/server.ts' },
         { method: 'GET', path: '/api/info', filePath: 'src/server.ts' },
         { method: '*', path: '/api/mcp', filePath: 'src/server.ts' },
         { method: 'POST', path: '/api/query', filePath: 'src/server.ts' },
