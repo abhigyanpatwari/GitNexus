@@ -96,6 +96,7 @@ export function collectNamespaceTargets(
               localName: edge.localName,
               importPath: edge.targetExportedName,
               targetFile: edge.targetFile,
+              explicitAlias: edge.explicitAlias,
             }
           : undefined;
       const identity = namespace === undefined ? undefined : options?.bindingIdentity?.(namespace);
