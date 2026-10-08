@@ -514,3 +514,19 @@ export function pythonNamespaceReceiverPaths(
   }
   return out;
 }
+
+/** Dotted imports bind their root package object, including namespace packages
+ * without an __init__.py. Anchor identity on the resolved path, not spelling. */
+export function pythonNamespaceBindingIdentity(edge: {
+  readonly localName: string;
+  readonly importPath: string;
+  readonly targetFile: string;
+}): string | undefined {
+  const segments = edge.importPath.split('.');
+  if (segments.length < 2 || segments[0] !== edge.localName) return edge.targetFile;
+  const dirs = edge.targetFile.split('/').slice(0, -1);
+  const count = edge.targetFile.endsWith('/__init__.py') ? segments.length : segments.length - 1;
+  const offset = dirs.length - count;
+  if (offset < 0) return undefined;
+  return dirs.slice(0, offset + 1).join('/') + '/__init__.py';
+}
