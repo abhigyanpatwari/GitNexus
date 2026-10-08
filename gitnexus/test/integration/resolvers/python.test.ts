@@ -152,6 +152,34 @@ describe('Python global nested declarations bind at module scope (#3502)', () =>
     );
     expect(calls).toEqual([]);
   });
+
+  it('resolves global class declarations from a sibling caller', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'global_class_caller' && edge.target === 'published_ping',
+    );
+    expect(calls.map((edge) => [edge.targetLabel, edge.targetFilePath])).toEqual([
+      ['Method', 'main.py'],
+    ]);
+  });
+
+  it('does not let a nested class global publish its enclosing function-local declaration', () => {
+    const calls = getRelationships(result, 'CALLS').filter((edge) => edge.target === 'retained');
+    expect(calls.map((edge) => edge.source)).toEqual(['class_global_boundary']);
+  });
+
+  it('publishes class-owned global functions and classes without creating a method', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'class_global_caller',
+    );
+    expect(
+      calls.map((edge) => `${edge.targetFilePath}:${edge.targetLabel}:${edge.target}`).sort(),
+    ).toEqual(['main.py:Function:class_target', 'main.py:Method:class_ping']);
+    expect(getNodesByLabel(result, 'Method')).not.toContain('class_target');
+    const definition = getNodesByLabelFull(result, 'Function').find(
+      (node) => node.name === 'class_target',
+    );
+    expect(definition?.properties.parameterCount).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
