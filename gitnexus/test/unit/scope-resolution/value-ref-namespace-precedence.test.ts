@@ -20,9 +20,8 @@
  * `namespaceExportsIncludeImportedNames`; Zig forbids declaring a name twice
  * in one container, so its source cannot express the overlapping bindings
  * tested here. Building the indexes directly isolates the shared precedence
- * contract from provider extraction and finalization, including receivers
- * bound to more than one target file. The middle case below fails without
- * the local-name guard.
+ * contract from provider extraction and finalization. The middle case below
+ * fails without the local-name guard.
  */
 
 import { describe, it, expect } from 'vitest';
