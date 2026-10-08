@@ -525,6 +525,9 @@ function makeEdgeDrafts(
       targetFile: null,
       targetExportedName: extractExportedName(parsed),
       kind: edgeKindFor(parsed),
+      ...(parsed.kind === 'namespace' && parsed.explicitAlias === true
+        ? { explicitAlias: true }
+        : {}),
       ...typeOnlyFor(parsed),
       ...runsOnlyWhenCalledFor(parsed),
       linkStatus: 'unresolved',
@@ -563,6 +566,9 @@ function makeEdgeDrafts(
         hooks.isNamespaceImport?.(parsed, tf, file.filePath) === true
           ? 'namespace'
           : edgeKindFor(parsed),
+      ...(parsed.kind === 'namespace' && parsed.explicitAlias === true
+        ? { explicitAlias: true }
+        : {}),
       ...typeOnlyFor(parsed),
       ...runsOnlyWhenCalledFor(parsed),
     };
