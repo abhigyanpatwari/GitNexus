@@ -1412,7 +1412,10 @@ export interface ScopeResolver {
   ) => readonly (readonly [spelling: string, targetFile: string])[] | undefined;
 
   /** Stable identity of the namespace object bound by an import. Equal identities
-   * allow distinct receiver paths to remain visible across lexical scopes. */
+   * allow distinct receiver paths to remain visible across lexical scopes.
+   * Supplying this hook also suppresses same-scope import names with conflicting
+   * or unprovably equal identities; a lone namespace with undefined identity
+   * remains eligible. Without the hook, same-scope multi-target behavior stays. */
   readonly namespaceBindingIdentity?: (edge: {
     readonly localName: string;
     readonly importPath: string;
