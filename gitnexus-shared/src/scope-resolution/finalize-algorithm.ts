@@ -96,6 +96,10 @@ export interface FinalizeInput {
  * expects pure answers.
  */
 export interface FinalizeHooks {
+  /** Retain the legacy module lookup surface for class-owned definitions.
+   * Providers with strictly lexical bare-name lookup disable this, independently
+   * of the source container or file extension. Defaults to true. */
+  readonly ownedMembersBindAtModuleScope?: boolean;
   /** Bind imports at their extracted lexical scope. Missing provenance retains
    * the legacy module-scope behavior. Opt-in: lexical position and language
    * import-binding semantics are distinct facts. */
@@ -1625,13 +1629,12 @@ function materializeBindings(
       // Some language enrichers synthesize members after scope extraction
       // (for example Lombok accessors). They have no lexical scope binding to
       // project, but existing dispatch/index consumers still need them in the
-      // finalized lookup surface. Legacy non-Python resolvers also depend on
+      // finalized lookup surface. Legacy resolvers also depend on
       // class-owned definitions for implicit receiver, constructor, inherited,
-      // and partial-class lookup. Python is the exception: a bare name never
-      // means an arbitrary class method, so ownerId must not widen its module
-      // bucket. This compatibility split can disappear once those providers
-      // project their implicit member surfaces explicitly.
-      const allowOwnedCompatibility = !/\.pyi?$/i.test(file.filePath);
+      // and partial-class lookup. Providers with strictly lexical bare-name
+      // lookup disable this compatibility surface. It can disappear once
+      // those providers project their implicit member surfaces explicitly.
+      const allowOwnedCompatibility = hooks.ownedMembersBindAtModuleScope !== false;
       for (const def of file.localDefs) {
         if (def.isSynthetic !== true && !(allowOwnedCompatibility && def.ownerId !== undefined))
           continue;
