@@ -1406,6 +1406,7 @@ export interface ScopeResolver {
       readonly localName: string;
       readonly importPath: string;
       readonly targetFile: string;
+      readonly explicitAlias?: boolean;
     },
     moduleFileExists: (filePath: string) => boolean,
   ) => readonly (readonly [spelling: string, targetFile: string])[] | undefined;
@@ -1416,6 +1417,7 @@ export interface ScopeResolver {
     readonly localName: string;
     readonly importPath: string;
     readonly targetFile: string;
+    readonly explicitAlias?: boolean;
   }) => string | undefined;
 
   /** Enclosing class bodies are not lexical environments for namespace lookup.
