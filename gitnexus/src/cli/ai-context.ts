@@ -775,7 +775,7 @@ export async function refreshBaseRefLine(
     // CLI fallback when migrating guidance generated for an external store.
     const legacyRunner =
       block.match(/or `([^`\n]+?) detect-changes --scope compare --base-ref\b/)?.[1] ??
-      '.gitnexus/run.cjs';
+      'node .gitnexus/run.cjs';
     const mergeBaseGuidance = regressionReviewGuidance(defaultBranch, legacyRunner);
     let newBlock = block.replace(
       /For regression review of target branch "(?:[^"\\]|\\.)*"/,
