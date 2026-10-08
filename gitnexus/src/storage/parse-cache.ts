@@ -838,7 +838,14 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v131 (#3504): Python namespace imports retain explicit alias syntax. Warm
 // v130 ParsedFiles lack this fact and can bind a root-spelled alias to the
 // package root instead of the imported module.
-const SCHEMA_BUMP = 131;
+// v132 (#3487, #3505): merge the parallel Express route capture changes.
+// Require semantic handler arguments, retain route(path) builders, and preserve
+// app.all as method-agnostic. Both branches used v131 for different captures,
+// so invalidate either branch's cache before reusing the combined schema.
+// v133 (#3505): route(path) builders emit only chained verb registrations
+// with semantic handler arguments. Warm v132 caches can retain phantom GET
+// routes for bare builders and lose the actual methods of chained handlers.
+const SCHEMA_BUMP = 133;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

@@ -50,6 +50,8 @@ export interface ParseOutput {
   readonly allFetchWrapperDefs: readonly FetchWrapperDef[];
   readonly allExtractedRoutes: readonly ExtractedRoute[];
   readonly allDecoratorRoutes: readonly ExtractedDecoratorRoute[];
+  /** Exact admitted declarations that own Route nodes and handler attribution. */
+  readonly selectedRoutes: ReadonlySet<ExtractedRoute | ExtractedDecoratorRoute>;
   readonly allToolDefs: readonly ExtractedToolDef[];
   readonly allORMQueries: readonly ExtractedORMQuery[];
   /** Route URL → resolved handler symbol UID (Part 2, #2138). Consumed by the
