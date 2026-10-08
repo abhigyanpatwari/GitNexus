@@ -832,7 +832,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v129 (#3499): Python/PHP/Ruby declaration bindings now preserve language-
 // specific module visibility. Warm v128 ParsedFiles retain the old binding
 // placement and can lose valid calls when finalized by the new projection.
-const SCHEMA_BUMP = 129;
+// v130 (#3502): Python globals use exact function/class block ownership and
+// Ruby ordinary-method binding uses AST markers. Warm v129 ParsedFiles retain
+// incorrect declaration scopes and must be re-extracted.
+const SCHEMA_BUMP = 130;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
