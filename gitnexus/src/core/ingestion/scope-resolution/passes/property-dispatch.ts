@@ -58,7 +58,10 @@ import {
   isOwnerNameShadowedBySomethingElse,
   lookupBindingsAt,
 } from '../scope/walkers.js';
-import { collectNamespaceTargets } from '../scope/namespace-targets.js';
+import {
+  collectNamespaceTargets,
+  type NamespaceTargetOptions,
+} from '../scope/namespace-targets.js';
 import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import { CALL_TARGET_TYPES } from '../../model/symbol-table.js';
@@ -152,6 +155,7 @@ export function resolveValueRefTarget(
   scopes: ScopeResolutionIndexes,
   model: SemanticModel,
   publishesImportedNames: boolean,
+  namespaceOptions?: NamespaceTargetOptions,
 ): SymbolDefinition | undefined {
   const receiverName = site.explicitReceiver?.name;
   if (receiverName === undefined) {
@@ -179,6 +183,7 @@ export function resolveValueRefTarget(
     receiverName,
     scopes,
     publishesImportedNames,
+    namespaceOptions,
   );
   if (viaNamespace !== undefined) {
     // `'owned'` is NOT "no answer" — it is "this receiver is a namespace handle
@@ -272,15 +277,25 @@ function findNamespaceValueRefTarget(
   receiverName: string,
   scopes: ScopeResolutionIndexes,
   publishesImportedNames: boolean,
+  namespaceOptions?: NamespaceTargetOptions,
 ): SymbolDefinition | 'owned' | undefined {
   const moduleScopeId = scopes.moduleScopes.get(filePath);
   if (moduleScopeId === undefined) return undefined;
   const targetFiles =
     collectNamespaceTargets({ moduleScope: moduleScopeId }, scopes, {
+      ...namespaceOptions,
       inScope: site.inScope,
     }).get(receiverName) ?? [];
   if (targetFiles.length === 0) return undefined;
-  if (isNamespaceNameShadowed(receiverName, site.inScope, scopes)) return undefined;
+  if (
+    isNamespaceNameShadowed(
+      receiverName,
+      site.inScope,
+      scopes,
+      namespaceOptions?.skipEnclosingClasses,
+    )
+  )
+    return undefined;
 
   /** The unique callable `select` finds across every target file, or nothing. */
   const uniqueMember = (
@@ -361,6 +376,7 @@ export function emitPropertyDispatchCalls(
    * so the CALL and the REGISTRATION forms of `hub.fn` cannot disagree.
    */
   publishesImportedNames = false,
+  namespaceOptions?: NamespaceTargetOptions,
 ): {
   usesEmitted: number;
   callsEmitted: number;
@@ -382,6 +398,7 @@ export function emitPropertyDispatchCalls(
         scopes,
         model,
         publishesImportedNames,
+        namespaceOptions,
       );
       if (def === undefined) continue;
 
