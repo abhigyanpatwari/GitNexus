@@ -68,6 +68,8 @@ export interface FinalizeOrchestratorOptions {
    * merge for bindings.
    */
   readonly hooks?: Partial<FinalizeHooks>;
+  /** Optional exact module export surface, independent of nested definitions. */
+  readonly moduleExports?: (file: ParsedFile) => ReadonlyMap<string, SymbolDefinition>;
   /**
    * Opaque workspace context forwarded to hooks. `undefined` today; Ring
    * 2 PKG #922 populates this with a real cross-file index for the
@@ -95,7 +97,7 @@ export function finalizeScopeModel(
   // materialization. Returns linked imports + merged bindings per module
   // scope + SCC condensation + stats.
   const finalizeInput = {
-    files: parsedFiles.map(toFinalizeFile),
+    files: parsedFiles.map((file) => toFinalizeFile(file, options.moduleExports?.(file))),
     workspaceIndex,
   };
   const finalizeOut = finalize(finalizeInput, hooks);
@@ -165,15 +167,17 @@ export function finalizeScopeModel(
 
 // ─── Internal ───────────────────────────────────────────────────────────────
 
-/** Shape-reduce a `ParsedFile` to the narrower `FinalizeFile` the shared
- *  algorithm reads. The subset is stable — `FinalizeFile` is a proper
- *  subset of `ParsedFile`. */
-function toFinalizeFile(file: ParsedFile): FinalizeFile {
+/** Shape-reduce parse output and attach the provider's exact export surface. */
+function toFinalizeFile(
+  file: ParsedFile,
+  localExports?: ReadonlyMap<string, SymbolDefinition>,
+): FinalizeFile {
   return {
     filePath: file.filePath,
     moduleScope: file.moduleScope,
     parsedImports: file.parsedImports,
     localDefs: file.localDefs,
+    localExports,
   };
 }
 
@@ -206,6 +210,7 @@ function withDefaultHooks(partial: Partial<FinalizeHooks>): FinalizeHooks {
     wildcardCollisionIsAmbiguous: partial.wildcardCollisionIsAmbiguous === true,
     namedImportsBindTopLevelOnly: partial.namedImportsBindTopLevelOnly === true,
     expandsWildcardTo: partial.expandsWildcardTo ?? (() => []),
+    filterWildcardNames: partial.filterWildcardNames,
     mergeBindings:
       partial.mergeBindings ??
       ((
