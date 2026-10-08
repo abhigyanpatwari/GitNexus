@@ -165,7 +165,7 @@ export class RFieldExtractor extends BaseFieldExtractor {
  * query and definition hook (`isRNamingArgument`), so `contains = "Base"` or
  * `representation(...)` ahead of `Class = "A"` never names the owner.
  */
-function getRClassNameArgument(args: SyntaxNode): string | null {
+export function getRClassNameArgument(args: SyntaxNode): string | null {
   for (let i = 0; i < args.namedChildCount; i++) {
     const arg = args.namedChild(i);
     if (!arg || arg.type !== 'argument') continue;

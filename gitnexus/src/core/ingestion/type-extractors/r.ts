@@ -6,6 +6,7 @@ import type {
   ConstructorBindingScanner,
 } from './types.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { getRClassNameArgument } from '../field-extractors/r.js';
 
 /**
  * R type extractor — roxygen2 annotation parsing.
@@ -120,12 +121,10 @@ const declaredClassName = (node: SyntaxNode): string | undefined => {
   if (fn?.type !== 'identifier' || (fn.text !== 'setClass' && fn.text !== 'setRefClass')) {
     return undefined;
   }
-  const first = node
-    .childForFieldName('arguments')
-    ?.namedChildren.find((c) => c.type === 'argument');
-  const value = first?.childForFieldName('value');
-  if (value?.type !== 'string') return undefined;
-  return value.namedChildren.find((c) => c.type === 'string_content')?.text;
+  // The class name is the argument that takes the `Class` formal, by name or else
+  // the first unnamed one; `contains = "Base"` ahead of `Class = "A"` is not it.
+  const args = node.childForFieldName('arguments');
+  return (args && getRClassNameArgument(args)) ?? undefined;
 };
 
 /** Class names defined anywhere in the file, built on first use and kept per tree. */
@@ -253,21 +252,10 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
 
   // S4 pattern: obj <- new("ClassName", ...)
   if (fn.type === 'identifier' && fn.text === 'new') {
+    // `new(Class, ...)`: the class is the argument that takes the `Class` formal.
     const args = rhs.childForFieldName('arguments');
-    if (args) {
-      for (const child of args.children) {
-        if (child.type === 'argument') {
-          const val = child.childForFieldName('value');
-          if (val?.type === 'string') {
-            const content = val.children.find((c: SyntaxNode) => c.type === 'string_content');
-            if (content) {
-              return { varName: lhs.text, calleeName: content.text };
-            }
-          }
-          break;
-        }
-      }
-    }
+    const className = args && getRClassNameArgument(args);
+    if (className) return { varName: lhs.text, calleeName: className };
   }
 
   return undefined;

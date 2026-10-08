@@ -135,6 +135,23 @@ model <- new("DataModel", name = "test")
       expect(binding!.calleeName).toBe('DataModel');
     });
 
+    it.each([
+      ['Class= after another argument', 'model <- new(name = "test", Class = "DataModel")'],
+      ['Class= first', 'model <- new(Class = "DataModel", name = "test")'],
+      ['a leading named argument', 'model <- new(name = "test", "DataModel")'],
+    ])('returns the S4 constructor binding for new() with %s', (_form, code) => {
+      const { constructorBindings } = buildTypeEnv(parse(code), SupportedLanguages.R);
+      expect(constructorBindings.find((b) => b.varName === 'model')?.calleeName).toBe('DataModel');
+    });
+
+    it('does not take a later string as the class of new() when Class= is another value', () => {
+      const { constructorBindings } = buildTypeEnv(
+        parse('model <- new(Class = base_class, "Other")'),
+        SupportedLanguages.R,
+      );
+      expect(constructorBindings.find((b) => b.varName === 'model')).toBeUndefined();
+    });
+
     it('extracts @param types when @examples block is present', () => {
       const tree = parse(`
 DataFrame <- R6::R6Class("DataFrame", public = list(rows = function() 1))
@@ -442,6 +459,38 @@ ${definition}
 `);
         const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
         expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
+      });
+
+      it.each([
+        ['setClass', 'setClass(contains = "Base", Class = "Derived")'],
+        ['setRefClass', 'setRefClass(fields = list(n = "numeric"), Class = "Derived")'],
+        ['a backticked Class', 'setClass(contains = "Base", `Class` = "Derived")'],
+      ])('names the class from Class= when %s puts it after another argument', (_form, call) => {
+        const tree = parse(`
+#' @param a Derived
+#' @param b Base
+save <- function(a, b) {
+  a
+}
+
+${call}
+`);
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
+        expect(flatGet(typeEnv, 'a')).toBe('Derived');
+        // `Base` is only a parent named by contains=; the file does not define it.
+        expect(flatGet(typeEnv, 'b')).toBeUndefined();
+      });
+
+      it('still names the class from the first unnamed argument', () => {
+        const tree = parse(`
+#' @param a Derived
+save <- function(a) {
+  a
+}
+
+setClass(contains = "Base", "Derived")
+`);
+        expect(flatGet(buildTypeEnv(tree, SupportedLanguages.R), 'a')).toBe('Derived');
       });
 
       it('binds the braced form, with or without prose after it', () => {
