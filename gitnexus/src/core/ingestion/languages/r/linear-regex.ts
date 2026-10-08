@@ -325,15 +325,10 @@ const BRACES = /\{(\d+)(?:(,)(\d*))?\}/y;
 class Parser {
   private pos = 0;
   private depth = 0;
-  /** `\k` is an identity escape only when the pattern has no named group. */
-  private readonly hasNamedGroup: boolean;
 
-  constructor(private readonly src: string) {
-    this.hasNamedGroup = src.includes('(?<');
-  }
+  constructor(private readonly src: string) {}
 
   parse(): Node {
-    if (this.hasNamedGroup) reject('named groups and look-behind are unsupported');
     const node = this.parseDisjunction();
     if (this.pos < this.src.length) reject('unmatched )');
     return node;
@@ -414,6 +409,9 @@ class Parser {
     this.pos++; // (
     if (this.peek() === '?') {
       // `(?:` is a plain group; `(?=`, `(?!`, `(?<` and everything else is unsupported or invalid.
+      // Only a `(` the parser reaches here opens a group: one inside a character class
+      // (`[(?<]`) or after a backslash (`\(?<`) is a literal and never gets this far.
+      if (this.peek(1) === '<') reject('named groups and look-behind are unsupported');
       if (this.peek(1) !== ':') reject('look-around and group modifiers are unsupported');
       this.pos += 2;
     }
@@ -543,7 +541,7 @@ class Parser {
         return { code: 0x75 };
       }
       case 'k':
-        // Identity escape (no named groups exist; `parse` already rejected those).
+        // Identity escape (no named groups exist; `parseGroup` rejects those).
         return { code: 0x6b };
       default:
         if (c >= '1' && c <= '9') reject('back-reference or legacy octal escape');

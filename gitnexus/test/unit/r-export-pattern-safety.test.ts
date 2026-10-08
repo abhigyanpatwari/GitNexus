@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compileRExportPattern } from '../../src/core/ingestion/languages/r/export-pattern.js';
 import {
   compileLinearRegex,
+  compileLinearRegexDetailed,
   MAX_STATES,
 } from '../../src/core/ingestion/languages/r/linear-regex.js';
 
@@ -731,6 +732,48 @@ describe('compileRExportPattern is linear-time on catastrophic patterns', () => 
     ]) {
       expect(compileRExportPattern(unsupported), unsupported).toBeNull();
     }
+  });
+
+  describe('"(?<" is only a group opener outside a character class and an escape', () => {
+    it.each([
+      ['[(?<]', ['(', '?', '<'], ['a', '']],
+      ['[^(?<]x', ['ax'], ['(x', '<x']],
+      ['^[(?<]+$', ['(<?', '<'], ['a<', '']],
+      ['[(?<]\\k', ['(k'], ['k']],
+      ['\\(?<x', ['<x', '(<x'], ['x']],
+      ['\\[[(?<]', ['[<', '[('], ['<']],
+      ['[\\]](?:a)', [']a'], ['a']],
+      ['[\\](?<]x', ['(x', ']x', '<x'], ['ax']],
+      ['[[(?<]', ['[', '('], ['a']],
+    ])('compiles %s and matches it as written', (pattern, matching, notMatching) => {
+      const regex = compileLinearRegex(pattern);
+      expect(regex, pattern).not.toBeNull();
+      for (const name of matching) expect(regex?.test(name), `${pattern} ~ ${name}`).toBe(true);
+      for (const name of notMatching) {
+        expect(regex?.test(name), `${pattern} !~ ${name}`).toBe(false);
+      }
+    });
+
+    it.each([
+      ['a real look-behind', '(?<=x)y'],
+      ['a negative look-behind', '(?<!x)y'],
+      ['a named group', '(?<n>a)'],
+      ['after a closed class', '[ab](?<=x)'],
+      ['after a class holding an escaped ]', '[\\]](?<=x)'],
+      ['after an escaped [', '\\[(?<=x)'],
+      ['after a class that holds (?<', '[(?<](?<=x)'],
+      ['inside a group', '(a|(?<=x)b)'],
+    ])('still rejects %s', (_label, pattern) => {
+      expect(compileLinearRegex(pattern), pattern).toBeNull();
+    });
+
+    it('reports a named group or look-behind as such', () => {
+      for (const pattern of ['(?<=x)y', '(?<n>a)']) {
+        const result = compileLinearRegexDetailed(pattern);
+        expect(result.regex).toBeNull();
+        expect(result.reason).toContain('look-behind');
+      }
+    });
   });
 
   it('bounds the matcher by pattern size, not by the name it is run against', () => {
