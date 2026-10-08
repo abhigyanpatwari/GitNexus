@@ -22,21 +22,10 @@ export function rubyBindingScopeFor(
   }
   // A plain Ruby `def` creates a method on the enclosing class/module (or
   // Object at top level), even when it appears textually inside another
-  // method. It is not a lexical closure. In the provider capture, an ordinary
-  // method starts with its declared name immediately after `def`; singleton
-  // methods carry a receiver first (`def self.foo` / `def Obj.foo`), while
-  // lambda/proc anchors do not start with `def` at all.
-  const functionDecl = decl['@declaration.function'];
-  const functionName = decl['@declaration.name']?.text;
-  const afterDef = functionDecl?.text.trimStart().startsWith('def')
-    ? functionDecl.text.trimStart().slice(3).trimStart()
-    : null;
-  if (
-    functionName !== undefined &&
-    afterDef !== null &&
-    afterDef.startsWith(functionName) &&
-    !/[A-Za-z0-9_!?=]/u.test(afterDef[functionName.length] ?? '')
-  ) {
+  // method. The provider proves this from the AST before emitting either a
+  // function or a reclassified method declaration; singleton methods and
+  // lambda/proc bindings never carry this marker.
+  if (decl['@declaration.lexical-method'] !== undefined) {
     let cur: Scope | undefined = innermost;
     while (cur !== undefined && cur.kind !== 'Class' && cur.kind !== 'Module') {
       // A block's receiver can rebind Ruby's default definee (`class_eval`,
