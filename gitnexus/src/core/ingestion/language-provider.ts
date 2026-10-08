@@ -38,6 +38,8 @@ import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
 import type { GraphNode, NodeLabel, ParameterTypeClass, RelationshipType } from 'gitnexus-shared';
+import type { KnowledgeGraph } from '../graph/types.js';
+import type { MutableSemanticModel } from './model/semantic-model.js';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
 import type {
@@ -233,6 +235,16 @@ export function shouldHarvestModuleConstants(
   return !provider.moduleConstantHeuristic || provider.moduleConstantHeuristic(content);
 }
 
+/**
+ * Everything a {@link LanguageProviderConfig.postParse} hook may read or mutate: the merged graph, the
+ * populated semantic model, and the repository root. Hooks mutate `graph`/`model` in place.
+ */
+export interface PostParseContext {
+  readonly graph: KnowledgeGraph;
+  readonly model: MutableSemanticModel;
+  readonly repoPath: string;
+}
+
 interface LanguageProviderConfig {
   // ── Identity ──────────────────────────────────────────────────────
   readonly id: SupportedLanguages;
@@ -372,6 +384,16 @@ interface LanguageProviderConfig {
     root: SyntaxNode,
     filePath: string,
   ) => { readonly name: string; readonly label: NodeLabel } | null;
+
+  /**
+   * For languages whose member owner is not a syntactic ancestor container
+   * (R: `R6Class(...)` / `setRefClass(...)` calls): return the node the
+   * method/field extractors read members from, or `null`.
+   *
+   * Consulted by the enclosing-owner slot after the container walk and
+   * `resolveFileTypeOwner` (same slot as the Zig file-owner).
+   * Default: undefined. */
+  readonly resolveMemberOwnerNode?: (definitionNode: SyntaxNode) => SyntaxNode | null;
 
   /**
    * The type a CONTAINER node declares, when the language names it from its
@@ -728,6 +750,20 @@ interface LanguageProviderConfig {
    * Default: undefined (the harvested constants are already fold-ready).
    */
   readonly prepareRouteConstants?: (repo: RepoConstants) => void;
+
+  /**
+   * Whole-graph work that can only run once every chunk is merged and before scope resolution
+   * (deferred owner resolution, package-manifest-driven export refinement). "Post-parse" means after
+   * all chunks are merged but still inside the parse phase — not the later `crossFile` phase.
+   *
+   * Called once per analyze, only if this language has parsed files, awaited, on the main thread.
+   * Mutates `ctx.graph` / `ctx.model` in place. A throw aborts the parse phase (it is not isolated,
+   * because the hook mutates shared state and a swallowed mid-mutation throw could leave the graph
+   * half-updated).
+   *
+   * Default: undefined (nothing to do after the merge).
+   */
+  readonly postParse?: (ctx: PostParseContext) => void | Promise<void>;
 
   /**
    * Spring async messaging facts captured for one file — the listener
@@ -1225,6 +1261,22 @@ export function prepareRouteConstantsByProvider(
   }
   for (const [provider, slice] of slices) {
     provider.prepareRouteConstants?.(slice);
+  }
+}
+
+/**
+ * Run each present language's {@link LanguageProviderConfig.postParse} hook, sequentially and in
+ * language-id order (independent of scan order), awaiting each before the next: the hooks share one
+ * mutable graph/model. The provider lookup is a callback so this file needs no registry import.
+ * A rejection propagates and later hooks do not run.
+ */
+export async function runPostParseHooks(
+  presentLanguages: ReadonlySet<SupportedLanguages>,
+  providerFor: (language: SupportedLanguages) => Pick<LanguageProvider, 'postParse'> | undefined,
+  ctx: PostParseContext,
+): Promise<void> {
+  for (const language of [...presentLanguages].sort()) {
+    await providerFor(language)?.postParse?.(ctx);
   }
 }
 

@@ -303,3 +303,10 @@ export function hasZigPubKeyword(declNode: SyntaxNode): boolean {
   }
   return false;
 }
+
+/**
+ * R: every definition is exported by default. NAMESPACE-driven export
+ * refinement lives in R's `postParse` hook (ExportChecker has no file-path
+ * context; NAMESPACE detection needs it).
+ */
+export const rExportChecker: ExportChecker = (_node, _name) => true;

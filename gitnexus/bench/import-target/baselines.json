@@ -2,6 +2,7 @@
   "_what": "Baselines for bench/import-target/measure.mjs cover every import-target resolver registered in SCOPE_RESOLVERS on a shared corpus, plus a configured C# arm for the branch the default call cannot reach. measure.mjs derives its arm inventory from LANG_REGISTRY and --check reconciles the registered languages in both directions. The single PHP arm supplies its production PSR-4 Composer mapping; csharp_csproj supplies csproj configuration. C and C++ also receive their production resolutionConfig header corpus. The timing, shape, fingerprint, context, and retained-heap gates therefore cover each production resolver path without splitting PHP into configured and unconfigured identities.",
   "_rebaselined_2960_kotlin_declared_packages": "Kotlin now resolves only from parsed package facts and local module bindings. This deliberately changes its five fingerprints, removes path-depth sensitivity, adds the context probe, and reduces the 32000-file retained index from 40.82 MiB to 4.31 MiB. External same-name path decoys now remain unresolved.",
   "_zig_arm_1432": "zig was registered in SCOPE_RESOLVERS by PR #1432 with no arm here, which is the exact hole the inventory arm exists for, and it reported it. The arm passes NO build config: resolveZigImportInternal walks an importer-relative @import path component by component and probes allFiles.has() twice (as spelled, then + '.zig'), so its fingerprints pin that walk alone and do not move when build.zig / build.zig.zon parsing (the bare-name legs, gated by test/unit/zig-import-resolver.test.ts) changes. Same corpus proportions as rust — 979 of 3200 resolve at 400 files — and rust's collide design, a deep tree whose spellings carry thirteen components against the unique arm's three, because component count is the only axis the cost has. Measured on one box: small 1.036 ms, collide 1.700 ms, scaling 1.050, collide scaling 1.011, depth 1.573; budgets take the file's usual ~1.5x on ratios (2.4 depth) and ~4x on absolute ms (4 / 7). Heap reads 16 B at both 8000 and 32000 files — it builds nothing, exactly rust's reading — so it sits in heap_bound_bytes at rust's absolute 1048576 B.",
+  "_r_arm": "R was registered in SCOPE_RESOLVERS without an arm here, which is the hole the inventory arm exists for, and it reported it twice: no LANG_REGISTRY row, and a five-parameter resolveImportTarget with no context arm. The arm drives the registered hook with the three import forms R code has, at the shared corpus proportions (1153 of 3200 resolve at 400 files, as for go, java and objc): library(pkg) as a wildcard, which resolves to every file of the package's R/ directory; source(\"R/file.R\") as a side-effect import, which misses the exact join and is answered by the suffix index; and a NAMESPACE importFrom(pkg, name) as a named import, spelled pkg::name in the corpus and split back in resolveOne, which reads the parsed workspace. The config is the DESCRIPTION-derived package map rebuilt from the corpus paths, with no NAMESPACE, so exports are not filtered. The collide arm repeats mod{k}.R in every package and spells source() at the project root (R/mod{k}.R), which is ambiguous across every package. The context probe is importFrom(pkgA, f): the parsed workspace answers the one file defining f, the context-free call answers every file of pkgA/R. Heap reads 57.26 MiB at 32000 files through the shared workspace file index, ratio 0.970, so R is budgeted. Measured over three runs: small 11.9-12.1 ms, collide 10.8-11.2 ms, scaling 1.38-1.43, collide scaling 1.39-1.45, depth 2.77-2.89. Budgets take the file's usual ~1.5x on ratios and ~4x on absolute ms. R sits above every other linear-budget language on scaling and collide scaling because two of its legs are genuinely O(files) per import rather than keyed: library() of a local package scans the whole file list for the R/ prefix, and every source() path calls normalizedFileList.indexOf before it reaches the index. Measured per leg at 400/1600/6400 files: library of a local package 2.5/8.9/32.4 us, source hit 1.2/6.3/35.9 us, against a flat 0.04 us for an external library() and about 13 us for a source miss. The mixed corpus is dominated by the flat legs, which is why the aggregate stays under the shared 1.8 scaling budget; the collide and depth budgets are set with that in mind rather than hiding it. Fixing the two scans is a resolver change, outside this arm's scope.",
   "_objc_arm_3179": "Objective-C resolves local header and source imports through a cached suffix map. The map preserves the previous first-path tie-break, which is covered directly in objective-c-provider.test.ts. This arm covers the registered resolver's five dispatch paths, including the depth-sensitive index construction and a collision layout. Measured on this branch: small 1.844 ms, collide 1.861 ms, scaling 1.111, collide scaling 1.067, depth 2.779, and 44101944 retained bytes. The 3.6 depth budget allows normal timing variation while remaining below a full per-import file scan; collision scaling stays at the shared linear 1.8 budget because suffix lookup is keyed.",
   "_cobol_copybook_dir_preference_2967": "COBOL now prefers well-known copybook directories (copybooks/, cpy/, copy/, plus importer dir) over vendor paths when resolving COPY statements, so COPY EXTERNAL no longer hits same-named decoys outside the project structure. This intentional behavior change moves the resolver from depth-free (prior measured ~0.885) to depth-sensitive (measured 1.751 on CI), because the new preferredCopybookDirs check walks path components. The 2.4 depth budget is ~1.37x the measured ratio, consistent with the ~1.5x convention for depth arms. The unique-arm fingerprints and resolved counts change to reflect the new target set: small/deep drop from 1153 to 442 resolved because files outside preferred directories are now correctly filtered. The collide arm (svc${d}/copybooks layout) keeps 1153 resolved because ALL its files are in preferred copybook directories, so the filter does not change its resolution outcomes — the collide arm now measures collision behavior within the preferred class rather than across mixed layouts. Fixes #2967.",
   "_php_composer_gate_2962": "The canonical PHP arm supplies an authoritative App PSR-4 mapping. A deterministic Vendor0 suffix decoy makes deletion of the external gate change every timing fingerprint, while the heap arm separately pins a mapped miss, the rendered mapping, and the external null result. Three serial samples measured depth ratios 1.058, 1.114, and 1.158; the 1.8 budget is 1.55x the observed maximum. The mapped-miss heap reading peaked at 39607216 retained bytes at 32000 files.",
@@ -31,7 +32,8 @@
     "c": 3.8,
     "cpp": 4,
     "objc": 1.8,
-    "zig": 1.8
+    "zig": 1.8,
+    "r": 2.2
   },
   "depth_budget": {
     "go": 1.4,
@@ -52,7 +54,8 @@
     "c": 3,
     "cpp": 3,
     "objc": 3.6,
-    "zig": 2.4
+    "zig": 2.4,
+    "r": 4.2
   },
   "small_ms_ceiling": {
     "go": 7,
@@ -73,7 +76,8 @@
     "c": 7,
     "cpp": 7,
     "objc": 8,
-    "zig": 4
+    "zig": 4,
+    "r": 50
   },
   "collide_ms_ceiling": {
     "go": 28,
@@ -94,7 +98,8 @@
     "c": 11,
     "cpp": 12,
     "objc": 8,
-    "zig": 7
+    "zig": 7,
+    "r": 45
   },
   "heap_ceiling_bytes": {
     "kotlin": 6800000,
@@ -108,7 +113,8 @@
     "php": 59410824,
     "java": 5600000,
     "python": 9541404,
-    "c": 15000000
+    "c": 15000000,
+    "r": 90100000
   },
   "_heap_reading_note": "heap_reading_bytes records each measured large-corpus reading so the 0.5x floor is independent of its ceiling. Ceilings use the standard 1.5x allowance for cross-platform and Node heap-accounting differences; re-baseline the reading and ceiling together.",
   "_kotlin_declared_package_gate": "#2960 replaces Kotlin\u0027s path-suffix cascade with one declared-package/module-binding index. The 32000-file arm measured 4516944 retained bytes (4.31 MiB), with a 6800000-byte ceiling. Correctness and reuse are pinned separately by kotlin-module-resolution.test.ts, external-import-conformance.test.ts, the shared index-reuse contract, and bench/kotlin-import-target.",
@@ -124,7 +130,8 @@
     "php": 39607216,
     "java": 3676984,
     "python": 6360936,
-    "c": 10018816
+    "c": 10018816,
+    "r": 60040752
   },
   "_heap_bound_note": "THE SECOND HEAP TIER. Every registered language is measured now; heap_bound_bytes gates the nine that are not BUDGETED above, and it gates them with one comparison and no floor. A ceiling says 'this index is not too big'. A bound says something narrower and it is the thing that was missing: 'the exclusion still holds' \u2014 this language has not grown an index since it was left out. measure.mjs's MEMORY section states the re-entry condition (if a language ever diverges in what it ASKS its index, it earns a budgeted arm) and until now nothing watched for the divergence; HEAP_LANGS was a hand-maintained list of eight whose two neighbours, LANG_REGISTRY and CONTEXT_LANGS, are both reconciled against a derived predicate in both directions. HEAP_BOUNDED is derived too \u2014 it is LANGS minus HEAP_BUDGETED \u2014 so the two tiers partition the languages and a new one cannot land outside both. WHAT RE-MEASURING FOUND, five runs each, maximum quoted, peak-to-peak in brackets. go 2998464 B [1.0021], dart 7834200 B [1.0006] and kotlin 42802456 B [1.0004] HAD NO STATED REASON AT ALL: the old prose opened 'SIX of the seventeen are deliberately NOT in HEAP_LANGS' against a list of eight of seventeen, and these three were the three nobody counted. All three retain a real per-pass structure (go's PackageDirIndex, dart's basename buckets, kotlin's suffixByStem cascade) and kotlin's 40.82 MiB is above ruby's 39.12 and java's 33.34, both of which carry a full budget. (It read 45.85 MiB when this was written, described here as 'the second-largest reading in this file' \u2014 it was third even then, behind csharp_csproj and php; #2881 later compacted its dirChildren buckets and took 11% off it. Same staleness this paragraph exists to document.) swift 3449216 B [1.0024] and cobol 2320456 B [1.0000] were excluded as 'below the measurement's own noise floor' on readings of 0.29 MB and 0 B at 32000 files; they now read 3.29 MB and 2.21 MB, growing with the corpus (969120 B and 536264 B at 8000). Those old numbers were not wrong when taken \u2014 the ARM changed under them, when #2903's follow-up made every probe resolve a real import and when measureHeap began flattening its corpus \u2014 which is the whole finding: a measurement written into prose is not re-taken, and this file had already gone stale against itself, quoting javascript at 46208832 B four paragraphs after quoting it at 25.51 MiB. rust is the one exclusion that survived unchanged: 16 B at 8000 files and 16 B at 32000, identical in all five runs. typescript 26745296 B, vue 28884016 B and cpp 10023344 B are duplicates of a builder AND of a read pattern: typescript is byte-identical to javascript's 26745296 in four runs of five, cpp is +0.05% of c's 10018816, vue is +8.0% of javascript. HOW THE BOUNDS WERE CHOSEN. Each takes 1.5x its measured maximum, rounded up to the next 100000 B: cobol 6200000 (1.508x of 4112464 B measured after copybook-dir preference; previously 3500000 based on 2320456 B before the behavior change), swift 5200000 (1.508x). (This sentence used to list eight, including go, dart, kotlin, typescript, vue and cpp. Those six were promoted to the budgeted tier and their bounds deleted; the numbers stayed here, unread by any gate, and #2881 dutifully updated kotlin's to 64300000 before anyone noticed heap_bound_bytes holds only cobol, swift and rust. A number nothing asserts is a number that rots \u2014 the finding this paragraph is otherwise about.) 1.5x is NOT copied from the ceilings out of habit \u2014 it is the same number for a stated reason, and the reason is not noise: measured peak-to-peak on this box is at most 1.0024, so noise alone would justify 1.05x. What a bound has to survive is a RUNNER change, since heapUsed accounting moves across platforms and Node majors, and this file already fixes that allowance at 50% for exactly this measurement on exactly this arm. Using a second allowance for the same uncertainty on the same number would be two conventions, not more rigour. At 1.5x the bound catches what the re-entry condition is about \u2014 a language growing an index, which costs +85% for one more suffix map and +100% for a duplicate \u2014 and it does NOT catch a duplicate diverging by 8%. That limit is real and is stated rather than hidden: the tight form is a same-process ratio against the arm each duplicate is a duplicate OF, which is the only form immune to the drift the absolute bound has to tolerate. RUST TAKES AN ABSOLUTE BOUND INSTEAD, 1048576 B (1 MiB), because 1.5 x 16 B is 24 B and would fail on the first byte of anything \u2014 a multiplier on a reading that is already nothing is a gate that flakes rather than a gate that bites. 1 MiB is ~65000x the reading and still 3.9x below the smallest real index measured here (cobol's 3.92 MB at the same file count after copybook-dir preference), so it separates 'builds nothing' from 'builds something' with room on both sides. NO FLOOR ON ANY OF THE NINE, and the reason differs by language rather than being uniform. For rust a floor would be a floor on noise. For the other eight the readings are stable enough to floor today, and for kotlin and dart \u2014 larger than budgeted arms \u2014 a floor would be worth having, since a lazily-built map going quiet is exactly how the four budgeted arms once read 0 B. Adding one is a PROMOTION to the budgeted tier, with a ceiling and a recorded reading beside it, not a line here: a floor whose companion ceiling does not exist asserts 'still measuring' against a number nothing else bounds. Recommended next, in order: kotlin, then dart, then go.",
   "heap_bound_bytes": {
@@ -1144,6 +1151,62 @@
         "depth_ratio": 1.573,
         "scaling_ratio": 1.05,
         "small_ms": 1.036
+      }
+    },
+    "r": {
+      "small": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 1153,
+        "distinct_outcomes": 3080,
+        "fingerprint": "b77a56af9b59034404801d79b3ed7760bbc63069b50caab996123051e97bf755"
+      },
+      "large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4681,
+        "distinct_outcomes": 12297,
+        "fingerprint": "159bb6eacfff674cc2c7fec1ffe3b814104fb500d6cb8416a38942ec11ec97fd"
+      },
+      "deep": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 1153,
+        "distinct_outcomes": 3080,
+        "fingerprint": "5ea8bb989760f40b4e47986efeb8b6e67d8363f38caac1c341d24c000af25a05"
+      },
+      "collide": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 1153,
+        "distinct_outcomes": 3057,
+        "fingerprint": "b53fe6dce1eaa9bd6c1c5083aa36bec45ea5afe485cc9ec28db97b78cc41fce5"
+      },
+      "collide_large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4681,
+        "distinct_outcomes": 12212,
+        "fingerprint": "225bda6d01439bc48eda483a76e7b4c1c3f8328ab243d52adcf2d4c018b0cf0b"
+      },
+      "fingerprint": "159bb6eacfff674cc2c7fec1ffe3b814104fb500d6cb8416a38942ec11ec97fd",
+      "heap": {
+        "files_small": 8000,
+        "files_large": 32000,
+        "path_segments": 11,
+        "probe": "vendor0/R/missing.R"
+      },
+      "context": {
+        "target": "pkgA::f",
+        "with_context": "pkgA/R/a.R",
+        "without_context": "pkgA/R/a.R,pkgA/R/b.R"
+      },
+      "_measured": {
+        "collide_ms": 11.022,
+        "collide_scaling_ratio": 1.434,
+        "depth_ratio": 2.82,
+        "scaling_ratio": 1.39,
+        "small_ms": 12.145
       }
     }
   },

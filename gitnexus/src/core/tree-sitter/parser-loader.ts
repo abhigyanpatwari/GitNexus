@@ -127,6 +127,11 @@ const SOURCES: Record<string, GrammarSource> = {
     unavailableNote:
       'Ruby parsing requires `tree-sitter-ruby`. Check the install and native binding.',
   },
+  [SupportedLanguages.R]: {
+    load: () => _require('@eagleoutice/tree-sitter-r'),
+    unavailableNote:
+      'R parsing requires `@eagleoutice/tree-sitter-r`. Check the install and native binding.',
+  },
   [SupportedLanguages.Vue]: {
     load: () => _require('tree-sitter-typescript').typescript,
     unavailableNote:

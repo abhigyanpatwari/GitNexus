@@ -1,7 +1,7 @@
-<!-- version: 1.17.0 -->
-<!-- Last updated: 2026-09-24 -->
+<!-- version: 1.18.0 -->
+<!-- Last updated: 2026-10-07 -->
 
-Last reviewed: 2026-09-24
+Last reviewed: 2026-10-07
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -40,6 +40,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**, **[CONTRIBUTING.md](CONTRIBUTING.md)**, **[GUARDRAILS.md](GUARDRAILS.md)**
 - **Objective-C provider work:** read **[docs/languages/objective-c-provider.md](docs/languages/objective-c-provider.md)** before changing Objective-C parsing or resolution.
+- **R provider work:** read **[docs/languages/r-provider.md](docs/languages/r-provider.md)** before changing R parsing or resolution.
 - **Call & inheritance resolution (RFC #909 Ring 3):** See ARCHITECTURE.md § Scope-Resolution Pipeline. All languages resolve calls and inheritance through the scope-resolution pipeline (`Registry.lookup`, `preEmitInheritanceEdges`, `emitHeritageEdges`, `buildMro` → `MethodDispatchIndex`). **Shared code in `gitnexus/src/core/ingestion/` must not name languages** — plug language behavior in via `LanguageProvider` / `ScopeResolver` hooks. A language plugs in by implementing `ScopeResolver` (`scope-resolution/contract/scope-resolver.ts`) and registering it in `SCOPE_RESOLVERS`. (The legacy call-resolution DAG + `@heritage` capture path were removed in RING4-1 #942.)
 - **Cursor:** `.cursor/index.mdc` (always-on); `.cursor/rules/*.mdc` (glob-scoped). Legacy `.cursorrules` deprecated.
 - **GitNexus:** standard skills in `.claude/skills/gitnexus-*/`; MCP rules in `gitnexus:start` block below.
@@ -91,6 +92,7 @@ mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Toke
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-10-07 | 1.18.0 | Added the R provider guide as the required reference before changing R parsing or resolution. |
 | 2026-09-24 | 1.17.0 | Clones with the same `origin` URL now share a store automatically; `--no-share` records a lasting opt-out (#3352). |
 | 2026-09-24 | 1.16.0 | Documented the shared worktree index store (`<GITNEXUS_HOME>/stores/`, `analyze --share-with`, `GITNEXUS_SHARED_STORE=off`) in the storage notes (#3352). |
 | 2026-09-07 | 1.15.0 | Added the Objective-C provider guide as the required reference before changing Objective-C parsing or resolution. |

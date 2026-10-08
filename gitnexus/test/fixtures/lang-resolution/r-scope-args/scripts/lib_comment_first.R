@@ -1,0 +1,4 @@
+library(
+  # the package
+  pkgP
+)

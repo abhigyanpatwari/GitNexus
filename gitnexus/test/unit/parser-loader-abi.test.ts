@@ -129,6 +129,11 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'pub fn main() void {}\n',
     rootType: 'source_file',
   },
+  [SupportedLanguages.R]: {
+    language: SupportedLanguages.R,
+    snippet: 'f <- function(x) x\n',
+    rootType: 'program',
+  },
 };
 
 describe('parser-loader ABI load-smoke (#1922)', () => {

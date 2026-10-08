@@ -59,6 +59,10 @@ const GRAMMAR_PACKAGES: Partial<Record<SupportedLanguages, { pkg: string; subpat
   [SupportedLanguages.Go]: { pkg: 'tree-sitter-go', subpaths: ['src/node-types.json'] },
   [SupportedLanguages.Ruby]: { pkg: 'tree-sitter-ruby', subpaths: ['src/node-types.json'] },
   [SupportedLanguages.Rust]: { pkg: 'tree-sitter-rust', subpaths: ['src/node-types.json'] },
+  [SupportedLanguages.R]: {
+    pkg: '@eagleoutice/tree-sitter-r',
+    subpaths: ['src/node-types.json'],
+  },
   // tree-sitter-php's runtime export is `php_only` (see parser-loader), so the
   // gate must validate against that variant's node set, not the embedded-HTML
   // `php` grammar.

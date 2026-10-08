@@ -722,8 +722,11 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 | Objective-C | ✓      | —              | ✓       | ✓        | ✓                | —                     | —      | —          | —            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
+| R (experimental) | ✓  | ✓              | ✓       | ✓        | —                | ✓                     | ✓      | —          | —            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
+
+**R (experimental)** — `.r` / `.R` files, parsed with `@eagleoutice/tree-sitter-r`. Extracts functions, S4 classes, R6 classes and RefClass (`setRefClass`) classes with their methods and fields, and resolves `library()` / `require()` / `source()` imports to local packages and files, `obj$method()` and `pkg::fn()` calls, R6 `inherit=` / S4 `contains=` heritage and NAMESPACE-driven export status. Calls through function values, `do.call()`, infix operators and S3 dispatch are not linked, and `.Rmd` files, `box::use()` and external (CRAN) packages are not supported. See [docs/languages/r-provider.md](docs/languages/r-provider.md) for the full coverage and limits.
 
 **Control flow (CFG, opt-in `--pdg`)** — per-function control-flow graphs (`BasicBlock` nodes + `CFG` edges) feeding the PDG/taint substrate, currently **TypeScript & JavaScript** (#2081 M1); other languages planned. Off by default.
 

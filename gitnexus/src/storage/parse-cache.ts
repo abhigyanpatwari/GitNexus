@@ -838,7 +838,25 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v131 (#3504): Python namespace imports retain explicit alias syntax. Warm
 // v130 ParsedFiles lack this fact and can bind a root-spelled alias to the
 // package root instead of the imported module.
-const SCHEMA_BUMP = 131;
+// v132: R provider fixes, collapsed into one bump because none of them has
+// shipped. R scope queries anchor a `@scope.function` on every named-function
+// assignment and named function-valued argument (the same nodes the
+// `@declaration.function`/`@declaration.method` anchors use), so each def is
+// owned by its own Function scope instead of the module/Class scope, and
+// capture the `pkg::`/`pkg:::` qualifier of namespaced calls as
+// `@reference.qualified-name` so it reaches `site.rawQualifiedName`. The R
+// provider also keeps only the argument that names an S4 definition
+// (shouldSkipDefinitionCapture), so `setClass("A", contains = "VIRTUAL")` no
+// longer defines a Class `VIRTUAL`, `setGeneric(..., valueClass = "numeric")` a
+// Function `numeric`, nor `setMethod("show", "Foo", ...)` a Method `Foo`; the R
+// scope emitter likewise keeps only the argument that names a `setClass` class
+// or a `library`/`require`/`source` import, so `library(lib.loc = libO, pkgP)`
+// no longer imports `libO` and a comment before the first argument no longer
+// hides the class or import. Definitions and scope captures are parse-time
+// facts replayed verbatim from the warm cache, so stale ones (the pre-fix scope
+// tree, the unqualified call-site shape, the mis-selected arguments) would
+// persist on unchanged files; both stores must re-extract.
+const SCHEMA_BUMP = 132;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

@@ -67,6 +67,7 @@
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
+    "@eagleoutice/tree-sitter-r": "^1.1.2",
     "@ladybugdb/core": "0.21.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",

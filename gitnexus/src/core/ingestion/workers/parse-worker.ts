@@ -15,6 +15,7 @@ import CPP from 'tree-sitter-cpp';
 import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
+import R from '@eagleoutice/tree-sitter-r';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
@@ -599,6 +600,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
+  [SupportedLanguages.R]: R,
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
@@ -679,7 +681,9 @@ function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
  * a type (`resolveFileTypeOwner`, e.g. a Zig file-struct), the tree root is
  * the owner node the method/field extractors should read members from. Same
  * root, same name as `findEnclosingClassInfo`'s root branch, so member ids and
- * owner ids agree.
+ * owner ids agree. Failing both, the provider's `resolveMemberOwnerNode` gets
+ * the last word (languages whose members belong to a call/assignment rather
+ * than an enclosing container node, e.g. R's `R6Class(...)`).
  */
 function findEnclosingClassNodeOrFileOwner(
   node: SyntaxNode,
@@ -688,10 +692,12 @@ function findEnclosingClassNodeOrFileOwner(
 ): SyntaxNode | null {
   const container = findEnclosingClassNode(node);
   if (container !== null) return container;
-  if (provider.resolveFileTypeOwner === undefined) return null;
-  let root: SyntaxNode = node;
-  while (root.parent) root = root.parent;
-  return provider.resolveFileTypeOwner(root, filePath) !== null ? root : null;
+  if (provider.resolveFileTypeOwner !== undefined) {
+    let root: SyntaxNode = node;
+    while (root.parent) root = root.parent;
+    if (provider.resolveFileTypeOwner(root, filePath) !== null) return root;
+  }
+  return provider.resolveMemberOwnerNode?.(node) ?? null;
 }
 
 /**

@@ -39,6 +39,9 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   // Objective-C message sends are resolved by its ScopeResolver. The provider
   // does not emit callable-value-flow captures in this MVP.
   [SupportedLanguages.ObjectiveC]: 'not-applicable',
+  // R calls are resolved by its ScopeResolver. The provider does not emit
+  // callable-value-flow captures (no synthesizeCallableFlowCaptures use).
+  [SupportedLanguages.R]: 'not-applicable',
 } as const satisfies Record<SupportedLanguages, CallableFlowCoverage>;
 
 const PROVIDER_FLOW_CASES = [

@@ -377,7 +377,7 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 
 ## Language-agnostic graph feeding
 
-18 languages → single unified graph. Four abstraction layers:
+19 languages → single unified graph. Four abstraction layers:
 
 ```
  Unified Graph Schema (44 node types, 21 relationship types)
@@ -404,8 +404,10 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 | `mroStrategy`          | `first-wins` / `c3` / `none`                                                                                                                                                                                                                                                                                                      |
 | `descriptionExtractor` | Optional hook returning a symbol's doc-comment text as its `description`; feeds the embedding metadata header so doc-only terms are semantically searchable (issue #2270). Most languages register `createLeadingDocDescriptionExtractor` (shared, language-neutral; per-language comment/wrapper config passed at the call site) |
 | `definitionPropertiesExtractor` | Optional language-owned hook for structured, clone-safe definition metadata. Shared ingestion persists these properties opaquely; the owning provider supplies the extraction semantics. |
+| `postParse` | Optional. Whole-graph pass a language runs once after every chunk is merged and before scope resolution (deferred owner resolution, manifest-driven export refinement). Called once per analyze, awaited, only when the language has parsed files; a throw aborts the parse phase. R: deferred `setMethod`/R6 owners + NAMESPACE exports. |
+| `resolveMemberOwnerNode` | Optional. For languages whose members are owned by a call/assignment rather than an enclosing container node (R: R6/RefClass): returns the node the method and field extractors read members from, or null. Consulted by the enclosing-owner slot after the container walk and `resolveFileTypeOwner` (same slot; Zig file-owner is the precedent). Not an S4 mechanism: R's `setMethod(...)` returns null (its owner is a string-literal class name, not a node); S4 ownership arrives only through the `ownerNameHint` → `postParse` path. |
 
-18 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
+19 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
 
 ### Unified capture tags
 

@@ -1,0 +1,9 @@
+export(tidy)
+export(decoy_fn)
+export(quoted_fn)
+export(backticked_fn)
+export(shared)
+export(libshared)
+# Re-export: imported from provlib, never defined here.
+importFrom(provlib, reexp_fn)
+export(reexp_fn)

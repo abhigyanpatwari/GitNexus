@@ -1,0 +1,7 @@
+library(prov)
+use_foo <- function(v) foo(v)
+use_bar <- function(v) bar(v)
+use_baz <- function(v) baz(v)
+use_dotted <- function(x) print.foo(x)
+use_qux <- function(v) qux(v)
+use_odd <- function(v) `odd name`(v)
