@@ -1867,6 +1867,8 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.name',
   '@declaration.qualified_name',
   '@declaration.is-synthetic',
+  '@declaration.global',
+  '@declaration.lexical-method',
   '@import.name',
   '@import.source',
   '@import.alias',
