@@ -4,8 +4,8 @@ import { collectNamespaceTargets } from '../../../src/core/ingestion/scope-resol
 import { pythonNamespaceReceiverPaths } from '../../../src/core/ingestion/languages/python/import-target.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 
-// `collectNamespaceTargets` reads exactly two things: the file's module scope
-// and `scopes.imports`. Hand-building those keeps this test about the keying
+// The module-only cases need just a module scope and `scopes.imports`; the
+// lexical cases also supply parent scopes. This keeps the test about the keying
 // rule itself rather than about any one language's parser — which matters,
 // because the rule's whole job is to tell otherwise identical-looking edges
 // from different languages apart.
@@ -177,5 +177,45 @@ describe('collectNamespaceTargets — namespace receiver spellings (#2826)', () 
       targetFile: 'single.py',
     });
     expect(collectPython([bare]).get('single')).toEqual(['single.py']);
+  });
+});
+
+describe('collectNamespaceTargets — lexical import scopes', () => {
+  const inner = 'scope:inner' as ScopeId;
+  const sibling = 'scope:sibling' as ScopeId;
+  const closure = 'scope:closure' as ScopeId;
+  const parsed = { moduleScope: MODULE_SCOPE };
+  const parents = new Map([
+    [inner, MODULE_SCOPE],
+    [sibling, MODULE_SCOPE],
+    [closure, inner],
+  ]);
+
+  function collect(inScope: ScopeId, innerEdge: ImportEdge = edge({ targetFile: 'local.py' })) {
+    const scopes = {
+      imports: new Map([
+        [MODULE_SCOPE, [edge({})]],
+        [inner, [innerEdge]],
+      ]),
+      scopeTree: { getScope: (id: ScopeId) => ({ parent: parents.get(id) ?? null }) },
+    } as unknown as ScopeResolutionIndexes;
+    return collectNamespaceTargets(parsed, scopes, { inScope });
+  }
+
+  it('uses the nearest import without leaking it to a sibling or the module', () => {
+    expect(collect(inner).get('pkg')).toEqual(['local.py']);
+    expect(collect(closure).get('pkg')).toEqual(['local.py']);
+    expect(collect(sibling).get('pkg')).toEqual(['pkg/db.py']);
+    expect(collect(MODULE_SCOPE).get('pkg')).toEqual(['pkg/db.py']);
+  });
+
+  it('does not revive an outer namespace hidden by a named import', () => {
+    expect(collect(inner, edge({ kind: 'named', targetFile: 'local.py' })).has('pkg')).toBe(false);
+  });
+
+  it('does not revive an outer namespace when the nearest import is unresolved', () => {
+    expect(collect(inner, edge({ targetFile: null, linkStatus: 'unresolved' })).has('pkg')).toBe(
+      false,
+    );
   });
 });
