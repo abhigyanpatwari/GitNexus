@@ -1,9 +1,26 @@
-import type { ParsedFile, ScopeId } from 'gitnexus-shared';
+import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 
 const namesByWorkspace = new WeakMap<
   readonly ParsedFile[],
-  ReadonlyMap<ScopeId, readonly string[]>
+  ReadonlyMap<ScopeId, readonly string[] | null>
 >();
+
+/** Keep each module binding's definition, rather than looking its name up again
+ * among class members and nested functions in the file's flat definition list. */
+export function pythonModuleExports(parsed: ParsedFile): ReadonlyMap<string, SymbolDefinition> {
+  const exports = new Map<string, SymbolDefinition>();
+  const module = parsed.scopes.find((scope) => scope.id === parsed.moduleScope);
+  for (const [name, bindings] of module?.bindings ?? []) {
+    const definition = bindings[0]?.def;
+    if (
+      definition !== undefined &&
+      bindings.every((binding) => binding.def.nodeId === definition.nodeId)
+    ) {
+      exports.set(name, definition);
+    }
+  }
+  return exports;
+}
 
 /** Public declarations imported by `from module import *`.
  * Explicit `__all__` values are not represented by ParsedFile. Decline those
@@ -12,10 +29,11 @@ const namesByWorkspace = new WeakMap<
 export function expandPythonWildcardNames(
   targetModuleScope: ScopeId,
   parsedFiles: readonly ParsedFile[],
+  availableNames?: readonly string[],
 ): readonly string[] {
   let byScope = namesByWorkspace.get(parsedFiles);
   if (byScope === undefined) {
-    const collected = new Map<ScopeId, readonly string[]>();
+    const collected = new Map<ScopeId, readonly string[] | null>();
     for (const parsed of parsedFiles) {
       const module = parsed.scopes.find((scope) => scope.id === parsed.moduleScope);
       // Scope-creating declarations are owned by their body scope, but bind
@@ -29,15 +47,16 @@ export function expandPythonWildcardNames(
             edge.localName === '__all__' &&
             (edge.declaredAtScope === undefined || edge.declaredAtScope === parsed.moduleScope),
         );
-      collected.set(
-        parsed.moduleScope,
-        hasExplicitExports
-          ? []
-          : [...new Set(names.filter((name) => name.length > 0 && !name.startsWith('_')))],
-      );
+      collected.set(parsed.moduleScope, hasExplicitExports ? null : names);
     }
     byScope = collected;
     namesByWorkspace.set(parsedFiles, byScope);
   }
-  return byScope.get(targetModuleScope) ?? [];
+  const localNames = byScope.get(targetModuleScope);
+  if (localNames == null) return [];
+  return [
+    ...new Set(
+      (availableNames ?? localNames).filter((name) => name.length > 0 && !name.startsWith('_')),
+    ),
+  ];
 }
