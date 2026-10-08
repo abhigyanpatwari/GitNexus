@@ -893,6 +893,11 @@ export interface ScopeResolver {
    * publishing every file's imports at module scope. */
   readonly importsBindAtLexicalScope?: boolean;
 
+  /** Whether class-owned definitions also populate the legacy module lookup
+   * bucket. Disable when bare names must follow lexical bindings exclusively.
+   * Defaults to true; synthetic declarations remain available for dispatch. */
+  readonly ownedMembersBindAtModuleScope?: boolean;
+
   /**
    * Two `wildcard` re-exports that both DECLARE a name make it AMBIGUOUS in
    * this language — ECMAScript `export *` semantics, where the module simply

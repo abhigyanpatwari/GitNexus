@@ -17,6 +17,51 @@ import {
   type PipelineResult,
 } from './helpers.js';
 
+describe('Ruby nested method declarations remain visible on the outer method surface', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-nested-method'), () => {});
+  }, 60000);
+
+  it('resolves a sibling caller to the nested method despite a same-name method elsewhere', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find(
+      (candidate) =>
+        candidate.source === 'caller' && candidate.rel.targetId.includes('boot.target'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('does not project a receiver-rebinding block method onto the lexical class', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (candidate) => candidate.source === 'class_eval_caller' && candidate.target === 'rebound',
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ['commented_caller', 'commented_target', 'boot_commented.commented_target'],
+    ['class_caller', 'class_target', 'Host.boot_class.class_target'],
+  ])(
+    'resolves %s to its nested method despite a competing class member',
+    (caller, target, owner) => {
+      const calls = getRelationships(result, 'CALLS').filter(
+        (candidate) => candidate.source === caller && candidate.target === target,
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.rel.targetId).toContain(owner);
+    },
+  );
+
+  it('does not project a method through an unknown helper that rebinds the block definee', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (candidate) => candidate.source === 'helper_caller' && candidate.target === 'helper_target',
+    );
+    expect(calls).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Heritage: require_relative imports + include heritage + attr_* properties + calls
 // ---------------------------------------------------------------------------

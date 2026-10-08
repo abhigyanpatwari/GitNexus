@@ -77,6 +77,111 @@ describe('Python relative import & heritage resolution', () => {
   });
 });
 
+describe('Python nested declarations stay in their lexical scope (#3499)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-nested-def-scope'), () => {});
+  }, 60000);
+
+  it('does not expose a nested function to sibling callers', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const siblingEdges = calls.filter(
+      (edge) => edge.source === 'caller' && edge.rel.targetId.includes('outer.target'),
+    );
+    expect(siblingEdges).toEqual([]);
+  });
+
+  it('preserves module and function-local imports shadowed only by a nested name', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const importedCalls = calls.filter(
+      (edge) => edge.source === 'caller' && edge.rel.targetId.includes('facade.py:target'),
+    );
+    expect(importedCalls).toHaveLength(2);
+  });
+
+  it('still resolves each call inside the enclosing function to its nested declaration', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const nestedCalls = calls.filter(
+      (edge) => edge.source === 'outer' && edge.rel.targetId.includes('outer.target'),
+    );
+    expect(nestedCalls).toHaveLength(3);
+  });
+
+  it('does not expose ordinary class methods to unqualified module callers', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const callers = new Set([
+      'method_unbound_caller',
+      'method_module_caller',
+      'method_function_caller',
+    ]);
+    const methodEdges = calls.filter(
+      (edge) => callers.has(edge.source) && edge.rel.targetId.includes('Box.target'),
+    );
+    expect(methodEdges).toEqual([]);
+  });
+
+  it('preserves module and function-local imports shadowed only by a class method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const importedCalls = calls.filter(
+      (edge) =>
+        ['method_module_caller', 'method_function_caller'].includes(edge.source) &&
+        edge.rel.targetId.includes('facade.py:target'),
+    );
+    expect(importedCalls).toHaveLength(2);
+  });
+});
+
+describe('Python global nested declarations bind at module scope (#3502)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-global-nested-def'), () => {});
+  }, 60000);
+
+  it('resolves a sibling caller to the global declaration, not a same-name method', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'caller' && edge.target === 'target',
+    );
+    expect(calls.map((edge) => edge.targetFilePath)).toEqual(['main.py']);
+  });
+
+  it('does not carry an outer global declaration across a class body', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'class_boundary_caller' && edge.target === 'leaked',
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it('resolves global class declarations from a sibling caller', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'global_class_caller' && edge.target === 'published_ping',
+    );
+    expect(calls.map((edge) => [edge.targetLabel, edge.targetFilePath])).toEqual([
+      ['Method', 'main.py'],
+    ]);
+  });
+
+  it('does not let a nested class global publish its enclosing function-local declaration', () => {
+    const calls = getRelationships(result, 'CALLS').filter((edge) => edge.target === 'retained');
+    expect(calls.map((edge) => edge.source)).toEqual(['class_global_boundary']);
+  });
+
+  it('publishes class-owned global functions and classes without creating a method', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'class_global_caller',
+    );
+    expect(
+      calls.map((edge) => `${edge.targetFilePath}:${edge.targetLabel}:${edge.target}`).sort(),
+    ).toEqual(['main.py:Function:class_target', 'main.py:Method:class_ping']);
+    expect(getNodesByLabel(result, 'Method')).not.toContain('class_target');
+    const definition = getNodesByLabelFull(result, 'Function').find(
+      (node) => node.name === 'class_target',
+    );
+    expect(definition?.properties.parameterCount).toBe(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Qualified / generic bases (#1951). An earlier synth DROPPED these shapes —
 // only bare `identifier` bases emitted, so production silently omitted their

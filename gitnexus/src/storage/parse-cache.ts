@@ -829,7 +829,13 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Warm v126 worker results can retain false tools after a method replacement.
 // v128 (#3450): SDK namespace imports now prove positional tool receivers.
 // Warm v127 worker results omit these definitions and must be re-extracted.
-// v129: R provider fixes, collapsed into one bump because none of them has
+// v129 (#3499): Python/PHP/Ruby declaration bindings now preserve language-
+// specific module visibility. Warm v128 ParsedFiles retain the old binding
+// placement and can lose valid calls when finalized by the new projection.
+// v130 (#3502): Python globals use exact function/class block ownership and
+// Ruby ordinary-method binding uses AST markers. Warm v129 ParsedFiles retain
+// incorrect declaration scopes and must be re-extracted.
+// v131: R provider fixes, collapsed into one bump because none of them has
 // shipped. R scope queries anchor a `@scope.function` on every named-function
 // assignment and named function-valued argument (the same nodes the
 // `@declaration.function`/`@declaration.method` anchors use), so each def is
@@ -847,7 +853,7 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // facts replayed verbatim from the warm cache, so stale ones (the pre-fix scope
 // tree, the unqualified call-site shape, the mis-selected arguments) would
 // persist on unchanged files; both stores must re-extract.
-const SCHEMA_BUMP = 129;
+const SCHEMA_BUMP = 131;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
