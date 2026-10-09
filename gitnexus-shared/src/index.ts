@@ -233,6 +233,7 @@ export type {
 } from './scope-resolution/types.js';
 export {
   lookupLexicalName,
+  nameClaimsFor,
   selectClaimsAtScope,
   rangesOverlap,
 } from './scope-resolution/name-claims.js';
