@@ -71,14 +71,12 @@ def test_release_probe_skips_paid_calls_and_paid_job_has_pickup_watchdog():
     assert watch["steps"][-1]["if"] == "failure()"
 
 
-def test_release_comparison_consumes_exact_same_run_bundle_and_gates_outcomes():
+def test_release_comparison_is_scheduled_or_manual_and_gates_outcomes():
     document = workflow("release-evaluation.yml")
+    # PyYAML parses the bare `on` key as True.
+    assert set(document[True]) == {"schedule", "workflow_dispatch"}
     steps = document["jobs"]["evaluate"]["steps"]
-    download = next(step for step in steps if step.get("name") == "Download this run's prepared candidate")
-    assert download["with"]["name"] == "${{ inputs.candidate_artifact }}"
-    assert "run-id" not in download["with"] and "github-token" not in download["with"]
     scripts = "\n".join(step.get("run", "") for step in steps)
-    assert "release_candidate.py restore" in scripts
     assert "releases/latest" in scripts
     assert "workflow_bench.release_gate" in scripts
     assert "--stable-sha" in scripts and "--candidate-sha" in scripts

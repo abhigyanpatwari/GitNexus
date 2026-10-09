@@ -3,22 +3,6 @@
 name: Release evaluation
 
 on:
-  workflow_call:
-    inputs:
-      candidate_sha:
-        description: Exact prepared RC commit from this run
-        required: true
-        type: string
-      candidate_artifact:
-        description: This run's immutable candidate bundle artifact
-        required: true
-        type: string
-      model:
-        type: string
-        default: gpt-5.6-sol
-      effort:
-        type: string
-        default: xhigh
   schedule:
     - cron: '0 5 * * 3' # Wednesday 05:00 UTC
   workflow_dispatch:
@@ -53,7 +37,7 @@ jobs:
     if: >-
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
-      (inputs.candidate_artifact != '' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ubuntu-latest
     environment: gitnexus-evolution
@@ -84,7 +68,7 @@ jobs:
     if: >-
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
-      (inputs.candidate_artifact != '' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ubuntu-latest
     environment: gitnexus-evolution
@@ -115,7 +99,7 @@ jobs:
     if: >-
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
-      (inputs.candidate_artifact != '' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     # Partial reruns reuse successful startup outputs after cleanup stopped EC2.
     runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
@@ -167,7 +151,7 @@ jobs:
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
       inputs.runner_only != true &&
-      (inputs.candidate_artifact != '' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
     # Reuse the main-only protected model-secret environment. No tag/fork code
@@ -177,7 +161,7 @@ jobs:
     permissions:
       contents: read
     env:
-      INPUT_REF: ${{ inputs.candidate_sha || inputs.candidate_ref || 'latest-rc' }}
+      INPUT_REF: ${{ inputs.candidate_ref || 'latest-rc' }}
       MODEL: ${{ inputs.model || 'gpt-5.6-sol' }}
       EFFORT: ${{ inputs.effort || 'xhigh' }}
     steps:
@@ -204,11 +188,6 @@ jobs:
           stable_sha="$(git rev-parse --verify "$stable^{commit}")"
           echo "stable_sha=$stable_sha" >> "$GITHUB_OUTPUT"
           ref="$INPUT_REF"
-          if [[ '${{ inputs.candidate_artifact != '' }}' == 'true' ]]; then
-            [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::Candidate must be a full commit SHA.'; exit 1; }
-            echo "sha=$ref" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           if [[ "$ref" == 'latest-rc' ]]; then
             ref="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq \
               '[.[] | select(.prerelease and (.draft | not)) | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$"))] | sort_by(.published_at) | last | .tag_name // empty')"
@@ -230,22 +209,10 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.candidate_artifact != '' && github.sha || steps.resolve.outputs.sha }}
+          ref: ${{ steps.resolve.outputs.sha }}
           path: candidate
           persist-credentials: false
           fetch-depth: 0
-      - name: Download this run's prepared candidate
-        if: inputs.candidate_artifact != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ${{ inputs.candidate_artifact }}
-          path: ${{ runner.temp }}/rc-candidate
-      - name: Restore the exact unpublished candidate
-        if: inputs.candidate_artifact != ''
-        run: |
-          python3 eval/workflow_bench/release_candidate.py restore \
-            --repo "$GITHUB_WORKSPACE/candidate" --source-sha "$GITHUB_SHA" \
-            --candidate-sha "$INPUT_REF" --bundle "$RUNNER_TEMP/rc-candidate/candidate.bundle"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.resolve.outputs.stable_sha }}

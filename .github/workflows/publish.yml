@@ -7,8 +7,8 @@ name: Publish
 #
 # Two release modes, both routed through this file:
 #   • Release candidate (rc)  — triggered by push to `main` or workflow_dispatch.
-#       The RC path prepares and evaluates the next versioned RC against
-#       stable, then pushes that exact detached release commit with v<X.Y.Z>-rc.<N> + rc/<SHA> marker
+#       The RC path computes the next rc version, applies it in-CI, pushes a
+#       detached release commit with v<X.Y.Z>-rc.<N> + rc/<SHA> marker
 #       atomically, then publishes to npm with --tag rc and creates a GitHub
 #       prerelease. RC-only docker.yml invocation follows.
 #   • Stable                  — triggered by push of a v<X.Y.Z> tag (no -rc.*
@@ -65,8 +65,7 @@ on:
 # Workflow-level deny-all; each job declares the minimum it needs.
 permissions: {}
 
-# Distinct refs (refs/heads/main, refs/tags/v*) evaluate in parallel; the
-# publish job shares a lock across refs through GitHub Release creation. The
+# Distinct refs (refs/heads/main, refs/tags/v*) run in parallel. The
 # release-PR-skip in rc-guard is the load-bearing invariant that prevents
 # an RC main-push and a stable tag-push colliding on the same release commit.
 concurrency:
@@ -268,37 +267,172 @@ jobs:
       contents: read
       actions: read
 
-  # Prepare the exact versioned tree locally; no tag or marker reaches origin
-  # until both CI and the paid non-regression gate have passed this commit.
-  prepare-rc:
-    name: Prepare unpublished release candidate
+  # ── Phase 4: publish to npm + push refs (RC path) ──────────────────────────
+  # INVARIANT: `timeout-minutes` MUST stay below the App-token TTL (~60 min
+  # for actions/create-github-app-token installation tokens). The atomic
+  # tag-push step relies on the token minted at job start; if the job ever
+  # runs longer than the TTL, the push fails with an opaque 401. If you
+  # need to raise the timeout, re-mint the token immediately before the
+  # `Create and push rc tags` step instead.
+  publish:
+    name: Publish to npm
     needs: [route, rc-guard, ci]
-    if: ${{ needs.route.outputs.mode == 'rc' && needs.rc-guard.outputs.should_run == 'true' }}
+    if: ${{ always() && needs.ci.result == 'success' && (needs.route.outputs.mode == 'stable' || needs.rc-guard.outputs.should_run == 'true') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
-      contents: read
+      # contents: write — RC path needs it for `git push --atomic` (v-tag +
+      # marker). Stable path runs in the same job and inherits the grant; it
+      # never invokes `git push`, so the elevated scope is unused there.
+      # id-token: write — npm provenance attestation.
+      contents: write
+      id-token: write
+      actions: read # Fetch exact-revision agent evidence from the trusted main workflow.
     outputs:
-      candidate_sha: ${{ steps.bundle.outputs.candidate_sha }}
-      rc_version: ${{ steps.rc-version.outputs.rc_version }}
-      artifact_name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+      # Two distinct step IDs feed this output; exactly one fires per run.
+      vtag: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.rc-guard.outputs.head_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          package-manager-cache: false
-      - name: Resolve release App identity
+      # ── Mint short-lived GitHub App token (RC only) ──────────────────────
+      # Industry direction (2025-2026): GitHub Apps with
+      # `actions/create-github-app-token` over long-lived PATs for
+      # workflow-touching tag pushes. Same fine-grained permission surface,
+      # ~1h expiry, not tied to a user seat, organizationally auditable.
+      # Replaces a prior fine-grained PAT.
+      #
+      # Required secrets (set in repo Settings → Secrets and variables → Actions):
+      #   secrets.RELEASE_APP_ID         — the App's numeric ID
+      #   secrets.RELEASE_APP_PRIVATE_KEY — the App's PEM private key
+      # (The App ID is technically not sensitive — it's visible on the App's
+      # settings page — but storing it as a secret is harmless and avoids
+      # mixing storage classes for the same App.)
+      # The App must be installed on this repository with:
+      #   - Contents: write         (push the v-tag and rc marker)
+      #   - Workflows: write        (because the v-tag's tree may touch
+      #                              .github/workflows/**, which the default
+      #                              GITHUB_TOKEN cannot author)
+      #   - Metadata: read          (required for the `gh api /users/<slug>[bot]`
+      #                              bot-identity lookup in the tag-push step)
+      - name: Mint GitHub App token (RC)
+        if: needs.route.outputs.mode == 'rc'
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
+          # `client-id` is the renamed input that supersedes the deprecated
+          # `app-id` in v3.x. The action accepts the App's numeric ID or
+          # its Client ID under this name. We pass the numeric App ID,
+          # which the action resolves correctly.
           client-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          permission-contents: read
+
+      # ── Separate checkout steps per mode ─────────────────────────────────
+      # Conditional `token:` expressions are footguns: empty string passed to
+      # actions/checkout fails opaquely, and `|| github.token` silently
+      # degrades a missing token to GITHUB_TOKEN, masking auth failures until
+      # the eventual `git push`. Two distinct steps make the auth contract
+      # explicit and fail loudly at checkout when the App token mint failed
+      # on the RC path.
+      - name: Checkout (RC)
+        if: needs.route.outputs.mode == 'rc'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          # Short-lived GitHub App installation token. Required because the
+          # v-tag push lands at a SHA whose tree may touch
+          # `.github/workflows/**`, which the default GITHUB_TOKEN cannot
+          # author.
+          token: ${{ steps.app-token.outputs.token }}
+          # Do not persist the token in .git/config (artipacked audit). The
+          # RC tag push uses an inline `http.extraheader` at push time only;
+          # the credential never lands on disk. See the
+          # `Create and push rc tags` step below.
+          persist-credentials: false
+
+      - name: Checkout (stable)
+        if: needs.route.outputs.mode == 'stable'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Stable
+        # path performs no git pushes; the default scope is sufficient.
+        with:
+          # No git pushes from the stable path either. Skip credential
+          # persistence (artipacked audit).
+          persist-credentials: false
+
+      - name: Working-tree sanity
+        # Defense in depth (mirrors the vtag integrity gate, but on the input side):
+        # if a route-mode regression skipped both checkout `if:` gates, all
+        # downstream steps would run on a bare runner and produce confusing
+        # ENOENT errors. Fail loudly and early here instead.
+        shell: bash
+        run: |
+          if [ ! -f gitnexus/package.json ]; then
+            echo "::error::no working tree at gitnexus/package.json — route classification likely failed silently."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # Node 24 ships with npm >= 11.5.x, which is the minimum that
+          # supports npm Trusted Publishing OIDC. Node 22 ships with npm
+          # 10.9.x (no OIDC) and `npm install -g npm@latest` to self-upgrade
+          # is fragile — it can crash the in-flight reify with
+          # `MODULE_NOT_FOUND` on `promise-retry` etc. Bumping the Node
+          # version is the clean fix; the package's `engines` field is
+          # `>=22.0.0` so consumer-side compatibility is unaffected (this
+          # Node version is only used during publish, not by package users).
+          node-version: 24
+          # `registry-url:` is intentionally OMITTED. Under npm Trusted
+          # Publishing, OIDC only engages when no credential is configured.
+          # Setting `registry-url:` would make setup-node write
+          # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` into the
+          # runner's .npmrc AND export NODE_AUTH_TOKEN from its `token:`
+          # input (default github.token). `npm publish` would then attempt
+          # GITHUB_TOKEN as the npm token, get rejected with 404, and OIDC
+          # would never be tried. See actions/setup-node#1440 and the GitHub
+          # Community discussion #176761 for the upstream bug and consensus
+          # workaround.
+          #
+          # Hermetic install for published artifacts — opt out of the v5+
+          # default packageManager-based caching (clears the zizmor
+          # cache-poisoning audit). ~30s slower per release; runs rarely.
+          package-manager-cache: false
+
+      - name: Install gitnexus dependencies
+        run: npm ci
+        working-directory: gitnexus
+
+      # The published tarball ships the web UI (`files: [... "web"]`), built
+      # by prepack during `npm publish`. Install its deps in their own step
+      # so a slow install is visible here instead of dying inside build.js.
+      - name: Install gitnexus-web dependencies
+        run: npm ci
+        working-directory: gitnexus-web
+
+      # ── Stable-only: verify the tag and package.json agree ───────────────
+      - name: Verify version consistency (stable)
+        if: needs.route.outputs.mode == 'stable'
+        shell: bash
+        working-directory: gitnexus
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          # Stable mode REJECTS prerelease suffixes — those are filtered at
+          # trigger by the negative-glob filter, but defend at the bash layer too.
+          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Stable tag must be ^v[0-9]+.[0-9]+.[0-9]+$ — got v$TAG_VERSION"
+            exit 1
+          fi
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version (v$TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+          # Stable releases carry their version bump on main via the release
+          # PR, so the manifest surfaces must already be in sync — refuse to
+          # publish a stable whose manifests drifted (#2445).
+          node scripts/sync-plugin-manifests.mjs --check
+          echo "Version verified: $PKG_VERSION"
+
       # ── RC-only: compute the next rc version against the live registry ──
       - name: Resolve rc version (rc)
         id: rc-version
@@ -453,11 +587,9 @@ jobs:
         if: needs.route.outputs.mode == 'rc'
         shell: bash
         working-directory: gitnexus
-        env:
-          RC_VERSION: ${{ steps.rc-version.outputs.rc_version }}
         run: |
           set -euo pipefail
-          npm version "$RC_VERSION" \
+          npm version "${{ steps.rc-version.outputs.rc_version }}" \
             --no-git-tag-version --allow-same-version
 
       # ── Verify the plugin manifest surfaces synced (#2445) ───────────────
@@ -471,23 +603,63 @@ jobs:
         working-directory: gitnexus
         run: node scripts/sync-plugin-manifests.mjs --check
 
-      - name: Commit and bundle the versioned candidate
-        id: bundle
+      - name: Build gitnexus
+        run: npm run build
+        working-directory: gitnexus
+
+      - name: Dry-run publish
+        # Cheap verification that the tarball assembles before the real publish.
         shell: bash
         working-directory: gitnexus
         env:
-          HEAD_SHA: ${{ needs.rc-guard.outputs.head_sha }}
+          NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || 'latest' }}
+        run: npm publish --dry-run --tag "$NPM_TAG"
+
+      # Every release carries this run's fixed-answer accuracy. Paid paired
+      # agent runs gate only stable releases; RCs are measured on a schedule.
+      - name: Download this release's tool accuracy
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-tool-accuracy
+          path: ${{ runner.temp }}/release-evidence
+      - name: Require paired agent evidence for this stable commit
+        if: needs.route.outputs.mode == 'stable'
+        uses: ./.github/actions/require-agent-release-evidence
+
+      # ── Acquire the "rc lock" BEFORE publishing (idempotency anchor) ─────
+      # We create two refs and push atomically:
+      #   v<RC_VERSION>  → annotated tag on a detached release commit whose
+      #                    tree contains the rewritten package.json, so the
+      #                    tag's source matches the npm tarball.
+      #   rc/<HEAD_SHA>  → lightweight tag on HEAD; the guard's dedup key.
+      # Push fails → nothing published. Push succeeds, npm fails → marker
+      # blocks retries until manual cleanup (see Rollback Runbook in plan).
+      - name: Create and push rc tags
+        id: rc-tags
+        if: needs.route.outputs.mode == 'rc'
+        shell: bash
+        working-directory: gitnexus
+        env:
           RC_VERSION: ${{ steps.rc-version.outputs.rc_version }}
+          HEAD_SHA: ${{ needs.rc-guard.outputs.head_sha }}
+          # Short-lived GitHub App token. Auth is supplied inline at push
+          # time via `http.extraheader` (per GitHub's documented
+          # x-access-token Basic pattern). It is NOT persisted in
+          # .git/config (artipacked audit) — checkout above ran with
+          # `persist-credentials: false`.
+          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # App's slug from create-github-app-token (e.g. `gitnexus-release-bot`).
+          # Used to attribute the release commit to the App identity rather
+          # than the generic github-actions[bot]. The bot's numeric user-id
+          # is resolved at runtime via the GitHub API (the action does not
+          # expose it directly as of v3.2.0).
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
-            echo "::error::Candidate source differs from the guarded main commit."
-            exit 1
-          fi
-          git checkout --detach "$HEAD_SHA"
           VTAG="v${RC_VERSION}"
+          MARKER="rc/${HEAD_SHA}"
+
           # Resolve the App's bot user-id and construct the noreply email
           # in the GitHub-canonical `<id>+<slug>[bot]@users.noreply.github.com`
           # shape. `[bot]` is part of the actual login on GitHub.
@@ -549,321 +721,6 @@ jobs:
           git commit -m "release: ${VTAG}" --allow-empty
           RELEASE_SHA="$(git rev-parse HEAD)"
           echo "Detached release commit: $RELEASE_SHA"
-
-          RELEASE_SHA="$(python3 ../eval/workflow_bench/release_candidate.py create \
-            --repo .. --source-sha "$HEAD_SHA" --version "$RC_VERSION" \
-            --bundle "$RUNNER_TEMP/release-candidate/candidate.bundle")"
-          echo "candidate_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
-      - name: Upload unpublished candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/release-candidate/candidate.bundle
-          if-no-files-found: error
-          retention-days: 14
-
-  rc-evaluation:
-    name: Evaluate candidate against stable
-    needs: [route, rc-guard, ci, prepare-rc]
-    if: ${{ needs.route.outputs.mode == 'rc' && needs.rc-guard.outputs.should_run == 'true' }}
-    uses: ./.github/workflows/release-evaluation.yml
-    permissions:
-      contents: read
-      actions: write
-      id-token: write
-    with:
-      candidate_sha: ${{ needs.prepare-rc.outputs.candidate_sha }}
-      candidate_artifact: ${{ needs.prepare-rc.outputs.artifact_name }}
-
-  # ── Phase 4: publish to npm + push refs (RC path) ──────────────────────────
-  # INVARIANT: `timeout-minutes` MUST stay below the App-token TTL (~60 min
-  # for actions/create-github-app-token installation tokens). The atomic
-  # tag-push step relies on the token minted at job start; if the job ever
-  # runs longer than the TTL, the push fails with an opaque 401. If you
-  # need to raise the timeout, re-mint the token immediately before the
-  # `Create and push rc tags` step instead.
-  publish:
-    name: Publish to npm
-    needs: [route, rc-guard, ci, prepare-rc, rc-evaluation]
-    if: >-
-      ${{ always() && !cancelled() && needs.route.result == 'success' && needs.ci.result == 'success'
-          && (needs.route.outputs.mode == 'stable'
-              || (needs.route.outputs.mode == 'rc' && needs.rc-guard.outputs.should_run == 'true'
-                  && needs.prepare-rc.result == 'success' && needs.rc-evaluation.result == 'success')) }}
-    # Stable may advance during RC evaluation. Hold the same publication lock
-    # for both modes while rechecking the baseline and writing the release.
-    concurrency:
-      group: gitnexus-release-publication
-      cancel-in-progress: false
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      # contents: write — RC path needs it for `git push --atomic` (v-tag +
-      # marker). Stable path runs in the same job and inherits the grant; it
-      # never invokes `git push`, so the elevated scope is unused there.
-      # id-token: write — npm provenance attestation.
-      contents: write
-      id-token: write
-      actions: read # Fetch exact-revision agent evidence from the trusted main workflow.
-    outputs:
-      # Two distinct step IDs feed this output; exactly one fires per run.
-      vtag: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
-    steps:
-      # ── Mint short-lived GitHub App token (RC only) ──────────────────────
-      # Industry direction (2025-2026): GitHub Apps with
-      # `actions/create-github-app-token` over long-lived PATs for
-      # workflow-touching tag pushes. Same fine-grained permission surface,
-      # ~1h expiry, not tied to a user seat, organizationally auditable.
-      # Replaces a prior fine-grained PAT.
-      #
-      # Required secrets (set in repo Settings → Secrets and variables → Actions):
-      #   secrets.RELEASE_APP_ID         — the App's numeric ID
-      #   secrets.RELEASE_APP_PRIVATE_KEY — the App's PEM private key
-      # (The App ID is technically not sensitive — it's visible on the App's
-      # settings page — but storing it as a secret is harmless and avoids
-      # mixing storage classes for the same App.)
-      # The App must be installed on this repository with:
-      #   - Contents: write         (push the v-tag and rc marker)
-      #   - Workflows: write        (because the v-tag's tree may touch
-      #                              .github/workflows/**, which the default
-      #                              GITHUB_TOKEN cannot author)
-      #   - Metadata: read          (required for the `gh api /users/<slug>[bot]`
-      #                              bot-identity lookup in the tag-push step)
-      - name: Mint GitHub App token (RC)
-        if: needs.route.outputs.mode == 'rc'
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          # `client-id` is the renamed input that supersedes the deprecated
-          # `app-id` in v3.x. The action accepts the App's numeric ID or
-          # its Client ID under this name. We pass the numeric App ID,
-          # which the action resolves correctly.
-          client-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-
-      # ── Separate checkout steps per mode ─────────────────────────────────
-      # Conditional `token:` expressions are footguns: empty string passed to
-      # actions/checkout fails opaquely, and `|| github.token` silently
-      # degrades a missing token to GITHUB_TOKEN, masking auth failures until
-      # the eventual `git push`. Two distinct steps make the auth contract
-      # explicit and fail loudly at checkout when the App token mint failed
-      # on the RC path.
-      - name: Checkout (RC)
-        if: needs.route.outputs.mode == 'rc'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.rc-guard.outputs.head_sha }}
-          fetch-depth: 0
-          fetch-tags: true
-          # Short-lived GitHub App installation token. Required because the
-          # v-tag push lands at a SHA whose tree may touch
-          # `.github/workflows/**`, which the default GITHUB_TOKEN cannot
-          # author.
-          token: ${{ steps.app-token.outputs.token }}
-          # Do not persist the token in .git/config (artipacked audit). The
-          # RC tag push uses an inline `http.extraheader` at push time only;
-          # the credential never lands on disk. See the
-          # `Create and push rc tags` step below.
-          persist-credentials: false
-
-      - name: Checkout (stable)
-        if: needs.route.outputs.mode == 'stable'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Stable
-        # path performs no git pushes; the default scope is sufficient.
-        with:
-          # No git pushes from the stable path either. Skip credential
-          # persistence (artipacked audit).
-          persist-credentials: false
-
-      - name: Download the evaluated RC candidate
-        if: needs.route.outputs.mode == 'rc'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: ${{ needs.prepare-rc.outputs.artifact_name }}
-          path: ${{ runner.temp }}/release-candidate
-      - name: Restore the evaluated RC commit
-        if: needs.route.outputs.mode == 'rc'
-        env:
-          BEFORE_SHA: ${{ needs.rc-guard.outputs.head_sha }}
-          HEAD_SHA: ${{ needs.prepare-rc.outputs.candidate_sha }}
-          RC_VERSION: ${{ needs.prepare-rc.outputs.rc_version }}
-        run: |
-          python3 eval/workflow_bench/release_candidate.py restore \
-            --repo . --source-sha "$BEFORE_SHA" --candidate-sha "$HEAD_SHA" \
-            --version "$RC_VERSION" --bundle "$RUNNER_TEMP/release-candidate/candidate.bundle"
-
-      - name: Working-tree sanity
-        # Defense in depth (mirrors the vtag integrity gate, but on the input side):
-        # if a route-mode regression skipped both checkout `if:` gates, all
-        # downstream steps would run on a bare runner and produce confusing
-        # ENOENT errors. Fail loudly and early here instead.
-        shell: bash
-        run: |
-          if [ ! -f gitnexus/package.json ]; then
-            echo "::error::no working tree at gitnexus/package.json — route classification likely failed silently."
-            exit 1
-          fi
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          # Node 24 ships with npm >= 11.5.x, which is the minimum that
-          # supports npm Trusted Publishing OIDC. Node 22 ships with npm
-          # 10.9.x (no OIDC) and `npm install -g npm@latest` to self-upgrade
-          # is fragile — it can crash the in-flight reify with
-          # `MODULE_NOT_FOUND` on `promise-retry` etc. Bumping the Node
-          # version is the clean fix; the package's `engines` field is
-          # `>=22.0.0` so consumer-side compatibility is unaffected (this
-          # Node version is only used during publish, not by package users).
-          node-version: 24
-          # `registry-url:` is intentionally OMITTED. Under npm Trusted
-          # Publishing, OIDC only engages when no credential is configured.
-          # Setting `registry-url:` would make setup-node write
-          # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` into the
-          # runner's .npmrc AND export NODE_AUTH_TOKEN from its `token:`
-          # input (default github.token). `npm publish` would then attempt
-          # GITHUB_TOKEN as the npm token, get rejected with 404, and OIDC
-          # would never be tried. See actions/setup-node#1440 and the GitHub
-          # Community discussion #176761 for the upstream bug and consensus
-          # workaround.
-          #
-          # Hermetic install for published artifacts — opt out of the v5+
-          # default packageManager-based caching (clears the zizmor
-          # cache-poisoning audit). ~30s slower per release; runs rarely.
-          package-manager-cache: false
-
-      - name: Install gitnexus dependencies
-        run: npm ci
-        working-directory: gitnexus
-
-      # The published tarball ships the web UI (`files: [... "web"]`), built
-      # by prepack during `npm publish`. Install its deps in their own step
-      # so a slow install is visible here instead of dying inside build.js.
-      - name: Install gitnexus-web dependencies
-        run: npm ci
-        working-directory: gitnexus-web
-
-      # ── Stable-only: verify the tag and package.json agree ───────────────
-      - name: Verify version consistency (stable)
-        if: needs.route.outputs.mode == 'stable'
-        shell: bash
-        working-directory: gitnexus
-        run: |
-          set -euo pipefail
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          # Stable mode REJECTS prerelease suffixes — those are filtered at
-          # trigger by the negative-glob filter, but defend at the bash layer too.
-          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Stable tag must be ^v[0-9]+.[0-9]+.[0-9]+$ — got v$TAG_VERSION"
-            exit 1
-          fi
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
-            echo "::error::Tag version (v$TAG_VERSION) does not match package.json version ($PKG_VERSION)"
-            exit 1
-          fi
-          # Stable releases carry their version bump on main via the release
-          # PR, so the manifest surfaces must already be in sync — refuse to
-          # publish a stable whose manifests drifted (#2445).
-          node scripts/sync-plugin-manifests.mjs --check
-          echo "Version verified: $PKG_VERSION"
-
-      - name: Build gitnexus
-        run: npm run build
-        working-directory: gitnexus
-
-      - name: Dry-run publish
-        # Cheap verification that the tarball assembles before the real publish.
-        shell: bash
-        working-directory: gitnexus
-        env:
-          NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || 'latest' }}
-        run: npm publish --dry-run --tag "$NPM_TAG"
-
-      - name: Download this release's tool accuracy
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: release-tool-accuracy
-          path: ${{ runner.temp }}/release-evidence
-      - name: Download this RC's paired non-regression evidence
-        if: needs.route.outputs.mode == 'rc'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: release-agent-evaluation-${{ needs.prepare-rc.outputs.candidate_sha }}
-          path: ${{ runner.temp }}/release-evidence
-      - name: Verify the RC quality gate receipt
-        if: needs.route.outputs.mode == 'rc'
-        env:
-          HEAD_SHA: ${{ needs.prepare-rc.outputs.candidate_sha }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          node --input-type=module <<'NODE'
-          import { execFileSync } from 'node:child_process';
-          import { readFileSync } from 'node:fs';
-          import path from 'node:path';
-          const receipt = JSON.parse(readFileSync(path.join(process.env.RUNNER_TEMP, 'release-evidence', 'release-quality-gate.json'), 'utf8'));
-          if (receipt.schema !== 'gitnexus.release-quality-gate/v1'
-              || receipt.passed !== true
-              || receipt.candidate_sha !== process.env.HEAD_SHA) {
-            throw new Error('No passing quality gate receipt for the exact RC candidate');
-          }
-          // Resolve inside the shared publication lock; stable releases cannot
-          // advance between this check and the first RC tag/npm write.
-          const api = (...args) => execFileSync('gh', ['api', ...args], { encoding: 'utf8', timeout: 60_000 }).trim();
-          const repo = `repos/${process.env.GITHUB_REPOSITORY}`;
-          const stableTag = api(`${repo}/releases/latest`, '--jq', '.tag_name');
-          if (!/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(stableTag)) {
-            throw new Error('No valid official stable release found at publication time');
-          }
-          // The commits API resolves annotated tags to commits, rather than
-          // comparing their tag-object SHA with the evaluated runtime SHA.
-          const stableSha = api(`${repo}/commits/${stableTag}`, '--jq', '.sha');
-          if (!/^[0-9a-f]{40}$/.test(stableSha) || receipt.stable_sha !== stableSha) {
-            throw new Error('Stable release differs from the evaluated baseline; rerun the complete release gate');
-          }
-          NODE
-      - name: Require paired agent evidence for this stable commit
-        if: needs.route.outputs.mode == 'stable'
-        uses: ./.github/actions/require-agent-release-evidence
-
-      # ── Acquire the "rc lock" BEFORE publishing (idempotency anchor) ─────
-      # We create two refs and push atomically:
-      #   v<RC_VERSION>  → annotated tag on a detached release commit whose
-      #                    tree contains the rewritten package.json, so the
-      #                    tag's source matches the npm tarball.
-      #   rc/<HEAD_SHA>  → lightweight tag on HEAD; the guard's dedup key.
-      # Push fails → nothing published. Push succeeds, npm fails → marker
-      # blocks retries until manual cleanup (see Rollback Runbook in plan).
-      - name: Create and push rc tags
-        id: rc-tags
-        if: needs.route.outputs.mode == 'rc'
-        shell: bash
-        working-directory: gitnexus
-        env:
-          RC_VERSION: ${{ needs.prepare-rc.outputs.rc_version }}
-          HEAD_SHA: ${{ needs.rc-guard.outputs.head_sha }}
-          BEFORE_SHA: ${{ needs.prepare-rc.outputs.candidate_sha }}
-          # Short-lived GitHub App token. Auth is supplied inline at push
-          # time via `http.extraheader` (per GitHub's documented
-          # x-access-token Basic pattern). It is NOT persisted in
-          # .git/config (artipacked audit) — checkout above ran with
-          # `persist-credentials: false`.
-          PUSH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          VTAG="v${RC_VERSION}"
-          MARKER="rc/${HEAD_SHA}"
-
-          RELEASE_SHA="$(git rev-parse HEAD)"
-          if [ "$RELEASE_SHA" != "$BEFORE_SHA" ]; then
-            echo "::error::Publish checkout differs from the evaluated RC commit."
-            exit 1
-          fi
-          # Builds must not silently mutate the source tree that passed evaluation.
-          git diff --exit-code
-          git diff --cached --exit-code
-          git config user.name "$(git show -s --format=%an HEAD)"
-          git config user.email "$(git show -s --format=%ae HEAD)"
 
           git tag -a "$VTAG" "$RELEASE_SHA" -m "$VTAG"
           git tag "$MARKER" "$HEAD_SHA"
@@ -997,36 +854,11 @@ jobs:
             echo "$NOTES" > /tmp/release-notes.md
             echo "fallback=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Append measured release evidence
-        env:
-          MODE: ${{ needs.route.outputs.mode }}
-          RC_VERSION: ${{ needs.prepare-rc.outputs.rc_version }}
-          BEFORE_SHA: ${{ needs.rc-guard.outputs.head_sha }}
-          HEAD_SHA: ${{ steps.rc-tags.outputs.release_sha }}
-        run: |
-          set -euo pipefail
-          if [[ "$MODE" == 'rc' ]]; then
-            cat > /tmp/release-notes.md <<EOF
-          Automated release candidate build from main.
-
-          **npm:** \`npm install gitnexus@rc\`
-          **Version:** \`$RC_VERSION\`
-          **Source commit (main):** $BEFORE_SHA
-          **Release commit (versioned tree):** $HEAD_SHA
-
-          Release candidates are pre-stable builds intended for early testing. Stable releases remain on the latest dist-tag.
-          EOF
-          fi
           {
             printf '\n'
             cat "$RUNNER_TEMP/release-evidence/accuracy.md"
             printf '\n'
             cat "$RUNNER_TEMP/release-evidence/agent-evaluation.md"
-            if [[ "$MODE" == 'rc' ]]; then
-              printf '\n'
-              cat "$RUNNER_TEMP/release-evidence/release-quality-gate.md"
-            fi
           } >> /tmp/release-notes.md
 
       - name: Create GitHub Release
@@ -1039,12 +871,24 @@ jobs:
                 || steps.vtag-gate.outputs.vtag }}
           prerelease: ${{ needs.route.outputs.mode == 'rc' }}
           make_latest: ${{ needs.route.outputs.mode == 'stable' && 'true' || 'false' }}
-          body_path: /tmp/release-notes.md
+          # Stable: CHANGELOG body (or auto-generated notes) plus measured
+          # evidence. RC: auto-generated + the prerelease body block below.
+          body_path: ${{ needs.route.outputs.mode == 'stable' && '/tmp/release-notes.md' || '' }}
           files: ${{ runner.temp }}/release-evidence/*
           fail_on_unmatched_files: true
           generate_release_notes: >-
             ${{ needs.route.outputs.mode == 'rc'
                 || steps.changelog.outputs.fallback == 'true' }}
+          body: >-
+            ${{ needs.route.outputs.mode == 'rc' && format(
+              'Automated release candidate build from `main`.{0}{0}**npm:** `npm install gitnexus@rc`{0}**Version:** `{1}`{0}**Target base:** `{2}` (rc #{3}){0}**Source commit (main):** {4}{0}**Release commit (versioned tree):** {5}{0}{0}Release candidates are pre-stable builds intended for early testing. Stable releases remain on the `latest` dist-tag.',
+              '\n',
+              steps.rc-version.outputs.rc_version,
+              steps.rc-version.outputs.base,
+              steps.rc-version.outputs.rc_n,
+              needs.rc-guard.outputs.head_sha,
+              steps.rc-tags.outputs.release_sha
+            ) || '' }}
 
       # ── RC partial-failure cleanup ───────────────────────────────────────
       # If anything after the atomic tag-push step failed (npm publish

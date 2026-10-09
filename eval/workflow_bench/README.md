@@ -91,22 +91,15 @@ uv run --locked --extra dev python -m workflow_bench.release_gate \
 The command writes `release-quality-gate.json` and `release-quality-gate.md`
 and exits nonzero on rejection. Its caller must authenticate the reports and
 resolve the published stable and exact candidate revisions independently;
-self-reported metadata does not establish provenance. The publishing workflow
-prepares a versioned RC commit without pushing it, transfers it in a current-run
-Git bundle, and invokes the reusable evaluator. The evaluator verifies that the
-candidate has exactly the triggering main commit as its parent and measures it
-against the latest published stable release. Only a successful comparison and
-runner shutdown permit publication. The publisher verifies the same commit and
-passing receipt before pushing a tag or publishing npm; it never rebuilds a new
-versioned commit after evaluation. RC and stable publication share a short
-publication lock. Inside that lock, the publisher checks that the measured
-stable SHA still identifies the latest stable release; if stable advanced
-during evaluation, publication fails and a fresh comparison is required.
+self-reported metadata does not establish provenance. Release evaluation
+resolves the latest published stable release and the requested candidate
+itself, then measures both with main's trusted harness. The comparison is a
+regression signal for published RCs; it does not block RC publication.
 
 ### Current workflow
 
 Following [discussion #3493](https://github.com/abhigyanpatwari/GitNexus/discussions/3493#discussioncomment-18772530),
-release evidence has two levels:
+release evidence is split by cost:
 
 1. Every CI run, RC and stable release runs the offline
    [tool-accuracy corpus](../../gitnexus/bench/tool-accuracy/README.md) against
@@ -115,7 +108,8 @@ release evidence has two levels:
    precision/recall and source/fixture revisions. The initial reviewed gaps
    remain failures in the accuracy total. The gate rejects new/worsened failures,
    missing outputs and repaired allowances that have not been removed.
-2. **Release evaluation** runs three fresh paired repetitions of every scenario
+2. **Release evaluation**, before each stable release and weekly against the
+   latest RC, runs three fresh paired repetitions of every scenario
    on both candidate and stable runtimes, including the expensive task, using
    `baseline_nomcp` and MCP `baseline`.
    Every task starts at the immutable v1.6.12 commit; all four tasks remain
@@ -139,10 +133,10 @@ Stable publishing requires a successful default-branch evaluation for that
 It validates individual cells and recomputes totals before publishing to npm
 or either Docker registry. Docker publication also runs the cheap accuracy
 gate once before both image builds, then builds the verified immutable commit.
-RCs attach the cheap accuracy evidence, both agent reports and the quality-gate
-receipt; stable releases also attach and include their paired agent report.
-Every RC must preserve each covered task's MCP solve count relative to stable.
-The comparison does not require GitNexus to beat the no-MCP arm or claim that
+Every release attaches the cheap accuracy evidence; stable releases also attach
+and include their paired agent report. RCs publish after CI without waiting for
+a paid run. The weekly comparison checks that the latest RC preserves each
+covered task's MCP solve count relative to stable. The comparison does not require GitNexus to beat the no-MCP arm or claim that
 four tasks establish general improvements.
 
 The Wednesday release comparison reuses the existing schedule controls:
