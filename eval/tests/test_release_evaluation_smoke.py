@@ -74,6 +74,8 @@ def test_native_paired_evaluator_produces_valid_report_and_keeps_negative_result
             "prepare",
             "--repo",
             str(repo),
+            "--task-repo",
+            str(repo),
             "--out",
             str(prepared),
             "--model",

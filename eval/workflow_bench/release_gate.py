@@ -11,9 +11,11 @@ import argparse
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from .release_report import suite_binding, validate_report
+from .task_assets import DEPENDENCY_CONTENT_BINDING_FIELD
 
 
 def compare_reports(
@@ -39,9 +41,9 @@ def compare_reports(
     }
     for label, report, sha in (("candidate", candidate, candidate_sha), ("stable", stable, stable_sha)):
         try:
-            validate_report(report, runtime_sha=sha, task_set_digest=task_set_digest, now=measured_at)
-            if report["tasks"] != task_pins:
-                raise ValueError("task/oracle pins differ from the trusted harness")
+            validate_report(
+                report, runtime_sha=sha, task_set_digest=task_set_digest, task_pins=task_pins, now=measured_at
+            )
         except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
             # Do not echo untrusted report values or filesystem details into
             # the public artifact. Full measurements remain in their reports.
@@ -52,6 +54,19 @@ def compare_reports(
     for field in ("harness_sha", "task_set_digest", "tasks", "model", "effort", "runs"):
         if candidate[field] != stable[field]:
             result["problems"].append(f"candidate and stable use different {field}")
+    # Every cell of a task, on both sides, must be graded against the same
+    # staged dependency bytes (toolchain, test runner, shared build).
+    for task in task_pins:
+        dependencies = {
+            digest if isinstance(digest := row.get(DEPENDENCY_CONTENT_BINDING_FIELD), str) else None
+            for report in (candidate, stable)
+            for row in report["per_run"]
+            if row["task"] == task
+        }
+        if len(dependencies) != 1 or not re.fullmatch(r"[0-9a-f]{64}", next(iter(dependencies)) or ""):
+            result["problems"].append(
+                f"{task}: candidate and stable were not graded against identical task dependencies"
+            )
     if result["problems"]:
         return result
 

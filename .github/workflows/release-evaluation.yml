@@ -234,6 +234,22 @@ jobs:
           python-version: '3.13'
           enable-cache: true
           cache-dependency-glob: eval/uv.lock
+      # Both runtimes grade the pinned task source against one dependency tree
+      # built from that commit's lockfile, never the runtime under test's.
+      - name: Resolve pinned task revision
+        id: tasks
+        working-directory: eval
+        run: |
+          set -euo pipefail
+          sha="$(uv run --locked --extra dev python -m workflow_bench.release_report task-sha)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo '::error::The release task set has no single pinned commit.'; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.tasks.outputs.sha }}
+          path: tasks-base
+          persist-credentials: false
+          fetch-depth: 0
       - name: Install sandbox runtime and pinned Claude CLI
         run: |
           set -euo pipefail
@@ -252,9 +268,9 @@ jobs:
         working-directory: eval
         run: |
           set -euo pipefail
-          for runtime in stable candidate; do
+          for checkout in tasks-base stable candidate; do
             uv run --locked --extra dev python -m workflow_bench.release_build \
-              --repo "$GITHUB_WORKSPACE/$runtime"
+              --repo "$GITHUB_WORKSPACE/$checkout"
           done
       - name: Prepare pinned task set
         working-directory: eval
@@ -262,7 +278,8 @@ jobs:
           set -euo pipefail
           for runtime in stable candidate; do
             uv run --locked --extra dev python -m workflow_bench.release_report prepare \
-              --repo "$GITHUB_WORKSPACE/$runtime" --out "$RUNNER_TEMP/release-evaluation/$runtime" \
+              --repo "$GITHUB_WORKSPACE/$runtime" --task-repo "$GITHUB_WORKSPACE/tasks-base" \
+              --out "$RUNNER_TEMP/release-evaluation/$runtime" \
               --model "$MODEL" --effort "$EFFORT" --runs 3
           done
       - name: Require real containment before paid sessions

@@ -13,6 +13,7 @@ from workflow_bench.release_report import build_report, suite_binding
 
 CANDIDATE = "a" * 40
 STABLE = "b" * 40
+DEPENDENCIES = "9" * 64
 NOW = datetime.now(UTC)
 
 
@@ -37,6 +38,7 @@ def reports():
             task_base_sha=pin["sha"],
             oracle_digest=pin["oracle_digest"],
             sandbox_backend="bwrap",
+            sandbox_dependency_content_digest=DEPENDENCIES,
             ok=True,
             resolved=run != 0,
             authored_tests_passed=True,
@@ -167,16 +169,49 @@ def test_both_reports_must_match_the_trusted_oracle_pins():
     assert any("pins" in problem for problem in result["problems"])
 
 
-@pytest.mark.parametrize("regression", [False, True])
-def test_cli_exit_status_and_saved_evidence_reflect_quality(tmp_path, regression):
-    candidate, stable = reports()
-    if regression:
-        set_outcome(candidate, next(iter(candidate["tasks"])), 1, False)
-        candidate = rebuild(candidate)
-    for name, report in (("candidate", candidate), ("stable", stable)):
-        (tmp_path / f"{name}.json").write_text(json.dumps(report))
-    out = tmp_path / "public"
-    result = subprocess.run(
+def first_task_rows(report):
+    task = next(iter(report["tasks"]))
+    return [row for row in report["per_run"] if row["task"] == task]
+
+
+@pytest.mark.parametrize(
+    "side,mutate",
+    [
+        # Stable graded the task with another toolchain than the candidate.
+        (1, lambda rows: [row.update(sandbox_dependency_content_digest="8" * 64) for row in rows]),
+        # One candidate cell drifted from the other cells of the same task.
+        (0, lambda rows: rows[0].update(sandbox_dependency_content_digest="8" * 64)),
+        # Evidence that never recorded its dependency set cannot be compared.
+        (1, lambda rows: [row.pop("sandbox_dependency_content_digest") for row in rows]),
+        (0, lambda rows: [row.update(sandbox_dependency_content_digest=None) for row in rows]),
+        (1, lambda rows: [row.update(sandbox_dependency_content_digest=["9" * 64]) for row in rows]),
+    ],
+)
+def test_comparison_rejects_tasks_graded_against_different_dependencies(side, mutate):
+    measured = list(reports())
+    mutate(first_task_rows(measured[side]))
+    result = decide(*(rebuild(report) for report in measured))
+    assert result["passed"] is False
+    assert result["tasks"] == {}
+    assert result["problems"] == [
+        f"{next(iter(measured[0]['tasks']))}: candidate and stable were not graded against identical task dependencies"
+    ]
+
+
+@pytest.mark.parametrize("digest", [None, "9" * 63, "not-a-dependency-digest"])
+def test_comparison_rejects_matching_but_unrecorded_dependency_digests(digest):
+    measured = list(reports())
+    for report in measured:
+        for row in report["per_run"]:
+            row["sandbox_dependency_content_digest"] = digest
+    result = decide(*(rebuild(report) for report in measured))
+    assert result["passed"] is False
+    assert len(result["problems"]) == len(measured[0]["tasks"])
+    assert all("identical task dependencies" in problem for problem in result["problems"])
+
+
+def run_gate_cli(tmp_path, out):
+    return subprocess.run(
         [
             sys.executable,
             "-m",
@@ -195,6 +230,41 @@ def test_cli_exit_status_and_saved_evidence_reflect_quality(tmp_path, regression
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.parametrize(
+    "write_candidate",
+    [
+        lambda path: None,  # The candidate summary never ran.
+        lambda path: path.write_text('{"schema": '),  # Torn or corrupt JSON.
+    ],
+)
+def test_cli_missing_or_unreadable_report_saves_failed_evidence(tmp_path, write_candidate):
+    _, stable = reports()
+    write_candidate(tmp_path / "candidate.json")
+    (tmp_path / "stable.json").write_text(json.dumps(stable))
+    out = tmp_path / "public"
+    result = run_gate_cli(tmp_path, out)
+    assert result.returncode == 1, result.stderr
+    assert "Traceback" not in result.stderr
+    evidence = json.loads((out / "release-quality-gate.json").read_text())
+    assert evidence["passed"] is False
+    assert evidence["problems"] == ["candidate: invalid, incomplete, stale, or mismatched evidence/pins"]
+    prose = (out / "release-quality-gate.md").read_text()
+    assert "**FAIL**" in prose
+    assert "- candidate: invalid" in prose
+
+
+@pytest.mark.parametrize("regression", [False, True])
+def test_cli_exit_status_and_saved_evidence_reflect_quality(tmp_path, regression):
+    candidate, stable = reports()
+    if regression:
+        set_outcome(candidate, next(iter(candidate["tasks"])), 1, False)
+        candidate = rebuild(candidate)
+    for name, report in (("candidate", candidate), ("stable", stable)):
+        (tmp_path / f"{name}.json").write_text(json.dumps(report))
+    out = tmp_path / "public"
+    result = run_gate_cli(tmp_path, out)
     assert result.returncode == int(regression), result.stderr
     evidence = json.loads((out / "release-quality-gate.json").read_text())
     assert evidence["passed"] is (not regression)

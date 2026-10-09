@@ -95,6 +95,30 @@ def test_release_comparison_is_scheduled_or_manual_and_gates_outcomes():
     assert "--stable-sha" in scripts and "--candidate-sha" in scripts
 
 
+def test_both_runtimes_grade_tasks_against_one_pinned_task_dependency_checkout():
+    steps = workflow("release-evaluation.yml")["jobs"]["evaluate"]["steps"]
+    names = [step.get("name", step.get("uses", "")) for step in steps]
+    resolve = next(step for step in steps if step.get("id") == "tasks")
+    assert "workflow_bench.release_report task-sha" in resolve["run"]
+    assert 'echo "sha=$sha" >> "$GITHUB_OUTPUT"' in resolve["run"]
+    checkout = next(step for step in steps if step.get("with", {}).get("path") == "tasks-base")
+    assert checkout["with"]["ref"] == "${{ steps.tasks.outputs.sha }}"
+    assert checkout["with"]["persist-credentials"] is False
+    build = next(step for step in steps if "workflow_bench.release_build" in step.get("run", ""))
+    prepare = next(step for step in steps if "release_report prepare" in step.get("run", ""))
+    sessions = next(step for step in steps if "workflow_bench.runner" in step.get("run", ""))
+    assert steps.index(resolve) < steps.index(checkout) < steps.index(build) < steps.index(prepare)
+    # The task checkout is built in the same sandbox as both runtimes.
+    assert "for checkout in tasks-base stable candidate; do" in build["run"]
+    assert '--repo "$GITHUB_WORKSPACE/$checkout"' in build["run"]
+    # Task source and dependencies never come from the runtime under test,
+    # which reaches the sessions only through --gitnexus-root.
+    assert '--repo "$GITHUB_WORKSPACE/$runtime" --task-repo "$GITHUB_WORKSPACE/tasks-base"' in prepare["run"]
+    assert '--gitnexus-root "$GITHUB_WORKSPACE/$runtime"' in sessions["run"]
+    assert "tasks-base" not in sessions["run"]
+    assert names.count("Resolve pinned task revision") == 1
+
+
 @pytest.mark.parametrize(
     "name,paid", [("gitnexus-skill-evolution.yml", "evolve"), ("release-evaluation.yml", "evaluate")]
 )

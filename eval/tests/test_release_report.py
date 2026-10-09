@@ -2,10 +2,13 @@
 
 from datetime import UTC, datetime, timedelta
 import json
+import subprocess
 
 import pytest
+import yaml
 
-from workflow_bench.release_report import build_report, render_markdown, validate_report
+from workflow_bench import release_report
+from workflow_bench.release_report import build_report, pinned_task_sha, render_markdown, validate_report
 
 
 SHA = "a" * 40
@@ -36,6 +39,7 @@ def rows():
             "task_base_sha": "d" * 40,
             "oracle_digest": "e" * 64,
             "sandbox_backend": "bwrap",
+            "sandbox_dependency_content_digest": "9" * 64,
             "ok": True,
             "resolved": arm == "baseline_nomcp" or run != 1,
             "authored_tests_passed": True,
@@ -60,6 +64,7 @@ def test_report_keeps_failed_solutions_and_compares_against_no_gitnexus():
     assert report["paired"]["mean_cost_change_pct"] == 25.0
     assert report["paired"]["mean_wall_change_pct"] == 25.0
     assert "internal_path" not in report["per_run"][0]
+    assert report["per_run"][0]["sandbox_dependency_content_digest"] == "9" * 64
     assert "baseline_nomcp" in render_markdown(report)
     assert "n=3" in render_markdown(report)
     validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)
@@ -139,3 +144,98 @@ def test_torn_result_file_publishes_incomplete_evidence(tmp_path, monkeypatch):
     assert report["complete"] is False
     assert "invalid measurement" in report["problems"][0]
     assert "Incomplete evidence" in (out / "agent-evaluation.md").read_text()
+
+
+def test_validate_report_binds_the_trusted_task_pins():
+    report = build_report(rows(), metadata(), now=NOW)
+    validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, task_pins=metadata()["tasks"], now=NOW)
+    other = {"task-one": {"sha": "d" * 40, "oracle_digest": "f" * 64}}
+    with pytest.raises(ValueError, match="pins"):
+        validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, task_pins=other, now=NOW)
+
+
+def commit_repo(path, content):
+    path.mkdir()
+    (path / "marker.txt").write_text(content)
+    for arguments in (
+        ["init", "-q"],
+        ["add", "."],
+        ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", content],
+    ):
+        subprocess.run(["git", "-C", str(path), *arguments], check=True, capture_output=True)
+    return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+
+
+@pytest.fixture
+def prepare_suite(tmp_path, monkeypatch):
+    task_sha = commit_repo(tmp_path / "tasks-base", "pinned task commit")
+    runtimes = {name: commit_repo(tmp_path / name, name) for name in ("stable", "candidate")}
+    tasks = [
+        {"id": task_id, "repo": "~/GitNexus", "ref": task_sha, "prompt": "p", "verify": "true"}
+        for task_id in ("task-one", "task-two")
+    ]
+    pins = {task["id"]: {"sha": task_sha, "oracle_digest": "e" * 64} for task in tasks}
+    monkeypatch.setattr(release_report, "suite_binding", lambda: ([dict(task) for task in tasks], DIGEST, pins))
+    return tmp_path, task_sha, runtimes
+
+
+def run_prepare(monkeypatch, root, runtime, task_repo):
+    out = root / "prepared" / runtime
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "release-report",
+            "prepare",
+            "--repo",
+            str(root / runtime),
+            "--task-repo",
+            str(task_repo),
+            "--out",
+            str(out),
+            "--model",
+            "gpt-6.1-sol",
+            "--effort",
+            "medium",
+        ],
+    )
+    release_report.main()
+    return yaml.safe_load((out / "tasks.yaml").read_text())["tasks"], json.loads((out / "metadata.json").read_text())
+
+
+def test_prepare_grades_both_runtimes_against_one_task_dependency_checkout(prepare_suite, monkeypatch):
+    root, _, runtimes = prepare_suite
+    prepared = {name: run_prepare(monkeypatch, root, name, root / "tasks-base") for name in runtimes}
+    (stable_tasks, stable_meta), (candidate_tasks, candidate_meta) = prepared["stable"], prepared["candidate"]
+    # Task source and staged dependencies come from the pinned task checkout,
+    # identical for both runtimes; only runtime_sha differs.
+    assert {task["repo"] for task in stable_tasks + candidate_tasks} == {str((root / "tasks-base").resolve())}
+    assert stable_tasks == candidate_tasks
+    assert stable_meta["runtime_sha"] == runtimes["stable"]
+    assert candidate_meta["runtime_sha"] == runtimes["candidate"]
+
+
+def test_prepare_rejects_a_dependency_checkout_at_another_commit(prepare_suite, monkeypatch):
+    root, _, _ = prepare_suite
+    with pytest.raises(SystemExit) as exc:
+        run_prepare(monkeypatch, root, "candidate", root / "candidate")
+    assert exc.value.code == 2
+    assert not (root / "prepared" / "candidate" / "tasks.yaml").exists()
+
+
+def test_task_sha_names_the_single_pinned_task_commit(prepare_suite, monkeypatch, capsys):
+    _, task_sha, _ = prepare_suite
+    monkeypatch.setattr("sys.argv", ["release-report", "task-sha"])
+    release_report.main()
+    assert capsys.readouterr().out == f"{task_sha}\n"
+
+
+def test_tasks_pinned_to_different_commits_cannot_share_a_dependency_checkout():
+    assert pinned_task_sha([{"ref": "a" * 40}, {"ref": "a" * 40}]) == "a" * 40
+    with pytest.raises(ValueError, match="one pinned commit"):
+        pinned_task_sha([{"ref": "a" * 40}, {"ref": "b" * 40}])
+
+
+def test_shipped_release_tasks_share_one_pinned_commit():
+    tasks, _, _ = release_report.suite_binding()
+    # The workflow builds exactly one dependency checkout for the whole suite.
+    assert pinned_task_sha(tasks) == tasks[0]["ref"]

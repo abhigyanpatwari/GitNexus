@@ -17,6 +17,7 @@ import yaml
 
 from .oracle_assets import capture_task_oracles
 from .runner_tasks import normalized_model_identifier, select_tasks
+from .task_assets import DEPENDENCY_CONTENT_BINDING_FIELD
 
 SCHEMA = "gitnexus.release-evaluation/v1"
 ARMS = ("baseline_nomcp", "baseline")
@@ -31,6 +32,7 @@ ROW_FIELDS = (
     "task_base_sha",
     "oracle_digest",
     "sandbox_backend",
+    DEPENDENCY_CONTENT_BINDING_FIELD,
     "ok",
     "resolved",
     "authored_tests_passed",
@@ -58,6 +60,14 @@ def suite_binding(path: Path = TASKS) -> tuple[list[dict[str, Any]], str, dict[s
         pins[task["id"]] = {"sha": task["ref"], "oracle_digest": oracle.digest}
     digest = hashlib.sha256(json.dumps(definitions, sort_keys=True).encode()).hexdigest()
     return tasks, digest, pins
+
+
+def pinned_task_sha(tasks: list[dict[str, Any]]) -> str:
+    """The one task commit whose built checkout supplies every task's dependencies."""
+    refs = {task["ref"] for task in tasks}
+    if len(refs) != 1:
+        raise ValueError("release tasks must share one pinned commit so both runtimes grade one dependency checkout")
+    return refs.pop()
 
 
 def _finite_nonnegative(value: Any) -> bool:
@@ -183,12 +193,19 @@ def render_markdown(report: dict[str, Any]) -> str:
 
 
 def validate_report(
-    report: dict[str, Any], *, runtime_sha: str, task_set_digest: str, now: datetime | None = None
+    report: dict[str, Any],
+    *,
+    runtime_sha: str,
+    task_set_digest: str,
+    task_pins: dict[str, Any] | None = None,
+    now: datetime | None = None,
 ) -> None:
     if report.get("schema") != SCHEMA or report.get("complete") is not True:
         raise ValueError("incomplete or unsupported release evidence")
     if report.get("runtime_sha") != runtime_sha or report.get("task_set_digest") != task_set_digest:
         raise ValueError("release evidence belongs to a different runtime or task set")
+    if task_pins is not None and report.get("tasks") != task_pins:
+        raise ValueError("release task pins do not match the measured task set")
     measured_at = datetime.fromisoformat(report["generated_at"])
     if measured_at.tzinfo is None or not timedelta(0) <= (now or datetime.now(UTC)) - measured_at <= timedelta(days=7):
         raise ValueError("release evidence must be at most seven days old and not future-dated")
@@ -207,7 +224,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     prepare = commands.add_parser("prepare")
-    prepare.add_argument("--repo", required=True, type=Path)
+    prepare.add_argument("--repo", required=True, type=Path, help="runtime under test (recorded as runtime_sha)")
+    prepare.add_argument(
+        "--task-repo",
+        required=True,
+        type=Path,
+        help="built checkout of the pinned task commit; supplies every task's source and dependencies",
+    )
     prepare.add_argument("--out", required=True, type=Path)
     prepare.add_argument("--model", required=True)
     prepare.add_argument("--effort", required=True)
@@ -219,14 +242,19 @@ def main() -> None:
     check = commands.add_parser("check")
     check.add_argument("--evidence", required=True, type=Path)
     check.add_argument("--runtime-sha", required=True)
+    commands.add_parser("task-sha", help="print the pinned task commit for the dependency checkout")
     args = parser.parse_args()
     if args.command == "prepare":
         if args.runs < 3:
             parser.error("release evaluation requires at least three runs per arm")
         tasks, digest, pins = suite_binding()
+        # Candidate and stable must grade identical task source and toolchains;
+        # the runtime under test is supplied only through runner --gitnexus-root.
+        if _git_sha(args.task_repo) != pinned_task_sha(tasks):
+            parser.error("--task-repo must be checked out at the pinned task commit")
         args.out.mkdir(parents=True, exist_ok=True)
         for task in tasks:
-            task["repo"] = str(args.repo.resolve())
+            task["repo"] = str(args.task_repo.resolve())
         (args.out / "tasks.yaml").write_text(yaml.safe_dump({"tasks": tasks}, sort_keys=False))
         metadata = dict(
             runtime_sha=_git_sha(args.repo),
@@ -253,12 +281,12 @@ def main() -> None:
         (args.out / "agent-evaluation.md").write_text(render_markdown(report))
         if not report["complete"]:
             raise SystemExit(1)
+    elif args.command == "task-sha":
+        print(pinned_task_sha(suite_binding()[0]))
     else:
         _, digest, pins = suite_binding()
         report = json.loads(args.evidence.read_text())
-        validate_report(report, runtime_sha=args.runtime_sha, task_set_digest=digest)
-        if report["tasks"] != pins:
-            raise ValueError("release task pins do not match the measured task set")
+        validate_report(report, runtime_sha=args.runtime_sha, task_set_digest=digest, task_pins=pins)
         print("Pinned paired agent evidence verified.")
 
 
