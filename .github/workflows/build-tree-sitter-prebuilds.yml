@@ -423,19 +423,20 @@ jobs:
           # node-addon-api must match what the grammar's binding.cc expects.
           # GitNexus hoists ^8 for the vendored grammars; npm grammars declare
           # their own (do NOT pin it for npm grammars — let the dep resolve it).
+          # node-gyp >=12.1 recognizes Visual Studio 2026 on Windows ARM runners.
           if [ "$KIND" = "vendored" ]; then
             # Build from the vendored C source (carries parser.c + binding.gyp).
             srcdir="$work/$NAME"
             cp -R "$GITHUB_WORKSPACE/gitnexus/vendor/$NAME" "$srcdir"
             rm -rf "$srcdir/prebuilds" "$srcdir/build" "$srcdir/node_modules"
             npm install --no-audit --no-fund --ignore-scripts \
-              prebuildify@^6 node-gyp@^11 node-addon-api@^8
+              prebuildify@^6 node-gyp@12.4.0 node-addon-api@^8
             pkgdir="$srcdir"
             export npm_config_node_gyp="$work/node_modules/node-gyp/bin/node-gyp.js"
           else
             # Pull the published source-only package.
             npm install --no-audit --no-fund --ignore-scripts \
-              "$NAME@${REF}" prebuildify@^6 node-gyp@^11
+              "$NAME@${REF}" prebuildify@^6 node-gyp@12.4.0
             pkgdir="$work/node_modules/$NAME"
           fi
 
@@ -492,7 +493,7 @@ jobs:
           # no matching runtime prebuild is available. The grammar built above
           # is still loaded as a prebuild; setLanguage checks its runtime ABI.
           npm install --no-audit --no-fund \
-            node-gyp-build@^4 node-gyp@^11 node-addon-api@^8 tree-sitter@0.25.1
+            node-gyp-build@^4 node-gyp@12.4.0 node-addon-api@^8 tree-sitter@0.25.1
           # The node script is single-quoted on purpose — its ${...} are JS
           # template literals read from the environment, not shell expansions.
           # shellcheck disable=SC2016
