@@ -733,7 +733,9 @@ export interface ScopeResolver {
   ) => void;
 
   /**
-   * Optional workspace-wide enrichment of extracted reference sites. Runs
+   * Optional workspace-wide enrichment of extracted reference sites and their
+   * lexical name claims. Providers replace affected ParsedFile/scope records
+   * rather than mutating extraction snapshots or finalized indexes. Runs
    * after all files have been extracted and before reference finalization.
    * Use this when a per-file capture needs conservative facts from an
    * imported sibling (for example a compile-time branch constant).
