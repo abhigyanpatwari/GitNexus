@@ -363,7 +363,9 @@ export function emitTsScopeCaptures(
   sourceText: string,
   filePath: string,
   cachedTree?: unknown,
+  sourceMeta?: { scriptLanguage?: string },
 ): readonly CaptureMatch[] {
+  const grammarPath = sourceMeta?.scriptLanguage === 'tsx' ? `${filePath}.tsx` : filePath;
   // Reuse a pre-parsed Tree when the caller passes one via `cachedTree`; a
   // miss re-parses. (The cache is currently always empty — its only producer,
   // the sequential parser, was removed — so this re-parses in practice.) The
@@ -378,11 +380,11 @@ export function emitTsScopeCaptures(
   // fresh parse if they disagree (e.g. a worker-mode parse landed
   // with the wrong grammar pinned).
   let tree = cachedTree as ReturnType<ReturnType<typeof getTsParser>['parse']> | undefined;
-  if (tree !== undefined && !tsCachedTreeMatchesGrammar(tree, filePath)) {
+  if (tree !== undefined && !tsCachedTreeMatchesGrammar(tree, grammarPath)) {
     tree = undefined;
   }
   if (tree === undefined) {
-    tree = parseSourceSafe(getTsParser(filePath), sourceText, undefined, {
+    tree = parseSourceSafe(getTsParser(grammarPath), sourceText, undefined, {
       bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
@@ -390,7 +392,7 @@ export function emitTsScopeCaptures(
     recordCacheHit();
   }
 
-  const rawMatches = getTsScopeQuery(filePath).matches(tree.rootNode);
+  const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
   const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
   const out: CaptureMatch[] = [];

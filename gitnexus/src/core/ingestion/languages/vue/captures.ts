@@ -3,7 +3,7 @@
  *
  * Extracts the `<script>` / `<script setup>` block from the SFC source
  * and delegates to the script language's scope emitter. The parse worker's
- * structural tree uses TypeScript; explicit JS/JSX scripts are parsed with
+ * structural tree uses TypeScript or TSX; explicit JS/JSX scripts are parsed with
  * their own scope grammar inside the worker.
  *
  * Template expressions are intentionally out-of-scope: component-
@@ -12,7 +12,7 @@
  *
  * Lexical capture positions stay relative to the extracted script block,
  * matching the cached tree. Declaration graph-position metadata carries
- * the separate offset used by the structure phase's graph-node positions.
+ * the source row map used by the structure phase's graph-node positions.
  */
 
 import type { CaptureMatch } from 'gitnexus-shared';
@@ -37,13 +37,15 @@ const DECLARATION_ANCHORS = [
 function withGraphPositions(
   matches: readonly CaptureMatch[],
   lineOffset: number,
+  sourceLineMap?: readonly number[],
 ): readonly CaptureMatch[] {
   return matches.map((match) => {
     const anchor = DECLARATION_ANCHORS.map((name) => match[name]).find(
       (capture) => capture !== undefined,
     );
     if (anchor === undefined) return match;
-    const startLine = anchor.range.startLine + lineOffset;
+    const startLine =
+      (sourceLineMap?.[anchor.range.startLine - 1] ?? anchor.range.startLine - 1 + lineOffset) + 1;
     const startCol = anchor.range.startCol;
     return {
       ...match,
@@ -86,6 +88,7 @@ export function emitVueScopeCaptures(
     sourceKind?: 'full-file' | 'pre-extracted-script';
     scriptLanguage?: string;
     lineOffset?: number;
+    sourceLineMap?: readonly number[];
   },
 ): readonly CaptureMatch[] {
   // Vue resolver may include supporting TS/JS files in the same run to
@@ -98,12 +101,13 @@ export function emitVueScopeCaptures(
   if (sourceMeta?.sourceKind === 'pre-extracted-script') {
     const isJavaScript = sourceMeta.scriptLanguage === 'js' || sourceMeta.scriptLanguage === 'jsx';
     const emit = isJavaScript ? emitJsScopeCaptures : emitTsScopeCaptures;
-    // The worker's structural tree is TypeScript. Native Tree versions without
+    // The worker's structural tree uses a TypeScript grammar. Native Tree versions without
     // getLanguage() cannot prove grammar compatibility, so never give that
     // tree to the JavaScript query. This parse stays inside the worker.
     return withGraphPositions(
-      emit(sourceText, filePath, isJavaScript ? undefined : cachedTree),
+      emit(sourceText, filePath, isJavaScript ? undefined : cachedTree, sourceMeta),
       sourceMeta.lineOffset ?? 0,
+      sourceMeta.sourceLineMap,
     );
   }
 
@@ -115,12 +119,18 @@ export function emitVueScopeCaptures(
   // Mixed-lang: TS handles JS natively; JS grammar chokes on TS syntax.
   if (extracted.lang === 'js' || extracted.lang === 'jsx') {
     return withGraphPositions(
-      emitJsScopeCaptures(extracted.scriptContent, filePath, cachedTree),
+      emitJsScopeCaptures(extracted.scriptContent, filePath, cachedTree, {
+        scriptLanguage: extracted.lang,
+      }),
       extracted.lineOffset,
+      extracted.sourceLineMap,
     );
   }
   return withGraphPositions(
-    emitTsScopeCaptures(extracted.scriptContent, filePath, cachedTree),
+    emitTsScopeCaptures(extracted.scriptContent, filePath, cachedTree, {
+      scriptLanguage: extracted.lang,
+    }),
     extracted.lineOffset,
+    extracted.sourceLineMap,
   );
 }

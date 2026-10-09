@@ -1649,17 +1649,17 @@ export function getTsScopeQuery(filePath?: string): Parser.Query {
 
 /**
  * Validate that a cached `Tree` was produced by the grammar matching
- * `filePath` (TSX vs TypeScript). The runtime tree-sitter `Tree` exposes
- * `getLanguage()` (returning the grammar object the parser was bound
- * to); the .d.ts is incomplete, so we reach via a cast. Identity
+ * `filePath` (TSX vs TypeScript). Native tree-sitter exposes `language`;
+ * other Tree implementations expose `getLanguage()`. The .d.ts is
+ * incomplete, so we reach via a cast. Identity
  * comparison against `TSX_GRAMMAR` / `TS_GRAMMAR` is exact: the same
- * module instance produces both. If `getLanguage` is unavailable for
+ * module instance produces both. If neither grammar accessor is available for
  * any reason, return true to keep behavior backwards-compatible (the
  * original code never validated grammar at all).
  */
 export function tsCachedTreeMatchesGrammar(tree: unknown, filePath: string): boolean {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const lang = (tree as any)?.getLanguage?.();
+  const lang = (tree as any)?.getLanguage?.() ?? (tree as any)?.language;
   if (lang === undefined || lang === null) return true;
   return isTsxFile(filePath) ? lang === TSX_GRAMMAR : lang === TS_GRAMMAR;
 }

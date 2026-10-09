@@ -961,7 +961,7 @@ export function getJsScopeQuery(filePath?: string): Parser.Query {
 /** Validate that a cached Tree was produced by the JS grammar. */
 export function jsCachedTreeMatchesGrammar(tree: unknown): boolean {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const lang = (tree as any)?.getLanguage?.();
+  const lang = (tree as any)?.getLanguage?.() ?? (tree as any)?.language;
   if (lang === undefined || lang === null) return true;
   return lang === JS_GRAMMAR;
 }

@@ -299,6 +299,9 @@ interface LanguageProviderConfig {
    */
   readonly preprocessSource?: (sourceText: string, filePath: string) => string;
 
+  /** Select the native grammar for a pre-extracted embedded script. */
+  readonly selectEmbeddedGrammar?: (scriptLanguage: string) => object;
+
   /**
    * Runtime/compiler identity reconciliation for framework metadata. The
    * central importer owns ambiguity handling; providers only supply aliases
@@ -874,6 +877,8 @@ interface LanguageProviderConfig {
       readonly scriptLanguage?: string;
       /** Row offset from an embedded parse buffer to graph-source positions. */
       readonly lineOffset?: number;
+      /** Original zero-based source row for each embedded buffer row. */
+      readonly sourceLineMap?: readonly number[];
       /** Python `.ipynb` only: JSON line segments for the pre-extracted buffer. */
       readonly notebookSegments?: readonly NotebookLineSegment[];
     },

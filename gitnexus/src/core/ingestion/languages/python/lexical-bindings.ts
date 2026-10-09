@@ -164,6 +164,8 @@ export function applyPythonLexicalBindings(
             bind(childEnv, target, 'binding', true);
           const defaultValue = parameter.childForFieldName('value');
           if (defaultValue) visit(defaultValue, env, conditional);
+          const annotation = parameter.childForFieldName('type');
+          if (annotation) visit(annotation, env, conditional);
         }
       }
       const body = node.childForFieldName('body');

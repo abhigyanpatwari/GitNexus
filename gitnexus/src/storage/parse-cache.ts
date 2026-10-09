@@ -853,7 +853,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v135: review fixes retain unambiguous conditional Python imports and ordinary
 // mutable TS/JS type facts, and preserve unchanged destructured CJS re-exports.
 // v134 stores contain the old blocked claims and must be extracted again.
-const SCHEMA_BUMP = 135;
+// v136: Python parameter annotations retain enclosing lookup ownership; Vue
+// JSX/TSX captures and multi-block declarations retain their source grammar
+// and original graph positions. Both stores must re-extract v135 captures.
+const SCHEMA_BUMP = 136;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

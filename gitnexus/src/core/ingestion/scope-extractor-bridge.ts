@@ -49,6 +49,7 @@ export function extractParsedFile(
   notebookSegments?: readonly NotebookLineSegment[],
   lineOffset?: number,
   scriptLanguage?: string,
+  sourceLineMap?: readonly number[],
 ): ParsedFile | undefined {
   if (provider.emitScopeCaptures === undefined) return undefined;
   if (sourceText.trim().length === 0) return undefined;
@@ -67,6 +68,7 @@ export function extractParsedFile(
       ...(scriptLanguage !== undefined ? { scriptLanguage } : {}),
       ...(notebookSegments ? { notebookSegments } : {}),
       ...(lineOffset !== undefined ? { lineOffset } : {}),
+      ...(sourceLineMap !== undefined ? { sourceLineMap } : {}),
     });
     return extractScope(captures, filePath, provider);
   } catch (err) {

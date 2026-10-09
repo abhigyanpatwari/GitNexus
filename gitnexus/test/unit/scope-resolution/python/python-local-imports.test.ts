@@ -98,6 +98,16 @@ def outer_parameter_default(helper):
         from closure_target import helper
     return inner_parameter_default
 `,
+      'parameter_annotation.py': `from module_target import helper
+def annotated_parameter(value: helper()):
+    from closure_target import helper
+    return helper()
+
+def outer_annotation(helper):
+    def inner_annotation(value: helper()):
+        from closure_target import helper
+    return inner_annotation
+`,
       'import_default.py': `from module_target import helper
 def outer_import_default():
     from closure_target import helper
@@ -376,6 +386,20 @@ def enclosing():
         .filter((edge) => edge.sourceFilePath === 'import_default.py' && edge.target === 'helper')
         .map((edge) => [edge.source, edge.rel.targetId]),
     ).toEqual([['outer_import_default', 'Function:closure_target.py:helper']]);
+  });
+
+  it('resolves parameter annotations outside the function body and retains outer parameter barriers', () => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter(
+          (edge) => edge.sourceFilePath === 'parameter_annotation.py' && edge.target === 'helper',
+        )
+        .map((edge) => `${edge.rel.sourceId} -> ${edge.rel.targetId}`)
+        .sort(),
+    ).toEqual([
+      'File:parameter_annotation.py -> Function:module_target.py:helper',
+      'Function:parameter_annotation.py:annotated_parameter -> Function:closure_target.py:helper',
+    ]);
   });
 
   it('resolves default-expression receivers in the enclosing environment', () => {

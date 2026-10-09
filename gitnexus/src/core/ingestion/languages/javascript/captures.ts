@@ -876,18 +876,20 @@ export function emitJsScopeCaptures(
   sourceText: string,
   filePath: string,
   cachedTree?: unknown,
+  sourceMeta?: { scriptLanguage?: string },
 ): readonly CaptureMatch[] {
+  const grammarPath = sourceMeta?.scriptLanguage === 'jsx' ? `${filePath}.jsx` : filePath;
   let tree = cachedTree as ReturnType<ReturnType<typeof getJsParser>['parse']> | undefined;
   if (tree !== undefined && !jsCachedTreeMatchesGrammar(tree)) {
     tree = undefined;
   }
   if (tree === undefined) {
-    tree = parseSourceSafe(getJsParser(filePath), sourceText, undefined, {
+    tree = parseSourceSafe(getJsParser(grammarPath), sourceText, undefined, {
       bufferSize: getTreeSitterBufferSize(sourceText),
     });
   }
 
-  const rawMatches = getJsScopeQuery(filePath).matches(tree.rootNode);
+  const rawMatches = getJsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
   const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
   const out: CaptureMatch[] = [];
