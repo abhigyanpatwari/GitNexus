@@ -35,6 +35,7 @@ import {
   isCppDependentBaseMember,
 } from './two-phase-lookup.js';
 import { populateCppAssociatedNamespaces, clearCppAdlState, pickCppAdlCandidates } from './adl.js';
+import { findCallableBindingsAndAdlBlocker } from './callable-bindings.js';
 import { applyCppCaptureSideChannel } from './capture-side-channel.js';
 import {
   clearCppInlineNamespaces,
@@ -378,6 +379,7 @@ export const cppScopeResolver: ScopeResolver = {
   // namespaces. Function-pointer args and full conversion-ranking remain
   // excluded.
   resolveAdlCandidates: pickCppAdlCandidates,
+  resolveOrdinaryCallables: findCallableBindingsAndAdlBlocker,
 
   // C++ qualified namespace-member resolution (U5 of plan 2026-05-13-001).
   // Handles `outer::foo()` where `outer` is a namespace (not a class).
