@@ -23,6 +23,67 @@ describe('Python compiler-local import ownership', () => {
       'class_target.py': 'def helper(): return 3\n',
       'empty.py': 'value = 1\n',
       'model.py': 'class User:\n    def save(self): pass\n',
+      'comprehension_source.py': 'def items(): return []\n',
+      'type_checking.py': `from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from model import User
+
+def type_checking_receiver(user: User):
+    user.save()
+`,
+      'conditional_imports.py': `def conditional_named(flag):
+    if flag:
+        from module_target import helper
+    return helper()
+
+def conditional_namespace(flag):
+    if flag:
+        import module_target as mod
+    return mod.helper()
+
+def try_named():
+    try:
+        from module_target import helper
+    except ImportError:
+        pass
+    return helper()
+
+def try_identical_imports():
+    try:
+        import module_target as mod
+    except ImportError:
+        import module_target as mod
+    return mod.helper()
+
+def conflicting_conditional_imports(flag):
+    if flag:
+        from module_target import helper
+    else:
+        from closure_target import helper
+    return helper()
+
+def mixed_conditional_import(flag, callback):
+    if flag:
+        from module_target import helper
+    else:
+        helper = callback
+    return helper()
+
+def conflicting_try_imports():
+    try:
+        from module_target import helper
+    except ImportError:
+        from closure_target import helper
+    return helper()
+`,
+      'comprehension_iterables.py': `import comprehension_source as y
+
+def comprehension_later_iterable(xs):
+    return [y for x in xs for y in y.items()]
+
+def comprehension_first_iterable():
+    return [y for y in y.items()]
+`,
       'receivers.py': `from model import User
 class Holder:
     value = User()
@@ -198,6 +259,29 @@ def enclosing():
     expect(targets('after_import')).toEqual(['Function:closure_target.py:helper']);
   });
 
+  it('uses a TYPE_CHECKING import to resolve an annotated receiver', () => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === 'type_checking_receiver')
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(['Method:model.py:User.save#0']);
+  });
+
+  it.each(['conditional_named', 'conditional_namespace', 'try_named', 'try_identical_imports'])(
+    'resolves the sole import identity in %s',
+    (caller) => {
+      expect(targets(caller)).toEqual(['Function:module_target.py:helper']);
+    },
+  );
+
+  it.each([
+    'conflicting_conditional_imports',
+    'mixed_conditional_import',
+    'conflicting_try_imports',
+  ])('preserves the barrier for competing bindings in %s', (caller) => {
+    expect(targets(caller)).toEqual([]);
+  });
+
   it.each(['unresolved_import', 'missing_export'])(
     'does not fall through an unresolved owned import: %s',
     (caller) => expect(targets(caller)).toEqual([]),
@@ -222,6 +306,18 @@ def enclosing():
   it('isolates comprehension targets and evaluates the first iterable outside their scope', () => {
     expect(targets('comprehension_does_not_leak')).toEqual(['Function:module_target.py:helper']);
     expect(targets('comprehension_iterable')).toEqual(['Function:module_target.py:helper']);
+  });
+
+  it('owns later comprehension targets before evaluating their iterable', () => {
+    // CPython raises UnboundLocalError for y.items() in the later for clause:
+    // its y is already a comprehension local, not the imported namespace.
+    const calls = getRelationships(result, 'CALLS').filter((edge) => edge.target === 'items');
+    expect(calls.filter((edge) => edge.source === 'comprehension_later_iterable')).toEqual([]);
+    expect(
+      calls
+        .filter((edge) => edge.source === 'comprehension_first_iterable')
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(['Function:comprehension_source.py:items']);
   });
 
   it('does not assume an installer executed for an unrelated global caller', () => {
