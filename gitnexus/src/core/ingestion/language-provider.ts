@@ -870,6 +870,10 @@ interface LanguageProviderConfig {
      */
     sourceMeta?: {
       readonly sourceKind?: 'full-file' | 'pre-extracted-script';
+      /** Explicit language of an embedded script, interpreted by its provider. */
+      readonly scriptLanguage?: string;
+      /** Row offset from an embedded parse buffer to graph-source positions. */
+      readonly lineOffset?: number;
       /** Python `.ipynb` only: JSON line segments for the pre-extracted buffer. */
       readonly notebookSegments?: readonly NotebookLineSegment[];
     },

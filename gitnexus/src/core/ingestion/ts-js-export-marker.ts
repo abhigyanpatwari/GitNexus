@@ -241,7 +241,9 @@ const NESTING_BOUNDARIES: ReadonlySet<string> = new Set([
   // of the namespace/ambient module, not of the file.
   'internal_module',
   'module',
-  'ambient_declaration',
+  // `ambient_declaration` only wraps `declare`: an exported class/function
+  // under it is still a file export. Ambient module bodies remain bounded by
+  // their `module`/`internal_module` and `statement_block` nodes above.
 ]);
 
 /**

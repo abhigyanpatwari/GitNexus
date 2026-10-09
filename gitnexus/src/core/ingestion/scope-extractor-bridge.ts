@@ -47,6 +47,8 @@ export function extractParsedFile(
   cachedTree?: unknown,
   sourceKind: ScopeCaptureSourceKind = 'full-file',
   notebookSegments?: readonly NotebookLineSegment[],
+  lineOffset?: number,
+  scriptLanguage?: string,
 ): ParsedFile | undefined {
   if (provider.emitScopeCaptures === undefined) return undefined;
   if (sourceText.trim().length === 0) return undefined;
@@ -62,7 +64,9 @@ export function extractParsedFile(
         : sourceText;
     const captures = provider.emitScopeCaptures(parseText, filePath, cachedTree, {
       sourceKind,
+      ...(scriptLanguage !== undefined ? { scriptLanguage } : {}),
       ...(notebookSegments ? { notebookSegments } : {}),
+      ...(lineOffset !== undefined ? { lineOffset } : {}),
     });
     return extractScope(captures, filePath, provider);
   } catch (err) {
