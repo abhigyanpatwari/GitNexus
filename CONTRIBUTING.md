@@ -185,7 +185,12 @@ routes between two modes based on the triggering event:
   `gitnexus-claude-plugin/.codex-plugin/plugin.json`,
   `.agents/plugins/marketplace.json`, and the matching `CHANGELOG.md` entry in
   lockstep — the always-on `gitnexus` unit suite now fails if those manifest
-  versions drift.
+  versions drift. Stable publication also requires paired agent evidence for
+  the exact tagged commit: run **Release evaluation** from `main` with
+  `candidate_ref` set to the full commit SHA, confirm the run started and
+  passed, and push the tag within seven days. Without that evidence, npm and
+  Docker publication fail. See `eval/workflow_bench/README.md` § Release
+  evaluation.
 - **Release-candidate mode** — runs on every push to `main` (typically a
   merged PR) plus manual `workflow_dispatch`. Docs-only changes are skipped
   via `paths-ignore`. Publishes to the `rc` dist-tag with version
@@ -198,6 +203,9 @@ routes between two modes based on the triggering event:
     the cycle from `latest`.
   - `N` is auto-incremented against existing `X.Y.Z-rc.*` entries on the
     registry. First rc for a given base is `rc.1`.
+  - The RC is gated by CI, including the fixed-answer tool-accuracy check
+    (`gitnexus/bench/tool-accuracy/`); its report is attached to every
+    release. RCs do not wait for a paid agent evaluation.
   - After the npm publish succeeds, the workflow calls `docker.yml` as a
     reusable workflow to build and push the corresponding RC Docker images
     (e.g. `ghcr.io/abhigyanpatwari/gitnexus:1.7.0-rc.1`, mirrored to
