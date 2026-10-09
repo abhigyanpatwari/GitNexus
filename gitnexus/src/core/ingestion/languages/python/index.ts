@@ -77,6 +77,7 @@ export { pythonArityCompatibility } from './arity.js';
 export {
   isPythonImportedModule,
   pythonNamespaceReceiverPaths,
+  pythonNamespaceBindingIdentity,
   resolvePythonImportTarget,
   type PythonResolveContext,
 } from './import-target.js';

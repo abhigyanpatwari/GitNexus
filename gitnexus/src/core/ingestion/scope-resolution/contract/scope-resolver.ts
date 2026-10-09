@@ -452,6 +452,17 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
   ) => readonly string[];
 
+  /** Exact local module bindings, excluding definitions owned by nested scopes. */
+  readonly moduleExports?: (file: ParsedFile) => ReadonlyMap<string, SymbolDefinition>;
+
+  /** Filter local and transitive export names for wildcard imports. Opting in
+   * applies the filter both to re-export closures and imported bindings. */
+  readonly filterWildcardNames?: (
+    targetModuleScope: ScopeId,
+    availableNames: readonly string[],
+    parsedFiles: readonly ParsedFile[],
+  ) => readonly string[];
+
   /**
    * Optional one-shot loader for cross-file import-resolution config
    * (e.g. tsconfig path aliases for TypeScript, go.mod paths for Go,
@@ -470,6 +481,19 @@ export interface ScopeResolver {
    * `resolveImportTarget` casts it to the language's expected shape.
    */
   loadResolutionConfig?(repoPath: string): Promise<unknown> | unknown;
+
+  /**
+   * Capture metadata from the scan's complete, nonignored candidate paths,
+   * before unreadable/large source files are filtered out. Called once for a
+   * language present in the scan. The compact result is shared by every
+   * resolution pass instead of calling loadResolutionConfig again.
+   * Capture failures must throw; consumers must not mutate the result.
+   * This is a stable-workspace input boundary, not an atomic filesystem snapshot.
+   */
+  captureResolutionConfig?(
+    repoPath: string,
+    filePaths: readonly string[],
+  ): Promise<unknown> | unknown;
 
   /**
    * Per-scope binding-merge precedence. The shared finalize pass
@@ -879,6 +903,11 @@ export interface ScopeResolver {
   /** Opt in to binding imports at their extracted lexical scope, rather than
    * publishing every file's imports at module scope. */
   readonly importsBindAtLexicalScope?: boolean;
+
+  /** Whether class-owned definitions also populate the legacy module lookup
+   * bucket. Disable when bare names must follow lexical bindings exclusively.
+   * Defaults to true; synthetic declarations remain available for dispatch. */
+  readonly ownedMembersBindAtModuleScope?: boolean;
 
   /**
    * Two `wildcard` re-exports that both DECLARE a name make it AMBIGUOUS in
@@ -1377,9 +1406,26 @@ export interface ScopeResolver {
       readonly localName: string;
       readonly importPath: string;
       readonly targetFile: string;
+      readonly explicitAlias?: boolean;
     },
     moduleFileExists: (filePath: string) => boolean,
   ) => readonly (readonly [spelling: string, targetFile: string])[] | undefined;
+
+  /** Stable identity of the namespace object bound by an import. Equal identities
+   * allow distinct receiver paths to remain visible across lexical scopes.
+   * Supplying this hook also suppresses same-scope import names with conflicting
+   * or unprovably equal identities; a lone namespace with undefined identity
+   * remains eligible. Without the hook, same-scope multi-target behavior stays. */
+  readonly namespaceBindingIdentity?: (edge: {
+    readonly localName: string;
+    readonly importPath: string;
+    readonly targetFile: string;
+    readonly explicitAlias?: boolean;
+  }) => string | undefined;
+
+  /** Enclosing class bodies are not lexical environments for namespace lookup.
+   * The reference's own class scope remains visible for class-body expressions. */
+  readonly namespaceSkipsEnclosingClasses?: boolean;
 
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved

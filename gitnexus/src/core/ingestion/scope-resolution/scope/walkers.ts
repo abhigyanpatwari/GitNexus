@@ -316,6 +316,7 @@ export function isNamespaceNameShadowed(
   namespaceName: string,
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
+  skipEnclosingClasses = false,
 ): boolean {
   const firstDot = namespaceName.indexOf('.');
   const rootName = firstDot === -1 ? namespaceName : namespaceName.slice(0, firstDot);
@@ -326,6 +327,10 @@ export function isNamespaceNameShadowed(
     visited.add(currentId);
     const scope = scopes.scopeTree.getScope(currentId);
     if (scope === undefined) return true;
+    if (skipEnclosingClasses && scope.kind === 'Class' && currentId !== inScope) {
+      currentId = scope.parent;
+      continue;
+    }
     // Stop AT the module scope without inspecting it. In languages where a
     // namespace import IS a variable declaration — CommonJS
     // `const svc = require('./svc')` — the import puts its own name into the
@@ -2294,7 +2299,12 @@ export function findExportedDefIncludingImportedNames(
   if (moduleScope === undefined) return undefined;
   let picked: SymbolDefinition | undefined;
   for (const ref of lookupBindingsAt(moduleScope.id, memberName, scopes)) {
-    if (ref.origin !== 'import' && ref.origin !== 'namespace' && ref.origin !== 'reexport')
+    if (
+      ref.origin !== 'import' &&
+      ref.origin !== 'namespace' &&
+      ref.origin !== 'reexport' &&
+      ref.origin !== 'wildcard'
+    )
       continue;
     if (picked === undefined) {
       picked = ref.def;
