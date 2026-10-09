@@ -162,21 +162,20 @@ function conditionalVar(node: SyntaxNode, owner: LexicalScope): boolean {
 }
 
 /**
- * Add scope facts and imports in one AST pass. Returned identities are consumed
- * by CommonJS forwarding synthesis, so it cannot trust a shadowed `require`.
+ * Add scope facts and imports in one AST pass. Returned identities and blocked
+ * binding names let CommonJS forwarding reject shadowed loaders and written handles.
  * Computed sources and indirect promise/loader chains never become aliases.
  */
 export function synthesizeTsLocalImports(
   root: SyntaxNode,
   filePath: string,
   out: CaptureMatch[],
-): ReadonlySet<number> {
+): ReadonlyMap<number, ReadonlySet<string>> {
   const scopes = new Map<string, LexicalScope>();
   const scopesAt = new Map<string, LexicalScope>();
   const calls: LocatedNode[] = [];
   const writes: LocatedNode[] = [];
   const bindingWrites: Array<LocatedNode & { readonly name: string }> = [];
-  const functionDeclarations = new Map<LexicalScope, Set<string>>();
   const uninitializedVarClaims = new Set<NameClaim>();
   const declarations: LocatedNode[] = [];
   const equalsImports: LocatedNode[] = [];
@@ -194,7 +193,7 @@ export function synthesizeTsLocalImports(
     }
   }
   const module = scopes.get(scopeKey(rangeOf(root), 'Module'));
-  if (!module) return new Set();
+  if (!module) return new Map();
 
   const add = (
     scope: LexicalScope,
@@ -249,9 +248,6 @@ export function synthesizeTsLocalImports(
         )
       ) {
         add(parent, node, [name], { hoisted: true });
-        let declaredNames = functionDeclarations.get(parent);
-        if (!declaredNames) functionDeclarations.set(parent, (declaredNames = new Set()));
-        declaredNames.add(name.text);
       } else if (name && ['function_expression', 'generator_function'].includes(node.type))
         add(current, node, [name], { hoisted: true });
     }
@@ -379,7 +375,7 @@ export function synthesizeTsLocalImports(
     }
   }
 
-  const validRequireCalls = new Set<number>();
+  const validRequireCalls = new Map<number, Set<string>>();
   const declarationByValue = new Map(
     declarations.map((entry) => [entry.node.childForFieldName('value')?.id, entry]),
   );
@@ -450,7 +446,7 @@ export function synthesizeTsLocalImports(
     const sourceNode = args[0];
     if (!sourceNode || sourceNode.type !== 'string' || (requireCall && args.length !== 1)) continue;
     const source = sourceNode.text.slice(1, -1);
-    if (requireCall) validRequireCalls.add(node.id);
+    if (requireCall) validRequireCalls.set(node.id, new Set());
     const value = importCall && node.parent?.type === 'await_expression' ? node.parent : node;
     const declaration = declarationByValue.get(value.id);
     if (importCall && value === node) continue; // A promise is not a module namespace.
@@ -513,13 +509,14 @@ export function synthesizeTsLocalImports(
       );
     }
   }
-  // Callable value flow retains a real function declaration as an inclusion
-  // target after reassignment. Imported handles still lose their module proof,
-  // including a var loader that shares a name with a function declaration.
+  // Writes invalidate an imported handle's module proof, including a var loader
+  // that shares a name with a function declaration. Ordinary locals retain their
+  // type and callable-value inference; an assignment does not erase that evidence.
   for (const { node, scope, name } of bindingWrites) {
     if (
-      functionDeclarations.get(scope)?.has(name) &&
-      !scope.claims.some((claim) => claim.name === name && claim.kind === 'import')
+      !scope.claims.some(
+        (claim) => claim.name === name && claim.kind === 'import' && claim.purpose !== 'type',
+      )
     ) {
       continue;
     }
@@ -548,14 +545,15 @@ export function synthesizeTsLocalImports(
     }
   }
   // Forwarding exports require a stable handle as well as a genuine loader.
-  // Keep the original import facts for calls before a write; only remove the
-  // proof that lets the separate CommonJS export pass forward this handle.
+  // Keep the original import facts for calls before a write; remove forwarding
+  // proof only for each written handle, preserving unchanged destructured siblings.
   for (const { node, scope } of declarations) {
     const value = node.childForFieldName('value');
-    if (!value || !validRequireCalls.has(value.id)) continue;
+    const blockedNames = value && validRequireCalls.get(value.id);
+    if (!blockedNames) continue;
     const names = new Set(boundNames(node.childForFieldName('name')).map((name) => name.text));
-    if (scope.claims.some((claim) => claim.kind === 'blocked' && names.has(claim.name))) {
-      validRequireCalls.delete(value.id);
+    for (const claim of scope.claims) {
+      if (claim.kind === 'blocked' && names.has(claim.name)) blockedNames.add(claim.name);
     }
   }
   for (const scope of scopes.values()) {
