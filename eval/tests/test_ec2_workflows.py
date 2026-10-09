@@ -167,3 +167,17 @@ def test_both_cold_boot_workflows_wait_for_package_lock():
             "sudo apt-get -o DPkg::Lock::Timeout=600 install --yes --no-install-recommends bubblewrap ripgrep socat"
             in apt_commands
         )
+
+
+def test_shared_lifecycle_jobs_stay_identical_across_both_ec2_workflows():
+    # The two workflows duplicate the verified lifecycle instead of sharing a
+    # reusable workflow; this pins them together so an edit to one copy fails.
+    evaluation = workflow("release-evaluation.yml")["jobs"]
+    evolution = workflow("gitnexus-skill-evolution.yml")["jobs"]
+    renamed = {"watch-evaluate-pickup": "watch-evolve-pickup", "evaluate": "evolve"}
+    for job in ("start-runner", "check-runner", "runner-ready", "stop-runner"):
+        expected = {key: value for key, value in evaluation[job].items() if key != "name"}
+        expected["needs"] = [renamed.get(need, need) for need in expected.get("needs", [])]
+        actual = {key: value for key, value in evolution[job].items() if key != "name"}
+        actual["needs"] = actual.get("needs", [])
+        assert actual == expected, job
