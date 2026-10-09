@@ -32,7 +32,7 @@
  */
 
 import Parser from 'tree-sitter';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 
 const CSHARP_SCOPE_QUERY = `
 ;; Scopes

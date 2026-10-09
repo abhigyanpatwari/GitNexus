@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import type Parser from 'tree-sitter';
 import { requireVendoredGrammar } from '../../../tree-sitter/vendored-grammars.js';
 import {
   compilePatterns,
@@ -19,15 +20,15 @@ import type { GrpcDetection, GrpcLanguagePlugin } from './types.js';
  *
  * The grammar is vendored in `vendor/tree-sitter-proto/` with
  * parser.c regenerated against tree-sitter-cli 0.24 (ABI version 14)
- * so it is compatible with the project's tree-sitter 0.21.1 runtime
- * (which loads ABI 13–14).
+ * so it is compatible with the project's tree-sitter 0.25.1 runtime
+ * (which loads ABI 13–15).
  */
 
 // Only for `tree-sitter` (a real npm dependency) in the smoke-test below;
 // the vendored grammar goes through requireVendoredGrammar (never a bare
 // `_require('tree-sitter-proto')`, which would force a node_modules copy — #2111).
 const _require = createRequire(import.meta.url);
-let ProtoGrammar: unknown = null;
+let ProtoGrammar: Parser.Language | null = null;
 try {
   ProtoGrammar = requireVendoredGrammar('tree-sitter-proto');
 } catch {

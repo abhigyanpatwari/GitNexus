@@ -155,6 +155,23 @@ Re-invoking `/autofix` after a successful apply is a safe no-op — the workflow
 
 **Sensitive paths.** The apply workflow refuses any patch that touches `.github/` (workflow files, CODEOWNERS, dependabot config). A malicious PR could ship a custom prettier or ESLint config that reformats workflow YAML; if accepted, those edits would be pushed under `contents: write` without human review. Apply formatter changes to files under `.github/` manually in a normal commit so they get the same review every other workflow change gets.
 
+### Native tree-sitter npm packages
+
+The CLI pins and bundles the native `tree-sitter` runtime and its npm grammars.
+Several compatible grammars still declare older runtime peer ranges. Root npm
+`overrides` work in this checkout but do not propagate to consumers, so
+`gitnexus/scripts/prepare-tree-sitter-bundle.cjs` runs during `prepack` to add the
+tested runtime version to eight audited dependency manifests. It leaves grammar
+sources and native binaries unchanged and rejects unexpected versions, peer
+ranges, or dependency layouts before writing any manifests.
+
+When upgrading these packages, update the exact pins, lockfile, and audited peer
+list together. Run the parser, extraction, CFG, and worker tests, then use a real
+`npm pack` (including `prepack`) to test a fresh consumer's `npm install`,
+`npm ci`, `npm ls`, and a subsequent dependency install. Check native parser
+loading on the supported Node.js versions and release platforms. A successful
+install in this checkout alone does not verify the published bundle.
+
 ### Vendored tree-sitter grammars
 
 `.github/vendored-grammars.json` is the **single source of truth** for the vendored tree-sitter grammar **set** and each grammar's policy `hold` (the ones shipped from `gitnexus/vendor/<name>` rather than installed from npm). It lists each grammar's name, upstream coords (`npm` or `github`), and any `hold`. The monitor resolves upstreams from it; the readiness report keeps its own upstream-drift coords and reads vendored ABIs from `gitnexus/vendor/`. Two workflows read it:
