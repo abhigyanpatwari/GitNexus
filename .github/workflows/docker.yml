@@ -116,6 +116,11 @@ jobs:
         if: steps.version.outputs.publish == 'true'
         with:
           build: 'true'
+      - name: Install ripgrep for rename text search
+        if: steps.version.outputs.publish == 'true'
+        run: |
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install --yes --no-install-recommends ripgrep
       - name: Check fixed answers before Docker publication
         if: steps.version.outputs.publish == 'true'
         working-directory: gitnexus

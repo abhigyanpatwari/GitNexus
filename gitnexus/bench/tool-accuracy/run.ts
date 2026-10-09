@@ -82,6 +82,27 @@ async function fixtureDigest(
   return relative ? '' : digest.digest('hex');
 }
 
+// rename's text-search pass shells out to ripgrep and degrades silently when it is missing,
+// which would change what the corpus measures. Fail closed before indexing instead.
+const externalTools = Object.fromEntries(
+  ['rg'].map((tool) => {
+    try {
+      const version = execFileSync(tool, ['--version'], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+        .split('\n')[0]
+        .trim();
+      return [tool, version];
+    } catch (error) {
+      throw new Error(
+        `Required external tool "${tool}" is unavailable (${error instanceof Error ? error.message : String(error)}); the tool-accuracy corpus is only valid when it is installed`,
+      );
+    }
+  }),
+);
+
 const source = {
   sha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: CHECKOUT, encoding: 'utf8' }).trim(),
   dirty: !!execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {
@@ -89,6 +110,7 @@ const source = {
     encoding: 'utf8',
   }).trim(),
   fixtureSha: await fixtureDigest(path.join(HERE, 'fixtures')),
+  externalTools,
 };
 const manifest: KnownGapManifest = JSON.parse(await fs.readFile(knownGaps, 'utf8'));
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-tool-accuracy-'));

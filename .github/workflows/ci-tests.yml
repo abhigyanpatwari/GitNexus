@@ -18,6 +18,10 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
+      - name: Install ripgrep for rename text search
+        run: |
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install --yes --no-install-recommends ripgrep
       - name: Check fixed answers against real tools
         working-directory: gitnexus
         run: node --import tsx bench/tool-accuracy/run.ts --check --out "$RUNNER_TEMP/tool-accuracy"

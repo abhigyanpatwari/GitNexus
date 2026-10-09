@@ -151,6 +151,12 @@ describe('Docker publication prerequisites', () => {
     const accuracy = gate.steps.find((step) => step.run?.includes('bench/tool-accuracy/run.ts'));
     expect(accuracy?.run).toContain('--check');
     expect(accuracy?.if).toBe("steps.version.outputs.publish == 'true'");
+    const installIndex = gate.steps.findIndex(
+      (step) => step.run?.includes('install') && step.run.includes('ripgrep'),
+    );
+    expect(installIndex).toBeGreaterThanOrEqual(0);
+    expect(gate.steps[installIndex].if).toBe(accuracy?.if);
+    expect(installIndex).toBeLessThan(gate.steps.findIndex((step) => step === accuracy));
     const paid = gate.steps.find(
       (step) => step.uses === './.github/actions/require-agent-release-evidence',
     );
