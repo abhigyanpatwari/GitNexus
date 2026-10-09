@@ -858,8 +858,6 @@ def real_directory(path: Path, *, label: str) -> Path:
     return lexical
 
 
-# Historical private name, still imported by task_assets.
-
 
 def _safe_repo_source(repo: Path, relative: str, *, label: str) -> tuple[Path, Path]:
     candidate = PurePosixPath(relative)

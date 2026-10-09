@@ -56,3 +56,15 @@ def test_unbalanced_gitnexus_markers_fail_closed(guidance):
 def test_module_has_no_sandbox_import_cycle():
     source = Path(baseline_guidance.__file__).read_text()
     assert "proposer_sandbox" not in source
+
+
+@pytest.mark.parametrize("indent", ["", " ", "  ", "   "])
+def test_gitnexus_sections_are_stripped_under_commonmark_heading_indentation(indent):
+    guidance = (
+        "Build first.\n"
+        f"{indent}## GitNexus rules\n"
+        "Always consult the code graph before editing.\n"
+        "## Testing\n"
+        "Run the unit tests.\n"
+    )
+    assert baseline_guidance.ordinary_repository_guidance(guidance) == "Build first.\n## Testing\nRun the unit tests.\n"

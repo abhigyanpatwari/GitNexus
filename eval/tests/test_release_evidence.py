@@ -72,6 +72,7 @@ def make_report(*, harness_sha: str = HARNESS, runtime_sha: str = RUNTIME) -> di
             transcript_missing=False,
             cost_usd=1,
             duration_s=1,
+            sandbox_dependency_content_digest="f" * 64,
         )
         for i in range(3)
         for arm in ("baseline_nomcp", "baseline")

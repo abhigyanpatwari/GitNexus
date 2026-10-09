@@ -47,7 +47,7 @@ def ordinary_repository_guidance(text: str) -> str:
             continue
         if marked:
             continue
-        heading = re.match(r"^(#{1,6})\s+(.+)", line)
+        heading = re.match(r"^ {0,3}(#{1,6})\s+(.+)", line)
         if heading is not None:
             level = len(heading.group(1))
             if section_level is not None and level <= section_level:

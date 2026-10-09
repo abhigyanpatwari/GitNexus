@@ -71,7 +71,12 @@ def pinned_task_sha(tasks: list[dict[str, Any]]) -> str:
 
 
 def _finite_nonnegative(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # JSON integers can exceed float range.
+        return False
 
 
 def _json_safe(value: Any) -> Any:
@@ -130,6 +135,8 @@ def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | N
             and row.get("transcript_missing") is False
             and _finite_nonnegative(row.get("cost_usd"))
             and _finite_nonnegative(row.get("duration_s"))
+            and isinstance(row.get(DEPENDENCY_CONTENT_BINDING_FIELD), str)
+            and re.fullmatch(r"[0-9a-f]{64}", row[DEPENDENCY_CONTENT_BINDING_FIELD]) is not None
         )
         if not valid:
             problems.append(f"{task}/{arm}/{run}: untrustworthy measurement")

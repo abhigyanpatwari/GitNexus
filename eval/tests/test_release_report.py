@@ -255,3 +255,12 @@ def test_evidence_with_fields_outside_the_published_schema_is_rejected(smuggle):
     smuggle(report)
     with pytest.raises(ValueError, match="outside the published report schema"):
         validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)
+
+
+@pytest.mark.parametrize("field", ["cost_usd", "duration_s"])
+def test_oversized_integer_measurements_mark_evidence_incomplete_instead_of_crashing(field):
+    measured = rows()
+    measured[0][field] = 10**400
+    report = build_report(measured, metadata(), now=NOW)
+    assert report["complete"] is False
+    assert any("untrustworthy measurement" in problem for problem in report["problems"])

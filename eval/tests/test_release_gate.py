@@ -181,10 +181,6 @@ def first_task_rows(report):
         (1, lambda rows: [row.update(sandbox_dependency_content_digest="8" * 64) for row in rows]),
         # One candidate cell drifted from the other cells of the same task.
         (0, lambda rows: rows[0].update(sandbox_dependency_content_digest="8" * 64)),
-        # Evidence that never recorded its dependency set cannot be compared.
-        (1, lambda rows: [row.pop("sandbox_dependency_content_digest") for row in rows]),
-        (0, lambda rows: [row.update(sandbox_dependency_content_digest=None) for row in rows]),
-        (1, lambda rows: [row.update(sandbox_dependency_content_digest=["9" * 64]) for row in rows]),
     ],
 )
 def test_comparison_rejects_tasks_graded_against_different_dependencies(side, mutate):
@@ -198,16 +194,26 @@ def test_comparison_rejects_tasks_graded_against_different_dependencies(side, mu
     ]
 
 
-@pytest.mark.parametrize("digest", [None, "9" * 63, "not-a-dependency-digest"])
-def test_comparison_rejects_matching_but_unrecorded_dependency_digests(digest):
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda row: row.pop("sandbox_dependency_content_digest"),
+        lambda row: row.update(sandbox_dependency_content_digest=None),
+        lambda row: row.update(sandbox_dependency_content_digest=["9" * 64]),
+        lambda row: row.update(sandbox_dependency_content_digest="9" * 63),
+        lambda row: row.update(sandbox_dependency_content_digest="not-a-dependency-digest"),
+    ],
+    ids=["missing", "none", "list", "short", "not-hex"],
+)
+@pytest.mark.parametrize("side,label", [(0, "candidate"), (1, "stable")])
+def test_evidence_without_a_recorded_dependency_digest_is_invalid(side, label, mutate):
+    # Each row must bind its task dependencies, so even identical bad values on
+    # both sides fail as invalid evidence before the pairing check.
     measured = list(reports())
-    for report in measured:
-        for row in report["per_run"]:
-            row["sandbox_dependency_content_digest"] = digest
+    mutate(first_task_rows(measured[side])[0])
     result = decide(*(rebuild(report) for report in measured))
     assert result["passed"] is False
-    assert len(result["problems"]) == len(measured[0]["tasks"])
-    assert all("identical task dependencies" in problem for problem in result["problems"])
+    assert result["problems"] == [f"{label}: invalid, incomplete, stale, or mismatched evidence/pins"]
 
 
 def run_gate_cli(tmp_path, out):
