@@ -72,6 +72,8 @@ def test_report_keeps_failed_solutions_and_compares_against_no_gitnexus():
         lambda rs: rs.append(dict(rs[0])),
         lambda rs: rs[0].update(cost_usd=None),
         lambda rs: rs[0].update(cost_usd=float("nan")),
+        lambda rs: rs[0].update(cost_usd=[float("nan")]),
+        lambda rs: rs[0].update(duration_s={"wall": float("inf")}),
         lambda rs: rs[0].update(duration_s=-1),
         lambda rs: rs[0].update(task_base_sha="f" * 40),
         lambda rs: rs[0].update(oracle_digest="f" * 64),

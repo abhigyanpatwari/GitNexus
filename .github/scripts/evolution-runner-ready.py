@@ -36,7 +36,8 @@ def wait_for_runner(
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            # Never let the final request outlive the pickup deadline.
+            timeout=max(1, min(30, until - time.monotonic())),
         )
         if result.returncode:
             raise RuntimeError(

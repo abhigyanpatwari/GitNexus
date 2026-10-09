@@ -14,8 +14,9 @@ bootstrap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bootstrap)
 
 
-def pickup_driver(monkeypatch, responses, *, denied=False):
+def pickup_driver(monkeypatch, responses, *, denied=False, timeouts=None):
     calls = []
+    timeouts = [] if timeouts is None else timeouts
     clock = [0.0]
     monkeypatch.setenv("GITHUB_REPOSITORY", "abhigyanpatwari/GitNexus")
     monkeypatch.setenv("GITHUB_RUN_ID", "1234")
@@ -25,7 +26,8 @@ def pickup_driver(monkeypatch, responses, *, denied=False):
     def run(command, **kwargs):
         calls.append(command)
         assert command == ["gh", "api", "repos/abhigyanpatwari/GitNexus/actions/runs/1234/jobs?per_page=100"]
-        assert kwargs == {"capture_output": True, "text": True, "timeout": 30}
+        timeouts.append(kwargs.pop("timeout"))
+        assert kwargs == {"capture_output": True, "text": True}
         jobs = responses.pop(0) if len(responses) > 1 else responses[0]
         return SimpleNamespace(returncode=int(denied), stdout=json.dumps({"jobs": jobs}), stderr="private details")
 
@@ -51,6 +53,14 @@ def test_pickup_missing_offline_or_unrelated_job_has_bounded_wait(monkeypatch, j
     with pytest.raises(RuntimeError, match="before the deadline"):
         bootstrap.wait_for_runner(timeout=20)
     assert len(calls) == 2
+
+
+def test_each_jobs_request_is_bounded_by_the_remaining_pickup_deadline(monkeypatch):
+    timeouts = []
+    pickup_driver(monkeypatch, [[]], timeouts=timeouts)
+    with pytest.raises(RuntimeError, match="before the deadline"):
+        bootstrap.wait_for_runner(timeout=35)
+    assert timeouts == [30, 25, 15, 5]
 
 
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", "timed_out"])

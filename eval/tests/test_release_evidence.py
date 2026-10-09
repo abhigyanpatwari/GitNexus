@@ -125,3 +125,32 @@ def test_expired_artifact_is_not_downloaded_or_accepted(tmp_path, evidence_backe
     with pytest.raises(ValueError, match="No complete paired"):
         release_evidence.download_evidence("owner/repo", sha, tmp_path)
     assert calls == []
+
+
+def test_evidence_beyond_the_first_page_of_recent_runs_is_found(tmp_path, evidence_backend, monkeypatch):
+    sha, report, _, calls = evidence_backend
+    original = release_evidence._gh_json
+    filler = [
+        {
+            "id": index,
+            "conclusion": "success",
+            "head_branch": "main",
+            "event": "push",
+            "head_repository": {"full_name": "owner/repo"},
+        }
+        for index in range(100)
+    ]
+    # The first page holds only ineligible runs; valid evidence is on page 2.
+    run_pages = iter([{"workflow_runs": filler}, original("runs")])
+    endpoints = []
+
+    def api(endpoint):
+        endpoints.append(endpoint)
+        return original(endpoint) if "/artifacts?" in endpoint else next(run_pages)
+
+    monkeypatch.setattr(release_evidence, "_gh_json", api)
+    release_evidence.download_evidence("owner/repo", sha, tmp_path)
+    assert json.loads((tmp_path / "agent-evaluation.json").read_text()) == report
+    assert calls[0][:4] == ["gh", "run", "download", "10"]
+    assert [endpoint[-6:] for endpoint in endpoints[:2]] == ["page=1", "page=2"]
+    assert all("created=%3E%3D" in endpoint for endpoint in endpoints[:2])

@@ -188,7 +188,7 @@ export const EXPECTATIONS = [
   {
     id: 'summary.cap',
     issue: 3497,
-    title: '501 names retain 500 and explicitly omit the last name',
+    title: '501 names over 1001 sites retain 500 and explicitly omit the last name',
     expected: ['kept=500 total=1001 omitted=1 target=false'],
   },
   {

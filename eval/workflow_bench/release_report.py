@@ -64,6 +64,17 @@ def _finite_nonnegative(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
 
 
+def _json_safe(value: Any) -> Any:
+    """Replace non-finite floats at any depth so failure receipts still serialize."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     report = {key: metadata[key] for key in META_FIELDS}
     report.update(schema=SCHEMA, generated_at=(now or datetime.now(UTC)).isoformat())
@@ -83,13 +94,7 @@ def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | N
             problems.append(f"row {index}: invalid measurement")
             continue
         # Invalid rows still need a public, JSON-serializable failure receipt.
-        safe_rows.append(
-            {
-                key: (None if isinstance(row[key], float) and not math.isfinite(row[key]) else row[key])
-                for key in ROW_FIELDS
-                if key in row
-            }
-        )
+        safe_rows.append({key: _json_safe(row[key]) for key in ROW_FIELDS if key in row})
         task, run, arm = row.get("task"), row.get("run"), row.get("arm")
         if not isinstance(task, str) or type(run) is not int or not isinstance(arm, str):
             problems.append(f"row {index}: invalid cell identity")

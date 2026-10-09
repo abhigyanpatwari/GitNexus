@@ -7,6 +7,8 @@ import json
 import re
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,15 +31,27 @@ def _gh_json(endpoint: str) -> dict[str, Any]:
     return json.loads(subprocess.run(["gh", "api", endpoint], check=True, capture_output=True, text=True).stdout)
 
 
+def _recent_runs(repo: str) -> Iterator[int]:
+    # Reports expire after seven days; a run can start up to a day earlier.
+    since = (datetime.now(UTC) - timedelta(days=8)).date().isoformat()
+    page = 1
+    while True:
+        payload = _gh_json(
+            f"repos/{repo}/actions/workflows/release-evaluation.yml/runs"
+            f"?branch=main&status=success&created=%3E%3D{since}&per_page=100&page={page}"
+        )
+        yield from eligible_runs(payload, repo)
+        if len(payload.get("workflow_runs", [])) < 100:
+            return
+        page += 1
+
+
 def download_evidence(repo: str, runtime_sha: str, out: Path) -> None:
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) or not re.fullmatch(r"[0-9a-f]{40}", runtime_sha):
         raise ValueError("expected a repository name and full release commit SHA")
     _, digest, pins = suite_binding()
-    payload = _gh_json(
-        f"repos/{repo}/actions/workflows/release-evaluation.yml/runs?branch=main&status=success&per_page=50"
-    )
     artifact_name = f"release-agent-evaluation-{runtime_sha}"
-    for run_id in eligible_runs(payload, repo):
+    for run_id in _recent_runs(repo):
         artifacts = _gh_json(f"repos/{repo}/actions/runs/{run_id}/artifacts?per_page=100")
         if not any(
             item.get("name") == artifact_name and not item.get("expired") for item in artifacts.get("artifacts", [])
