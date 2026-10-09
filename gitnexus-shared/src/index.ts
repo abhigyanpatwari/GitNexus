@@ -223,3 +223,21 @@ export {
   stripGitSuffix,
 } from './integrations/understand-quickly.js';
 export type { UqDispatchPayload } from './integrations/understand-quickly.js';
+
+export type {
+  SourcePosition,
+  LookupPurpose,
+  NameClaim,
+  ScopeLookupPolicy,
+  NameLookupOptions,
+} from './scope-resolution/types.js';
+export {
+  lookupLexicalName,
+  selectClaimsAtScope,
+  rangesOverlap,
+} from './scope-resolution/name-claims.js';
+export type {
+  NameClaimResult,
+  NameClaimSources,
+  ScopeClaimSelection,
+} from './scope-resolution/name-claims.js';
