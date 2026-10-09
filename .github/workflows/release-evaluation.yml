@@ -1,5 +1,11 @@
 # Compare the exact candidate with the last stable release using trusted main's
 # harness. Share the existing evolution runner, protected settings, and power lock.
+#
+# The shared group keeps only ONE pending run, even with cancel-in-progress:
+# false: a newer queued skill-evolution or release-evaluation run cancels this
+# run while it is pending. Before relying on a dispatched evaluation for a
+# stable publish, confirm its "Start the dedicated EC2 runner" job ran; if the
+# run shows Cancelled, dispatch it again once the group is free.
 name: Release evaluation
 
 on:
