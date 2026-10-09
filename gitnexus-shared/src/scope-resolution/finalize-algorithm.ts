@@ -488,7 +488,7 @@ function makeEdgeDrafts(
   workspace: WorkspaceIndex,
 ): ImportEdgeDraft[] {
   const fromScope =
-    parsed.bindsAtLexicalScope === true || hooks.importsBindAtLexicalScope === true
+    (parsed.bindsAtLexicalScope ?? hooks.importsBindAtLexicalScope) === true
       ? (parsed.declaredAtScope ?? file.moduleScope)
       : file.moduleScope;
   // Dynamic-unresolved passes through — no `BindingRef`, no target file.
@@ -614,14 +614,13 @@ function typeOnlyFor(parsed: ParsedImport): { typeOnly?: true } {
 }
 
 /**
- * Re-carry both runtime-presence flags from an existing edge onto a derived
- * one.
+ * Carry runtime-presence flags and source provenance onto a derived edge.
  *
  * `expandWildcard` builds each `wildcard-expanded` edge from scratch rather
  * than spreading the source (three fields differ per exported name), so every
- * field it does not name is dropped. That is exactly how both flags were lost
- * once already. Naming the pair here keeps "these two travel together" in one
- * place, so a third presence flag is added in one place too.
+ * field it does not name is dropped. Keep presence flags and the source range
+ * together here so wildcard expansion preserves both runtime policy and the
+ * location used to select the owning import claim.
  */
 function carriedPresenceFlags(
   edge: Pick<ImportEdge, 'typeOnly' | 'runsOnlyWhenCalled' | 'atRange'>,

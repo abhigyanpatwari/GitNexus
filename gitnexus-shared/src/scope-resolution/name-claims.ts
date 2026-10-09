@@ -35,12 +35,55 @@ const ABSENT: NameClaimResult = Object.freeze({
   imports: [],
   claims: [],
 });
+// Published scope arrays are readonly. Cache by the array, not the scope ID:
+// finalization and cache hydration can replace a scope's import/claim snapshot.
+const claimsByName = new WeakMap<readonly NameClaim[], ReadonlyMap<string, readonly NameClaim[]>>();
+const importsByName = new WeakMap<
+  readonly ImportEdge[],
+  ReadonlyMap<string, readonly ImportEdge[]>
+>();
+const NO_CLAIMS: readonly NameClaim[] = Object.freeze([]);
+const NO_IMPORTS: readonly ImportEdge[] = Object.freeze([]);
+
+export function nameClaimsFor(scope: Scope, name: string): readonly NameClaim[] {
+  const claims = scope.nameClaims;
+  if (claims === undefined || claims.length === 0) return NO_CLAIMS;
+  let byName = claimsByName.get(claims);
+  if (byName === undefined) {
+    const indexed = new Map<string, NameClaim[]>();
+    for (const claim of claims) {
+      const bucket = indexed.get(claim.name);
+      if (bucket === undefined) indexed.set(claim.name, [claim]);
+      else bucket.push(claim);
+    }
+    byName = indexed;
+    claimsByName.set(claims, byName);
+  }
+  return byName.get(name) ?? NO_CLAIMS;
+}
+
+function importsFor(imports: readonly ImportEdge[], name: string): readonly ImportEdge[] {
+  if (imports.length === 0) return NO_IMPORTS;
+  let byName = importsByName.get(imports);
+  if (byName === undefined) {
+    const indexed = new Map<string, ImportEdge[]>();
+    for (const edge of imports) {
+      if (edge.kind === 'side-effect' || edge.kind === 'dynamic-resolved') continue;
+      const bucket = indexed.get(edge.localName);
+      if (bucket === undefined) indexed.set(edge.localName, [edge]);
+      else bucket.push(edge);
+    }
+    byName = indexed;
+    importsByName.set(imports, byName);
+  }
+  return byName.get(name) ?? NO_IMPORTS;
+}
 const compare = (a: SourcePosition, b: SourcePosition): number =>
   a.startLine - b.startLine || a.startCol - b.startCol;
 export function rangesOverlap(a: Range, b: Range): boolean {
   return (
-    compare(a, { startLine: b.endLine, startCol: b.endCol }) <= 0 &&
-    compare(b, { startLine: a.endLine, startCol: a.endCol }) <= 0
+    compare(a, { startLine: b.endLine, startCol: b.endCol }) < 0 &&
+    compare(b, { startLine: a.endLine, startCol: a.endCol }) < 0
   );
 }
 
@@ -51,12 +94,9 @@ export function selectClaimsAtScope(
   options: NameLookupOptions = {},
 ): ScopeClaimSelection {
   const purpose = options.purpose ?? 'value';
-  const claims =
-    scope.nameClaims?.filter(
-      (c) =>
-        c.name === name &&
-        (c.purpose === undefined || c.purpose === 'both' || c.purpose === purpose),
-    ) ?? [];
+  const claims = nameClaimsFor(scope, name).filter(
+    (c) => c.purpose === undefined || c.purpose === 'both' || c.purpose === purpose,
+  );
   if (claims.length === 0) return { status: 'absent', claims };
   const active = claims.filter(
     (c) =>
@@ -111,7 +151,7 @@ function redirectScope(
     seen.add(parent.id);
     if (
       parent.kind === 'Function' &&
-      (parent.nameClaims?.some((c) => c.name === name && c.redirect === undefined) ||
+      (nameClaimsFor(parent, name).some((c) => c.redirect === undefined) ||
         parent.lexicalNames?.has(name) ||
         parent.bindings.has(name) ||
         parent.typeBindings.has(name))
@@ -193,11 +233,10 @@ export function lookupLexicalName(
     }
     if (selected.status === 'blocked')
       return { ...ABSENT, status: 'blocked', scope, claims: selected.claims };
-    const hasClaimsForName = scope.nameClaims?.some((claim) => claim.name === name) === true;
+    const nameClaims = nameClaimsFor(scope, name);
+    const hasClaimsForName = nameClaims.length > 0;
     const allBindings = sources.bindingsAt?.(scope, name) ?? scope.bindings.get(name) ?? [];
-    const allImports = (sources.importsAt?.(scope) ?? scope.imports ?? []).filter(
-      (e) => e.localName === name && e.kind !== 'side-effect' && e.kind !== 'dynamic-resolved',
-    );
+    const allImports = importsFor(sources.importsAt?.(scope) ?? scope.imports ?? NO_IMPORTS, name);
     let bindings = allBindings.filter(
       (b) =>
         b.availableFrom === undefined ||
@@ -225,9 +264,7 @@ export function lookupLexicalName(
         (b) =>
           b.availableFrom !== undefined &&
           b.declarationRange !== undefined &&
-          !scope.nameClaims!.some(
-            (c) => c.name === name && rangesOverlap(c.range, b.declarationRange!),
-          ),
+          !nameClaims.some((c) => rangesOverlap(c.range, b.declarationRange!)),
       );
       imports = [];
     }
@@ -242,7 +279,8 @@ export function lookupLexicalName(
       scope.ownsReceivers?.has(name) === true ||
       (!hasClaimsForName && (scope.lexicalNames?.has(name) === true || typeFactOwnsName));
     if (owns) {
-      const typeBinding =
+      let typeBinding = ownType;
+      if (
         selected.status === 'selected' &&
         ownType?.bindingRange !== undefined &&
         !selected.claims.some(
@@ -250,8 +288,30 @@ export function lookupLexicalName(
             c.kind === 'import' ||
             (c.kind === 'binding' && rangesOverlap(c.range, ownType.bindingRange!)),
         )
-          ? undefined
-          : ownType;
+      ) {
+        // A later assignment can infer the type of the already-owned binding.
+        // Check ownership after that fact binds its value, not at the producer's
+        // lookup position: a later shadowing let still reads the earlier binding
+        // in its initializer, but must not lend that binding its inferred type.
+        const factClaims =
+          ownType.source === 'constructor-inferred' || ownType.source === 'assignment-inferred'
+            ? selectClaimsAtScope(scope, name, {
+                ...options,
+                position: {
+                  startLine: ownType.bindingRange.endLine,
+                  startCol: ownType.bindingRange.endCol,
+                },
+              })
+            : undefined;
+        if (
+          factClaims?.status !== 'selected' ||
+          factClaims.claims.length !== selected.claims.length ||
+          !selected.claims.every(
+            (claim) => claim.kind === 'binding' && factClaims.claims.includes(claim),
+          )
+        )
+          typeBinding = undefined;
+      }
       const usable = bindings.filter(
         (b) => (options.purpose ?? 'value') !== 'value' || b.via?.typeOnly !== true,
       );

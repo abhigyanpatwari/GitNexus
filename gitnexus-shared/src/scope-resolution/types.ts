@@ -676,12 +676,6 @@ export interface TypeRef {
 
 // ─── §2.2 Scope ─────────────────────────────────────────────────────────────
 
-/**
- * The canonical lexical-scope node. Forms the spine of the SemanticModel.
- *
- * ScopeId shape (RFC §2.2): `scope:{filePath}#{startLine}:{startCol}-{endLine}:{endCol}:{kind}`
- * — deterministic, stable across reparses of the same source, interned.
- */
 export interface SourcePosition {
   readonly startLine: number;
   readonly startCol: number;
@@ -725,6 +719,12 @@ export interface NameLookupOptions {
   readonly purpose?: LookupPurpose;
 }
 
+/**
+ * The canonical lexical-scope node. Forms the spine of the SemanticModel.
+ *
+ * ScopeId shape (RFC §2.2): `scope:{filePath}#{startLine}:{startCol}-{endLine}:{endCol}:{kind}`
+ * — deterministic, stable across reparses of the same source, interned.
+ */
 export interface Scope {
   readonly nameClaims?: readonly NameClaim[];
   readonly lookupPolicy?: ScopeLookupPolicy;
