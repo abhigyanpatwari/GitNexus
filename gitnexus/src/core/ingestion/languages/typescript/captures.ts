@@ -738,6 +738,23 @@ export function emitTsScopeCaptures(
   return out;
 }
 
+/** Select matching nodes in the existing parent-first, right-to-left order. */
+function relevantNodesRightFirst(root: SyntaxNode, types: readonly string[]): SyntaxNode[] {
+  const candidates = root.descendantsOfType([...types]).map((node, ordinal) => ({
+    node,
+    ordinal,
+    start: node.startIndex,
+    end: node.endIndex,
+  }));
+  candidates.sort((a, b) => {
+    if (a.start === b.start && a.end === b.end) return a.ordinal - b.ordinal;
+    if (a.start <= b.start && a.end >= b.end) return -1;
+    if (b.start <= a.start && b.end >= a.end) return 1;
+    return b.start - a.start;
+  });
+  return candidates.map(({ node }) => node);
+}
+
 /**
  * Synthesize `@reference.inherits` captures from TypeScript class heritage so
  * the registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
@@ -774,14 +791,11 @@ export function emitTsScopeCaptures(
  * `models.Base` → `Base`) so `findClassBindingInScope` resolves it.
  */
 function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
-
+  for (const node of relevantNodesRightFirst(root, [
+    'interface_declaration',
+    'class_declaration',
+    'abstract_class_declaration',
+  ])) {
     // `interface B extends A, C` hangs its bases off an `extends_type_clause`
     // DIRECTLY on the interface — there is no `class_heritage` wrapper, so the
     // class path below cannot reach them (#2842 review). The clause's `type`
@@ -889,13 +903,7 @@ function terminalTsTypeNameNode(node: SyntaxNode): SyntaxNode | null {
  * Left as a follow-up optimization.
  */
 function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
+  for (const node of relevantNodesRightFirst(root, ['variable_declarator'])) {
     if (node.type !== 'variable_declarator') continue;
     const nameNode = node.childForFieldName('name');
     const valueNode = node.childForFieldName('value');
@@ -953,13 +961,7 @@ function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]):
  * Uses sentinel `__MAP_TUPLE_i__:rhs` consumed by compound-receiver.
  */
 function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
+  for (const node of relevantNodesRightFirst(root, ['for_in_statement'])) {
     if (node.type !== 'for_in_statement') continue;
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
@@ -1002,13 +1004,7 @@ function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]):
  * declared types instead.
  */
 function synthesizeInstanceofNarrowings(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
+  for (const node of relevantNodesRightFirst(root, ['if_statement'])) {
     if (node.type !== 'if_statement') continue;
     const cond = node.childForFieldName('condition');
     if (cond === null) continue;
