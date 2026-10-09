@@ -297,22 +297,21 @@ must finish within five minutes. If the probe fails, the hosted check cancels
 its own run to clear the queued job. A second hosted watchdog bounds pickup of
 the paid job. Only these watchdogs have Actions write permission.
 
-The protected `gitnexus-evolution` environment is assumed to retain the four
-names from the earlier workflow revision. Their live values and IAM access
-have **not** been verified:
+The protected `gitnexus-evolution` environment holds these four settings
+(configured and verified by the live probes below):
 
 | Setting | Kind | Purpose |
 | --- | --- | --- |
-| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN` | Secret | Existing AWS OIDC role |
-| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID` | Secret | Existing dedicated instance |
+| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN` | Secret | AWS role assumed through GitHub OIDC |
+| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID` | Secret | Dedicated runner instance |
 | `GITNEXUS_EVOLUTION_AWS_REGION` | Variable | Instance region |
 | `GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC` | Variable | Actual weekly EventBridge stop, `DAY HH:MM` UTC |
 
-No new stored credential or alternative configuration name is introduced. The
-AWS action obtains short-lived credentials using GitHub OIDC. The existing role
-must trust this repository's protected environment and permit EC2 DescribeInstances,
-DescribeInstanceStatus, StartInstances and StopInstances, with power changes
-scoped to the dedicated instance. Missing configuration or access fails closed.
+No long-lived AWS credential is stored. The AWS action obtains short-lived
+credentials using GitHub OIDC. The role trusts only this repository's
+`gitnexus-evolution` environment and permits EC2 DescribeInstances and
+DescribeInstanceStatus, with StartInstances and StopInstances scoped to the
+dedicated instance. Missing configuration or access fails closed.
 The workflow does not create IAM roles, instances, secrets or schedules.
 
 A main-branch dispatch of either workflow with `runner_only=true` starts the
@@ -330,8 +329,10 @@ or paid job runs on a hosted runner and fails promptly with that instruction,
 instead of waiting on the stopped instance.
 
 PR tests use a fake AWS CLI to cover transitions, denial, lost responses,
-timeouts, cleanup and workflow wiring. Live startup/shutdown still requires a
-trusted main-branch smoke dispatch with the existing private environment.
+timeouts, cleanup and workflow wiring. On 2026-10-09, `runner_only=true`
+dispatches of both workflows started the instance, ran the native pickup probe
+on the dedicated runner and verified the instance stopped (runs 37893007912 and
+37895899767, from temporary branches with a runner-only guard exception).
 
 CI separately runs a six-cell paired evaluator canary using the real pinned
 Claude CLI, Bubblewrap, built MCP runtime, hidden grading and public report
