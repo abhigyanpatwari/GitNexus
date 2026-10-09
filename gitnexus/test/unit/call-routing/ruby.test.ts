@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { SyntaxNode } from 'tree-sitter';
 import { routeRubyCall } from '../../../src/core/ingestion/call-routing.js';
 
 // ── Mock AST node helpers ────────────────────────────────────────────────────
@@ -164,67 +165,73 @@ function makeNamedSibling(type = 'expression_statement'): MockNode {
   return { type, text: '', isNamed: true };
 }
 
+// These routing fixtures intentionally provide only the traversed AST fields.
+// Keep the native SyntaxNode assertion at the test boundary.
+function syntaxNode(node: MockNode): SyntaxNode {
+  return node as unknown as SyntaxNode;
+}
+
 // ── require / require_relative ───────────────────────────────────────────────
 
 describe('routeRubyCall — require / require_relative', () => {
   it('require with a valid string path returns import with isRelative=false', () => {
     const node = makeRequireCallNode('net/http');
-    const result = routeRubyCall('require', node);
+    const result = routeRubyCall('require', syntaxNode(node));
 
     expect(result).toEqual({ kind: 'import', importPath: 'net/http', isRelative: false });
   });
 
   it('require_relative without leading dot prepends "./"', () => {
     const node = makeRequireCallNode('models/user');
-    const result = routeRubyCall('require_relative', node);
+    const result = routeRubyCall('require_relative', syntaxNode(node));
 
     expect(result).toEqual({ kind: 'import', importPath: './models/user', isRelative: true });
   });
 
   it('require_relative with path already starting with "." does not double-prepend', () => {
     const node = makeRequireCallNode('./helpers/formatter');
-    const result = routeRubyCall('require_relative', node);
+    const result = routeRubyCall('require_relative', syntaxNode(node));
 
     expect(result).toEqual({ kind: 'import', importPath: './helpers/formatter', isRelative: true });
   });
 
   it('require_relative with "../" prefix is left unchanged', () => {
     const node = makeRequireCallNode('../shared/utils');
-    const result = routeRubyCall('require_relative', node);
+    const result = routeRubyCall('require_relative', syntaxNode(node));
 
     expect(result).toEqual({ kind: 'import', importPath: '../shared/utils', isRelative: true });
   });
 
   it('returns skip when there is no string_content node (non-literal argument)', () => {
     const node = makeRequireCallNodeNoContent();
-    expect(routeRubyCall('require', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('require', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('returns skip when import path is an empty string', () => {
     const node = makeRequireCallNode('');
-    expect(routeRubyCall('require', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('require', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('returns skip when import path contains a control character (\\x00)', () => {
     const node = makeRequireCallNode('some\x00path');
-    expect(routeRubyCall('require', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('require', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('returns skip when import path contains a newline control character (\\n)', () => {
     const node = makeRequireCallNode('path\ninjection');
-    expect(routeRubyCall('require', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('require', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('returns skip when import path exceeds 1024 characters', () => {
     const longPath = 'a'.repeat(1025);
     const node = makeRequireCallNode(longPath);
-    expect(routeRubyCall('require', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('require', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('accepts import path of exactly 1024 characters', () => {
     const maxPath = 'a'.repeat(1024);
     const node = makeRequireCallNode(maxPath);
-    const result = routeRubyCall('require', node);
+    const result = routeRubyCall('require', syntaxNode(node));
     expect(result).toEqual({ kind: 'import', importPath: maxPath, isRelative: false });
   });
 
@@ -240,13 +247,13 @@ describe('routeRubyCall — require / require_relative', () => {
       text: '',
       childForFieldName: (name: string) => (name === 'arguments' ? argList : undefined),
     };
-    expect(routeRubyCall('require', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('require', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('returns skip when childForFieldName is absent (undefined callNode fields)', () => {
     // callNode has no childForFieldName method at all
     const node: MockNode = { type: 'call', text: '' };
-    expect(routeRubyCall('require', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('require', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 });
 
@@ -259,7 +266,7 @@ describe('routeRubyCall — require / require_relative', () => {
 describe('routeRubyCall — include / extend / prepend (heritage owned by scope-resolution)', () => {
   it('include returns skip (heritage emitted by scope-resolution, not a call edge)', () => {
     const node = makeHeritageCallNode([makeConstantArg('Serializable')], 'class', 'User');
-    expect(routeRubyCall('include', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('include', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('extend returns skip (heritage emitted by scope-resolution, not a call edge)', () => {
@@ -268,12 +275,12 @@ describe('routeRubyCall — include / extend / prepend (heritage owned by scope-
       'class',
       'Post',
     );
-    expect(routeRubyCall('extend', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('extend', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('prepend returns skip (heritage emitted by scope-resolution, not a call edge)', () => {
     const node = makeHeritageCallNode([makeConstantArg('Instrumented')], 'class', 'Service');
-    expect(routeRubyCall('prepend', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('prepend', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 });
 
@@ -282,7 +289,7 @@ describe('routeRubyCall — include / extend / prepend (heritage owned by scope-
 describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
   it('attr_accessor with a single symbol returns a property item', () => {
     const node = makeAccessorCallNode([makeSimpleSymbol('name', 5)]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toEqual({
       kind: 'properties',
@@ -292,7 +299,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
 
   it('attr_reader sets accessorType to "attr_reader"', () => {
     const node = makeAccessorCallNode([makeSimpleSymbol('age', 3)]);
-    const result = routeRubyCall('attr_reader', node);
+    const result = routeRubyCall('attr_reader', syntaxNode(node));
 
     expect(result).toEqual({
       kind: 'properties',
@@ -302,7 +309,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
 
   it('attr_writer sets accessorType to "attr_writer"', () => {
     const node = makeAccessorCallNode([makeSimpleSymbol('email', 7)]);
-    const result = routeRubyCall('attr_writer', node);
+    const result = routeRubyCall('attr_writer', syntaxNode(node));
 
     expect(result).toEqual({
       kind: 'properties',
@@ -319,7 +326,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
       endPosition: { row: 2 },
     };
     const node = makeAccessorCallNode([symNode]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toMatchObject({ kind: 'properties', items: [{ propName: 'title' }] });
   });
@@ -333,7 +340,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
       endPosition: { row: 1 },
     };
     const node = makeAccessorCallNode([symNode]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toMatchObject({ kind: 'properties', items: [{ propName: 'status' }] });
   });
@@ -345,7 +352,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
       makeSimpleSymbol('dob', 10),
     ];
     const node = makeAccessorCallNode(args);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toEqual({
       kind: 'properties',
@@ -360,7 +367,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
   it('extracts simple YARD @return [Type] from preceding comment', () => {
     const comment = makeCommentNode('# @return [Address]');
     const node = makeAccessorCallNode([makeSimpleSymbol('address', 20)], [comment]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toMatchObject({
       kind: 'properties',
@@ -372,7 +379,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
     // The regex captures "Array<User>"; the simple match grabs the first uppercase word "Array"
     const comment = makeCommentNode('# @return [Array<User>]');
     const node = makeAccessorCallNode([makeSimpleSymbol('users', 15)], [comment]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toMatchObject({
       kind: 'properties',
@@ -383,7 +390,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
   it('extracts type from YARD comment with extra whitespace inside brackets', () => {
     const comment = makeCommentNode('#  @return [  Integer  ]');
     const node = makeAccessorCallNode([makeSimpleSymbol('count', 8)], [comment]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toMatchObject({
       kind: 'properties',
@@ -393,7 +400,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
 
   it('does not set declaredType when no YARD comment precedes the call', () => {
     const node = makeAccessorCallNode([makeSimpleSymbol('score', 12)]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toMatchObject({ kind: 'properties', items: [{ propName: 'score' }] });
     const item = (result as any).items[0];
@@ -403,7 +410,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
   it('does not set declaredType when comment has no @return annotation', () => {
     const comment = makeCommentNode('# This accessor stores the user name');
     const node = makeAccessorCallNode([makeSimpleSymbol('user_name', 9)], [comment]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     const item = (result as any).items[0];
     expect(item.declaredType).toBeUndefined();
@@ -413,7 +420,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
     // e.g. "@return [string]" — lowercase first char fails the simple = raw.match(/^([A-Z]\w*)/)
     const comment = makeCommentNode('# @return [string]');
     const node = makeAccessorCallNode([makeSimpleSymbol('label', 4)], [comment]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     const item = (result as any).items[0];
     expect(item.declaredType).toBeUndefined();
@@ -426,7 +433,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
     const named = makeNamedSibling();
     const node = makeAccessorCallNode([makeSimpleSymbol('owner', 6)], [yardComment, named]);
     // named is last in the array → becomes direct previousSibling
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     const item = (result as any).items[0];
     expect(item.declaredType).toBeUndefined();
@@ -438,7 +445,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
     const comment = makeCommentNode('# @return [Order]');
     // siblings in order oldest→newest; the last becomes the direct previousSibling
     const node = makeAccessorCallNode([makeSimpleSymbol('order', 30)], [comment, unnamedNode]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toMatchObject({
       kind: 'properties',
@@ -450,12 +457,12 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
     // Only an identifier node — not a symbol
     const identArg: MockNode = { type: 'identifier', text: 'some_var' };
     const node = makeAccessorCallNode([identArg]);
-    expect(routeRubyCall('attr_accessor', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('attr_accessor', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('returns skip when arg list is empty', () => {
     const node = makeAccessorCallNode([]);
-    expect(routeRubyCall('attr_accessor', node)).toEqual({ kind: 'skip' });
+    expect(routeRubyCall('attr_accessor', syntaxNode(node))).toEqual({ kind: 'skip' });
   });
 
   it('records correct startLine and endLine from symbol node positions', () => {
@@ -466,7 +473,7 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
       endPosition: { row: 42 },
     };
     const node = makeAccessorCallNode([sym]);
-    const result = routeRubyCall('attr_accessor', node);
+    const result = routeRubyCall('attr_accessor', syntaxNode(node));
 
     expect(result).toMatchObject({
       kind: 'properties',
@@ -480,19 +487,19 @@ describe('routeRubyCall — attr_accessor / attr_reader / attr_writer', () => {
 describe('routeRubyCall — default (unknown method name)', () => {
   it('returns {kind: "call"} for an arbitrary method name', () => {
     const node: MockNode = { type: 'call', text: '' };
-    expect(routeRubyCall('some_method', node)).toEqual({ kind: 'call' });
+    expect(routeRubyCall('some_method', syntaxNode(node))).toEqual({ kind: 'call' });
   });
 
   it('returns {kind: "call"} for an empty method name string', () => {
     const node: MockNode = { type: 'call', text: '' };
-    expect(routeRubyCall('', node)).toEqual({ kind: 'call' });
+    expect(routeRubyCall('', syntaxNode(node))).toEqual({ kind: 'call' });
   });
 
   it('returns {kind: "call"} for a realistic method name (save, render, etc.)', () => {
     const node: MockNode = { type: 'call', text: '' };
-    expect(routeRubyCall('render', node)).toEqual({ kind: 'call' });
-    expect(routeRubyCall('save', node)).toEqual({ kind: 'call' });
-    expect(routeRubyCall('destroy', node)).toEqual({ kind: 'call' });
+    expect(routeRubyCall('render', syntaxNode(node))).toEqual({ kind: 'call' });
+    expect(routeRubyCall('save', syntaxNode(node))).toEqual({ kind: 'call' });
+    expect(routeRubyCall('destroy', syntaxNode(node))).toEqual({ kind: 'call' });
   });
 });
 
@@ -501,13 +508,13 @@ describe('routeRubyCall — default (unknown method name)', () => {
 describe('routeRubyCall passthrough', () => {
   it('routeRubyCall delegates correctly for require', () => {
     const node = makeRequireCallNode('json');
-    const result = routeRubyCall('require', node);
+    const result = routeRubyCall('require', syntaxNode(node));
     expect(result).toEqual({ kind: 'import', importPath: 'json', isRelative: false });
   });
 
   it('routeRubyCall returns {kind: "call"} for an unknown method name', () => {
     const node: MockNode = { type: 'call', text: '' };
-    const result = routeRubyCall('render', node);
+    const result = routeRubyCall('render', syntaxNode(node));
     expect(result).toEqual({ kind: 'call' });
   });
 });

@@ -91,9 +91,10 @@ describe('reconcileMetadataFiles', () => {
     // The dirty flag travels through this file; a reconciliation that
     // reconstructed a trimmed object instead of carrying fields verbatim
     // would silently drop it and skip the recovery full-rebuild.
-    const dirty = metaAt('2026-06-01T00:00:00.000Z', 'crashed-run', {
+    const dirty = {
+      ...metaAt('2026-06-01T00:00:00.000Z', 'crashed-run'),
       incrementalInProgress: true,
-    } as Partial<RepoMeta>);
+    };
     await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify(dirty));
 
     await reconcileMetadataFiles(tmpRepo.dbPath);

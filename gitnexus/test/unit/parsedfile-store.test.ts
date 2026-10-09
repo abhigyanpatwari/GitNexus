@@ -26,29 +26,40 @@ import {
  * Maps — the round-trip's fidelity hinges on those Maps surviving JSON
  * serialization (they would otherwise collapse to `{}`).
  */
-const makeParsedFile = (filePath: string): ParsedFile =>
-  ({
-    filePath,
-    moduleScope: `${filePath}:module`,
-    parsedImports: [],
-    localDefs: [
-      { nodeId: `Function:${filePath}:fn`, filePath, type: 'Function', qualifiedName: 'fn' },
-    ],
-    referenceSites: [],
-    scopes: [
-      {
-        id: `${filePath}:module`,
-        parent: null,
-        kind: 'Module',
-        range: { startLine: 1, startCol: 0, endLine: 9, endCol: 0 },
-        filePath,
-        bindings: new Map([['fn', [{ defId: `Function:${filePath}:fn`, origin: 'local' }]]]),
-        ownedDefs: [],
-        imports: [],
-        typeBindings: new Map([['x', { name: 'int' }]]),
-      },
-    ],
-  }) as unknown as ParsedFile;
+const makeParsedFile = (filePath: string): ParsedFile => ({
+  filePath,
+  moduleScope: `${filePath}:module`,
+  parsedImports: [],
+  localDefs: [
+    { nodeId: `Function:${filePath}:fn`, filePath, type: 'Function', qualifiedName: 'fn' },
+  ],
+  referenceSites: [],
+  scopes: [
+    {
+      id: `${filePath}:module`,
+      parent: null,
+      kind: 'Module',
+      range: { startLine: 1, startCol: 0, endLine: 9, endCol: 0 },
+      filePath,
+      bindings: new Map([
+        [
+          'fn',
+          [
+            {
+              def: { nodeId: `Function:${filePath}:fn`, filePath, type: 'Function' },
+              origin: 'local',
+            },
+          ],
+        ],
+      ]),
+      ownedDefs: [],
+      imports: [],
+      typeBindings: new Map([
+        ['x', { rawName: 'int', declaredAtScope: `${filePath}:module`, source: 'annotation' }],
+      ]),
+    },
+  ],
+});
 
 /**
  * Store payload with arbitrary (possibly corrupt) field overrides. The one
@@ -79,9 +90,9 @@ describe('parsedfile-store', () => {
       const a = loaded.get('a.c')!;
       const scope = a.scopes[0];
       expect(scope.bindings).toBeInstanceOf(Map);
-      expect(scope.bindings.get('fn')?.[0]?.defId).toBe('Function:a.c:fn');
+      expect(scope.bindings.get('fn')?.[0]?.def.nodeId).toBe('Function:a.c:fn');
       expect(scope.typeBindings).toBeInstanceOf(Map);
-      expect((scope.typeBindings.get('x') as { name: string }).name).toBe('int');
+      expect(scope.typeBindings.get('x')?.rawName).toBe('int');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -374,7 +385,7 @@ describe('parsedfile-store', () => {
       const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
       const scope = loaded.get('a.c')!.scopes[0];
       expect(scope.bindings).toBeInstanceOf(Map);
-      expect(scope.bindings.get('fn')?.[0]?.defId).toBe('Function:a.c:fn');
+      expect(scope.bindings.get('fn')?.[0]?.def.nodeId).toBe('Function:a.c:fn');
       expect(scope.typeBindings).toBeInstanceOf(Map);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -916,9 +927,12 @@ describe('parsedfile-store receiverChain sanitation', () => {
         type: 'Function' as const,
         qualifiedName: 'fn',
       };
-      const pf = makeParsedFile('a.c');
-      (pf.localDefs as unknown as object[])[0] = def;
-      (pf.scopes[0] as { ownedDefs: object[] }).ownedDefs = [def];
+      const base = makeParsedFile('a.c');
+      const pf: ParsedFile = {
+        ...base,
+        localDefs: [def],
+        scopes: [{ ...base.scopes[0], ownedDefs: [def] }],
+      };
       await persistParsedFileChunk(dir, 'ok', [pf]);
       const loadedFile = (await loadParsedFilesForPaths(dir, new Set(['a.c']))).get('a.c');
       expect(loadedFile).toBeDefined();

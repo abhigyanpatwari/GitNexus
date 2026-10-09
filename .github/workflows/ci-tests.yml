@@ -32,11 +32,12 @@ jobs:
     env:
       GITNEXUS_REQUIRE_FTS: '1'
       GITNEXUS_REQUIRE_ZIG: '1'
+      GITNEXUS_REQUIRE_VECTOR: '1'
     steps:
       # persist-credentials: false — runs tests + uploads a blob artifact; the
       # default-persisted token must not be capturable through it (zizmor
       # credential-persistence / artipacked audit). The job never pushes.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
@@ -79,8 +80,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-blob-${{ matrix.shard }}
-          path: gitnexus/.vitest-reports/
-          # .vitest-reports is a dotdir; upload-artifact excludes hidden files by
+          path: gitnexus/.vitest/blob/
+          # .vitest is a dotdir; upload-artifact excludes hidden files by
           # default, which would upload an empty artifact and break the merge.
           include-hidden-files: true
           retention-days: 5
@@ -99,7 +100,7 @@ jobs:
     env:
       GITNEXUS_REQUIRE_FTS: '1'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
@@ -109,19 +110,19 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: coverage-blob-*
-          path: gitnexus/.vitest-reports
+          path: gitnexus/.vitest/blob
           merge-multiple: true
       - name: Merge coverage + enforce thresholds
         run: >-
-          npx vitest --mergeReports
+          npx vitest --mergeReports=.vitest/blob
           --reporter=default
-          --reporter=json
+          --reporter=./scripts/execution-reporter.ts
           --outputFile=test-results.json
           --coverage
           --coverage.reporter=json-summary
           --coverage.reporter=json
           --coverage.reporter=text
-          --coverage.thresholdAutoUpdate=false
+          --coverage.thresholds.autoUpdate=false
         working-directory: gitnexus
       # gitnexus-shared already built by setup-gitnexus above
       - name: Install gitnexus-web dependencies
@@ -131,7 +132,8 @@ jobs:
         run: >-
           npx vitest run
           --reporter=default
-          --reporter=json
+          --reporter=../gitnexus/scripts/execution-reporter.ts
+          --includeTaskLocation
           --outputFile=web-test-results.json
         working-directory: gitnexus-web
       - name: Run docker-server integration tests
@@ -140,7 +142,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-reports
+          name: coverage-reports
           path: |
             gitnexus/coverage/coverage-summary.json
             gitnexus/coverage/coverage-final.json
@@ -162,7 +164,7 @@ jobs:
     steps:
       - id: gen
         run: |
-          TOTAL=3         # cross-platform (windows/macOS) shards per OS
+          TOTAL=4         # cross-platform (windows/macOS) shards per OS
           COV_TOTAL=3     # ubuntu coverage shards (merged before thresholds)
           if [ "$TOTAL" -lt 1 ] || [ "$COV_TOTAL" -lt 1 ]; then
             echo "shard totals must be >= 1" >&2; exit 1
@@ -223,7 +225,7 @@ jobs:
     steps:
       # persist-credentials: false — runs tests only, never pushes (zizmor
       # credential-persistence / artipacked audit).
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
@@ -254,8 +256,48 @@ jobs:
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
+          GITNEXUS_TEST_REPORT: ${{ matrix.os }}-${{ matrix.shard }}.json
         run: npx tsx scripts/run-cross-platform.ts --shard="$SHARD"
         working-directory: gitnexus
+      - name: Upload platform execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-${{ matrix.os }}-${{ matrix.shard }}
+          path: gitnexus/${{ matrix.os }}-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 5
+
+  # Branch protection still requires these six names from the three-shard
+  # matrix. Keep them as aggregate gates as the real matrix grows: every native
+  # shard and the complete execution audit must pass before any gate succeeds.
+  # These jobs only verify dependency results; tests run in cross-platform above.
+  protected-platform-checks:
+    name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.check }}/3
+    needs: [cross-platform, test-completeness]
+    if: always()
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        check: [1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require all native shards and the execution audit
+        shell: bash
+        env:
+          NATIVE_RESULT: ${{ needs.cross-platform.result }}
+          EXECUTION_RESULT: ${{ needs.test-completeness.result }}
+        run: |
+          echo "Compatibility gate for the former three-shard check name."
+          echo "All native shards: $NATIVE_RESULT"
+          echo "Complete execution audit: $EXECUTION_RESULT"
+          if [[ "$NATIVE_RESULT" != "success" || "$EXECUTION_RESULT" != "success" ]]; then
+            echo "::error::Every native shard and the execution audit must succeed."
+            exit 1
+          fi
 
   # Tree-sitter ABI gate (#1922). Two halves, both blocking:
   #   1. Static, offline: assert every grammar's compiled ABI loads on the
@@ -273,7 +315,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
@@ -317,7 +359,7 @@ jobs:
       # from a tarball and never pushes back; the token in .git/config would
       # be at risk of leaking through any future artifact-upload step
       # (zizmor artipacked audit). Disable upfront.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Skip prepare/postinstall/build here. `npm pack` runs prepack, which
@@ -430,7 +472,7 @@ jobs:
     steps:
       # persist-credentials: false — builds and import-links only, never pushes
       # (zizmor credential-persistence / artipacked audit).
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -482,11 +524,8 @@ jobs:
   # heap, so parallel forks both skew the timings and OOM the worker pool — they
   # must run one file at a time.
   #
-  # go-pipeline-benchmark.test.ts is deliberately NOT included: its
-  # worker-pool (#1848) suite spins a real worker pool that exits unexpectedly
-  # under vitest's fork pool (reproduced in validation), which would make this
-  # gate flaky. Go is already guarded by its non-gated O(n^2) tripwire (runs in
-  # the main coverage job) plus its golden capture-parity test.
+  # Every opt-in suite is discovered by run-benchmarks.ts. A failing worker
+  # benchmark is a failure to investigate, never a reason to omit that suite.
   benchmarks:
     name: benchmarks (GITNEXUS_BENCH)
     runs-on: ubuntu-latest
@@ -496,7 +535,7 @@ jobs:
       # and never pushes; the default-persisted token in .git/config would be at
       # risk of leaking through an artifact upload (zizmor credential-persistence
       # / artipacked audit). Mirrors the packaged-install-smoke job below.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
@@ -876,28 +915,18 @@ jobs:
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         if: ${{ !cancelled() }}
-        # cpp-adl-benchmark.test.ts and csharp-razor-view-components-benchmark.test.ts
-        # are not `*-pipeline-benchmark.test.ts` files but belong here for the
-        # same reason: they are skipIf-gated on GITNEXUS_BENCH, so the scaling
-        # guards they hold never run in the main coverage job.
         env:
-          GITNEXUS_BENCH: '1'
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
-        run: >-
-          npx vitest run --no-file-parallelism
-          test/integration/cobol-pipeline-benchmark.test.ts
-          test/integration/csharp-pipeline-benchmark.test.ts
-          test/integration/csharp-razor-view-components-benchmark.test.ts
-          test/integration/objective-c-pipeline-benchmark.test.ts
-          test/integration/cpp-adl-benchmark.test.ts
-          test/integration/data-route-table-benchmark.test.ts
-          test/integration/instance-ownership-pipeline-benchmark.test.ts
-          test/integration/spring-bean-resource-benchmark.test.ts
-          test/integration/spring-dynamic-lookup-benchmark.test.ts
-          test/integration/rust-pipeline-benchmark.test.ts
-          test/integration/php-pipeline-benchmark.test.ts
-          test/integration/ruby-pipeline-benchmark.test.ts
+        run: npm run test:benchmarks
         working-directory: gitnexus
+      - name: Upload benchmark execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-benchmarks
+          path: gitnexus/benchmarks.json
+          if-no-files-found: error
+          retention-days: 5
 
   # Locked eval suite. setup-uv and uv itself are immutable so CI exercises
   # exactly the dependency graph developers run from eval/uv.lock.
@@ -907,17 +936,97 @@ jobs:
     timeout-minutes: 15
     steps:
       # persist-credentials: false — runs tests only, never pushes.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.11.23'
           python-version: '3.13'
           enable-cache: true
           cache-dependency-glob: eval/uv.lock
-      - run: uv run --locked --extra dev python -m pytest tests -q
+      - run: uv run --locked --extra dev python -m pytest tests -q --junitxml=pytest-locked.xml
         working-directory: eval
+      - name: Upload pytest execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-pytest-locked
+          path: eval/pytest-locked.xml
+          if-no-files-found: error
+          retention-days: 5
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Exercise real workflow evidence preflight
+        if: ${{ !cancelled() }}
+        run: >-
+          npx vitest run test/unit/skill-evolution-workflow.test.ts
+          --reporter=default --reporter=./scripts/execution-reporter.ts --outputFile=preflight.json
+        working-directory: gitnexus
+      - name: Upload preflight execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-preflight
+          path: gitnexus/preflight.json
+          if-no-files-found: error
+          retention-days: 5
+
+  test-completeness:
+    name: every test executed
+    needs:
+      [
+        shard-plan,
+        coverage-merge,
+        cross-platform,
+        benchmarks,
+        eval-tests,
+        eval-containment-linux,
+        eval-containment-windows,
+      ]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Download coverage and web reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: coverage-reports
+      - name: Download all execution receipts
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: execution-*
+          path: execution-reports
+          merge-multiple: true
+      - name: Require a real pass for every collected test
+        env:
+          PLATFORM_SHARDS: ${{ needs.shard-plan.outputs.total }}
+        run: |
+          cp gitnexus/test-results.json execution-reports/coverage.json
+          cd gitnexus
+          node --import tsx scripts/test-completeness.ts ../execution-reports test-results.json "$PLATFORM_SHARDS"
+      - name: Require a real pass for every pytest case
+        if: ${{ !cancelled() }}
+        run: python3 eval/check_test_execution.py execution-reports eval/pytest-results.json
+      - name: Upload complete test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports
+          path: |
+            gitnexus/coverage/coverage-summary.json
+            gitnexus/coverage/coverage-final.json
+            gitnexus/test-results.json
+            gitnexus-web/web-test-results.json
+            eval/pytest-results.json
+          if-no-files-found: error
+          retention-days: 5
 
   # Native Linux ownership and Bubblewrap boundary. The environment flag makes
   # the real namespace test mandatory; a missing/blocked bwrap is a failure.
@@ -934,7 +1043,7 @@ jobs:
       GITNEXUS_REQUIRE_FULL_SWEEP: '1'
       GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -944,7 +1053,7 @@ jobs:
           cache-dependency-path: |
             gitnexus/package-lock.json
             gitnexus-shared/package-lock.json
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -992,8 +1101,19 @@ jobs:
           tests/test_workflow_bench_sessions.py
           tests/test_ce_plugin_runtime.py
           tests/test_offline_sweep_integration.py
-          tests/test_mock_provider.py -q
+          tests/test_mock_provider.py
+          tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant
+          tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
+          -q --junitxml=pytest-ubuntu.xml
         working-directory: eval
+      - name: Upload pytest execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-pytest-ubuntu
+          path: eval/pytest-ubuntu.xml
+          if-no-files-found: error
+          retention-days: 5
 
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while
   # the grandchild delayed-write test must execute and pass on this runner.
@@ -1002,10 +1122,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1015,5 +1135,13 @@ jobs:
         run: >-
           uv run --locked --extra dev python -m pytest
           tests/test_process_control.py tests/test_model_gateway.py
-          -k "not locked_litellm" -q
+          -k "not locked_litellm" -q --junitxml=pytest-windows.xml
         working-directory: eval
+      - name: Upload pytest execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-pytest-windows
+          path: eval/pytest-windows.xml
+          if-no-files-found: error
+          retention-days: 5

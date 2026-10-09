@@ -1532,7 +1532,7 @@ describe('local agent CLI calls', () => {
       return stdinText;
     });
 
-    const spawnSpy = vi.fn(() => child);
+    const spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => child);
     vi.doMock('child_process', () => ({
       execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
       spawn: spawnSpy,
@@ -1583,7 +1583,7 @@ describe('local agent CLI calls', () => {
       });
     });
 
-    const spawnSpy = vi.fn(() => child);
+    const spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => child);
     vi.doMock('child_process', () => ({
       execFileSync: vi.fn().mockReturnValue('opencode 1.15.13'),
       spawn: spawnSpy,
@@ -1780,7 +1780,7 @@ describe('local agent CLI calls', () => {
       });
     });
 
-    const spawnSpy = vi.fn(() => child);
+    const spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => child);
     vi.doMock('child_process', () => ({
       execFileSync: vi.fn().mockReturnValue('codex-cli 0.132.0'),
       spawn: spawnSpy,

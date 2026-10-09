@@ -29,6 +29,7 @@ function hostileResult(): AnalyzeResult {
   };
   graph.self = graph; // circular — JSON.stringify throws
   return {
+    rebuildReasons: [],
     repoName: 'demo',
     repoPath: '/repos/demo',
     storagePath: '/repos/demo/.gitnexus',
@@ -83,8 +84,16 @@ describe('#2112: analyze-worker IPC projection', () => {
         properties: { name: `n${i}`, filePath: 'x.ts' },
       });
     }
-    graph.addRelationship({ id: 'n0->n1', source: 'n0', target: 'n1', type: 'CALLS' });
+    graph.addRelationship({
+      id: 'n0->n1',
+      sourceId: 'n0',
+      targetId: 'n1',
+      type: 'CALLS',
+      confidence: 1,
+      reason: '',
+    });
     const result: AnalyzeResult = {
+      rebuildReasons: [],
       repoName: 'demo',
       repoPath: '/r',
       storagePath: '/r/.gitnexus',

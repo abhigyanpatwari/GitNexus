@@ -207,4 +207,26 @@ describe('context resource freshness — out-of-process analyze (#2438)', () => 
     expect(result).toContain('symbols: 333');
     expect(result).toContain('processes: 4');
   });
+
+  it('does not claim divergence when disk metadata and the cached handle have no indexed commit', async function missingIndexedCommitDoesNotClaimDivergence() {
+    writeFileSync(path.join(repoPath, 'a.ts'), 'export const a = 1;\n');
+    runGit(repoPath, 'add', 'a.ts');
+    runGit(repoPath, 'commit', '-m', 'c1');
+
+    // A legacy metadata/registry entry can omit lastCommit despite RepoMeta's
+    // required field; seed that persisted shape rather than a symbolic ref.
+    await seedIndexedRepo(repoPath, storagePath, {
+      repoPath,
+      indexedAt: '2024-01-01T00:00:00Z',
+      stats: { files: 1, nodes: 1, processes: 0 },
+    } as RepoMeta);
+
+    const backend = new LocalBackend();
+    await backend.init();
+    expect((await backend.resolveRepo('test-repo')).lastCommit).toBeUndefined();
+
+    const result = await readResource('gitnexus://repo/test-repo/context', backend);
+    expect(result).not.toContain('staleness:');
+    expect(result).toContain('  commit: ""');
+  });
 });

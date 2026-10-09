@@ -82,7 +82,9 @@ describe('process tracing excludes name-guessed CALLS edges', () => {
 
     const result = await processProcesses(graph, []);
     expect(result.processes.length).toBeGreaterThan(0);
-    const tracedNames = new Set(result.steps.map((step) => step.toName));
+    const tracedNames = new Set(
+      result.steps.map((step) => graph.getNode(step.nodeId)?.properties.name),
+    );
     expect(tracedNames.has('unrelatedHelper')).toBe(false);
   });
 });

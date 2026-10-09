@@ -124,7 +124,11 @@ import {
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
-import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
+import {
+  countCallArguments,
+  extractCallArgTypes,
+  type MixedChainStep,
+} from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
@@ -439,6 +443,8 @@ export interface ExtractedToolDef {
   description: string;
   lineNumber: number;
   handlerNodeId?: string;
+  /** Unresolved registrations must not inherit unrelated same-file flows. */
+  allowFileFallback?: false;
 }
 
 export interface ExtractedORMQuery {
@@ -1685,6 +1691,7 @@ const processFileGroup = (
     // node id → graph node id for classes THIS file's capture loop materialized.
     // Keyed by in-memory AST identity (never persisted); filled below.
     const classOwnersByNodeId = new Map<number, string>();
+    const callableBindings = new Map<number, string>();
 
     // #2687: ONE pass over `matches` yields both suppression sets — the
     // definition-name claims by rank (callable > Property > value), so the dedup
@@ -2039,6 +2046,10 @@ const processFileGroup = (
           // HTTP client calls like axios.get('/api/users') that match the same pattern
           // as Express route registrations.
           const callNode = captureMap['express_route'];
+          // route(path) returns a builder; verb registrations need a handler.
+          // Count arguments without comments, which are also named AST children.
+          const minimumArguments = method === 'route' ? 1 : 2;
+          if ((countCallArguments(callNode) ?? 0) < minimumArguments) continue;
           const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
           // Walk through nested member_expressions and call_expressions to
           // reach the innermost receiver identifier.  Handles chains like:
@@ -2076,17 +2087,49 @@ const processFileGroup = (
             continue;
           }
 
-          const httpMethod =
-            method === 'all' || method === 'use' || method === 'route'
-              ? 'GET'
-              : method.toUpperCase();
-          result.decoratorRoutes.push({
-            filePath: file.path,
-            routePath,
-            httpMethod,
-            decoratorName: `express.${method}`,
-            lineNumber: captureMap['express_route'].startPosition.row + lineOffset,
-          });
+          const registrations: { method: string; node: SyntaxNode }[] = [];
+          if (method === 'route') {
+            // A builder alone registers nothing. Follow only direct chained
+            // verb calls, each of which must supply a non-comment handler arg.
+            let builderNode = callNode;
+            while (builderNode.parent?.type === 'member_expression') {
+              const member = builderNode.parent;
+              const registration = member.parent;
+              const verb = member.childForFieldName('property')?.text;
+              if (
+                member.childForFieldName('object')?.id !== builderNode.id ||
+                registration?.type !== 'call_expression' ||
+                registration.childForFieldName('function')?.id !== member.id ||
+                !verb ||
+                !EXPRESS_ROUTE_METHODS.has(verb) ||
+                verb === 'route' ||
+                verb === 'use'
+              ) {
+                break;
+              }
+              if ((countCallArguments(registration) ?? 0) >= 1) {
+                registrations.push({ method: verb, node: registration });
+              }
+              builderNode = registration;
+            }
+          } else {
+            registrations.push({ method, node: callNode });
+          }
+          for (const registration of registrations) {
+            const httpMethod =
+              registration.method === 'all'
+                ? '*'
+                : registration.method === 'use'
+                  ? 'GET'
+                  : registration.method.toUpperCase();
+            result.decoratorRoutes.push({
+              filePath: file.path,
+              routePath,
+              httpMethod,
+              decoratorName: `express.${registration.method}`,
+              lineNumber: registration.node.startPosition.row + lineOffset,
+            });
+          }
         }
         continue;
       }
@@ -3123,6 +3166,11 @@ const processFileGroup = (
         }),
       });
 
+      // Keep actual emitted identities; providers must not reconstruct graph IDs.
+      if (nameNode && (nodeLabel === 'Function' || nodeLabel === 'Method')) {
+        callableBindings.set(nameNode.id, nodeId);
+      }
+
       // enclosingClassId already computed above (before nodeId generation)
       const ownerId = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId;
 
@@ -3223,6 +3271,23 @@ const processFileGroup = (
           });
         }
       }
+    }
+
+    if (provider.extractToolDefinitions) {
+      // Distinct lexical declarations can share a graph ID (for example, sibling
+      // block-scoped functions). Such IDs cannot prove which handler owns a tool.
+      const seenCallableIds = new Set<string>();
+      const ambiguousCallableIds = new Set<string>();
+      for (const nodeId of callableBindings.values()) {
+        if (seenCallableIds.has(nodeId)) ambiguousCallableIds.add(nodeId);
+        seenCallableIds.add(nodeId);
+      }
+      for (const [bindingId, nodeId] of callableBindings) {
+        if (ambiguousCallableIds.has(nodeId)) callableBindings.delete(bindingId);
+      }
+      result.toolDefs.push(
+        ...provider.extractToolDefinitions(tree, file.path, lineOffset, callableBindings),
+      );
     }
 
     // Extract framework routes via provider detection (e.g., Laravel routes.php)

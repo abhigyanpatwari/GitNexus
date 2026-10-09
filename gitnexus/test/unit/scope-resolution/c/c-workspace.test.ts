@@ -462,7 +462,7 @@ describe('C/C++ monorepo config', () => {
     targetRaw: string,
     fromFile: string,
     workspace: ReadonlySet<string>,
-  ): string | null {
+  ): ReturnType<typeof cScopeResolver.resolveImportTarget> {
     return cScopeResolver.resolveImportTarget(
       targetRaw,
       fromFile,

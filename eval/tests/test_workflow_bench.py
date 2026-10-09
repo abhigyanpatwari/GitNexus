@@ -185,7 +185,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         step for step in containment["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@")
     )
     claude_lock = json.loads((repo_root / ".github" / "claude-canary-runtime" / "package-lock.json").read_text())
-    setup_uv = "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990"
+    setup_uv = "astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7"
     assert workflow.count(setup_uv) >= 3
     assert workflow.count("version: '0.11.23'") >= 3
     assert workflow.count("uv run --locked --extra dev python -m pytest") >= 3
@@ -250,7 +250,11 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
         # set only on this job. Omitted from this list it skipped everywhere.
         "tests/test_mock_provider.py",
+        # These also need runtime dependencies absent from the locked pytest job.
+        "tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant",
+        "tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout",
         "-q",
+        "--junitxml=pytest-ubuntu.xml",
     ]
     bwrap_canary_marker = re.compile(
         r'@pytest\.mark\.skipif\(\s*os\.environ\.get\("GITNEXUS_REQUIRE_BWRAP_CANARY"\)',
@@ -264,6 +268,72 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
     assert bwrap_canary_files == ["test_proposer_sandbox.py", "test_workflow_bench_sessions.py"]
     assert all(f"tests/{name}" in selected_containment_tests for name in bwrap_canary_files)
     assert "eval-containment-windows:" in workflow
+
+
+@pytest.fixture(scope="module")
+def ci_test_jobs():
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((repo_root / ".github" / "workflows" / "ci-tests.yml").read_text())
+    return workflow["jobs"]
+
+
+def test_platform_ci_preserves_required_check_names_with_complete_execution_gates(ci_test_jobs):
+    jobs = ci_test_jobs
+    gate = jobs["protected-platform-checks"]
+    matrix = gate["strategy"]["matrix"]
+    names = {
+        "tests / " + gate["name"].replace("${{ matrix.os }}", platform).replace("${{ matrix.check }}", str(check))
+        for platform in matrix["os"]
+        for check in matrix["check"]
+    }
+    assert names == {
+        f"tests / {platform} (platform-sensitive) {check}/3"
+        for platform in ("windows-latest", "macos-latest")
+        for check in (1, 2, 3)
+    }
+    plan = jobs["shard-plan"]["steps"][0]["run"]
+    total = int(re.search(r"^TOTAL=(\d+)\b", plan, re.MULTILINE)[1])
+    native_names = {
+        "tests / "
+        + jobs["cross-platform"]["name"]
+        .replace("${{ matrix.os }}", platform)
+        .replace("${{ matrix.shard }}", str(shard))
+        .replace("${{ needs.shard-plan.outputs.total }}", str(total))
+        for platform in jobs["cross-platform"]["strategy"]["matrix"]["os"]
+        for shard in range(1, total + 1)
+    }
+    assert names.isdisjoint(native_names)
+    assert set(gate["needs"]) == {"cross-platform", "test-completeness"}
+    assert gate["if"] == "always()"
+    assert not gate.get("continue-on-error", False)
+    assert not jobs["cross-platform"].get("continue-on-error", False)
+    assert not jobs["test-completeness"].get("continue-on-error", False)
+    assert gate["permissions"] == {}
+    assert len(gate["steps"]) == 1
+    step = gate["steps"][0]
+    assert not step.get("continue-on-error", False)
+    assert "if" not in step
+    assert step["shell"] == "bash"
+    assert step["env"] == {
+        "NATIVE_RESULT": "${{ needs.cross-platform.result }}",
+        "EXECUTION_RESULT": "${{ needs.test-completeness.result }}",
+    }
+
+
+@pytest.mark.parametrize("native_result", ["success", "failure", "cancelled", "skipped", ""])
+@pytest.mark.parametrize("execution_result", ["success", "failure", "cancelled", "skipped", ""])
+def test_required_platform_check_fails_unless_every_dependency_passed(ci_test_jobs, native_result, execution_result):
+    step = ci_test_jobs["protected-platform-checks"]["steps"][0]
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+        env={**os.environ, "NATIVE_RESULT": native_result, "EXECUTION_RESULT": execution_result},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    expected = 0 if native_result == execution_result == "success" else 1
+    assert result.returncode == expected, result.stdout + result.stderr
 
 
 def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_assets():
@@ -1092,4 +1162,3 @@ def test_an_uninvoked_skill_still_counts_toward_the_arm_median():
     # The invariant that makes the half-fix unsafe: the median and the run count
     # the gate reads must cover the same rows.
     assert agg["valid_runs"] == 2
-

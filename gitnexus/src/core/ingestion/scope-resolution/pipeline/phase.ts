@@ -176,7 +176,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ScopeResolutionOutput> {
     logHeapProbe('scopeResolution-enter');
-    const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
+    const { scannedFiles, resolutionConfigs } = getPhaseOutput<StructureOutput>(deps, 'structure');
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
     const { model, parsedFiles: workerParsedFiles, contentLanguageByPath } = parseOutput;
     const scopeExtractionFailures = new Set(parseOutput.scopeExtractionFailures);
@@ -382,8 +382,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         // composer.json autoload, go.mod, ...). One I/O round trip per
         // workspace pass — cached implicitly by the result handed to
         // every `resolveImportTarget` call below.
-        const resolutionConfig =
-          provider.loadResolutionConfig !== undefined
+        const resolutionConfig = resolutionConfigs?.has(lang)
+          ? resolutionConfigs.get(lang)
+          : provider.loadResolutionConfig !== undefined
             ? await provider.loadResolutionConfig(ctx.repoPath)
             : undefined;
 

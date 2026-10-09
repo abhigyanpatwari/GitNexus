@@ -41,9 +41,9 @@ const queryNames = async (graph: string): Promise<string[]> => {
   const db = new lbug.Database(graph, 0, true, true);
   const conn = new lbug.Connection(db);
   try {
-    const rows = (await (
-      await conn.query('MATCH (f:Function) RETURN f.name AS n ORDER BY n')
-    ).getAll()) as { n: string }[];
+    const result = await conn.query('MATCH (f:Function) RETURN f.name AS n ORDER BY n');
+    if (Array.isArray(result)) throw new Error('Expected a single query result');
+    const rows = (await result.getAll()) as { n: string }[];
     return rows.map((r) => r.n);
   } finally {
     await conn.close();

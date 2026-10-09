@@ -1,3 +1,4 @@
+import { SupportedLanguages } from 'gitnexus-shared';
 import { describe, it, expect } from 'vitest';
 import {
   calculateEntryPointScore,
@@ -8,34 +9,58 @@ import {
 describe('calculateEntryPointScore', () => {
   describe('base scoring', () => {
     it('returns 0 for functions with no outgoing calls', () => {
-      const result = calculateEntryPointScore('handler', 'typescript', true, 0, 0);
+      const result = calculateEntryPointScore('handler', SupportedLanguages.TypeScript, true, 0, 0);
       expect(result.score).toBe(0);
       expect(result.reasons).toContain('no-outgoing-calls');
     });
 
     it('calculates base score as calleeCount / (callerCount + 1)', () => {
-      const result = calculateEntryPointScore('doStuff', 'typescript', false, 0, 5);
+      const result = calculateEntryPointScore(
+        'doStuff',
+        SupportedLanguages.TypeScript,
+        false,
+        0,
+        5,
+      );
       // base = 5 / (0 + 1) = 5, no export bonus, no name bonus
       expect(result.score).toBe(5);
     });
 
     it('reduces score for functions with many callers', () => {
-      const few = calculateEntryPointScore('doStuff', 'typescript', false, 1, 5);
-      const many = calculateEntryPointScore('doStuff', 'typescript', false, 10, 5);
+      const few = calculateEntryPointScore('doStuff', SupportedLanguages.TypeScript, false, 1, 5);
+      const many = calculateEntryPointScore('doStuff', SupportedLanguages.TypeScript, false, 10, 5);
       expect(few.score).toBeGreaterThan(many.score);
     });
   });
 
   describe('export multiplier', () => {
     it('applies 2.0 multiplier for exported functions', () => {
-      const exported = calculateEntryPointScore('doStuff', 'typescript', true, 0, 4);
-      const notExported = calculateEntryPointScore('doStuff', 'typescript', false, 0, 4);
+      const exported = calculateEntryPointScore(
+        'doStuff',
+        SupportedLanguages.TypeScript,
+        true,
+        0,
+        4,
+      );
+      const notExported = calculateEntryPointScore(
+        'doStuff',
+        SupportedLanguages.TypeScript,
+        false,
+        0,
+        4,
+      );
       expect(exported.score).toBe(notExported.score * 2);
       expect(exported.reasons).toContain('exported');
     });
 
     it('does not add exported reason when not exported', () => {
-      const result = calculateEntryPointScore('doStuff', 'typescript', false, 0, 4);
+      const result = calculateEntryPointScore(
+        'doStuff',
+        SupportedLanguages.TypeScript,
+        false,
+        0,
+        4,
+      );
       expect(result.reasons).not.toContain('exported');
     });
   });
@@ -44,7 +69,7 @@ describe('calculateEntryPointScore', () => {
     it.each(['main', 'init', 'bootstrap', 'start', 'run', 'setup', 'configure'])(
       'recognizes "%s" as entry point pattern',
       (name) => {
-        const result = calculateEntryPointScore(name, 'typescript', false, 0, 3);
+        const result = calculateEntryPointScore(name, SupportedLanguages.TypeScript, false, 0, 3);
         expect(result.reasons).toContain('entry-pattern');
       },
     );
@@ -64,13 +89,19 @@ describe('calculateEntryPointScore', () => {
       'fireEvent',
       'emitEvent',
     ])('recognizes "%s" as entry point pattern', (name) => {
-      const result = calculateEntryPointScore(name, 'typescript', false, 0, 3);
+      const result = calculateEntryPointScore(name, SupportedLanguages.TypeScript, false, 0, 3);
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('applies 1.5x name multiplier for entry patterns', () => {
-      const matching = calculateEntryPointScore('handleLogin', 'typescript', false, 0, 4);
-      const plain = calculateEntryPointScore('doStuff', 'typescript', false, 0, 4);
+      const matching = calculateEntryPointScore(
+        'handleLogin',
+        SupportedLanguages.TypeScript,
+        false,
+        0,
+        4,
+      );
+      const plain = calculateEntryPointScore('doStuff', SupportedLanguages.TypeScript, false, 0, 4);
       // matching gets 1.5x, plain gets 1.0x
       expect(matching.score).toBe(plain.score * 1.5);
     });
@@ -78,63 +109,81 @@ describe('calculateEntryPointScore', () => {
 
   describe('language-specific patterns', () => {
     it('recognizes React hooks for TypeScript', () => {
-      const result = calculateEntryPointScore('useEffect', 'typescript', false, 0, 2);
+      const result = calculateEntryPointScore(
+        'useEffect',
+        SupportedLanguages.TypeScript,
+        false,
+        0,
+        2,
+      );
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes React hooks for JavaScript', () => {
-      const result = calculateEntryPointScore('useState', 'javascript', false, 0, 2);
+      const result = calculateEntryPointScore(
+        'useState',
+        SupportedLanguages.JavaScript,
+        false,
+        0,
+        2,
+      );
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes Python REST patterns', () => {
-      const result = calculateEntryPointScore('get_users', 'python', false, 0, 2);
+      const result = calculateEntryPointScore('get_users', SupportedLanguages.Python, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes Java servlet patterns', () => {
-      const result = calculateEntryPointScore('doGet', 'java', false, 0, 2);
+      const result = calculateEntryPointScore('doGet', SupportedLanguages.Java, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes Go handler patterns', () => {
-      const result = calculateEntryPointScore('NewServer', 'go', false, 0, 2);
+      const result = calculateEntryPointScore('NewServer', SupportedLanguages.Go, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes Rust entry patterns', () => {
-      const result = calculateEntryPointScore('handle_request', 'rust', false, 0, 2);
+      const result = calculateEntryPointScore(
+        'handle_request',
+        SupportedLanguages.Rust,
+        false,
+        0,
+        2,
+      );
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes Swift UIKit lifecycle', () => {
-      const result = calculateEntryPointScore('viewDidLoad', 'swift', false, 0, 2);
+      const result = calculateEntryPointScore('viewDidLoad', SupportedLanguages.Swift, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes Swift SwiftUI body', () => {
-      const result = calculateEntryPointScore('body', 'swift', false, 0, 2);
+      const result = calculateEntryPointScore('body', SupportedLanguages.Swift, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes PHP Laravel patterns', () => {
       // __invoke starts with '_' which matches utility pattern first
-      const result = calculateEntryPointScore('handle', 'php', false, 0, 2);
+      const result = calculateEntryPointScore('handle', SupportedLanguages.PHP, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes PHP RESTful resource methods', () => {
-      const result = calculateEntryPointScore('index', 'php', false, 0, 2);
+      const result = calculateEntryPointScore('index', SupportedLanguages.PHP, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes C# ASP.NET patterns', () => {
-      const result = calculateEntryPointScore('GetUsers', 'csharp', false, 0, 2);
+      const result = calculateEntryPointScore('GetUsers', SupportedLanguages.CSharp, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
     it('recognizes C main entry point', () => {
-      const result = calculateEntryPointScore('main', 'c', false, 0, 2);
+      const result = calculateEntryPointScore('main', SupportedLanguages.C, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
@@ -152,7 +201,7 @@ describe('calculateEntryPointScore', () => {
       'session_create',
       'window_resize',
     ])('recognizes C pattern "%s"', (name) => {
-      const result = calculateEntryPointScore(name, 'c', false, 0, 2);
+      const result = calculateEntryPointScore(name, SupportedLanguages.C, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
@@ -167,7 +216,7 @@ describe('calculateEntryPointScore', () => {
       'OnEventReceived',
       'on_click',
     ])('recognizes C++ pattern "%s"', (name) => {
-      const result = calculateEntryPointScore(name, 'cpp', false, 0, 2);
+      const result = calculateEntryPointScore(name, SupportedLanguages.CPlusPlus, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
@@ -186,7 +235,7 @@ describe('calculateEntryPointScore', () => {
       'module',
       'AuthService',
     ])('recognizes Kotlin pattern "%s"', (name) => {
-      const result = calculateEntryPointScore(name, 'kotlin', false, 0, 2);
+      const result = calculateEntryPointScore(name, SupportedLanguages.Kotlin, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
 
@@ -197,14 +246,14 @@ describe('calculateEntryPointScore', () => {
     it.each(['main', 'build', 'createState', 'initState', 'dispose', 'runApp', 'onEvent'])(
       'recognizes Dart pattern "%s"',
       (name) => {
-        const result = calculateEntryPointScore(name, 'dart', false, 0, 2);
+        const result = calculateEntryPointScore(name, SupportedLanguages.Dart, false, 0, 2);
         expect(result.reasons).toContain('entry-pattern');
       },
     );
 
     // Ruby-specific patterns (Rails callable/job/service objects)
     it.each(['call', 'perform', 'execute'])('recognizes Ruby pattern "%s"', (name) => {
-      const result = calculateEntryPointScore(name, 'ruby', false, 0, 2);
+      const result = calculateEntryPointScore(name, SupportedLanguages.Ruby, false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
   });
@@ -226,15 +275,21 @@ describe('calculateEntryPointScore', () => {
       'cloneDeep',
       'mergeObjects',
     ])('penalizes utility function "%s"', (name) => {
-      const result = calculateEntryPointScore(name, 'typescript', false, 0, 3);
+      const result = calculateEntryPointScore(name, SupportedLanguages.TypeScript, false, 0, 3);
       expect(result.reasons).toContain('utility-pattern');
       // 0.3 multiplier
-      const plain = calculateEntryPointScore('doStuff', 'typescript', false, 0, 3);
+      const plain = calculateEntryPointScore('doStuff', SupportedLanguages.TypeScript, false, 0, 3);
       expect(result.score).toBeLessThan(plain.score);
     });
 
     it('penalizes private-by-convention functions', () => {
-      const result = calculateEntryPointScore('_internal', 'typescript', false, 0, 3);
+      const result = calculateEntryPointScore(
+        '_internal',
+        SupportedLanguages.TypeScript,
+        false,
+        0,
+        3,
+      );
       expect(result.reasons).toContain('utility-pattern');
     });
   });
@@ -243,7 +298,7 @@ describe('calculateEntryPointScore', () => {
     it('boosts Next.js page entry points', () => {
       const result = calculateEntryPointScore(
         'render',
-        'typescript',
+        SupportedLanguages.TypeScript,
         true,
         0,
         3,
@@ -256,7 +311,7 @@ describe('calculateEntryPointScore', () => {
     it('does not apply framework bonus for non-framework paths', () => {
       const result = calculateEntryPointScore(
         'render',
-        'typescript',
+        SupportedLanguages.TypeScript,
         true,
         0,
         3,
@@ -271,7 +326,7 @@ describe('calculateEntryPointScore', () => {
       // handleLogin: entry pattern (1.5x) + exported (2.0x) + base
       const result = calculateEntryPointScore(
         'handleLogin',
-        'typescript',
+        SupportedLanguages.TypeScript,
         true,
         0,
         4,

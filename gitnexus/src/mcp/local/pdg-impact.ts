@@ -27,6 +27,11 @@ import { toDisplayLine } from './line-display.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
+import {
+  assertSymbolIdentity,
+  assertIdentityFields,
+  assertQueryIdentity,
+} from './query-result-integrity.js';
 
 /**
  * Parse the `<fnLine>` segment out of a `BasicBlock` id (1-based function start
@@ -90,14 +95,19 @@ const INTERPROC_NODE_BUDGET = 5000;
  * `classifyPdgBridgeEvidence`); this is the same fact, read at the descent side.
  */
 function parseCalleeIdsCell(raw: unknown): { ids: string[]; truncated: boolean } {
+  assertIdentityFields(raw);
   const ids: string[] = [];
   let truncated = false;
+  if (!String(raw ?? '').trim()) return { ids, truncated };
   // Split on the SHARED CALLEE_ID_SEP (tab) — ids embed file paths / multi-word
   // C++ type tokens that can contain a space, so a space split would fragment
   // them. Producer (calleeIdsOfBlock) joins with the same constant.
   for (const id of String(raw ?? '').split(CALLEE_ID_SEP)) {
     if (id === CALLEES_TRUNCATED_SENTINEL) truncated = true;
-    else if (id) ids.push(id);
+    else {
+      assertSymbolIdentity(id);
+      ids.push(id);
+    }
   }
   return { ids, truncated };
 }
@@ -218,6 +228,7 @@ async function selfReachingDefEdgesByBlock(
     { ids: blockIds },
   );
   for (const r of rows as Array<Record<string, unknown>>) {
+    assertQueryIdentity(r, 'id', 0);
     const id = String(r['id'] ?? '');
     if (!id) continue;
     const decoded = decodeReachingDefReason(r['reason']);
@@ -297,6 +308,7 @@ async function pdgStatementsForBlocks(
   // Narrow the awaited rows ONCE at the boundary to a typed record shape; read
   // the aliased cells via bracket access with String()/Number() coercion.
   for (const r of rows as Array<Record<string, unknown>>) {
+    assertQueryIdentity(r, 'id', 0);
     const id = String(r['id'] ?? '');
     const line = Number(r['line'] ?? 0);
     if (!id || !Number.isFinite(line) || line <= 0) continue;
@@ -501,6 +513,10 @@ async function projectBlocksToSymbols(deps: {
       // non-aliased row shape) — no per-field `as any`, matching the typed-row
       // pattern used elsewhere in this file (e.g. lines ~264, ~1309, ~1386).
       for (const r of rows as Array<Record<string, unknown>>) {
+        assertQueryIdentity(r, 'id', 0, [
+          ['name', 1],
+          ['label', 2],
+        ]);
         resolved.push({
           id: String(r['id'] ?? r['0'] ?? ''),
           name: String(r['name'] ?? r['1'] ?? ''),
@@ -1718,6 +1734,7 @@ async function bfsReachableBlocks(input: {
     // Narrow the awaited rows ONCE at the boundary (executeParameterized returns
     // any[]) to a typed record shape, then read the aliased `id` via bracket
     // access — no `as any` sprayed per field.
+    for (const row of rawRows) assertQueryIdentity(row, 'id', 0);
     const rows = rawRows.slice(0, stepLimit) as Array<Record<string, unknown>>;
     depthReached = depth + 1;
     if (rawRows.length > stepLimit) truncatedByLimit = true;
@@ -1796,6 +1813,10 @@ async function calleeIdsByBlock(
   // Narrow the awaited rows ONCE at the boundary to a typed record shape; read
   // the aliased cells via bracket access — no per-field `as any`.
   for (const r of rows as Array<Record<string, unknown>>) {
+    assertQueryIdentity(r, 'id', 0, [
+      ['calleeIds', 1],
+      ['callees', 2],
+    ]);
     const blockId = String(r['id'] ?? '');
     if (!blockId) continue;
     // ONE pass over the cell classifies BOTH facts — a second full split just to
@@ -1877,6 +1898,7 @@ async function calleesWithReturnFlow(
     { ids: calleeIds },
   );
   for (const r of rows as Array<Record<string, unknown>>) {
+    assertQueryIdentity(r, 'id', 0);
     const id = String(r['id'] ?? '');
     if (!id) continue;
     const decoded = decodeCallSummary(r['reason']);
@@ -1931,6 +1953,7 @@ async function resolveCalleeSpans(
   // the aliased columns via bracket access with Number()/String() coercion —
   // no per-field `as any` (the same boundary-narrowing the typed helpers use).
   for (const r of rows as Array<Record<string, unknown>>) {
+    assertQueryIdentity(r, 'id', 0, [['filePath', 1]]);
     const id = String(r['id'] ?? '');
     const filePath = String(r['filePath'] ?? '');
     const startLine = Number(r['startLine']);
@@ -2168,6 +2191,7 @@ async function interproceduralDescent(input: {
           seedBlockQuery(anchorClause, probeLimit),
           queryParams,
         );
+        for (const row of rawSeedRows) assertQueryIdentity(row, 'id', 0);
         const exceeded = rawSeedRows.length > stepLimit;
         const seeds = rawSeedRows
           .slice(0, stepLimit)
@@ -2353,6 +2377,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     seedBlockQuery(anchorClause, probeLimit),
     queryParams,
   );
+  for (const row of rawSeedRows) assertQueryIdentity(row, 'id', 0);
   const seedRows = rawSeedRows.slice(0, stepLimit) as Array<Record<string, unknown>>;
   let seedBlocks: string[] = seedRows
     .map((r) => String(r['id'] ?? ''))

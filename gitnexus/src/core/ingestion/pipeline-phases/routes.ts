@@ -14,7 +14,7 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
-import { isBladeTemplateFilename } from 'gitnexus-shared';
+import { isTemplateRouteCandidate } from '../utils/template-file.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
@@ -41,6 +41,8 @@ import { readFileContents } from '../filesystem-walker.js';
 import { isDev } from '../utils/env.js';
 
 import { logger } from '../../logger.js';
+export { isTemplateRouteCandidate } from '../utils/template-file.js';
+
 const EXPO_NAV_PATTERNS = [
   /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
   /<Link\s+[^>]*href=\s*['"`]([^'"`]+)['"`]/g,
@@ -121,17 +123,6 @@ function hasRouteParameters(routeUrl: string): boolean {
   return /\{[^}]+\}/.test(routeUrl);
 }
 
-export const isTemplateRouteCandidate = (filePath: string): boolean => {
-  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-  return (
-    normalized.endsWith('.html') ||
-    normalized.endsWith('.htm') ||
-    normalized.endsWith('.ejs') ||
-    normalized.endsWith('.hbs') ||
-    isBladeTemplateFilename(normalized)
-  );
-};
-
 export function extractTemplateStaticFetchCalls(
   filePath: string,
   content: string,
@@ -189,6 +180,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       allExtractedRoutes,
       allDecoratorRoutes,
       routeHandlerSymbols,
+      selectedRoutes,
     } = getPhaseOutput<ParseOutput>(deps, 'parse');
 
     // Local copy — routes phase must not mutate upstream ParseOutput
@@ -304,11 +296,14 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
       const routeUrl = normalizeExtractedRoutePath(route.routePath, route.prefix);
-      addRoute(routeUrl, {
-        filePath: route.filePath,
-        source: 'framework-route',
-        method: normalizeRouteMethod(route.httpMethod),
-      });
+      if (!selectedRoutes || selectedRoutes.has(route)) {
+        addRoute(routeUrl, {
+          filePath: route.filePath,
+          source: 'framework-route',
+          method: normalizeRouteMethod(route.httpMethod),
+        });
+      }
+      // Losing declarations may still provide distinct named aliases.
       if (route.routeName && !namedRouteRegistry.has(route.routeName)) {
         namedRouteRegistry.set(route.routeName, routeUrl);
       }
@@ -318,6 +313,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     // idiom, which no single file can reconcile. Framework routes are untouched;
     // their verb-less form is a declaration, not a weaker observation.
     for (const dr of reconcileDispatchGuardRoutes(allDecoratorRoutes)) {
+      if (selectedRoutes && !selectedRoutes.has(dr)) continue;
       const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
       const method = normalizeRouteMethod(dr.httpMethod);
       const routeKey = routeNodeKey(method, url);

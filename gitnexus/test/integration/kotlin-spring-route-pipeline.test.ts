@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import type { PipelineResult } from '../../types/pipeline.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
 import {
   loadParseCache,
   PARSE_CACHE_VERSION,

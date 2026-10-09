@@ -1,9 +1,10 @@
-import type { BigIntStats, Dirent } from 'node:fs';
-import { constants, lstat, open, opendir, type FileHandle } from 'node:fs/promises';
+import type { BigIntStats } from 'node:fs';
+import { constants, lstat, open, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { JSON_SCHEMA, load } from 'js-yaml';
-import { createWatchIgnorePredicate } from '../../../../config/ignore-service.js';
+import { loadIgnoreRules } from '../../../../config/ignore-service.js';
 import { logger } from '../../../logger.js';
+import { walkRepositoryPaths } from '../../filesystem-walker.js';
 import { getMaxFileSizeBytes } from '../../utils/max-file-size.js';
 
 export interface DartPackageConfig {
@@ -11,55 +12,60 @@ export interface DartPackageConfig {
   readonly manifestsByName: ReadonlyMap<string, readonly string[]>;
 }
 
-/** An incomplete walk cannot prove package names are unique. */
-const DART_PUBSPEC_DIRECTORY_LIMIT = 20_000;
-
-/**
- * Directory descriptors one walk may hold at once. The visit budget is far
- * above a process file-descriptor limit, so a deep chain is refused before
- * the next open instead of failing later with EMFILE.
- */
-const DART_PUBSPEC_OPEN_DIRECTORY_LIMIT = 64;
-
-/**
- * Names read from one directory. `readdir` would retain every entry before the
- * visit budget can run, so the walk counts names as it reads and stops there.
- */
-const DART_PUBSPEC_DIRECTORY_ENTRY_LIMIT = 100_000;
+const DART_PUBSPEC_MANIFEST_LIMIT = 20_000;
 
 export interface DartPackageConfigOptions {
-  /** Test seam. Production calls omit it and use the module directory limit. */
-  readonly directoryLimit?: number;
-  /** Test seam. Production calls omit it and use the open-directory cap. */
-  readonly directoryDepthLimit?: number;
-  /** Test seam. Production calls omit it and use the per-directory entry cap. */
-  readonly directoryEntryLimit?: number;
-  /**
-   * Test seam. Production calls omit it. Invoked after the directory inode
-   * is listed and before its entries are opened.
-   */
-  readonly beforeEntryOpen?: (relativePath: string) => void | Promise<void>;
+  /** Test seam. Production calls use the manifest-count limit. */
+  readonly manifestLimit?: number;
+}
+
+function warn(reason: string, relativePath: string): void {
+  logger.warn(
+    { reason, relativePath },
+    'Dart pubspec discovery could not read a valid package declaration.',
+  );
+}
+
+function incomplete(reason: string, relativePath = '.'): never {
+  warn(reason, relativePath);
+  throw new Error(`Dart pubspec discovery failed (${reason}): ${relativePath}`);
+}
+
+function manifestIdentity(info: BigIntStats): string {
+  return `${info.dev}:${info.ino}:${info.mode}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
 }
 
 type ManifestRead =
   | { readonly ok: true; readonly content: string }
   | { readonly ok: false; readonly reason: 'manifest-size' | 'read-pubspec' };
 
-/**
- * Read at most `maxManifestSize` bytes from a descriptor already opened
- * with `O_NOFOLLOW`. A size check after the read rejects a file that grew
- * past the captured bytes, including past the cap. The caller closes nothing;
- * this function owns `handle`.
- */
+/** Open once, validate and read that descriptor. Null excludes a symbolic link. */
 async function readManifestBounded(
-  handle: FileHandle,
+  absolute: string,
   maxManifestSize: number,
-): Promise<ManifestRead> {
+): Promise<ManifestRead | null> {
+  let handle: FileHandle;
   try {
-    const info = await handle.stat();
-    if (!info.isFile()) return { ok: false, reason: 'read-pubspec' };
-    if (info.size > maxManifestSize) return { ok: false, reason: 'manifest-size' };
-    const toRead = Math.min(maxManifestSize + 1, info.size + 1);
+    handle = await open(
+      absolute,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    // O_NOFOLLOW rejects leaf symlinks on POSIX. Keep static links excluded,
+    // including dangling links, without retrying the pathname open.
+    if ((await lstat(absolute).catch(() => null))?.isSymbolicLink()) return null;
+    return { ok: false, reason: 'read-pubspec' };
+  }
+  try {
+    const before = await handle.stat({ bigint: true });
+    const current = await lstat(absolute, { bigint: true });
+    // Also exclude links before reading on platforms without O_NOFOLLOW.
+    if (current.isSymbolicLink()) return null;
+    if (!before.isFile() || manifestIdentity(before) !== manifestIdentity(current)) {
+      return { ok: false, reason: 'read-pubspec' };
+    }
+    if (before.size > BigInt(maxManifestSize)) return { ok: false, reason: 'manifest-size' };
+    const toRead = Math.min(maxManifestSize + 1, Number(before.size) + 1);
     const buffer = Buffer.allocUnsafe(toRead);
     let bytesRead = 0;
     while (bytesRead < toRead) {
@@ -68,10 +74,11 @@ async function readManifestBounded(
       bytesRead += chunk.bytesRead;
     }
     if (bytesRead > maxManifestSize) return { ok: false, reason: 'manifest-size' };
-    const after = await handle.stat();
-    if (!after.isFile()) return { ok: false, reason: 'read-pubspec' };
-    if (after.size > maxManifestSize) return { ok: false, reason: 'manifest-size' };
-    if (after.size !== bytesRead) return { ok: false, reason: 'read-pubspec' };
+    const after = await handle.stat({ bigint: true });
+    if (after.size > BigInt(maxManifestSize)) return { ok: false, reason: 'manifest-size' };
+    if (manifestIdentity(after) !== manifestIdentity(before) || after.size !== BigInt(bytesRead)) {
+      return { ok: false, reason: 'read-pubspec' };
+    }
     return { ok: true, content: buffer.subarray(0, bytesRead).toString('utf8') };
   } catch {
     return { ok: false, reason: 'read-pubspec' };
@@ -80,373 +87,122 @@ async function readManifestBounded(
   }
 }
 
-function requireNoFollowFlag(): number {
-  const noFollow = constants.O_NOFOLLOW;
-  if (typeof noFollow !== 'number' || noFollow === 0) {
-    throw Object.assign(new Error('O_NOFOLLOW is unavailable'), { code: 'ENOTSUP' });
-  }
-  return noFollow;
-}
-
-/** Linux anchors child opens. macOS verifies them. Every other platform does neither. */
-export function pubspecWalkAnchored(): boolean {
-  const noFollow = constants.O_NOFOLLOW;
-  return (
-    (process.platform === 'linux' || process.platform === 'darwin') &&
-    typeof noFollow === 'number' &&
-    noFollow !== 0
-  );
-}
-
-export function directoryOpenFlags(): number {
-  let flags = constants.O_RDONLY | requireNoFollowFlag();
-  if (typeof constants.O_DIRECTORY === 'number') flags |= constants.O_DIRECTORY;
-  return flags;
-}
-
-/**
- * Read-only, no-follow, and non-blocking. `O_NONBLOCK` does not change a
- * regular-file read. Without it, a FIFO blocks inside `open` until a writer
- * connects, so the later file-type check never runs.
- */
-function fileOpenFlags(): number {
-  const nonBlock = constants.O_NONBLOCK;
-  if (typeof nonBlock !== 'number' || nonBlock === 0) {
-    throw Object.assign(new Error('O_NONBLOCK is unavailable'), { code: 'ENOTSUP' });
-  }
-  return constants.O_RDONLY | requireNoFollowFlag() | nonBlock;
-}
-
-function directoryIdentity(stat: BigIntStats): string {
-  return `${stat.dev}:${stat.ino}:${stat.mode}`;
-}
-
-/**
- * Path that lists the directory inode already open on `fd`.
- * Linux uses `/proc/self/fd/N` and macOS uses `/dev/fd/N`.
- * Other platforms have no such path; callers refuse instead of listing by name.
- */
-export function descriptorDirectoryPath(fd: number): string | null {
-  if (process.platform === 'linux') return `/proc/self/fd/${fd}`;
-  if (process.platform === 'darwin') return `/dev/fd/${fd}`;
-  return null;
-}
-
-/**
- * One entry of the directory inode open on `fd`.
- * Linux looks up `/proc/self/fd/N/<name>` in that inode. macOS `/dev/fd/N/<name>`
- * does not resolve a child, so this returns null and the walker verifies the
- * pinned parent chain instead. Every other platform returns null and is not walked.
- */
-export function descriptorEntryPath(fd: number, name: string): string | null {
-  if (process.platform !== 'linux') return null;
-  if (!isSingleDirectoryEntry(name)) return null;
-  return `/proc/self/fd/${fd}/${name}`;
-}
-
-function isSingleDirectoryEntry(name: string): boolean {
-  return (
-    name !== '' && name !== '.' && name !== '..' && !name.includes('/') && !name.includes('\0')
-  );
-}
-
-interface OpenedDirectory {
-  readonly handle: FileHandle;
-  readonly identity: string;
-}
-
-async function openVerifiedDirectory(directory: string): Promise<OpenedDirectory> {
-  const handle = await open(directory, directoryOpenFlags());
+/** Package identity is a pure function of captured manifest text. */
+function packageName(content: string, manifestPath: string): string | null {
   try {
-    const info = await handle.stat({ bigint: true });
-    if (!info.isDirectory()) {
-      throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
-    }
-    return { handle, identity: directoryIdentity(info) };
-  } catch (error) {
-    await handle.close();
-    throw error;
+    const manifest: unknown = load(content, { schema: JSON_SCHEMA });
+    if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return null;
+    const name = (manifest as Record<string, unknown>).name;
+    return typeof name === 'string' && /^[a-z_][a-z0-9_]*$/.test(name) ? name : null;
+  } catch {
+    warn('invalid-yaml', manifestPath);
+    return null;
   }
 }
 
-interface WalkFrame {
-  relative: string;
-  absolute: string;
-  handle: FileHandle;
-  identity: string;
-  entries: Dirent[];
-  next: number;
-}
-
-/** Re-stat each pinned directory and its path. A replaced inode or a symlink fails the walk. */
-async function assertPinnedChain(frames: readonly WalkFrame[]): Promise<void> {
-  for (const frame of frames) {
-    const pinned = await frame.handle.stat({ bigint: true });
-    if (!pinned.isDirectory() || directoryIdentity(pinned) !== frame.identity) {
-      throw Object.assign(new Error('parent descriptor changed'), { code: 'ELOOP' });
-    }
-    let lexical: BigIntStats;
-    try {
-      lexical = await lstat(frame.absolute, { bigint: true });
-    } catch {
-      throw Object.assign(new Error('parent path changed'), { code: 'ELOOP' });
-    }
+/**
+ * Capture declarations from the shared scan, before source stat/size filtering.
+ * No directory enumeration occurs here. Every enumerated regular manifest must
+ * be captured successfully before this config can be published.
+ *
+ * Acquisition assumes a stable, trusted workspace, like the source-file reader.
+ * Static symlinks/junctions are excluded and observed file changes are rejected;
+ * these checks do not provide a sandbox or an atomic view of a mutating tree.
+ * Once returned, resolution uses only this compact map, on every operating system.
+ */
+export async function captureDartPackageConfig(
+  repoPath: string,
+  filePaths: readonly string[],
+  options?: DartPackageConfigOptions,
+): Promise<DartPackageConfig> {
+  const manifests = new Set<string>();
+  const limit = options?.manifestLimit ?? DART_PUBSPEC_MANIFEST_LIMIT;
+  for (const filePath of filePaths) {
+    if (filePath !== 'pubspec.yaml' && !filePath.endsWith('/pubspec.yaml')) continue;
     if (
-      lexical.isSymbolicLink() ||
-      !lexical.isDirectory() ||
-      directoryIdentity(lexical) !== frame.identity
+      /[\\\0]/.test(filePath) ||
+      /^[a-zA-Z]:/.test(filePath) ||
+      filePath.split('/').some((part) => part === '' || part === '.' || part === '..')
     ) {
-      throw Object.assign(new Error('parent path changed'), { code: 'ELOOP' });
+      return incomplete('manifest-path');
     }
+    manifests.add(filePath);
+    if (manifests.size > limit) return incomplete('manifest-limit');
   }
-}
-
-/**
- * macOS has no descriptor-relative child lookup. Re-check the pinned parents,
- * open the child with O_NOFOLLOW, then re-check the parents. The opened
- * descriptor is the only child metadata consulted.
- */
-async function openLexicalDirectory(
-  frames: readonly WalkFrame[],
-  lexicalPath: string,
-): Promise<OpenedDirectory> {
-  await assertPinnedChain(frames);
-  const opened = await openVerifiedDirectory(lexicalPath);
   try {
-    await assertPinnedChain(frames);
-    return opened;
-  } catch (error) {
-    await opened.handle.close();
-    throw error;
+    await loadIgnoreRules(repoPath, { strictRepoControlFiles: true, noGlobalIgnore: true });
+  } catch {
+    return incomplete('scan-inputs');
   }
-}
+  const packages = new Map<string, string>();
+  const manifestsByName = new Map<string, string[]>();
+  if (manifests.size === 0) return { packages, manifestsByName };
 
-async function openLexicalFile(
-  frames: readonly WalkFrame[],
-  lexicalPath: string,
-): Promise<FileHandle> {
-  await assertPinnedChain(frames);
-  const handle = await open(lexicalPath, fileOpenFlags());
-  try {
-    const opened = await handle.stat({ bigint: true });
-    if (!opened.isFile()) {
-      throw Object.assign(new Error('not a file'), { code: 'ELOOP' });
-    }
-    await assertPinnedChain(frames);
-    return handle;
-  } catch (error) {
-    await handle.close();
-    throw error;
+  // Cache static parent checks once per directory, not once per import/file.
+  // This cache belongs only to this capture and never survives another analysis.
+  const directories = new Map<string, boolean>();
+  const root = await lstat(repoPath).catch(() => null);
+  if (root === null || !root.isDirectory() || root.isSymbolicLink()) {
+    return incomplete('read-directory');
   }
-}
-
-async function openChildDirectory(
-  frames: readonly WalkFrame[],
-  parentFd: number,
-  name: string,
-  lexicalPath: string,
-): Promise<OpenedDirectory> {
-  const anchored = descriptorEntryPath(parentFd, name);
-  if (anchored !== null) return openVerifiedDirectory(anchored);
-  if (process.platform === 'darwin') return openLexicalDirectory(frames, lexicalPath);
-  throw Object.assign(new Error('no descriptor anchor'), { code: 'ENOTSUP' });
-}
-
-async function openChildFile(
-  frames: readonly WalkFrame[],
-  parentFd: number,
-  name: string,
-  lexicalPath: string,
-): Promise<FileHandle> {
-  const anchored = descriptorEntryPath(parentFd, name);
-  if (anchored !== null) return open(anchored, fileOpenFlags());
-  if (process.platform === 'darwin') return openLexicalFile(frames, lexicalPath);
-  throw Object.assign(new Error('no descriptor anchor'), { code: 'ENOTSUP' });
-}
-
-async function listOpenedDirectory(handle: FileHandle, entryLimit: number): Promise<Dirent[]> {
-  const listing = descriptorDirectoryPath(handle.fd);
-  if (listing === null) {
-    throw Object.assign(new Error('no descriptor listing'), { code: 'ENOTSUP' });
-  }
-  const dir = await opendir(listing);
-  const entries: Dirent[] = [];
-  try {
-    let count = 0;
-    while (true) {
-      const entry = await dir.read();
-      if (entry === null) break;
-      count += 1;
-      if (count > entryLimit) {
-        throw Object.assign(new Error('directory entry limit'), { code: 'E2BIG' });
+  const maxManifestSize = Math.min(1024 * 1024, getMaxFileSizeBytes());
+  for (const manifestPath of manifests) {
+    const parts = manifestPath.split('/');
+    let parent = '';
+    let linked = false;
+    for (const part of parts.slice(0, -1)) {
+      parent = parent ? `${parent}/${part}` : part;
+      let accepted = directories.get(parent);
+      if (accepted === undefined) {
+        const info = await lstat(path.join(repoPath, parent)).catch(() => null);
+        if (info === null || (!info.isDirectory() && !info.isSymbolicLink())) {
+          return incomplete('read-directory', parent);
+        }
+        accepted = !info.isSymbolicLink();
+        directories.set(parent, accepted);
       }
-      entries.push(entry);
+      if (!accepted) {
+        linked = true;
+        break;
+      }
     }
-  } finally {
-    await dir.close().catch(() => undefined);
+    if (linked) continue;
+
+    const read = await readManifestBounded(path.join(repoPath, manifestPath), maxManifestSize);
+    if (read === null) continue;
+    if (read.ok === false) return incomplete(read.reason, manifestPath);
+    const name = packageName(read.content, manifestPath);
+    if (name === null) continue;
+
+    const witnesses = manifestsByName.get(name) ?? [];
+    witnesses.push(manifestPath);
+    witnesses.sort();
+    // Two deterministic witnesses prove ambiguity without duplicate fanout.
+    if (witnesses.length > 2) witnesses.length = 2;
+    manifestsByName.set(name, witnesses);
+    if (witnesses.length > 1) packages.delete(name);
+    else packages.set(name, parent ? `${parent}/lib` : 'lib');
   }
-  return entries;
+  return { packages, manifestsByName };
 }
 
-/**
- * Open `directory` without following a final symlink, then list that inode.
- * A path swapped for a symlink after the parent listing fails this open
- * (`ENOTDIR` / `ELOOP`) instead of being traversed.
- */
-export async function readDirectoryNoFollow(directory: string): Promise<Dirent[]> {
-  const opened = await openVerifiedDirectory(directory);
-  try {
-    return await listOpenedDirectory(opened.handle, DART_PUBSPEC_DIRECTORY_ENTRY_LIMIT);
-  } finally {
-    await opened.handle.close();
-  }
-}
-
-/** Discover only in-repository packages; never follow dependency paths or symlinks. */
+/** Standalone callers use the same scanner/capture boundary as the pipeline. */
 export async function loadDartPackageConfig(
   repoPath: string,
   options?: DartPackageConfigOptions,
 ): Promise<DartPackageConfig> {
-  const warn = (reason: string, relativePath = '.'): void => {
-    logger.warn(
-      { reason, relativePath },
-      'Dart pubspec discovery could not read a valid package declaration.',
-    );
-  };
-  const incomplete = (reason: string, relativePath = '.'): never => {
-    warn(reason, relativePath);
-    throw new Error(`Dart pubspec discovery failed (${reason}): ${relativePath}`);
-  };
-  if (!pubspecWalkAnchored()) {
-    warn('nofollow-anchor');
-    return { packages: new Map(), manifestsByName: new Map() };
-  }
-  let isIgnored;
+  let captured: DartPackageConfig | undefined;
   try {
-    isIgnored = await createWatchIgnorePredicate(repoPath);
-  } catch {
-    return incomplete('ignore-rules');
+    await walkRepositoryPaths(repoPath, undefined, {
+      onPathsDiscovered: async (paths) => {
+        captured = await captureDartPackageConfig(repoPath, paths, options);
+      },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Dart pubspec discovery failed')) {
+      throw error;
+    }
+    return incomplete('scan-inputs');
   }
-  const packages = new Map<string, string>();
-  const manifestsByName = new Map<string, string[]>();
-  const maxManifestSize = Math.min(1024 * 1024, getMaxFileSizeBytes());
-  const directoryLimit = options?.directoryLimit ?? DART_PUBSPEC_DIRECTORY_LIMIT;
-  const directoryDepthLimit = options?.directoryDepthLimit ?? DART_PUBSPEC_OPEN_DIRECTORY_LIMIT;
-  const directoryEntryLimit = options?.directoryEntryLimit ?? DART_PUBSPEC_DIRECTORY_ENTRY_LIMIT;
-  const ambiguous = new Set<string>();
-  const stack: WalkFrame[] = [];
-  let visited = 0;
-
-  const closeStack = async (): Promise<void> => {
-    const frames = stack.splice(0);
-    await Promise.all(frames.map((frame) => frame.handle.close().catch(() => undefined)));
-  };
-
-  const fillFrame = async (frame: WalkFrame): Promise<void> => {
-    if (++visited > directoryLimit) return incomplete('directory-limit', frame.relative || '.');
-    try {
-      frame.entries = await listOpenedDirectory(frame.handle, directoryEntryLimit);
-    } catch (error) {
-      const reason =
-        (error as NodeJS.ErrnoException).code === 'E2BIG' ? 'directory-entries' : 'read-directory';
-      return incomplete(reason, frame.relative || '.');
-    }
-    if (options?.beforeEntryOpen) await options.beforeEntryOpen(frame.relative);
-  };
-
-  try {
-    let rootOpened: OpenedDirectory;
-    try {
-      rootOpened = await openVerifiedDirectory(repoPath);
-    } catch {
-      return incomplete('read-directory', '.');
-    }
-    const root: WalkFrame = {
-      relative: '',
-      absolute: repoPath,
-      handle: rootOpened.handle,
-      identity: rootOpened.identity,
-      entries: [],
-      next: 0,
-    };
-    stack.push(root);
-    await fillFrame(root);
-
-    while (stack.length > 0) {
-      const frame = stack[stack.length - 1];
-      if (frame === undefined) break;
-      if (frame.next >= frame.entries.length) {
-        stack.pop();
-        await frame.handle.close().catch(() => undefined);
-        continue;
-      }
-      const entry = frame.entries[frame.next];
-      frame.next += 1;
-      if (entry === undefined || !isSingleDirectoryEntry(entry.name) || entry.isSymbolicLink()) {
-        continue;
-      }
-      const childRelative = frame.relative ? `${frame.relative}/${entry.name}` : entry.name;
-      const entryPath = path.join(repoPath, childRelative);
-      if (entry.isDirectory()) {
-        if (entry.name.startsWith('.') || isIgnored(entryPath, true)) continue;
-        if (stack.length >= directoryDepthLimit) {
-          return incomplete('directory-depth', childRelative);
-        }
-        let childOpened: OpenedDirectory;
-        try {
-          childOpened = await openChildDirectory(stack, frame.handle.fd, entry.name, entryPath);
-        } catch {
-          return incomplete('read-directory', childRelative);
-        }
-        const child: WalkFrame = {
-          relative: childRelative,
-          absolute: entryPath,
-          handle: childOpened.handle,
-          identity: childOpened.identity,
-          entries: [],
-          next: 0,
-        };
-        stack.push(child);
-        await fillFrame(child);
-      } else if (entry.isFile() && entry.name === 'pubspec.yaml' && !isIgnored(entryPath, false)) {
-        const manifestPath = frame.relative ? `${frame.relative}/pubspec.yaml` : 'pubspec.yaml';
-        let manifestHandle: FileHandle;
-        try {
-          manifestHandle = await openChildFile(stack, frame.handle.fd, entry.name, entryPath);
-        } catch {
-          return incomplete('read-pubspec', manifestPath);
-        }
-        const read = await readManifestBounded(manifestHandle, maxManifestSize);
-        if (read.ok === false) return incomplete(read.reason, manifestPath);
-        try {
-          const manifest: unknown = load(read.content, {
-            schema: JSON_SCHEMA,
-          });
-          if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest))
-            continue;
-          const name = (manifest as Record<string, unknown>).name;
-          if (typeof name !== 'string' || !/^[a-z_][a-z0-9_]*$/.test(name)) continue;
-          const manifests = manifestsByName.get(name) ?? [];
-          manifests.push(manifestPath);
-          // Two deterministic witnesses suffice to prove ambiguity. Retaining
-          // more would create unbounded duplicate-package dependency fanout.
-          manifests.sort();
-          if (manifests.length > 2) manifests.length = 2;
-          manifestsByName.set(name, manifests);
-          if (packages.has(name) || ambiguous.has(name)) {
-            packages.delete(name);
-            ambiguous.add(name);
-          } else {
-            packages.set(name, frame.relative ? `${frame.relative}/lib` : 'lib');
-          }
-        } catch {
-          // Invalid YAML cannot declare a package. Other valid packages remain usable.
-          warn('invalid-yaml', manifestPath);
-        }
-      }
-    }
-  } finally {
-    await closeStack();
-  }
-  return { packages, manifestsByName };
+  return captured ?? incomplete('scan-inputs');
 }

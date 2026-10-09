@@ -3,6 +3,7 @@ import {
   dropFTSIndex,
   indexRowName,
   indexRowTable,
+  indexRowType,
   resolveGateRows,
   DEFAULT_FTS_STEMMER,
   type IndexCatalogSnapshot,
@@ -110,19 +111,21 @@ export const ftsDegradedWarning = (
 };
 
 /**
- * Warning for when the FTS extension is loaded and indexes exist, but every
- * configured table's query failed for a real, non-benign reason (timeout,
- * connection reset, native fault) — as opposed to `ftsDegradedWarning`'s
- * missing-index case. `--repair-fts` will not fix a query/connection error,
- * so this deliberately does NOT suggest it: reusing the missing-index
- * message here would reproduce, for this cause, the exact misleading
- * "run --repair-fts" guidance #2767 itself was about (tri-review NEW-1).
+ * Warning when no FTS query succeeded and at least one failed for a real,
+ * non-benign reason (timeout, connection reset, native fault). `--repair-fts`
+ * will not fix those errors. If indexes are also missing, the caller composes
+ * their repair guidance separately; do not deny that additional failure cause.
  */
-export const ftsQueryFailedWarning = (context: FtsWarningContext): string =>
+export const ftsQueryFailedWarning = (
+  context: FtsWarningContext,
+  hasMissingIndexes = false,
+): string =>
   'FTS keyword search failed — every configured index query returned an error' +
   (context.lastErrorRedacted ? ` (${context.lastErrorRedacted})` : '') +
-  '; results do not include keyword matches. This is not a missing-index ' +
-  'condition — see server logs for details.' +
+  '; results do not include keyword matches. ' +
+  (hasMissingIndexes
+    ? 'See server logs for query error details.'
+    : 'This is not a missing-index condition — see server logs for details.') +
   ` (resolved: ${formatResolvedSuffix(context)})`;
 
 // Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token
@@ -392,9 +395,40 @@ export const summarizeFtsIndexBuildFailures = (
   `FTS index build failed for ${failures.length} of ${indexes.length} tables: ` +
   failures.map((f) => `${f.table}.${f.indexName} (${f.error})`).join(', ');
 
+/** Bounded catalog evidence for CLI/log diagnostics, never source or index definitions. */
+export interface FtsIndexVerificationDiagnostic {
+  table: string;
+  indexName: string;
+  message: string;
+}
+
+const boundCatalogText = (text: string, limit: number): string =>
+  text.length > limit ? `${text.slice(0, limit - 14)}… [truncated]` : text;
+
+const catalogFieldEvidence = (value: unknown): string =>
+  typeof value === 'string'
+    ? JSON.stringify(boundCatalogText(value, 80))
+    : value === undefined
+      ? '<missing>'
+      : `<invalid ${value === null ? 'null' : typeof value}>`;
+
+const catalogPropertiesEvidence = (value: unknown): string => {
+  if (!Array.isArray(value)) return `<invalid properties: ${catalogFieldEvidence(value)}>`;
+  return (
+    `[${value.slice(0, 8).map(catalogFieldEvidence).join(', ')}]` +
+    (value.length > 8 ? ` (${value.length - 8} properties truncated)` : '')
+  );
+};
+
+/**
+ * Return missing or invalid configured indexes. An optional callback receives
+ * bounded evidence from the same catalog read; a failed read still throws and
+ * proves neither presence nor absence.
+ */
 export async function verifySearchFTSIndexes(
   executeQuery: (cypher: string) => Promise<unknown[]>,
   indexes: readonly FTSIndexDefinition[] = FTS_INDEXES,
+  onMismatch?: (diagnostic: FtsIndexVerificationDiagnostic) => void,
 ): Promise<string[]> {
   // Read the catalog once and check each configured index both EXISTS and
   // covers its expected columns. A queryability-only probe (CALL QUERY_FTS_INDEX
@@ -402,34 +436,51 @@ export async function verifySearchFTSIndexes(
   // pre-#2299 DB stays queryable yet silently misses `description`, so the probe
   // would pass while doc-comment search is still broken (#2299). SHOW_INDEXES
   // exposes `property_names` (STRING[]) per index, so we assert coverage directly.
-  const rows = await executeQuery('CALL SHOW_INDEXES() RETURN *');
-
-  const propsByIndex = new Map<string, readonly string[]>();
-  for (const row of rows) {
-    if (typeof row !== 'object' || row === null) continue;
-    const record = row as Record<string, unknown>;
-    const indexName = indexRowName(record);
-    // LADYBUGDB-CONTRACT: `property_names` is the one SHOW_INDEXES column with a
-    // single reader, so it has no shared accessor — see {@link IndexCatalogRow}
-    // in lbug-adapter.ts for the full column list and the re-validation rule.
-    // Unlike the gates, an unreadable shape here is safe: it reports the index as
-    // not covering its columns, i.e. "missing", which degrades keyword search
-    // loudly rather than passing a broken index off as verified.
-    const propertyNames = record.property_names;
-    if (typeof indexName !== 'string' || !Array.isArray(propertyNames)) continue;
-    propsByIndex.set(
-      indexName,
-      propertyNames.filter((p): p is string => typeof p === 'string'),
-    );
-  }
+  const rows = (await executeQuery('CALL SHOW_INDEXES() RETURN *')).filter(
+    (row): row is Record<string, unknown> => typeof row === 'object' && row !== null,
+  );
 
   const missing: string[] = [];
   for (const { table, indexName, properties } of indexes) {
-    const actual = propsByIndex.get(indexName);
-    // Absent from the catalog, or present but not covering every expected column.
-    if (!actual || !properties.every((p) => actual.includes(p))) {
-      missing.push(`${table}.${indexName}`);
-    }
+    const valid = rows.some((row) => {
+      // LADYBUGDB-CONTRACT: `property_names` is a named STRING[] column;
+      // identity/type use the shared catalog readers in lbug-adapter.ts.
+      const actual = row.property_names;
+      return (
+        indexRowTable(row) === table &&
+        indexRowName(row) === indexName &&
+        indexRowType(row) === 'FTS' &&
+        Array.isArray(actual) &&
+        actual.every((property) => typeof property === 'string') &&
+        properties.every((property) => actual.includes(property))
+      );
+    });
+    if (valid) continue;
+    missing.push(`${table}.${indexName}`);
+    if (!onMismatch) continue;
+
+    // Show only rows that could explain this identity mismatch, and only
+    // catalog identity/type/property fields. Malformed objects are represented
+    // by their type rather than serialized (they can carry arbitrary content).
+    const relevant = rows.filter(
+      (row) => indexRowTable(row) === table || indexRowName(row) === indexName,
+    );
+    const observed = relevant
+      .slice(0, 3)
+      .map(
+        (row) =>
+          `{table=${catalogFieldEvidence(indexRowTable(row))}, ` +
+          `index=${catalogFieldEvidence(indexRowName(row))}, ` +
+          `type=${catalogFieldEvidence(indexRowType(row))}, ` +
+          `properties=${catalogPropertiesEvidence(row.property_names)}}`,
+      );
+    const message =
+      `${table}.${indexName}: expected table=${catalogFieldEvidence(table)}, ` +
+      `index=${catalogFieldEvidence(indexName)}, type=FTS, ` +
+      `properties=${catalogPropertiesEvidence(properties)}; observed ` +
+      (observed.length > 0 ? observed.join(', ') : 'no matching table or index name') +
+      (relevant.length > 3 ? ` (${relevant.length - 3} catalog rows truncated)` : '');
+    onMismatch({ table, indexName, message: boundCatalogText(message, 2048) });
   }
   return missing;
 }
@@ -533,19 +584,39 @@ export async function buildSearchIndexesOrDegrade(
     // means description search is broken (#2299).
     const failures = await createSearchFTSIndexes(options);
     const indexes = options?.indexes ?? FTS_INDEXES;
-    const missing = await verifySearchFTSIndexes(executeQuery, indexes);
-    if (failures.length === 0 && missing.length === 0) return { ok: true };
+    const diagnostics: FtsIndexVerificationDiagnostic[] = [];
+    let missing: string[] = [];
+    let verificationError: string | undefined;
+    try {
+      missing = await verifySearchFTSIndexes(executeQuery, indexes, (diagnostic) =>
+        diagnostics.push(diagnostic),
+      );
+    } catch (e) {
+      // A failed catalog read is unknown, not absence. Keep the native build
+      // failures already collected rather than replacing them with this error.
+      verificationError = e instanceof Error ? e.message : String(e);
+    }
+    if (failures.length === 0 && missing.length === 0 && verificationError === undefined) {
+      return { ok: true };
+    }
 
-    // A table that failed to build is necessarily missing too — report it once,
-    // with its reason, and keep `missing` for indexes nothing explains.
+    // A failed DROP may leave an old catalog row present. Build failures stand
+    // on their own; avoid naming the same table again as an unexplained failure.
     const named = new Set(failures.map((f) => `${f.table}.${f.indexName}`));
-    const unexplained = missing.filter((name) => !named.has(name));
+    const unexplained = diagnostics.filter((d) => !named.has(`${d.table}.${d.indexName}`));
     const error = [
       failures.length > 0 ? summarizeFtsIndexBuildFailures(failures, indexes) : '',
       // Structural incompleteness with no thrown error — classified capability
       // (degrade) below, matching prior behavior; a broken *write* surfaces as
       // a thrown IO/checkpoint error and is classified integrity there.
-      unexplained.length > 0 ? `missing indexes after build: ${unexplained.join(', ')}` : '',
+      unexplained.length > 0
+        ? 'missing indexes or mismatched catalog rows after build ' +
+          '(no build error was returned for these indexes): ' +
+          unexplained.map((d) => d.message).join('; ')
+        : '',
+      verificationError !== undefined
+        ? `FTS catalog verification failed: ${verificationError}`
+        : '',
     ]
       .filter((part) => part.length > 0)
       .join('; ');
@@ -553,9 +624,11 @@ export async function buildSearchIndexesOrDegrade(
     // Classify per failure, not over the joined text: capability signatures are
     // checked first, so folding the messages together would let an untokenizable
     // row mask a genuinely broken write and downgrade an abort into a degrade.
-    const failureClass = failures.some((f) => classifyFtsBuildError(f.error) === 'integrity')
-      ? 'integrity'
-      : classifyFtsBuildError(error);
+    const failureClass =
+      failures.some((f) => classifyFtsBuildError(f.error) === 'integrity') ||
+      (verificationError !== undefined && classifyFtsBuildError(verificationError) === 'integrity')
+        ? 'integrity'
+        : 'capability';
     return { ok: false, error, failureClass };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);

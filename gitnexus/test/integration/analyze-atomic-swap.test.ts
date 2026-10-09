@@ -19,32 +19,55 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 type LbugAdapter = typeof import('../../src/core/lbug/lbug-adapter.js');
+type RepoManager = typeof import('../../src/storage/repo-manager.js');
+type FsAtomic = typeof import('../../src/storage/fs-atomic.js');
 const ctx = vi.hoisted(() => ({
   loadMock: vi.fn(),
   realLoad: null as LbugAdapter['loadGraphToLbug'] | null,
   deleteMock: vi.fn(),
   realDelete: null as LbugAdapter['deleteNodesForFiles'] | null,
+  closeMock: vi.fn(),
+  realClose: null as LbugAdapter['closeLbug'] | null,
+  saveMetaMock: vi.fn(),
+  realSaveMeta: null as RepoManager['saveMeta'] | null,
+  renameMock: vi.fn(),
+  realRename: null as FsAtomic['retryRename'] | null,
 }));
-// Delegating mock: overrides only loadGraphToLbug so a rebuild can be made to
-// fail on demand (mirrors run-analyze-adopt-failure.test.ts).
+// Delegating mocks keep real graph, metadata, and registry writes while
+// allowing failures at the write and publication boundaries.
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   const actual = await importOriginal<LbugAdapter>();
   ctx.realLoad = actual.loadGraphToLbug;
   ctx.realDelete = actual.deleteNodesForFiles;
+  ctx.realClose = actual.closeLbug;
   ctx.loadMock.mockImplementation(actual.loadGraphToLbug);
   ctx.deleteMock.mockImplementation(actual.deleteNodesForFiles);
+  ctx.closeMock.mockImplementation(actual.closeLbug);
   return {
     ...actual,
     loadGraphToLbug: ctx.loadMock,
     deleteNodesForFiles: ctx.deleteMock,
+    closeLbug: ctx.closeMock,
   };
+});
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<RepoManager>();
+  ctx.realSaveMeta = actual.saveMeta;
+  ctx.saveMetaMock.mockImplementation(actual.saveMeta);
+  return { ...actual, saveMeta: ctx.saveMetaMock };
+});
+vi.mock('../../src/storage/fs-atomic.js', async (importOriginal) => {
+  const actual = await importOriginal<FsAtomic>();
+  ctx.realRename = actual.retryRename;
+  ctx.renameMock.mockImplementation(actual.retryRename);
+  return { ...actual, retryRename: ctx.renameMock };
 });
 
 import {
   analyzeFailureMayHaveMutatedLiveIndex,
   runFullAnalysis,
 } from '../../src/core/run-analyze.js';
-import { getStoragePaths } from '../../src/storage/repo-manager.js';
+import { getStoragePaths, loadMeta, readRegistry } from '../../src/storage/repo-manager.js';
 import {
   initLbug as poolInit,
   executeQuery as poolQuery,
@@ -82,6 +105,16 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
     ctx.deleteMock.mockReset();
     ctx.deleteMock.mockImplementation((...a: Parameters<LbugAdapter['deleteNodesForFiles']>) =>
       ctx.realDelete!(...a),
+    );
+    ctx.closeMock.mockReset();
+    ctx.closeMock.mockImplementation(() => ctx.realClose!());
+    ctx.saveMetaMock.mockReset();
+    ctx.saveMetaMock.mockImplementation((...a: Parameters<RepoManager['saveMeta']>) =>
+      ctx.realSaveMeta!(...a),
+    );
+    ctx.renameMock.mockReset();
+    ctx.renameMock.mockImplementation((...a: Parameters<FsAtomic['retryRename']>) =>
+      ctx.realRename!(...a),
     );
   });
 
@@ -143,6 +176,102 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
       await cleanup();
     }
   }, 180_000);
+
+  it.each(
+    (['full', 'incremental'] as const).flatMap((writeMode) =>
+      (['close', 'swap', 'metadata'] as const).map((failurePoint) => ({
+        writeMode,
+        failurePoint,
+      })),
+    ),
+  )(
+    'keeps registry freshness unchanged when $writeMode publication fails at $failurePoint',
+    async ({ writeMode, failurePoint }) => {
+      const { repo, cleanup } = await makeRepo();
+      const repoId = `atomic-publication-${writeMode}-${failurePoint}`;
+      try {
+        await runFullAnalysis(repo, {}, { onProgress: () => {} });
+        const { lbugPath, storagePath } = getStoragePaths(repo);
+        const oldGraph = await fs.readFile(lbugPath);
+        const oldMeta = await loadMeta(storagePath);
+        const oldRegistry = await readRegistry();
+        expect(oldRegistry).toHaveLength(1);
+        expect(oldRegistry[0]).toMatchObject({
+          lastCommit: oldMeta!.lastCommit,
+          indexedAt: oldMeta!.indexedAt,
+        });
+
+        await fs.writeFile(
+          path.join(repo, 'a.ts'),
+          'export function replacement() { return "new graph"; }\n',
+        );
+        execSync('git -c user.name=t -c user.email=t@t commit -am replacement', {
+          cwd: repo,
+          stdio: 'pipe',
+        });
+        const nextCommit = execSync('git rev-parse HEAD', {
+          cwd: repo,
+          encoding: 'utf8',
+        }).trim();
+        expect(nextCommit).not.toBe(oldMeta!.lastCommit);
+
+        const injected = new Error(`injected final ${failurePoint} failure`);
+        ctx.loadMock.mockClear();
+        ctx.deleteMock.mockClear();
+        if (failurePoint === 'close') {
+          ctx.closeMock.mockImplementation(async () => {
+            // Actually release native handles, then inject the rejection only
+            // after loading the new graph, not at the pre-rebuild close.
+            await ctx.realClose!();
+            if (ctx.loadMock.mock.calls.length > 0) throw injected;
+          });
+        } else if (failurePoint === 'swap') {
+          ctx.renameMock.mockImplementation(
+            async (...args: Parameters<FsAtomic['retryRename']>) => {
+              const [from, to] = args;
+              if (from.startsWith(`${lbugPath}.staging.`) && to === lbugPath) throw injected;
+              await ctx.realRename!(...args);
+            },
+          );
+        } else {
+          ctx.saveMetaMock.mockImplementation(
+            async (...args: Parameters<RepoManager['saveMeta']>) => {
+              const [, meta] = args;
+              if (meta.lastCommit === nextCommit && !meta.incrementalInProgress) throw injected;
+              await ctx.realSaveMeta!(...args);
+            },
+          );
+        }
+
+        const failure = await runFullAnalysis(
+          repo,
+          writeMode === 'full' ? { force: true } : { atomicIncremental: true },
+          { onProgress: () => {} },
+        ).catch((error: unknown) => error);
+        expect(failure).toBe(injected);
+        expect(ctx.loadMock).toHaveBeenCalled();
+        expect(ctx.deleteMock.mock.calls.length > 0).toBe(writeMode === 'incremental');
+        expect(await readRegistry()).toEqual(oldRegistry);
+        expect(await loadMeta(storagePath)).toMatchObject({ lastCommit: oldMeta!.lastCommit });
+        expect(await lingeringTemp(lbugPath)).toEqual([]);
+
+        // A metadata failure occurs after the swap; close/swap failures keep
+        // the old bytes. Both cases must retain the old registry receipt.
+        const published = failurePoint === 'metadata';
+        expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(published);
+        expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(!published);
+        await poolInit(repoId, lbugPath);
+        const names = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
+          (row) => Object.values(row as Record<string, unknown>).map(String),
+        );
+        expect(names.sort()).toEqual(published ? ['replacement'] : ['caller', 'greet']);
+      } finally {
+        await poolClose(repoId);
+        await cleanup();
+      }
+    },
+    180_000,
+  );
 
   it('marks a failure after an atomic publish as potentially live-mutating', async () => {
     const { repo, cleanup } = await makeRepo();

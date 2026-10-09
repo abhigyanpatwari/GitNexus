@@ -29,7 +29,7 @@ export interface CfgHarness {
  * CFG shape). The parser is created once and reused across parses.
  */
 export function makeCfgHarness(
-  grammar: Parser.Language,
+  grammar: Parameters<Parser['setLanguage']>[0],
   visitor: CfgVisitor<SyntaxNode>,
   filePath = 'fixture',
 ): CfgHarness {

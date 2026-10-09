@@ -21,7 +21,13 @@ describe('collectResolvedCalleeNames', () => {
     fn('b', 'b', 'src/b.go');
     fn('c', 'c', 'src/c.ts');
     fn('d', 'd', 'src/d.go');
-    g.addNode({ id: 'file', label: 'File' as NodeLabel, properties: { filePath: 'src/a.go' } });
+    const namelessNode = {
+      id: 'file',
+      label: 'File' as const,
+      properties: { name: '', filePath: 'src/a.go' },
+    };
+    Reflect.deleteProperty(namelessNode.properties, 'name');
+    g.addNode(namelessNode);
     g.addRelationship({
       id: 'r1',
       sourceId: 'a',

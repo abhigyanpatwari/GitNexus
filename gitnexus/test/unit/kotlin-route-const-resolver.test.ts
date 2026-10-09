@@ -51,7 +51,7 @@ try {
 }
 
 const parser = new Parser();
-if (Kotlin) parser.setLanguage(Kotlin as Parser.Language);
+if (Kotlin) parser.setLanguage(Kotlin);
 
 const parse = (src: string): Parser.Tree => parser.parse(src);
 

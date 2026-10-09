@@ -343,6 +343,14 @@
     "captureGroups": 11,
     "digest": "c372e232faf99874eff46877b71f70b533b496832b762833f2b266ca9939978f"
   },
+  "php-nested-function/main.php": {
+    "captureGroups": 13,
+    "digest": "7fab180036a0224560d1be1f980e720aed1f0ac145b31bdda2db3ff30dd2df4f"
+  },
+  "php-nested-function/other.php": {
+    "captureGroups": 5,
+    "digest": "61a67454c4e1a950b86e7240ac3700a6e2ef4256a3a78ddb533c111823a5cbd1"
+  },
   "php-nullable-receiver/app/Models/Repo.php": {
     "captureGroups": 7,
     "digest": "44921bb2ae5aba27957cd45a7d3e515425f27f8e93af5d6285125b94f5d9ba88"

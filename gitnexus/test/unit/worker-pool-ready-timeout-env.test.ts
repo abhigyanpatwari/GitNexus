@@ -15,6 +15,7 @@
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import type { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -63,9 +64,10 @@ describe('worker pool — GITNEXUS_WORKER_READY_TIMEOUT_MS override', () => {
       workerFactory: () => new NeverReadyWorker() as unknown as Worker,
     });
 
-    const err = await pool
-      .dispatch([{ path: 'a.ts', content: 'x' }])
-      .catch((e: unknown) => e as InstanceType<typeof WorkerPoolInitializationError>);
+    const err = await pool.dispatch([{ path: 'a.ts', content: 'x' }]).catch((e: unknown) => e);
+    if (!(err instanceof WorkerPoolInitializationError)) {
+      throw new Error('expected worker initialization failure');
+    }
 
     expect(err).toBeInstanceOf(WorkerPoolInitializationError);
     expect(err.readinessFailures.join('\n')).toContain('within 50ms');
@@ -79,9 +81,10 @@ describe('worker pool — GITNEXUS_WORKER_READY_TIMEOUT_MS override', () => {
       workerFactory: () => new NeverReadyWorker() as unknown as Worker,
     });
 
-    const err = await pool
-      .dispatch([{ path: 'a.ts', content: 'x' }])
-      .catch((e: unknown) => e as InstanceType<typeof WorkerPoolInitializationError>);
+    const err = await pool.dispatch([{ path: 'a.ts', content: 'x' }]).catch((e: unknown) => e);
+    if (!(err instanceof WorkerPoolInitializationError)) {
+      throw new Error('expected worker initialization failure');
+    }
 
     expect(err).toBeInstanceOf(WorkerPoolInitializationError);
     expect(err.readinessFailures.join('\n')).toContain('within 5000ms');

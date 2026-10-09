@@ -21,7 +21,7 @@ import path from 'node:path';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { generateId } from '../../src/lib/utils.js';
 import { routeNodeKey } from '../../src/core/ingestion/route-extractors/route-path.js';
-import type { PipelineResult } from '../../types/pipeline.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'multi-verb-route-app');
 

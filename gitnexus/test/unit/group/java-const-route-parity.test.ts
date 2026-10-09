@@ -29,7 +29,6 @@ import {
   expandJavaWildcardStaticImports,
   extractJavaModuleConstants,
   foldJavaOperands,
-  type RepoConstants,
 } from '../../../src/core/ingestion/route-extractors/java-const-resolver.js';
 
 const parser = new Parser();
@@ -42,6 +41,7 @@ const parse = (src: string): Parser.Tree => parseSource(parser, src);
 /** Group side: prepareRepo + a 3-argument scan over every .java file. */
 function groupProviders(files: Record<string, string>): string[] {
   const ctx = JAVA_HTTP_PLUGIN.prepareRepo?.({
+    repoPath: '/repo',
     files: Object.keys(files),
     parser: new Parser(),
     readFile: (rel: string) => files[rel] ?? null,
@@ -59,7 +59,7 @@ function groupProviders(files: Record<string, string>): string[] {
 
 /** Ingestion side: extract routes, then fold operands against the same map. */
 function ingestionRoutes(files: Record<string, string>): string[] {
-  const repo: RepoConstants = new Map();
+  const repo = new Map<string, ReturnType<typeof extractJavaModuleConstants>>();
   for (const [rel, src] of Object.entries(files)) {
     repo.set(rel, extractJavaModuleConstants(parse(src)));
   }

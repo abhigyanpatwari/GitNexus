@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { computeChunkHash, fileContentHash } from '../../src/storage/parse-cache.js';
@@ -27,16 +28,15 @@ const emptyWorkerResult = (filePath: string, name: string): ParseWorkerResult =>
         filePath,
         startLine: 1,
         endLine: 1,
-        language: 'typescript',
+        language: SupportedLanguages.TypeScript,
+        isExported: true,
       },
     },
   ],
   relationships: [],
   symbols: [],
-  imports: [],
   calls: [],
   assignments: [],
-  heritage: [],
   routes: [],
   fetchCalls: [],
   fetchWrapperDefs: [],

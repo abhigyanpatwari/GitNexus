@@ -36,6 +36,7 @@ function mkCfg(
   return {
     filePath: 't.ts',
     functionStartLine: 1,
+    functionEndLine: blockCount,
     functionStartColumn: 0,
     entryIndex: entry,
     exitIndex: exit,

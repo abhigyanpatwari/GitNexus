@@ -19,12 +19,18 @@ From `gitnexus/`:
 | Command                       | What it runs                                       | When to use                           |
 | ----------------------------- | -------------------------------------------------- | ------------------------------------- |
 | `npm test`                    | Full suite (all 3 vitest projects)                 | Before opening a PR                   |
+| `npm run typecheck:tests`     | TypeScript checks for source, tests, and helpers   | Before opening a PR                   |
 | `npm run test:unit`           | Unit tests only (`test/unit/`)                     | Tight development loop                |
 | `npm run test:integration`    | Integration tests (`test/integration/`)            | After changing pipelines, DB, workers |
 | `npm run test:coverage`       | Full suite + v8 coverage with thresholds           | Checking coverage impact              |
 | `npm run test:parity`         | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
 | `npm run test:cross-platform` | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
 | `npm run test:watch`          | Vitest in watch mode                               | Active development                    |
+
+Vitest transpiles TypeScript without checking types. Run `npm run typecheck:tests`
+in `gitnexus/` to check test code and helpers against the production types. This
+uses `tsc --noEmit -p tsconfig.test.json`; parser input files under `test/fixtures/`
+are excluded because they are sample source code, not part of the test program.
 
 ### `gitnexus-web/` commands
 
@@ -41,7 +47,7 @@ From `gitnexus-web/`:
 ```bash
 # gitnexus-shared/dist must exist first. `npm install` / `npm run build` in
 # gitnexus/ compiles it via parent `lib/tsc.js` (do not npm ci gitnexus-shared).
-cd gitnexus && npx tsc --noEmit && npm test
+cd gitnexus && npx tsc --noEmit && npm run typecheck:tests && npm test
 cd ../gitnexus-web && npx tsc -b --noEmit && npm test
 ```
 
@@ -119,7 +125,45 @@ GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
 | `ci-scope-parity.yml` | discover, parity                                                  | Scope-resolution parity for all migrated languages                    |
 | `ci-e2e.yml`          | e2e (chromium)                                                    | Playwright E2E, gated on `gitnexus-web/**` changes                    |
 
-The `CI Gate` job in `ci.yml` is the single required check for branch protection. It requires quality, tests, e2e, and scope-parity to all pass.
+The `CI Gate` job in `ci.yml` requires the quality and test workflows to pass.
+The browser E2E workflow must pass or be skipped because no web files changed.
+
+Branch protection also requires six platform check names from the former
+three-shard matrix. These names remain as aggregate gates: all native shards
+and the `every test executed` audit must succeed before any of them passes.
+Failed, cancelled, skipped, or missing dependency results fail these gates.
+The actual native tests run in the current Windows/macOS shard matrix.
+
+The `typecheck` job runs both the production compiler check and
+`npm run typecheck:tests`. A type error in either check fails the job and the CI gate.
+
+### Complete execution, including platform and benchmark tests
+
+The required `every test executed` job reconciles execution receipts from Ubuntu
+coverage, every Windows/macOS shard, the serial benchmark run, and the real Python
+workflow preflight. It requires a recorded pass for every collected test. A skip
+on Linux is satisfied only by a pass of that exact test in another required job.
+Test identities include the file, suite/title and source location; ambiguous
+parameterized cases must have unique titles. Missing receipts, missing test files,
+unhandled runner errors, failed hooks, failed assertions, and tests with no pass
+all fail the gate. Web tests are checked separately with the same rules.
+
+The locked pytest suite and Linux/Windows containment jobs also upload JUnit
+receipts. The same gate checks every Python test file was collected and every
+case passed in at least one job, while preserving failures from any job. The
+Linux containment job supplies Bubblewrap, the pinned CLI, and built Vitest
+dependencies for tests that cannot run in the basic Python job. Python results
+are included in the combined PR report.
+
+The PR report shows the reconciled result as **Unverified**. Zero means every test
+has execution evidence; individual OS logs still show tests that require another
+OS as skipped. Failed executions remain failures even if another job passes.
+
+`npm run test:benchmarks` discovers all tests gated by `GITNEXUS_BENCH` and runs
+them serially. Keep timing measurements out of parallel coverage workers. The
+`eval-tests` job installs the locked Python dependencies and runs the workflow
+preflight Vitest tests as well as pytest; those tests must exercise real Python
+validation, never a stubbed success.
 
 ## Regression testing
 
