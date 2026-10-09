@@ -258,11 +258,12 @@ function preEmitInheritanceEdges(
     if (callerClass === undefined) continue;
 
     const targetDef = resolveInheritanceBaseInScope(
-      site.inScope,
+      site.lookupScope ?? site.inScope,
       site.name,
       scopes,
       site.rawQualifiedName,
       callerClass,
+      { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
     );
     if (targetDef === undefined || targetDef.nodeId === callerClass.nodeId) {
       // Static lookup can mistake the current declaration for an earlier
@@ -1706,6 +1707,7 @@ export function runScopeResolution(
             taintLimits,
             (message) => logger.warn(message), // unconditional — R4/R6
             rdSolve,
+            pf,
           );
           if (PROF) taintMs += performance.now() - t1;
           taintTotals.analyzed += taint.functionsAnalyzed;
@@ -1740,6 +1742,7 @@ export function runScopeResolution(
                 ? taintLimits.maxFacts
                 : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
               rdSolve,
+              pf,
             );
             harvestedSummaries.push(...harvest.summaries);
             summaryUnresolved += harvest.unresolved;
