@@ -45,3 +45,15 @@ def test_candidate_build_clears_tokens_and_mounts_only_candidate_writable(monkey
     assert [command[i + 1] for i, v in enumerate(command) if v == '--setenv'] == ['PATH', 'HOME']
     assert '--unshare-pid' in command and '--cap-drop' in command
     assert 'npm ci' in command[-1] and 'npm run build --prefix gitnexus' in command[-1]
+
+
+def test_candidate_build_mounts_git_metadata_read_only_over_the_writable_checkout(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(release_build, "preflight_bubblewrap", lambda: Path('/usr/bin/bwrap'))
+    monkeypatch.setattr(release_build, "run_checked", lambda *a, **k: calls.append(a))
+    (tmp_path / ".git").mkdir()
+    release_build.build_candidate(tmp_path)
+    (command,) = calls[0]
+    # bwrap applies mounts in order, so the read-only overlay must follow the writable bind.
+    at = command.index('--bind')
+    assert command[at:at + 6] == ['--bind', str(tmp_path), '/workspace', '--ro-bind', str(tmp_path / ".git"), '/workspace/.git']

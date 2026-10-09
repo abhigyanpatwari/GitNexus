@@ -135,6 +135,21 @@ def test_start_response_lost_still_attempts_stop_and_waits_for_stopped(monkeypat
     assert CONFIG["EC2_INSTANCE_ID"] not in str(exc.value)
 
 
+def test_instance_that_stops_again_after_start_fails_without_a_second_start(monkeypatch, configured):
+    calls, _ = driver(monkeypatch, configured, ["stopped", "pending", "stopped"])
+    with pytest.raises(RuntimeError, match="stopped again during bootstrap"):
+        lifecycle.start(CONFIG, timeout=60)
+    assert calls == [
+        "describe-instances",
+        "start-instances",
+        "describe-instances",
+        "describe-instances",
+        "describe-instances",
+    ]
+    assert "cleanup_required=true" in configured.read_text()
+    assert "stop_deadline_epoch" not in configured.read_text()
+
+
 def test_denied_start_still_cleans_up_claimed_instance(monkeypatch, configured):
     calls, _ = driver(monkeypatch, configured, ["stopped", "stopped"], errors={"start-instances": "denied"})
     with pytest.raises(RuntimeError, match="start-instances") as exc:

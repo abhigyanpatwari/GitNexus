@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from .process_control import run_checked
@@ -10,8 +11,12 @@ from .proposer_sandbox import SANDBOX_PATH, _real_directory, _runtime_mount_args
 
 
 def build_candidate(repo: Path) -> None:
-    """Run candidate lifecycle scripts with only their checkout writable."""
+    """Run candidate lifecycle scripts with only their checkout, minus git metadata, writable."""
     repo = _real_directory(repo, label="release candidate")
+    # Host git later runs in this checkout (e.g. actions/checkout cleanup), so
+    # lifecycle scripts must not plant git config such as core.fsmonitor.
+    git_dir = repo / ".git"
+    git_mask = ["--ro-bind", str(git_dir), "/workspace/.git"] if os.path.lexists(git_dir) else []
     bwrap = preflight_bubblewrap()
     command = [
         str(bwrap),
@@ -35,6 +40,7 @@ def build_candidate(repo: Path) -> None:
         "--bind",
         str(repo),
         "/workspace",
+        *git_mask,
         "--clearenv",
         "--setenv",
         "PATH",

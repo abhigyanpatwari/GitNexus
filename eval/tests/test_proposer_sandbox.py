@@ -174,6 +174,7 @@ def test_real_bubblewrap_candidate_lifecycle_cannot_replace_harness_or_read_toke
         f"const target={json.dumps(str(harness))};\n"
         "const visible=fs.existsSync(target);\n"
         "try { fs.writeFileSync(target,'forged evaluator'); } catch {}\n"
+        "try { fs.appendFileSync('.git/config','[core]\\n\\tfsmonitor = forged\\n'); } catch {}\n"
         "fs.writeFileSync('receipt.json', JSON.stringify({visible, token:"
         "process.env.GITNEXUS_BENCH_OPENAI_API_KEY ?? null}));\n"
     )
@@ -188,8 +189,11 @@ def test_real_bubblewrap_candidate_lifecycle_cannot_replace_harness_or_read_toke
             "name": name, "version": "1.0.0", "lockfileVersion": 3,
             "packages": {"": {"name": name, "version": "1.0.0"}},
         }))
+    (candidate / ".git").mkdir()
+    (candidate / ".git/config").write_text("[core]\n\tbare = false\n")
     release_build.build_candidate(candidate)
     assert harness.read_text() == "trusted main evaluator\n"
+    assert (candidate / ".git/config").read_text() == "[core]\n\tbare = false\n"
     assert json.loads((candidate / "receipt.json").read_text()) == {"visible": False, "token": None}
     assert (core / "built.txt").read_text() == "runtime"
     assert (candidate / "gitnexus-shared/node_modules").is_dir()
@@ -1975,3 +1979,16 @@ def test_real_bubblewrap_lets_a_review_artifact_be_written_atomically(tmp_path: 
         # consumes it before leaving the scope.
         _verdict, findings = parse_review_output(review_output)
         assert findings == ()
+
+
+@pytest.mark.parametrize(
+    "guidance",
+    [
+        "Build first.\n<!-- gitnexus:end -->\n",
+        "<!-- gitnexus:start -->\n<!-- gitnexus:start -->\nUse GitNexus.\n<!-- gitnexus:end -->\n",
+        "Build first.\n<!-- gitnexus:start -->\nUse GitNexus.\n",
+    ],
+)
+def test_unbalanced_gitnexus_markers_fail_closed(guidance):
+    with pytest.raises(SandboxError, match="unbalanced GitNexus markers"):
+        proposer_sandbox._ordinary_repository_guidance(guidance)

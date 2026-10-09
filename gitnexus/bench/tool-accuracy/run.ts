@@ -8,6 +8,35 @@ import type { ResolutionOutcome } from '../../src/core/ingestion/scope-resolutio
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
 import { formatAccuracyMarkdown, scoreAccuracy, type KnownGapManifest } from './score.js';
 
+// Shapes read from tool outputs, after need() has validated each field used.
+interface RouteEntry {
+  route: string;
+  handler: string;
+  method: string | null;
+}
+interface ApiConsumer {
+  file: string;
+}
+interface ExplainHop {
+  line: number;
+  function?: string;
+  variable?: string;
+}
+interface ExplainFinding {
+  file: string;
+  sinkKind: string;
+  interprocedural?: boolean;
+  functionLine?: number;
+  source: { function?: string; variable?: string; line: number };
+  sink: { function?: string; line: number };
+  hops: ExplainHop[];
+}
+interface ContextCallee {
+  uid: string;
+  name: string;
+  filePath: string;
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CHECKOUT = path.resolve(HERE, '../../..');
 const args = process.argv.slice(2);
@@ -243,15 +272,16 @@ try {
           Array.isArray(route.consumers),
         'Malformed route_map route',
       );
+    const routes: RouteEntry[] = result.routes;
     for (const [id, url] of [
       ['routes.production-handler', '/api/info'],
       ['routes.all-method', '/api/mcp'],
       ['routes.map-lookup', '/lookup-only'],
       ['routes.helper-registration', '/api/progress'],
     ])
-      observations[id] = result.routes
-        .filter((route: any) => route.route === url)
-        .map((route: any) => `${route.method} ${route.route} ${route.handler}`);
+      observations[id] = routes
+        .filter((route) => route.route === url)
+        .map((route) => `${route.method} ${route.route} ${route.handler}`);
   });
 
   for (const [id, url] of [
@@ -266,13 +296,12 @@ try {
           result.impactSummary?.directConsumers === result.consumers.length,
         'Malformed api_impact result',
       );
+      const consumers: ApiConsumer[] = result.consumers;
       need(
-        result.consumers.every((consumer: any) => typeof consumer.file === 'string'),
+        consumers.every((consumer) => typeof consumer.file === 'string'),
         'Malformed API consumers',
       );
-      observations[id] = [
-        ...new Set<string>(result.consumers.map((consumer: any) => consumer.file)),
-      ];
+      observations[id] = [...new Set(consumers.map((consumer) => consumer.file))];
     });
   }
 
@@ -301,52 +330,46 @@ try {
           'Malformed explain hop',
         );
     }
-    const named = result.findings.filter(
-      (finding: any) => finding.interprocedural && finding.source.function === 'handleUnsafe',
+    const findings: ExplainFinding[] = result.findings;
+    const named = findings.filter(
+      (finding) => finding.interprocedural && finding.source.function === 'handleUnsafe',
     );
     observations['explain.named-flow'] = named.map(
-      (finding: any) =>
-        `${finding.source.function} -> ${finding.sink.function} ${finding.sinkKind}`,
+      (finding) => `${finding.source.function} -> ${finding.sink.function} ${finding.sinkKind}`,
     );
-    observations['explain.inline-flow'] = result.findings
-      .filter((finding: any) => finding.interprocedural && finding.file === 'src/server/inline.ts')
-      .map((finding: any) => `${finding.file} -> ${finding.sink.function} ${finding.sinkKind}`);
-    observations['explain.guard'] = result.findings
-      .filter(
-        (finding: any) => finding.interprocedural && finding.source.function === 'handleGuarded',
-      )
+    observations['explain.inline-flow'] = findings
+      .filter((finding) => finding.interprocedural && finding.file === 'src/server/inline.ts')
+      .map((finding) => `${finding.file} -> ${finding.sink.function} ${finding.sinkKind}`);
+    observations['explain.guard'] = findings
+      .filter((finding) => finding.interprocedural && finding.source.function === 'handleGuarded')
       .map(
-        (finding: any) =>
-          `${finding.source.function} -> ${finding.sink.function} ${finding.sinkKind}`,
+        (finding) => `${finding.source.function} -> ${finding.sink.function} ${finding.sinkKind}`,
       );
-    observations['explain.cross-lines'] = named.flatMap((finding: any) => [
+    observations['explain.cross-lines'] = named.flatMap((finding) => [
       `source ${finding.source.function}@${finding.source.line}`,
       `sink ${finding.sink.function}@${finding.sink.line}`,
-      ...finding.hops.map((hop: any, index: number) => `hop ${index} ${hop.function}@${hop.line}`),
+      ...finding.hops.map((hop, index) => `hop ${index} ${hop.function}@${hop.line}`),
     ]);
-    observations['explain.intra-lines'] = result.findings
+    observations['explain.intra-lines'] = findings
       .filter(
-        (finding: any) =>
+        (finding) =>
           !finding.interprocedural &&
           finding.file === 'src/security.ts' &&
           finding.functionLine === 22,
       )
-      .flatMap((finding: any) => [
+      .flatMap((finding) => [
         `function@${finding.functionLine}`,
         `source ${finding.source.variable}@${finding.source.line}`,
         `sink@${finding.sink.line}`,
-        ...finding.hops.map(
-          (hop: any, index: number) => `hop ${index} ${hop.variable}@${hop.line}`,
-        ),
+        ...finding.hops.map((hop, index) => `hop ${index} ${hop.variable}@${hop.line}`),
       ]);
     const constant = await call('explain', { target: 'safeConstant' });
     need(
       Array.isArray(constant.findings) && constant.totalFindings === constant.findings.length,
       'Malformed constant-control explain output',
     );
-    observations['explain.constant-control'] = constant.findings.map(
-      (finding: any) => finding.sinkKind,
-    );
+    const constantFindings: ExplainFinding[] = constant.findings;
+    observations['explain.constant-control'] = constantFindings.map((finding) => finding.sinkKind);
   });
 
   for (const [id, name, file, member] of [
@@ -373,7 +396,7 @@ try {
           (result.outgoing.calls === undefined || Array.isArray(result.outgoing.calls)),
         'Malformed or unresolved context output',
       );
-      const calls = result.outgoing.calls ?? []; // Empty categories are omitted by context's public output contract.
+      const calls: ContextCallee[] = result.outgoing.calls ?? []; // Empty categories are omitted by context's public output contract.
       for (const target of calls)
         need(
           typeof target.uid === 'string' &&
@@ -382,8 +405,8 @@ try {
           'Malformed context callee',
         );
       observations[id] = calls
-        .filter((target: any) => target.name === member)
-        .map((target: any) => {
+        .filter((target) => target.name === member)
+        .map((target) => {
           const node = pipeline.graph.getNode(target.uid);
           need(node, `Tool callee does not exist in fixture graph: ${target.uid}`);
           // UID preserves the class / lexical owner that a simple display name loses.

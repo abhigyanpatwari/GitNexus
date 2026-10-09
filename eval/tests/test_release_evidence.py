@@ -154,3 +154,42 @@ def test_evidence_beyond_the_first_page_of_recent_runs_is_found(tmp_path, eviden
     assert calls[0][:4] == ["gh", "run", "download", "10"]
     assert [endpoint[-6:] for endpoint in endpoints[:2]] == ["page=1", "page=2"]
     assert all("created=%3E%3D" in endpoint for endpoint in endpoints[:2])
+
+
+@pytest.mark.parametrize(
+    "plant",
+    [
+        lambda folder, report: (folder / "other.json").write_text(json.dumps(report)),
+        lambda folder, report: (folder / "agent-evaluation.json").symlink_to(folder / "elsewhere.json"),
+        lambda folder, report: (folder / "agent-evaluation.json").write_text(" " * (2 * 1024 * 1024 + 1)),
+    ],
+    ids=["missing", "symlink", "oversized"],
+)
+def test_unsafe_or_missing_artifact_file_blocks_publishing(tmp_path, evidence_backend, monkeypatch, plant):
+    sha, report, _, _ = evidence_backend
+    (tmp_path / "elsewhere.json").write_text(json.dumps(report))
+    monkeypatch.setattr(release_evidence.subprocess, "run", lambda command, **kwargs: plant(Path(command[-1]), report))
+    with pytest.raises(ValueError, match="invalid release evidence artifact"):
+        release_evidence.download_evidence("owner/repo", sha, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_report_measured_on_different_task_pins_blocks_publishing(tmp_path, evidence_backend, monkeypatch):
+    sha, report, _, _ = evidence_backend
+    monkeypatch.setattr(release_evidence, "suite_binding", lambda: ([], report["task_set_digest"], {"other": {}}))
+    with pytest.raises(ValueError, match="task pins"):
+        release_evidence.download_evidence("owner/repo", sha, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    ("repo", "sha"), [("owner/repo;rm", "a" * 40), ("owner/repo", "a" * 39), ("owner/repo", "A" * 40)]
+)
+def test_malformed_repository_or_revision_is_rejected_before_any_api_call(
+    tmp_path, evidence_backend, monkeypatch, repo, sha
+):
+    calls = []
+    monkeypatch.setattr(release_evidence, "_gh_json", lambda endpoint: calls.append(endpoint))
+    with pytest.raises(ValueError, match="full release commit SHA"):
+        release_evidence.download_evidence(repo, sha, tmp_path / "out")
+    assert calls == []
