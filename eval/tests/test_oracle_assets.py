@@ -553,10 +553,16 @@ def test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
 
 @pytest.fixture(scope="module")
 def scenario_control_base(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, dict[str, dict[str, object]]]:
-    """Use the immutable task source; current checkout supplies only dependencies."""
+    """Use the immutable task source with the dependencies that grade it.
+
+    Release evaluation grades tasks with a toolchain built at the pinned task
+    commit. CI points GITNEXUS_ORACLE_TASK_DEPENDENCIES at that build; local runs
+    fall back to the current checkout's dependencies.
+    """
 
     repository = Path(__file__).resolve().parents[2]
-    if not (repository / "gitnexus" / "node_modules" / ".bin" / "vitest").is_file():
+    dependencies = Path(os.environ.get("GITNEXUS_ORACLE_TASK_DEPENDENCIES") or repository)
+    if not (dependencies / "gitnexus" / "node_modules" / ".bin" / "vitest").is_file():
         pytest.skip("GitNexus Vitest dependencies are not installed")
     tasks = yaml.safe_load((repository / "eval/workflow_bench/tasks.scenarios.yaml").read_text())["tasks"]
     refs = {task["ref"] for task in tasks}
@@ -601,7 +607,7 @@ def scenario_control_base(tmp_path_factory: pytest.TempPathFactory) -> tuple[Pat
         # Extraction filters arrived in 3.11.4; the local git archive is trusted input.
         source.extractall(base, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
     for relative in ("node_modules", "gitnexus/node_modules", "gitnexus-shared/dist"):
-        (base / relative).symlink_to(repository / relative, target_is_directory=True)
+        (base / relative).symlink_to(dependencies / relative, target_is_directory=True)
     subprocess.run(["git", "init", "--quiet", str(base)], check=True, capture_output=True)
     return base, {task["id"]: task for task in tasks}
 

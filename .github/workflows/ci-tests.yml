@@ -1128,9 +1128,23 @@ jobs:
           npm ci
           npm run build
         working-directory: gitnexus
+      # Release evaluation grades tasks with dependencies built at the pinned
+      # task commit; prove the hidden oracles against that same toolchain.
+      - name: Build the pinned task toolchain that grades release evaluation
+        working-directory: eval
+        run: |
+          set -euo pipefail
+          sha="$(uv run --locked --extra dev python -m workflow_bench.release_report task-sha)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          git -C .. worktree add --detach "${RUNNER_TEMP}/tasks-base" "$sha"
+          cd "${RUNNER_TEMP}/tasks-base"
+          npm ci --audit=false --fund=false
+          npm ci --prefix gitnexus --audit=false --fund=false
+          npm run build --prefix gitnexus
       - name: Prove process-tree and sandbox containment
         env:
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+          GITNEXUS_ORACLE_TASK_DEPENDENCIES: ${{ runner.temp }}/tasks-base
         run: >-
           uv run --locked --extra dev python -m pytest
           tests/test_process_control.py
