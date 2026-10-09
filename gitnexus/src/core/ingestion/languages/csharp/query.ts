@@ -32,7 +32,8 @@
  */
 
 import Parser from 'tree-sitter';
-import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
+import { SupportedLanguages } from 'gitnexus-shared';
+import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 
 const CSHARP_SCOPE_QUERY = `
 ;; Scopes
@@ -546,14 +547,16 @@ let _query: Parser.Query | null = null;
 export function getCsharpParser(): Parser {
   if (_parser === null) {
     _parser = new Parser();
-    _parser.setLanguage(CSharp as Parameters<Parser['setLanguage']>[0]);
+    // The upstream ESM wrapper uses top-level await. Keep the provider on the
+    // same synchronous native loader as workers and the compiled CLI.
+    _parser.setLanguage(getLanguageGrammar(SupportedLanguages.CSharp));
   }
   return _parser;
 }
 
 export function getCsharpScopeQuery(): Parser.Query {
   if (_query === null) {
-    _query = new Parser.Query(CSharp as Parameters<Parser['setLanguage']>[0], CSHARP_SCOPE_QUERY);
+    _query = new Parser.Query(getLanguageGrammar(SupportedLanguages.CSharp), CSHARP_SCOPE_QUERY);
   }
   return _query;
 }
