@@ -120,8 +120,9 @@ Run **Release evaluation** from `main` before cutting a stable tag. Set
 `candidate_ref` to the full, already-reviewed stable commit SHA. The workflow
 uses main's trusted harness and `--gitnexus-root` to select a separate immutable
 runtime checkout.
-Candidate install and build scripts run in Bubblewrap with only that checkout
-writable, system tools read-only, and a cleared environment. The trusted harness
+Candidate installs run in Bubblewrap with only that checkout (minus `.git`)
+writable, system tools read-only, and a cleared environment. Locked downloads
+run without package scripts; every lifecycle script then runs with no network. The trusted harness
 and host command files are not mounted into the candidate build.
 The report records runtime/harness SHAs, task and oracle digests, model/effort,
 every repetition, solve counts, cost and agent wall time. Failed
