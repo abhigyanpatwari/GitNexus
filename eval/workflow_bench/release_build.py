@@ -7,12 +7,12 @@ import os
 from pathlib import Path
 
 from .process_control import run_checked
-from .proposer_sandbox import SANDBOX_PATH, _real_directory, _runtime_mount_args, preflight_bubblewrap
+from .proposer_sandbox import SANDBOX_PATH, bwrap_base_args, preflight_bubblewrap, real_directory
 
 
 def build_candidate(repo: Path) -> None:
     """Run candidate lifecycle scripts with only their checkout, minus git metadata, writable."""
-    repo = _real_directory(repo, label="release candidate")
+    repo = real_directory(repo, label="release candidate")
     # Host git later runs in this checkout (e.g. actions/checkout cleanup), so
     # lifecycle scripts must not plant git config such as core.fsmonitor.
     git_dir = repo / ".git"
@@ -20,19 +20,7 @@ def build_candidate(repo: Path) -> None:
     bwrap = preflight_bubblewrap()
     command = [
         str(bwrap),
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--die-with-parent",
-        "--new-session",
-        "--cap-drop",
-        "ALL",
-        *_runtime_mount_args(),
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
+        *bwrap_base_args(cap_drop_all=True),
         "--tmpfs",
         "/tmp",
         "--dir",

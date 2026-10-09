@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from workflow_bench import release_build
-from workflow_bench.proposer_sandbox import SandboxError
+from workflow_bench.proposer_sandbox import SandboxError, bwrap_base_args
 
 
 def test_candidate_build_refuses_unavailable_containment_before_npm(monkeypatch, tmp_path):
@@ -57,3 +57,17 @@ def test_candidate_build_mounts_git_metadata_read_only_over_the_writable_checkou
     # bwrap applies mounts in order, so the read-only overlay must follow the writable bind.
     at = command.index('--bind')
     assert command[at:at + 6] == ['--bind', str(tmp_path), '/workspace', '--ro-bind', str(tmp_path / ".git"), '/workspace/.git']
+
+
+def test_candidate_build_uses_the_shared_bubblewrap_preamble_with_all_capabilities_dropped(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(release_build, "preflight_bubblewrap", lambda: Path("/usr/bin/bwrap"))
+    monkeypatch.setattr(release_build, "run_checked", lambda *a, **k: calls.append(a))
+    release_build.build_candidate(tmp_path)
+    (command,) = calls[0]
+    preamble = bwrap_base_args(cap_drop_all=True)
+    assert command[1 : 1 + len(preamble)] == preamble
+    at = preamble.index("--cap-drop")
+    assert preamble[at : at + 2] == ["--cap-drop", "ALL"]
+    assert "--unshare-net" not in preamble
+    assert "--cap-drop" not in bwrap_base_args()

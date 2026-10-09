@@ -197,12 +197,11 @@ def test_run_claude_forwards_xhigh_effort_to_every_session(monkeypatch, tmp_path
     assert captured[captured.index("--effort") + 1] == "xhigh"
 
 
-def test_run_claude_restricts_tools_via_tools_flag_outside_bare(monkeypatch, tmp_path):
-    # Outside --bare, the built-in toolset defaults to everything (subagents,
-    # WebFetch, Task, ...) and --allowedTools only pre-approves within that —
-    # it does not narrow it. --tools is what actually restricts the set, so a
-    # non-bare arm session must pass it or it silently gets a far wider
-    # toolset than intended.
+def test_run_claude_restricts_tools_via_tools_flag(monkeypatch, tmp_path):
+    # The built-in toolset defaults to everything (subagents, WebFetch, Task,
+    # ...) and --allowedTools only pre-approves within that -- it does not
+    # narrow it. --tools is what actually restricts the set, so an arm session
+    # must pass it or it silently gets a far wider toolset than intended.
     captured: list[str] = []
 
     def fake_run(command, **kwargs):
@@ -215,36 +214,12 @@ def test_run_claude_restricts_tools_via_tools_flag_outside_bare(monkeypatch, tmp
         tmp_path,
         claude_bin="claude",
         timeout=5,
-        bare=False,
         allowed_tools=["Read", "Edit", "Bash", "Skill"],
     )
     tools_idx = captured.index("--tools")
     assert captured[tools_idx + 1 : tools_idx + 5] == ["Read", "Edit", "Bash", "Skill"]
     allowed_idx = captured.index("--allowedTools")
     assert captured[allowed_idx + 1 : allowed_idx + 5] == ["Read", "Edit", "Bash", "Skill"]
-
-
-def test_run_claude_omits_tools_flag_under_bare(monkeypatch, tmp_path):
-    # --bare already hard-restricts to Bash/Edit/Read on its own (a Claude
-    # Code design choice, not something --tools/--allowedTools can widen or
-    # narrow further), so bare sessions must not also pass --tools.
-    captured: list[str] = []
-
-    def fake_run(command, **kwargs):
-        captured.extend(command)
-        return fake_cli_result(VALID_REPORT)
-
-    monkeypatch.setattr(runner_sessions, "run_managed", fake_run)
-    runner.run_claude(
-        "task",
-        tmp_path,
-        claude_bin="claude",
-        timeout=5,
-        bare=True,
-        allowed_tools=["Read", "Edit", "Bash", "Skill"],
-    )
-    assert "--tools" not in captured
-    assert "--allowedTools" in captured
 
 
 @pytest.mark.parametrize(
@@ -373,10 +348,7 @@ def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, t
 
     # Both tool-enabled and no-MCP arms retain ordinary CLAUDE.md startup
     # context. The latter explicitly disables all skills/commands instead.
-    assert captured[0]["bare"] is False  # workflow: planning session
-    assert captured[1]["bare"] is False  # review
-    assert captured[2]["bare"] is False  # workflow_direct
-    assert captured[3]["bare"] is False  # baseline_nomcp
+    assert all("bare" not in session for session in captured[:4])
     assert captured[3]["disable_slash_commands"] is True
 
 

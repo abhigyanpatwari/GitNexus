@@ -627,7 +627,6 @@ def run_claude(
     expected_skill: str | None = None,
     command_prefix: list[str] | None = None,
     require_pid_namespace: bool = False,
-    bare: bool = False,
     settings_json: str | None = None,
     strict_mcp_config: bool = False,
     allowed_tools: list[str] | None = None,
@@ -658,8 +657,6 @@ def run_claude(
         "stream-json",
         "--verbose",
     ]
-    if bare:
-        cmd.append("--bare")
     for plugin_dir in plugin_dirs:
         cmd += ["--plugin-dir", plugin_dir]
     if settings_json is not None:
@@ -667,13 +664,11 @@ def run_claude(
     if strict_mcp_config:
         cmd += ["--strict-mcp-config", "--mcp-config", mcp_config_json or '{"mcpServers":{}}']
     if allowed_tools:
-        # --bare's own hard-coded Bash/Edit/Read ceiling already scopes bare
-        # sessions; outside --bare the built-in toolset defaults to
-        # everything (subagents, WebFetch, Task, ...), so --tools is needed
-        # to actually restrict it — --allowedTools only pre-approves within
-        # whatever set is available, it does not narrow that set.
-        if not bare:
-            cmd += ["--tools", *allowed_tools]
+        # The built-in toolset defaults to everything (subagents, WebFetch,
+        # Task, ...), so --tools is needed to actually restrict it --
+        # --allowedTools only pre-approves within whatever set is available,
+        # it does not narrow that set.
+        cmd += ["--tools", *allowed_tools]
         cmd += ["--allowedTools", *allowed_tools]
     if disable_slash_commands:
         cmd.append("--disable-slash-commands")

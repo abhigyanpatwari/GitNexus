@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -604,15 +605,30 @@ if returncode:
         ":(exclude).wfbench-artifact-*",
         *_synthetic_guidance_exclusions(sandbox),
     ]
+    primary: BaseException | None = None
     try:
         result = sandbox.run(command, timeout=60, env=build_sandbox_environment())
         if not result.ok:
             raise ManagedProcessError(command, result)
         return _bounded_regular_bytes(patch, limit=MAX_PATCH_BYTES)
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
         # The returned bytes are the evidence; this temporary sink must not
         # become an agent edit in later Git diffs or repeated captures.
-        shutil.rmtree(artifact_dir)
+        try:
+            shutil.rmtree(artifact_dir)
+        except OSError as cleanup:
+            # A failed removal must neither discard the patch already read nor
+            # replace the real failure. The leftover directory is excluded from
+            # the patch pathspec above and dies with the disposable clone, so
+            # it cannot corrupt the evidence; still report it rather than hide it.
+            detail = f"patch artifact cleanup failed: {artifact_dir}: {type(cleanup).__name__}: {cleanup}"
+            if primary is not None:
+                primary.add_note(detail)
+            else:
+                print(f"warning: {detail}", file=sys.stderr, flush=True)
 
 
 def enforce_work_evidence(

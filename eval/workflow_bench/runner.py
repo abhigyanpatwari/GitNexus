@@ -106,8 +106,8 @@ from .review_scoring import (
     parse_review_output,
     score_review,
 )
+from .baseline_guidance import GITNEXUS_UNAVAILABLE_NOTE
 from .proposer_sandbox import (
-    GITNEXUS_UNAVAILABLE_NOTE,
     SANDBOX_GITNEXUS as SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
     SANDBOX_GITNEXUS_SHARED as SANDBOX_GITNEXUS_SHARED,
@@ -470,10 +470,10 @@ def run_arm(
         model=args.model,
         build_sandbox_environment=environment_builder,
     )
-    # All arms load ordinary repository context through the same startup
-    # mode. --bare would also discard CLAUDE.md in the no-MCP arm. That arm
-    # instead disables skills/commands and restricts its exact tool surface,
-    # with an empty MCP config and no supplied graph/runtime/CLI mounts.
+    # All arms load ordinary repository context (CLAUDE.md) through the same
+    # startup mode. The no-MCP arm instead disables skills/commands and
+    # restricts its exact tool surface, with an empty MCP config and no
+    # supplied graph/runtime/CLI mounts.
     progress_label = transcript_output_prefix or f"{task.get('id', 'task')}-{arm}"
     common = {
         "progress_label": progress_label,
@@ -489,7 +489,6 @@ def run_arm(
             read_only_paths=_evaluated_skill_roots(worktree, arm),
         ),
         "require_pid_namespace": getattr(sandbox, "require_pid_namespace", True),
-        "bare": False,
         "settings_json": sandbox.settings_json,
         "strict_mcp_config": True,
         "mcp_config_json": host_text(sandbox_mcp_config()),

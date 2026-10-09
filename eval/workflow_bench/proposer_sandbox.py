@@ -54,12 +54,6 @@ SANDBOX_GITNEXUS_SHARED = "/opt/gitnexus-shared"
 SANDBOX_GITNEXUS_REGISTRY = "/opt/gitnexus-registry"
 SANDBOX_USER_SKILLS = f"{SANDBOX_HOME}/.claude/skills"
 SANDBOX_EVIDENCE = "/evidence"
-GITNEXUS_UNAVAILABLE_NOTE = (
-    "GitNexus tools are unavailable in this baseline_nomcp arm. "
-    "No GitNexus graph, repository registry, MCP server, or harness CLI is supplied; "
-    "the Skill tool is disabled. Use source reads, search, and repository tests "
-    "to complete the task. Do not invoke or bootstrap GitNexus with npx or .gitnexus/run.cjs.\n"
-)
 
 # Claude Code's weaker nested sandbox overlays these absent root paths with
 # /dev/null devices. They are tool-created mount noise, not model-authored
@@ -167,7 +161,7 @@ def prepare_review_workspace(sandbox: SandboxSession, artifact_name: str) -> Pat
     except OSError as exc:
         raise SandboxError(f"review artifact directory is unavailable: {output.parent}") from exc
 
-    clone = _real_directory(sandbox.clone, label="review clone")
+    clone = real_directory(sandbox.clone, label="review clone")
     if sandbox.backend != "bwrap":
         return output
     created: list[str] = []
@@ -345,7 +339,7 @@ class SandboxSession:
             return []
 
         additional: list[ReadOnlyMount] = []
-        clone = _real_directory(self.clone, label="sandbox clone")
+        clone = real_directory(self.clone, label="sandbox clone")
         for raw_path in read_only_paths:
             lexical = raw_path.expanduser().absolute()
             try:
@@ -544,8 +538,8 @@ def build_sandbox_environment(
         token = auth_token.strip()
         if not token:
             raise SandboxError("model auth token must not be blank")
-        # Explicit API-key auth works for normal benchmark startup and the
-        # proposer's --bare mode; private HOME carries no OAuth/keychain state.
+        # Explicit API-key auth works for normal benchmark startup; private
+        # HOME carries no OAuth/keychain state.
         env["ANTHROPIC_API_KEY"] = token
     if base_url is not None:
         env["ANTHROPIC_BASE_URL"] = _validated_base_url(base_url)
@@ -609,8 +603,8 @@ def build_claude_settings(*, sandbox_enabled: bool = True) -> str:
             # non-default mode only emits a warning and never takes effect.
             # Under "default" a tool runs without a prompt only if it matches an
             # allow rule, so pre-approve the proposer's exact tool surface. Bash
-            # is the only writable tool under --bare (it writes the candidate
-            # overlay) and stays sandbox-confined by the sandbox.* policy above.
+            # is the only writable tool (it writes the candidate overlay) and
+            # stays sandbox-confined by the sandbox.* policy above.
             **permissions,
         },
         "env": (
@@ -625,7 +619,9 @@ def build_claude_settings(*, sandbox_enabled: bool = True) -> str:
     return json.dumps(settings, sort_keys=True, separators=(",", ":"))
 
 
-def _runtime_mount_args() -> list[str]:
+def runtime_mount_args() -> list[str]:
+    """Read-only system/runtime binds shared by every Bubblewrap sandbox."""
+
     args: list[str] = []
     system_trees = ("/usr", "/bin", "/lib", "/lib64")
     for raw in system_trees:
@@ -693,6 +689,30 @@ def _runtime_mount_args() -> list[str]:
     return args
 
 
+def bwrap_base_args(*, unshare_network: bool = False, cap_drop_all: bool = False) -> list[str]:
+    """Namespace, lifetime, runtime-mount and /proc,/dev preamble shared by sandboxes.
+
+    Callers append their own filesystem binds, environment and command after
+    this preamble, so a hardening change here reaches every Bubblewrap user.
+    """
+
+    return [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        *(["--unshare-net"] if unshare_network else []),
+        "--die-with-parent",
+        "--new-session",
+        *(["--cap-drop", "ALL"] if cap_drop_all else []),
+        *runtime_mount_args(),
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+
+
 def _create_shell_prefix_wrapper(private_root: Path, *, gitnexus_available: bool = True) -> Path:
     """Create Claude's immutable clean-environment command adapter."""
 
@@ -740,81 +760,6 @@ def _create_gitnexus_wrapper(private_root: Path) -> Path:
     return wrapper
 
 
-_GITNEXUS_TOOL_GUIDANCE = re.compile(
-    r"(?:\.gitnexus/run\.cjs|\b(?:npx|bunx|pnpm\s+dlx)\s+(?:--?\w[\w-]*(?:=[^\s`]+)?\s+)*gitnexus(?:@|\b)|"
-    r"\bmcp__gitnexus(?:__|\b)|\bgitnexus:(?:start|end)\b|"
-    r"\bgitnexus-(?:plan|work|review|lfg|exploring|impact-analysis|debugging|refactoring|guide|cli)\b|"
-    r"\b(?:use|run|bootstrap|invoke)\s+(?:\*\*|`)?gitnexus\b|"
-    r"\bgitnexus\s+(?:setup|analyze|query|context|impact|detect-changes)\b)",
-    re.IGNORECASE,
-)
-
-
-def _ordinary_repository_guidance(text: str) -> str:
-    """Remove marked/tool-specific instructions, preserving development guidance."""
-
-    kept: list[str] = []
-    marked = False
-    section_level: int | None = None
-    skip_continuation = False
-    for line in text.splitlines(keepends=True):
-        marker = re.fullmatch(r"\s*<!--\s*gitnexus:(start|end)\s*-->\s*", line, re.IGNORECASE)
-        if marker is not None:
-            starts = marker.group(1).lower() == "start"
-            if starts == marked:
-                raise SandboxError("repository guidance contains unbalanced GitNexus markers")
-            marked = starts
-            continue
-        if marked:
-            continue
-        heading = re.match(r"^(#{1,6})\s+(.+)", line)
-        if heading is not None:
-            level = len(heading.group(1))
-            if section_level is not None and level <= section_level:
-                section_level = None
-            skip_continuation = False
-            if section_level is None and (
-                _GITNEXUS_TOOL_GUIDANCE.search(line)
-                or re.fullmatch(r"GitNexus(?:\s+rules|\s+[—-]\s+Code Intelligence)\s*", heading.group(2), re.IGNORECASE)
-            ):
-                section_level = level
-            if section_level is not None:
-                continue
-        elif section_level is not None:
-            continue
-        if not line.strip():
-            skip_continuation = False
-        elif skip_continuation:
-            if line[:1].isspace():
-                continue
-            skip_continuation = False
-        if _GITNEXUS_TOOL_GUIDANCE.search(line):
-            skip_continuation = bool(re.match(r"^\s*[-*]\s", line))
-            continue
-        kept.append(line)
-    if marked:
-        raise SandboxError("repository guidance contains unbalanced GitNexus markers")
-    return "".join(kept)
-
-
-def _baseline_gitnexus_mounts(clone: Path, private_root: Path) -> tuple[ReadOnlyMount, ...]:
-    """Hide inherited index/bootstrap bytes and graph-first startup guidance."""
-
-    empty_index = private_root / "empty-gitnexus"
-    empty_index.mkdir(mode=0o500)
-    _prepare_clone_target(clone, PurePosixPath(".gitnexus"), directory=True, label="baseline index mask")
-    mounts = [ReadOnlyMount(empty_index, f"{SANDBOX_WORKSPACE}/.gitnexus")]
-    for index, name in enumerate(("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md")):
-        if os.path.lexists(clone / name):
-            _prepare_clone_target(clone, PurePosixPath(name), directory=False, label="baseline guidance")
-            ordinary = _ordinary_repository_guidance(_evidence_bytes(clone / name, ()).decode("utf-8"))
-            guidance = private_root / f"repository-guidance-{index}.md"
-            guidance.write_text(ordinary.rstrip() + "\n\n" + GITNEXUS_UNAVAILABLE_NOTE)
-            guidance.chmod(0o400)
-            mounts.append(ReadOnlyMount(guidance, f"{SANDBOX_WORKSPACE}/{name}"))
-    return tuple(mounts)
-
-
 def _create_git_excludes(private_root: Path) -> Path:
     """Create the immutable excludes for nested-sandbox mount artifacts."""
 
@@ -840,22 +785,7 @@ def preflight_bubblewrap(bwrap_bin: Path | str | None = None) -> Path:
     if sys.platform != "linux":
         raise SandboxError(f"Bubblewrap containment is supported only on Linux/WSL2, not {sys.platform}")
     bwrap = _resolve_executable(bwrap_bin, "bwrap")
-    command = [
-        str(bwrap),
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--die-with-parent",
-        "--new-session",
-        *_runtime_mount_args(),
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
-        "--",
-        "/usr/bin/true",
-    ]
+    command = [str(bwrap), *bwrap_base_args(), "--", "/usr/bin/true"]
     result = run_managed(command, timeout=10, require_pid_namespace=True)
     if not result.ok:
         raise SandboxError(f"Bubblewrap namespace preflight failed: {result.detail or result.stderr_tail[-1000:]}")
@@ -908,7 +838,7 @@ def require_claude_sandbox_helpers() -> None:
     _resolve_executable(None, "socat")
 
 
-def _real_directory(path: Path, *, label: str) -> Path:
+def real_directory(path: Path, *, label: str) -> Path:
     """Return an absolute directory path without accepting any symlink hop."""
 
     lexical = path.expanduser().absolute()
@@ -925,6 +855,10 @@ def _real_directory(path: Path, *, label: str) -> Path:
     if resolved != lexical:
         raise SandboxError(f"{label} must not traverse symlinks: {lexical}")
     return lexical
+
+
+# Historical private name, still imported by task_assets.
+_real_directory = real_directory
 
 
 def _safe_repo_source(repo: Path, relative: str, *, label: str) -> tuple[Path, Path]:
@@ -1027,18 +961,7 @@ def _sandbox_command_prefix(
 ) -> list[str]:
     args = [
         str(bwrap),
-        "--unshare-user",
-        "--unshare-pid",
-        "--unshare-ipc",
-        "--unshare-uts",
-        *(["--unshare-net"] if unshare_network else []),
-        "--die-with-parent",
-        "--new-session",
-        *_runtime_mount_args(),
-        "--proc",
-        "/proc",
-        "--dev",
-        "/dev",
+        *bwrap_base_args(unshare_network=unshare_network),
         "--tmpfs",
         "/run",
         "--ro-bind" if read_only_workspace else "--bind",
@@ -1238,7 +1161,7 @@ def prepare_sandbox(
 
     # Validate the lexical path before resolving it. Resolving first would
     # erase the evidence that the caller supplied a symlinked clone root.
-    clone = _real_directory(clone, label="sandbox clone")
+    clone = real_directory(clone, label="sandbox clone")
     if backend not in ("bwrap", "host-unsafe"):
         raise SandboxError(f"unknown sandbox backend: {backend}")
     if not gitnexus_available:
@@ -1280,7 +1203,13 @@ def prepare_sandbox(
     user_skills.chmod(0o500)
     primary: BaseException | None = None
     try:
-        baseline_mounts = () if gitnexus_available else _baseline_gitnexus_mounts(clone, private_root)
+        if gitnexus_available:
+            baseline_mounts: tuple[ReadOnlyMount, ...] = ()
+        else:
+            # Lazy: baseline_guidance imports this module's mount/clone primitives.
+            from .baseline_guidance import baseline_gitnexus_mounts
+
+            baseline_mounts = baseline_gitnexus_mounts(clone, private_root)
         protected_mounts = (
             *read_only_mounts,
             ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),

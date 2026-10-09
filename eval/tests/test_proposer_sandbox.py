@@ -42,7 +42,7 @@ from workflow_bench.proposer_sandbox import (
     SANDBOX_WORKSPACE,
     ReadOnlyMount,
     SandboxError,
-    _runtime_mount_args,
+    runtime_mount_args,
     build_claude_settings,
     build_sandbox_environment,
     _force_rmtree,
@@ -256,29 +256,6 @@ def test_nomcp_sandbox_requires_containment(tmp_path):
     with pytest.raises(SandboxError, match="baseline_nomcp requires Bubblewrap"):
         with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe", gitnexus_available=False):
             pass
-
-
-@pytest.mark.parametrize("launcher", ["npx", "bunx", "pnpm dlx"])
-def test_repository_guidance_filters_launcher_flags_without_hiding_ordinary_tests(launcher):
-    guidance = (
-        f"Bootstrap with {launcher} --yes --package=gitnexus gitnexus@1.6.12.\n"
-        f"Validate with {launcher} --yes vitest run.\n"
-    )
-    assert proposer_sandbox._ordinary_repository_guidance(guidance) == f"Validate with {launcher} --yes vitest run.\n"
-
-
-def test_repository_guidance_does_not_backtrack_on_malformed_launcher_options():
-    # The old overlapping dash quantifiers take exponential time on this input.
-    # A subprocess deadline makes a recurrence fail without hanging pytest.
-    result = subprocess.run(
-        [sys.executable, "-c", (
-            "from workflow_bench.proposer_sandbox import _ordinary_repository_guidance; "
-            "text = 'npx ' + '-- -' * 10000 + '\\n'; "
-            "assert _ordinary_repository_guidance(text) == text"
-        )],
-        capture_output=True, text=True, timeout=5,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(
@@ -900,7 +877,7 @@ def test_runtime_mounts_bind_the_resolved_node_to_a_fresh_sandbox_path(monkeypat
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: "/opt/hostedtoolcache/node/22.18.0/x64/bin/node" if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     node_index = args.index("/opt/hostedtoolcache/node/22.18.0/x64/bin/node")
     assert args[node_index - 1] == "--ro-bind"
     assert args[node_index + 1] == SANDBOX_NODE
@@ -926,7 +903,7 @@ def test_runtime_mounts_bind_the_node_prefix_so_npx_and_npm_resolve(monkeypatch,
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(prefix / "bin" / "node") if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     prefix_index = args.index(str(prefix))
     assert args[prefix_index - 1] == "--ro-bind"
     assert args[prefix_index + 1] == SANDBOX_NODE_PREFIX
@@ -953,7 +930,7 @@ def test_runtime_mounts_skip_the_prefix_bind_for_an_unrecognized_node_layout(mon
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(bare / "node") if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     assert SANDBOX_NODE_PREFIX not in args
     assert str(tmp_path) not in args
     # the node bind itself is unaffected -- SANDBOX_NODE still works.
@@ -970,7 +947,7 @@ def test_runtime_mounts_skip_the_prefix_bind_without_npx_beside_node(monkeypatch
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(prefix / "bin" / "node") if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     assert SANDBOX_NODE_PREFIX not in args
 
 
@@ -987,7 +964,7 @@ def test_runtime_mounts_bind_a_real_tool_cache_layout(monkeypatch, tmp_path) -> 
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: str(prefix / "bin" / "node") if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     prefix_index = args.index(SANDBOX_NODE_PREFIX)
     assert args[prefix_index - 2] == "--ro-bind"
     assert args[prefix_index - 1] == str(prefix)
@@ -1002,14 +979,14 @@ def test_runtime_mounts_skip_the_prefix_bind_when_it_is_already_bound(monkeypatc
         "workflow_bench.proposer_sandbox.shutil.which",
         lambda name: "/usr/local/bin/node" if name == "node" else None,
     )
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     assert SANDBOX_NODE_PREFIX not in args
     assert args[args.index("/usr/local/bin/node") + 1] == SANDBOX_NODE
 
 
 def test_runtime_mounts_skip_the_node_bind_when_node_is_unresolvable(monkeypatch) -> None:
     monkeypatch.setattr("workflow_bench.proposer_sandbox.shutil.which", lambda name: None)
-    args = _runtime_mount_args()
+    args = runtime_mount_args()
     assert SANDBOX_NODE not in args
 
 
@@ -1417,7 +1394,7 @@ def test_preflight_failure_is_returned_before_a_model_command(monkeypatch, tmp_p
 
     monkeypatch.setattr("workflow_bench.proposer_sandbox.run_managed", fail)
     monkeypatch.setattr(
-        "workflow_bench.proposer_sandbox._runtime_mount_args",
+        "workflow_bench.proposer_sandbox.runtime_mount_args",
         lambda: runtime_mounts,
     )
     with pytest.raises(SandboxError, match="preflight"):
@@ -1979,16 +1956,3 @@ def test_real_bubblewrap_lets_a_review_artifact_be_written_atomically(tmp_path: 
         # consumes it before leaving the scope.
         _verdict, findings = parse_review_output(review_output)
         assert findings == ()
-
-
-@pytest.mark.parametrize(
-    "guidance",
-    [
-        "Build first.\n<!-- gitnexus:end -->\n",
-        "<!-- gitnexus:start -->\n<!-- gitnexus:start -->\nUse GitNexus.\n<!-- gitnexus:end -->\n",
-        "Build first.\n<!-- gitnexus:start -->\nUse GitNexus.\n",
-    ],
-)
-def test_unbalanced_gitnexus_markers_fail_closed(guidance):
-    with pytest.raises(SandboxError, match="unbalanced GitNexus markers"):
-        proposer_sandbox._ordinary_repository_guidance(guidance)
