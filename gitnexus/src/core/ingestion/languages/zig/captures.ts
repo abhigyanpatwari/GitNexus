@@ -1929,7 +1929,12 @@ function addZigLexicalFacts(out: CaptureMatch[], root: SyntaxNode): void {
     if (node.type === 'variable_declaration' && !isZigKeywordDeclaration(node)) continue;
     const name = node.type === 'parameter' ? node.childForFieldName('name') : node.namedChild(0);
     const owner = zigLexicalHost(node);
-    if (owner !== null && name?.type === 'identifier') add(owner, name.text, node, 'binding');
+    if (owner !== null && name?.type === 'identifier') {
+      // A file's @This() alias names the synthetic Struct declaration, whose
+      // range is the whole file. It must not claim a separate Const binding.
+      const declaration = isZigFileThisAlias(node) && isZigFileStruct(root) ? root : node;
+      add(owner, name.text, declaration, 'binding');
+    }
   }
   for (let i = 0; i < out.length; i++) {
     const group = out[i]!;

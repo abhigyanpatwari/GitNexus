@@ -9,7 +9,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
-import { SupportedLanguages, type BindingRef, type SymbolDefinition } from 'gitnexus-shared';
+import {
+  SupportedLanguages,
+  lookupLexicalName,
+  type BindingRef,
+  type SymbolDefinition,
+} from 'gitnexus-shared';
 import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
@@ -1300,6 +1305,20 @@ pub fn helper() u32 { return 1; }
       expect(isZigTypeShadowingBinding(decl)).toBe(true);
       const nsDecl = find(parse(NAMESPACE).rootNode, 'variable_declaration', 'const util');
       expect(isZigTypeShadowingBinding(nsDecl)).toBe(false);
+    });
+
+    it('selects the file Struct through its @This() lexical claim', () => {
+      const parsed = extractScopes(
+        emitZigScopeCaptures(FILE_STRUCT, 'src/Page.zig'),
+        'src/Page.zig',
+        zigProvider,
+      );
+      const selected = lookupLexicalName(parsed.moduleScope, 'Page', {
+        scopes: { getScope: (id) => parsed.scopes.find((scope) => scope.id === id) },
+      });
+      expect(selected.status).toBe('resolved');
+      expect(selected.bindings.map((binding) => binding.def.type)).toEqual(['Struct']);
+      expect(selected.bindings[0]?.def.filePath).toBe('src/Page.zig');
     });
 
     it('rewrites @This() aliases in type position to the container name (`self: *SigHandler` in Sighandler.zig, nested `Self`)', () => {

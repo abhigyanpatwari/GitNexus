@@ -106,21 +106,24 @@ export namespace Container { export class Inside {} }
     {
       provider: javascriptProvider,
       extension: 'js',
+      declaration: 'local',
       source: 'const LIMIT = 3; function read() { return LIMIT; }',
     },
     {
       provider: javascriptProvider,
       extension: 'js',
+      declaration: 'exported',
       source: 'export const LIMIT = 3; function read() { return LIMIT; }',
     },
     {
       provider: typescriptProvider,
       extension: 'ts',
+      declaration: 'namespace',
       source:
         'export namespace Limits { export const LIMIT = 3; export function read() { return LIMIT; } }',
     },
   ])(
-    'selects the exact $extension value declaration through its lexical claim',
+    'selects the exact $extension $declaration value declaration through its lexical claim',
     ({ provider, extension, source }) => {
       const parsed = extractParsedFile(provider, source, `app.${extension}`)!;
       const site = parsed.referenceSites.find(
