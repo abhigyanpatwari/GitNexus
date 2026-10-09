@@ -1628,6 +1628,7 @@ const processFileGroup = (
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
     let scopeSourceKind: ScopeCaptureSourceKind = 'full-file';
+    let scriptLanguage: string | undefined;
     let lineOffset = 0;
     let isVueSetup = false;
     let notebookSegments: readonly NotebookLineSegment[] | undefined;
@@ -1639,6 +1640,7 @@ const processFileGroup = (
       parseContent = extracted.scriptContent;
       scopeSourceKind = 'pre-extracted-script';
       lineOffset = extracted.lineOffset;
+      scriptLanguage = extracted.lang;
       isVueSetup = extracted.isSetup;
     } else if (language === SupportedLanguages.Python && isNotebookPath(file.path)) {
       const extracted = extractNotebookPython(file.content);
@@ -1720,6 +1722,8 @@ const processFileGroup = (
       tree,
       scopeSourceKind,
       notebookSegments,
+      lineOffset,
+      scriptLanguage,
     );
     if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
     if (parsedFile !== undefined) {
