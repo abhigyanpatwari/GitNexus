@@ -129,8 +129,18 @@ solutions stay in the denominator. Infrastructure/session failures, missing
 costs, incomplete pairs or failed containment make evidence incomplete.
 
 Stable publishing requires a successful default-branch evaluation for that
-**exact commit and current task/oracle set**, no more than seven days old.
-It validates individual cells and recomputes totals before publishing to npm
+**exact commit, measured by main's current evaluator**, no more than seven days
+old. The publish job loads `eval/` from main's head rather than the release
+commit, so later task changes on main do not strand an already-measured
+release. A report counts only when its `harness_sha` is the commit its
+scheduled or manually dispatched `main` run executed, and GitHub's comparison
+from that commit to main's head changes nothing under `eval/`,
+`.github/workflows/release-evaluation.yml` or `.github/claude-canary-runtime/`.
+An unavailable or truncated (300-file) comparison rejects the run. Any change
+to the harness, graders, task pins or agent CLI therefore requires a fresh
+Release evaluation. Runs are tried newest first; a rejected run does not hide an
+older valid one, and when none passes the error lists each rejection.
+It validates task pins, individual cells and recomputed totals before publishing to npm
 or either Docker registry. Docker publication also runs the cheap accuracy
 gate once before both image builds, then builds the verified immutable commit.
 Every release attaches the cheap accuracy evidence; stable releases also attach
