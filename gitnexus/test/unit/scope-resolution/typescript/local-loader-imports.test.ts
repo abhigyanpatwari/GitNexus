@@ -128,6 +128,45 @@ describe.each(variants)('$extension local loader extraction', ({ extension, prov
       parsed.parsedImports.filter((imp) => imp.kind !== 'reexport').map((imp) => imp.targetRaw),
     ).toEqual(['./a', './b']);
   });
+
+  it('keeps unchanged destructured CommonJS exports when sibling handles are reassigned', () => {
+    const parsed = extract(`
+      let { changed, stable } = require('./a');
+      changed = custom;
+      exports.changed = changed;
+      exports.stable = stable;
+      let { changed: renamedChanged, stable: renamedStable } = require('./b');
+      renamedChanged = custom;
+      exports.renamedChanged = renamedChanged;
+      exports.renamedStable = renamedStable;
+    `);
+    expect(parsed.parsedImports.filter((imp) => imp.kind === 'reexport')).toEqual([
+      expect.objectContaining({ targetRaw: './a', importedName: 'stable', localName: 'stable' }),
+      expect.objectContaining({
+        targetRaw: './b',
+        importedName: 'stable',
+        localName: 'renamedStable',
+      }),
+    ]);
+  });
+
+  it('limits reassignment barriers to imported handles, preserving ordinary local values', () => {
+    const parsed = extract(`function owner(parameter) {
+      let local = new Service();
+      var hoisted = new Service();
+      local = new Service();
+      hoisted = new Service();
+      parameter = new Service();
+      let imported = require('./a');
+      imported = custom;
+    }`);
+    expect(
+      parsed.scopes
+        .flatMap((scope) => scope.nameClaims ?? [])
+        .filter((claim) => claim.kind === 'blocked')
+        .map((claim) => claim.name),
+    ).toEqual(['imported']);
+  });
 });
 
 it('recognizes TypeScript import-equals as a module namespace binding', () => {
@@ -226,6 +265,31 @@ describe('local-loader graph targets', () => {
         `
         import { run } from './a';
         import * as root from './a';
+        class LocalService { work() { return 1; } }
+        ${
+          extension === 'js' || extension === 'jsx'
+            ? '/** @type {LocalService} */ let moduleClient;'
+            : 'let moduleClient: LocalService;'
+        }
+        export function assignModuleClient() { moduleClient = new LocalService(); }
+        export function readModuleClient() { return moduleClient.work(); }
+        export function assignedLet() {
+          let service = new LocalService(); service = new LocalService(); service.work();
+        }
+        export function assignedVar() {
+          var service = new LocalService(); service = new LocalService(); service.work();
+        }
+        ${
+          extension === 'ts' || extension === 'tsx' || extension === 'vue'
+            ? `
+        export function assignedTyped() {
+          let service: LocalService; service = new LocalService(); service.work();
+        }
+        export function assignedParameter(service: LocalService) {
+          service = new LocalService(); service.work();
+        }`
+            : ''
+        }
         function replacedLoader() {}
         var replacedLoader = require('./a');
         replacedLoader = factory;
@@ -253,6 +317,29 @@ describe('local-loader graph targets', () => {
       `,
         extension,
       );
+      if (extension === 'ts' || extension === 'js') {
+        files[`${extension}/forward.${extension}`] = `
+          let { run: changed, stable } = require('./exports');
+          changed = custom;
+          exports.changed = changed;
+          exports.stable = stable;
+          let { run: renamedChanged, stable: renamedStable } = require('./exports');
+          renamedChanged = custom;
+          exports.renamedChanged = renamedChanged;
+          exports.renamedStable = renamedStable;
+        `;
+        files[`${extension}/exports.${extension}`] = `
+          exports.run = function run() { return 1; };
+          exports.stable = function stable() { return 2; };
+        `;
+        files[`${extension}/consumer.${extension}`] = `
+          const { changed, stable, renamedChanged, renamedStable } = require('./forward');
+          export function callChanged() { return changed(); }
+          export function callStable() { return stable(); }
+          export function callRenamedChanged() { return renamedChanged(); }
+          export function callRenamedStable() { return renamedStable(); }
+        `;
+      }
     }
     writeFixtureRepo(repo, files);
     result = await runPipelineFromRepo(repo, () => {}, { workerPoolSize: 1 });
@@ -260,6 +347,47 @@ describe('local-loader graph targets', () => {
   afterAll(() => {
     if (repo) fs.rmSync(repo, { recursive: true, force: true });
   });
+
+  it.each(variants)(
+    '$extension retains method calls after ordinary receiver assignment',
+    ({ extension }) => {
+      expect(
+        getRelationships(result, 'CALLS')
+          .filter(
+            (edge) =>
+              edge.sourceFilePath === `${extension}/app.${extension}` && edge.target === 'work',
+          )
+          .map((edge) => [edge.source, edge.targetFilePath])
+          .sort(),
+      ).toEqual(
+        [
+          'assignedLet',
+          'assignedVar',
+          'readModuleClient',
+          ...(extension === 'ts' || extension === 'tsx' || extension === 'vue'
+            ? ['assignedTyped', 'assignedParameter']
+            : []),
+        ]
+          .sort()
+          .map((name) => [name, `${extension}/app.${extension}`]),
+      );
+    },
+  );
+
+  it.each(['ts', 'js'])(
+    '%s forwards unchanged destructured siblings to their exact definition',
+    (extension) => {
+      expect(
+        getRelationships(result, 'CALLS')
+          .filter((edge) => edge.sourceFilePath === `${extension}/consumer.${extension}`)
+          .map((edge) => [edge.source, edge.target, edge.targetFilePath])
+          .sort(),
+      ).toEqual([
+        ['callRenamedStable', 'stable', `${extension}/exports.${extension}`],
+        ['callStable', 'stable', `${extension}/exports.${extension}`],
+      ]);
+    },
+  );
 
   it.each(variants)(
     '$extension binds exact targets and excludes sibling, parameter and TDZ leakage',
