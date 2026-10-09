@@ -3,15 +3,21 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'git
 /**
  * Interpret a C++ import capture into a ParsedImport.
  *
- * C++ has three import forms:
- *   1. #include "file.h"  → wildcard import (all symbols from header)
- *   2. using namespace X; → wildcard import (all symbols from namespace X)
- *   3. using X::name;     → named import (single symbol from namespace X)
+ * Header includes become wildcard file imports. Namespace using captures
+ * are resolved separately against exact namespace members and their lexical
+ * declaration positions by populateCppUsingBindings.
  *
  * Angle `#include <...>` sets `isSystem`. The resolver searches header
  * paths for that form and does not use the basename index.
  */
 export function interpretCppImport(captures: CaptureMatch): ParsedImport | null {
+  // Namespace using facts are linked by populateCppUsingBindings. They are
+  // not file imports: suffix-matching a namespace against a header is wrong.
+  if (
+    captures['@import.using-decl'] !== undefined ||
+    captures['@import.using-namespace'] !== undefined
+  )
+    return null;
   const source = captures['@import.source']?.text;
   if (source === undefined) return null;
 
@@ -19,13 +25,13 @@ export function interpretCppImport(captures: CaptureMatch): ParsedImport | null 
   const kind = captures['@import.kind']?.text;
 
   if (kind === 'named') {
-    // using X::name — named import
+    // Compatibility for synthetic named-import captures without a using marker.
     const importedName = captures['@import.name']?.text;
     if (importedName === undefined) return null;
     return { kind: 'named', targetRaw: source, localName: importedName, importedName };
   }
 
-  // #include or using namespace — wildcard import
+  // #include — wildcard file import
   return { kind: 'wildcard', targetRaw: source, isSystem };
 }
 

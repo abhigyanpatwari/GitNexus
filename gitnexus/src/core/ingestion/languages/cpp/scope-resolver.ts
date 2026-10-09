@@ -54,6 +54,11 @@ import {
 } from './member-lookup.js';
 import { stripCppSpecifiers } from './interpret.js';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import {
+  clearCppUsingDeclarations,
+  populateCppIncludedUsingClaims,
+  populateCppUsingBindings,
+} from './using-bindings.js';
 
 /** A pointee worth binding: a bare identifier, not `T**`, `T[]`, `A::B` or a
  *  template spelling. Hoisted — a literal here would mint a fresh RegExp on
@@ -115,6 +120,7 @@ export const cppScopeResolver: ScopeResolver = {
     clearCppInlineNamespaces();
     clearCppUserDefinedConversions();
     clearCppMemberLookupState();
+    clearCppUsingDeclarations();
     return loadCFamilyResolutionConfig(repoPath, CPP_HEADER_EXTENSIONS);
   },
 
@@ -206,6 +212,21 @@ export const cppScopeResolver: ScopeResolver = {
   populateWorkspaceOwners: (parsedFiles: readonly ParsedFile[]) => {
     populateCppDependentBases(parsedFiles);
   },
+
+  populateWorkspaceReferences: (parsedFiles, context) => {
+    const allFilePaths = new Set(parsedFiles.map((parsed) => parsed.filePath));
+    populateCppIncludedUsingClaims(parsedFiles, (parsed, imported) =>
+      cppScopeResolver.resolveImportTarget(
+        imported.targetRaw,
+        parsed.filePath,
+        allFilePaths,
+        context.resolutionConfig,
+        { parsedFiles, parsedImport: imported },
+      ),
+    );
+  },
+
+  populateNamespaceSiblings: populateCppUsingBindings,
 
   // Simple `isSuperReceiver` returns false for C++. Real super
   // classification is caller-context-dependent and lives in
@@ -356,43 +377,7 @@ export const cppScopeResolver: ScopeResolver = {
   // specializations with explicit type arguments contribute associated
   // namespaces. Function-pointer args and full conversion-ranking remain
   // excluded.
-  resolveAdlCandidates: (site, callerParsed, scopes, parsedFiles) => {
-    // `using ns::name;` introduces `name` into ordinary unqualified lookup.
-    // For template-class method bodies, lexical scope walks can miss this
-    // named-using visibility; recover by resolving the imported namespace
-    // member directly when the local call name matches a named using import.
-    const usingNamedHits: SymbolDefinition[] = [];
-    const seenUsing = new Set<string>();
-    for (const imp of callerParsed.parsedImports) {
-      if (imp.kind !== 'named') continue;
-      if (imp.localName !== site.name) continue;
-      const member = resolveCppQualifiedNamespaceMember(
-        imp.targetRaw,
-        imp.importedName,
-        parsedFiles,
-        scopes,
-      );
-      if (member === undefined || member === 'ambiguous') continue;
-      if (seenUsing.has(member.nodeId)) continue;
-      seenUsing.add(member.nodeId);
-      usingNamedHits.push(member);
-    }
-    const adlHits = pickCppAdlCandidates(site, callerParsed, scopes, parsedFiles);
-    if (usingNamedHits.length === 0) return adlHits;
-    if (adlHits === undefined || adlHits.length === 0) return usingNamedHits;
-    const merged: SymbolDefinition[] = [];
-    const seen = new Set<string>();
-    for (const hit of usingNamedHits) {
-      seen.add(hit.nodeId);
-      merged.push(hit);
-    }
-    for (const hit of adlHits) {
-      if (seen.has(hit.nodeId)) continue;
-      seen.add(hit.nodeId);
-      merged.push(hit);
-    }
-    return merged;
-  },
+  resolveAdlCandidates: pickCppAdlCandidates,
 
   // C++ qualified namespace-member resolution (U5 of plan 2026-05-13-001).
   // Handles `outer::foo()` where `outer` is a namespace (not a class).
