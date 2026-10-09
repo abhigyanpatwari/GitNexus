@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { ResolutionOutcome } from '../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
+import { FIXTURE_ANCHORS, anchorDrift } from './expectations.js';
 import { formatAccuracyMarkdown, scoreAccuracy, type KnownGapManifest } from './score.js';
 
 // Shapes read from tool outputs, after need() has validated each field used.
@@ -138,6 +140,13 @@ try {
   const dbPath = path.join(storagePath, 'lbug');
   await fs.cp(path.join(HERE, 'fixtures'), repoPath, { recursive: true });
   await fs.mkdir(storagePath, { recursive: true });
+  const drift = anchorDrift((file) =>
+    readFileSync(path.join(HERE, 'fixtures', file), 'utf8').split(/\r?\n/),
+  );
+  need(
+    drift.length === 0,
+    `Fixture line anchors drifted; update FIXTURE_ANCHORS in expectations.ts: ${drift.join('; ')}`,
+  );
   const pipeline = await runPipelineFromRepo(repoPath, () => {}, {
     pdg: true,
     workerPoolSize: 1,
@@ -246,11 +255,17 @@ try {
       'Inconsistent rename totals',
     );
     const key = (edit: (typeof edits)[number]) => `${edit.file}:${edit.line}:${edit.text}`;
+    const at = (edit: (typeof edits)[number], ...anchors: Array<{ file: string; line: number }>) =>
+      anchors.some((anchor) => edit.file === anchor.file && edit.line === anchor.line);
     const comment = (edit: (typeof edits)[number]) =>
-      edit.file === 'rename/writer.ts' && [10, 11].includes(edit.line);
+      at(edit, FIXTURE_ANCHORS.writerComment, FIXTURE_ANCHORS.writerString);
     const reference = (edit: (typeof edits)[number]) =>
-      (edit.file === 'rename/writer.ts' && [2, 8].includes(edit.line)) ||
-      (edit.file === 'rename/caller.ts' && edit.line === 3);
+      at(
+        edit,
+        FIXTURE_ANCHORS.writerCloseDeclaration,
+        FIXTURE_ANCHORS.writerCloseCall,
+        FIXTURE_ANCHORS.callerCloseCall,
+      );
     observations['rename.references'] = edits.filter(reference).map(key);
     observations['rename.comments-strings'] = edits.filter(comment).map(key);
     observations['rename.homonyms'] = edits
@@ -355,7 +370,7 @@ try {
         (finding) =>
           !finding.interprocedural &&
           finding.file === 'src/security.ts' &&
-          finding.functionLine === 22,
+          finding.functionLine === FIXTURE_ANCHORS.directUnsafe.line,
       )
       .flatMap((finding) => [
         `function@${finding.functionLine}`,

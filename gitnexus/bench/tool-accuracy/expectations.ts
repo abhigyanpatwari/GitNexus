@@ -1,3 +1,61 @@
+/**
+ * The single place that pins fixture line numbers. run.ts buckets observations by these anchors
+ * and the fixed answers below are built from them, so a fixture edit is one reviewed change here.
+ * `anchorDrift` fails loudly (run.ts and a unit test) when a fixture line no longer holds the
+ * pinned text, instead of letting observations drift into the wrong bucket.
+ */
+export const FIXTURE_ANCHORS = {
+  writerCloseDeclaration: { file: 'rename/writer.ts', line: 2, text: 'close(): void {}' },
+  writerCloseCall: { file: 'rename/writer.ts', line: 8, text: 'writer.close();' },
+  callerCloseCall: { file: 'rename/caller.ts', line: 3, text: 'writer.close();' },
+  writerComment: {
+    file: 'rename/writer.ts',
+    line: 10,
+    text: '// close is a comment, not a reference.',
+  },
+  writerString: { file: 'rename/writer.ts', line: 11, text: "export const title = 'close';" },
+  runGit: {
+    file: 'src/security.ts',
+    line: 4,
+    text: 'export function runGit(args: string): string {',
+  },
+  blameSummary: {
+    file: 'src/security.ts',
+    line: 7,
+    text: 'export function blameSummary(ref: string): string {',
+  },
+  handleUnsafe: {
+    file: 'src/security.ts',
+    line: 14,
+    text: 'export function handleUnsafe(req: any): string {',
+  },
+  directUnsafe: {
+    file: 'src/security.ts',
+    line: 22,
+    text: 'export function directUnsafe(req: any): void {',
+  },
+  directUnsafeSource: {
+    file: 'src/security.ts',
+    line: 23,
+    text: 'const command = req.query.command as string;',
+  },
+  directUnsafeSink: { file: 'src/security.ts', line: 24, text: 'execSync(command);' },
+} as const satisfies Record<string, { file: string; line: number; text: string }>;
+
+const A = FIXTURE_ANCHORS;
+
+/** Anchors whose fixture line (1-based) no longer holds the pinned text; empty when in sync. */
+export function anchorDrift(readLines: (file: string) => string[]): string[] {
+  return Object.entries(FIXTURE_ANCHORS).flatMap(([name, anchor]) => {
+    const actual = readLines(anchor.file)[anchor.line - 1]?.trim();
+    return actual === anchor.text
+      ? []
+      : [
+          `${name}: ${anchor.file}:${anchor.line} is ${JSON.stringify(actual)}, expected ${JSON.stringify(anchor.text)}`,
+        ];
+  });
+}
+
 /** Fixed answers reviewed from the fixture source, never learned from tool output. */
 export const EXPECTATIONS = [
   {
@@ -5,9 +63,9 @@ export const EXPECTATIONS = [
     issue: 3486,
     title: 'All resolved Writer.close references',
     expected: [
-      'rename/caller.ts:3:writer.closeWriter();',
-      'rename/writer.ts:2:closeWriter(): void {}',
-      'rename/writer.ts:8:writer.closeWriter();',
+      `rename/caller.ts:${A.callerCloseCall.line}:writer.closeWriter();`,
+      `rename/writer.ts:${A.writerCloseDeclaration.line}:closeWriter(): void {}`,
+      `rename/writer.ts:${A.writerCloseCall.line}:writer.closeWriter();`,
     ],
   },
   {
@@ -82,11 +140,11 @@ export const EXPECTATIONS = [
     issue: 3491,
     title: 'Cross-function source, sink and every hop are 1-based',
     expected: [
-      'source handleUnsafe@14',
-      'sink runGit@4',
-      'hop 0 handleUnsafe@14',
-      'hop 1 blameSummary@7',
-      'hop 2 runGit@4',
+      `source handleUnsafe@${A.handleUnsafe.line}`,
+      `sink runGit@${A.runGit.line}`,
+      `hop 0 handleUnsafe@${A.handleUnsafe.line}`,
+      `hop 1 blameSummary@${A.blameSummary.line}`,
+      `hop 2 runGit@${A.runGit.line}`,
     ],
   },
   {
@@ -94,11 +152,11 @@ export const EXPECTATIONS = [
     issue: 3491,
     title: 'Statement-level source, sink and hops are 1-based',
     expected: [
-      'function@22',
-      'source command@23',
-      'sink@24',
-      'hop 0 command@23',
-      'hop 1 command@24',
+      `function@${A.directUnsafe.line}`,
+      `source command@${A.directUnsafeSource.line}`,
+      `sink@${A.directUnsafeSink.line}`,
+      `hop 0 command@${A.directUnsafeSource.line}`,
+      `hop 1 command@${A.directUnsafeSink.line}`,
     ],
   },
   {

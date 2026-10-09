@@ -67,6 +67,7 @@ baseline-update command or production-engine fix in this corpus. The gate:
 - Rejects a passing check whose allowance remains: **remove the allowance in the
   PR that repairs the case**, so the fixed answer protects future releases.
 
-Changing a fixture requires reviewing its fixed answers and line literals in
-`expectations.ts`. Broadening an allowance requires review of the actual repro;
+Changing a fixture requires reviewing its fixed answers and the line anchors in
+`FIXTURE_ANCHORS` (`expectations.ts`); the runner and a unit test fail when an anchor
+no longer matches its fixture line. Broadening an allowance requires review of the actual repro;
 never change an expected answer simply to match current output.

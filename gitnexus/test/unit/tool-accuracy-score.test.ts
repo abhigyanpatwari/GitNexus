@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { EXPECTATIONS } from '../../bench/tool-accuracy/expectations.js';
+import {
+  EXPECTATIONS,
+  FIXTURE_ANCHORS,
+  anchorDrift,
+} from '../../bench/tool-accuracy/expectations.js';
 import {
   formatAccuracyMarkdown,
   scoreAccuracy,
@@ -184,5 +188,27 @@ describe('deterministic tool-accuracy scoring and release gate', () => {
     );
     expect(scoreAccuracy(perfect(), EMPTY, { ...SOURCE, sha: '' }).gate.passed).toBe(false);
     expect(scoreAccuracy(perfect(), EMPTY, { ...SOURCE, fixtureSha: '' }).gate.passed).toBe(false);
+  });
+
+  it('keeps every pinned fixture line anchor in sync with the fixture source', () => {
+    const fixtureLines = (file: string) =>
+      readFileSync(
+        new URL(`../../bench/tool-accuracy/fixtures/${file}`, import.meta.url),
+        'utf8',
+      ).split(/\r?\n/);
+    expect(anchorDrift(fixtureLines)).toEqual([]);
+  });
+
+  it('reports the drifted anchor when a fixture line moves instead of mis-bucketing it', () => {
+    const shifted = (file: string) => [
+      '// inserted above',
+      ...readFileSync(
+        new URL(`../../bench/tool-accuracy/fixtures/${file}`, import.meta.url),
+        'utf8',
+      ).split(/\r?\n/),
+    ];
+    const drift = anchorDrift(shifted);
+    expect(drift).toHaveLength(Object.keys(FIXTURE_ANCHORS).length);
+    expect(drift[0]).toContain('writerCloseDeclaration: rename/writer.ts:2');
   });
 });
