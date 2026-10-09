@@ -285,6 +285,13 @@ how run 33962002890 lost 51 finished sessions. Local runs are uncapped.
 Both skill evolution and release evaluation manage the existing dedicated EC2
 runner through hosted startup and cleanup jobs. They share a concurrency group
 for the whole run, so neither can stop the instance during the other's work.
+GitHub keeps only one pending run per group, even with `cancel-in-progress:
+false`: a newer queued run of either workflow cancels the older pending one.
+A release evaluation dispatched for a stable publish can therefore be dropped
+while it waits behind a running evolution. Do not queue another run behind a
+pending release evaluation, and confirm its **Start the dedicated EC2 runner**
+job ran before relying on its evidence. If the run shows Cancelled, dispatch it
+again once the group is free.
 Startup waits for EC2 running and both health checks, then a native pickup probe
 must finish within five minutes. If the probe fails, the hosted check cancels
 its own run to clear the queued job. A second hosted watchdog bounds pickup of

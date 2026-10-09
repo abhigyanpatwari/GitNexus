@@ -65,11 +65,15 @@ def stop_deadline(schedule: str, *, now: datetime | None = None) -> int:
     return int(deadline.timestamp())
 
 
+class CommandError(RuntimeError):
+    """The AWS CLI call itself failed, timed out, or returned unusable output."""
+
+
 def aws(values: dict[str, str], operation: str, *extra: str, until: float | None = None) -> dict:
     """Keep each command within the remaining budget and hide AWS diagnostics."""
     timeout = 30 if until is None else min(30, until - time.monotonic())
     if timeout <= 0:
-        raise RuntimeError("EC2 command deadline expired")
+        raise CommandError("EC2 command deadline expired")
     try:
         result = subprocess.run(
             [
@@ -91,15 +95,15 @@ def aws(values: dict[str, str], operation: str, *extra: str, until: float | None
         )
     except (subprocess.TimeoutExpired, OSError):
         # TimeoutExpired includes the full command; never expose private IDs.
-        raise RuntimeError(f"EC2 {operation} command failed or timed out") from None
+        raise CommandError(f"EC2 {operation} command failed or timed out") from None
     if result.returncode:
-        raise RuntimeError(f"EC2 {operation} failed; verify the protected role's scoped permissions")
+        raise CommandError(f"EC2 {operation} failed; verify the protected role's scoped permissions")
     try:
         response = json.loads(result.stdout)
     except (json.JSONDecodeError, TypeError):
-        raise RuntimeError(f"EC2 {operation} returned an invalid response") from None
+        raise CommandError(f"EC2 {operation} returned an invalid response") from None
     if not isinstance(response, dict):
-        raise RuntimeError(f"EC2 {operation} returned an invalid response")
+        raise CommandError(f"EC2 {operation} returned an invalid response")
     return response
 
 
@@ -147,8 +151,18 @@ def pause(until: float) -> None:
 def stop(values: dict[str, str], *, timeout: float = STOP_TIMEOUT) -> None:
     """Gracefully stop and observe stopped; an accepted API call is insufficient."""
     until = time.monotonic() + timeout
+    failure: CommandError | None = None
     while time.monotonic() < until:
-        state = instance_state(values, until=until)
+        try:
+            state = instance_state(values, until=until)
+        except CommandError as error:
+            # A failed or timed-out describe is unknown state, not proof of
+            # either outcome. Keep observing within the same stop budget; an
+            # unusable state or identity mismatch still fails at once.
+            failure = error
+            pause(until)
+            continue
+        failure = None
         if state == "stopped":
             print("Dedicated EC2 instance confirmed stopped.")
             return
@@ -162,6 +176,8 @@ def stop(values: dict[str, str], *, timeout: float = STOP_TIMEOUT) -> None:
         # StopInstances is invalid for pending instances. Wait for running; for
         # stopping instances, wait for the real terminal stopped state.
         pause(until)
+    if failure is not None:
+        raise RuntimeError(f"EC2 shutdown deadline expired after: {failure}; use the external stop watchdog")
     raise RuntimeError("EC2 shutdown deadline expired; use the external stop watchdog")
 
 

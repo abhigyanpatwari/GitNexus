@@ -71,6 +71,19 @@ def test_release_probe_skips_paid_calls_and_paid_job_has_pickup_watchdog():
     assert watch["steps"][-1]["if"] == "failure()"
 
 
+@pytest.mark.parametrize(
+    "name,paid,watch",
+    [
+        ("gitnexus-skill-evolution.yml", "evolve", "watch-evolve-pickup"),
+        ("release-evaluation.yml", "evaluate", "watch-evaluate-pickup"),
+    ],
+)
+def test_pickup_watchdog_names_the_paid_job_it_bounds(name, paid, watch):
+    jobs = workflow(name)["jobs"]
+    command = f'python3 .github/scripts/evolution-runner-ready.py --job-name "{jobs[paid]["name"]}"'
+    assert [step.get("run") for step in jobs[watch]["steps"]].count(command) == 1
+
+
 def test_release_comparison_is_scheduled_or_manual_and_gates_outcomes():
     document = workflow("release-evaluation.yml")
     # PyYAML parses the bare `on` key as True.

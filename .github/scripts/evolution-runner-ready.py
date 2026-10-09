@@ -10,10 +10,8 @@ import sys
 import time
 
 
-def wait_for_runner(
-    *, timeout: float = 300, evolve: bool = False, job_name: str | None = None
-) -> None:
-    """Require probe success or bound pickup of the actual paid job."""
+def wait_for_runner(*, timeout: float = 300, job_name: str | None = None) -> None:
+    """Require probe success, or bound pickup of the named paid job."""
     repository = os.environ.get("GITHUB_REPOSITORY", "")
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     if repository != "abhigyanpatwari/GitNexus" or not re.fullmatch(r"\d+", run_id):
@@ -21,13 +19,10 @@ def wait_for_runner(
             "runner pickup requires this repository's current workflow run"
         )
     until = time.monotonic() + timeout
-    paid = evolve or job_name is not None
-    job_name = job_name or (
-        "Propose, benchmark, and gate skill candidates"
-        if evolve
-        else "Verify the runner service is online"
-    )
-    while time.monotonic() < until:
+    paid = job_name is not None
+    job_name = job_name or "Verify the runner service is online"
+    # Never start a request with no time left, nor let one outlive the deadline.
+    while (remaining := until - time.monotonic()) > 0:
         result = subprocess.run(
             [
                 "gh",
@@ -36,8 +31,7 @@ def wait_for_runner(
             ],
             capture_output=True,
             text=True,
-            # Never let the final request outlive the pickup deadline.
-            timeout=max(1, min(30, until - time.monotonic())),
+            timeout=min(30, remaining),
         )
         if result.returncode:
             raise RuntimeError(
@@ -71,10 +65,10 @@ if __name__ == "__main__":
         args = sys.argv[1:]
         if len(args) == 2 and args[0] == "--job-name" and args[1].strip():
             wait_for_runner(job_name=args[1])
-        elif args in ([], ["--evolve"]):
-            wait_for_runner(evolve=args == ["--evolve"])
+        elif args == []:
+            wait_for_runner()
         else:
-            raise ValueError("expected no arguments, --evolve, or --job-name NAME")
+            raise ValueError("expected no arguments or --job-name NAME")
         print("The dedicated runner picked up this run's requested job.")
     except (
         ValueError,

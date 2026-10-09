@@ -50,6 +50,9 @@ def driver(monkeypatch, configured, states, *, statuses=None, errors=None):
         if operation == "start-instances":
             assert "cleanup_required=true" in configured.read_text()
         problem = errors.get(operation)
+        if isinstance(problem, list):
+            # A list scripts one outcome per call; None lets that call succeed.
+            problem = problem.pop(0) if problem else None
         if problem:
             if isinstance(problem, BaseException):
                 raise problem
@@ -212,6 +215,33 @@ def test_stop_lost_response_can_still_confirm_stopped(monkeypatch, configured):
     )
     lifecycle.stop(CONFIG, timeout=40)
     assert calls.count("stop-instances") == 1
+
+
+@pytest.mark.parametrize("problem", [subprocess.TimeoutExpired(["aws", CONFIG["EC2_INSTANCE_ID"]], 30), "denied"])
+def test_stop_keeps_observing_after_a_transient_describe_failure(monkeypatch, configured, problem):
+    calls, clock = driver(
+        monkeypatch, configured, ["running", "stopping", "stopped"], errors={"describe-instances": [problem]}
+    )
+    lifecycle.stop(CONFIG, timeout=60)
+    assert calls == [
+        "describe-instances",
+        "describe-instances",
+        "stop-instances",
+        "describe-instances",
+        "describe-instances",
+    ]
+    assert clock[0] == 30
+
+
+@pytest.mark.parametrize("problem", [subprocess.TimeoutExpired(["aws", CONFIG["EC2_INSTANCE_ID"]], 30), "denied"])
+def test_persistent_describe_failure_still_raises_at_the_stop_deadline(monkeypatch, configured, problem):
+    calls, clock = driver(monkeypatch, configured, ["running"], errors={"describe-instances": problem})
+    with pytest.raises(RuntimeError, match="shutdown deadline expired after: EC2 describe-instances") as exc:
+        lifecycle.stop(CONFIG, timeout=25)
+    assert calls == ["describe-instances"] * 3
+    assert clock[0] == 25
+    assert "private" not in str(exc.value)
+    assert CONFIG["EC2_INSTANCE_ID"] not in str(exc.value)
 
 
 def test_denied_stop_fails_bounded_without_private_diagnostics(monkeypatch, configured):

@@ -82,6 +82,16 @@
 #     Wall clock is quantised by ceil(cells_per_task / workers), and a review
 #     task is 9 cells cold, so 4 costs host contention for exactly the wall
 #     clock of 3. The next step up that buys anything is 5 (3 waves -> 2).
+#
+# Shared runner lock: this workflow and release-evaluation.yml use the one
+# concurrency group gitnexus-evolution-runner, so neither can stop the instance
+# during the other's run. GitHub keeps only ONE pending run per group, even with
+# cancel-in-progress: false: a newer queued run of either workflow cancels the
+# older pending run ("higher priority waiting request"). A release evaluation
+# dispatched for a stable publish can therefore vanish while it waits. Do not
+# queue evolution behind a pending release evaluation, and confirm the
+# evaluation's "Start the dedicated EC2 runner" job actually ran before relying
+# on its evidence; if the run shows Cancelled, dispatch it again.
 name: GitNexus skill evolution
 
 on:
@@ -266,7 +276,7 @@ jobs:
       - name: Require pickup of this run's paid evolution job
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/evolution-runner-ready.py --evolve
+        run: python3 .github/scripts/evolution-runner-ready.py --job-name "Propose, benchmark, and gate skill candidates"
       - name: Cancel this run when evolution pickup fails
         if: failure()
         env:

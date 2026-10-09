@@ -2,14 +2,15 @@
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-spec = importlib.util.spec_from_file_location(
-    "evolution_runner_ready", Path(__file__).resolve().parents[2] / ".github/scripts/evolution-runner-ready.py"
-)
+SCRIPT = Path(__file__).resolve().parents[2] / ".github/scripts/evolution-runner-ready.py"
+spec = importlib.util.spec_from_file_location("evolution_runner_ready", SCRIPT)
 bootstrap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bootstrap)
 
@@ -55,12 +56,14 @@ def test_pickup_missing_offline_or_unrelated_job_has_bounded_wait(monkeypatch, j
     assert len(calls) == 2
 
 
-def test_each_jobs_request_is_bounded_by_the_remaining_pickup_deadline(monkeypatch):
+@pytest.mark.parametrize(("timeout", "expected"), [(35, [30, 25, 15, 5]), (30.5, [30, 20.5, 10.5, 0.5])])
+def test_each_jobs_request_is_bounded_by_the_remaining_pickup_deadline(monkeypatch, timeout, expected):
     timeouts = []
     pickup_driver(monkeypatch, [[]], timeouts=timeouts)
     with pytest.raises(RuntimeError, match="before the deadline"):
-        bootstrap.wait_for_runner(timeout=35)
-    assert timeouts == [30, 25, 15, 5]
+        bootstrap.wait_for_runner(timeout=timeout)
+    # Under one second left must not round up past the deadline.
+    assert timeouts == expected
 
 
 @pytest.mark.parametrize("conclusion", ["failure", "cancelled", "skipped", "timed_out"])
@@ -90,8 +93,11 @@ def test_pickup_refuses_another_repository_or_non_numeric_run(monkeypatch):
     assert calls == []
 
 
+EVOLVE = "Propose, benchmark, and gate skill candidates"
+
+
 def evolution(status, conclusion=None):
-    return {"name": "Propose, benchmark, and gate skill candidates", "status": status, "conclusion": conclusion}
+    return {"name": EVOLVE, "status": status, "conclusion": conclusion}
 
 
 def test_evolution_watchdog_waits_for_actual_job_after_successful_probe(monkeypatch):
@@ -103,21 +109,21 @@ def test_evolution_watchdog_waits_for_actual_job_after_successful_probe(monkeypa
             [probe("completed", "success"), evolution("in_progress")],
         ],
     )
-    bootstrap.wait_for_runner(timeout=40, evolve=True)
+    bootstrap.wait_for_runner(timeout=40, job_name=EVOLVE)
     assert len(calls) == 3
 
 
 def test_evolution_watchdog_bounds_offline_runner_after_successful_probe(monkeypatch):
     calls = pickup_driver(monkeypatch, [[probe("completed", "success"), evolution("queued")]])
     with pytest.raises(RuntimeError, match="before the deadline"):
-        bootstrap.wait_for_runner(timeout=20, evolve=True)
+        bootstrap.wait_for_runner(timeout=20, job_name=EVOLVE)
     assert len(calls) == 2
 
 
 @pytest.mark.parametrize("conclusion", ["success", "failure", "timed_out"])
 def test_evolution_watchdog_accepts_already_finished_job_pickup(monkeypatch, conclusion):
     calls = pickup_driver(monkeypatch, [[evolution("completed", conclusion)]])
-    bootstrap.wait_for_runner(timeout=20, evolve=True)
+    bootstrap.wait_for_runner(timeout=20, job_name=EVOLVE)
     assert len(calls) == 1
 
 
@@ -125,7 +131,7 @@ def test_evolution_watchdog_accepts_already_finished_job_pickup(monkeypatch, con
 def test_evolution_watchdog_rejects_job_that_never_ran(monkeypatch, conclusion):
     pickup_driver(monkeypatch, [[evolution("completed", conclusion)]])
     with pytest.raises(RuntimeError, match="did not run"):
-        bootstrap.wait_for_runner(timeout=20, evolve=True)
+        bootstrap.wait_for_runner(timeout=20, job_name=EVOLVE)
 
 
 def test_reusable_workflow_probe_accepts_github_job_prefix(monkeypatch):
@@ -156,3 +162,10 @@ def test_reusable_probe_rejects_ambiguous_matching_jobs(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="multiple"):
         bootstrap.wait_for_runner(timeout=20)
+
+
+@pytest.mark.parametrize("args", [["--evolve"], ["--job-name"], ["--job-name", " "], ["--job-name", EVOLVE, "extra"]])
+def test_cli_accepts_only_the_native_probe_or_one_named_paid_job(args):
+    result = subprocess.run([sys.executable, str(SCRIPT), *args], env={}, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 1
+    assert result.stdout == "::error::expected no arguments or --job-name NAME\n"

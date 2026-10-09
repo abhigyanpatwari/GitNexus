@@ -27,6 +27,7 @@ const workflowDocument = load(workflow) as {
   jobs?: Record<
     string,
     {
+      name?: string;
       environment?: unknown;
       needs?: string | string[];
       permissions?: Record<string, string>;
@@ -147,9 +148,13 @@ describe('dedicated runner readiness', () => {
     expect(watch?.permissions).toEqual({ contents: 'read', actions: 'write' });
     expect(watch?.if).toBe('inputs.runner_only != true');
     expect(evolveJob?.needs).not.toContain('watch-evolve-pickup');
+    // The watchdog matches by job name, so a rename must update both together.
+    expect(evolveJob?.name).toBe('Propose, benchmark, and gate skill candidates');
     expect(
       watch?.steps?.some(
-        (step) => step.run === 'python3 .github/scripts/evolution-runner-ready.py --evolve',
+        (step) =>
+          step.run ===
+          `python3 .github/scripts/evolution-runner-ready.py --job-name "${evolveJob?.name}"`,
       ),
     ).toBe(true);
     expect(watch?.steps?.at(-1)?.if).toBe('failure()');
