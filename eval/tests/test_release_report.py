@@ -264,3 +264,19 @@ def test_oversized_integer_measurements_mark_evidence_incomplete_instead_of_cras
     report = build_report(measured, metadata(), now=NOW)
     assert report["complete"] is False
     assert any("untrustworthy measurement" in problem for problem in report["problems"])
+
+
+@pytest.mark.parametrize("retype", [bool, float], ids=["bool", "float"])
+def test_evidence_with_a_retyped_summary_value_is_rejected(retype):
+    measured = rows()
+    # Leave exactly one solved MCP repetition so the count is 1 (== True).
+    solved = [row for row in measured if row["arm"] == "baseline" and row["resolved"]]
+    for row in solved[1:]:
+        row.update(resolved=False, oracle_passed=False, error_kind="oracle-failed")
+    report = json.loads(json.dumps(build_report(measured, metadata(), now=NOW)))
+    validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)
+    assert report["arms"]["baseline"]["solved"] == 1
+    # Python equality treats True == 1 == 1.0; the published JSON must not.
+    report["arms"]["baseline"]["solved"] = retype(report["arms"]["baseline"]["solved"])
+    with pytest.raises(ValueError, match="outside the published report schema"):
+        validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)

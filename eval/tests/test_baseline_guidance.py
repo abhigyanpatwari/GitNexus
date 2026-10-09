@@ -68,3 +68,26 @@ def test_gitnexus_sections_are_stripped_under_commonmark_heading_indentation(ind
         "Run the unit tests.\n"
     )
     assert baseline_guidance.ordinary_repository_guidance(guidance) == "Build first.\n## Testing\nRun the unit tests.\n"
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "## GitNexus rules ##",
+        "## GitNexus rules #####",
+        "   ### GitNexus — Code Intelligence ###",
+        "##   GitNexus rules   ",
+        "##\tGitNexus rules",
+    ],
+)
+def test_gitnexus_sections_are_stripped_for_every_commonmark_atx_form(heading):
+    guidance = (
+        f"Build first.\n{heading}\nAlways consult the code graph before editing.\n## Testing\nRun the unit tests.\n"
+    )
+    assert baseline_guidance.ordinary_repository_guidance(guidance) == "Build first.\n## Testing\nRun the unit tests.\n"
+
+
+@pytest.mark.parametrize("line", ["#GitNexus rules", "    ## GitNexus rules", "####### GitNexus rules"])
+def test_lines_that_are_not_atx_headings_do_not_open_a_section(line):
+    guidance = f"{line}\nRun the unit tests.\n"
+    assert baseline_guidance.ordinary_repository_guidance(guidance) == guidance

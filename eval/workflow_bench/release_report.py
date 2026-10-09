@@ -221,7 +221,8 @@ def validate_report(
         raise ValueError("release summary does not match its measured cells")
     # Publication copies this document verbatim, so it must be exactly the
     # field-whitelisted rebuild: no extra top-level or per-run fields.
-    if json.loads(json.dumps(rebuilt, allow_nan=False)) != report:
+    # Compare serialized JSON, not Python values: True == 1 and 1.0 == 1 there.
+    if json.dumps(rebuilt, allow_nan=False, sort_keys=True) != json.dumps(report, allow_nan=False, sort_keys=True):
         raise ValueError("release evidence carries fields outside the published report schema")
 
 

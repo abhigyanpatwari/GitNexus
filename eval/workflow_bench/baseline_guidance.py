@@ -30,6 +30,20 @@ _GITNEXUS_TOOL_GUIDANCE = re.compile(
 )
 
 
+def _atx_heading(line: str) -> tuple[int, str] | None:
+    """Return (level, text) for a CommonMark ATX heading, else None.
+
+    Up to three leading spaces, 1-6 '#', then a space or end of line; an
+    optional closing run of '#' preceded by a space is not part of the text.
+    """
+
+    match = re.match(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$", line.rstrip("\r\n"))
+    if match is None:
+        return None
+    text = re.sub(r"(?:^|[ \t]+)#+$", "", match.group(2) or "").strip()
+    return len(match.group(1)), text
+
+
 def ordinary_repository_guidance(text: str) -> str:
     """Remove marked/tool-specific instructions, preserving development guidance."""
 
@@ -47,15 +61,15 @@ def ordinary_repository_guidance(text: str) -> str:
             continue
         if marked:
             continue
-        heading = re.match(r"^ {0,3}(#{1,6})\s+(.+)", line)
+        heading = _atx_heading(line)
         if heading is not None:
-            level = len(heading.group(1))
+            level, title = heading
             if section_level is not None and level <= section_level:
                 section_level = None
             skip_continuation = False
             if section_level is None and (
                 _GITNEXUS_TOOL_GUIDANCE.search(line)
-                or re.fullmatch(r"GitNexus(?:\s+rules|\s+[—-]\s+Code Intelligence)\s*", heading.group(2), re.IGNORECASE)
+                or re.fullmatch(r"GitNexus(?:\s+rules|\s+[—-]\s+Code Intelligence)\s*", title, re.IGNORECASE)
             ):
                 section_level = level
             if section_level is not None:
