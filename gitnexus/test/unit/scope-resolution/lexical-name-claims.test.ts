@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   lookupLexicalName,
+  nameClaimsFor,
+  rangesOverlap,
   type BindingRef,
   type ImportEdge,
   type Scope,
@@ -11,9 +13,9 @@ import {
   findCallableBindingInScope,
   findClassBindingInScope,
   findReceiverTypeBinding,
-  findCallableBindingsAndAdlBlocker,
   isNamespaceNameShadowed,
 } from '../../../src/core/ingestion/scope-resolution/scope/walkers.js';
+import { findCallableBindingsAndAdlBlocker } from '../../../src/core/ingestion/languages/cpp/callable-bindings.js';
 import { followChainPostFinalize } from '../../../src/core/ingestion/scope-resolution/passes/imported-return-types.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 
@@ -56,6 +58,53 @@ function indexes(
 }
 
 describe('lexical name ownership', () => {
+  it('keeps touching half-open import ranges separate', () => {
+    const earlier = { startLine: 1, startCol: 0, endLine: 1, endCol: 10 };
+    const later = { startLine: 1, startCol: 10, endLine: 1, endCol: 20 };
+    expect(rangesOverlap(earlier, later)).toBe(false);
+    expect(rangesOverlap(later, earlier)).toBe(false);
+    expect(rangesOverlap(earlier, { ...earlier, startCol: 9 })).toBe(true);
+    const edge = (atRange: typeof earlier, targetFile: string): ImportEdge => ({
+      localName: 'helper',
+      kind: 'namespace',
+      targetFile,
+      targetExportedName: '',
+      atRange,
+    });
+    const first = edge(earlier, 'earlier.ts');
+    const second = edge(later, 'later.ts');
+    const module = scope('module', null, {
+      nameClaims: [{ name: 'helper', kind: 'import', range: later }],
+      imports: [first, second],
+    });
+    expect(
+      lookupLexicalName(module.id, 'helper', { scopes: { getScope: () => module } }).imports,
+    ).toEqual([second]);
+  });
+
+  it('indexes each immutable snapshot without retaining replaced claims or import edges', () => {
+    const first: ImportEdge = {
+      localName: 'helper',
+      kind: 'namespace',
+      targetFile: 'first.ts',
+      targetExportedName: '',
+    };
+    const second: ImportEdge = { ...first, targetFile: 'second.ts' };
+    const original = scope('module', null, { imports: Object.freeze([first]) });
+    const replaced = {
+      ...original,
+      imports: Object.freeze([second]),
+      nameClaims: Object.freeze([{ name: 'helper', kind: 'blocked' as const, range }]),
+    };
+    const lookup = (owner: Scope) =>
+      lookupLexicalName(owner.id, 'helper', { scopes: { getScope: () => owner } });
+    expect(lookup(original).imports).toEqual([first]);
+    expect(lookup({ ...original, imports: replaced.imports }).imports).toEqual([second]);
+    expect(lookup(replaced).status).toBe('blocked');
+    expect(nameClaimsFor(original, 'helper')).toEqual([]);
+    expect(nameClaimsFor(replaced, 'helper')).toHaveLength(1);
+    expect(lookup(original).imports).toEqual([first]);
+  });
   const at = (line: number) => ({ startLine: line, startCol: 0, endLine: line, endCol: 20 });
   const lexical = (inner: Scope, outer: Scope, line: number, purpose: 'value' | 'type' = 'value') =>
     lookupLexicalName(
@@ -345,6 +394,50 @@ describe('lexical name ownership', () => {
     });
     expect(lexical(inner, scope('module', null), 6).typeBinding).toBe(typeRef);
   });
+  it.each(['constructor-inferred', 'assignment-inferred'] as const)(
+    'retains a %s fact assigned to the same lexical binding',
+    (source) => {
+      const typeRef: TypeRef = {
+        rawName: 'User',
+        declaredAtScope: 'fn',
+        bindingRange: at(8),
+        lookupPosition: at(8),
+        source,
+      };
+      const inner = scope('fn', 'module', {
+        nameClaims: [{ name: 'helper', kind: 'binding', range: at(4), availableFrom: at(5) }],
+        typeBindings: new Map([['helper', typeRef]]),
+      });
+      expect(lexical(inner, scope('module', null), 10).typeBinding).toBe(typeRef);
+    },
+  );
+  it.each(['constructor-inferred', 'assignment-inferred'] as const)(
+    'does not attach a later %s binder to an earlier binding during its initializer',
+    (source) => {
+      const typeRef: TypeRef = {
+        rawName: 'LaterUser',
+        declaredAtScope: 'producer',
+        bindingRange: at(8),
+        // Producer lookup happens before the later binder becomes active.
+        lookupPosition: at(8),
+        source,
+      };
+      const inner = scope('fn', 'module', {
+        nameClaims: [
+          { name: 'helper', kind: 'binding', range: at(4), availableFrom: at(5) },
+          {
+            name: 'helper',
+            kind: 'binding',
+            range: at(8),
+            availableFrom: { startLine: 8, startCol: 20 },
+          },
+        ],
+        typeBindings: new Map([['helper', typeRef]]),
+      });
+      expect(lexical(inner, scope('module', null), 8).typeBinding).toBeUndefined();
+      expect(lexical(inner, scope('module', null), 10).typeBinding).toBe(typeRef);
+    },
+  );
   it('preserves the initializer lookup position while following an alias', () => {
     const inner = scope('fn', 'module', {
       nameClaims: [{ name: 'first', kind: 'binding', range: at(3) }],
