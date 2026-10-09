@@ -15,7 +15,7 @@ import { extractParsedFile } from '../../../../src/core/ingestion/scope-extracto
 import { cppScopeResolver } from '../../../../src/core/ingestion/languages/cpp/scope-resolver.js';
 import { finalizeScopeModel } from '../../../../src/core/ingestion/finalize-orchestrator.js';
 import { populateCppUsingBindings } from '../../../../src/core/ingestion/languages/cpp/using-bindings.js';
-import { findCallableBindingsAndAdlBlocker } from '../../../../src/core/ingestion/scope-resolution/scope/walkers.js';
+import { findCallableBindingsAndAdlBlocker } from '../../../../src/core/ingestion/languages/cpp/callable-bindings.js';
 
 it('merges same-file local overloads with a named using at its declaration position', () => {
   const parsed = extractParsedFile(
