@@ -73,7 +73,7 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { collectNamespaceTargets } from '../scope/namespace-targets.js';
+import { createNamespaceTargetCache } from '../scope/namespace-target-cache.js';
 import {
   bindsTypeParameter,
   findClassBindingInScope,
@@ -1065,15 +1065,18 @@ export function emitReceiverBoundCalls(
   };
 
   for (const parsed of parsedFiles) {
-    const namespaceTargetsAt = (inScope?: ScopeId, position?: TypeRef['lookupPosition']) =>
-      collectNamespaceTargets(parsed, scopes, {
+    const namespaceCache = createNamespaceTargetCache(
+      parsed,
+      scopes,
+      {
         receiverPaths: provider.namespaceReceiverPaths,
         bindingIdentity: provider.namespaceBindingIdentity,
         skipEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
         moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
-        inScope,
-        position,
-      });
+      },
+      provider.importsBindAtLexicalScope === true,
+    );
+    const namespaceTargetsAt = namespaceCache.at;
     const namespaceContext = (inScope?: ScopeId, position?: TypeRef['lookupPosition']) => {
       const namespaceTargets = namespaceTargetsAt(inScope, position);
       return {
@@ -1104,7 +1107,6 @@ export function emitReceiverBoundCalls(
       };
     };
     const fileNamespaces = namespaceContext();
-    const namespacesByScope = new Map<string, ReturnType<typeof namespaceContext>>();
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
     // capture is a no-op and emission stays byte-identical (R4).
@@ -1117,19 +1119,9 @@ export function emitReceiverBoundCalls(
       if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
       if (site.explicitReceiver === undefined) continue;
 
-      let namespaces = fileNamespaces;
-      if (
-        provider.importsBindAtLexicalScope === true ||
-        parsed.scopes.some((scope) => scope.nameClaims !== undefined)
-      ) {
-        const namespaceKey = `${site.inScope}:${site.atRange.startLine}:${site.atRange.startCol}`;
-        let scoped = namespacesByScope.get(namespaceKey);
-        if (scoped === undefined) {
-          scoped = namespaceContext(site.inScope, site.atRange);
-          namespacesByScope.set(namespaceKey, scoped);
-        }
-        namespaces = scoped;
-      }
+      const namespaces = namespaceCache.requiresLexicalLookup
+        ? namespaceContext(site.inScope, site.atRange)
+        : fileNamespaces;
       const { namespaceTargets, fileCompoundOpts } = namespaces;
 
       const receiverName = site.explicitReceiver.name;

@@ -45,7 +45,6 @@ import {
   findAllCallableBindingCandidatesInScope,
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
-  findCallableBindingsAndAdlBlocker,
   findClassBindingInScope,
   findEnclosingClassDef,
   isClassFileImportGrounded,
@@ -87,6 +86,7 @@ export function emitFreeCallFallback(
     readonly markConstructionSites?: boolean;
     readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
     readonly isCallableVisibleFromCaller?: ScopeResolver['isCallableVisibleFromCaller'];
+    readonly resolveOrdinaryCallables?: ScopeResolver['resolveOrdinaryCallables'];
     readonly resolveAdlCandidates?: (
       site: {
         readonly name: string;
@@ -354,7 +354,10 @@ export function emitFreeCallFallback(
       // by argument types (#1578). The first-match result is kept as a
       // fallback when narrowing is indeterminate.
       if (fnDef === undefined) {
-        if (options.resolveAdlCandidates === undefined) {
+        if (
+          options.resolveAdlCandidates === undefined ||
+          options.resolveOrdinaryCallables === undefined
+        ) {
           // Non-ADL path: first-match preserves scope-chain precedence
           // (local shadows import). When a conversion-rank function is
           // available AND the binding scope contains multiple overloads,
@@ -492,14 +495,13 @@ export function emitFreeCallFallback(
             }
           }
         } else {
-          // ADL path: ISO C++ `[basic.lookup.unqual]` §7 — ADL is suppressed
-          // when ordinary lookup finds a non-function name or a block-scope
-          // function declaration.
+          // The provider owns declaration normalization and lexical barriers
+          // for its argument-dependent candidate tier.
           const {
             callables: ordinary,
             nonCallableFound,
             blockScopeDeclFound,
-          } = findCallableBindingsAndAdlBlocker(site.inScope, site.name, scopes, lookupOptions);
+          } = options.resolveOrdinaryCallables(site.inScope, site.name, scopes, lookupOptions);
           const adlSuppressed = nonCallableFound || blockScopeDeclFound;
           const adl = adlSuppressed
             ? undefined
