@@ -1,4 +1,4 @@
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, NameClaim } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getZigParser, getZigScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
@@ -1172,8 +1172,12 @@ export function emitZigScopeCaptures(
   // `Counter` from `counter.zig` below. Aliases are collected in the same
   // pass so their plain-variable group is dropped (a local Const binding
   // would outrank the import binding it stands for).
-  const importSources = new Map<string, SyntaxNode>();
+  const importSources = new Map<
+    number,
+    Map<string, { readonly statement: SyntaxNode; readonly source: SyntaxNode }>
+  >();
   const aliasDeclIds = new Set<number>();
+  const aliasSources = new Map<number, SyntaxNode>();
   // The `@import(…)` string nodes a BINDING rule (or the keyword-less
   // side-effect rule) matched, by node id, plus their texts. The catch-all
   // `@import.inline` rule matches those same builtins again; the id set
@@ -1210,10 +1214,14 @@ export function emitZigScopeCaptures(
       importSource !== undefined &&
       byName.get('import.imported') === undefined &&
       importStmt !== undefined &&
-      importStmt.parent?.type === 'source_file' &&
       isZigKeywordDeclaration(importStmt)
     ) {
-      importSources.set(importName.text, importSource);
+      const owner = zigLexicalHost(importStmt);
+      if (owner !== null) {
+        let names = importSources.get(owner.id);
+        if (names === undefined) importSources.set(owner.id, (names = new Map()));
+        names.set(importName.text, { statement: importStmt, source: importSource });
+      }
     }
   }
   for (const m of rawMatches) {
@@ -1227,47 +1235,12 @@ export function emitZigScopeCaptures(
     // answered with the first `work` in the file — `A.work` (PR #1432 review,
     // 8.4). Those stay Consts and are rewritten at their use sites instead
     // (`collectZigDeepAliases`).
-    if (
-      stmt !== undefined &&
-      ns !== undefined &&
-      importSources.has(ns.text) &&
-      zigMemberChainOf(stmt)?.members.length === 1
-    ) {
-      aliasDeclIds.add(stmt.id);
-    }
-  }
-  // Function-local `@import` bindings, keyed per enclosing callable (PR #1432
-  // review, 8.9). Finalization flattens every import of a file onto its
-  // Module scope, so two sibling fns each binding `const m = @import(…)` to a
-  // different file became ONE `m → [a.zig, b.zig]` namespace bucket and both
-  // `m.Thing{}` sites took the first target. The binding and every use of the
-  // name inside that fn are rewritten to `m$<fn>` — a spelling no Zig
-  // identifier can take — so each fn's handle is its own bucket and resolves
-  // through its own lexical import (`rewriteZigFunctionLocalImportNames`).
-  const fnLocalImports = new Map<
-    number,
-    { readonly fn: SyntaxNode; readonly names: Map<string, string> }
-  >();
-  for (const m of rawMatches) {
-    const byName = new Map(m.captures.map((c) => [c.name, c.node] as const));
-    const importName = byName.get('import.name');
-    const importStmt = byName.get('import.statement');
-    const importSource = byName.get('import.source');
-    if (importName === undefined || importStmt === undefined || importSource === undefined) {
-      continue;
-    }
-    if (!isZigKeywordDeclaration(importStmt) || isZigTypePositionImport(importStmt, importSource)) {
-      continue;
-    }
-    const fn = zigEnclosingFunction(importStmt);
-    if (fn === null) continue;
-    let entry = fnLocalImports.get(fn.id);
-    if (entry === undefined) {
-      entry = { fn, names: new Map() };
-      fnLocalImports.set(fn.id, entry);
-    }
-    if (!entry.names.has(importName.text)) {
-      entry.names.set(importName.text, zigFunctionLocalImportKey(importName.text, fn, _filePath));
+    if (stmt !== undefined && ns !== undefined && zigMemberChainOf(stmt)?.members.length === 1) {
+      const source = zigVisibleImportSource(stmt, ns.text, importSources);
+      if (source !== undefined) {
+        aliasDeclIds.add(stmt.id);
+        aliasSources.set(stmt.id, source);
+      }
     }
   }
   // Deep member aliases — `const chosen = @import("lib.zig").B.work;`,
@@ -1275,7 +1248,7 @@ export function emitZigScopeCaptures(
   // #1432 review, 8.4): the owner path is kept and the alias's use sites are
   // rewritten to qualified references (`chosen()` → `lib.B` . `work`), which
   // the namespace chain walk resolves segment by segment.
-  const deepAliases = collectZigDeepAliases(tree.rootNode, importSources, fnLocalImports);
+  const deepAliases = collectZigDeepAliases(tree.rootNode, importSources);
 
   // File-struct (top-level fields): the file IS a type named after the file.
   // Emit a Class scope over the whole file (nested under the Module scope —
@@ -1350,7 +1323,7 @@ export function emitZigScopeCaptures(
       if (claimedImportSourceIds.has(source.id)) continue;
       const sourceCapture = grouped['@import.source']!;
       if (isZigInlineImportReceiver(inlineImport) || deepAliases.inlineRoots.has(inlineImport.id)) {
-        const key = `receiver:${source.text}`;
+        const key = `receiver:${zigLexicalHost(inlineImport)?.id}:${source.text}`;
         if (importedSourceTexts.has(key)) continue;
         importedSourceTexts.add(key);
         out.push({
@@ -1385,7 +1358,7 @@ export function emitZigScopeCaptures(
       );
       const source = nodeMap['@import.source'];
       if (importRoot !== null && source !== undefined) {
-        const key = `receiver:${source.text}`;
+        const key = `receiver:${zigLexicalHost(importRoot)?.id}:${source.text}`;
         if (!importedSourceTexts.has(key)) {
           importedSourceTexts.add(key);
           out.push({
@@ -1404,7 +1377,7 @@ export function emitZigScopeCaptures(
     const aliasStmt = nodeMap['@alias.statement'];
     if (aliasStmt !== undefined) {
       if (!aliasDeclIds.has(aliasStmt.id)) continue;
-      const source = importSources.get(nodeMap['@alias.namespace']!.text)!;
+      const source = aliasSources.get(aliasStmt.id)!;
       out.push({
         '@import.statement': nodeToCapture('@import.statement', aliasStmt),
         '@import.name': nodeToCapture('@import.name', nodeMap['@alias.name']!),
@@ -1807,25 +1780,15 @@ export function emitZigScopeCaptures(
     ),
   );
 
-  // Use-site rewrites, in this order: a deep alias's receiver may itself name
-  // a fn-local import (`const m = @import(…); const w = m.B.work;`), and the
-  // second pass rewrites that name inside the receiver text it just minted.
+  // Keep the written receiver path for deep member aliases. Imported handles
+  // retain their source spelling and bind in their actual lexical scope.
   rewriteZigDeepAliasReferences(out, deepAliases.aliases);
-  rewriteZigFunctionLocalImportNames(out, fnLocalImports);
+  addZigLexicalFacts(out, tree.rootNode);
 
   return stampZigStaticGating(out, tree.rootNode);
 }
 
 // ─── Use-site rewrites (8.4 / 8.9) and result-location sites (8.6) ────────────
-
-/** The unique spelling a function-local import binding gets: `m$<callable>`
- *  — `m$f_sib_a`, `m$Reflect$string`, `m$test$L12`. `$` cannot appear in a
- *  Zig identifier, so the key collides with nothing the source declares;
- *  every non-word character of the callable's qualified name becomes `$` so
- *  the key stays a single receiver segment (a `.` would split it). */
-function zigFunctionLocalImportKey(name: string, fn: SyntaxNode, filePath: string): string {
-  return `${name}$${zigCallableQualifiedName(fn, filePath).replace(/[^\w]/g, '$')}`;
-}
 
 type ZigRange = Capture['range'];
 
@@ -1849,90 +1812,153 @@ function zigRangeWithin(inner: ZigRange, outer: ZigRange): boolean {
   return startsAfter && endsBefore;
 }
 
-/** Replace every bare identifier token `name` in `text` — outside string
- *  literals, and not the member of a `.name` access or the tail of a
- *  `@builtin` — with `replacement`. Zig forbids shadowing, so inside the
- *  region a rewrite applies to, every such token is the same binding. */
-function zigReplaceIdentifier(text: string, name: string, replacement: string): string {
-  let out = '';
-  let i = 0;
-  let inString = false;
-  while (i < text.length) {
-    const ch = text[i]!;
-    if (inString) {
-      out += ch;
-      if (ch === '\\') {
-        out += text[i + 1] ?? '';
-        i += 2;
-        continue;
-      }
-      if (ch === '"') inString = false;
-      i++;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      out += ch;
-      i++;
-      continue;
-    }
-    if (/[A-Za-z_]/.test(ch)) {
-      let j = i;
-      while (j < text.length && /\w/.test(text[j]!)) j++;
-      const word = text.slice(i, j);
-      const prev = i > 0 ? text[i - 1] : '';
-      out += word === name && prev !== '.' && prev !== '@' ? replacement : word;
-      i = j;
-      continue;
-    }
-    out += ch;
-    i++;
+/** Zig declarations belong to the nearest block, callable, or container. */
+function zigLexicalHost(node: SyntaxNode): SyntaxNode | null {
+  let parent = node.parent;
+  while (parent !== null) {
+    if (
+      parent.type === 'block' ||
+      parent.type === 'source_file' ||
+      isZigCallableNode(parent) ||
+      ZIG_CONTAINER_TYPES.has(parent.type)
+    )
+      return parent;
+    parent = parent.parent;
   }
-  return out;
+  return null;
 }
 
-/** Every capture whose text can spell a receiver, a type, a bound name or a
- *  callable-flow cell — the ones a fn-local import name can appear in. */
-const ZIG_NAME_BEARING_TAGS: readonly string[] = [
-  '@import.name',
-  '@reference.receiver',
-  '@reference.name',
-  '@type-binding.type',
-  '@callable-flow.target-name',
-  '@callable-flow.target-qualified-name',
-  '@callable-flow.receiver',
-  '@callable-flow.source',
-  '@callable-flow.destination',
-  '@callable-flow.callee',
-  '@callable-flow.direct-callee-name',
-];
+type ZigImportSources = ReadonlyMap<
+  number,
+  ReadonlyMap<string, { readonly statement: SyntaxNode; readonly source: SyntaxNode }>
+>;
 
-/** 8.9 — rewrite a fn-local import's binding and its uses to its unique key
- *  (`zigFunctionLocalImportKey`), within that fn's range only. */
-function rewriteZigFunctionLocalImportNames(
-  out: CaptureMatch[],
-  fnLocalImports: ReadonlyMap<
-    number,
-    { readonly fn: SyntaxNode; readonly names: Map<string, string> }
-  >,
-): void {
-  if (fnLocalImports.size === 0) return;
-  for (const { fn, names } of fnLocalImports.values()) {
-    const fnRange = zigNodeRange(fn);
-    for (let i = 0; i < out.length; i++) {
-      const group = out[i]!;
-      let next: Record<string, Capture> | undefined;
-      for (const tag of ZIG_NAME_BEARING_TAGS) {
-        const cap = group[tag];
-        if (cap === undefined || !zigRangeWithin(cap.range, fnRange)) continue;
-        let text = cap.text;
-        for (const [name, key] of names) text = zigReplaceIdentifier(text, name, key);
-        if (text === cap.text) continue;
-        next ??= { ...group };
-        next[tag] = { ...cap, text };
-      }
-      if (next !== undefined) out[i] = next;
+/** Container names are unordered; block variables start after their initializer. */
+function zigVisibleImportSource(
+  at: SyntaxNode,
+  name: string,
+  sources: ZigImportSources,
+): SyntaxNode | undefined {
+  let owner = zigLexicalHost(at);
+  while (owner !== null) {
+    const binding = sources.get(owner.id)?.get(name);
+    if (
+      binding !== undefined &&
+      (owner.type !== 'block' || binding.statement.endIndex <= at.startIndex)
+    ) {
+      return binding.source;
     }
+    owner = zigLexicalHost(owner);
+  }
+  return undefined;
+}
+
+function zigRangeKey(range: ZigRange): string {
+  return `${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}`;
+}
+
+/** Carry lexical ownership independently of whether the imported target exists. */
+function addZigLexicalFacts(out: CaptureMatch[], root: SyntaxNode): void {
+  const nodes = new Map<string, SyntaxNode[]>();
+  const declarations: SyntaxNode[] = [];
+  const visit = (node: SyntaxNode): void => {
+    const key = zigRangeKey(zigNodeRange(node));
+    const peers = nodes.get(key);
+    if (peers === undefined) nodes.set(key, [node]);
+    else peers.push(node);
+    if (node.type === 'variable_declaration' || node.type === 'parameter') declarations.push(node);
+    for (const child of node.namedChildren) if (child !== null) visit(child);
+  };
+  visit(root);
+  const claims = new Map<number, NameClaim[]>();
+  const importedDeclarations = new Set<string>();
+  const add = (
+    owner: SyntaxNode,
+    name: string,
+    node: SyntaxNode,
+    kind: NameClaim['kind'],
+  ): void => {
+    if (name === '_') return;
+    const range = zigNodeRange(node);
+    let list = claims.get(owner.id);
+    if (list === undefined) claims.set(owner.id, (list = []));
+    if (
+      list.some(
+        (c) => c.name === name && c.kind === kind && zigRangeKey(c.range) === zigRangeKey(range),
+      )
+    )
+      return;
+    list.push({
+      name,
+      range,
+      kind,
+      ...(owner.type === 'block' && node.type === 'variable_declaration'
+        ? {
+            availableFrom: { startLine: range.endLine, startCol: range.endCol },
+            inactive: 'outer' as const,
+          }
+        : {}),
+    });
+  };
+  for (let i = 0; i < out.length; i++) {
+    const group = out[i]!;
+    const anchor = group['@import.statement'] ?? group['@import.wildcard'];
+    if (anchor === undefined) continue;
+    const node = nodes
+      .get(zigRangeKey(anchor.range))
+      ?.find(
+        (candidate) =>
+          candidate.type === 'variable_declaration' ||
+          candidate.type === 'builtin_function' ||
+          candidate.type === 'using_namespace_declaration',
+      );
+    if (node === undefined) continue;
+    const owner = zigLexicalHost(node);
+    if (owner === null) continue;
+    if (owner.type !== 'source_file') {
+      out[i] = { ...group, '@import.lexical': { ...anchor, name: '@import.lexical', text: '' } };
+    }
+    const name = group['@import.name']?.text;
+    if (name !== undefined) {
+      importedDeclarations.add(zigRangeKey(anchor.range));
+      add(owner, name, node, 'import');
+    }
+  }
+  for (const node of declarations) {
+    if (importedDeclarations.has(zigRangeKey(zigNodeRange(node)))) continue;
+    if (node.type === 'variable_declaration' && !isZigKeywordDeclaration(node)) continue;
+    const name = node.type === 'parameter' ? node.childForFieldName('name') : node.namedChild(0);
+    const owner = zigLexicalHost(node);
+    if (owner !== null && name?.type === 'identifier') add(owner, name.text, node, 'binding');
+  }
+  for (let i = 0; i < out.length; i++) {
+    const group = out[i]!;
+    const scopeTag = ['@scope.module', '@scope.class', '@scope.function', '@scope.block'].find(
+      (tag) => group[tag] !== undefined,
+    );
+    if (scopeTag === undefined) continue;
+    const anchor = group[scopeTag]!;
+    const node = nodes
+      .get(zigRangeKey(anchor.range))
+      ?.find((candidate) =>
+        scopeTag === '@scope.module'
+          ? candidate.type === 'source_file'
+          : scopeTag === '@scope.class'
+            ? ZIG_CONTAINER_TYPES.has(candidate.type)
+            : scopeTag === '@scope.function'
+              ? isZigCallableNode(candidate)
+              : candidate.type === 'block',
+      );
+    // The synthetic file-struct Class shares its range with the Module.
+    // File imports and their public forwarding names continue to belong to Module.
+    if (node === undefined || (node.type === 'source_file' && scopeTag !== '@scope.module'))
+      continue;
+    const names = claims.get(node.id);
+    if (names === undefined) continue;
+    out[i] = {
+      ...group,
+      '@scope.name-claims': { ...anchor, name: '@scope.name-claims', text: JSON.stringify(names) },
+    };
   }
 }
 
@@ -1968,18 +1994,13 @@ function zigMemberChainOf(
   return { root: cur, members };
 }
 
-/** 8.4 — every deep member alias in the tree whose root is a module handle:
- *  a file-level `@import` binding of this file, a fn-local one (its key is
- *  applied by the later rewrite), or an inline `@import(…)`. Returns the
+/** 8.4 — every deep member alias in the tree whose root is a visible module
+ *  handle or an inline `@import(…)`. Returns the
  *  aliases, the declaring nodes (so their import / alias groups are handled
  *  as deep aliases) and the inline-import roots (bound as namespaces). */
 function collectZigDeepAliases(
   root: SyntaxNode,
-  importSources: ReadonlyMap<string, SyntaxNode>,
-  fnLocalImports: ReadonlyMap<
-    number,
-    { readonly fn: SyntaxNode; readonly names: Map<string, string> }
-  >,
+  importSources: ZigImportSources,
 ): {
   readonly aliases: readonly ZigDeepAlias[];
   readonly declIds: ReadonlySet<number>;
@@ -1992,13 +2013,11 @@ function collectZigDeepAliases(
     if (node.type === 'variable_declaration' && isZigKeywordDeclaration(node)) {
       const chain = zigMemberChainOf(node);
       if (chain !== undefined && chain.members.length >= 2) {
-        const fn = zigEnclosingFunction(node);
         const isHandle =
           isZigImportBuiltin(chain.root) ||
-          importSources.has(chain.root.text) ||
-          (fn !== null && fnLocalImports.get(fn.id)?.names.has(chain.root.text) === true);
+          zigVisibleImportSource(node, chain.root.text, importSources) !== undefined;
         if (isHandle) {
-          const host = zigIdentityHost(node);
+          const host = zigLexicalHost(node);
           const receiver = [chain.root.text, ...chain.members.slice(0, -1).map((m) => m.text)].join(
             '.',
           );
@@ -2006,7 +2025,18 @@ function collectZigDeepAliases(
             name: node.namedChild(0)!.text,
             receiver,
             member: chain.members[chain.members.length - 1]!.text,
-            range: host === null || host.type === 'source_file' ? null : zigNodeRange(host),
+            range:
+              host === null || host.type === 'source_file'
+                ? null
+                : {
+                    ...zigNodeRange(host),
+                    ...(host.type === 'block'
+                      ? {
+                          startLine: node.endPosition.row + 1,
+                          startCol: node.endPosition.column,
+                        }
+                      : {}),
+                  },
           });
           declIds.add(node.id);
           if (isZigImportBuiltin(chain.root)) inlineRoots.add(chain.root.id);
