@@ -52,6 +52,7 @@ import { reducesToContainedType } from '../typescript/interpret.js';
 const JS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set(['field_definition']);
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 import { synthesizeCjsModuleExports } from '../typescript/cjs-module-exports.js';
+import { synthesizeTsLocalImports } from '../typescript/local-loaders.js';
 import {
   isShadowedCjsExportAssignment,
   isUnexportedMemberAssignmentValue,
@@ -245,104 +246,6 @@ function inferArgType(argNode: SyntaxNode): string {
     }
     default:
       return '';
-  }
-}
-
-// ─── CJS require() decomposition ─────────────────────────────────────────
-
-/**
- * Walk the AST and synthesize `@import.*` captures for CJS `require()` calls:
- *
- *   - `const { X, Y } = require('./m')` → one match per destructured name,
- *     `@import.kind = 'named'`, `@import.name = X / Y`.
- *   - `const X = require('./m')` → `@import.kind = 'namespace'`,
- *     `@import.alias = X` (the whole module is bound to X).
- *   - `require('./m')` as a bare expression-statement → side-effect.
- *
- * CJS named-alias form (`const { X: alias } = require('./m')`) emits
- * `@import.kind = 'named-alias'` with `@import.name = X` and
- * `@import.alias = alias`.
- *
- * The synthesized markers are identical to those produced by
- * `splitImportStatement` for ESM, so `interpretJsImport` can delegate
- * unchanged to `interpretTsImport` for all cases.
- */
-function synthesizeCjsImports(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
-
-    if (node.type !== 'call_expression') continue;
-
-    // Require call: function must be bare identifier "require".
-    const fn = node.childForFieldName('function');
-    if (fn === null || fn.type !== 'identifier' || fn.text !== 'require') continue;
-
-    const argsNode = node.childForFieldName('arguments');
-    if (argsNode === null) continue;
-
-    // Source must be a string literal.
-    const firstArg = argsNode.namedChild(0);
-    if (firstArg === null || firstArg.type !== 'string') continue;
-    const rawSource = firstArg.text; // includes surrounding quotes
-    const source = firstArg.namedChild(0)?.text ?? rawSource.slice(1, -1);
-
-    const parent = node.parent;
-
-    // Case 1: const { X } = require('./m') OR const X = require('./m')
-    if (parent?.type === 'variable_declarator') {
-      const nameNode = parent.childForFieldName('name');
-      if (nameNode === null) continue;
-
-      if (nameNode.type === 'object_pattern') {
-        // Destructured: emit one match per specifier.
-        for (const field of nameNode.namedChildren) {
-          if (field === null) continue;
-          if (field.type === 'shorthand_property_identifier_pattern') {
-            const name = field.text;
-            out.push({
-              '@import.statement': syntheticCapture('@import.statement', node, rawSource),
-              '@import.kind': syntheticCapture('@import.kind', node, 'named'),
-              '@import.name': syntheticCapture('@import.name', field, name),
-              '@import.source': syntheticCapture('@import.source', firstArg, source),
-            });
-          } else if (field.type === 'pair_pattern') {
-            const key = field.childForFieldName('key');
-            const value = field.childForFieldName('value');
-            if (key === null || value === null || value.type !== 'identifier') continue;
-            out.push({
-              '@import.statement': syntheticCapture('@import.statement', node, rawSource),
-              '@import.kind': syntheticCapture('@import.kind', node, 'named-alias'),
-              '@import.name': syntheticCapture('@import.name', key, key.text),
-              '@import.alias': syntheticCapture('@import.alias', value, value.text),
-              '@import.source': syntheticCapture('@import.source', firstArg, source),
-            });
-          }
-        }
-      } else if (nameNode.type === 'identifier') {
-        // Namespace-style: const X = require('./m') → bind whole module to X.
-        out.push({
-          '@import.statement': syntheticCapture('@import.statement', node, rawSource),
-          '@import.kind': syntheticCapture('@import.kind', node, 'namespace'),
-          '@import.alias': syntheticCapture('@import.alias', nameNode, nameNode.text),
-          '@import.source': syntheticCapture('@import.source', firstArg, source),
-        });
-      }
-      continue;
-    }
-
-    // Case 2: bare require('./m') — side-effect import.
-    if (parent?.type === 'expression_statement') {
-      out.push({
-        '@import.statement': syntheticCapture('@import.statement', node, rawSource),
-        '@import.kind': syntheticCapture('@import.kind', node, 'side-effect'),
-        '@import.source': syntheticCapture('@import.source', firstArg, source),
-      });
-    }
   }
 }
 
@@ -1257,8 +1160,8 @@ export function emitJsScopeCaptures(
   }
 
   // Post-query synthesis passes.
-  synthesizeCjsImports(tree.rootNode, out);
-  synthesizeCjsModuleExports(tree.rootNode, filePath, out);
+  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out);
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
   synthesizeJsDocBindings(tree.rootNode, out);
   synthesizeConstructorFieldBindings(tree.rootNode, out);
   synthesizeDestructuringBindings(tree.rootNode, out);
