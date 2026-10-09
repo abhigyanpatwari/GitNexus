@@ -20,7 +20,10 @@
  * as-is for TypeScript, Java, Kotlin, Ruby, etc.
  */
 
+import { lookupLexicalName } from 'gitnexus-shared';
 import type {
+  NameLookupOptions,
+  NameClaimResult,
   BindingRef,
   ParsedFile,
   Scope,
@@ -44,6 +47,94 @@ import {
 import { definitionIdPosition } from '../utils/definition-id.js';
 
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
+
+interface IndexedNameLookupOptions extends NameLookupOptions {
+  /** Include-defined overloads share module/namespace lookup tiers in ADL. */
+  readonly includeUnclaimedOverloads?: boolean;
+}
+
+/** Resolve ownership before any target-kind filtering or global fallback. */
+export function lookupNameClaim(
+  startScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+  options: IndexedNameLookupOptions = {},
+): NameClaimResult {
+  return lookupLexicalName(
+    startScope,
+    name,
+    {
+      scopes: scopes.scopeTree,
+      importsAt: (scope) => scopes.imports?.get(scope.id) ?? scope.imports,
+      bindingsAt: (scope, spelling) => {
+        const local = scope.bindings.get(spelling) ?? [];
+        const augmented = scopes.bindingAugmentations.get(scope.id)?.get(spelling) ?? [];
+        // Unrelated claims and inactive using directives must not change the
+        // legacy import tier. ADL can retain include overloads at namespace or
+        // module scope; block-local declarations still hide outer overloads.
+        if (local.length > 0 && !scope.nameClaims?.some((claim) => claim.name === spelling)) {
+          const included =
+            options.includeUnclaimedOverloads === true &&
+            (scope.kind === 'Module' || scope.kind === 'Namespace') &&
+            local.every((binding) => binding.def.type === 'Function')
+              ? (scopes.bindings.get(scope.id)?.get(spelling) ?? []).filter(
+                  (binding) =>
+                    binding.def.type === 'Function' && binding.via?.kind === 'wildcard-expanded',
+                )
+              : [];
+          return [
+            ...local,
+            ...included,
+            ...augmented.filter(
+              (binding) =>
+                binding.declarationRange !== undefined || binding.availableFrom !== undefined,
+            ),
+          ];
+        }
+        return [
+          ...local,
+          ...(scopes.bindings.get(scope.id)?.get(spelling) ?? []),
+          ...augmented,
+          ...(collectNamespaceFqnBindings(scope.id, spelling, scopes) ?? []),
+          ...(scopes.workspaceFqnBindings?.get(spelling) ?? []),
+        ];
+      },
+    },
+    options,
+  );
+}
+
+/** Provider claims are strict; legacy records retain their historical kind namespaces. */
+export function hasExplicitNameClaim(claim: NameClaimResult, name: string): boolean {
+  return (
+    claim.claims.length > 0 ||
+    claim.scope?.lexicalNames?.has(name) === true ||
+    claim.imports.some((edge) => edge.linkStatus === 'unresolved')
+  );
+}
+
+function lookupMatchingNameClaim(
+  startScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+  predicate: (def: SymbolDefinition) => boolean,
+  options?: NameLookupOptions,
+): NameClaimResult {
+  let current: ScopeId | null = startScope;
+  const seen = new Set<ScopeId>();
+  while (current !== null && !seen.has(current)) {
+    seen.add(current);
+    const claim = lookupNameClaim(current, name, scopes, options);
+    if (
+      claim.status === 'absent' ||
+      hasExplicitNameClaim(claim, name) ||
+      claim.bindings.some((b) => predicate(b.def))
+    )
+      return claim;
+    current = claim.scope?.lookupPolicy?.parentScope ?? claim.scope?.parent ?? null;
+  }
+  return { status: 'absent', bindings: [], imports: [], claims: [] };
+}
 
 /**
  * Look up binding refs at `scopeId` for `name`, consulting both the
@@ -301,25 +392,32 @@ export function isReceiverOwnedButUnbound(
  * caller, suppressing a resolution costs a missing edge, while trusting a
  * corrupt scope chain costs a wrong one.
  *
- * Reads `scope.bindings` DIRECTLY rather than through `lookupBindingsAt`, and
- * that is deliberate — the opposite of the fix #2745 applied to Rust's
- * `headBoundLocally`. There the question was "is this name bound at all?", so
- * missing the finalized/augmented import channels lost real bindings. Here the
- * question is "does something LOCAL shadow the import?", and the import's own
- * finalized binding is the one thing that must NOT count: routing this through
- * `lookupBindingsAt` would find the namespace import shadowing itself and
- * suppress every namespace receiver in the workspace. Locals, parameters and
- * lexical names all live in the scope's own tables, which is exactly the set
- * this walk wants.
+ * Provider claims first select the owning declaration and its active import
+ * provenance, so a local loader does not shadow its own namespace handle.
+ * Without an explicit claim, the compatibility walk inspects local scope
+ * tables directly. Finalized import bindings must not count as local shadows
+ * in that fallback, or a namespace import would suppress itself.
  */
 export function isNamespaceNameShadowed(
   namespaceName: string,
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   skipEnclosingClasses = false,
+  position?: NameLookupOptions['position'],
 ): boolean {
   const firstDot = namespaceName.indexOf('.');
   const rootName = firstDot === -1 ? namespaceName : namespaceName.slice(0, firstDot);
+  const claim = lookupNameClaim(inScope, rootName, scopes, {
+    position,
+    purpose: 'value',
+    skipEnclosingClasses,
+  });
+  if (hasExplicitNameClaim(claim, rootName)) {
+    return !claim.imports.some(
+      (edge) =>
+        edge.kind === 'namespace' && edge.targetFile !== null && edge.linkStatus !== 'unresolved',
+    );
+  }
   let currentId: ScopeId | null = inScope;
   const visited = new Set<ScopeId>();
   while (currentId !== null) {
@@ -438,21 +536,11 @@ export function findReceiverTypeBinding(
   startScope: ScopeId,
   receiverName: string,
   scopes: ScopeResolutionIndexes,
+  options?: NameLookupOptions,
 ): TypeRef | undefined {
-  let currentId: ScopeId | null = startScope;
-  const visited = new Set<ScopeId>();
-  let moduleScopeId: ScopeId | null = null;
-  while (currentId !== null) {
-    if (visited.has(currentId)) return undefined;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return undefined;
-    const typeRef = scope.typeBindings.get(receiverName);
-    if (typeRef !== undefined) return typeRef;
-    if (scope.ownsReceivers?.has(receiverName) === true) return undefined;
-    if (scope.kind === 'Module') moduleScopeId = currentId;
-    currentId = scope.parent;
-  }
+  const claim = lookupNameClaim(startScope, receiverName, scopes, options);
+  if (claim.status !== 'absent') return claim.typeBinding;
+  const moduleScopeId = moduleScopeIdOf(startScope, scopes);
   // Fallback 1 — named namespaces accessible from this file (own + `using`d),
   // gated by `accessibleNamespacesByScope`. Consulted BEFORE the global channel
   // so a more-specific named binding wins, matching the pre-#1871 order where
@@ -543,12 +631,14 @@ export function findAllClassBindingsInScope(
   startScope: ScopeId,
   name: string,
   scopes: ScopeResolutionIndexes,
+  options?: NameLookupOptions,
 ): readonly SymbolDefinition[] {
-  return classBindingsVisibleFrom(
-    lexicalClassBindingsInScope(startScope, name, scopes),
-    name,
-    scopes,
-  );
+  const lookup = { purpose: 'type' as const, ...options };
+  const lexical = lexicalClassBindingsInScope(startScope, name, scopes, lookup);
+  if (lexical.length > 0) return lexical;
+  const claim = lookupNameClaim(startScope, name, scopes, lookup);
+  if (hasExplicitNameClaim(claim, name)) return [];
+  return classBindingsVisibleFrom(lexical, name, scopes);
 }
 
 /**
@@ -787,7 +877,7 @@ function soleBoundBaseName(bound: string): string | undefined {
   return base.length === 0 ? undefined : base;
 }
 
-export type ClassBindingLookup = {
+export type ClassBindingLookup = NameLookupOptions & {
   /**
    * When false, skip the workspace-unique QualifiedNameIndex hit (and the
    * dotted-tail variant). Default true — Go inheritance still needs that
@@ -835,8 +925,41 @@ export function findClassBindingInScope(
     );
   }
 
-  const local = walkScopeChain(startScope, receiverName, scopes, (def) => isClassLike(def.type));
+  const claim = lookupMatchingNameClaim(
+    startScope,
+    receiverName,
+    scopes,
+    (def) => isClassLike(def.type),
+    { purpose: 'type', ...lookup },
+  );
+  const local = claim.bindings.find((binding) => isClassLike(binding.def.type))?.def;
   if (local !== undefined) return local;
+  if (claim.status !== 'absent') return undefined;
+  const rootName = receiverName.split(/[.:]/, 1)[0]!;
+  if (rootName !== receiverName) {
+    const rootClaim = lookupNameClaim(startScope, rootName, scopes, { purpose: 'type', ...lookup });
+    if (rootClaim.status !== 'absent') {
+      // A selected namespace import licenses types only from its target files.
+      // A non-namespace or unresolved owner still blocks the global name index.
+      const targetFiles = new Set(
+        rootClaim.imports.flatMap((edge) =>
+          edge.kind === 'namespace' && edge.targetFile !== null && edge.linkStatus !== 'unresolved'
+            ? [edge.targetFile]
+            : [],
+        ),
+      );
+      const candidates = new Map<string, SymbolDefinition>();
+      const memberName = receiverName.slice(rootName.length).replace(/^[.:]+/, '');
+      for (const spelling of [receiverName, memberName]) {
+        for (const id of scopes.qualifiedNames.get(spelling)) {
+          const def = scopes.defs.get(id);
+          if (def !== undefined && isClassLike(def.type) && targetFiles.has(def.filePath))
+            candidates.set(def.nodeId, def);
+        }
+      }
+      return candidates.size === 1 ? candidates.values().next().value : undefined;
+    }
+  }
 
   // Fallback for languages (Go) where namespace-style imports don't
   // create scope bindings: resolve via QualifiedNameIndex. Only fires
@@ -873,7 +996,7 @@ export function findClassBindingInScope(
       const stripped = stripDecoration(current);
       if (stripped === undefined || stripped === current || stripped.length === 0) break;
       current = stripped;
-      const candidates = findAllClassBindingsInScope(startScope, current, scopes);
+      const candidates = findAllClassBindingsInScope(startScope, current, scopes, lookup);
       // Exactly one, or decline. Two same-named classes reachable from here mean
       // the decoration was carrying the only disambiguating information, and
       // picking the nearest would mint a confident wrong edge — the failure this
@@ -982,8 +1105,12 @@ function lexicalClassBindingsInScope(
   startScope: ScopeId,
   name: string,
   scopes: ScopeResolutionIndexes,
+  options?: NameLookupOptions,
 ): readonly SymbolDefinition[] {
-  return findAllBindingsInScope(startScope, name, scopes, (def) => isClassLike(def.type));
+  return findAllBindingsInScope(startScope, name, scopes, (def) => isClassLike(def.type), {
+    purpose: 'type',
+    ...options,
+  });
 }
 
 /**
@@ -1160,9 +1287,12 @@ export function resolveClassBindingForName(
    * strip is what suppresses its fallback.
    */
   stripDecoration?: DecorationStripper,
+  lookup?: ClassBindingLookup,
 ): SymbolDefinition | undefined {
-  const direct = findClassBindingInScope(scopeId, rawClassName, scopes, stripDecoration);
+  const direct = findClassBindingInScope(scopeId, rawClassName, scopes, stripDecoration, lookup);
   if (direct !== undefined) return direct;
+  const claim = lookupNameClaim(scopeId, rawClassName, scopes, { purpose: 'type', ...lookup });
+  if (hasExplicitNameClaim(claim, rawClassName)) return undefined;
 
   // NO object-type-ALIAS fallback here, and that is a decision rather than an
   // omission. This function carried one before #2833 moved it out of
@@ -1186,7 +1316,9 @@ export function resolveClassBindingForName(
   // here" AND ground (1) of the erasure rule below, and the two asked for it
   // separately, bottoming out in the same walk for a third of the cost of every
   // lookup whose declared type carries type arguments.
-  const lexical = lexicalClassBindingsInScope(scopeId, baseName, scopes);
+  const lexical = lexicalClassBindingsInScope(scopeId, baseName, scopes, lookup);
+  const baseClaim = lookupNameClaim(scopeId, baseName, scopes, { purpose: 'type', ...lookup });
+  if (lexical.length === 0 && hasExplicitNameClaim(baseClaim, baseName)) return undefined;
 
   const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
   if (wantedArgs !== undefined && wantedArgs.length > 0) {
@@ -1316,6 +1448,12 @@ export function resolveInheritanceBaseInScope(
   enclosingClassDef?: SymbolDefinition,
   lookup?: ClassBindingLookup,
 ): SymbolDefinition | undefined {
+  const claim = lookupNameClaim(startScope, baseName, scopes, { purpose: 'type', ...lookup });
+  if (
+    hasExplicitNameClaim(claim, baseName) &&
+    !claim.bindings.some((binding) => isClassLike(binding.def.type))
+  )
+    return undefined;
   // #1982: when the source wrote a qualified base (`Other::Inner`), resolve it
   // against the full-path QualifiedNameIndex FIRST, so a same-tail nested base
   // binds to the matching sibling instead of the first-inserted one that the
@@ -1670,38 +1808,10 @@ function walkScopeChain(
   name: string,
   scopes: ScopeResolutionIndexes,
   predicate: (def: SymbolDefinition) => boolean,
+  options?: NameLookupOptions,
 ): SymbolDefinition | undefined {
-  let currentId: ScopeId | null = startScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return undefined;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return undefined;
-
-    // `Object` scopes (object/record literal bodies) are a hoist
-    // boundary only -- their members are reachable via property access,
-    // never bare identifiers, so they contribute nothing to lookup
-    // (#2545/#2551). Still traverse past to the parent.
-    if (scope.kind !== 'Object') {
-      // Local first: a `const x` in this scope shadows any imported `x`.
-      const localBindings = scope.bindings.get(name);
-      if (localBindings !== undefined) {
-        for (const b of localBindings) {
-          if (predicate(b.def)) return b.def;
-        }
-      }
-
-      // Then imported/augmented bindings — only consulted when no local match.
-      const importedBindings = lookupBindingsAt(currentId, name, scopes);
-      for (const b of importedBindings) {
-        if (predicate(b.def)) return b.def;
-      }
-    }
-
-    currentId = scope.parent;
-  }
-  return undefined;
+  const claim = lookupMatchingNameClaim(startScope, name, scopes, predicate, options);
+  return claim.bindings.find((binding) => predicate(binding.def))?.def;
 }
 
 /**
@@ -1718,8 +1828,9 @@ export function findCallableBindingInScope(
   startScope: ScopeId,
   callableName: string,
   scopes: ScopeResolutionIndexes,
+  options?: NameLookupOptions,
 ): SymbolDefinition | undefined {
-  return findAllCallableBindingsInScope(startScope, callableName, scopes)[0];
+  return findAllCallableBindingsInScope(startScope, callableName, scopes, options)[0];
 }
 
 export interface CallableBindingCandidate {
@@ -1758,31 +1869,16 @@ export function findAllCallableBindingCandidatesInScope(
   startScope: ScopeId,
   callableName: string,
   scopes: ScopeResolutionIndexes,
+  options?: NameLookupOptions,
 ): readonly CallableBindingCandidate[] {
-  let currentId: ScopeId | null = startScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return [];
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return [];
-
-    if (scope.kind !== 'Object') {
-      const lexical = collectCallableBindingCandidates([scope.bindings.get(callableName)]);
-      if (lexical.length > 0) return lexical;
-
-      const candidates = collectCallableBindingCandidates([
-        scopes.bindings.get(currentId)?.get(callableName),
-        scopes.bindingAugmentations.get(currentId)?.get(callableName),
-        collectNamespaceFqnBindings(currentId, callableName, scopes),
-        scopes.workspaceFqnBindings?.get(callableName),
-      ]);
-      if (candidates.length > 0) return candidates;
-    }
-
-    currentId = scope.parent;
-  }
-  return [];
+  const claim = lookupMatchingNameClaim(
+    startScope,
+    callableName,
+    scopes,
+    (def) => def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor',
+    options,
+  );
+  return collectCallableBindingCandidates([claim.bindings]);
 }
 
 /**
@@ -1815,48 +1911,31 @@ function findAllBindingsInScope(
   name: string,
   scopes: ScopeResolutionIndexes,
   predicate: (def: SymbolDefinition) => boolean,
+  options?: NameLookupOptions,
 ): readonly SymbolDefinition[] {
-  let currentId: ScopeId | null = startScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return [];
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) return [];
-
-    // `Object` scopes are a hoist boundary only -- see walkScopeChain's
-    // comment (#2545/#2551). Skip lookup here, still traverse to parent.
-    if (scope.kind !== 'Object') {
-      const out: SymbolDefinition[] = [];
-      const seen = new Set<string>();
-      const push = (def: SymbolDefinition): void => {
-        if (!predicate(def)) return;
-        if (seen.has(def.nodeId)) return;
-        seen.add(def.nodeId);
-        out.push(def);
-      };
-
-      // Local first: a binding in this scope shadows an imported one.
-      for (const b of scope.bindings.get(name) ?? []) push(b.def);
-      for (const b of lookupBindingsAt(currentId, name, scopes)) push(b.def);
-
-      if (out.length > 0) return out;
-    }
-    currentId = scope.parent;
-  }
-  return [];
+  const claim = lookupMatchingNameClaim(startScope, name, scopes, predicate, options);
+  const seen = new Set<string>();
+  return claim.bindings
+    .map((binding) => binding.def)
+    .filter((def) => {
+      if (!predicate(def) || seen.has(def.nodeId)) return false;
+      seen.add(def.nodeId);
+      return true;
+    });
 }
 
 export function findAllCallableBindingsInScope(
   startScope: ScopeId,
   callableName: string,
   scopes: ScopeResolutionIndexes,
+  options?: NameLookupOptions,
 ): readonly SymbolDefinition[] {
   return findAllBindingsInScope(
     startScope,
     callableName,
     scopes,
     (def) => def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor',
+    options,
   );
 }
 
@@ -1880,67 +1959,139 @@ export function findCallableBindingsAndAdlBlocker(
   startScope: ScopeId,
   name: string,
   scopes: ScopeResolutionIndexes,
+  options?: NameLookupOptions,
 ): {
   callables: readonly SymbolDefinition[];
   nonCallableFound: boolean;
   blockScopeDeclFound: boolean;
 } {
-  let currentId: ScopeId | null = startScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId))
-      return { callables: [], nonCallableFound: false, blockScopeDeclFound: false };
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined)
-      return { callables: [], nonCallableFound: false, blockScopeDeclFound: false };
-
-    const callables: SymbolDefinition[] = [];
-    const seen = new Set<string>();
-    let nonCallableFound = false;
-    let anyBinding = false;
-
-    const process = (def: SymbolDefinition): void => {
-      anyBinding = true;
-      if (def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor') {
-        if (!seen.has(def.nodeId)) {
-          seen.add(def.nodeId);
-          callables.push(def);
-        }
-      } else {
-        nonCallableFound = true;
-      }
-    };
-
-    // `Object` scopes are a hoist boundary only (#2545/#2551) -- never
-    // reached by C++'s ADL path in practice (no language reusing this
-    // function emits `@scope.object`), guarded for consistency with the
-    // other scope-chain walkers in this file.
-    if (scope.kind !== 'Object') {
-      const localBindings = scope.bindings.get(name);
-      if (localBindings !== undefined) {
-        for (const b of localBindings) {
-          process(b.def);
-        }
-      }
-
-      const importedBindings = lookupBindingsAt(currentId, name, scopes);
-      for (const b of importedBindings) {
-        process(b.def);
-      }
-    }
-
-    if (anyBinding) {
-      // ISO C++: a block-scope function declaration (Function or Block scope)
-      // that is NOT a using-declaration blocks ADL. If we found callables at
-      // a function/block scope, ADL must be suppressed.
-      const blockScopeDeclFound =
-        callables.length > 0 && (scope.kind === 'Function' || scope.kind === 'Block');
-      return { callables, nonCallableFound, blockScopeDeclFound };
-    }
-    currentId = scope.parent;
+  // Use the same ownership and provenance selection as every other consumer.
+  // Deduplicating finalized and augmented refs before selection can discard the
+  // using-declaration range that proves a callable belongs to this scope.
+  const claim = lookupNameClaim(startScope, name, scopes, {
+    purpose: 'value',
+    ...options,
+    includeUnclaimedOverloads: true,
+  });
+  const isCallable = (binding: BindingRef): boolean =>
+    binding.def.type === 'Function' ||
+    binding.def.type === 'Method' ||
+    binding.def.type === 'Constructor';
+  const callables = new Map<string, SymbolDefinition>();
+  for (const binding of normalizeIncludedCallableDeclarations(claim.bindings, scopes)) {
+    if (isCallable(binding)) callables.set(binding.def.nodeId, binding.def);
   }
-  return { callables: [], nonCallableFound: false, blockScopeDeclFound: false };
+  // C++ constructor-form calls share the class spelling. Local class lookup
+  // takes precedence over include refs, but its own constructor compatibility
+  // refs still belong to that selected entity. Defaulted C++ constructors can
+  // retain the parser's Function label; exact class ownership is authoritative.
+  const classOwners = new Set(
+    claim.bindings
+      .filter(
+        (binding) =>
+          binding.def.type === 'Class' ||
+          binding.def.type === 'Struct' ||
+          binding.def.type === 'Record',
+      )
+      .map((binding) => binding.def.nodeId),
+  );
+  if (claim.status === 'resolved' && claim.scope !== undefined && classOwners.size > 0) {
+    for (const { def } of lookupBindingsAt(claim.scope.id, name, scopes)) {
+      if (
+        (def.type === 'Constructor' || def.type === 'Method' || def.type === 'Function') &&
+        def.ownerId !== undefined &&
+        classOwners.has(def.ownerId)
+      )
+        callables.set(def.nodeId, def);
+    }
+  }
+  return {
+    callables: [...callables.values()],
+    nonCallableFound:
+      claim.status === 'blocked' || claim.bindings.some((binding) => !isCallable(binding)),
+    // Imported functions introduced by using declarations do not suppress ADL.
+    blockScopeDeclFound:
+      (claim.scope?.kind === 'Function' || claim.scope?.kind === 'Block') &&
+      claim.bindings.some((binding) => binding.origin === 'local' && isCallable(binding)),
+  };
+}
+
+const callableDefinitionScopes = new WeakMap<
+  ScopeResolutionIndexes['scopeTree'],
+  {
+    readonly files: ReadonlySet<string>;
+    readonly anchors: ReadonlySet<string>;
+  }
+>();
+
+/** Coalesce a literal-include prototype with its unique local definition. */
+function normalizeIncludedCallableDeclarations(
+  bindings: readonly BindingRef[],
+  scopes: ScopeResolutionIndexes,
+): readonly BindingRef[] {
+  if (!bindings.some((binding) => binding.via?.kind === 'wildcard-expanded')) return bindings;
+  let definitions = callableDefinitionScopes.get(scopes.scopeTree);
+  if (definitions === undefined) {
+    const files = new Set<string>();
+    const anchors = new Set<string>();
+    for (const scope of scopes.scopeTree.byId.values()) {
+      files.add(scope.filePath);
+      if (scope.kind === 'Function') {
+        anchors.add(`${scope.filePath}\0${scope.range.startLine}\0${scope.range.startCol}`);
+      }
+    }
+    definitions = { files, anchors };
+    callableDefinitionScopes.set(scopes.scopeTree, definitions);
+  }
+  const definitionIndex = definitions;
+  const hasBody = (def: SymbolDefinition): boolean => {
+    const position = definitionIdPosition(def.nodeId, def.filePath);
+    return (
+      position !== undefined &&
+      definitionIndex.anchors.has(`${def.filePath}\0${position.line}\0${position.column}`)
+    );
+  };
+  const localBySignature = new Map<string, Set<string>>();
+  for (const binding of bindings) {
+    if (binding.origin !== 'local' || !hasBody(binding.def)) continue;
+    const signature = callableRedeclarationSignature(binding.def);
+    if (signature === undefined) continue;
+    const ids = localBySignature.get(signature) ?? new Set<string>();
+    ids.add(binding.def.nodeId);
+    localBySignature.set(signature, ids);
+  }
+  return bindings.filter((binding) => {
+    if (
+      binding.via?.kind !== 'wildcard-expanded' ||
+      !definitionIndex.files.has(binding.def.filePath) ||
+      hasBody(binding.def)
+    )
+      return true;
+    const signature = callableRedeclarationSignature(binding.def);
+    return signature === undefined || localBySignature.get(signature)?.size !== 1;
+  });
+}
+
+function callableRedeclarationSignature(def: SymbolDefinition): string | undefined {
+  if (
+    def.type !== 'Function' ||
+    def.ownerId !== undefined ||
+    def.qualifiedName === undefined ||
+    def.parameterCount === undefined ||
+    def.parameterTypes === undefined ||
+    def.parameterTypes.length !== def.parameterCount ||
+    def.parameterTypes.some((type) => type === '') ||
+    (def.typeParameters?.length ?? 0) > 0 ||
+    def.templateConstraints !== undefined
+  )
+    return undefined;
+  return JSON.stringify([
+    def.namespacePrefix ?? '',
+    def.qualifiedName,
+    def.parameterCount,
+    def.parameterTypes,
+    def.parameterTypeClasses,
+  ]);
 }
 
 /**
@@ -2172,29 +2323,20 @@ export function findExportedDefByName(
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   index: WorkspaceResolutionIndex,
+  options?: NameLookupOptions,
 ): SymbolDefinition | undefined {
-  let currentId: ScopeId | null = inScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) break;
-    visited.add(currentId);
-    const scope = scopes.scopeTree.getScope(currentId);
-    if (scope === undefined) break;
-    // `Object` scopes are a hoist boundary only (#2545/#2551).
-    if (scope.kind !== 'Object') {
-      const local = scope.bindings.get(name);
-      if (local !== undefined) {
-        for (const b of local) {
-          if (b.def.type === 'Function' || b.def.type === 'Method') return b.def;
-        }
-      }
-      const finalized = lookupBindingsAt(currentId, name, scopes);
-      for (const b of finalized) {
-        if (b.def.type === 'Function' || b.def.type === 'Method') return b.def;
-      }
-    }
-    currentId = scope.parent;
-  }
+  const claim = lookupMatchingNameClaim(
+    inScope,
+    name,
+    scopes,
+    (def) => def.type === 'Function' || def.type === 'Method',
+    options,
+  );
+  const callable = claim.bindings.find(
+    (binding) => binding.def.type === 'Function' || binding.def.type === 'Method',
+  );
+  if (callable !== undefined) return callable.def;
+  if (hasExplicitNameClaim(claim, name)) return undefined;
   // Workspace-wide fallback: the first locally-declared callable binding
   // matching `name` across every file's Module scope (first-seen-by-file wins;
   // `origin === 'local'`, callable types Function/Method/Constructor). This is
