@@ -63,7 +63,7 @@
  * language (R4) — never dropped on the floor (the M2 lesson).
  */
 
-import type { ParsedImport } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { generateId } from '../../../lib/utils.js';
 import {
@@ -165,6 +165,7 @@ export function emitFileTaint(
   // The zero-match fast path below still skips the solve entirely; only MATCHED
   // functions request it, hitting the cache the call-summary harvest warmed.
   solve: ReachingDefsSolver = computeReachingDefs,
+  parsed?: ParsedFile,
 ): TaintEmitResult {
   const result: TaintEmitResult = {
     functionsAnalyzed: 0,
@@ -179,8 +180,8 @@ export function emitFileTaint(
     droppedExamples: [],
   };
 
-  // Imports are a FILE-level fact — build the index once, not per function.
-  const importIndex = buildTaintImportIndex(parsedImports);
+  // Build lexical import provenance once per file, not per function.
+  const importIndex = buildTaintImportIndex(parsedImports, parsed);
   const maxFindingsPerFunction =
     limits?.maxFindingsPerFunction ?? DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION;
   const maxHops = limits?.maxHops ?? DEFAULT_PDG_MAX_TAINT_HOPS;
