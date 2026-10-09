@@ -20,7 +20,7 @@
  * as-is for TypeScript, Java, Kotlin, Ruby, etc.
  */
 
-import { lookupLexicalName } from 'gitnexus-shared';
+import { lookupLexicalName, nameClaimsFor } from 'gitnexus-shared';
 import type {
   NameLookupOptions,
   NameClaimResult,
@@ -49,8 +49,13 @@ import { definitionIdPosition } from '../utils/definition-id.js';
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
 
 interface IndexedNameLookupOptions extends NameLookupOptions {
-  /** Include-defined overloads share module/namespace lookup tiers in ADL. */
-  readonly includeUnclaimedOverloads?: boolean;
+  /** Add same-scope candidates beside legacy local bindings. Explicit name
+   * claims still select their own candidates through the shared resolver. */
+  readonly expandLocalBindings?: (
+    scope: Scope,
+    local: readonly BindingRef[],
+    indexed: readonly BindingRef[],
+  ) => readonly BindingRef[];
 }
 
 /** Resolve ownership before any target-kind filtering or global fallback. */
@@ -69,22 +74,18 @@ export function lookupNameClaim(
       bindingsAt: (scope, spelling) => {
         const local = scope.bindings.get(spelling) ?? [];
         const augmented = scopes.bindingAugmentations.get(scope.id)?.get(spelling) ?? [];
-        // Unrelated claims and inactive using directives must not change the
-        // legacy import tier. ADL can retain include overloads at namespace or
-        // module scope; block-local declarations still hide outer overloads.
-        if (local.length > 0 && !scope.nameClaims?.some((claim) => claim.name === spelling)) {
-          const included =
-            options.includeUnclaimedOverloads === true &&
-            (scope.kind === 'Module' || scope.kind === 'Namespace') &&
-            local.every((binding) => binding.def.type === 'Function')
-              ? (scopes.bindings.get(scope.id)?.get(spelling) ?? []).filter(
-                  (binding) =>
-                    binding.def.type === 'Function' && binding.via?.kind === 'wildcard-expanded',
-                )
-              : [];
+        // Unrelated claims must not change the legacy local binding tier.
+        // Providers may add candidates that share that selected tier.
+        if (local.length > 0 && nameClaimsFor(scope, spelling).length === 0) {
+          const additional =
+            options.expandLocalBindings?.(
+              scope,
+              local,
+              scopes.bindings.get(scope.id)?.get(spelling) ?? EMPTY_BINDINGS,
+            ) ?? EMPTY_BINDINGS;
           return [
             ...local,
-            ...included,
+            ...additional,
             ...augmented.filter(
               (binding) =>
                 binding.declarationRange !== undefined || binding.availableFrom !== undefined,
@@ -1937,161 +1938,6 @@ export function findAllCallableBindingsInScope(
     (def) => def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor',
     options,
   );
-}
-
-/**
- * ISO C++ `[basic.lookup.unqual]` §7: ADL is suppressed when ordinary
- * unqualified lookup finds:
- *   - a name that is NOT a function or function template, OR
- *   - a block-scope function declaration that is NOT a using-declaration.
- *
- * Combined walker that stops at the **nearest scope** where `name` has any
- * binding (callable or non-callable) and returns:
- *   - `callables`: Function/Method/Constructor defs found at that scope
- *   - `nonCallableFound`: a non-function binding was present (variable, class, etc.)
- *   - `blockScopeDeclFound`: a callable was found at a Function or Block scope
- *     (block-scope function declaration that blocks ADL)
- *
- * One pass, one stop — no divergence between callable collection and blocker
- * detection.
- */
-export function findCallableBindingsAndAdlBlocker(
-  startScope: ScopeId,
-  name: string,
-  scopes: ScopeResolutionIndexes,
-  options?: NameLookupOptions,
-): {
-  callables: readonly SymbolDefinition[];
-  nonCallableFound: boolean;
-  blockScopeDeclFound: boolean;
-} {
-  // Use the same ownership and provenance selection as every other consumer.
-  // Deduplicating finalized and augmented refs before selection can discard the
-  // using-declaration range that proves a callable belongs to this scope.
-  const claim = lookupNameClaim(startScope, name, scopes, {
-    purpose: 'value',
-    ...options,
-    includeUnclaimedOverloads: true,
-  });
-  const isCallable = (binding: BindingRef): boolean =>
-    binding.def.type === 'Function' ||
-    binding.def.type === 'Method' ||
-    binding.def.type === 'Constructor';
-  const callables = new Map<string, SymbolDefinition>();
-  for (const binding of normalizeIncludedCallableDeclarations(claim.bindings, scopes)) {
-    if (isCallable(binding)) callables.set(binding.def.nodeId, binding.def);
-  }
-  // C++ constructor-form calls share the class spelling. Local class lookup
-  // takes precedence over include refs, but its own constructor compatibility
-  // refs still belong to that selected entity. Defaulted C++ constructors can
-  // retain the parser's Function label; exact class ownership is authoritative.
-  const classOwners = new Set(
-    claim.bindings
-      .filter(
-        (binding) =>
-          binding.def.type === 'Class' ||
-          binding.def.type === 'Struct' ||
-          binding.def.type === 'Record',
-      )
-      .map((binding) => binding.def.nodeId),
-  );
-  if (claim.status === 'resolved' && claim.scope !== undefined && classOwners.size > 0) {
-    for (const { def } of lookupBindingsAt(claim.scope.id, name, scopes)) {
-      if (
-        (def.type === 'Constructor' || def.type === 'Method' || def.type === 'Function') &&
-        def.ownerId !== undefined &&
-        classOwners.has(def.ownerId)
-      )
-        callables.set(def.nodeId, def);
-    }
-  }
-  return {
-    callables: [...callables.values()],
-    nonCallableFound:
-      claim.status === 'blocked' || claim.bindings.some((binding) => !isCallable(binding)),
-    // Imported functions introduced by using declarations do not suppress ADL.
-    blockScopeDeclFound:
-      (claim.scope?.kind === 'Function' || claim.scope?.kind === 'Block') &&
-      claim.bindings.some((binding) => binding.origin === 'local' && isCallable(binding)),
-  };
-}
-
-const callableDefinitionScopes = new WeakMap<
-  ScopeResolutionIndexes['scopeTree'],
-  {
-    readonly files: ReadonlySet<string>;
-    readonly anchors: ReadonlySet<string>;
-  }
->();
-
-/** Coalesce a literal-include prototype with its unique local definition. */
-function normalizeIncludedCallableDeclarations(
-  bindings: readonly BindingRef[],
-  scopes: ScopeResolutionIndexes,
-): readonly BindingRef[] {
-  if (!bindings.some((binding) => binding.via?.kind === 'wildcard-expanded')) return bindings;
-  let definitions = callableDefinitionScopes.get(scopes.scopeTree);
-  if (definitions === undefined) {
-    const files = new Set<string>();
-    const anchors = new Set<string>();
-    for (const scope of scopes.scopeTree.byId.values()) {
-      files.add(scope.filePath);
-      if (scope.kind === 'Function') {
-        anchors.add(`${scope.filePath}\0${scope.range.startLine}\0${scope.range.startCol}`);
-      }
-    }
-    definitions = { files, anchors };
-    callableDefinitionScopes.set(scopes.scopeTree, definitions);
-  }
-  const definitionIndex = definitions;
-  const hasBody = (def: SymbolDefinition): boolean => {
-    const position = definitionIdPosition(def.nodeId, def.filePath);
-    return (
-      position !== undefined &&
-      definitionIndex.anchors.has(`${def.filePath}\0${position.line}\0${position.column}`)
-    );
-  };
-  const localBySignature = new Map<string, Set<string>>();
-  for (const binding of bindings) {
-    if (binding.origin !== 'local' || !hasBody(binding.def)) continue;
-    const signature = callableRedeclarationSignature(binding.def);
-    if (signature === undefined) continue;
-    const ids = localBySignature.get(signature) ?? new Set<string>();
-    ids.add(binding.def.nodeId);
-    localBySignature.set(signature, ids);
-  }
-  return bindings.filter((binding) => {
-    if (
-      binding.via?.kind !== 'wildcard-expanded' ||
-      !definitionIndex.files.has(binding.def.filePath) ||
-      hasBody(binding.def)
-    )
-      return true;
-    const signature = callableRedeclarationSignature(binding.def);
-    return signature === undefined || localBySignature.get(signature)?.size !== 1;
-  });
-}
-
-function callableRedeclarationSignature(def: SymbolDefinition): string | undefined {
-  if (
-    def.type !== 'Function' ||
-    def.ownerId !== undefined ||
-    def.qualifiedName === undefined ||
-    def.parameterCount === undefined ||
-    def.parameterTypes === undefined ||
-    def.parameterTypes.length !== def.parameterCount ||
-    def.parameterTypes.some((type) => type === '') ||
-    (def.typeParameters?.length ?? 0) > 0 ||
-    def.templateConstraints !== undefined
-  )
-    return undefined;
-  return JSON.stringify([
-    def.namespacePrefix ?? '',
-    def.qualifiedName,
-    def.parameterCount,
-    def.parameterTypes,
-    def.parameterTypeClasses,
-  ]);
 }
 
 /**
