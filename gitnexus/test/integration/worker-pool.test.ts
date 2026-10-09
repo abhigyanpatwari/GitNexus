@@ -13,7 +13,7 @@ import {
   WorkerPoolDispatchError,
 } from '../../src/core/ingestion/workers/worker-pool.js';
 import { pathToFileURL } from 'node:url';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -107,6 +107,45 @@ describe('worker pool integration', () => {
     await expect(pool.dispatch([])).resolves.toEqual([]);
     expect(pool.getStats().activeSlots).toBe(1);
   });
+
+  it.skipIf(!hasDistWorker)(
+    'terminates ready parser workers repeatedly without aborting the host',
+    () => {
+      // Run outside Vitest so a native/V8 abort becomes an assertion failure
+      // rather than killing the test runner and hiding the remaining cases.
+      const runner = `
+        const { Worker } = require('node:worker_threads');
+        const { pathToFileURL } = require('node:url');
+        (async () => {
+          const workerUrl = pathToFileURL(process.argv[1]);
+          for (let iteration = 0; iteration < 20; iteration++) {
+            const worker = new Worker(workerUrl);
+            await new Promise((resolve, reject) => {
+              worker.once('error', reject);
+              worker.once('exit', (code) => reject(new Error('worker exited before ready: ' + code)));
+              worker.on('message', (message) => {
+                if (message.type === 'ready') resolve();
+              });
+            });
+            await worker.terminate();
+          }
+          process.stdout.write('20 ready/terminate cycles completed');
+        })().catch((error) => {
+          console.error(error);
+          process.exitCode = 1;
+        });
+      `;
+      const child = spawnSync(process.execPath, ['--eval', runner, DIST_WORKER], {
+        encoding: 'utf8',
+        timeout: 60_000,
+      });
+      expect(child.error).toBeUndefined();
+      expect(child.signal, child.stderr).toBeNull();
+      expect(child.status, child.stderr).toBe(0);
+      expect(child.stdout).toContain('20 ready/terminate cycles completed');
+    },
+    65_000,
+  );
 
   it.skipIf(!hasDistWorker)('dispatches an empty batch without error', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
