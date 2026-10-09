@@ -1792,6 +1792,7 @@ const processFileGroup = (
             // it joins its graph node and BasicBlock lines map to source.
             lineOffset,
             notebookSegments || sourceLineMap ? mapRow : undefined,
+            sourceLineMap ? 'parse-buffer' : 'source',
           );
           if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
           // Surface per-function CFG skips per-language (#2195): merged + logged

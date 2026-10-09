@@ -87,6 +87,10 @@ describe('Vue embedded script grammar and source positions', () => {
         );
         expect(blocks.some((block) => block.properties.startLine === originalRow + 1)).toBe(true);
         expect(
+          blocks.find((block) => block.properties.startLine === originalRow + 1)?.properties
+            .calleeIds,
+        ).toBe('Function:target.ts:run');
+        expect(
           getRelationships(result, 'CALLS')
             .filter(
               (edge) =>

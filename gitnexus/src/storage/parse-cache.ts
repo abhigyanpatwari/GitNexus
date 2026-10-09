@@ -1065,7 +1065,7 @@ export const computeChunkHash = (
   // default-cap runs share a key. The emit-time edge cap is deliberately
   // absent — see the PdgCacheKey doc comment.
   //
-  // NAMESPACE VERSION (`pdg:5`): bumped when the worker-emitted
+  // NAMESPACE VERSION (`pdg:6`): bumped when the worker-emitted
   // `cfgSideChannel` SHAPE changes for pdg-mode runs only — pdg:1→2 in #2083
   // M3 U1 (TsHarvester emits taint `sites` on StatementFacts); pdg:2→3 in the
   // #2227 follow-up U1 (every C-family / TS harvester now stamps the call-site
@@ -1085,7 +1085,9 @@ export const computeChunkHash = (
   // byte-identical, so non-pdg users pay nothing. Deliberately NOT a SCHEMA_BUMP —
   // that gates the whole cache version and would force a full cold re-parse on
   // EVERY user (the M1 bump comment above records that cost).
-  const ns = `pdg:5;maxFn=${opts.maxFunctionLines ?? 'def'}`;
+  // pdg:5→6 preserves parse-buffer call anchors when embedded graph lines are
+  // remapped, restoring the exact-position resolved-callee join (#3532).
+  const ns = `pdg:6;maxFn=${opts.maxFunctionLines ?? 'def'}`;
   return sha256Hex(`${ns}\n${joined}`);
 };
 

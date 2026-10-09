@@ -148,14 +148,17 @@ exact call-site positions are missing.
 
 ## Cache migration and verification evidence
 
-[Parse-cache schema 135](../../gitnexus/src/storage/parse-cache.ts) replaces 133
-and the pre-review schema 134, which retained overly broad Python/TS/JS binding
-barriers. The same version gate applies to the
+[Parse-cache schema 136](../../gitnexus/src/storage/parse-cache.ts) replaces 133,
+134, and 135. It invalidates overly broad Python/TS/JS binding barriers,
+incorrect parameter-annotation lookup ownership, and embedded Vue grammar and
+source positions. The same version gate applies to the
 [durable ParsedFile store](../../gitnexus/src/storage/parsedfile-store.ts).
 Incompatible records are rejected and rebuilt on the next analysis; unchanged
 records can then be reused. The
 [schema regression](../../gitnexus/test/unit/incremental-parse-cache.test.ts)
-explicitly rejects valid schema-133 and schema-134 records in both stores.
+explicitly rejects valid schema-133, schema-134, and schema-135 records in both stores.
+PDG-mode chunk keys also advance to `pdg:6`, so embedded-script CFGs with
+incorrect call anchors are rebuilt before the resolved-callee join.
 
 The [real-worker parity suite](../../gitnexus/test/integration/local-import-worker-parity.test.ts)
 witnesses worker boot, dispatch, and returned ParsedFiles, then compares complete
