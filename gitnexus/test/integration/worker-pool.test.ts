@@ -98,10 +98,14 @@ describe('worker pool integration', () => {
     }
   });
 
-  it.skipIf(!hasDistWorker)('creates a worker pool from dist/ worker', () => {
+  it.skipIf(!hasDistWorker)('creates a worker pool from dist/ worker', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     pool = createWorkerPool(workerUrl, 1);
     expect(pool.size).toBe(1);
+    // The empty dispatch waits for the real worker's ready handshake. Do not
+    // let teardown interrupt ESM/native grammar initialization (#2432).
+    await expect(pool.dispatch([])).resolves.toEqual([]);
+    expect(pool.getStats().activeSlots).toBe(1);
   });
 
   it.skipIf(!hasDistWorker)('dispatches an empty batch without error', async () => {
@@ -290,6 +294,8 @@ describe('worker pool integration', () => {
   it.skipIf(!hasDistWorker)('terminates cleanly', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     pool = createWorkerPool(workerUrl, 2);
+    await expect(pool.dispatch([])).resolves.toEqual([]);
+    expect(pool.getStats().activeSlots).toBe(2);
     await pool.terminate();
     pool = undefined; // already terminated
   });
@@ -308,6 +314,8 @@ describe('worker pool integration', () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     pool = createWorkerPool(workerUrl, 1);
     const terminatedPool = pool;
+    await expect(terminatedPool.dispatch([])).resolves.toEqual([]);
+    expect(terminatedPool.getStats().activeSlots).toBe(1);
     await terminatedPool.terminate();
     pool = undefined; // already terminated — prevent afterEach double-terminate
 
@@ -319,6 +327,8 @@ describe('worker pool integration', () => {
   it.skipIf(!hasDistWorker)('double terminate does not throw', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     pool = createWorkerPool(workerUrl, 1);
+    await expect(pool.dispatch([])).resolves.toEqual([]);
+    expect(pool.getStats().activeSlots).toBe(1);
     await pool.terminate();
     await expect(pool.terminate()).resolves.toBeUndefined();
     pool = undefined;
