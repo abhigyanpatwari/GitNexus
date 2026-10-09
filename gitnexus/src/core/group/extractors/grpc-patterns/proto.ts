@@ -18,10 +18,7 @@ import type { GrpcDetection, GrpcLanguagePlugin } from './types.js';
  * (e.g. no prebuild for an unusual platform), the plugin exports `null` and the
  * orchestrator falls back to the existing manual string-sanitizing parser.
  *
- * The grammar is vendored in `vendor/tree-sitter-proto/` with
- * parser.c regenerated against tree-sitter-cli 0.24 (ABI version 14)
- * so it is compatible with the project's tree-sitter 0.25.1 runtime
- * (which loads ABI 13–15).
+ * The upstream-generated grammar is vendored in `vendor/tree-sitter-proto/`.
  */
 
 // Only for `tree-sitter` (a real npm dependency) in the smoke-test below;
@@ -30,7 +27,18 @@ import type { GrpcDetection, GrpcLanguagePlugin } from './types.js';
 const _require = createRequire(import.meta.url);
 let ProtoGrammar: Parser.Language | null = null;
 try {
-  ProtoGrammar = requireVendoredGrammar('tree-sitter-proto');
+  const grammar = requireVendoredGrammar('tree-sitter-proto');
+  // node-tree-sitter 0.25.1 derives JS subclass names from nodeTypeInfo.
+  // Protobuf's named `syntax` node becomes `class SyntaxNode extends
+  // SyntaxNode`, which throws in setLanguage. Omit only its subclass metadata
+  // on a private wrapper: the native node, queries, and childForFieldName()
+  // still work through the base SyntaxNode API. Do not alter upstream sources
+  // or the shared grammar's metadata. Remove when node-tree-sitter fixes the
+  // subclass-name collision.
+  ProtoGrammar = {
+    ...grammar,
+    nodeTypeInfo: grammar.nodeTypeInfo.filter((node) => !(node.named && node.type === 'syntax')),
+  };
 } catch {
   // Grammar not installed — PROTO_GRPC_PLUGIN will be null.
 }
@@ -41,11 +49,8 @@ let SERVICE_PATTERNS: CompiledPatterns<Record<string, never>> | null = null;
 if (ProtoGrammar) {
   try {
     // Validate that the grammar actually loads end-to-end: compile queries
-    // AND parse + walk a trivial proto file. tree-sitter's internal
-    // `initializeLanguageNodeClasses` can fail with a TDZ error in some
-    // test runners (vitest forks) when SyntaxNode isn't fully initialized
-    // yet. Catching that here ensures `PROTO_GRPC_PLUGIN` stays null and
-    // the orchestrator falls back to the manual parser.
+    // AND parse + walk a trivial proto file. Keep the manual fallback for
+    // platforms where the native grammar cannot initialize.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const _Parser = _require('tree-sitter') as any;
     // Smoke-test: parse + setLanguage to verify the grammar is

@@ -3,6 +3,11 @@ import * as fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import Parser from 'tree-sitter';
+import {
+  PROTO_GRPC_PLUGIN,
+  extractPackageFromTree,
+} from '../../../src/core/group/extractors/grpc-patterns/proto.js';
 
 const { parseSourceSafeSpy } = vi.hoisted(() => ({ parseSourceSafeSpy: vi.fn() }));
 
@@ -48,6 +53,49 @@ describe('GrpcExtractor', () => {
   });
 
   describe('proto file parsing', () => {
+    it('loads the native proto grammar and preserves syntax fields and service queries', () => {
+      expect(PROTO_GRPC_PLUGIN).not.toBeNull();
+      if (!PROTO_GRPC_PLUGIN) throw new Error('Vendored Protobuf grammar failed to initialize');
+      const plugin = PROTO_GRPC_PLUGIN;
+      const parser = new Parser();
+      parser.setLanguage(plugin.language);
+      const tree = parser.parse(`syntax = "proto3";
+package native.v1;
+service NativeService {
+  // rpc Removed (Request) returns (Response);
+  rpc Active (Request) returns (Response);
+}`);
+
+      expect(tree.rootNode.hasError).toBe(false);
+      const syntax = tree.rootNode.namedChildren.find((node) => node.type === 'syntax');
+      expect(syntax?.childForFieldName('version')?.text).toBe('"proto3"');
+      expect(extractPackageFromTree(tree)).toBe('native.v1');
+      expect(plugin.scan(tree).map((detection) => detection.symbolName)).toEqual([
+        'NativeService.Active',
+      ]);
+    });
+
+    it('excludes RPC declarations in comments and strings from the fallback map and contracts', async () => {
+      writeFile(
+        'api/commented-rpc.proto',
+        `syntax = "proto3";
+package commented;
+service Svc {
+  // rpc LineComment (Req) returns (Res);
+  /* rpc BlockComment (Req) returns (Res); */
+  option (description) = "rpc StringLiteral (Req) returns (Res);";
+  rpc Active (Req) returns (Res);
+}`,
+      );
+
+      // buildProtoMap always uses the manual parser, even when the native
+      // grammar is available. Assert it independently of plugin selection.
+      const services = await buildProtoMap(tmpDir);
+      expect(services.get('Svc')?.map((service) => service.methods)).toEqual([['Active']]);
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      expect(contracts.map((contract) => contract.symbolName)).toEqual(['Svc.Active']);
+    });
+
     it('test_extract_proto_service_single_rpc_returns_provider', async () => {
       writeFile(
         'proto/auth.proto',

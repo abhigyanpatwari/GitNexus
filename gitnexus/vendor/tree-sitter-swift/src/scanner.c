@@ -234,7 +234,7 @@ struct ScannerState {
 };
 
 void *tree_sitter_swift_external_scanner_create() {
-    return calloc(0, sizeof(struct ScannerState));
+    return calloc(1, sizeof(struct ScannerState));
 }
 
 void tree_sitter_swift_external_scanner_destroy(void *payload) {
@@ -511,7 +511,7 @@ static bool eat_operators(
         uint64_t suppressing_symbols = OP_SYMBOL_SUPPRESSOR[full_match];
         if (suppressing_symbols) {
             for (uint64_t suppressor = 0; suppressor < TOKEN_COUNT; suppressor++) {
-                if (!(suppressing_symbols & 1 << suppressor)) {
+                if (!(suppressing_symbols & 1ULL << suppressor)) {
                     continue;
                 }
 

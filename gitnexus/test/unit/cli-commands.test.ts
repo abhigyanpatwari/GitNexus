@@ -142,7 +142,7 @@ describe('CLI commands', () => {
       // range) can't drift under a minor bump.
       expect(pkg.default.dependencies['tree-sitter']).toBe('0.25.1');
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
-      expect(swiftPkg.default.version).toBe('0.7.1');
+      expect(swiftPkg.default.version).toBe('0.7.2');
       // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
       expect(
         (swiftPkg.default as { scripts?: Record<string, string> }).scripts?.install,
@@ -150,7 +150,7 @@ describe('CLI commands', () => {
       expect(
         (swiftPkg.default as { dependencies?: Record<string, string> }).dependencies,
       ).toBeUndefined();
-      expect(swiftPkg.default.peerDependencies['tree-sitter']).toContain('^0.21.1');
+      expect(swiftPkg.default.peerDependencies['tree-sitter']).toBe('0.25.1');
       // Swift is now unified with Dart/Proto/Kotlin/C: the grammar SOURCE is
       // vendored so build-tree-sitter-grammars.cjs can source-build the binding
       // when no committed prebuild matches (e.g. CI before prebuilds land).
@@ -178,7 +178,7 @@ describe('CLI commands', () => {
       // ships source only) and loaded from vendor/ by absolute path (#2111).
       expect(optional['tree-sitter-kotlin']).toBeUndefined();
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
-      expect(kotlinPkg.default.version).toBe('0.4.0');
+      expect(kotlinPkg.default.version).toBe('0.4.0-g1852ea1');
       // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
       expect(
         (kotlinPkg.default as { scripts?: Record<string, string> }).scripts?.install,
@@ -186,7 +186,7 @@ describe('CLI commands', () => {
       expect(
         (kotlinPkg.default as { dependencies?: Record<string, string> }).dependencies,
       ).toBeUndefined();
-      expect(kotlinPkg.default.peerDependencies['tree-sitter']).toContain('^0.21');
+      expect(kotlinPkg.default.peerDependencies['tree-sitter']).toBe('0.25.1');
     });
 
     it('vendors tree-sitter-zig instead of an npm optionalDependency', async () => {
@@ -202,27 +202,27 @@ describe('CLI commands', () => {
         '@tree-sitter-grammars/tree-sitter-zig',
       );
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
-      expect(zigPkg.default.version).toBe('1.1.2');
+      expect(zigPkg.default.version).toBe('1.1.2-g6479aa1');
       expect(
         (zigPkg.default as { scripts?: Record<string, string> }).scripts?.install,
       ).toBeUndefined();
       expect(
         (zigPkg.default as { dependencies?: Record<string, string> }).dependencies,
       ).toBeUndefined();
-      expect(zigPkg.default.peerDependencies['tree-sitter']).toContain('^0.21');
+      expect(zigPkg.default.peerDependencies['tree-sitter']).toBe('0.25.1');
     });
 
-    it('vendors tree-sitter-c prebuild-only at the 0.21.4 ABI pin instead of an npm dependency (#2116/#1242)', async () => {
+    it('vendors tree-sitter-c at the tested upstream snapshot instead of an npm dependency (#2116/#1242)', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
       const cPkg = await import('../../vendor/tree-sitter-c/package.json', {
         with: { type: 'json' },
       });
       // c is a REQUIRED grammar that hard-fails install on toolchain-less ARM
       // (upstream ships 4/6). Vendored with GitNexus-built prebuilds for all 6,
-      // held at 0.21.4 for ABI safety (#1242) — so it is NOT an npm dependency.
+      // sourced from the tested upstream snapshot rather than an npm dependency.
       expect(pkg.default.dependencies['tree-sitter-c']).toBeUndefined();
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
-      expect(cPkg.default.version).toBe('0.21.4');
+      expect(cPkg.default.version).toBe('0.24.2-gb780e47');
       expect(
         (cPkg.default as { scripts?: Record<string, string> }).scripts?.install,
       ).toBeUndefined();

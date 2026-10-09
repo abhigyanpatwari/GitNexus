@@ -9,9 +9,8 @@ name: Build tree-sitter prebuilds
 # upstream prebuilds AND stays dependency-review-tracked, so it is left alone).
 # All seven are vendored under gitnexus/vendor/; `kind` (below) only picks where
 # the build job fetches the C source to compile:
-#   - tree-sitter-c      (vendored prebuild-only; built from the published npm
-#                         package — closes upstream's 4/6 ARM gap #2116 for a
-#                         REQUIRED grammar)
+#   - tree-sitter-c      (vendored source from upstream Git, including releases
+#                         newer than npm; REQUIRED grammar)
 #   - tree-sitter-dart   (vendored source; built from gitnexus/vendor/)
 #   - tree-sitter-proto  (vendored source; built from gitnexus/vendor/)
 #   - tree-sitter-kotlin (vendored source; built from gitnexus/vendor/ — pinned to
@@ -152,11 +151,11 @@ jobs:
           // 'vendored' builds from gitnexus/vendor/<name> (which carries the C
           // source + binding.gyp). Extend this list to cover a new grammar.
           const REGISTRY = {
-            // c is vendored prebuild-only but BUILT from the published npm
-            // package (kind 'npm'), held at 0.21.4 — it closes upstream's 4/6
+            // c builds the exact upstream source snapshot in vendor/ so the
+            // prebuild matches its metadata — this also closes upstream's 4/6
             // ARM gap (#2116) for a REQUIRED grammar that otherwise hard-fails
             // install on toolchain-less ARM.
-            c:      { name: 'tree-sitter-c',      kind: 'npm' },
+            c:      { name: 'tree-sitter-c',      kind: 'vendored' },
             dart:   { name: 'tree-sitter-dart',   kind: 'vendored' },
             proto:  { name: 'tree-sitter-proto',  kind: 'vendored' },
             // kotlin is vendored WITH its source (parser.c/scanner.c/binding.gyp),
@@ -489,15 +488,11 @@ jobs:
           cd "$probe"
           # Pin tree-sitter to the repo's exact runtime peer so an ABI mismatch
           # fails HERE, not in a user's install (mirrors the #1922 ABI gate).
-          # NOT --ignore-scripts: tree-sitter@0.21.1's tarball ships prebuilds for
-          # the common tuples but NOT linux-arm64 / win32-arm64, so on the arm64
-          # runners node-gyp-build must source-build the runtime — give it node-gyp
-          # + node-addon-api to do so. Where tree-sitter ships a prebuild (x64,
-          # darwin-arm64) node-gyp-build uses it and nothing compiles. The grammar
-          # .node we built is still loaded as a prebuild; only the runtime peer may
-          # compile. The grammar-vs-runtime ABI check still fires at setLanguage.
+          # Allow install scripts so node-gyp-build can compile the runtime if
+          # no matching runtime prebuild is available. The grammar built above
+          # is still loaded as a prebuild; setLanguage checks its runtime ABI.
           npm install --no-audit --no-fund \
-            node-gyp-build@^4 node-gyp@^11 node-addon-api@^8 tree-sitter@0.21.1
+            node-gyp-build@^4 node-gyp@^11 node-addon-api@^8 tree-sitter@0.25.1
           # The node script is single-quoted on purpose — its ${...} are JS
           # template literals read from the environment, not shell expansions.
           # shellcheck disable=SC2016

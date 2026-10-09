@@ -333,7 +333,7 @@ jobs:
       # exemption is revoked here and an ABI-broken Zig binding fails the
       # job instead of being accepted as a clean absence.
       - name: Run parser-loader ABI load-smoke (dynamic)
-        run: npx vitest run test/unit/parser-loader-abi.test.ts
+        run: npx vitest run test/unit/parser-loader-abi.test.ts test/unit/group/grpc-extractor.test.ts
         env:
           GITNEXUS_REQUIRE_ZIG: '1'
         working-directory: gitnexus

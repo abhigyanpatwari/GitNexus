@@ -118,8 +118,9 @@ class ManifestClassification(TestCase):
         self.assertNotIn("tree-sitter-cpp", readiness.VENDORED_NAMES)
         self.assertNotIn("tree-sitter-go", readiness.VENDORED_NAMES)
 
-    def test_c_carries_a_hold_cpp_does_not(self):
-        self.assertTrue(readiness.VENDORED["tree-sitter-c"]["hold"])
+    def test_swift_carries_a_hold_c_does_not(self):
+        self.assertTrue(readiness.VENDORED["tree-sitter-swift"]["hold"])
+        self.assertFalse(readiness.VENDORED["tree-sitter-c"]["hold"])
         self.assertNotIn("tree-sitter-c", readiness.INTENTIONAL_PINS)
         # cpp stays an npm intentional pin.
         self.assertIn("tree-sitter-cpp", readiness.INTENTIONAL_PINS)
@@ -328,14 +329,14 @@ class ReportRendering(TestCase):
         self.assertNotIn("Could not check", self.report)
         self.assertNotIn("fetch failed", self.report)
 
-    def test_held_c_renders_held_and_keeps_exit_nonzero(self):
+    def test_held_swift_renders_held_and_keeps_exit_nonzero(self):
         # Status is the last matrix cell (the row-diff regex captures the whole
         # tail, not just status, so read the cell directly).
-        cells = [c.strip() for c in self._matrix_row("tree-sitter-c").strip().strip("|").split("|")]
+        cells = [c.strip() for c in self._matrix_row("tree-sitter-swift").strip().strip("|").split("|")]
         self.assertEqual(cells[-1], "Vendored — held")
         self.assertIn("**Held:**", self.report)
         # With every npm grammar mocked to "Ready", the ONLY remaining blocker is
-        # the held c — so a non-zero exit proves the hold is treated as a blocker.
+        # the held Swift — so a non-zero exit proves the hold is treated as a blocker.
         self.assertEqual(self.code, 1)
 
     def test_upstream_abi_miss_uses_labeled_sentinel(self):
@@ -351,9 +352,9 @@ class ReportRendering(TestCase):
         self.assertEqual(len(self.rows), len(readiness.GRAMMARS))
         for name in readiness.VENDORED_NAMES:
             self.assertIn(name, self.rows)
-        # group 2 is the Status cell — held c renders exactly "Vendored — held",
+        # group 2 is the Status cell — held Swift renders exactly "Vendored — held",
         # and no captured status contains a pipe (proves cell-scoped capture).
-        self.assertEqual(self.rows["tree-sitter-c"], "Vendored — held")
+        self.assertEqual(self.rows["tree-sitter-swift"], "Vendored — held")
         for status in self.rows.values():
             self.assertNotIn("|", status)
 
@@ -365,16 +366,10 @@ class ReportRendering(TestCase):
         # Counts are derived from _render_report()'s mock corpus (all npm peer
         # deps mocked permissive): of the 10 npm-installed grammars, 9 render
         # Ready and 1 — tree-sitter-cpp — is the intentional pin (#1242), so it is
-        # not counted ready. The 4 blockers are that same pinned tree-sitter-cpp
-        # plus three held vendored grammars: ABI-held tree-sitter-c (#1242/#858),
-        # tree-sitter-kotlin (pinned to an unreleased fwcd main commit for `fun
-        # interface` support — ABI 14 is in range, but a hold counts as a blocker
-        # until it is lifted), and tree-sitter-objc. If a grammar is added/removed
-        # or a pin/hold changes,
-        # update _render_report()'s mock AND these expected counts together; a
-        # mismatch here means the report prose drifted, not the regex.
+        # not counted ready. The remaining blockers are that intentional pin
+        # and Swift's declaration-recovery hold.
         self.assertEqual(ready.groups(), ("9", "10"))
-        self.assertEqual(blockers.group(1), "4")
+        self.assertEqual(blockers.group(1), "2")
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():

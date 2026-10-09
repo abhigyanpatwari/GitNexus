@@ -798,10 +798,9 @@ function zigCallableCaptureOptions(
       );
     },
     extractCallArguments: (call: SyntaxNode) => {
-      const callee = call.childForFieldName('function');
-      const explicit = call.namedChildren.filter(
-        (child): child is SyntaxNode =>
-          child !== null && child.id !== callee?.id && child.type !== 'comment',
+      const argumentsNode = call.namedChildren.find((child) => child?.type === 'arguments');
+      const explicit = (argumentsNode?.namedChildren ?? []).filter(
+        (child): child is SyntaxNode => child !== null && child.type !== 'comment',
       );
       const receiver = zigImplicitReceiver(call, fnLocalNames, hostValueNames);
       return receiver === undefined ? explicit : [receiver, ...explicit];
