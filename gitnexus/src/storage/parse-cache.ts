@@ -850,7 +850,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Explicit JS/JSX embedded scripts retain their provider capture semantics.
 // Invalidate both stores together: v133 can replay file-wide import ownership
 // or TypeScript captures for an explicitly JavaScript embedded script.
-const SCHEMA_BUMP = 134;
+// v135: review fixes retain unambiguous conditional Python imports and ordinary
+// mutable TS/JS type facts, and preserve unchanged destructured CJS re-exports.
+// v134 stores contain the old blocked claims and must be extracted again.
+const SCHEMA_BUMP = 135;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
