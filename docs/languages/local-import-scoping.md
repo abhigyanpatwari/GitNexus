@@ -65,6 +65,10 @@ define this boundary. There is no full annotation evaluator, `exec` evaluation,
 or general closure scheduling model. A deferred `global`/`nonlocal` installer is
 not assumed to have executed for unrelated callers.
 
+Conditional imports with one compatible identity remain available for structural
+reference resolution, including `TYPE_CHECKING` annotations and `try` imports.
+Their runtime execution is not guaranteed by a resolved graph edge.
+
 Default expressions look up names in the enclosing environment. FastAPI's
 synthetic dependency graph caller is recorded separately as `callerScope`; it
 does not move lexical lookup into the handler body. Both
@@ -77,6 +81,8 @@ check this distinction.
 Loader recognition checks AST shape and binding identity, including parameters,
 catch/destructuring bindings, temporal-dead-zone ownership, and writes to the
 loader or imported handle. CommonJS forwarding uses that same identity check.
+Reassigning one destructured import leaves unchanged sibling re-exports intact.
+Writes to ordinary locals retain their declared type and callable-value facts.
 Unawaited dynamic imports remain Promise/file-dependency facts rather than module
 namespace aliases. Computed specifiers, indirect loader/Promise chains, and
 unsupported destructuring remain unresolved; see the
@@ -142,13 +148,14 @@ exact call-site positions are missing.
 
 ## Cache migration and verification evidence
 
-[Parse-cache schema 134](../../gitnexus/src/storage/parse-cache.ts) replaces 133
-for these facts. The same version gate applies to the
+[Parse-cache schema 135](../../gitnexus/src/storage/parse-cache.ts) replaces 133
+and the pre-review schema 134, which retained overly broad Python/TS/JS binding
+barriers. The same version gate applies to the
 [durable ParsedFile store](../../gitnexus/src/storage/parsedfile-store.ts).
 Incompatible records are rejected and rebuilt on the next analysis; unchanged
 records can then be reused. The
 [schema regression](../../gitnexus/test/unit/incremental-parse-cache.test.ts)
-explicitly rejects valid schema-133 records in both stores.
+explicitly rejects valid schema-133 and schema-134 records in both stores.
 
 The [real-worker parity suite](../../gitnexus/test/integration/local-import-worker-parity.test.ts)
 witnesses worker boot, dispatch, and returned ParsedFiles, then compares complete
