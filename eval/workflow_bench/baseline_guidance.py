@@ -30,6 +30,12 @@ _GITNEXUS_TOOL_GUIDANCE = re.compile(
 )
 
 
+# A CommonMark list item: bullet (-, *, +) or ordered marker (1-9 digits then
+# . or )), followed by a space, tab or end of line. Its indented continuation
+# lines belong to the item and are dropped with it.
+_LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
+
+
 def _atx_heading(line: str) -> tuple[int, str] | None:
     """Return (level, text) for a CommonMark ATX heading, else None.
 
@@ -83,7 +89,7 @@ def ordinary_repository_guidance(text: str) -> str:
                 continue
             skip_continuation = False
         if _GITNEXUS_TOOL_GUIDANCE.search(line):
-            skip_continuation = bool(re.match(r"^\s*[-*]\s", line))
+            skip_continuation = _LIST_ITEM.match(line) is not None
             continue
         kept.append(line)
     if marked:

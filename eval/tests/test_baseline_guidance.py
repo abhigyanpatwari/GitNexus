@@ -91,3 +91,9 @@ def test_gitnexus_sections_are_stripped_for_every_commonmark_atx_form(heading):
 def test_lines_that_are_not_atx_headings_do_not_open_a_section(line):
     guidance = f"{line}\nRun the unit tests.\n"
     assert baseline_guidance.ordinary_repository_guidance(guidance) == guidance
+
+
+@pytest.mark.parametrize("marker", ["-", "*", "+", "1.", "2)", "10.", "   -"])
+def test_gitnexus_list_items_drop_their_continuation_lines_for_every_commonmark_marker(marker):
+    guidance = f"{marker} Run npx gitnexus analyze\n  before editing.\nBuild first.\n"
+    assert baseline_guidance.ordinary_repository_guidance(guidance) == "Build first.\n"
