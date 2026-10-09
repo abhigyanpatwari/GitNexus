@@ -212,6 +212,10 @@ def validate_report(
     rebuilt = build_report(report["per_run"], report, now=measured_at)
     if not rebuilt["complete"] or any(rebuilt[key] != report[key] for key in ("arms", "paired", "problems")):
         raise ValueError("release summary does not match its measured cells")
+    # Publication copies this document verbatim, so it must be exactly the
+    # field-whitelisted rebuild: no extra top-level or per-run fields.
+    if json.loads(json.dumps(rebuilt, allow_nan=False)) != report:
+        raise ValueError("release evidence carries fields outside the published report schema")
 
 
 def _git_sha(repo: Path) -> str:

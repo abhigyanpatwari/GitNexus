@@ -239,3 +239,19 @@ def test_shipped_release_tasks_share_one_pinned_commit():
     tasks, _, _ = release_report.suite_binding()
     # The workflow builds exactly one dependency checkout for the whole suite.
     assert pinned_task_sha(tasks) == tasks[0]["ref"]
+
+
+@pytest.mark.parametrize(
+    "smuggle",
+    [
+        lambda report: report["per_run"][0].update(internal_path="/home/runner/private/transcript.jsonl"),
+        lambda report: report.update(transcripts=["private"]),
+    ],
+    ids=["per-run-field", "top-level-field"],
+)
+def test_evidence_with_fields_outside_the_published_schema_is_rejected(smuggle):
+    report = json.loads(json.dumps(build_report(rows(), metadata(), now=NOW)))
+    validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)
+    smuggle(report)
+    with pytest.raises(ValueError, match="outside the published report schema"):
+        validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)

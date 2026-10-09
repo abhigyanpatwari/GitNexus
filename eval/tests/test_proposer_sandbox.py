@@ -176,7 +176,8 @@ def test_real_bubblewrap_candidate_lifecycle_cannot_replace_harness_or_read_toke
         "try { fs.writeFileSync(target,'forged evaluator'); } catch {}\n"
         "try { fs.appendFileSync('.git/config','[core]\\n\\tfsmonitor = forged\\n'); } catch {}\n"
         "fs.writeFileSync('receipt.json', JSON.stringify({visible, token:"
-        "process.env.GITNEXUS_BENCH_OPENAI_API_KEY ?? null}));\n"
+        "process.env.GITNEXUS_BENCH_OPENAI_API_KEY ?? null,"
+        "interfaces:Object.keys(require('os').networkInterfaces()).sort()}));\n"
     )
     (candidate / "attack.cjs").write_text(attack)
     for folder, name, scripts in (
@@ -194,7 +195,12 @@ def test_real_bubblewrap_candidate_lifecycle_cannot_replace_harness_or_read_toke
     release_build.build_candidate(candidate)
     assert harness.read_text() == "trusted main evaluator\n"
     assert (candidate / ".git/config").read_text() == "[core]\n\tbare = false\n"
-    assert json.loads((candidate / "receipt.json").read_text()) == {"visible": False, "token": None}
+    # Lifecycle scripts run in a fresh network namespace: loopback only.
+    assert json.loads((candidate / "receipt.json").read_text()) == {
+        "visible": False,
+        "token": None,
+        "interfaces": ["lo"],
+    }
     assert (core / "built.txt").read_text() == "runtime"
     assert (candidate / "gitnexus-shared/node_modules").is_dir()
 
@@ -1956,3 +1962,21 @@ def test_real_bubblewrap_lets_a_review_artifact_be_written_atomically(tmp_path: 
         # consumes it before leaving the scope.
         _verdict, findings = parse_review_output(review_output)
         assert findings == ()
+
+
+def test_nomcp_sandbox_refuses_unbalanced_repository_guidance(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "AGENTS.md").write_text("Build first.\n<!-- gitnexus:start -->\nUse GitNexus.\n")
+    bwrap = tmp_path / "bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o755)
+    with pytest.raises(SandboxError, match="unbalanced GitNexus markers"):
+        with prepare_sandbox(
+            clone=clone,
+            claude_bin=sys.executable,
+            bwrap_bin=bwrap,
+            preflight=False,
+            gitnexus_available=False,
+        ):
+            pass

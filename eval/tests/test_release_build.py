@@ -36,15 +36,35 @@ def test_candidate_build_clears_tokens_and_mounts_only_candidate_writable(monkey
     monkeypatch.setattr(release_build, "preflight_bubblewrap", lambda: Path('/usr/bin/bwrap'))
     monkeypatch.setattr(release_build, "run_checked", lambda *a, **k: calls.append((a, k)))
     release_build.build_candidate(tmp_path)
-    (command,), kwargs = calls[0]
-    assert kwargs == {"timeout": 1200, "env": {}}
-    assert '--clearenv' in command
-    at = command.index('--bind')
-    assert command[at + 1:at + 3] == [str(tmp_path), '/workspace']
-    assert command.count('--bind') == 1
-    assert [command[i + 1] for i, v in enumerate(command) if v == '--setenv'] == ['PATH', 'HOME']
-    assert '--unshare-pid' in command and '--cap-drop' in command
-    assert 'npm ci' in command[-1] and 'npm run build --prefix gitnexus' in command[-1]
+    assert len(calls) == 2
+    for (command,), kwargs in calls:
+        assert kwargs == {"timeout": 1200, "env": {}}
+        assert '--clearenv' in command
+        at = command.index('--bind')
+        assert command[at + 1:at + 3] == [str(tmp_path), '/workspace']
+        assert command.count('--bind') == 1
+        assert [command[i + 1] for i, v in enumerate(command) if v == '--setenv'] == ['PATH', 'HOME']
+        assert '--unshare-pid' in command and '--cap-drop' in command
+
+
+def test_candidate_downloads_without_scripts_then_runs_every_script_offline(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(release_build, "preflight_bubblewrap", lambda: Path('/usr/bin/bwrap'))
+    monkeypatch.setattr(release_build, "run_checked", lambda *a, **k: calls.append(a[0]))
+    release_build.build_candidate(tmp_path)
+    download, scripts = calls
+    assert "--unshare-net" not in download
+    assert download[-1].splitlines()[1:] == [
+        "npm ci --ignore-scripts --audit=false --fund=false",
+        "npm ci --prefix gitnexus --ignore-scripts --audit=false --fund=false",
+    ]
+    assert "--unshare-net" in scripts
+    assert scripts[-1].splitlines()[1:] == [
+        "npm rebuild --foreground-scripts",
+        "npm rebuild --prefix gitnexus --foreground-scripts",
+        "npm run build --prefix gitnexus",
+        "mkdir -p gitnexus-shared/node_modules",
+    ]
 
 
 def test_candidate_build_mounts_git_metadata_read_only_over_the_writable_checkout(monkeypatch, tmp_path):
@@ -53,10 +73,11 @@ def test_candidate_build_mounts_git_metadata_read_only_over_the_writable_checkou
     monkeypatch.setattr(release_build, "run_checked", lambda *a, **k: calls.append(a))
     (tmp_path / ".git").mkdir()
     release_build.build_candidate(tmp_path)
-    (command,) = calls[0]
-    # bwrap applies mounts in order, so the read-only overlay must follow the writable bind.
-    at = command.index('--bind')
-    assert command[at:at + 6] == ['--bind', str(tmp_path), '/workspace', '--ro-bind', str(tmp_path / ".git"), '/workspace/.git']
+    assert len(calls) == 2
+    for (command,) in calls:
+        # bwrap applies mounts in order, so the read-only overlay must follow the writable bind.
+        at = command.index('--bind')
+        assert command[at:at + 6] == ['--bind', str(tmp_path), '/workspace', '--ro-bind', str(tmp_path / ".git"), '/workspace/.git']
 
 
 def test_candidate_build_uses_the_shared_bubblewrap_preamble_with_all_capabilities_dropped(monkeypatch, tmp_path):
@@ -64,9 +85,11 @@ def test_candidate_build_uses_the_shared_bubblewrap_preamble_with_all_capabiliti
     monkeypatch.setattr(release_build, "preflight_bubblewrap", lambda: Path("/usr/bin/bwrap"))
     monkeypatch.setattr(release_build, "run_checked", lambda *a, **k: calls.append(a))
     release_build.build_candidate(tmp_path)
-    (command,) = calls[0]
+    (download,), (scripts,) = calls
     preamble = bwrap_base_args(cap_drop_all=True)
-    assert command[1 : 1 + len(preamble)] == preamble
+    assert download[1 : 1 + len(preamble)] == preamble
+    offline = bwrap_base_args(unshare_network=True, cap_drop_all=True)
+    assert scripts[1 : 1 + len(offline)] == offline
     at = preamble.index("--cap-drop")
     assert preamble[at : at + 2] == ["--cap-drop", "ALL"]
     assert "--unshare-net" not in preamble
