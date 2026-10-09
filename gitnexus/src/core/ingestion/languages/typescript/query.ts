@@ -220,6 +220,12 @@ export const TYPESCRIPT_SCOPE_QUERY = `
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
 
+;; Generator expressions have the same callable binding and scope anchor.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (generator_function) @declaration.function))
+
 (variable_declaration
   (variable_declarator
     name: (identifier) @declaration.name
@@ -229,6 +235,11 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (generator_function) @declaration.function))
 
 ;; CJS property-assignment exports (#2723) — see the matching block in
 ;; \`languages/javascript/query.ts\` for the rationale. Mirrored here because
@@ -1096,12 +1107,11 @@ export const TYPESCRIPT_SCOPE_QUERY = `
     function: (member_expression) @type-binding.type)) @type-binding.alias
 
 ;; Type bindings — for-of member-access iterable: \`for (const u of this.users)\`.
-;; Bind u to \`users\` (the attribute name); chain-follow resolves users
-;; via the enclosing class's field binding.
+;; Preserve the explicit receiver so class fields are resolved as members,
+;; without treating them as lexical names visible in method bodies.
 (for_in_statement
   left: (identifier) @type-binding.name
-  right: (member_expression
-    property: (property_identifier) @type-binding.type)) @type-binding.alias
+  right: (member_expression) @type-binding.type) @type-binding.alias
 
 ;; Type bindings — class field annotation: \`private city: City\`.
 (public_field_definition

@@ -39,7 +39,11 @@ import { defaultExportNameCollides } from './cjs-export-assignment.js';
  * resolve through it, and synthesizing a second binding would re-create the
  * ambiguity the shadow guard exists to prevent.
  */
-export function synthesizeCjsReExports(root: SyntaxNode, out: CaptureMatch[]): void {
+export function synthesizeCjsReExports(
+  root: SyntaxNode,
+  out: CaptureMatch[],
+  validRequireCalls?: ReadonlySet<number>,
+): void {
   // Namespace and named bindings introduced by require(), by local name.
   const namespaceSources = new Map<string, { source: string; node: SyntaxNode }>();
   const namedSources = new Map<string, { source: string; name: string; node: SyntaxNode }>();
@@ -51,6 +55,7 @@ export function synthesizeCjsReExports(root: SyntaxNode, out: CaptureMatch[]): v
       const value = declarator.childForFieldName('value');
       if (value === null || value.type !== 'call_expression') continue;
       if (value.childForFieldName('function')?.text !== 'require') continue;
+      if (validRequireCalls !== undefined && !validRequireCalls.has(value.id)) continue;
       const arg = value.childForFieldName('arguments')?.namedChild(0);
       if (arg === undefined || arg === null || arg.type !== 'string') continue;
       const source = arg.namedChild(0)?.text ?? arg.text.slice(1, -1);
@@ -190,7 +195,8 @@ export function synthesizeCjsModuleExports(
   root: SyntaxNode,
   filePath: string,
   out: CaptureMatch[],
+  validRequireCalls?: ReadonlySet<number>,
 ): void {
-  synthesizeCjsReExports(root, out);
+  synthesizeCjsReExports(root, out, validRequireCalls);
   synthesizeCjsDefaultExport(root, filePath, out);
 }
