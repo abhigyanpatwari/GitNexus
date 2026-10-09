@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
 
+from .baseline_guidance import GITNEXUS_UNAVAILABLE_NOTE, GuidanceError, ordinary_repository_guidance
 from .process_control import ManagedProcessResult, run_managed
 
 
@@ -858,7 +859,6 @@ def real_directory(path: Path, *, label: str) -> Path:
 
 
 # Historical private name, still imported by task_assets.
-_real_directory = real_directory
 
 
 def _safe_repo_source(repo: Path, relative: str, *, label: str) -> tuple[Path, Path]:
@@ -1146,6 +1146,27 @@ def sandbox_workspace_write_boundary(
         yield
 
 
+def baseline_gitnexus_mounts(clone: Path, private_root: Path) -> tuple[ReadOnlyMount, ...]:
+    """Hide inherited index/bootstrap bytes and graph-first startup guidance."""
+
+    empty_index = private_root / "empty-gitnexus"
+    empty_index.mkdir(mode=0o500)
+    _prepare_clone_target(clone, PurePosixPath(".gitnexus"), directory=True, label="baseline index mask")
+    mounts = [ReadOnlyMount(empty_index, f"{SANDBOX_WORKSPACE}/.gitnexus")]
+    for index, name in enumerate(("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md")):
+        if os.path.lexists(clone / name):
+            _prepare_clone_target(clone, PurePosixPath(name), directory=False, label="baseline guidance")
+            try:
+                ordinary = ordinary_repository_guidance(_evidence_bytes(clone / name, ()).decode("utf-8"))
+            except GuidanceError as error:
+                raise SandboxError(str(error)) from None
+            guidance = private_root / f"repository-guidance-{index}.md"
+            guidance.write_text(ordinary.rstrip() + "\n\n" + GITNEXUS_UNAVAILABLE_NOTE)
+            guidance.chmod(0o400)
+            mounts.append(ReadOnlyMount(guidance, f"{SANDBOX_WORKSPACE}/{name}"))
+    return tuple(mounts)
+
+
 @contextmanager
 def prepare_sandbox(
     *,
@@ -1206,8 +1227,6 @@ def prepare_sandbox(
         if gitnexus_available:
             baseline_mounts: tuple[ReadOnlyMount, ...] = ()
         else:
-            # Lazy: baseline_guidance imports this module's mount/clone primitives.
-            from .baseline_guidance import baseline_gitnexus_mounts
 
             baseline_mounts = baseline_gitnexus_mounts(clone, private_root)
         protected_mounts = (

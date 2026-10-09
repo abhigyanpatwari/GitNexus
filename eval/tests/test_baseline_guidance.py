@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from workflow_bench import baseline_guidance
-from workflow_bench.proposer_sandbox import SandboxError
 
 
 @pytest.mark.parametrize("launcher", ["npx", "bunx", "pnpm dlx"])
@@ -49,5 +49,10 @@ def test_repository_guidance_does_not_backtrack_on_malformed_launcher_options():
     ],
 )
 def test_unbalanced_gitnexus_markers_fail_closed(guidance):
-    with pytest.raises(SandboxError, match="unbalanced GitNexus markers"):
+    with pytest.raises(baseline_guidance.GuidanceError, match="unbalanced GitNexus markers"):
         baseline_guidance.ordinary_repository_guidance(guidance)
+
+
+def test_module_has_no_sandbox_import_cycle():
+    source = Path(baseline_guidance.__file__).read_text()
+    assert "proposer_sandbox" not in source

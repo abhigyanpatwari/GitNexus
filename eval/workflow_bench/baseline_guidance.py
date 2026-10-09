@@ -1,18 +1,16 @@
-"""Baseline (no-GitNexus) arm: strip GitNexus guidance from inherited repository docs."""
+"""Baseline (no-GitNexus) arm: strip GitNexus guidance from inherited repository docs.
+
+Pure text handling only, so the sandbox module can import it without a cycle.
+"""
 
 from __future__ import annotations
 
-import os
 import re
-from pathlib import Path, PurePosixPath
 
-from .proposer_sandbox import (
-    SANDBOX_WORKSPACE,
-    ReadOnlyMount,
-    SandboxError,
-    _evidence_bytes,
-    _prepare_clone_target,
-)
+
+class GuidanceError(ValueError):
+    """Repository guidance cannot be safely reduced to ordinary development guidance."""
+
 
 GITNEXUS_UNAVAILABLE_NOTE = (
     "GitNexus tools are unavailable in this baseline_nomcp arm. "
@@ -44,7 +42,7 @@ def ordinary_repository_guidance(text: str) -> str:
         if marker is not None:
             starts = marker.group(1).lower() == "start"
             if starts == marked:
-                raise SandboxError("repository guidance contains unbalanced GitNexus markers")
+                raise GuidanceError("repository guidance contains unbalanced GitNexus markers")
             marked = starts
             continue
         if marked:
@@ -75,23 +73,5 @@ def ordinary_repository_guidance(text: str) -> str:
             continue
         kept.append(line)
     if marked:
-        raise SandboxError("repository guidance contains unbalanced GitNexus markers")
+        raise GuidanceError("repository guidance contains unbalanced GitNexus markers")
     return "".join(kept)
-
-
-def baseline_gitnexus_mounts(clone: Path, private_root: Path) -> tuple[ReadOnlyMount, ...]:
-    """Hide inherited index/bootstrap bytes and graph-first startup guidance."""
-
-    empty_index = private_root / "empty-gitnexus"
-    empty_index.mkdir(mode=0o500)
-    _prepare_clone_target(clone, PurePosixPath(".gitnexus"), directory=True, label="baseline index mask")
-    mounts = [ReadOnlyMount(empty_index, f"{SANDBOX_WORKSPACE}/.gitnexus")]
-    for index, name in enumerate(("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md")):
-        if os.path.lexists(clone / name):
-            _prepare_clone_target(clone, PurePosixPath(name), directory=False, label="baseline guidance")
-            ordinary = ordinary_repository_guidance(_evidence_bytes(clone / name, ()).decode("utf-8"))
-            guidance = private_root / f"repository-guidance-{index}.md"
-            guidance.write_text(ordinary.rstrip() + "\n\n" + GITNEXUS_UNAVAILABLE_NOTE)
-            guidance.chmod(0o400)
-            mounts.append(ReadOnlyMount(guidance, f"{SANDBOX_WORKSPACE}/{name}"))
-    return tuple(mounts)

@@ -603,9 +603,10 @@ def scenario_control_base(tmp_path_factory: pytest.TempPathFactory) -> tuple[Pat
         pytest.skip("pinned task source blobs are unavailable; fetch v1.6.12 before running oracle controls")
     base = workspace / "base"
     base.mkdir()
+    if not hasattr(tarfile, "data_filter"):
+        pytest.skip("oracle controls need tarfile extraction filters (Python 3.11.4+)")
     with tarfile.open(archive) as source:
-        # Extraction filters arrived in 3.11.4; the local git archive is trusted input.
-        source.extractall(base, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+        source.extractall(base, filter="data")
     for relative in ("node_modules", "gitnexus/node_modules", "gitnexus-shared/dist"):
         (base / relative).symlink_to(dependencies / relative, target_is_directory=True)
     subprocess.run(["git", "init", "--quiet", str(base)], check=True, capture_output=True)
