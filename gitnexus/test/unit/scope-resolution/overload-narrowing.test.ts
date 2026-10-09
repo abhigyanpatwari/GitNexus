@@ -27,6 +27,37 @@ describe('narrowOverloadCandidates — empty input', () => {
   });
 });
 
+describe('narrowOverloadCandidates — definitive block declaration conversions', () => {
+  const prototype = mkDef({
+    nodeId: 'record:int',
+    type: 'Function',
+    parameterCount: 1,
+    requiredParameterCount: 1,
+    parameterTypes: ['int'],
+  });
+  const conversionRankFn = (argument: string, parameter: string) =>
+    argument === parameter ? 0 : Number.POSITIVE_INFINITY;
+
+  it('rejects a known incompatible local prototype only when requested', () => {
+    expect(narrowOverloadCandidates([prototype], 1, ['Event'], { conversionRankFn })).toEqual([
+      prototype,
+    ]);
+    expect(
+      narrowOverloadCandidates([prototype], 1, ['Event'], {
+        conversionRankFn,
+        incompatibleConversionsAreFinal: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it('preserves candidates when argument or parameter metadata is unknown', () => {
+    const unknown = { ...prototype, parameterTypes: undefined };
+    const hooks = { conversionRankFn, incompatibleConversionsAreFinal: true };
+    expect(narrowOverloadCandidates([prototype], 1, [''], hooks)).toEqual([prototype]);
+    expect(narrowOverloadCandidates([unknown], 1, ['Event'], hooks)).toEqual([unknown]);
+  });
+});
+
 describe('narrowOverloadCandidates — arity filtering', () => {
   const add1 = mkDef({ nodeId: 'add:1', parameterCount: 1, requiredParameterCount: 1 });
   const add2 = mkDef({ nodeId: 'add:2', parameterCount: 2, requiredParameterCount: 2 });
