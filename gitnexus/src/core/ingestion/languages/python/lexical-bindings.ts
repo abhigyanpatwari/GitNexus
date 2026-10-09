@@ -306,11 +306,9 @@ export function applyPythonLexicalBindings(
     const eventRange = mapRange(range(event.node));
     const claim: NameClaim = {
       name: event.name,
-      kind:
-        (event.annotationOnly && owner.kind === 'Class') ||
-        (event.conditional && event.kind === 'import')
-          ? 'blocked'
-          : event.kind,
+      // Imports under guards (including TYPE_CHECKING) still provide static
+      // references. The identity/mixed-binding pass below blocks ambiguity.
+      kind: event.annotationOnly && owner.kind === 'Class' ? 'blocked' : event.kind,
       range: eventRange,
       ...(event.hoisted || event.annotationOnly
         ? { hoisted: true }
