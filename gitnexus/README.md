@@ -723,7 +723,7 @@ Configure the behavior with these environment variables:
 | `GITNEXUS_STREAM_GRAPH_EMIT`                 | `0`, `1`                       | `1` (on)                                           | **On by default** on a full rebuild (`--force`); incremental runs ignore it. Holds structural relationships (CALLS, IMPORTS, ACCESSES, CONTAINS, ...) as CSV-on-disk plus compact in-memory columns instead of as objects in three overlapping indexes, cutting peak in-memory graph heap by ~1.4x at no measurable CPU cost (measured A/B on a synthetic 400k-node / 1.08M-edge graph: 819 MB -> 584 MB, iteration at parity, scaling verified linear from 100k to 800k nodes, with every edge still visible through the graph interface; no end-to-end measurement on a real repository yet). Nothing is traded away — community detection, process extraction, PDG taint summaries and the local-symbol pruner all read a complete relationship set and behave identically. Set to `0` only to bisect a suspected streaming-related fault. |
 | `GITNEXUS_COMMUNITY_ENGINE`                  | `graphology`, `icebug`, `auto` | `graphology`                                       | Community-detection engine used during analyze. `graphology` is the supported default. `icebug` and `auto` are **experimental** and currently behave identically: both try the optional `@ladybugmem/icebug` native Leiden over a CSR export and fall back to Graphology if it is not installed, cannot load, or lacks the deterministic thread/seed controls. Experimental engines partition differently, so community IDs are not comparable across engines.                                                                                                                                                                                                                                                                                                                                                                                |
 | `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`                | `67108864` (64 MiB)                                | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`             | integer `>= 0` (bytes)         | min(2 GiB, 80% RAM)                                | LadybugDB buffer-pool ceiling for every GitNexus database (analyze, MCP server, serve, group bridges). Bounded so a long-lived `gitnexus mcp` process or a large incremental `analyze` cannot grow toward LadybugDB's native 80%-of-RAM default and OOM the host (#2557). `0` restores that native unbounded default; invalid values warn and fall back to the default. During `analyze` the pool is right-sized to the graph and, on non-4 KiB-page hosts (Apple Silicon 16 KiB, Ascend/aarch64 64 KiB), scaled by the page-size granule ratio up to min(2 GiB × pageSize/4 KiB, 80% RAM) (#2631); this env var overrides all of that as an absolute value.                                                                                                                                                                                  |
+| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`             | integer `>= 0` (bytes)         | min(2 GiB, 80% RAM)                                | LadybugDB buffer-pool ceiling for every GitNexus database (analyze, MCP server, serve, group bridges). Bounded so a long-lived `gitnexus mcp` process or a large incremental `analyze` cannot grow toward LadybugDB's native 80%-of-RAM default and OOM the host (#2557). `0` restores the native 80%-of-RAM default; invalid values warn and fall back to the default. During `analyze` the pool is right-sized to the graph and, on non-4 KiB-page hosts (Apple Silicon 16 KiB, Ascend/aarch64 64 KiB), scaled by the page-size granule ratio up to min(2 GiB × pageSize/4 KiB, 80% RAM) (#2631); this env var overrides all of that as an absolute value.                                                                                                                                                                                  |
 | `GITNEXUS_LBUG_MAX_DB_SIZE`                  | positive integer (bytes)       | `17179869184` (16 GiB)                             | Upper bound for a single LadybugDB database file. This is an mmap/disk-address-space ceiling, not a memory limit — it does not constrain the buffer pool (use `GITNEXUS_LBUG_BUFFER_POOL_SIZE` for that). Raise it when indexing genuinely huge monorepos; invalid values silently fall back to the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ```bash
@@ -743,6 +743,27 @@ GITNEXUS_FTS_CJK_SEGMENTATION=bigram npx gitnexus analyze --force
 ```
 
 ### Analysis runs out of memory
+
+If graph writes fail with `Unable to allocate memory` or `The buffer pool is
+full`, LadybugDB's **native buffer pool** is exhausted. Analysis stops on these
+errors rather than retrying with row skipping. This pool is separate from the
+Node/V8 heap and parse-worker budgets; raising `NODE_OPTIONS`,
+`--memory-budget`, or worker heap limits does not increase it.
+
+On a host with memory to spare, override the pool in **bytes** and rebuild:
+
+```bash
+# 3 GiB native pool; leave room for Node, workers, other native memory, and the OS
+GITNEXUS_LBUG_BUFFER_POOL_SIZE=3221225472 npx gitnexus analyze --force
+```
+
+An explicit value bypasses automatic pool sizing and can exhaust the host if
+set too high. `0` restores LadybugDB's native 80%-of-RAM default; it does not
+provide unlimited memory. Reduce the indexed scope or use more RAM when the
+combined budgets do not fit. A collapsed staged build is discarded before
+publication, preserving the previous index if one exists. In-place collapse
+leaves an incomplete index and exits nonzero; recover with `--force` once the
+underlying problem is fixed.
 
 Memory management is automatic: `analyze` sizes its heap to the machine
 (always below physical RAM), caps each parse worker, and — rather than
