@@ -265,7 +265,14 @@ def test_nomcp_sandbox_requires_containment(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "target", ["/opt/gitnexus/dist", "/opt/gitnexus-shared/dist", "/opt/gitnexus-registry", "/workspace/.gitnexus/lbug"]
+    "target", [
+        "/", "/opt", "/opt/claude", "/workspace",
+        "/opt/gitnexus", "/opt/gitnexus-shared", "/opt/gitnexus-registry",
+        "/opt/claude/gitnexus", "/workspace/.gitnexus",
+        "/opt/gitnexus/dist", "/opt/gitnexus-shared/dist", "/opt/gitnexus-registry/registry.json",
+        "/opt/claude/gitnexus/child", "/workspace/.gitnexus/lbug",
+        "//opt", "//opt/gitnexus", "/opt//gitnexus", "/opt/./gitnexus/", "//workspace/.gitnexus",
+    ]
 )
 def test_nomcp_sandbox_refuses_supplied_graph_or_runtime_mounts(tmp_path, target):
     clone = tmp_path / "clone"
@@ -278,6 +285,47 @@ def test_nomcp_sandbox_refuses_supplied_graph_or_runtime_mounts(tmp_path, target
             read_only_mounts=(ReadOnlyMount(tmp_path / "runtime", target),),
         ):
             pass
+
+
+@pytest.mark.parametrize("target", ["opt/gitnexus", "", "/opt/safe/../gitnexus", "/workspace/../opt"])
+def test_nomcp_sandbox_rejects_nonabsolute_or_parent_traversing_mount_targets(tmp_path, target):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with pytest.raises(SandboxError, match="baseline_nomcp mount target must be absolute"):
+        with prepare_sandbox(
+            clone=clone,
+            claude_bin=sys.executable,
+            gitnexus_available=False,
+            read_only_mounts=(ReadOnlyMount(tmp_path / "runtime", target),),
+        ):
+            pass
+
+
+@pytest.mark.parametrize(
+    "target", [
+        "/opt/gitnexus-tools", "/opt/gitnexus-shared-extra", "/opt/gitnexus-registry-backup",
+        "/opt/claude/gitnexus-extra", "/workspace/.gitnexus-cache", "/opt/ce-plugin",
+        "/workspace/node_modules", "/workspace/gitnexus/node_modules", "//workspace/gitnexus/node_modules",
+    ]
+)
+def test_nomcp_sandbox_accepts_nearby_paths_and_normal_dependency_mounts(tmp_path, target):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    dependency = tmp_path / "dependency"
+    dependency.mkdir()
+    bwrap = tmp_path / "bwrap"
+    bwrap.write_text("#!/bin/sh\nexit 0\n")
+    bwrap.chmod(0o755)
+    mount = ReadOnlyMount(dependency, target)
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=sys.executable,
+        bwrap_bin=bwrap,
+        gitnexus_available=False,
+        read_only_mounts=(mount,),
+        preflight=False,
+    ) as sandbox:
+        assert mount in sandbox.read_only_mounts
 
 
 @pytest.mark.skipif(

@@ -1239,7 +1239,12 @@ def prepare_sandbox(
         )
         for mount in read_only_mounts:
             target = PurePosixPath(mount.target)
-            if any(target.is_relative_to(path) for path in forbidden):
+            if not target.is_absolute() or ".." in target.parts:
+                raise SandboxError(f"baseline_nomcp mount target must be absolute without '..': {mount.target}")
+            # Linux treats a double-slash root as '/'; PurePosixPath preserves
+            # it, so normalize it before comparing namespace mount coverage.
+            target = PurePosixPath("/", *target.parts[1:])
+            if any(target.is_relative_to(path) or PurePosixPath(path).is_relative_to(target) for path in forbidden):
                 raise SandboxError(f"baseline_nomcp cannot mount GitNexus tools or graph assets: {mount.target}")
     if preflight:
         bwrap = preflight_bubblewrap(bwrap_bin) if backend == "bwrap" else preflight_unsafe_host()

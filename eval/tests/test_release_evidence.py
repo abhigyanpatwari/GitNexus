@@ -182,15 +182,17 @@ def test_recent_runs_are_paged_within_the_evidence_window(monkeypatch):
     [
         lambda folder, report: (folder / "other.json").write_text(json.dumps(report)),
         lambda folder, report: (folder / "agent-evaluation.json").symlink_to(folder / "elsewhere.json"),
+        lambda folder, report: (folder / "agent-evaluation.json").symlink_to(folder / "missing.json"),
         lambda folder, report: (folder / "agent-evaluation.json").write_text(" " * (2 * 1024 * 1024 + 1)),
     ],
-    ids=["missing", "symlink", "oversized"],
+    ids=["missing", "symlink-existing-target", "symlink-dangling", "oversized"],
 )
 def test_unsafe_or_missing_artifact_file_blocks_publishing(tmp_path, github, monkeypatch, plant):
-    (tmp_path / "elsewhere.json").write_text(json.dumps(github.reports["10"]))
-
     def planted(command, **options):
-        plant(Path(command[-1]), github.reports["10"])
+        folder = Path(command[-1])
+        report = github.reports["10"]
+        (folder / "elsewhere.json").write_text(json.dumps(report))
+        plant(folder, report)
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(release_evidence.subprocess, "run", planted)
