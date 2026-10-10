@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import stat
 import subprocess
 from pathlib import Path, PurePosixPath
@@ -117,12 +118,13 @@ def test_default_buffered_fallback_budget_covers_a_realistic_large_asset(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    # 20 MiB exceeds the old 16 MiB default but must fit comfortably under
-    # the current default, proving the real (non-monkeypatched) budget
-    # constant is sized for a realistic large sandbox_copy asset such as the
-    # harness's own pre-built graph index, not just tiny fixtures.
-    payload = os.urandom(20 * 1024 * 1024)
-    repo, task = _repo_and_task(tmp_path, {"large": payload})
+    # Exercise a valid snapshot above 512 MiB. Use a sparse source to avoid a
+    # huge Python allocation; capture and materialization still copy every byte.
+    repo, task = _repo_and_task(tmp_path, {"large": b"graph-start"})
+    source = repo / "large"
+    with source.open("r+b") as stream:
+        stream.seek(513 * 1024 * 1024)
+        stream.write(b"graph-end")
     clone = tmp_path / "clone"
     clone.mkdir()
     monkeypatch.setattr(task_assets, "_try_reflink", lambda *_args: False)
@@ -131,7 +133,9 @@ def test_default_buffered_fallback_budget_covers_a_realistic_large_asset(
         snapshot = cache.prepare(task, repo=repo, resolved_sha=SHA)
         snapshot.materialize(clone)
 
-    assert (clone / "large").read_bytes() == payload
+    with source.open("rb") as original, (clone / "large").open("rb") as copied:
+        assert hashlib.file_digest(copied, "sha256").digest() == hashlib.file_digest(original, "sha256").digest()
+    assert (clone / "large").stat().st_ino != source.stat().st_ino
 
 
 def test_large_asset_without_reflink_fails_before_publish_and_cleans_staging(

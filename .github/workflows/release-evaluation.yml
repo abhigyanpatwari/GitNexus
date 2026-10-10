@@ -295,6 +295,17 @@ jobs:
           GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
         run: uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py -q
+      - name: Materialize both release graphs before paid sessions
+        timeout-minutes: 120
+        working-directory: eval
+        run: |
+          set -euo pipefail
+          for runtime in stable candidate; do
+            uv run --locked --extra dev python -m workflow_bench.release_preflight \
+              --tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml" \
+              --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
+              --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+          done
       - name: Run repeated paired agent sessions
         timeout-minutes: 1140
         working-directory: eval
