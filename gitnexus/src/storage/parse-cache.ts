@@ -856,7 +856,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v136: Python parameter annotations retain enclosing lookup ownership; Vue
 // JSX/TSX captures and multi-block declarations retain their source grammar
 // and original graph positions. Both stores must re-extract v135 captures.
-const SCHEMA_BUMP = 136;
+// v137: Python module-accessor syntax proofs and exact assigned-call provenance
+// join the existing subtype capture payload. Re-extract v136 in both stores.
+const SCHEMA_BUMP = 137;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

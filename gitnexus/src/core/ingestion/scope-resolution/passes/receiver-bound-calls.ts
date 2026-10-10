@@ -188,6 +188,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'namespaceReceiverPaths'
   | 'namespaceBindingIdentity'
   | 'namespaceSkipsEnclosingClasses'
+  | 'createReceiverNamespaceResolver'
   | 'resolveReceiverMember'
   | 'suppressReceiverLookup'
   | 'resolveThisViaEnclosingClass'
@@ -1064,6 +1065,7 @@ export function emitReceiverBoundCalls(
     return undefined;
   };
 
+  const resolveReceiverNamespace = provider.createReceiverNamespaceResolver?.(scopes, index);
   for (const parsed of parsedFiles) {
     const namespaceCache = createNamespaceTargetCache(
       parsed,
@@ -1633,6 +1635,9 @@ export function emitReceiverBoundCalls(
         )
           ? namespaceCandidates
           : undefined;
+      const receiverNamespace =
+        targetFiles === undefined ? resolveReceiverNamespace?.(site, parsed) : undefined;
+      targetFiles ??= receiverNamespace?.targetFiles;
       // Chain walk: `hub.sub.helper()` / `hub.sub.Thing{}` — the receiver is
       // no handle of this file, but its segments reach a module (see
       // `resolveNamespaceChain`). A prefix that ends in a CLASS is Case 2's.
@@ -2949,7 +2954,10 @@ export function emitReceiverBoundCalls(
       // keyed by the MEMBER name, which is the only thing still known about a
       // dropped site (its callee is unknown by definition, so the drop cannot
       // be attributed to any target symbol).
-      if (compoundReceiverUnresolved && !handledSites.has(siteKey)) {
+      if (
+        (compoundReceiverUnresolved || receiverNamespace !== undefined) &&
+        !handledSites.has(siteKey)
+      ) {
         // Decoded once: both the shape census and the origin classifier read the
         // same chain, and this is inside the drop guard so a resolved site pays
         // nothing.
@@ -2976,13 +2984,16 @@ export function emitReceiverBoundCalls(
           // to point at, so its absence is completeness, not uncertainty — but
           // ONLY a positive built-in match may say so. Everything the index
           // cannot demonstrate stays `unknown` and keeps hedging.
-          receiverOrigin: classifyReceiverOrigin(
-            decodedChain,
-            site.inScope,
-            receiverName,
-            scopes,
-            receiverOriginOpts,
-          ),
+          receiverOrigin:
+            receiverNamespace?.callResultOrigin.isDefinite === false
+              ? 'unknown'
+              : classifyReceiverOrigin(
+                  receiverNamespace === undefined ? decodedChain : undefined,
+                  receiverNamespace?.callResultOrigin.inScope ?? site.inScope,
+                  receiverNamespace?.callResultOrigin.name ?? receiverName,
+                  scopes,
+                  receiverOriginOpts,
+                ),
         });
       }
     }

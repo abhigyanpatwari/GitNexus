@@ -318,8 +318,9 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 133 -> 134 for lexical local-import facts and real-worker parity.
   // Moved 134 -> 135 for guarded-import and mutable binding review fixes (#3532).
   // Moved 135 -> 136 for parameter annotations and Vue embedded script fixes (#3532).
-  it('pins SCHEMA_BUMP to 136 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399, #3414, #3408, #3402, #3446, #3450, #3499, #3502, #3487, #3505, #3504)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(136);
+  // Moved 136 -> 137 for Python module-accessor and call-result assignment captures (#3497).
+  it('pins SCHEMA_BUMP to 137 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399, #3414, #3408, #3402, #3446, #3450, #3499, #3502, #3487, #3505, #3504, #3497)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(137);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
@@ -329,7 +330,7 @@ describe('PARSE_CACHE_VERSION', () => {
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
       82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103,
       104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122,
-      123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
+      123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

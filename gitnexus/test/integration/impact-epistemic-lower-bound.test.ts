@@ -16,9 +16,14 @@
  * container, so impact("EmailLogger", upstream) finds no direct caller — but
  * must flag that the true blast radius is higher.
  */
-import { it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, loadMeta } from '../../src/storage/repo-manager.js';
+import {
+  MAX_UNRESOLVED_RECEIVER_MEMBERS,
+  summarizeUnresolvedReceivers,
+} from '../../src/core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { ResolutionOutcome } from '../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
@@ -43,6 +48,10 @@ const SEED = [
   `CREATE (leaf:Function {id: 'Function:src/util.ts:formatDate', name: 'formatDate', filePath: 'src/util.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
   `CREATE (caller:Function {id: 'Function:src/page.ts:renderHeader', name: 'renderHeader', filePath: 'src/page.ts', startLine: 1, endLine: 10, isExported: true, content: '', description: ''})`,
   `MATCH (a:Function {id:'Function:src/page.ts:renderHeader'}), (b:Function {id:'Function:src/util.ts:formatDate'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.9, reason:'direct', step:0}]->(b)`,
+  ...['noKnownCallers', 'constructor', 'toString', '__proto__'].map(
+    (name) =>
+      `CREATE (:Function {id: 'Function:src/util.ts:${name}', name: '${name}', filePath: 'src/util.ts', startLine: 5, endLine: 7, isExported: true, content: '', description: ''})`,
+  ),
 
   ...[
     ['listOrders', 'query'],
@@ -68,6 +77,8 @@ withTestLbugDB(
       backend = (handle as any)._backend;
     });
     beforeEach(() => {
+      // One query can read metadata for both freshness and epistemic boundaries.
+      // Keep each fixture snapshot stable for every read in that test.
       vi.mocked(loadMeta).mockResolvedValue({
         scopeExtractionReceipt: 1,
       } as Awaited<ReturnType<typeof loadMeta>>);
@@ -122,8 +133,200 @@ withTestLbugDB(
       expect(result.impactedCount).toBeGreaterThanOrEqual(1);
     });
 
+    describe.each(['impact', 'context'] as const)('%s() receiver summary', (tool) => {
+      const query = (name: string) =>
+        backend.callTool(
+          tool,
+          tool === 'impact'
+            ? { target: name, file_path: 'src/util.ts', direction: 'upstream' }
+            : { name, file_path: 'src/util.ts' },
+        );
+
+      it.each([
+        ['noKnownCallers', 0],
+        ['formatDate', 1],
+      ] as const)('hedges an omitted %s with %i known callers', async (name, callers) => {
+        vi.mocked(loadMeta).mockResolvedValue({
+          repoPath: '',
+          lastCommit: '',
+          indexedAt: '',
+          scopeExtractionReceipt: 1,
+          unresolvedReceiverMembers: {
+            counts: { anotherMember: 3 },
+            totalSites: 10,
+            omittedNames: 2,
+          },
+        } as Awaited<ReturnType<typeof loadMeta>>);
+
+        const result = await query(name);
+
+        expect(result).not.toHaveProperty('error');
+        expect(result.epistemic).toBe('lower-bound');
+        expect(result.boundaries.join(' ')).toContain('truncated');
+        expect(result.boundaries.join(' ')).toContain(`\`${name}\``);
+        expect(result.boundaries.join(' ')).toContain('dropped-call count');
+        expect(result.boundaries.join(' ')).toContain('cannot be determined');
+        expect(result.causes).toMatchObject({ receiverTyping: 0, externalBoundary: 0 });
+        if (tool === 'impact') {
+          expect(result.impactedCount).toBe(callers);
+        } else {
+          expect(result.status).toBe('found');
+          expect(result.incoming.calls?.length ?? 0).toBe(callers);
+        }
+      });
+
+      it('keeps actual retained call-site counts when other names were omitted', async () => {
+        vi.mocked(loadMeta).mockResolvedValue({
+          repoPath: '',
+          lastCommit: '',
+          indexedAt: '',
+          scopeExtractionReceipt: 1,
+          unresolvedReceiverMembers: {
+            counts: { formatDate: 3 },
+            totalSites: 10,
+            omittedNames: 2,
+            externalCounts: { formatDate: 4 },
+            externalSites: 4,
+          },
+        } as Awaited<ReturnType<typeof loadMeta>>);
+
+        const result = await query('formatDate');
+
+        expect(result.epistemic).toBe('lower-bound');
+        expect(result.causes).toMatchObject({ receiverTyping: 3, externalBoundary: 4 });
+        expect(result.boundaries).toHaveLength(1);
+        expect(result.boundaries[0]).toContain('3 call sites invoking `formatDate` were dropped');
+        expect(result.boundaries[0]).not.toContain('truncated');
+      });
+
+      it.each([
+        ['uncapped', { counts: { anotherMember: 1 }, totalSites: 1 }],
+        [
+          'external-only capped',
+          {
+            counts: {},
+            totalSites: 0,
+            externalCounts: { formatDate: 4 },
+            externalSites: 10,
+            externalOmittedNames: 2,
+          },
+        ],
+      ])('leaves an absent name exact with an %s summary', async (_label, summary) => {
+        vi.mocked(loadMeta).mockResolvedValue({
+          repoPath: '',
+          lastCommit: '',
+          indexedAt: '',
+          scopeExtractionReceipt: 1,
+          unresolvedReceiverMembers: summary,
+        } as Awaited<ReturnType<typeof loadMeta>>);
+
+        const result = await query('formatDate');
+
+        expect(result.epistemic).toBe('exact');
+        expect(result.boundaries).toBeUndefined();
+        expect(result.causes?.receiverTyping ?? 0).toBe(0);
+        expect(result.causes?.externalBoundary ?? 0).toBe(
+          'externalCounts' in summary ? summary.externalCounts.formatDate : 0,
+        );
+      });
+
+      it.each(['in-program', 'external'] as const)(
+        'consumes a persisted summary actually capped after 501 %s names',
+        async (receiverOrigin) => {
+          const outcomes: ResolutionOutcome[] = [
+            ...Array.from({ length: MAX_UNRESOLVED_RECEIVER_MEMBERS }, (_, i) => `aaa_member${i}`),
+            'noKnownCallers',
+          ].map((name, i) => ({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: 'src/caller.py',
+            name,
+            range: { startLine: i + 1, endLine: i + 1, startCol: 0, endCol: 30 },
+            siteKind: 'call',
+            receiverOrigin,
+          }));
+          const summary = JSON.parse(JSON.stringify(summarizeUnresolvedReceivers(outcomes)));
+          const external = receiverOrigin === 'external';
+          expect(Object.keys(external ? summary.externalCounts : summary.counts)).toHaveLength(
+            MAX_UNRESOLVED_RECEIVER_MEMBERS,
+          );
+          expect(external ? summary.externalSites : summary.totalSites).toBe(501);
+          expect(external ? summary.externalOmittedNames : summary.omittedNames).toBe(1);
+          expect(external ? summary.externalCounts : summary.counts).not.toHaveProperty(
+            'noKnownCallers',
+          );
+          vi.mocked(loadMeta).mockResolvedValue({
+            scopeExtractionReceipt: 1,
+            unresolvedReceiverMembers: summary,
+          } as Awaited<ReturnType<typeof loadMeta>>);
+
+          const result = await query('noKnownCallers');
+
+          expect(result.epistemic).toBe(external ? 'exact' : 'lower-bound');
+          expect(result.causes?.receiverTyping ?? 0).toBe(0);
+          expect(result.causes?.externalBoundary ?? 0).toBe(0);
+          if (external) expect(result.boundaries).toBeUndefined();
+          else expect(result.boundaries.join(' ')).toContain('truncated');
+        },
+      );
+
+      it.each([undefined, null, 0, -1, NaN, Infinity, 1.5, '2', '<invalid>', {}, true])(
+        'does not infer truncation from malformed or nonpositive omittedNames=%j',
+        async (omittedNames) => {
+          vi.mocked(loadMeta).mockResolvedValue({
+            scopeExtractionReceipt: 1,
+            unresolvedReceiverMembers: { counts: {}, totalSites: 0, omittedNames },
+          } as Awaited<ReturnType<typeof loadMeta>>);
+
+          const result = await query('formatDate');
+
+          expect(result.epistemic).toBe('exact');
+          expect(result.boundaries).toBeUndefined();
+          expect(result.causes).toBeUndefined();
+        },
+      );
+
+      it.each(['constructor', 'toString', '__proto__'])(
+        'never invents a count for omitted prototype-like member %s',
+        async (name) => {
+          vi.mocked(loadMeta).mockResolvedValue({
+            scopeExtractionReceipt: 1,
+            unresolvedReceiverMembers: { counts: {}, totalSites: 3, omittedNames: 2 },
+          } as Awaited<ReturnType<typeof loadMeta>>);
+
+          const result = await query(name);
+
+          expect(result.epistemic).toBe('lower-bound');
+          expect(result.causes).toMatchObject({ receiverTyping: 0, externalBoundary: 0 });
+          expect(result.boundaries.join(' ')).toContain('truncated');
+          expect(result.boundaries.join(' ')).not.toMatch(/native code|NaN|undefined|\[object/);
+        },
+      );
+
+      it.each(['constructor', 'toString', '__proto__'])(
+        'preserves a genuinely recorded prototype-like member %s',
+        async (name) => {
+          vi.mocked(loadMeta).mockResolvedValue({
+            scopeExtractionReceipt: 1,
+            unresolvedReceiverMembers: JSON.parse(
+              JSON.stringify({ counts: { [name]: 3 }, totalSites: 5, omittedNames: 2 }),
+            ),
+          } as Awaited<ReturnType<typeof loadMeta>>);
+
+          const result = await query(name);
+
+          expect(result.epistemic).toBe('lower-bound');
+          expect(result.causes.receiverTyping).toBe(3);
+          expect(result.boundaries.join(' ')).toContain(`3 call sites invoking \`${name}\``);
+          expect(result.boundaries.join(' ')).not.toContain('truncated');
+        },
+      );
+    });
+
     it('marks impact as a lower bound when scope extraction omitted files', async () => {
-      vi.mocked(loadMeta).mockResolvedValueOnce({
+      vi.mocked(loadMeta).mockResolvedValue({
         repoPath: '/test/repo',
         lastCommit: 'abc123',
         indexedAt: new Date().toISOString(),
@@ -145,7 +348,7 @@ withTestLbugDB(
     });
 
     it('never renders repository-controlled failure paths in boundary prose', async () => {
-      vi.mocked(loadMeta).mockResolvedValueOnce({
+      vi.mocked(loadMeta).mockResolvedValue({
         repoPath: '/test/repo',
         lastCommit: 'abc123',
         indexedAt: new Date().toISOString(),
@@ -172,7 +375,7 @@ withTestLbugDB(
       ['missing metadata', null],
       ['malformed summary', { scopeExtractionReceipt: 1, scopeExtractionFailures: 'invalid' }],
     ])('treats %s as an unknown lower bound', async (_label, metadata) => {
-      vi.mocked(loadMeta).mockResolvedValueOnce(metadata as Awaited<ReturnType<typeof loadMeta>>);
+      vi.mocked(loadMeta).mockResolvedValue(metadata as Awaited<ReturnType<typeof loadMeta>>);
 
       const result = await backend.callTool('impact', {
         target: 'formatDate',
@@ -187,7 +390,7 @@ withTestLbugDB(
     });
 
     it('treats a metadata read failure as an unknown lower bound', async () => {
-      vi.mocked(loadMeta).mockRejectedValueOnce(new Error('metadata unavailable'));
+      vi.mocked(loadMeta).mockRejectedValue(new Error('metadata unavailable'));
 
       const result = await backend.callTool('impact', {
         target: 'formatDate',
@@ -244,7 +447,7 @@ withTestLbugDB(
     });
 
     it('context() reports persisted scope extraction omissions as a lower bound', async () => {
-      vi.mocked(loadMeta).mockResolvedValueOnce({
+      vi.mocked(loadMeta).mockResolvedValue({
         repoPath: '/test/repo',
         lastCommit: 'abc123',
         indexedAt: new Date().toISOString(),
