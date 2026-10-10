@@ -1,5 +1,6 @@
 import Parser from 'tree-sitter';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 import { logger } from '../logger.js';
@@ -81,15 +82,18 @@ const SOURCES: Record<string, GrammarSource> = {
     unavailableNote:
       'Java parsing requires `tree-sitter-java`. Check the install and native binding.',
   },
-  // tree-sitter-c-sharp declares `type: "module"` with `main: "bindings/node"`
-  // (no extension) and no `exports` field, which triggers Node 22's DEP0151
-  // deprecation warning on the bare-package import. The explicit subpath
-  // bypasses the deprecated ESM main-field resolution. (#1013)
+  // 0.23.5's ESM wrapper uses top-level await. Load the same native binding
+  // directly to preserve the synchronous grammar contract used by providers.
   [SupportedLanguages.CSharp]: {
-    load: () => _require('tree-sitter-c-sharp/bindings/node/index.js'),
+    load: () => {
+      const root = path.dirname(_require.resolve('tree-sitter-c-sharp/package.json'));
+      const grammar = _require('node-gyp-build')(root);
+      grammar.nodeTypeInfo = _require(path.join(root, 'src/node-types.json'));
+      return grammar;
+    },
     unavailableNote:
-      'C# parsing requires `tree-sitter-c-sharp/bindings/node/index.js`. ' +
-      `If the subpath is missing, see ${ISSUES_URL}/1013.`,
+      'C# parsing requires the `tree-sitter-c-sharp` native binding and node-type metadata. ' +
+      'Check the install and platform prebuild.',
   },
   [SupportedLanguages.CPlusPlus]: {
     load: () => _require('tree-sitter-cpp'),
@@ -105,7 +109,7 @@ const SOURCES: Record<string, GrammarSource> = {
       '`gitnexus/vendor/tree-sitter-objc`) could not be loaded. GitNexus ships ' +
       'prebuilt binaries for supported macOS/Linux runner architectures; this usually ' +
       'indicates a corrupted install or native ABI mismatch with the bundled ' +
-      'tree-sitter@0.21.1 runtime.',
+      'tree-sitter@0.25.1 runtime.',
   },
   [SupportedLanguages.Go]: {
     load: () => _require('tree-sitter-go'),
@@ -151,7 +155,7 @@ const SOURCES: Record<string, GrammarSource> = {
       '`gitnexus/vendor/tree-sitter-c`) could not be loaded. GitNexus ships ' +
       'prebuilt binaries for all supported platforms (win32/darwin/linux ' +
       'x64+arm64, N-API), so this usually indicates a corrupted install or a ' +
-      'native ABI mismatch with the bundled tree-sitter@0.21.1 runtime. ' +
+      'native ABI mismatch with the bundled tree-sitter@0.25.1 runtime. ' +
       'Try reinstalling, then re-run analyze. ' +
       `If the failure persists, file details at ${ISSUES_URL}/1242.`,
   },
@@ -376,10 +380,13 @@ export const isGrammarRuntimeSkipped = (
   return source !== undefined && isRuntimeSkippedGrammar(key, source);
 };
 
-export const getLanguageGrammar = (language: SupportedLanguages, filePath?: string): unknown => {
+export const getLanguageGrammar = (
+  language: SupportedLanguages,
+  filePath?: string,
+): Parser.Language => {
   const key = resolveLanguageKey(language, filePath);
   const result = loadGrammar(key);
-  if (result.ok === true) return result.grammar;
+  if (result.ok === true) return result.grammar as Parser.Language;
   // Fatal failures throw the original underlying error (preserving stack)
   // after the note has been logged. Optional failures fall through to the
   // standard "Unsupported language" message that callers already handle.

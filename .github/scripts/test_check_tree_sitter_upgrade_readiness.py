@@ -46,7 +46,7 @@ _ROW_DIFF_RE = re.compile(r"\| `(tree-sitter-[^`]+)` \|.*\| ([^|]+?) \|$", re.M)
 _ISSUE_READY_RE = re.compile(
     r"- (\d+)/(\d+) npm-installed grammars already accept tree-sitter@"
 )
-_ISSUE_BLOCKER_RE = re.compile(r"\*\*Blocked\*\* — (\d+) grammars? ")
+_ISSUE_BLOCKER_RE = re.compile(r"\*\*Workarounds\*\* — (\d+) grammars? ")
 
 
 def _physical_vendor_grammars() -> set[str]:
@@ -118,8 +118,9 @@ class ManifestClassification(TestCase):
         self.assertNotIn("tree-sitter-cpp", readiness.VENDORED_NAMES)
         self.assertNotIn("tree-sitter-go", readiness.VENDORED_NAMES)
 
-    def test_c_carries_a_hold_cpp_does_not(self):
-        self.assertTrue(readiness.VENDORED["tree-sitter-c"]["hold"])
+    def test_swift_carries_a_hold_c_does_not(self):
+        self.assertTrue(readiness.VENDORED["tree-sitter-swift"]["hold"])
+        self.assertFalse(readiness.VENDORED["tree-sitter-c"]["hold"])
         self.assertNotIn("tree-sitter-c", readiness.INTENTIONAL_PINS)
         # cpp stays an npm intentional pin.
         self.assertIn("tree-sitter-cpp", readiness.INTENTIONAL_PINS)
@@ -278,9 +279,7 @@ class ReportRendering(TestCase):
         cls.rows = dict(_ROW_DIFF_RE.findall(cls.report))
 
     def test_no_bare_question_mark_anywhere(self):
-        # The only legitimate '?' is the "Satisfies 0.25?" column header.
-        sanitized = self.report.replace("Satisfies 0.25?", "Satisfies 0.25")
-        self.assertNotIn("?", sanitized, "report still contains a bare '?' placeholder")
+        self.assertNotIn("?", self.report, "report still contains a bare '?' placeholder")
 
     def test_malformed_npm_version_renders_unknown_in_prose_not_bare_question(self):
         # A successful (200) npm /latest response that omits `version` leaves
@@ -304,8 +303,7 @@ class ReportRendering(TestCase):
              contextlib.redirect_stdout(buf):
             readiness.main()
         report = buf.getvalue()
-        sanitized = report.replace("Satisfies 0.25?", "Satisfies 0.25")
-        self.assertNotIn("?", sanitized)
+        self.assertNotIn("?", report)
         # The Ready bucket prose line for go shows the labeled 'unknown', not '?'.
         self.assertRegex(report, r"`tree-sitter-go`.*npm latest `unknown`")
 
@@ -328,14 +326,14 @@ class ReportRendering(TestCase):
         self.assertNotIn("Could not check", self.report)
         self.assertNotIn("fetch failed", self.report)
 
-    def test_held_c_renders_held_and_keeps_exit_nonzero(self):
+    def test_held_swift_renders_held_and_keeps_exit_nonzero(self):
         # Status is the last matrix cell (the row-diff regex captures the whole
         # tail, not just status, so read the cell directly).
-        cells = [c.strip() for c in self._matrix_row("tree-sitter-c").strip().strip("|").split("|")]
+        cells = [c.strip() for c in self._matrix_row("tree-sitter-swift").strip().strip("|").split("|")]
         self.assertEqual(cells[-1], "Vendored — held")
         self.assertIn("**Held:**", self.report)
         # With every npm grammar mocked to "Ready", the ONLY remaining blocker is
-        # the held c — so a non-zero exit proves the hold is treated as a blocker.
+        # the held Swift — so a non-zero exit proves the hold is treated as a blocker.
         self.assertEqual(self.code, 1)
 
     def test_upstream_abi_miss_uses_labeled_sentinel(self):
@@ -351,9 +349,9 @@ class ReportRendering(TestCase):
         self.assertEqual(len(self.rows), len(readiness.GRAMMARS))
         for name in readiness.VENDORED_NAMES:
             self.assertIn(name, self.rows)
-        # group 2 is the Status cell — held c renders exactly "Vendored — held",
+        # group 2 is the Status cell — held Swift renders exactly "Vendored — held",
         # and no captured status contains a pipe (proves cell-scoped capture).
-        self.assertEqual(self.rows["tree-sitter-c"], "Vendored — held")
+        self.assertEqual(self.rows["tree-sitter-swift"], "Vendored — held")
         for status in self.rows.values():
             self.assertNotIn("|", status)
 
@@ -365,16 +363,30 @@ class ReportRendering(TestCase):
         # Counts are derived from _render_report()'s mock corpus (all npm peer
         # deps mocked permissive): of the 10 npm-installed grammars, 9 render
         # Ready and 1 — tree-sitter-cpp — is the intentional pin (#1242), so it is
-        # not counted ready. The 4 blockers are that same pinned tree-sitter-cpp
-        # plus three held vendored grammars: ABI-held tree-sitter-c (#1242/#858),
-        # tree-sitter-kotlin (pinned to an unreleased fwcd main commit for `fun
-        # interface` support — ABI 14 is in range, but a hold counts as a blocker
-        # until it is lifted), and tree-sitter-objc. If a grammar is added/removed
-        # or a pin/hold changes,
-        # update _render_report()'s mock AND these expected counts together; a
-        # mismatch here means the report prose drifted, not the regex.
+        # not counted ready. The remaining workarounds are that intentional pin
+        # and Swift's declaration-recovery hold.
         self.assertEqual(ready.groups(), ("9", "10"))
-        self.assertEqual(blockers.group(1), "4")
+        self.assertEqual(blockers.group(1), "2")
+
+    def test_lists_every_pack_time_peer_patch_with_its_drop_condition(self):
+        patched = readiness.read_patched_peers()
+        # Guards the AUDITED_PEERS regex: the bundle script patches 8 manifests today.
+        self.assertGreaterEqual(len(patched), 8)
+        self.assertIn(f"## Pack-time peer patches ({len(patched)})", self.report)
+        for name, version, _ in patched:
+            self.assertIn(f"- `{name}@{version}`", self.report)
+        line = lambda pkg: next(l for l in self.report.splitlines() if l.startswith(f"- `{pkg}`"))
+        # npm is mocked to a permissive 9.9.9, so a direct pin can be bumped away...
+        self.assertIn("can drop: bump to `9.9.9`", line("tree-sitter-java@0.23.5"))
+        # ...but not an intentional pin, nor a nested copy owned by another grammar.
+        self.assertIn("required while intentionally pinned", line("tree-sitter-cpp@0.23.4"))
+        self.assertIn("transitive", line("tree-sitter-javascript@0.23.1"))
+        self.assertIn("transitive", line("tree-sitter-c@0.23.6"))
+
+    def test_target_runtime_is_the_bundled_pin(self):
+        pkg = json.loads((_REPO_ROOT / "gitnexus" / "package.json").read_text())
+        self.assertEqual(readiness.TARGET_RUNTIME, pkg["dependencies"]["tree-sitter"])
+        self.assertIn(f"Bundled runtime `tree-sitter@{readiness.TARGET_RUNTIME}`", self.report)
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():
@@ -419,8 +431,7 @@ class OfflineMode(TestCase):
 
     def test_offline_report_has_no_bare_question_mark(self):
         report, _ = self._render_offline()
-        sanitized = report.replace("Satisfies 0.25?", "Satisfies 0.25")
-        self.assertNotIn("?", sanitized)
+        self.assertNotIn("?", report)
 
 
 class VendoredAbiBranches(TestCase):

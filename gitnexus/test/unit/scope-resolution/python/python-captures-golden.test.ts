@@ -181,6 +181,24 @@ function formatGolden(snap: Snapshot): string {
 }
 
 describe('Python scope captures — golden parity', () => {
+  it('captures an empty package module without inventing declarations or references', () => {
+    // Tree-sitter 0.25 matches the zero-width module root. The 15 empty
+    // __init__.py fixtures therefore gain this scope (with its lexical
+    // decorations) and no other captures.
+    const range = { startLine: 1, startCol: 0, endLine: 1, endCol: 0 };
+    expect(emitPythonScopeCaptures('', '__init__.py')).toEqual([
+      {
+        '@scope.module': { name: '@scope.module', text: '', range },
+        '@scope.name-claims': { name: '@scope.name-claims', text: '[]', range },
+        '@scope.lookup-policy': {
+          name: '@scope.lookup-policy',
+          text: '{"callerScopeIsAuthoritative":true}',
+          range,
+        },
+      },
+    ]);
+  });
+
   it('keeps ordinary Python call arity out of the generic reference schema', () => {
     const src = [
       'zero()',

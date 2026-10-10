@@ -368,7 +368,7 @@ jobs:
       # exemption is revoked here and an ABI-broken Zig binding fails the
       # job instead of being accepted as a clean absence.
       - name: Run parser-loader ABI load-smoke (dynamic)
-        run: npx vitest run test/unit/parser-loader-abi.test.ts
+        run: npx vitest run test/unit/parser-loader-abi.test.ts test/unit/group/grpc-extractor.test.ts
         env:
           GITNEXUS_REQUIRE_ZIG: '1'
         working-directory: gitnexus
@@ -376,7 +376,7 @@ jobs:
   # End-to-end smoke test for the #1728 packaging fix: pack the published
   # tarball, install it globally into a temp prefix, and assert no junction
   # creation (the EPERM root cause) plus working CLI plus vendor cleanliness
-  # (#836). Runs on windows-latest because that is the platform the fix
+  # (#836) plus native grammar loading from the bundled runtime. Runs on windows-latest because that is the platform the fix
   # targets; the in-repo `npm ci` job above only exercises the dev-tree path
   # and skips the tarball reify step where the historical EPERM occurred.
   packaged-install-smoke:
@@ -455,6 +455,10 @@ jobs:
           # The npm package contract includes the built web UI. Validate the
           # installed artifact, not just the source workflow that produced it.
           node "$INSTALLED/scripts/assert-web-assets.mjs" "$INSTALLED/web"
+
+          # Every bundled/vendored grammar must load and parse from the
+          # installed tree (main thread + worker), not just the dev checkout.
+          node "$INSTALLED/scripts/assert-native-parsers.mjs" "$INSTALLED"
 
           # #836 invariant: no node_modules/ or build/ under any vendor/*.
           BAD=$(find "$INSTALLED/vendor" \( -name node_modules -o -name build \) -print 2>/dev/null || true)

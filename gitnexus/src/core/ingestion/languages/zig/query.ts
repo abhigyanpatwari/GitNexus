@@ -391,24 +391,21 @@ export const ZIG_SCOPE_QUERY = `
 ;; evaluation and is deliberately NOT modelled; \`impact\` reports the shortfall
 ;; as \`epistemic: "lower-bound"\` instead of pretending to certainty.
 
-;; Call ARGUMENTS. In tree-sitter-zig arguments are direct children of
-;; \`call_expression\`, NOT wrapped in an \`arguments\` node (only builtins have
-;; one), so the callee has to be consumed explicitly by \`function:\` — without
-;; that binding the same rule also matches the callee of \`foo(bar)\` and mints a
-;; USES edge duplicating the call.
+;; Call ARGUMENTS. The upstream grammar wraps actuals in \`arguments\`.
+;; Match inside that wrapper so the callee cannot also become a value reference.
 (call_expression
-  function: (_)
-  (identifier) @reference.name @reference.value-ref)
+  (arguments
+    (identifier) @reference.name @reference.value-ref))
 
 ;; Qualified argument — \`bridge.accessor(Element.getNamespaceUri, …)\`. The
 ;; RECEIVER is captured alongside the member so the site carries the owner it
 ;; was written with; \`@reference.name\` stays the member, which is the name the
 ;; scope walk resolves.
 (call_expression
-  function: (_)
-  (field_expression
-    object: (_) @reference.receiver
-    member: (identifier) @reference.name) @reference.value-ref)
+  (arguments
+    (field_expression
+      object: (_) @reference.receiver
+      member: (identifier) @reference.name) @reference.value-ref))
 
 ;; Const binding initialiser — \`pub const defaultHandler = onReset;\`. Both
 ;; anchors are load-bearing: the leading \`.\` pins the bound name to the first

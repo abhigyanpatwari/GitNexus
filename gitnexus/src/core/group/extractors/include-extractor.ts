@@ -12,7 +12,7 @@ import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
 // (#2091/#2093). It may be absent on a platform without a prebuild; when the
 // binding is absent, `getLanguageForFile` returns null for `.c`/`.h` so C
 // include-extraction is skipped (C++ is unaffected — its binding always ships).
-let C: unknown = null;
+let C: Parser.Language | null = null;
 try {
   C = requireVendoredGrammar('tree-sitter-c');
 } catch {
@@ -270,7 +270,7 @@ function isHeaderFile(filePath: string): boolean {
   return HEADER_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
-function getLanguageForFile(filePath: string): unknown | null {
+function getLanguageForFile(filePath: string): Parser.Language | null {
   const ext = path.extname(filePath).toLowerCase();
   switch (ext) {
     case '.c':
