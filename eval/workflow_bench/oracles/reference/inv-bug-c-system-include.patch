@@ -1,0 +1,12 @@
+--- a/gitnexus/src/core/ingestion/languages/c/scope-resolver.ts
++++ b/gitnexus/src/core/ingestion/languages/c/scope-resolver.ts
+@@ -81,7 +81,8 @@
+   // this process. Runs BEFORE `populateOwners`.
+   applyCaptureSideChannel: applyCStaticLinkageSideChannel,
+ 
+-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
++  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
++    if (context?.parsedImport?.kind === 'wildcard' && context.parsedImport.isSystem) return null;
+     // Augment allFilePaths with .h files discovered via loadResolutionConfig
+     // since the phase only passes .c files to the C resolver but #include
+     // targets .h files classified as C++ in language detection.

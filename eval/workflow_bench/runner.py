@@ -106,6 +106,7 @@ from .review_scoring import (
     parse_review_output,
     score_review,
 )
+from .baseline_guidance import GITNEXUS_UNAVAILABLE_NOTE
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS as SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
@@ -469,13 +470,10 @@ def run_arm(
         model=args.model,
         build_sandbox_environment=environment_builder,
     )
-    # --bare hard-disables the Skill tool and every mcp__* tool — by Claude
-    # Code design, not a bug (--allowedTools can't restore what --bare
-    # removes). Every arm except baseline_nomcp needs Skill and/or MCP tools,
-    # so only baseline_nomcp can keep --bare's tighter isolation; the rest
-    # rely on ANTHROPIC_API_KEY alone (the sandboxed HOME has no OAuth/
-    # keychain state to conflict with it).
-    bare = arm == "baseline_nomcp"
+    # All arms load ordinary repository context (CLAUDE.md) through the same
+    # startup mode. The no-MCP arm instead disables skills/commands and
+    # restricts its exact tool surface, with an empty MCP config and no
+    # supplied graph/runtime/CLI mounts.
     progress_label = transcript_output_prefix or f"{task.get('id', 'task')}-{arm}"
     common = {
         "progress_label": progress_label,
@@ -491,10 +489,9 @@ def run_arm(
             read_only_paths=_evaluated_skill_roots(worktree, arm),
         ),
         "require_pid_namespace": getattr(sandbox, "require_pid_namespace", True),
-        "bare": bare,
         "settings_json": sandbox.settings_json,
         "strict_mcp_config": True,
-        "mcp_config_json": host_text(sandbox_mcp_config()),
+        "mcp_config_json": host_text(sandbox_mcp_config(unsafe_host=backend == "host-unsafe")),
         "transcript_projects": sandbox.transcript_projects,
         "transcript_cwd": Path(SANDBOX_WORKSPACE),
         "transcript_wait_seconds": 5,
@@ -642,16 +639,16 @@ def run_arm(
         # question: no skills AND no graph tools.
         sessions.append(
             run_claude(
-                BASELINE_PROMPT.format(task=task["prompt"]),
+                BASELINE_PROMPT.format(task=task["prompt"]) + "\n\n" + GITNEXUS_UNAVAILABLE_NOTE,
                 worktree,
                 disallowed_tools=["Skill", "mcp__gitnexus"],
                 **{
                     **common,
+                    "disable_slash_commands": True,
                     "mcp_config_json": '{"mcpServers":{}}',
-                    "allowed_tools": allowed_agent_tools(
-                        implementation=True,
-                        include_mcp=False,
-                    ),
+                    "allowed_tools": [
+                        tool for tool in allowed_agent_tools(implementation=True, include_mcp=False) if tool != "Skill"
+                    ],
                 },
             )
         )
@@ -1190,13 +1187,16 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
     worktree: Path | None = None
     record: dict[str, Any] | None = None
     cleanup_error: OSError | None = None
+    execution_arm = CANDIDATE_ARMS.get(arm, arm)
+    gitnexus_available = execution_arm != "baseline_nomcp"
     try:
         if ctx.asset_snapshot_error is not None:
             raise RuntimeError(f"task asset snapshot preparation failed: {ctx.asset_snapshot_error}")
-        if ctx.graph_snapshot_error is not None:
-            raise RuntimeError(f"sanitized graph snapshot preparation failed: {ctx.graph_snapshot_error}")
-        if ctx.graph_snapshot is None:
-            raise RuntimeError("sanitized graph snapshot is unavailable")
+        if gitnexus_available:
+            if ctx.graph_snapshot_error is not None:
+                raise RuntimeError(f"sanitized graph snapshot preparation failed: {ctx.graph_snapshot_error}")
+            if ctx.graph_snapshot is None:
+                raise RuntimeError("sanitized graph snapshot is unavailable")
         if ctx.asset_snapshot is None:
             raise RuntimeError("task asset snapshot is unavailable")
         if ctx.clone_template is not None:
@@ -1207,15 +1207,20 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         else:
             worktree = make_worktree(ctx.repo, ctx.task_sha, ctx.trees_dir)
             sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
-        ctx.graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
+        if gitnexus_available:
+            assert ctx.graph_snapshot is not None
+            ctx.graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
         dependency_mounts = stage_task_assets(
             task,
             repo=ctx.repo,
             clone=worktree,
             snapshot=ctx.asset_snapshot,
         )
-        registry_mount = isolated_gitnexus_registry_mount(worktree, ctx.trees_dir)
-        execution_arm = CANDIDATE_ARMS.get(arm, arm)
+        gitnexus_mounts = (
+            [*ctx.runtime_mounts, isolated_gitnexus_registry_mount(worktree, ctx.trees_dir)]
+            if gitnexus_available
+            else []
+        )
         ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ctx.ce_plugin_snapshot)
         with prepare_sandbox(
             clone=worktree,
@@ -1223,12 +1228,12 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             bwrap_bin=ctx.bwrap_bin,
             read_only_mounts=[
                 *dependency_mounts,
-                *ctx.runtime_mounts,
-                registry_mount,
+                *gitnexus_mounts,
                 *ce_mounts,
             ],
             preflight=False,
             backend=ctx.sandbox_backend,
+            gitnexus_available=gitnexus_available,
         ) as sandbox:
             # Capture the BASE (pre-overlay) skill digest — identical
             # for the incumbent and candidate arms — then run the
@@ -1236,12 +1241,12 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             # candidate overlay is applied only afterwards, so setup
             # can never observe candidate prose and both arms share
             # byte-identical pre-overlay state.
-            # Historical review SHAs may predate gitnexus-review. Seed
-            # the current evaluated skill first so fingerprinting and
-            # the model see the same incumbent prose on every case.
-            if execution_arm == "review":
+            # Historical task SHAs may predate the selected release skills.
+            # Seed them before fingerprinting/setup so every task evaluates
+            # the same release prose, with candidate overlays applied later.
+            if execution_arm in ("review", "workflow", "workflow_direct"):
                 seed_evaluated_skills(
-                    HARNESS_ROOT,
+                    getattr(args, "gitnexus_root", None) or HARNESS_ROOT,
                     worktree,
                     sandbox=sandbox,
                     arm=execution_arm,
@@ -1413,9 +1418,11 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             "sandbox_dependency_manifest_digest": (
                 ctx.asset_snapshot.dependency_manifest_digest if ctx.asset_snapshot is not None else None
             ),
-            "sanitized_graph_snapshot_digest": (ctx.graph_snapshot.digest if ctx.graph_snapshot is not None else None),
+            "sanitized_graph_snapshot_digest": (
+                ctx.graph_snapshot.digest if gitnexus_available and ctx.graph_snapshot is not None else None
+            ),
             "sanitized_graph_manifest_digest": (
-                ctx.graph_snapshot.manifest_digest if ctx.graph_snapshot is not None else None
+                ctx.graph_snapshot.manifest_digest if gitnexus_available and ctx.graph_snapshot is not None else None
             ),
             "oracle_digest": ctx.oracle_snapshot.digest,
             "oracle_command_digest": ctx.oracle_snapshot.command_digest,
@@ -1948,6 +1955,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument(
+        "--gitnexus-root",
+        type=Path,
+        default=HARNESS_ROOT,
+        help="checkout supplying the pinned GitNexus runtime and evaluated skills (defaults to the harness checkout)",
+    )
+    parser.add_argument(
         "--ce-plugin-dir",
         type=Path,
         default=None,
@@ -2130,7 +2143,7 @@ def main() -> None:
             bwrap_bin = preflight_bubblewrap()
             sandbox_backend = "bwrap"
             require_claude_sandbox_helpers()
-        runtime_mounts = trusted_gitnexus_runtime_mounts()
+        runtime_mounts = trusted_gitnexus_runtime_mounts(root=args.gitnexus_root)
     except SandboxError as exc:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
@@ -2179,7 +2192,7 @@ def _comparator_reuse_expectation(
     for arm in args.arms:
         execution = CANDIDATE_ARMS.get(arm, arm)
         if execution in EVALUATED_ARM_SKILLS:
-            skill_digests[arm] = skill_fingerprint(HARNESS_ROOT, execution)
+            skill_digests[arm] = skill_fingerprint(getattr(args, "gitnexus_root", None) or HARNESS_ROOT, execution)
         else:
             skill_digests[arm] = None
     task_locks: dict[str, TaskReuseBinding] = {}

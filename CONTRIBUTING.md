@@ -95,6 +95,7 @@ Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:
   - `workflow_run` scope (e.g. `ci-report.yml`): `${{ github.workflow }}-${{ github.event.workflow_run.pull_requests[0].number || format('{0}/{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) }}` — the fork fallback must be stable across reruns (never `workflow_run.id`, which is per-run-unique and defeats serialization).
   - Global single-slot (manual dispatch utilities): `${{ github.workflow }}`
   - **Reusable workflows invoked via `workflow_call`:** do NOT use `${{ github.workflow }}` in the group key — in called-workflow context its evaluation is ambiguous and can resolve to the caller's name, which would deadlock against the caller's own group. Use a hardcoded literal prefix and a `github.event_name`-aware expression that falls through to `github.run_id` for reusable invocations (see `ci.yml` for the canonical form). Approved literal prefixes: `CI-` (`ci.yml`) and `docker-build-push-` (`docker.yml`). The `check-workflow-concurrency.py` validation script must be updated whenever a new approved literal prefix is added.
+  - **Shared EC2 resource:** `gitnexus-skill-evolution.yml` and `release-evaluation.yml` use the exact group `gitnexus-evolution-runner` with `cancel-in-progress: false`. They must serialize startup, paid work and hosted shutdown across both workflows. This exception is limited to those two files.
   - **Merge queue (`merge_group`)**: when this event is added, use `${{ github.workflow }}-${{ github.event.merge_group.head_ref }}` with `cancel-in-progress: false` (every queue entry is a distinct ref; never cancel).
 - **`cancel-in-progress` policy:**
 
@@ -201,7 +202,12 @@ routes between two modes based on the triggering event:
   `gitnexus-claude-plugin/.codex-plugin/plugin.json`,
   `.agents/plugins/marketplace.json`, and the matching `CHANGELOG.md` entry in
   lockstep — the always-on `gitnexus` unit suite now fails if those manifest
-  versions drift.
+  versions drift. Stable publication also requires paired agent evidence for
+  the exact tagged commit: run **Release evaluation** from `main` with
+  `candidate_ref` set to the full commit SHA, confirm the run started and
+  passed, and push the tag within seven days. Without that evidence, npm and
+  Docker publication fail. See `eval/workflow_bench/README.md` § Release
+  evaluation.
 - **Release-candidate mode** — runs on every push to `main` (typically a
   merged PR) plus manual `workflow_dispatch`. Docs-only changes are skipped
   via `paths-ignore`. Publishes to the `rc` dist-tag with version
@@ -214,6 +220,9 @@ routes between two modes based on the triggering event:
     the cycle from `latest`.
   - `N` is auto-incremented against existing `X.Y.Z-rc.*` entries on the
     registry. First rc for a given base is `rc.1`.
+  - The RC is gated by CI, including the fixed-answer tool-accuracy check
+    (`gitnexus/bench/tool-accuracy/`); its report is attached to every
+    release. RCs do not wait for a paid agent evaluation.
   - After the npm publish succeeds, the workflow calls `docker.yml` as a
     reusable workflow to build and push the corresponding RC Docker images
     (e.g. `ghcr.io/abhigyanpatwari/gitnexus:1.7.0-rc.1`, mirrored to

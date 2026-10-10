@@ -28,6 +28,8 @@
 # cache only that sanitized graph for every arm. The target repository's
 # prebuilt .gitnexus directory is never copied. Three declared dependency trees
 # are mounted read-only; missing assets fail before model execution.
+# Every task starts at the exact v1.6.12 commit, where all four tasks remain
+# unsolved. In particular, moving main already contains the C include fix.
 
 tasks:
   # Overhead floor — measured 2026-07-11 (see README calibration): the
@@ -36,7 +38,7 @@ tasks:
   - id: trivial-status-json-alias
     class: trivial
     repo: ~/GitNexus
-    ref: main
+    ref: c4ecf398de637cf779ab2238e69958cfd5d601ce
     sandbox_dependencies: &gitnexus_sandbox_dependencies
       - source: node_modules
         target: node_modules
@@ -71,7 +73,7 @@ tasks:
   - id: inv-bug-c-system-include
     class: investigation-bug
     repo: ~/GitNexus
-    ref: main
+    ref: c4ecf398de637cf779ab2238e69958cfd5d601ce
     sandbox_dependencies: *gitnexus_sandbox_dependencies
     prompt: >
       Fix the C scope resolver so a system include such as <stdio.h> never
@@ -95,7 +97,7 @@ tasks:
   - id: inv-feature-list-repos-filter
     class: investigation-feature
     repo: ~/GitNexus
-    ref: main
+    ref: c4ecf398de637cf779ab2238e69958cfd5d601ce
     sandbox_dependencies: *gitnexus_sandbox_dependencies
     prompt: >
       Add an optional "name_contains" filter parameter to the list_repos MCP
@@ -121,12 +123,14 @@ tasks:
     class: cross-module
     expensive: true
     repo: ~/GitNexus
-    ref: main
+    ref: c4ecf398de637cf779ab2238e69958cfd5d601ce
     sandbox_dependencies: *gitnexus_sandbox_dependencies
     prompt: >
       Add bounded retry with backoff to the ingestion pipeline so a transient
       parse-worker failure on a file is retried up to 2 times before the file
-      is marked failed, without retrying deterministic parse errors. Cover
+      is marked failed, without retrying deterministic parse errors. Treat
+      EAGAIN worker error messages/events and worker exit code 75 as transient;
+      SyntaxError messages/events and exit code 65 are deterministic. Cover
       the retry/no-retry decision with unit tests in
       gitnexus/test/unit/parse-retry.test.ts.
     verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/parse-retry.test.ts
