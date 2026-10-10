@@ -99,7 +99,11 @@ function pnpmFixture() {
       symlinkSync(c, path.join(path.dirname(target), 'tree-sitter-c'), 'junction');
     }
     if (name === 'tree-sitter-typescript') {
-      symlinkSync(javascript, path.join(path.dirname(target), 'tree-sitter-javascript'), 'junction');
+      symlinkSync(
+        javascript,
+        path.join(path.dirname(target), 'tree-sitter-javascript'),
+        'junction',
+      );
     }
   }
   return { root, c, javascript };
