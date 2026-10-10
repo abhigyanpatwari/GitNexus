@@ -292,6 +292,10 @@ const WORKER_THREADS = [
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
+  // Real parse workers and both on-disk parse stores must retain lexical
+  // local-import ownership on each platform's native grammar/runtime pair.
+  'test/integration/local-import-worker-parity.test.ts',
+  'test/integration/resolvers/local-import-persistence.test.ts',
 ];
 
 // Tree-sitter native addon smoke tests — verify that native grammars
@@ -311,7 +315,10 @@ const FILESYSTEM = [
   // The deletion-guard cases in this file require real Windows path semantics.
   'test/unit/canonicalize-path-long-path-prefix.test.ts',
   'test/unit/storage-resolver.test.ts',
+  // Dart package metadata is captured during the shared scan on every platform.
   'test/unit/dart-package-imports.test.ts',
+  // Verify the same capture is reused by native parsing and scope resolution.
+  'test/integration/resolvers/dart.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',

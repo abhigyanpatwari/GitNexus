@@ -20,6 +20,13 @@ import {
   type ParseCache,
 } from '../../src/storage/parse-cache.js';
 import { writeV8CacheFile } from '../../src/storage/v8-sidecar.js';
+import {
+  getDurableParsedFileDir,
+  loadDurableParsedFileIndex,
+  persistDurableParsedFileShardSync,
+  pruneAndSaveDurableParsedFileStore,
+} from '../../src/storage/parsedfile-store.js';
+import type { ParsedFile } from 'gitnexus-shared';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
 const minimalResult = (overrides: Partial<ParseWorkerResult> = {}): ParseWorkerResult => ({
@@ -303,8 +310,16 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 125 -> 126 for #3446: SDK positional tool definitions and attribution.
   // Moved 126 -> 127 for #3450: reject destructured SDK registration-method writes.
   // Moved 127 -> 128 for #3450: recognize SDK namespace imports.
-  it('pins SCHEMA_BUMP to 128 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399, #3414, #3408, #3402, #3446, #3450)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(128);
+  // Moved 128 -> 130 on main for #3499/#3502 declaration-binding corrections.
+  // Moved 128 -> 130 in parallel for #3487/#3505 Express route corrections.
+  // Moved 130 -> 131 to invalidate both incompatible branch cache schemas.
+  // Moved 131 -> 132 to combine #3504 alias facts with Express captures.
+  // Moved 132 -> 133 for #3505: only chained handler verbs register builder routes.
+  // Moved 133 -> 134 for lexical local-import facts and real-worker parity.
+  // Moved 134 -> 135 for guarded-import and mutable binding review fixes (#3532).
+  // Moved 135 -> 136 for parameter annotations and Vue embedded script fixes (#3532).
+  it('pins SCHEMA_BUMP to 136 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399, #3414, #3408, #3402, #3446, #3450, #3499, #3502, #3487, #3505, #3504)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(136);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
@@ -314,7 +329,7 @@ describe('PARSE_CACHE_VERSION', () => {
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
       82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103,
       104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122,
-      123, 124, 125, 126, 127,
+      123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
@@ -414,6 +429,58 @@ describe('pruneCache', () => {
     const removed = pruneCache(cache, new Set(['disk-A']));
     expect(removed).toBe(2);
     expect([...(cache.onDiskKeys ?? [])].sort()).toEqual(['disk-A']);
+  });
+});
+
+describe.each([133, 134, 135])('local-import cache schema %i invalidation', (previousSchema) => {
+  // Keep this historical value independent of the production schema knob:
+  // deriving "current - 1" would pass before the required invalidation exists.
+  const previousVersion = `${previousSchema}+${PARSE_CACHE_VERSION.split('+').slice(1).join('+')}`;
+  const key = '7'.repeat(64);
+
+  it('rejects valid old parse-worker output after the ownership change', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'local-import-old-parse-cache-'));
+    try {
+      const old: ParseCache = {
+        version: previousVersion,
+        entries: new Map([[key, [minimalResult({ fileCount: 1 })]]]),
+        usedKeys: new Set([key]),
+      };
+      expect(await saveParseCache(dir, old)).toEqual([key]);
+      const index = JSON.parse(await readFile(path.join(dir, 'parse-cache', 'index.json'), 'utf8'));
+      expect(index.version).toBe(previousVersion);
+      expect(index.keys).toEqual([key]);
+      const loaded = await loadParseCache(dir);
+      expect(loaded.entries.size).toBe(0);
+      expect(loaded.onDiskKeys?.size ?? 0).toBe(0);
+      expect(await loadParseCacheChunk(loaded, key)).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects valid old durable ParsedFiles with the same version gate', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'local-import-old-parsedfiles-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      const old = {
+        filePath: 'old.py',
+        moduleScope: '',
+        scopes: [],
+        parsedImports: [],
+        localDefs: [],
+        referenceSites: [],
+      } as unknown as ParsedFile;
+      persistDurableParsedFileShardSync(durable, key, 1, 0, [old]);
+      await pruneAndSaveDurableParsedFileStore(durable, previousVersion, new Set([key]));
+      // Prove this is a readable old generation, not an absent/corrupt cache.
+      expect(await loadDurableParsedFileIndex(durable, previousVersion)).toEqual(
+        new Map([[key, new Set(['old.py'])]]),
+      );
+      expect(await loadDurableParsedFileIndex(durable, PARSE_CACHE_VERSION)).toEqual(new Map());
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

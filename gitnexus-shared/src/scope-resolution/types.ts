@@ -112,6 +112,9 @@ export type ParsedImport = ParsedImportSyntax & {
    * Absent for legacy or synthesized imports. Binding semantics remain opt-in
    * through FinalizeHooks.importsBindAtLexicalScope. */
   readonly declaredAtScope?: ScopeId;
+  readonly atRange?: Range;
+  /** Per-import lexical binding override; useful when a provider also has file-wide dependencies. */
+  readonly bindsAtLexicalScope?: boolean;
 };
 
 type ParsedImportSyntax =
@@ -305,6 +308,8 @@ type ParsedImportSyntax =
       readonly kind: 'namespace';
       /** The source omitted a local alias; the imported module declares its binding name. */
       readonly implicitLocalName?: boolean;
+      /** An explicit alias binds the imported module, even when it matches the path's root. */
+      readonly explicitAlias?: boolean;
       /** Scope-visible handle (e.g. `np` in `import numpy as np`; `numpy` when unaliased). */
       readonly localName: string;
       /** Module being aliased (e.g. `numpy` in `import numpy as np`). */
@@ -524,8 +529,11 @@ export interface Callsite {
  * bounded-fixpoint linking (RFC §3.2).
  */
 export interface ImportEdge {
+  readonly atRange?: Range;
   /** How this scope sees the imported name (after alias). */
   readonly localName: string;
+  /** Namespace-import alias syntax, retained for providers whose unaliased imports bind a path prefix. */
+  readonly explicitAlias?: boolean;
   /** Exporting file; `null` only when `kind === 'dynamic-unresolved'`. */
   readonly targetFile: string | null;
   /** The name under which the target exports this symbol. */
@@ -591,6 +599,9 @@ export interface ImportEdge {
  * stamping first-class instead of reconstructing provenance from a side table.
  */
 export interface BindingRef {
+  readonly availableFrom?: SourcePosition;
+  /** Source declaration range, independent of the target definition's identity. */
+  readonly declarationRange?: Range;
   readonly def: SymbolDefinition;
   readonly origin: 'local' | 'import' | 'namespace' | 'wildcard' | 'reexport';
   /** Non-null for non-local origins; carries the `ImportEdge` that brought the name into this scope. */
@@ -614,6 +625,10 @@ export interface BindingRef {
  * re-exports, and nested modules. Generics deferred to V2 via `typeArgs`.
  */
 export interface TypeRef {
+  /** Declaration that binds this value, independent of its type's lookup anchor. */
+  readonly bindingRange?: Range;
+  readonly lookupPosition?: SourcePosition;
+  readonly lookupPurpose?: LookupPurpose;
   /**
    * The type name AFTER the language's capture-time normalization — NOT
    * necessarily what the source says. Every provider's `interpretTypeBinding`
@@ -661,6 +676,49 @@ export interface TypeRef {
 
 // ─── §2.2 Scope ─────────────────────────────────────────────────────────────
 
+export interface SourcePosition {
+  readonly startLine: number;
+  readonly startCol: number;
+}
+
+export type LookupPurpose = 'value' | 'type';
+
+/** Provider-owned name ownership; a claim does not require an indexed target. */
+export interface NameClaim {
+  readonly name: string;
+  readonly range: Range;
+  readonly kind: 'binding' | 'import' | 'blocked';
+  /** Proven compatible declarations may accumulate their import paths. */
+  readonly merge?: boolean;
+  /** Hoisted declarations rank before active ordered rebinding at this scope. */
+  readonly hoisted?: boolean;
+  readonly purpose?: LookupPurpose | 'both';
+  readonly availableFrom?: SourcePosition;
+  readonly inactive?: 'blocked' | 'outer' | 'module';
+  readonly redirect?: 'module' | 'enclosing-function';
+}
+
+export interface ScopeLookupPolicy {
+  /** All lexical declarations have claims; inferred assignments alone do not declare names. */
+  readonly nameClaimsComplete?: boolean;
+  /** Reference scopes already identify the evaluating environment; do not infer
+   * a nested caller from physical source containment. */
+  readonly callerScopeIsAuthoritative?: boolean;
+  /** Exact lexical self names retained when other bindings are skipped by children. */
+  readonly visibleNamesFromChildren?: readonly string[];
+  readonly parentScope?: ScopeId;
+  /** The scope's locals are not an enclosing lexical environment. */
+  readonly skipFromChildren?: boolean;
+  /** Child execution is deferred, so source order in parents cannot imply a TDZ. */
+  readonly deferParentActivation?: boolean;
+}
+
+export interface NameLookupOptions {
+  readonly skipEnclosingClasses?: boolean;
+  readonly position?: SourcePosition;
+  readonly purpose?: LookupPurpose;
+}
+
 /**
  * The canonical lexical-scope node. Forms the spine of the SemanticModel.
  *
@@ -668,6 +726,8 @@ export interface TypeRef {
  * — deterministic, stable across reparses of the same source, interned.
  */
 export interface Scope {
+  readonly nameClaims?: readonly NameClaim[];
+  readonly lookupPolicy?: ScopeLookupPolicy;
   readonly id: ScopeId;
   readonly parent: ScopeId | null;
   readonly kind: ScopeKind;
@@ -758,7 +818,7 @@ export interface Resolution {
  * during the emit phase.
  */
 export interface Reference {
-  /** Innermost lexical scope containing `atRange`. */
+  /** Scope owning the graph source; may differ from lexical lookup for a synthesized call. */
   readonly fromScope: ScopeId;
   readonly toDef: DefId;
   /** Location of the reference in source. */
@@ -814,6 +874,8 @@ export type RegistryContributor = unknown;
  * RFC §4.4 for per-registry specializations.
  */
 export interface LookupParams {
+  readonly lookupPosition?: SourcePosition;
+  readonly lookupPurpose?: LookupPurpose;
   readonly acceptedKinds: readonly NodeLabel[];
   /** Class lookups: false. Method/Field lookups: true. */
   readonly useReceiverTypeBinding: boolean;

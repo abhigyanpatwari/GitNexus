@@ -100,7 +100,13 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
-import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
+import {
+  buildPositionIndex,
+  buildScopeTree,
+  canParentScope,
+  lookupLexicalName,
+  makeScopeId,
+} from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
 import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
 import {
@@ -131,6 +137,7 @@ export type ScopeExtractorHooks = Pick<
   | 'scopeOwnsReceivers'
   | 'bindingScopeFor'
   | 'interpretImport'
+  | 'importOwningScope'
   | 'importsExecuteWhereWritten'
   | 'interpretTypeBinding'
   | 'classifyCallForm'
@@ -178,6 +185,8 @@ export function extract(
         d.filePath,
         d.ownsReceivers,
         d.lexicalNames,
+        d.nameClaims,
+        d.lookupPolicy,
       );
     }
   }
@@ -382,6 +391,8 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+  readonly nameClaims?: readonly import('gitnexus-shared').NameClaim[];
+  readonly lookupPolicy?: import('gitnexus-shared').ScopeLookupPolicy;
   readonly lexicalNames?: ReadonlySet<string>;
   /** See `Scope.ownsReceivers` — set once at pass 1, never mutated. */
   readonly ownsReceivers?: ReadonlySet<string>;
@@ -441,6 +452,8 @@ function draftToScope(draft: ScopeDraft): Scope {
     imports: Object.freeze(draft.imports.slice()),
     typeBindings: new Map(draft.typeBindings),
     lexicalNames: draft.lexicalNames,
+    nameClaims: draft.nameClaims,
+    lookupPolicy: draft.lookupPolicy,
     ownsReceivers: draft.ownsReceivers,
   };
 }
@@ -519,6 +532,8 @@ function pass1BuildScopes(
         filePath,
         provider.scopeOwnsReceivers?.(cand.match),
         parseScopeLexicalNames(cand.match),
+        parseJsonCapture(cand.match['@scope.name-claims']) as ScopeDraft['nameClaims'],
+        parseJsonCapture(cand.match['@scope.lookup-policy']) as ScopeDraft['lookupPolicy'],
       ),
     );
     stack.push(cand);
@@ -566,6 +581,8 @@ function makeDraft(
   filePath: string,
   ownsReceivers?: ReadonlySet<string>,
   lexicalNames?: ReadonlySet<string>,
+  nameClaims?: ScopeDraft['nameClaims'],
+  lookupPolicy?: ScopeDraft['lookupPolicy'],
 ): ScopeDraft {
   return {
     id,
@@ -578,6 +595,8 @@ function makeDraft(
     imports: [],
     typeBindings: new Map(),
     lexicalNames,
+    nameClaims,
+    lookupPolicy,
     ownsReceivers,
   };
 }
@@ -706,7 +725,7 @@ function pass2AttachDeclarations(
     if (nameKey === undefined) continue;
 
     const existing = bindingHost.bindings.get(nameKey) ?? [];
-    existing.push({ def, origin: 'local' });
+    existing.push({ def, origin: 'local', declarationRange: anchor.range });
     bindingHost.bindings.set(nameKey, existing);
   }
 }
@@ -757,11 +776,15 @@ function buildDefFromDeclarationMatch(
   // emits the marker, and both `true` and `false` are verdicts (see
   // `SymbolDefinition.isExported`). Absent stays absent.
   const isExported = parseBooleanCapture(match['@declaration.is-exported']);
+  const graphPosition = match['@declaration.graph-position']?.range;
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
     filePath,
     type,
+    ...(graphPosition !== undefined
+      ? { graphPosition: { startLine: graphPosition.startLine, startCol: graphPosition.startCol } }
+      : {}),
     ...(qualifiedName !== undefined ? { qualifiedName } : { qualifiedName: nameCap.text }),
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
@@ -1110,9 +1133,16 @@ function pass3CollectImports(
     );
     const deferred =
       positionCanDefer && inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
+    const innermost = inScopeId === undefined ? undefined : scopeTree.getScope(inScopeId);
+    const owner =
+      parsed.declaredAtScope ??
+      (innermost === undefined
+        ? undefined
+        : (provider.importOwningScope?.(parsed, innermost, scopeTree) ?? inScopeId));
     parsedImports.push({
       ...parsed,
-      ...(inScopeId !== undefined ? { declaredAtScope: inScopeId } : {}),
+      atRange: parsed.atRange ?? anchor.range,
+      ...(owner !== undefined ? { declaredAtScope: owner } : {}),
       ...(deferred ? { runsOnlyWhenCalled: true } : {}),
     });
   }
@@ -1195,13 +1225,25 @@ function pass4CollectTypeBindings(
       declaredSpelling === undefined
         ? {
             rawName: parsed.rawTypeName,
-            declaredAtScope: host.id,
+            bindingRange: anchor.range,
+            declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
+            lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
+            lookupPurpose:
+              parsed.source === 'constructor-inferred' || parsed.source === 'assignment-inferred'
+                ? 'value'
+                : 'type',
             source: parsed.source,
           }
         : {
             rawName: parsed.rawTypeName,
             declaredSpelling,
-            declaredAtScope: host.id,
+            bindingRange: anchor.range,
+            declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
+            lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
+            lookupPurpose:
+              parsed.source === 'constructor-inferred' || parsed.source === 'assignment-inferred'
+                ? 'value'
+                : 'type',
             source: parsed.source,
           };
     // Prefer stronger sources when multiple matches fire for the same
@@ -1251,23 +1293,21 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
     // `QualifiedNameIndex` at resolution time — don't follow it here.
     if (current.rawName.includes('.')) return current;
 
-    // Look up the current rawName in the declaring scope and walk up
-    // the chain until we hit a scope that has a binding for it.
-    let scopeId: ScopeId | null = current.declaredAtScope;
-    let next: TypeRef | undefined;
-    while (scopeId !== null) {
-      const scope = draftById.get(scopeId);
-      if (scope === undefined) break;
-      next = scope.typeBindings.get(current.rawName);
-      if (next !== undefined) break;
-      scopeId = scope.parent;
-    }
+    const claim = lookupLexicalName(
+      current.declaredAtScope,
+      current.rawName,
+      {
+        scopes: { getScope: (id) => draftById.get(id) },
+      },
+      { position: current.lookupPosition, purpose: current.lookupPurpose },
+    );
+    const next = claim.typeBinding;
 
     if (next === undefined) return current; // dead end — nothing to chain to
     if (next === current) return current; // self-ref
     if (visited.has(next.rawName)) return current; // cycle guard
     visited.add(next.rawName);
-    current = next;
+    current = { ...next, bindingRange: start.bindingRange };
   }
   return current;
 }
@@ -1384,7 +1424,18 @@ function pass5CollectReferences(
     const site: ReferenceSite = {
       name: nameCap.text,
       atRange: anchor.range,
-      inScope: inScopeId,
+      ...(match['@reference.lookup-purpose']?.text === 'type' ||
+      match['@reference.lookup-purpose']?.text === 'value'
+        ? { lookupPurpose: match['@reference.lookup-purpose'].text as 'type' | 'value' }
+        : {}),
+      inScope:
+        kind === 'inherits' ? inScopeId : (match['@reference.lookup-scope']?.text ?? inScopeId),
+      ...(kind === 'inherits' && match['@reference.lookup-scope'] !== undefined
+        ? { lookupScope: match['@reference.lookup-scope'].text }
+        : {}),
+      ...(match['@reference.caller-scope'] !== undefined
+        ? { callerScope: match['@reference.caller-scope'].text }
+        : {}),
       kind,
       ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
         ? { rawQualifiedName: qualifiedCap.text }
@@ -1866,7 +1917,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@scope.lexical-names',
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.graph-position',
   '@declaration.is-synthetic',
+  '@declaration.global',
+  '@declaration.lexical-method',
   '@import.name',
   '@import.source',
   '@import.alias',

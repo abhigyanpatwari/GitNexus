@@ -23,7 +23,7 @@
  * Plan: `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
-import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
+import type { ParsedFile, RegistryProviders, Scope } from 'gitnexus-shared';
 import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
@@ -258,11 +258,12 @@ function preEmitInheritanceEdges(
     if (callerClass === undefined) continue;
 
     const targetDef = resolveInheritanceBaseInScope(
-      site.inScope,
+      site.lookupScope ?? site.inScope,
       site.name,
       scopes,
       site.rawQualifiedName,
       callerClass,
+      { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
     );
     if (targetDef === undefined || targetDef.nodeId === callerClass.nodeId) {
       // Static lookup can mistake the current declaration for an earlier
@@ -819,8 +820,11 @@ export function runScopeResolution(
       };
     }
   }
+  const filterWildcardNames = provider.filterWildcardNames;
   const finalized = finalizeScopeModel(parsedFiles, {
+    moduleExports: provider.moduleExports,
     hooks: {
+      ownedMembersBindAtModuleScope: provider.ownedMembersBindAtModuleScope,
       importsBindAtLexicalScope: provider.importsBindAtLexicalScope === true,
       resolveImportTarget: (targetRaw, fromFile, _workspaceIndex, parsedImport) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, {
@@ -831,6 +835,11 @@ export function runScopeResolution(
         provider.isNamespaceImport?.(parsedImport, targetFile, fromFile) ?? false,
       expandsWildcardTo: (targetModuleScope) =>
         provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
+      filterWildcardNames:
+        filterWildcardNames === undefined
+          ? undefined
+          : (targetModuleScope, names) =>
+              filterWildcardNames(targetModuleScope, names, parsedFiles),
       mergeBindings: (existing, incoming, scopeId) =>
         provider.mergeBindings(existing, incoming, scopeId),
       wildcardCollisionIsAmbiguous: provider.exclusiveWildcardReexports === true,
@@ -1229,6 +1238,7 @@ export function runScopeResolution(
           implicitThisWalksMro: provider.implicitThisWalksMro === true,
           isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
           resolveAdlCandidates: provider.resolveAdlCandidates,
+          resolveOrdinaryCallables: provider.resolveOrdinaryCallables,
           resolveQualifiedFreeCall: provider.resolveQualifiedFreeCall,
           conversionRankFn: provider.conversionRankFn,
           conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
@@ -1411,6 +1421,12 @@ export function runScopeResolution(
         // member (Case 1). Without it a hub module's re-exported callable
         // resolves when CALLED and declines when REGISTERED.
         provider.namespaceExportsIncludeImportedNames === true,
+        {
+          receiverPaths: provider.namespaceReceiverPaths,
+          bindingIdentity: provider.namespaceBindingIdentity,
+          skipEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
+          moduleFileExists: (filePath) => indexes.moduleScopes.get(filePath) !== undefined,
+        },
       );
   if (propertyDispatch.skippedKeys > 0) {
     // Never drop dispatch coverage silently: a hook table larger than the
@@ -1684,6 +1700,22 @@ export function runScopeResolution(
         // entirely when the language has no registered model.
         if (taintSpec !== undefined) {
           const t1 = PROF ? performance.now() : 0;
+          // The disk seal strips ParsedFile.scopes. Restore only this file's
+          // lexical context for both taint consumers, then release it with this
+          // iteration. Passing the stripped file silently blocks every sink;
+          // an imports-only fallback would instead lose local shadow barriers.
+          let taintParsed = pf;
+          if (pf.scopes.length === 0) {
+            const scopes: Scope[] = [];
+            const pending = [pf.moduleScope];
+            for (let i = 0; i < pending.length; i++) {
+              const scope = indexes.scopeTree.getScope(pending[i]);
+              if (scope === undefined) continue;
+              scopes.push(scope);
+              for (const child of indexes.scopeTree.getChildren(scope.id)) pending.push(child);
+            }
+            taintParsed = { ...pf, scopes };
+          }
           const taint = emitFileTaint(
             pdgTarget,
             wellFormed,
@@ -1692,6 +1724,7 @@ export function runScopeResolution(
             taintLimits,
             (message) => logger.warn(message), // unconditional — R4/R6
             rdSolve,
+            taintParsed,
           );
           if (PROF) taintMs += performance.now() - t1;
           taintTotals.analyzed += taint.functionsAnalyzed;
@@ -1726,6 +1759,7 @@ export function runScopeResolution(
                 ? taintLimits.maxFacts
                 : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
               rdSolve,
+              taintParsed,
             );
             harvestedSummaries.push(...harvest.summaries);
             summaryUnresolved += harvest.unresolved;

@@ -451,12 +451,14 @@ export async function runChunkedParseAndResolve(
   pipelineStart: number,
   onProgress: ProgressFn,
   options?: PipelineOptions,
+  capturedResolutionConfigs?: ReadonlyMap<SupportedLanguages, unknown>,
 ): Promise<{
   exportedTypeMap: ExportedTypeMap;
   allFetchCalls: ExtractedFetchCall[];
   allFetchWrapperDefs: FetchWrapperDef[];
   allExtractedRoutes: ExtractedRoute[];
   allDecoratorRoutes: ExtractedDecoratorRoute[];
+  selectedRoutes: ReadonlySet<ExtractedRoute | ExtractedDecoratorRoute>;
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
@@ -1853,9 +1855,11 @@ export async function runChunkedParseAndResolve(
     const resolver = SCOPE_RESOLVERS.get(language);
     routeResolutionConfigs.set(
       language,
-      resolver?.loadResolutionConfig === undefined
-        ? undefined
-        : await resolver.loadResolutionConfig(repoPath),
+      capturedResolutionConfigs?.has(language)
+        ? capturedResolutionConfigs.get(language)
+        : resolver?.loadResolutionConfig === undefined
+          ? undefined
+          : await resolver.loadResolutionConfig(repoPath),
     );
   }
   let routeResolutionFiles = allParsedFiles;
@@ -1929,6 +1933,7 @@ export async function runChunkedParseAndResolve(
       ),
     };
   });
+  const selectedRoutes = new Set<ExtractedRoute | ExtractedDecoratorRoute>();
   const routeHandlerSymbols = resolveRouteHandlerSymbols(
     model,
     allExtractedRoutes,
@@ -1944,6 +1949,7 @@ export async function runChunkedParseAndResolve(
         return typeof n?.properties.startLine === 'number' ? n.properties.startLine : undefined;
       },
     },
+    selectedRoutes,
   );
   return {
     exportedTypeMap,
@@ -1951,6 +1957,7 @@ export async function runChunkedParseAndResolve(
     allFetchWrapperDefs,
     allExtractedRoutes,
     allDecoratorRoutes,
+    selectedRoutes,
     allToolDefs,
     allORMQueries,
     bindingAccumulator,

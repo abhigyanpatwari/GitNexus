@@ -15,7 +15,13 @@
  * `@type-binding.type`.
  */
 
-import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'gitnexus-shared';
+import type {
+  CaptureMatch,
+  ParsedImport,
+  ParsedTypeBinding,
+  ScopeId,
+  TypeRef,
+} from 'gitnexus-shared';
 
 /** Shared empty result for the non-type-only path — see `typeOnly` below. */
 const NO_TYPE_ONLY: { typeOnly?: true } = Object.freeze({});
@@ -33,6 +39,8 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
   const nameCap = captures['@import.name'];
   const aliasCap = captures['@import.alias'];
   const sourceCap = captures['@import.source'];
+  const owner = captures['@import.lookup-scope'];
+  const lexicalOwner = owner ? { declaredAtScope: owner.text as ScopeId } : {};
 
   const kind = kindCap?.text;
   if (kind === undefined) return null;
@@ -55,6 +63,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       if (sourceCap === undefined || aliasCap === undefined) return null;
       return {
         kind: 'alias',
+        ...lexicalOwner,
         localName: aliasCap.text,
         importedName: 'default',
         alias: aliasCap.text,
@@ -67,6 +76,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       if (sourceCap === undefined || nameCap === undefined) return null;
       return {
         kind: 'named',
+        ...lexicalOwner,
         localName: nameCap.text,
         importedName: nameCap.text,
         targetRaw: sourceCap.text,
@@ -80,6 +90,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       }
       return {
         kind: 'alias',
+        ...lexicalOwner,
         localName: aliasCap.text,
         importedName: nameCap.text,
         alias: aliasCap.text,
@@ -92,6 +103,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       if (sourceCap === undefined || aliasCap === undefined) return null;
       return {
         kind: 'namespace',
+        ...lexicalOwner,
         localName: aliasCap.text,
         importedName: sourceCap.text,
         targetRaw: sourceCap.text,

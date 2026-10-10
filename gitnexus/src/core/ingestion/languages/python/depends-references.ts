@@ -51,6 +51,7 @@ export function synthesizeDependsReferences(fnNode: SyntaxNode): readonly Captur
       results.push({
         '@reference.call.free': nodeToCapture('@reference.call.free', firstArg),
         '@reference.name': nodeToCapture('@reference.name', firstArg),
+        '@reference.caller-function': nodeToCapture('@reference.caller-function', fnNode),
       });
       continue;
     }
@@ -63,6 +64,7 @@ export function synthesizeDependsReferences(fnNode: SyntaxNode): readonly Captur
           '@reference.call.member': nodeToCapture('@reference.call.member', attrName),
           '@reference.name': nodeToCapture('@reference.name', attrName),
           '@reference.receiver': nodeToCapture('@reference.receiver', obj),
+          '@reference.caller-function': nodeToCapture('@reference.caller-function', fnNode),
         });
       }
     }

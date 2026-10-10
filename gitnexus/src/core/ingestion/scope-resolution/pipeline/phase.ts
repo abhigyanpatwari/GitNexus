@@ -176,7 +176,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ScopeResolutionOutput> {
     logHeapProbe('scopeResolution-enter');
-    const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
+    const { scannedFiles, resolutionConfigs } = getPhaseOutput<StructureOutput>(deps, 'structure');
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
     const { model, parsedFiles: workerParsedFiles, contentLanguageByPath } = parseOutput;
     const scopeExtractionFailures = new Set(parseOutput.scopeExtractionFailures);
@@ -382,8 +382,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         // composer.json autoload, go.mod, ...). One I/O round trip per
         // workspace pass — cached implicitly by the result handed to
         // every `resolveImportTarget` call below.
-        const resolutionConfig =
-          provider.loadResolutionConfig !== undefined
+        const resolutionConfig = resolutionConfigs?.has(lang)
+          ? resolutionConfigs.get(lang)
+          : provider.loadResolutionConfig !== undefined
             ? await provider.loadResolutionConfig(ctx.repoPath)
             : undefined;
 
@@ -412,6 +413,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         let scopeFilePaths: Set<string>;
         let contents: Map<string, string>;
         if (provider.collectScopeContextPaths !== undefined) {
+          // Context hooks consume worker facts too. Load primary records before
+          // the hook, or a disk-backed run needlessly re-extracts those files.
+          await loadStoreFor(new Set(primaryFilePaths));
           // Context-expanding providers (e.g. Vue) need every primary file's
           // source up front for the closure hook, so load it all.
           const entryFileContents = await readFileContents(ctx.repoPath, primaryFilePaths);
@@ -426,7 +430,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           const extraPaths = [...scopeFilePaths].filter((p) => !entryFileContents.has(p));
           const extraContents = await readFileContents(ctx.repoPath, extraPaths);
           contents = new Map([...entryFileContents, ...extraContents]);
-          await loadStoreFor(scopeFilePaths);
+          await loadStoreFor(new Set(extraPaths));
         } else {
           scopeFilePaths = new Set(primaryFilePaths);
           await loadStoreFor(scopeFilePaths);

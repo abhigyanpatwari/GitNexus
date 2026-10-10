@@ -39,9 +39,10 @@ import { computePythonArityMetadata } from './arity-metadata.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
-import { pythonFunctionDefinitionLabel } from './simple-hooks.js';
+import { isPythonGlobalDeclaration, pythonFunctionDefinitionLabel } from './simple-hooks.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { applyPythonLexicalBindings } from './lexical-bindings.js';
 import {
   beginPythonSubtypeDispatchCapture,
   recordPythonSimplePositionalCall,
@@ -152,6 +153,20 @@ export function emitPythonScopeCaptures(
     if (Object.keys(grouped).length === 0) continue;
 
     recordPythonSubtypeCallShape(grouped, nodeMap, filePath, subtypeLineMapper);
+
+    const declarationNode = nodeMap['@declaration.function'] ?? nodeMap['@declaration.class'];
+    const declarationName = grouped['@declaration.name']?.text;
+    if (
+      declarationNode !== undefined &&
+      declarationName !== undefined &&
+      isPythonGlobalDeclaration(declarationNode, declarationName)
+    ) {
+      grouped['@declaration.global'] = syntheticCapture(
+        '@declaration.global',
+        declarationNode,
+        declarationName,
+      );
+    }
 
     if (grouped['@import.statement'] !== undefined) {
       // `@import.statement` is captured directly ON the `import_statement` /
@@ -272,10 +287,16 @@ export function emitPythonScopeCaptures(
   out.push(...synthesizePythonInheritanceReferences(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PYTHON_CALLABLE_CAPTURE_OPTIONS));
 
+  const lexicalCaptures = applyPythonLexicalBindings(
+    out,
+    tree.rootNode,
+    filePath,
+    notebookSegments === undefined ? undefined : (range) => remapRange(range, notebookSegments),
+  );
   if (notebookSegments !== undefined) {
-    return out.map((match) => remapCaptureMatch(match, notebookSegments));
+    return lexicalCaptures.map((match) => remapCaptureMatch(match, notebookSegments));
   }
-  return out;
+  return lexicalCaptures;
 }
 
 function resolveNotebookCaptureSource(
