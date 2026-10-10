@@ -93,6 +93,10 @@
     },
     "glm": {
       "apiKeyPlaceholder": "Enter your Z.AI API key"
+    },
+    "orcarouter": {
+      "apiKeyPlaceholder": "Enter your OrcaRouter API key",
+      "helperLinkLabel": "OrcaRouter"
     }
   },
   "loadingModels": "Loading models...",

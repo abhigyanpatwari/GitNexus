@@ -7,6 +7,8 @@ export const DEFAULT_BACKEND_URL =
   'http://localhost:4747';
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
 export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+export const DEFAULT_ORCAROUTER_BASE_URL = 'https://api.orcarouter.ai/v1';
+export const DEFAULT_ORCAROUTER_MODEL = 'orcarouter/auto';
 
 /**
  * sessionStorage key for the deploy access token sent as
