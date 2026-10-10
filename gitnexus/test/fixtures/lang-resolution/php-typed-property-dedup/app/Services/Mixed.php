@@ -4,7 +4,7 @@ namespace App\Services;
 
 use App\Models\UserRepo;
 
-class Mixed
+class MixedProperties
 {
     // Typed property: must emit exactly one Property def named `repo`,
     // zero stray Variable defs.

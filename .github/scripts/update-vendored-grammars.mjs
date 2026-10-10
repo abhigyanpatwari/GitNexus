@@ -9,22 +9,16 @@
  * validates the prebuilds — so even an imperfect re-vendor can never silently
  * ship: its PR's CI goes red.
  *
- * ABI awareness is load-bearing. Every grammar is pinned to tree-sitter@0.21.1
- * (LANGUAGE_VERSION 13–14, the #1922 gate). Most upstream grammar releases target
- * a newer tree-sitter, so a blind "bump to latest" would pull an ABI-incompatible
- * parser and open doomed PRs. This monitor fetches the candidate source, reads its
- * parser.c `#define LANGUAGE_VERSION`, and only re-vendors when it is 13 or 14;
- * incompatible updates are reported (and surfaced as a workflow notice), not
- * applied.
+ * The runtime is tree-sitter@0.25.1 (LANGUAGE_VERSION 13–15). Read the
+ * candidate's generated ABI before updating; incompatible candidates are
+ * reported rather than applied. Semantic compatibility is verified by PR CI.
  *
  * Usage:
  *   node update-vendored-grammars.mjs            # detect only → JSON report on stdout
  *   node update-vendored-grammars.mjs --apply X  # re-vendor grammar X in place
  *
- * tree-sitter-c and tree-sitter-objc are MONITORED but report-only (`hold`): c is ABI-pinned at 0.21.4
- * (#1242/#858) and must not auto-bump without a tree-sitter runtime upgrade, so an
- * available c update is detected + reported but never auto-applied — even if it is
- * ABI-13/14. A maintainer re-vendors it deliberately.
+ * Policy holds are recorded in the shared manifest. Swift is held at the
+ * newest tested release that preserves declaration ownership during recovery.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -36,12 +30,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const VENDOR = path.join(REPO_ROOT, 'gitnexus', 'vendor');
 
-const COMPATIBLE_ABI = new Set([13, 14]); // tree-sitter@0.21.1 LANGUAGE_VERSION range
+const COMPATIBLE_ABI = new Set([13, 14, 15]); // tree-sitter@0.25.1 LANGUAGE_VERSION range
 
 // Source-of-origin per grammar. npm grammars resolve `latest` via the registry;
 // github grammars (no usable npm release) track the default branch HEAD. A `hold`
 // reason makes a grammar report-only: updates are detected + surfaced but never
-// auto-applied (c is ABI-pinned and must not move without a runtime upgrade).
+// auto-applied (for example, when newer upstream error recovery regresses ownership).
 //
 // The vendored set lives in .github/vendored-grammars.json — the SHARED source of
 // truth this monitor and .github/scripts/check-tree-sitter-upgrade-readiness.py both
@@ -230,7 +224,7 @@ function detect(deps = {}) {
       abiCompatible: abi == null ? null : COMPATIBLE_ABI.has(abi),
       hold: g.hold || null,
       // Auto-appliable only when there's an update, the ABI is known-compatible,
-      // AND the grammar is not on a policy hold (c).
+      // AND the grammar is not on a policy hold (e.g. swift).
       applicable: newer && abi != null && COMPATIBLE_ABI.has(abi) && !g.hold,
     });
   }
@@ -285,8 +279,8 @@ function apply(key, opts = {}) {
   const abi = readAbiFn(srcRoot);
   if (abi == null || !COMPATIBLE_ABI.has(abi))
     throw new ApplyExit(
-      `${key}: candidate ${up.version} is ABI ${abi ?? 'unknown'} — not tree-sitter@0.21.1 ` +
-        `compatible (need 13/14); refusing to re-vendor. Handle manually.`,
+      `${key}: candidate ${up.version} is ABI ${abi ?? 'unknown'} — not tree-sitter@0.25.1 ` +
+        `compatible (need 13/14/15); refusing to re-vendor. Handle manually.`,
       3,
     );
 
@@ -299,7 +293,8 @@ function apply(key, opts = {}) {
 
   const dest = path.join(VENDOR, g.name);
   // The source-build inputs + runtime entrypoints that change between versions.
-  // binding.gyp / README / LICENSE / prebuilds are intentionally NOT touched.
+  // Keep the synchronous CommonJS wrapper: upstream C now uses top-level await.
+  // binding.gyp / bindings/node/index.* / README / LICENSE / prebuilds are preserved.
   for (const rel of [
     'src/parser.c',
     'src/scanner.c',
@@ -308,8 +303,6 @@ function apply(key, opts = {}) {
     'src/tree_sitter/array.h',
     'src/tree_sitter/parser.h',
     'bindings/node/binding.cc',
-    'bindings/node/index.js',
-    'bindings/node/index.d.ts',
   ]) {
     copyFile(srcRoot, dest, rel);
   }
@@ -317,10 +310,12 @@ function apply(key, opts = {}) {
   const pkgPath = path.join(dest, 'package.json');
   const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
   pkg.version = up.version;
+  if (up.kind === 'github') pkg._upstreamCommit = up.ref;
+  else delete pkg._upstreamCommit;
   pkg._vendoredBy =
     `gitnexus - re-vendored from ${g.npm ? `npm ${g.npm}@${up.version}` : `${g.github}@${up.ref}`} ` +
     `by grammar-update-monitor on ABI ${abi}. Source-build inputs (parser.c/scanner.c/src/) refreshed; ` +
-    `the GitNexus-hardened binding.gyp + vendor README + prebuilds are preserved (prebuilds are ` +
+    `the GitNexus-hardened binding.gyp + synchronous loader + vendor README + prebuilds are preserved (prebuilds are ` +
     `rebuilt by build-tree-sitter-prebuilds.yml on this version change). No scripts/dependencies here ` +
     `(#836/#1728).`;
   fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
