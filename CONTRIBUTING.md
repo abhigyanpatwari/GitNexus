@@ -160,14 +160,20 @@ Re-invoking `/autofix` after a successful apply is a safe no-op — the workflow
 
 The CLI pins and bundles the native `tree-sitter` runtime and its npm grammars.
 Several compatible grammars still declare older runtime peer ranges. Root npm
-`overrides` work in this checkout but do not propagate to consumers, so
-`gitnexus/scripts/prepare-tree-sitter-bundle.cjs` runs during `prepack` to add the
-tested runtime version to eight audited dependency manifests. It leaves grammar
-sources and native binaries unchanged and rejects unexpected versions, peer
-ranges, or dependency layouts before writing any manifests.
+`overrides` do not propagate to consumers, and older npm versions validate bundled
+peers against their original ranges even when an override is configured. The
+lockfile therefore includes the tested runtime in the same eight audited peer
+ranges. `gitnexus/scripts/prepare-tree-sitter-bundle.cjs` runs during `postinstall`
+and `prepack` to keep installed dependency manifests consistent with that lockfile
+and the published bundle. It leaves grammar sources and native binaries unchanged
+and rejects unexpected versions, peer ranges, or dependency layouts before writing
+any manifests.
 
 When upgrading these packages, update the exact pins, lockfile, and audited peer
-list together. Run the parser, extraction, CFG, and worker tests, then use a real
+list together. If regenerating the lockfile restores upstream's older peer ranges,
+apply the same audited `|| 0.25.1` additions before committing it. Verify ordinary
+`npm ci` and a subsequent `npm install` complete without peer-resolution warnings.
+Run the parser, extraction, CFG, and worker tests, then use a real
 `npm pack` (including `prepack`) to test a fresh consumer's `npm install`,
 `npm ci`, `npm ls`, and a subsequent dependency install. Check native parser
 loading on the supported Node.js versions and release platforms. A successful
