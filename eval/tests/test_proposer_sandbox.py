@@ -169,6 +169,7 @@ def test_real_bubblewrap_candidate_lifecycle_cannot_replace_harness_or_read_toke
     harness = tmp_path / "trusted-harness.py"
     harness.write_text("trusted main evaluator\n")
     monkeypatch.setenv("GITNEXUS_BENCH_OPENAI_API_KEY", "canary-token")
+    monkeypatch.setenv("ONNXRUNTIME_NODE_INSTALL", "cuda12")
     attack = (
         "const fs=require('fs');\n"
         f"const target={json.dumps(str(harness))};\n"
@@ -177,6 +178,7 @@ def test_real_bubblewrap_candidate_lifecycle_cannot_replace_harness_or_read_toke
         "try { fs.appendFileSync('.git/config','[core]\\n\\tfsmonitor = forged\\n'); } catch {}\n"
         "fs.writeFileSync('receipt.json', JSON.stringify({visible, token:"
         "process.env.GITNEXUS_BENCH_OPENAI_API_KEY ?? null,"
+        "onnxInstall:process.env.ONNXRUNTIME_NODE_INSTALL ?? null,"
         "interfaces:Object.keys(require('os').networkInterfaces()).sort()}));\n"
     )
     (candidate / "attack.cjs").write_text(attack)
@@ -199,6 +201,7 @@ def test_real_bubblewrap_candidate_lifecycle_cannot_replace_harness_or_read_toke
     assert json.loads((candidate / "receipt.json").read_text()) == {
         "visible": False,
         "token": None,
+        "onnxInstall": "skip",
         "interfaces": ["lo"],
     }
     assert (core / "built.txt").read_text() == "runtime"

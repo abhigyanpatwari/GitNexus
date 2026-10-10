@@ -43,6 +43,7 @@ def test_candidate_build_rejects_symlinked_checkout_before_execution(monkeypatch
 
 def test_candidate_build_clears_tokens_and_mounts_only_candidate_writable(monkeypatch, tmp_path):
     calls = []
+    monkeypatch.setenv('ONNXRUNTIME_NODE_INSTALL', 'cuda12')
     monkeypatch.setattr(release_build, "preflight_bubblewrap", lambda: Path('/usr/bin/bwrap'))
     monkeypatch.setattr(release_build, "run_checked", lambda *a, **k: calls.append((a, k)))
     write_lockfiles(tmp_path)
@@ -54,7 +55,12 @@ def test_candidate_build_clears_tokens_and_mounts_only_candidate_writable(monkey
         at = command.index('--bind')
         assert command[at + 1:at + 3] == [str(tmp_path), '/workspace']
         assert command.count('--bind') == 1
-        assert [command[i + 1] for i, v in enumerate(command) if v == '--setenv'] == ['PATH', 'HOME']
+        environment = {command[i + 1]: command[i + 2] for i, v in enumerate(command) if v == '--setenv'}
+        assert environment == {
+            'PATH': release_build.SANDBOX_PATH,
+            'HOME': '/home/build',
+            'ONNXRUNTIME_NODE_INSTALL': 'skip',
+        }
         assert '--unshare-pid' in command and '--cap-drop' in command
 
 
