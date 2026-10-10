@@ -654,7 +654,13 @@ export class GrpcExtractor implements ContractExtractor {
 
     // Steps 4 + 5: legacy per-repo proto map resolution (no import).
     const candidates = protoMap.get(d.serviceName) ?? [];
-    const proto = resolveProtoConflict(d.serviceName, filePath, candidates);
+    // A proto detection already knows its defining file; the directory
+    // heuristic is only for sources that name the service by short name.
+    const ownProto =
+      d.source === 'proto'
+        ? candidates.find((c) => c.protoPath === normalizeProtoPath(filePath))
+        : undefined;
+    const proto = ownProto ?? resolveProtoConflict(d.serviceName, filePath, candidates);
     // If there were proto candidates but resolution was ambiguous, skip
     // contract emission rather than fabricating a package-qualified id from
     // an arbitrary candidate. resolveProtoConflict already warned.

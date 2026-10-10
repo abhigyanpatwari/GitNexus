@@ -219,6 +219,19 @@ service ServiceB {
       ]);
     });
 
+    it('keeps same-named services from sibling protos in different packages', async () => {
+      writeFile('api/a.proto', 'package a;\nservice Svc { rpc Get (R) returns (R); }');
+      writeFile('api/b.proto', 'package b;\nservice Svc { rpc Get (R) returns (R); }');
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const ids = contracts
+        .filter((c) => c.role === 'provider')
+        .map((c) => `${c.symbolRef.filePath} ${c.contractId}`)
+        .sort();
+
+      expect(ids).toEqual(['api/a.proto grpc::a.Svc/Get', 'api/b.proto grpc::b.Svc/Get']);
+    });
+
     it('test_extract_proto_with_nested_option_blocks_in_rpc', async () => {
       writeFile(
         'api/nested.proto',
