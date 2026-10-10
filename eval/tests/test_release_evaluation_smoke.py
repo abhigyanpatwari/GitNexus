@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from workflow_bench import oracle_assets, release_report, runner
+from workflow_bench import oracle_assets, release_preflight, release_report, runner, runner_tasks
 from workflow_bench.mock_provider import MockProvider, Reply
 
 pytestmark = pytest.mark.skipif(
@@ -63,6 +63,7 @@ def test_native_paired_evaluator_produces_valid_report_and_keeps_negative_result
     capture = partial(oracle_assets.capture_task_oracles, root=oracles)
     monkeypatch.setattr(release_report, "capture_task_oracles", capture)
     monkeypatch.setattr(runner, "capture_task_oracles", capture)
+    monkeypatch.setattr(runner_tasks, "capture_task_oracles", capture)
     monkeypatch.setattr(release_report, "suite_binding", partial(release_report.suite_binding, suite))
     prepared = tmp_path / "prepared"
     model = "claude-canary-20260718"
@@ -89,6 +90,15 @@ def test_native_paired_evaluator_produces_valid_report_and_keeps_negative_result
     release_report.main()
     meta = json.loads((prepared / "metadata.json").read_text())
     assert meta["runtime_sha"] == sha and meta["harness_sha"] == release_report._git_sha(root)
+
+    # Exercise actual graph construction/copying before even starting a model
+    # provider. This must leave no measurements that could count as evidence.
+    release_preflight.preflight_release(
+        yaml.safe_load((prepared / "tasks.yaml").read_text())["tasks"],
+        gitnexus_root=root,
+        claude_bin=Path(os.environ["CLAUDE_CANARY_BIN"]),
+    )
+    assert not (prepared / "raw").exists()
 
     initial = []
     counts = {"baseline_nomcp": 0, "baseline": 0}

@@ -124,6 +124,13 @@ Candidate installs run in Bubblewrap with only that checkout (minus `.git`)
 writable, system tools read-only, and a cleared environment. Locked downloads
 run without package scripts; every lifecycle script then runs with no network. The trusted harness
 and host command files are not mounted into the candidate build.
+Before any paid sessions, `workflow_bench.release_preflight` builds and
+materializes the real sanitized graphs for both runtimes on the runner's temp
+filesystem. A copy or containment failure stops the workflow at that point.
+Buffered copies use the same 2 GiB hard ceiling as snapshot capture, including
+on filesystems without reflinks. This preflight adds an offline graph build per
+runtime; the measured runner rebuilds its own graphs to retain its existing
+provenance and cache lifecycle. Preflight output is not release evidence.
 The report records runtime/harness SHAs, task and oracle digests, model/effort,
 every repetition, solve counts, cost and agent wall time. Failed
 solutions stay in the denominator. Infrastructure/session failures, missing
