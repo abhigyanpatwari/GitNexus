@@ -1447,6 +1447,28 @@ export interface ScopeResolver {
    * The reference's own class scope remains visible for class-body expressions. */
   readonly namespaceSkipsEnclosingClasses?: boolean;
 
+  /** Prove namespace-valued receiver expressions using provider capture facts.
+   * Created once per receiver pass so providers can index local facts and memoize
+   * callable results. Targets feed the ordinary namespace-member path; declined
+   * call results retain their origin for final unresolved-call accounting. */
+  readonly createReceiverNamespaceResolver?: (
+    scopes: ScopeResolutionIndexes,
+    index: WorkspaceResolutionIndex,
+  ) => (
+    site: ReferenceSite,
+    parsed: ParsedFile,
+  ) =>
+    | {
+        readonly targetFiles?: readonly string[];
+        readonly callResultOrigin: {
+          readonly name: string;
+          readonly inScope: ScopeId;
+          /** False when this call is only one possible assignment origin. */
+          readonly isDefinite?: boolean;
+        };
+      }
+    | undefined;
+
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved
    * simple receiver type before the generic flattened-MRO walk. Languages

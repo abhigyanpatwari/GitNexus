@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
 import * as scopeBridge from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import { getProviderForFile } from '../../../src/core/ingestion/languages/index.js';
+import { summarizeUnresolvedReceivers } from '../../../src/core/ingestion/scope-resolution/unresolved-receivers.js';
 import {
   loadParseCache,
   loadParseCacheChunk,
@@ -84,6 +85,50 @@ def denied():
 `,
       'py/a.py': 'def run(): return 1\n',
       'py/b.py': 'def run(): return 2\n',
+      'py/accessors.py': `def lazy_module():
+    import a as namespace
+    return namespace
+def direct_accessor():
+    return lazy_module().run()
+def assigned_accessor():
+    module = lazy_module()
+    return module.run()
+`,
+      'py/accessor_caller.py': `from accessors import lazy_module as imported_module
+def imported_direct():
+    return imported_module().run()
+def imported_assigned():
+    module = imported_module()
+    return module.run()
+`,
+      'py/alternate_accessors.py': `def other_module():
+    import b as namespace
+    return namespace
+`,
+      'py/branch_modules.py': `from accessors import lazy_module
+from alternate_accessors import other_module
+def conditional_modules(flag):
+    if flag:
+        module = lazy_module()
+    else:
+        module = other_module()
+    return module.run()
+`,
+      'py/branch_builtin.py': `from accessors import lazy_module
+def conditional_builtin(flag):
+    if flag:
+        module = lazy_module()
+    else:
+        module = list()
+    return module.run()
+`,
+      'py/sequential_accessors.py': `from accessors import lazy_module
+from alternate_accessors import other_module
+def sequential():
+    module = lazy_module()
+    module = other_module()
+    return module.run()
+`,
       'py/metadata.py': `from a import run
 from fastapi import Depends
 def dependency(): return 1
@@ -122,6 +167,38 @@ int outside() { { using target::run; } return run(); }
       { file: 'src/lib.rs', caller: 'allowed', targetFile: 'src/target.rs', target: 'run' },
       { file: 'cpp/main.cpp', caller: 'allowed', targetFile: 'cpp/target.hpp', target: 'run' },
     );
+    for (const [file, callers] of [
+      ['py/accessors.py', ['direct_accessor', 'assigned_accessor']],
+      ['py/accessor_caller.py', ['imported_direct', 'imported_assigned']],
+    ] as const) {
+      for (const caller of callers) {
+        expected.push(
+          { file, caller, targetFile: 'py/a.py', target: 'run' },
+          { file, caller, targetFile: 'py/accessors.py', target: 'lazy_module' },
+        );
+      }
+    }
+    for (const [file, caller] of [
+      ['py/branch_modules.py', 'conditional_modules'],
+      ['py/branch_builtin.py', 'conditional_builtin'],
+      ['py/sequential_accessors.py', 'sequential'],
+    ] as const) {
+      expected.push({ file, caller, targetFile: 'py/accessors.py', target: 'lazy_module' });
+      if (file !== 'py/branch_builtin.py') {
+        expected.push({
+          file,
+          caller,
+          targetFile: 'py/alternate_accessors.py',
+          target: 'other_module',
+        });
+      }
+    }
+    expected.push({
+      file: 'py/sequential_accessors.py',
+      caller: 'sequential',
+      targetFile: 'py/b.py',
+      target: 'run',
+    });
     for (const extension of ['ts', 'tsx', 'js', 'jsx']) {
       const dir = extension;
       const targetExtension = extension.startsWith('ts') ? 'ts' : 'js';
@@ -242,6 +319,21 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
         .sort(),
     );
     // The exact set rejects both sibling-target leakage and every denied call.
+    for (const filePath of ['py/branch_modules.py', 'py/branch_builtin.py']) {
+      expect(
+        summarizeUnresolvedReceivers(
+          result.resolutionOutcomes.filter((outcome) => outcome.filePath === filePath),
+        ),
+        `one in-program/unknown branch call for ${filePath}`,
+      ).toEqual({ counts: { run: 1 }, totalSites: 1 });
+    }
+    expect(
+      summarizeUnresolvedReceivers(
+        result.resolutionOutcomes.filter(
+          (outcome) => outcome.filePath === 'py/sequential_accessors.py',
+        ),
+      ),
+    ).toBeUndefined();
   }
 
   it('reuses genuine cold output, retains exact targets, and invalidates changed ownership', async () => {
@@ -277,6 +369,43 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
           usingDeclarations: expect.arrayContaining([expect.any(Object)]),
         }),
       );
+      expect(coldRecords.get('py/accessors.py')!.captureSideChannel).toEqual(
+        expect.objectContaining({
+          kind: 'python-capture',
+          moduleAccessors: expect.arrayContaining([
+            expect.objectContaining({ status: 'accepted', returnedName: 'namespace' }),
+            expect.objectContaining({ status: 'declined' }),
+          ]),
+          subtypeDispatch: expect.objectContaining({
+            kind: 'python-subtype-dispatch',
+            simplePositionalCalls: expect.arrayContaining([expect.any(Array)]),
+          }),
+        }),
+      );
+      for (const filePath of ['py/accessors.py', 'py/accessor_caller.py']) {
+        expect(coldRecords.get(filePath)!.callResultAssignmentSites).toEqual([
+          expect.objectContaining({ lhs: 'module', callSite: expect.any(Object) }),
+        ]);
+      }
+      for (const [filePath, straightLine] of [
+        ['py/branch_modules.py', false],
+        ['py/branch_builtin.py', false],
+        ['py/sequential_accessors.py', true],
+      ] as const) {
+        const parsed = coldRecords.get(filePath)!;
+        const assignments = parsed.callResultAssignmentSites ?? [];
+        expect(assignments).toHaveLength(2);
+        expect(parsed.captureSideChannel).toEqual(
+          expect.objectContaining({
+            kind: 'python-capture',
+            callResultAssignments: assignments.map((assignment) => ({
+              callLine: assignment.callSite.startLine,
+              callColumn: assignment.callSite.startCol,
+              straightLine,
+            })),
+          }),
+        );
+      }
       expect(
         coldRecords
           .get('py/main.py')!
@@ -384,22 +513,43 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       await persist(warmCache);
       expect(await durableRecords()).toEqual(coldRecords);
 
-      // One changed local target plus one loader that ceases to be an import.
+      // Change the accessor's returned module while its importing caller is unchanged.
+      // Also change one local target and one loader that ceases to be an import.
       writeFixtureRepo(repoDir, {
         'ts/main.ts': files['ts/main.ts']!.replace("require('./a')", "require('./b')"),
         'js/main.js': files['js/main.js']!.replace('allowed()', 'allowed(require)'),
+        'py/accessors.py': files['py/accessors.py']!.replace(
+          'import a as namespace',
+          'import b as namespace',
+        ),
+        'py/alternate_accessors.py': files['py/alternate_accessors.py']!.replace(
+          'import b as namespace',
+          'import a as namespace',
+        ),
       });
       const editedCache = await loadParseCache(storageDir);
       const edited = await run(editedCache);
       expect(edited.usedWorkerPool).toBe(true);
-      expect(edited.reparsedFileCount).toBeGreaterThanOrEqual(2);
+      expect(edited.reparsedFileCount).toBeGreaterThanOrEqual(4);
       expect(edited.parseCacheHitFileCount).toBeGreaterThan(0);
       expect(edited.reparsedFileCount! + edited.parseCacheHitFileCount!).toBe(parsedPaths.length);
       expect(fs.existsSync(marker)).toBe(true);
       expect(extract).not.toHaveBeenCalled();
       const changedExpected = expected
         .filter((item) => item.file !== 'js/main.js')
-        .map((item) => (item.file === 'ts/main.ts' ? { ...item, targetFile: 'ts/b.ts' } : item));
+        .map((item) => {
+          if (item.file === 'ts/main.ts') return { ...item, targetFile: 'ts/b.ts' };
+          if (item.file === 'py/sequential_accessors.py' && item.target === 'run') {
+            return { ...item, targetFile: 'py/a.py' };
+          }
+          if (
+            (item.file === 'py/accessors.py' || item.file === 'py/accessor_caller.py') &&
+            item.target === 'run'
+          ) {
+            return { ...item, targetFile: 'py/b.py' };
+          }
+          return item;
+        });
       assertExactCalls(edited, changedExpected);
       expect(graphEdges(edited)).not.toEqual(graphEdges(cold));
       await persist(editedCache);
@@ -409,6 +559,23 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
         './b',
       ]);
       expect(editedRecords.get('py/main.py')).toEqual(coldRecords.get('py/main.py'));
+      expect(
+        editedRecords.get('py/accessors.py')!.parsedImports.map((imp) => imp.targetRaw),
+      ).toEqual(['b']);
+      expect(editedRecords.get('py/accessor_caller.py')).toEqual(
+        coldRecords.get('py/accessor_caller.py'),
+      );
+      expect(fs.readFileSync(path.join(repoDir, 'py/accessor_caller.py'), 'utf8')).toBe(
+        files['py/accessor_caller.py'],
+      );
+      for (const filePath of [
+        'py/branch_modules.py',
+        'py/branch_builtin.py',
+        'py/sequential_accessors.py',
+      ]) {
+        expect(editedRecords.get(filePath)).toEqual(coldRecords.get(filePath));
+        expect(fs.readFileSync(path.join(repoDir, filePath), 'utf8')).toBe(files[filePath]);
+      }
 
       fs.rmSync(marker);
       const editedWarm = await run(await loadParseCache(storageDir));
@@ -419,6 +586,35 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       expect(extract).not.toHaveBeenCalled();
       assertExactCalls(editedWarm, changedExpected);
       expect(graphEdges(editedWarm)).toEqual(graphEdges(edited));
+
+      // Both stores reject the pre-accessor schema. run() constructs a fresh
+      // graph, proving the full-rebuild upgrade path with unchanged sources;
+      // cache invalidation alone is not evidence of persisted graph-row updates.
+      const previousVersion = PARSE_CACHE_VERSION.replace(/^\d+\+/, '136+');
+      expect(previousVersion).not.toBe(PARSE_CACHE_VERSION);
+      for (const indexPath of [
+        path.join(storageDir, 'parse-cache', 'index.json'),
+        path.join(getDurableParsedFileDir(storageDir), 'index.json'),
+      ]) {
+        const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+        fs.writeFileSync(indexPath, JSON.stringify({ ...index, version: previousVersion }));
+      }
+      await clearParsedFileStore(storageDir);
+      expect(
+        await loadDurableParsedFileIndex(getDurableParsedFileDir(storageDir), PARSE_CACHE_VERSION),
+      ).toEqual(new Map());
+      const upgradedCache = await loadParseCache(storageDir);
+      expect(upgradedCache.entries.size).toBe(0);
+      expect(upgradedCache.onDiskKeys?.size ?? 0).toBe(0);
+      const rebuilt = await run(upgradedCache);
+      expect(rebuilt.usedWorkerPool).toBe(true);
+      expect(rebuilt.reparsedFileCount).toBe(parsedPaths.length);
+      expect(rebuilt.parseCacheHitFileCount).toBe(0);
+      expect(extract).not.toHaveBeenCalled();
+      assertExactCalls(rebuilt, changedExpected);
+      expect(graphEdges(rebuilt)).toEqual(graphEdges(edited));
+      await persist(upgradedCache);
+      expect(await durableRecords()).toEqual(editedRecords);
     } finally {
       extract.mockRestore();
     }
