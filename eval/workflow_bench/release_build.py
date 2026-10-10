@@ -82,6 +82,11 @@ def build_candidate(repo: Path) -> None:
             "--setenv",
             "HOME",
             "/home/build",
+            # CPU binaries ship in the npm package. Optional CUDA downloads
+            # cannot run during the network-isolated lifecycle phase.
+            "--setenv",
+            "ONNXRUNTIME_NODE_INSTALL",
+            "skip",
             "--chdir",
             "/workspace",
             "--",
