@@ -13,7 +13,7 @@ import {
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Java from 'tree-sitter-java';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import Python from 'tree-sitter-python';
@@ -25,7 +25,7 @@ import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-gram
 // Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
 const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 
-let Dart: unknown;
+let Dart: Parser.Language | null = null;
 try {
   Dart = requireVendoredGrammar('tree-sitter-dart');
   const testParser = new Parser();
@@ -34,7 +34,7 @@ try {
   Dart = null;
 }
 
-let Swift: unknown;
+let Swift: Parser.Language | null = null;
 try {
   Swift = requireVendoredGrammar('tree-sitter-swift');
   const testParser = new Parser();
@@ -45,7 +45,7 @@ try {
 
 const parser = new Parser();
 
-const parse = (code: string, lang: unknown) => {
+const parse = (code: string, lang: Parser.Language) => {
   parser.setLanguage(lang);
   return parser.parse(code);
 };

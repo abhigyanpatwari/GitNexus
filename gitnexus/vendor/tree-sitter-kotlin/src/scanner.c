@@ -103,7 +103,17 @@ static bool scan_string_content(TSLexer *lexer, Stack *stack,
   bool is_triple = (raw_delim & 1) != 0;
   char end_char = is_triple ? (char)(raw_delim - 1) : (char)raw_delim;
   bool has_content = false;
-  while (lexer->lookahead) {
+  while (true) {
+    if (lexer->lookahead == '\0') {
+      // Stop at real end-of-input, but treat a literal NUL byte (not EOF) as
+      // ordinary string content: consume it to guarantee forward progress.
+      // Returning here without advancing would leave the lexer stuck at the
+      // same offset (mirrors the NUL handling in scan_multiline_comment).
+      if (lexer->eof(lexer)) break;
+      advance(lexer);
+      has_content = true;
+      continue;
+    }
     if (lexer->lookahead == '$') {
       // If we already have content, stop here so the caller can emit it
       // before we deal with the potential interpolation.
@@ -299,7 +309,11 @@ static bool scan_multiline_comment(TSLexer *lexer) {
           lexer->mark_end(lexer);
           return true;
         }
-        return false;
+        // A literal NUL byte inside the comment (lookahead is '\0' but not EOF)
+        // must be consumed like any other comment content. Returning here without
+        // advancing leaves the lexer at the same offset, so tree-sitter re-invokes
+        // the scanner forever on inputs such as "/*\0" -> a parse-time hang (DoS).
+        // fallthrough
       default:
         advance(lexer);
         after_star = false;

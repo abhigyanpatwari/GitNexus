@@ -734,10 +734,10 @@ function rewriteZigThisAlias(
  *   `extractAssignment` pairs first-identifier → last-child positionally.
  *   `assignment_expression` (`self.f = target`) carries real `left`/`right`
  *   fields and is left to the shared path.
- * - `call_expression` has NO argument-list wrapper: `invoke(second)` is
- *   `(call_expression function: (identifier) (identifier))`. Arguments are
- *   every named child other than the `function` field, hence
- *   `extractCallArguments`.
+ * - `call_expression` wraps its actuals in a required `arguments:` field:
+ *   `invoke(second)` is `(call_expression function: (identifier)
+ *   arguments: (arguments (identifier)))`. `extractCallArguments` reads that
+ *   node's named children (minus comments).
  *
  * - Zig's receiver is an EXPLICIT first parameter named `self` (the same
  *   convention `interpretZigTypeBinding` keys receiver typing on), and a
@@ -798,10 +798,9 @@ function zigCallableCaptureOptions(
       );
     },
     extractCallArguments: (call: SyntaxNode) => {
-      const callee = call.childForFieldName('function');
-      const explicit = call.namedChildren.filter(
-        (child): child is SyntaxNode =>
-          child !== null && child.id !== callee?.id && child.type !== 'comment',
+      const argumentsNode = call.namedChildren.find((child) => child?.type === 'arguments');
+      const explicit = (argumentsNode?.namedChildren ?? []).filter(
+        (child): child is SyntaxNode => child !== null && child.type !== 'comment',
       );
       const receiver = zigImplicitReceiver(call, fnLocalNames, hostValueNames);
       return receiver === undefined ? explicit : [receiver, ...explicit];

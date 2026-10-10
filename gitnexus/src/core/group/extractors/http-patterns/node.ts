@@ -195,7 +195,7 @@ interface NodePatternBundle {
   requestObject: CompiledPatterns<Record<string, never>>;
 }
 
-function compileBundle(language: unknown, name: string): NodePatternBundle {
+function compileBundle(language: Parser.Language, name: string): NodePatternBundle {
   const mk = (spec: PatternSpec<Record<string, never>>, suffix: string) =>
     compilePatterns({
       name: `${name}-${suffix}`,

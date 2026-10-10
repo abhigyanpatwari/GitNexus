@@ -300,7 +300,7 @@ interface LanguageProviderConfig {
   readonly preprocessSource?: (sourceText: string, filePath: string) => string;
 
   /** Select the native grammar for a pre-extracted embedded script. */
-  readonly selectEmbeddedGrammar?: (scriptLanguage: string) => object;
+  readonly selectEmbeddedGrammar?: (scriptLanguage: string) => Parser.Language;
 
   /**
    * Runtime/compiler identity reconciliation for framework metadata. The
