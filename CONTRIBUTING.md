@@ -162,16 +162,17 @@ The CLI pins and bundles the native `tree-sitter` runtime and its npm grammars.
 Several compatible grammars still declare older runtime peer ranges. Root npm
 `overrides` do not propagate to consumers, and older npm versions validate bundled
 peers against their original ranges even when an override is configured. The
-lockfile therefore includes the tested runtime in the same eight audited peer
-ranges. `gitnexus/scripts/prepare-tree-sitter-bundle.cjs` runs during `postinstall`
+lockfile therefore pins the same eight audited peers to exactly `0.25.1`.
+`gitnexus/scripts/prepare-tree-sitter-bundle.cjs` runs during `postinstall`
 and `prepack` to keep installed dependency manifests consistent with that lockfile
 and the published bundle. It leaves grammar sources and native binaries unchanged
 and rejects unexpected versions, peer ranges, or dependency layouts before writing
-any manifests.
+any manifests. The upstream ranges remain in the script only as validation inputs;
+installed and published audited manifests require exactly `0.25.1`.
 
 When upgrading these packages, update the exact pins, lockfile, and audited peer
 list together. If regenerating the lockfile restores upstream's older peer ranges,
-apply the same audited `|| 0.25.1` additions before committing it. Verify ordinary
+restore the same audited `0.25.1` peer pins before committing it. Verify ordinary
 `npm ci` and a subsequent `npm install` complete without peer-resolution warnings.
 Run the parser, extraction, CFG, and worker tests, then use a real
 `npm pack` (including `prepack`) to test a fresh consumer's `npm install`,
