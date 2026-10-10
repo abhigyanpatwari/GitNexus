@@ -114,6 +114,71 @@ describe('setupClaudeCode', () => {
     await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
   });
 
+  describe('with CLAUDE_CONFIG_DIR set', () => {
+    let configDir: string;
+
+    beforeEach(async () => {
+      // Claude Code reads only the relocated root, so the HOME defaults must
+      // not exist for these cases: anything written there would be invisible.
+      await fs.rm(path.join(tempHome, '.claude'), { recursive: true, force: true });
+      configDir = path.join(tempHome, 'relocated', 'claude');
+      await fs.mkdir(configDir, { recursive: true });
+      process.env.CLAUDE_CONFIG_DIR = configDir;
+    });
+
+    afterEach(() => {
+      // vitest.config.ts pins it to '' so a developer shell's value never leaks in.
+      process.env.CLAUDE_CONFIG_DIR = '';
+    });
+
+    it('writes the MCP entry to $CLAUDE_CONFIG_DIR/.claude.json, not ~/.claude.json', async () => {
+      setPlatform('linux');
+
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+
+      const config = JSON.parse(await fs.readFile(path.join(configDir, '.claude.json'), 'utf-8'));
+      expect(config.mcpServers.gitnexus).toEqual({
+        command: 'npx',
+        args: ['-y', MCP_PINNED_REF, 'mcp'],
+      });
+      await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
+      await expect(fs.access(path.join(tempHome, '.claude'))).rejects.toThrow();
+    });
+
+    it('installs skills and hooks under $CLAUDE_CONFIG_DIR', async () => {
+      setPlatform('linux');
+
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+
+      const skills = await fs.readdir(path.join(configDir, 'skills'));
+      expect(skills.length).toBeGreaterThan(0);
+      await expect(
+        fs.access(path.join(configDir, 'hooks', 'gitnexus', 'gitnexus-hook.cjs')),
+      ).resolves.toBeUndefined();
+      const settings = JSON.parse(
+        await fs.readFile(path.join(configDir, 'settings.json'), 'utf-8'),
+      );
+      expect(JSON.stringify(settings.hooks.PreToolUse)).toContain(
+        path.join(configDir, 'hooks', 'gitnexus').replace(/\\/g, '/'),
+      );
+      expect(logLines()).toContain(path.join(configDir, 'skills'));
+    });
+
+    it('skips Claude Code when $CLAUDE_CONFIG_DIR does not exist, even if ~/.claude does', async () => {
+      await fs.rm(configDir, { recursive: true, force: true });
+      await fs.mkdir(path.join(tempHome, '.claude'), { recursive: true });
+
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+
+      await expect(fs.access(path.join(configDir, '.claude.json'))).rejects.toThrow();
+      await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
+      expect(await fs.readdir(path.join(tempHome, '.claude'))).toEqual([]);
+    });
+  });
+
   it('preserves existing keys in ~/.claude.json', async () => {
     setPlatform('linux');
 
