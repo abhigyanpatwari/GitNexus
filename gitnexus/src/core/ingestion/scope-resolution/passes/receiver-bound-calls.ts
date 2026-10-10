@@ -73,7 +73,7 @@ import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { collectNamespaceTargets } from '../scope/namespace-targets.js';
+import { createNamespaceTargetCache } from '../scope/namespace-target-cache.js';
 import {
   bindsTypeParameter,
   findClassBindingInScope,
@@ -83,6 +83,8 @@ import {
   findExportedDefIncludingImportedNames,
   findOwnedMember,
   findReceiverTypeBinding,
+  lookupNameClaim,
+  hasExplicitNameClaim,
   findValueBindingInScope,
   isClassLike,
   isNamespaceNameShadowed,
@@ -495,6 +497,7 @@ export function emitReceiverBoundCalls(
     prefix: string,
     inScope: ScopeId,
     namespaceTargets: ReadonlyMap<string, readonly string[]>,
+    position?: TypeRef['lookupPosition'],
   ): ChainCursor | undefined => {
     const segments = splitTopLevelDots(prefix);
     if (segments.length === 0) return undefined;
@@ -507,7 +510,15 @@ export function emitReceiverBoundCalls(
       const key = segments.slice(0, k).join('.');
       const files = namespaceTargets.get(key);
       if (files === undefined) continue;
-      if (isNamespaceNameShadowed(key, inScope, scopes, provider.namespaceSkipsEnclosingClasses))
+      if (
+        isNamespaceNameShadowed(
+          key,
+          inScope,
+          scopes,
+          provider.namespaceSkipsEnclosingClasses,
+          position,
+        )
+      )
         return undefined;
       cursor = { files };
       rest = segments.slice(k);
@@ -548,6 +559,7 @@ export function emitReceiverBoundCalls(
     receiverName: string,
     inScope: ScopeId,
     namespaceTargets: ReadonlyMap<string, readonly string[]>,
+    position?: TypeRef['lookupPosition'],
   ): SymbolDefinition | undefined => {
     const dot = walkChains ? lastTopLevelDot(receiverName) : receiverName.lastIndexOf('.');
     if (dot <= 0 || dot === receiverName.length - 1) return undefined;
@@ -555,7 +567,7 @@ export function emitReceiverBoundCalls(
     const tail = receiverName.slice(dot + 1);
     if (tail.includes('(') || tail.includes('[')) return undefined;
     if (walkChains) {
-      const cursor = resolveNamespaceChain(head, inScope, namespaceTargets);
+      const cursor = resolveNamespaceChain(head, inScope, namespaceTargets, position);
       if (cursor === undefined) return undefined;
       return 'classDef' in cursor
         ? findNestedClass(cursor.classDef, tail)
@@ -564,7 +576,13 @@ export function emitReceiverBoundCalls(
     const files = namespaceTargets.get(head);
     if (
       files === undefined ||
-      isNamespaceNameShadowed(head, inScope, scopes, provider.namespaceSkipsEnclosingClasses)
+      isNamespaceNameShadowed(
+        head,
+        inScope,
+        scopes,
+        provider.namespaceSkipsEnclosingClasses,
+        position,
+      )
     )
       return undefined;
     return uniqueClassAcross(files, tail);
@@ -724,7 +742,12 @@ export function emitReceiverBoundCalls(
   ): boolean | 'suppress' => {
     const predicate = provider.resolveMissingReceiverMembersFromSubtypes;
     if (predicate === undefined) return false;
-    const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
+    const callerGraphId = resolveCallerGraphId(
+      site.callerScope ?? site.inScope,
+      scopes,
+      nodeLookup,
+      site.atRange,
+    );
     const callerIsStatic =
       callerGraphId === undefined ? undefined : graph.getNode(callerGraphId)?.properties.isStatic;
     const receiverBindingGraphId = resolveCallerGraphId(
@@ -1042,30 +1065,48 @@ export function emitReceiverBoundCalls(
   };
 
   for (const parsed of parsedFiles) {
-    const namespaceContext = (inScope?: ScopeId) => {
-      const namespaceTargets = collectNamespaceTargets(parsed, scopes, {
+    const namespaceCache = createNamespaceTargetCache(
+      parsed,
+      scopes,
+      {
         receiverPaths: provider.namespaceReceiverPaths,
         bindingIdentity: provider.namespaceBindingIdentity,
         skipEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
         moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
-        inScope,
-      });
+      },
+      provider.importsBindAtLexicalScope === true,
+    );
+    const namespaceTargetsAt = namespaceCache.at;
+    const namespaceContext = (inScope?: ScopeId, position?: TypeRef['lookupPosition']) => {
+      const namespaceTargets = namespaceTargetsAt(inScope, position);
       return {
         namespaceTargets,
         fileCompoundOpts: {
           ...compoundOpts,
           namespaceTargets,
+          namespaceTargetsAt,
+          lookupPosition: position,
           ...(walkChains
             ? {
-                resolveQualifiedClass: (qualifiedName: string, scopeId: ScopeId) =>
-                  resolveNamespaceQualifiedClass(qualifiedName, scopeId, namespaceTargets),
+                resolveQualifiedClass: (
+                  qualifiedName: string,
+                  scopeId: ScopeId,
+                  lookupPosition?: TypeRef['lookupPosition'],
+                ) =>
+                  resolveNamespaceQualifiedClass(
+                    qualifiedName,
+                    scopeId,
+                    lookupPosition === undefined
+                      ? namespaceTargets
+                      : namespaceTargetsAt(scopeId, lookupPosition),
+                    lookupPosition,
+                  ),
               }
             : {}),
         },
       };
     };
     const fileNamespaces = namespaceContext();
-    const namespacesByScope = new Map<ScopeId, ReturnType<typeof namespaceContext>>();
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
     // capture is a no-op and emission stays byte-identical (R4).
@@ -1078,15 +1119,9 @@ export function emitReceiverBoundCalls(
       if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
       if (site.explicitReceiver === undefined) continue;
 
-      let namespaces = fileNamespaces;
-      if (provider.importsBindAtLexicalScope === true) {
-        let scoped = namespacesByScope.get(site.inScope);
-        if (scoped === undefined) {
-          scoped = namespaceContext(site.inScope);
-          namespacesByScope.set(site.inScope, scoped);
-        }
-        namespaces = scoped;
-      }
+      const namespaces = namespaceCache.requiresLexicalLookup
+        ? namespaceContext(site.inScope, site.atRange)
+        : fileNamespaces;
       const { namespaceTargets, fileCompoundOpts } = namespaces;
 
       const receiverName = site.explicitReceiver.name;
@@ -1100,7 +1135,7 @@ export function emitReceiverBoundCalls(
         const baseTypeRef =
           baseName === undefined
             ? undefined
-            : findReceiverTypeBinding(site.inScope, baseName, scopes);
+            : findReceiverTypeBinding(site.inScope, baseName, scopes, { position: site.atRange });
         if (baseTypeRef !== undefined && provider.suppressReceiverLookup(baseTypeRef)) {
           options.recordResolutionOutcome?.({
             kind: 'suppressed',
@@ -1594,6 +1629,7 @@ export function emitReceiverBoundCalls(
           site.inScope,
           scopes,
           provider.namespaceSkipsEnclosingClasses,
+          site.atRange,
         )
           ? namespaceCandidates
           : undefined;
@@ -1601,7 +1637,12 @@ export function emitReceiverBoundCalls(
       // no handle of this file, but its segments reach a module (see
       // `resolveNamespaceChain`). A prefix that ends in a CLASS is Case 2's.
       if (targetFiles === undefined && walkChains && lastTopLevelDot(receiverName) > 0) {
-        const cursor = resolveNamespaceChain(receiverName, site.inScope, namespaceTargets);
+        const cursor = resolveNamespaceChain(
+          receiverName,
+          site.inScope,
+          namespaceTargets,
+          site.atRange,
+        );
         if (cursor !== undefined && 'files' in cursor) targetFiles = cursor.files;
       }
       if (targetFiles !== undefined && provider.resolveQualifiedReceiverMember === undefined) {
@@ -1719,8 +1760,11 @@ export function emitReceiverBoundCalls(
       // opted in. Only a bare tail is walked here; `ns.Type.field.m()` is the
       // compound resolver's shape.
       const classDef =
-        findClassBindingInScope(site.inScope, receiverName, scopes) ??
-        resolveNamespaceQualifiedClass(receiverName, site.inScope, namespaceTargets);
+        findClassBindingInScope(site.inScope, receiverName, scopes, undefined, {
+          position: site.atRange,
+          purpose: 'value',
+        }) ??
+        resolveNamespaceQualifiedClass(receiverName, site.inScope, namespaceTargets, site.atRange);
       if (classDef !== undefined) {
         const chain = [classDef.nodeId, ...scopes.methodDispatch.mroFor(classDef.nodeId)];
         let memberDef: SymbolDefinition | undefined;
@@ -1841,7 +1885,9 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 3: dotted typeBinding (`u: models.User`) ────────────
-      const typeRef = findReceiverTypeBinding(site.inScope, receiverName, scopes);
+      const typeRef = findReceiverTypeBinding(site.inScope, receiverName, scopes, {
+        position: site.atRange,
+      });
       if (typeRef !== undefined && typeRef.rawName.includes('.')) {
         const [nsName, ...classNameParts] = typeRef.rawName.split('.');
         const className = classNameParts.join('.');
@@ -1849,7 +1895,12 @@ export function emitReceiverBoundCalls(
         // (`x: mod.Outer.Inner`, `t: hub.sub.Thing`); the candidate list then
         // has one entry or none. Without it: the historical one-hop split.
         const chainDef3 = walkChains
-          ? resolveNamespaceQualifiedClass(typeRef.rawName, site.inScope, namespaceTargets)
+          ? resolveNamespaceQualifiedClass(
+              typeRef.rawName,
+              typeRef.declaredAtScope,
+              namespaceTargetsAt(typeRef.declaredAtScope, typeRef.lookupPosition),
+              typeRef.lookupPosition,
+            )
           : undefined;
         const targetFiles3 = walkChains
           ? chainDef3 === undefined
@@ -1954,7 +2005,7 @@ export function emitReceiverBoundCalls(
           typeRef.declaredAtScope,
           scopes,
           index,
-          fileCompoundOpts,
+          { ...fileCompoundOpts, lookupPosition: typeRef.lookupPosition },
         );
         if (resolved === undefined && !typeRef.rawName.includes('(')) {
           resolved = resolveCompoundReceiverTyped(
@@ -1962,7 +2013,7 @@ export function emitReceiverBoundCalls(
             typeRef.declaredAtScope,
             scopes,
             index,
-            fileCompoundOpts,
+            { ...fileCompoundOpts, lookupPosition: typeRef.lookupPosition },
           );
         }
         const ownerDef = resolved?.def;
@@ -2095,9 +2146,11 @@ export function emitReceiverBoundCalls(
         // declares under that base name — see {@link erasedTypeApplication}.
         const typeApplication = erasedTypeApplication(typeRef);
         let ownerDef = resolveClassBindingForName(
-          site.inScope,
+          typeRef.declaredAtScope,
           typeApplication ?? typeRef.rawName,
           scopes,
+          undefined,
+          { position: typeRef.lookupPosition, purpose: typeRef.lookupPurpose ?? 'type' },
         );
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
         // rawName is itself a class symbol reachable through scope bindings.
@@ -2113,7 +2166,15 @@ export function emitReceiverBoundCalls(
         // MANUFACTURED by erasing type arguments, where the file may never
         // have named it at all. The lookup above already answered that case on
         // grounds; re-asking it here without any would undo them.
-        if (ownerDef === undefined && typeApplication === undefined) {
+        const typeClaim = lookupNameClaim(typeRef.declaredAtScope, typeRef.rawName, scopes, {
+          position: typeRef.lookupPosition,
+          purpose: typeRef.lookupPurpose ?? 'type',
+        });
+        if (
+          ownerDef === undefined &&
+          typeApplication === undefined &&
+          !hasExplicitNameClaim(typeClaim, typeRef.rawName)
+        ) {
           const qnameIds = scopes.qualifiedNames.get(typeRef.rawName);
           if (qnameIds.length === 1) {
             const qdef = scopes.defs.get(qnameIds[0]!);
@@ -2740,7 +2801,13 @@ export function emitReceiverBoundCalls(
         const headClass =
           staticMemberReceiver === undefined
             ? undefined
-            : findClassBindingInScope(site.inScope, staticMemberReceiver.headName, scopes);
+            : findClassBindingInScope(
+                site.inScope,
+                staticMemberReceiver.headName,
+                scopes,
+                undefined,
+                { position: site.atRange, purpose: 'value' },
+              );
         // The head must be the CLASS ITSELF, not a value that happens to
         // share its name — the same `currentIsClassConstant` test the text
         // cascade makes before it treats a head as a class constant. A head
@@ -2749,7 +2816,9 @@ export function emitReceiverBoundCalls(
         if (
           staticMemberReceiver !== undefined &&
           headClass !== undefined &&
-          findReceiverTypeBinding(site.inScope, staticMemberReceiver.headName, scopes) === undefined
+          findReceiverTypeBinding(site.inScope, staticMemberReceiver.headName, scopes, {
+            position: site.atRange,
+          }) === undefined
         ) {
           // MRO walk, so a class-level member declared on an ancestor is
           // reachable through a subclass name where the language allows it.

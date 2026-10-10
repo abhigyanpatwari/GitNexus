@@ -38,7 +38,8 @@
 
 import type { NodeLabel } from '../graph/types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
-import type { BindingRef, ScopeId, ScopeLookup, TypeRef } from './types.js';
+import { lookupLexicalName } from './name-claims.js';
+import type { BindingRef, ScopeLookup, TypeRef } from './types.js';
 import type { DefIndex } from './def-index.js';
 import type { QualifiedNameIndex } from './qualified-name-index.js';
 
@@ -100,36 +101,27 @@ const TYPE_KINDS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
 // ─── Main entry point ──────────────────────────────────────────────────────
 
 export function resolveTypeRef(ref: TypeRef, ctx: ResolveTypeRefContext): SymbolDefinition | null {
-  // Phase 1: scope-chain walk anchored at the declaration site.
-  let currentId: ScopeId | null = ref.declaredAtScope;
-  const visited = new Set<ScopeId>();
-
-  while (currentId !== null) {
-    // Cycle guard — a well-formed scope tree never loops, but a bug in the
-    // construction path should fail fast here rather than hanging.
-    if (visited.has(currentId)) return null;
-    visited.add(currentId);
-
-    const scope = ctx.scopes.getScope(currentId);
-    if (scope === undefined) return null; // broken chain = unresolvable
-
-    const bindings = scope.bindings.get(ref.rawName);
-    if (bindings !== undefined && bindings.length > 0) {
-      // At least one binding exists at this scope → it is the shadowing site.
-      // Either one of them qualifies, or the name is shadowed by a non-type.
-      for (const binding of bindings) {
-        if (!STRICT_ORIGINS.has(binding.origin)) continue;
-        if (TYPE_KINDS.has(binding.def.type)) {
-          return binding.def;
-        }
-      }
-      // Shadowed by a non-type / non-strict-origin binding. Fail fast — no
-      // global fallback, no walk to the parent.
-      return null;
-    }
-
-    currentId = scope.parent;
+  const options = { position: ref.lookupPosition, purpose: ref.lookupPurpose ?? ('type' as const) };
+  const claim = lookupLexicalName(
+    ref.declaredAtScope,
+    ref.rawName,
+    { scopes: ctx.scopes },
+    options,
+  );
+  if (claim.status !== 'absent') {
+    const candidates = claim.bindings.filter(
+      (binding) => STRICT_ORIGINS.has(binding.origin) && TYPE_KINDS.has(binding.def.type),
+    );
+    const distinct = new Map(candidates.map((binding) => [binding.def.nodeId, binding.def]));
+    return distinct.size === 1 ? distinct.values().next().value! : null;
   }
+  const rootName = ref.rawName.split('.', 1)[0]!;
+  if (
+    rootName !== ref.rawName &&
+    lookupLexicalName(ref.declaredAtScope, rootName, { scopes: ctx.scopes }, options).status !==
+      'absent'
+  )
+    return null;
 
   // Phase 2: dotted fallback via `QualifiedNameIndex`. Only accept a unique
   // type-kind hit; anything ambiguous returns null (strict: no guesses).

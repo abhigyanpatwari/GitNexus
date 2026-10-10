@@ -389,7 +389,8 @@ function measureLang(lang) {
   const fixtures =
     lang.fixturePrefix === undefined ? [] : collectFixtures(lang.fixturePrefix, lang.exts);
   for (const { key, absPath } of fixtures) {
-    const matches = lang.emit(fs.readFileSync(absPath, 'utf8'), absPath);
+    // Scope policies contain file identities; hash stable fixture paths.
+    const matches = lang.emit(fs.readFileSync(absPath, 'utf8'), key);
     groups += matches.length;
     perFixture.push(`${key}\t${matches.length}\t${digestCaptures(matches)}`);
   }

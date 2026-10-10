@@ -145,10 +145,12 @@ export function resolveReferenceSites(input: ResolveReferencesInput): ResolveRef
     const ref = buildReference(site, top);
     referencesEmitted++;
 
-    let bySource = bySourceScope.get(site.inScope);
+    // Source grouping follows the graph caller; lookup has already used the
+    // site's lexical environment, which may differ for a framework invocation.
+    let bySource = bySourceScope.get(ref.fromScope);
     if (bySource === undefined) {
       bySource = [];
-      bySourceScope.set(site.inScope, bySource);
+      bySourceScope.set(ref.fromScope, bySource);
     }
     bySource.push(ref);
 
@@ -208,16 +210,26 @@ function lookupForSite(
   macroRegistry: MacroRegistry,
   scopes: ScopeResolutionIndexes,
 ): readonly Resolution[] {
+  const lookupScope = site.lookupScope ?? site.inScope;
+  const lookupOptions = {
+    lookupPosition: site.atRange,
+    lookupPurpose:
+      site.lookupPurpose ??
+      (site.kind === 'inherits' || site.kind === 'type-reference'
+        ? ('type' as const)
+        : ('value' as const)),
+  };
   switch (site.kind) {
     case 'call': {
       const opts: Parameters<MethodRegistry['lookup']>[2] = {
+        ...lookupOptions,
         ...(site.arity !== undefined ? { callsite: { arity: site.arity } } : {}),
         ...(site.explicitReceiver !== undefined ? { explicitReceiver: site.explicitReceiver } : {}),
       };
-      return methodRegistry.lookup(site.name, site.inScope, opts);
+      return methodRegistry.lookup(site.name, lookupScope, opts);
     }
     case 'inherits': {
-      return classRegistry.lookup(site.name, site.inScope);
+      return classRegistry.lookup(site.name, lookupScope, lookupOptions);
     }
     case 'type-reference': {
       // A TYPE PARAMETER SHADOWS A DECLARED TYPE OF THE SAME NAME (#2899).
@@ -258,17 +270,18 @@ function lookupForSite(
       // `typeParameters` is populated only by languages whose captures were
       // extended for it, so a POSITIVE match declines and an absent list changes
       // nothing — which is what keeps every unconverted language unchanged.
-      if (bindsTypeParameter(site.inScope, site.name, scopes)) return [];
-      return classRegistry.lookup(site.name, site.inScope);
+      if (bindsTypeParameter(lookupScope, site.name, scopes)) return [];
+      return classRegistry.lookup(site.name, lookupScope, lookupOptions);
     }
     case 'read':
     case 'write': {
       // Try field first; fall through to method then class so bare-name
       // reads of a function (e.g. `cb = save`) still resolve.
       const fieldOpts: Parameters<FieldRegistry['lookup']>[2] = {
+        ...lookupOptions,
         ...(site.explicitReceiver !== undefined ? { explicitReceiver: site.explicitReceiver } : {}),
       };
-      const fieldHits = fieldRegistry.lookup(site.name, site.inScope, fieldOpts);
+      const fieldHits = fieldRegistry.lookup(site.name, lookupScope, fieldOpts);
       // A BARE IDENTIFIER is not a member access. With no receiver there is no
       // object whose `Property` this could be, so a hit on one is a false edge:
       // in JS/TS/Python/Ruby a field read needs `this.` / `self.` / `@`, and the
@@ -288,19 +301,19 @@ function lookupForSite(
           ? fieldHits.filter((hit) => hit.def?.type !== 'Property')
           : fieldHits;
       if (receiverlessFieldHits.length > 0) return receiverlessFieldHits;
-      const methodHits = methodRegistry.lookup(site.name, site.inScope);
+      const methodHits = methodRegistry.lookup(site.name, lookupScope, lookupOptions);
       if (methodHits.length > 0) return methodHits;
-      return classRegistry.lookup(site.name, site.inScope);
+      return classRegistry.lookup(site.name, lookupScope, lookupOptions);
     }
     case 'import-use': {
       // Try class, method, then field. The lexical-hit Step 1 in
       // `lookupCore` handles the actual binding lookup; the choice of
       // registry only narrows `acceptedKinds`.
-      const classHits = classRegistry.lookup(site.name, site.inScope);
+      const classHits = classRegistry.lookup(site.name, lookupScope, lookupOptions);
       if (classHits.length > 0) return classHits;
-      const methodHits = methodRegistry.lookup(site.name, site.inScope);
+      const methodHits = methodRegistry.lookup(site.name, lookupScope, lookupOptions);
       if (methodHits.length > 0) return methodHits;
-      return fieldRegistry.lookup(site.name, site.inScope);
+      return fieldRegistry.lookup(site.name, lookupScope, lookupOptions);
     }
     case 'value-ref': {
       // Unreachable — filtered before lookup (post-finalize resolution in
@@ -310,7 +323,7 @@ function lookupForSite(
     case 'macro': {
       // Macro-only namespace: resolves against `Macro`-labeled defs, never
       // functions. No receiver, no arity — see `MacroRegistry`.
-      return macroRegistry.lookup(site.name, site.inScope);
+      return macroRegistry.lookup(site.name, lookupScope);
     }
   }
 }
@@ -318,7 +331,7 @@ function lookupForSite(
 /** Compose a `Reference` record from a site + its top resolution. */
 function buildReference(site: ReferenceSite, top: Resolution): Reference {
   return {
-    fromScope: site.inScope,
+    fromScope: site.callerScope ?? site.inScope,
     toDef: top.def.nodeId,
     atRange: site.atRange,
     kind: site.kind,

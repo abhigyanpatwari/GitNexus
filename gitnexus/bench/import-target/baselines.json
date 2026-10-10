@@ -97,6 +97,7 @@
     "zig": 7
   },
   "heap_ceiling_bytes": {
+    "rust": 31300000,
     "kotlin": 6800000,
     "go": 4497696,
     "dart": 11751300,
@@ -113,6 +114,7 @@
   "_heap_reading_note": "heap_reading_bytes records each measured large-corpus reading so the 0.5x floor is independent of its ceiling. Ceilings use the standard 1.5x allowance for cross-platform and Node heap-accounting differences; re-baseline the reading and ceiling together.",
   "_kotlin_declared_package_gate": "#2960 replaces Kotlin\u0027s path-suffix cascade with one declared-package/module-binding index. The 32000-file arm measured 4516944 retained bytes (4.31 MiB), with a 6800000-byte ceiling. Correctness and reuse are pinned separately by kotlin-module-resolution.test.ts, external-import-conformance.test.ts, the shared index-reuse contract, and bench/kotlin-import-target.",
   "heap_reading_bytes": {
+    "rust": 20853888,
     "kotlin": 4516944,
     "go": 2998464,
     "dart": 7834200,
@@ -130,7 +132,6 @@
   "heap_bound_bytes": {
     "cobol": 6200000,
     "swift": 5200000,
-    "rust": 1048576,
     "javascript": 1048576,
     "typescript": 1048576,
     "vue": 1048576,
@@ -673,6 +674,12 @@
       }
     },
     "rust": {
+      "_lexical_context_3532": "The fifth argument now reaches Rust's lexical module workspace index. Existing scale-arm counts and fingerprints remain unchanged. A declared sibling module resolves locally with context and to the crate-root decoy without it. Retained heap at 8000/32000 files measured 5186248/20853888 bytes (linear ratio 1.005); promote Rust from bounded to budgeted with the standard 1.5x ceiling and the existing floor/ratio gates.",
+      "context": {
+        "target": "local::X",
+        "with_context": "src/parent/local.rs",
+        "without_context": "src/local.rs"
+      },
       "small": {
         "files": 400,
         "imports": 3200,

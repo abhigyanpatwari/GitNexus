@@ -39,15 +39,71 @@
  * scope-resolution generalization plan.
  */
 
-import type { ParsedFile, ScopeId, TypeRef } from 'gitnexus-shared';
+import type { ParsedFile, Scope, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+import { definitionIdPosition } from '../utils/definition-id.js';
 import {
   lookupBindingsAt,
+  lookupNameClaim,
+  findReceiverTypeBinding,
   namesAtScope,
   moduleScopeIdOf,
   namespaceTypeBindingFor,
 } from '../scope/walkers.js';
+
+/** Definition identity → its own type fact; built once, facts read lazily after propagation. */
+interface TypeFactOwner {
+  readonly scope: Scope;
+  readonly name: string;
+}
+const typeFactOwners = new WeakMap<ScopeResolutionIndexes, Map<string, TypeFactOwner>>();
+function producerTypeRef(defId: string, scopes: ScopeResolutionIndexes): TypeRef | undefined {
+  let owners = typeFactOwners.get(scopes);
+  if (owners === undefined) {
+    owners = new Map();
+    const returnsByDeclaration = new Map<string, TypeFactOwner | null>();
+    const definitions = new Map<string, SymbolDefinition>();
+    for (const scope of scopes.scopeTree.byId?.values() ?? []) {
+      for (const def of scope.ownedDefs ?? []) definitions.set(def.nodeId, def);
+      for (const [name, ref] of scope.typeBindings) {
+        // Some providers hoist method return annotations to the module. Join
+        // those facts by their declaration anchor, never by an enclosing name.
+        if (
+          ref.source !== 'return-annotation' ||
+          ref.bindingRange === undefined ||
+          ref.declaredAtScope !== scope.id
+        )
+          continue;
+        const key = `${scope.filePath}\0${ref.bindingRange.startLine}:${ref.bindingRange.startCol}`;
+        returnsByDeclaration.set(key, returnsByDeclaration.has(key) ? null : { scope, name });
+      }
+      for (const [name, bindings] of scope.bindings) {
+        for (const binding of bindings) {
+          if (binding.origin !== 'local') continue;
+          definitions.set(binding.def.nodeId, binding.def);
+          const ref = scope.typeBindings.get(name);
+          if (
+            ref !== undefined &&
+            !(ref.source === 'return-annotation' && ref.bindingRange !== undefined)
+          )
+            owners.set(binding.def.nodeId, { scope, name });
+        }
+      }
+    }
+    for (const def of definitions.values()) {
+      const position = definitionIdPosition(def.nodeId, def.filePath);
+      if (position === undefined) continue;
+      const owner = returnsByDeclaration.get(
+        `${def.filePath}\0${position.line}:${position.column}`,
+      );
+      if (owner !== undefined && owner !== null) owners.set(def.nodeId, owner);
+    }
+    typeFactOwners.set(scopes, owners);
+  }
+  const owner = owners.get(defId);
+  return owner?.scope.typeBindings.get(owner.name);
+}
 
 /**
  * Max chain depth for the post-finalize re-follow. Effective end-to-end
@@ -76,16 +132,28 @@ export function followChainPostFinalize(
   const moduleScopeId = moduleScopeIdOf(fromScopeId, scopes);
   for (let depth = 0; depth < RECHAIN_MAX_DEPTH; depth++) {
     if (current.rawName.includes('.')) return current;
-    let scopeId: ScopeId | null = fromScopeId;
-    let next: TypeRef | undefined;
-    while (scopeId !== null) {
-      const scope = scopes.scopeTree.getScope(scopeId);
-      if (scope === undefined) break;
-      next = scope.typeBindings.get(current.rawName);
-      if (next !== undefined && next !== current) break;
-      next = undefined;
-      scopeId = scope.parent;
+    const lookupScope = current.declaredAtScope ?? fromScopeId;
+    const claim = lookupNameClaim(lookupScope, current.rawName, scopes, {
+      position: current.lookupPosition,
+      purpose: current.lookupPurpose,
+    });
+    let next = claim.typeBinding;
+    if (next === undefined || claim.bindings.some((binding) => binding.origin !== 'local')) {
+      const candidates = new Map<string, TypeRef>();
+      for (const binding of claim.bindings) {
+        const producer = producerTypeRef(binding.def.nodeId, scopes);
+        if (producer !== undefined) candidates.set(binding.def.nodeId, producer);
+      }
+      if (candidates.size > 1) return current;
+      if (candidates.size === 1) next = candidates.values().next().value;
     }
+    if (claim.status !== 'absent' && next === undefined) return current;
+    if (claim.status === 'absent')
+      next = findReceiverTypeBinding(lookupScope, current.rawName, scopes, {
+        position: current.lookupPosition,
+        purpose: current.lookupPurpose,
+      });
+    if (next === current) next = undefined;
     // Scope-independent fallbacks (#1871), mirroring findReceiverTypeBinding's
     // precedence: named namespaces accessible from this file
     // (`namespaceTypeBindings`, gated by accessibility) first — they lived in the
@@ -93,18 +161,18 @@ export function followChainPostFinalize(
     // global/default namespace (`workspaceTypeBindings`, visible everywhere).
     // Both live in shared channels rather than each Scope.typeBindings to avoid
     // the O(files × names) blow-up.
-    if (next === undefined) {
+    if (next === undefined && claim.status === 'absent') {
       const nsHit = namespaceTypeBindingFor(moduleScopeId, current.rawName, scopes);
       if (nsHit !== undefined && nsHit !== current) next = nsHit;
     }
-    if (next === undefined) {
+    if (next === undefined && claim.status === 'absent') {
       const ws = scopes.workspaceTypeBindings?.get(current.rawName);
       if (ws !== undefined && ws !== current) next = ws;
     }
     if (next === undefined) return current;
     if (visited.has(next.rawName)) return current;
     visited.add(next.rawName);
-    current = next;
+    current = { ...next, bindingRange: start.bindingRange };
   }
   return current;
 }
