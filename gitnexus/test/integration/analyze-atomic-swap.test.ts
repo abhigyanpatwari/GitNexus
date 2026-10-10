@@ -68,6 +68,7 @@ import {
   runFullAnalysis,
 } from '../../src/core/run-analyze.js';
 import { getStoragePaths, loadMeta, readRegistry } from '../../src/storage/repo-manager.js';
+import { executeQuery } from '../../src/core/lbug/lbug-adapter.js';
 import {
   initLbug as poolInit,
   executeQuery as poolQuery,
@@ -173,6 +174,89 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
       // published it, so the live index is byte-for-byte untouched.
       expect(await identity(lbugPath)).toBe(before);
     } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  // Commit a replacement graph, then force a rebuild whose staged load loses
+  // every relationship, and assert the collapse guard rejects it unpublished.
+  const expectCollapsedRebuildRejected = async (repo: string) => {
+    const { lbugPath } = getStoragePaths(repo);
+    const oldRegistry = await readRegistry();
+    await fs.writeFile(
+      path.join(repo, 'a.ts'),
+      'export function replacement() { return "new graph"; }\n',
+    );
+    execSync('git -c user.name=t -c user.email=t@t commit -am replacement', {
+      cwd: repo,
+      stdio: 'pipe',
+    });
+    ctx.loadMock.mockImplementationOnce(
+      async (...args: Parameters<LbugAdapter['loadGraphToLbug']>) => {
+        const result = await ctx.realLoad!(...args);
+        // Keep real nodes and a measurable DB, but lose every relationship
+        // after the load so the actual collapse guard must reject it.
+        await executeQuery('MATCH ()-[r:CodeRelation]->() DELETE r');
+        return result;
+      },
+    );
+
+    const failure = await runFullAnalysis(repo, { force: true }, { onProgress: () => {} }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toMatchObject({
+      message: expect.stringMatching(/produced [1-9]\d* relationships but only 0/),
+    });
+    expect(failure).toMatchObject({
+      message: expect.stringContaining('GITNEXUS_LBUG_BUFFER_POOL_SIZE'),
+    });
+    expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(false);
+    expect(await lingeringTemp(lbugPath)).toEqual([]);
+    expect(await readRegistry()).toEqual(oldRegistry);
+  };
+
+  it('rejects a collapsed first-time staged graph before publication', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const { lbugPath, storagePath } = getStoragePaths(repo);
+    try {
+      await expectCollapsedRebuildRejected(repo);
+      await expect(fs.stat(lbugPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      // Storage setup may leave its empty metadata shell, but no analysis
+      // commit or completed graph statistics may be published.
+      const failedMeta = await loadMeta(storagePath);
+      expect(failedMeta?.lastCommit).toBe('');
+      expect(failedMeta?.stats).toBeUndefined();
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('rejects a collapsed rebuild and keeps the previous index readable', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const repoId = 'atomic-collapse-existing';
+    const { lbugPath, storagePath } = getStoragePaths(repo);
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const oldGraph = await fs.readFile(lbugPath);
+      const oldMeta = await loadMeta(storagePath);
+
+      await expectCollapsedRebuildRejected(repo);
+
+      expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(true);
+      expect(await loadMeta(storagePath)).toMatchObject({
+        lastCommit: oldMeta!.lastCommit,
+        indexedAt: oldMeta!.indexedAt,
+      });
+      await poolInit(repoId, lbugPath);
+      const names = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
+        (row) => Object.values(row as Record<string, unknown>).map(String),
+      );
+      expect(names.sort()).toEqual(['caller', 'greet']);
+      const edges = await poolQuery(repoId, 'MATCH ()-[r:CodeRelation]->() RETURN count(r) AS n');
+      expect(Number((edges[0] as Record<string, unknown>).n)).toBeGreaterThan(0);
+    } finally {
+      await poolClose(repoId);
       await cleanup();
     }
   }, 180_000);
