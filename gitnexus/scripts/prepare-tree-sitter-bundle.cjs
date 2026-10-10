@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Prepare the tested native parser bundle for npm pack/publish.
+ * Prepare the tested native parser dependencies for installation and publication.
  *
  * A dependency's npm overrides do not apply in a consumer project. Several
  * ABI-compatible grammars still advertise older runtime peers, so bundling
@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const RUNTIME = '0.25.1';
+// Upstream metadata is an input to validate, never the peer range we ship.
 const AUDITED_PEERS = new Map([
   ['tree-sitter-c@0.23.6', '^0.22.1'],
   ['tree-sitter-cpp@0.23.4', '^0.21.1'],
@@ -46,29 +47,50 @@ function prepareTreeSitterBundle(packageRoot = path.resolve(__dirname, '..')) {
   }
 
   const patches = [];
+  const visited = new Set();
   function visit(modules) {
     if (!fs.existsSync(modules)) return;
+    modules = fs.realpathSync(modules);
+    if (visited.has(modules)) return;
+    visited.add(modules);
     for (const entry of fs.readdirSync(modules, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      if (entry.name.startsWith('.')) continue;
       const dir = path.join(modules, entry.name);
+      if (
+        !entry.isDirectory() &&
+        (!entry.isSymbolicLink() || !fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory())
+      ) {
+        continue;
+      }
       if (entry.name.startsWith('@')) {
         visit(dir);
         continue;
       }
-      const file = path.join(dir, 'package.json');
+      const realDir = fs.realpathSync(dir);
+      if (visited.has(realDir)) continue;
+      visited.add(realDir);
+      const file = path.join(realDir, 'package.json');
       if (fs.existsSync(file)) {
         const pkg = readJson(file);
         const original = AUDITED_PEERS.get(`${pkg.name}@${pkg.version}`);
         if (original) {
-          const peer = `${original} || ${RUNTIME}`;
-          if (![original, peer].includes(pkg.peerDependencies?.['tree-sitter'])) {
+          // Also accept bundles prepared before peers were pinned exactly, so
+          // an existing checkout can migrate through ordinary npm install.
+          const accepted = [original, `${original} || ${RUNTIME}`, RUNTIME];
+          if (!accepted.includes(pkg.peerDependencies?.['tree-sitter'])) {
             throw new Error(`Unexpected tree-sitter peer metadata for ${pkg.name}@${pkg.version}`);
           }
-          pkg.peerDependencies['tree-sitter'] = peer;
+          pkg.peerDependencies['tree-sitter'] = RUNTIME;
           patches.push({ file, pkg });
         }
       }
-      visit(path.join(dir, 'node_modules'));
+      visit(path.join(realDir, 'node_modules'));
+      // pnpm links packages into node_modules but places their dependencies
+      // beside the real package. Follow that container without traversing the
+      // entire virtual store; realpaths deduplicate aliases and break cycles.
+      let parent = path.dirname(realDir);
+      if (path.basename(parent).startsWith('@')) parent = path.dirname(parent);
+      if (path.basename(parent) === 'node_modules') visit(parent);
     }
   }
   visit(modulesRoot);
