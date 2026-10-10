@@ -273,7 +273,7 @@ withTestLbugDB(
       );
 
       it.each([undefined, null, 0, -1, NaN, Infinity, 1.5, '2', '<invalid>', {}, true])(
-        'does not infer truncation from malformed or nonpositive omittedNames=%j',
+        'does not infer truncation from malformed or nonpositive omittedNames=%s',
         async (omittedNames) => {
           vi.mocked(loadMeta).mockResolvedValue({
             scopeExtractionReceipt: 1,
