@@ -253,6 +253,7 @@ export async function executeRenamePlan(
   const landed: FileChange[] = [];
   for (const change of changes) {
     const file = files.get(change.file_path)!;
+    let temporaryDirectory: string | undefined;
     try {
       // Recheck each destination immediately before its write. A concurrent edit
       // after an earlier write is a partial operation, never a successful rename.
@@ -265,7 +266,25 @@ export async function executeRenamePlan(
           `Source changed before writing ${change.file_path}.`,
         );
       }
-      await fs.writeFile(file.absolute, file.output, 'utf8');
+      // A rejected in-place write may already have truncated the source. Finish
+      // a replacement beside the destination before installing it atomically.
+      const { mode } = await fs.stat(file.real);
+      temporaryDirectory = await fs.mkdtemp(
+        path.join(path.dirname(file.real), '.gitnexus-rename-'),
+      );
+      const replacement = path.join(temporaryDirectory, 'replacement');
+      await fs.writeFile(replacement, file.output, 'utf8');
+      await fs.chmod(replacement, mode);
+      if (
+        (await checkedRealPath(repoPath, change.file_path)) !== file.real ||
+        !(await fs.readFile(file.absolute)).equals(Buffer.from(file.snapshot, 'utf8'))
+      ) {
+        throw new RenameFailure(
+          'source_changed',
+          `Source changed before replacing ${change.file_path}.`,
+        );
+      }
+      await fs.rename(replacement, file.real);
       landed.push(change);
     } catch (error) {
       return {
@@ -278,6 +297,10 @@ export async function executeRenamePlan(
         error: `${error instanceof Error ? error.message : String(error)} Check failed files before retrying; writes are not transactional.`,
         failed_files: changes.slice(landed.length).map((c) => c.file_path),
       };
+    } finally {
+      // Cleanup must not turn an installed replacement into a reported failure.
+      if (temporaryDirectory)
+        await fs.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => {});
     }
   }
   return {

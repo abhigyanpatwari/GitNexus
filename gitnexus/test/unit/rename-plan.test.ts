@@ -149,7 +149,10 @@ describe('exact rename plan application', () => {
     const original = fs.writeFile.bind(fs);
     let calls = 0;
     vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
-      if (calls++ === failAt) throw new Error('disk full');
+      if (calls++ === failAt) {
+        await original(args[0], String(args[1]).slice(0, 3), args[2]);
+        throw new Error('disk full');
+      }
       return original(...args);
     });
     const result = await executeRenamePlan(root, p, false);
@@ -165,14 +168,16 @@ describe('exact rename plan application', () => {
       failAt ? 'finish()' : 'close()',
     );
     expect(await fs.readFile(path.join(root, 'b.ts'), 'utf8')).toBe('close()');
+    expect((await fs.readdir(root)).sort()).toEqual(['a.ts', 'b.ts']);
   });
 
   it('reports a race after an earlier write as partial', async () => {
     const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()' });
-    const original = fs.writeFile.bind(fs);
-    vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+    const original = fs.rename.bind(fs);
+    vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
       await original(...args);
-      if (String(args[0]).endsWith('a.ts')) await original(path.join(root, 'b.ts'), 'user edit');
+      if (String(args[1]).endsWith('a.ts'))
+        await fs.writeFile(path.join(root, 'b.ts'), 'user edit');
     });
     expect(await executeRenamePlan(root, p, false)).toMatchObject({
       status: 'partial',
@@ -181,5 +186,30 @@ describe('exact rename plan application', () => {
       failed_files: ['b.ts'],
     });
     expect(await fs.readFile(path.join(root, 'b.ts'), 'utf8')).toBe('user edit');
+  });
+
+  it('blocks a destination changed while staging its replacement', async () => {
+    const p = await plan({ 'a.ts': 'close()' });
+    const original = fs.writeFile.bind(fs);
+    vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+      await original(...args);
+      await original(path.join(root, 'a.ts'), 'user edit');
+    });
+    expect(await executeRenamePlan(root, p, false)).toMatchObject({
+      status: 'partial',
+      applied: false,
+      code: 'source_changed',
+      total_edits: 0,
+    });
+    expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe('user edit');
+    expect(await fs.readdir(root)).toEqual(['a.ts']);
+  });
+
+  it('preserves the destination mode after replacement', async () => {
+    const p = await plan({ 'a.ts': 'close()' });
+    await fs.chmod(path.join(root, 'a.ts'), 0o750);
+    const mode = (await fs.stat(path.join(root, 'a.ts'))).mode;
+    expect(await executeRenamePlan(root, p, false)).toMatchObject({ applied: true });
+    expect((await fs.stat(path.join(root, 'a.ts'))).mode).toBe(mode);
   });
 });

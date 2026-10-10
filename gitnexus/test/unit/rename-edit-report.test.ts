@@ -158,10 +158,10 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
   });
 
   it('reports only the files and occurrences whose writes landed', async () => {
-    const originalWrite = fsPromises.writeFile.bind(fsPromises);
-    vi.spyOn(fsPromises, 'writeFile').mockImplementation(async (file, ...args: any[]) => {
-      if (String(file).endsWith(`${path.sep}writer.ts`)) throw new Error('EACCES');
-      return (originalWrite as any)(file, ...args);
+    const originalRename = fsPromises.rename.bind(fsPromises);
+    vi.spyOn(fsPromises, 'rename').mockImplementation(async (source, destination) => {
+      if (String(destination).endsWith(`${path.sep}writer.ts`)) throw new Error('EACCES');
+      return originalRename(source, destination);
     });
     const result = await callRename(stubbedBackend(), tmpDir, { dry_run: false });
     expect(result).toMatchObject({
