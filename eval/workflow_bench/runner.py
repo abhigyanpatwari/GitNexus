@@ -491,7 +491,7 @@ def run_arm(
         "require_pid_namespace": getattr(sandbox, "require_pid_namespace", True),
         "settings_json": sandbox.settings_json,
         "strict_mcp_config": True,
-        "mcp_config_json": host_text(sandbox_mcp_config()),
+        "mcp_config_json": host_text(sandbox_mcp_config(unsafe_host=backend == "host-unsafe")),
         "transcript_projects": sandbox.transcript_projects,
         "transcript_cwd": Path(SANDBOX_WORKSPACE),
         "transcript_wait_seconds": 5,

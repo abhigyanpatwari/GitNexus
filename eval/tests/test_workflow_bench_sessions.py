@@ -312,11 +312,8 @@ def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, t
     ]
     assert "Write" in review_tools
     assert "Edit" not in review_tools
-    assert implementation == [
-        *runner.BUILTIN_AGENT_TOOLS,
-        *runner.GITNEXUS_READ_ONLY_TOOLS,
-        *runner.GITNEXUS_MUTATING_TOOLS,
-    ]
+    assert implementation == read_only
+    assert not (set(runner.GITNEXUS_MUTATING_TOOLS) & set(implementation))
     assert no_mcp == list(runner.BUILTIN_AGENT_TOOLS)
     assert not any(tool.startswith("mcp__") for tool in no_mcp)
 
@@ -537,9 +534,13 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
 
     assert runner.SANDBOX_GITNEXUS_ENTRYPOINT in command_line
     assert not any(value.startswith("/workspace/") for value in command_line)
-    assert f"GITNEXUS_HOME={runner.SANDBOX_GITNEXUS_REGISTRY}" in command_line
-    assert "GITNEXUS_MCP_ALLOWED_REPOS=/workspace" in command_line
-    assert "GITNEXUS_MCP_DEFAULT_REPO=/workspace" in command_line
+    for key, value in (
+        ("GITNEXUS_HOME", runner.SANDBOX_GITNEXUS_REGISTRY),
+        ("GITNEXUS_MCP_ALLOWED_REPOS", "/workspace"),
+        ("GITNEXUS_MCP_DEFAULT_REPO", "/workspace"),
+    ):
+        index = command_line.index(key)
+        assert command_line[index - 1:index + 2] == ["--setenv", key, value]
     mounts = runner.trusted_gitnexus_runtime_mounts()
     assert [(mount.source, mount.target) for mount in mounts] == [
         (runtime / "dist", f"{runner.SANDBOX_GITNEXUS}/dist"),

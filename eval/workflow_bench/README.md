@@ -196,6 +196,15 @@ MCP configuration. Bash children do
 not inherit the model credential and their network sandbox denies all
 domains.
 
+The candidate MCP server runs in a separate nested Bubblewrap boundary. Its
+workspace (including the graph), registry, compiled runtime and shared package
+mounts are read-only. Its home and temporary directories are private tmpfs,
+and it has a fresh PID namespace and `/proc`, no network or capabilities, and
+no model credentials or agent state. MCP startup and tool handlers therefore
+cannot write patches that would be credited to the agent; the agent retains
+its writable workspace for implementation tasks. Mutating MCP tools are not
+granted in any phase.
+
 Prebuilt task `.gitnexus` assets are rejected. For each task commit, the
 harness creates the deterministic parentless snapshot first, removes every
 analyzer-visible path or stored source reference to the benchmark harness,

@@ -40,6 +40,7 @@ SANDBOX_PYTHON3 = "/opt/claude/python3"
 SANDBOX_GITNEXUS_CLI = "/opt/claude/gitnexus"
 SANDBOX_GIT_EXCLUDES = "/opt/claude/git-excludes"
 SANDBOX_NODE = "/opt/claude/node"
+SANDBOX_BWRAP = "/opt/claude/bwrap"
 SANDBOX_NODE_PREFIX = "/opt/claude/nodejs"
 # Vite transpiles a TypeScript config into <node_modules>/.vite-temp before it
 # loads anything, so a read-only dependency mount makes `vitest` die with EROFS
@@ -714,6 +715,49 @@ def bwrap_base_args(*, unshare_network: bool = False, cap_drop_all: bool = False
     ]
 
 
+def mcp_sandbox_prefix() -> list[str]:
+    """Confine candidate MCP code inside an already-contained agent session.
+
+    Sources are paths in the outer namespace, never host paths. Only code,
+    graph and repository reads cross this boundary; agent state and writable
+    mounts stay outside it. Clear credentials before even launching Bubblewrap.
+    """
+
+    args = [
+        "/usr/bin/env", "-i", SANDBOX_BWRAP,
+        "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+        "--unshare-net", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
+    ]
+    for path in ("/usr", "/bin", "/lib", "/lib64", "/etc/ssl", "/etc/hosts",
+                 "/etc/resolv.conf", "/etc/nsswitch.conf", "/etc/passwd", "/etc/group"):
+        args += ["--ro-bind-try", path, path]
+    for path in (SANDBOX_WORKSPACE, SANDBOX_GITNEXUS, SANDBOX_NODE):
+        args += ["--ro-bind", path, path]
+    # Minimal canaries and runtimes without shared packages need not supply
+    # these mounts. Missing optional paths must not weaken required binds.
+    for path in (SANDBOX_GITNEXUS_SHARED, SANDBOX_GITNEXUS_REGISTRY, SANDBOX_NODE_PREFIX):
+        args += ["--ro-bind-try", path, path]
+    args += [
+        "--proc", "/proc", "--dev", "/dev",
+        "--tmpfs", "/run", "--tmpfs", SANDBOX_TMP,
+        "--tmpfs", "/home", "--dir", SANDBOX_HOME,
+        "--clearenv",
+    ]
+    environment = {
+        "HOME": SANDBOX_HOME,
+        "TMPDIR": SANDBOX_TMP,
+        "GITNEXUS_HOME": SANDBOX_GITNEXUS_REGISTRY,
+        "GITNEXUS_MCP_ALLOWED_REPOS": SANDBOX_WORKSPACE,
+        "GITNEXUS_MCP_DEFAULT_REPO": SANDBOX_WORKSPACE,
+        "PATH": f"{SANDBOX_NODE_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    for key, value in environment.items():
+        args += ["--setenv", key, value]
+    return [*args, "--chdir", SANDBOX_WORKSPACE, "--"]
+
+
 def _create_shell_prefix_wrapper(private_root: Path, *, gitnexus_available: bool = True) -> Path:
     """Create Claude's immutable clean-environment command adapter."""
 
@@ -1229,6 +1273,11 @@ def prepare_sandbox(
             baseline_mounts = baseline_gitnexus_mounts(clone, private_root)
         protected_mounts = (
             *read_only_mounts,
+            *(
+                (ReadOnlyMount(source=bwrap, target=SANDBOX_BWRAP),)
+                if backend == "bwrap" and gitnexus_available
+                else ()
+            ),
             ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
             ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
             ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
