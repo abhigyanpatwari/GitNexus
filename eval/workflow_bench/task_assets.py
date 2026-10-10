@@ -35,21 +35,17 @@ from .proposer_sandbox import (
     real_directory,
 )
 
-# The shipped index is roughly 428 MiB.  These are containment limits rather
-# than expected-size assertions: they admit normal growth while preventing a
-# task declaration from turning snapshot preparation into an unbounded walk.
+# These are containment limits rather than expected-size assertions: they
+# prevent a task declaration from turning snapshot preparation into an
+# unbounded walk.
 MAX_TASK_ASSET_ENTRIES = 100_000
 MAX_TASK_ASSET_PATH_BYTES = 4_096
 MAX_TASK_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 
-# The largest known real sandbox_copy asset in this harness is the shipped
-# index above (~428 MiB estimated, ~290 MiB measured); budget comfortably
-# above that so it can still materialize via buffered copy on a filesystem
-# that cannot reflink (ext4 CI runners, 9p-backed dev mounts), while staying
-# well below MAX_TASK_ASSET_BYTES so a genuinely oversized or malformed
-# declaration still fails closed instead of silently paying for a slow full
-# copy.
-MAX_BUFFERED_FALLBACK_BYTES = 512 * 1024 * 1024
+# Every accepted snapshot must also be materializable on filesystems without
+# reflinks. Use the existing hard capture ceiling, so buffered copies stay
+# bounded without imposing a filesystem-dependent acceptance limit.
+MAX_BUFFERED_FALLBACK_BYTES = MAX_TASK_ASSET_BYTES
 COPY_CHUNK_BYTES = 1024 * 1024
 
 # linux/fs.h: #define FICLONE _IOW(0x94, 9, int)
