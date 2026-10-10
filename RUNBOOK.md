@@ -185,6 +185,30 @@ Orchestrator: `.github/workflows/ci.yml`.
 
 Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`). If you still OOM on huge repos, close other processes, avoid `--embeddings` for a first pass, or analyze a smaller path if supported by your workflow.
 
+`Unable to allocate memory` / `The buffer pool is full` during graph writes
+refers to LadybugDB's native buffer pool. Increasing `NODE_OPTIONS`,
+`--memory-budget`, or worker heap limits does not resize that pool. Recognized
+pool exhaustion aborts analysis instead of retrying with row skipping.
+
+If the host has enough memory, set an explicit pool size in **bytes**, then
+rebuild. For example, 3 GiB is `3221225472` bytes:
+
+```bash
+GITNEXUS_LBUG_BUFFER_POOL_SIZE=3221225472 npx gitnexus analyze --force
+```
+
+The override bypasses automatic pool sizing. Budget for the Node heap, parse
+workers, other native allocations, and the OS alongside it; a larger pool can
+exhaust the host. `GITNEXUS_LBUG_BUFFER_POOL_SIZE=0` restores LadybugDB's native
+80%-of-RAM default, not an unlimited supply of memory. If memory is insufficient,
+exclude generated/vendor directories or use a larger host.
+
+A measured graph-write collapse aborts a staged build before publication,
+leaving the previous index, if any, intact. An in-place run cannot roll back:
+it records `graph-write-collapsed` and exits nonzero. Rebuild a previously
+collapsed index with `--force` after addressing memory, disk space, or the
+reported COPY error; do not rely on its incomplete query results.
+
 ---
 
 ## LadybugDB / lock errors

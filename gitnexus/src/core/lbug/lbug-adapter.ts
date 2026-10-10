@@ -1099,12 +1099,19 @@ const doInitLbug = async (
 
 export type LbugProgressCallback = (message: string) => void;
 
+const throwIfBufferPoolExhausted = (error: unknown, context?: string): void => {
+  const message = error instanceof Error ? error.message : String(error);
+  const remedy = bufferPoolExhaustionRemedy(message);
+  if (remedy) throw new Error(`${context ?? message} ${remedy}`, { cause: error });
+};
+
 /**
  * Run a COPY, retrying once with IGNORE_ERRORS=true (which skips row-level
- * errors) on first failure. Log the original failure and native COPY/warning
- * receipts even when the retry succeeds. Node COPY requires every row; a
- * skipped-node receipt is a failure. Call sites retain their own message
- * limits and relationship fallback policy.
+ * errors) on a non-resource first failure. Buffer exhaustion is fatal, including
+ * retained retry warnings, and bypasses the recoverable-error callback. Log the
+ * original failure and native COPY/warning receipts even when the retry succeeds.
+ * Node COPY requires every row; a skipped-node receipt is a failure. Call sites
+ * retain their own message limits and relationship fallback policy.
  */
 const copyCsvWithRetry = async (
   targetConn: lbug.Connection,
@@ -1115,6 +1122,7 @@ const copyCsvWithRetry = async (
   try {
     await queryAndDrain(targetConn, copyQuery);
   } catch (firstError) {
+    throwIfBufferPoolExhausted(firstError);
     logger.warn(
       { err: firstError, copyQuery },
       'First COPY failure; retrying with IGNORE_ERRORS=true',
@@ -1157,6 +1165,13 @@ const copyCsvWithRetry = async (
           },
           'COPY retry completed; retained warnings describe skipped rows (a lower bound)',
         );
+        // Inspect every retained warning, not just the diagnostic samples.
+        // Exhaustion cannot be recovered by discarding rows or replaying a
+        // partially committed relationship COPY through the fallback path.
+        const resourceWarning = warnings.find((warning) =>
+          bufferPoolExhaustionRemedy(String(warning.message ?? '')),
+        );
+        if (resourceWarning) throw new Error(String(resourceWarning.message));
         if (expectedRows !== undefined && (copiedRows !== expectedRows || warnings.length > 0)) {
           throw new Error(
             `COPY retry skipped rows or could not verify a complete node load ` +
@@ -1168,8 +1183,10 @@ const copyCsvWithRetry = async (
     } catch (retryErr) {
       const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
       const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      const message = `COPY retry failed: ${retryMessage}; first failure: ${firstMessage}`;
+      throwIfBufferPoolExhausted(retryErr, message);
       onError(
-        new Error(`COPY retry failed: ${retryMessage}; first failure: ${firstMessage}`, {
+        new Error(message, {
           cause: retryErr,
         }),
       );
@@ -1247,14 +1264,7 @@ const copyNodeCSVs = async (
       copyQuery,
       (retryErr) => {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        // Pool exhaustion gets a remedy (#2631): the raw binder text gives the
-        // operator nothing to act on, and on non-4K-page hosts (Ascend aarch64,
-        // Apple Silicon) the pool bills up to pageSize/4KiB x faster than the
-        // sizing was calibrated for — name the knob and the mechanism.
-        const remedy = bufferPoolExhaustionRemedy(retryMsg);
-        throw new Error(
-          `COPY failed for ${table}: ${retryMsg.slice(0, 200)}${remedy ? ` ${remedy}` : ''}`,
-        );
+        throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
       },
       rows,
     );
@@ -1454,7 +1464,6 @@ export const loadGraphToLbug = async (
 
   const insertedRels = totalValidRels + (graphEmitManifest?.totalRows ?? 0);
   const warnings: string[] = [];
-  let poolRemedyIssued = false;
   if (insertedRels > 0) {
     log(`Loading edges: ${insertedRels.toLocaleString()} across ${copyJobs.length} CSV files`);
 
@@ -1487,17 +1496,6 @@ export const loadGraphToLbug = async (
       await copyCsvWithRetry(writeConn, copyQuery, (retryErr) => {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
-        // One remedy per bulk load, not per pair (#2631): pool exhaustion
-        // repeats for every remaining pair once it starts. logger.warn, not
-        // just warnings.push — the returned warnings array has no consumer at
-        // any call site, so a push alone would leave the remedy invisible
-        // while the row-by-row fallback quietly degrades the load.
-        const remedy = poolRemedyIssued ? undefined : bufferPoolExhaustionRemedy(retryMsg);
-        if (remedy) {
-          poolRemedyIssued = true;
-          warnings.push(remedy);
-          logger.warn(remedy);
-        }
         failedPairEdges += rows;
         failedPairCsvPaths.add(pairCsvPath);
       });
@@ -1696,8 +1694,9 @@ export const fallbackRelationshipInserts = async (
         CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(relType)}, confidence: ${confidence}, reason: ${formatCypherValue(reason)}, step: ${step}, staticGated: ${staticGated}}]->(b)
       `,
       );
-    } catch {
-      // skip
+    } catch (error) {
+      throwIfBufferPoolExhausted(error);
+      // Ordinary per-row failures remain skippable.
     }
   }
 };
