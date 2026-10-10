@@ -47,16 +47,29 @@ function prepareTreeSitterBundle(packageRoot = path.resolve(__dirname, '..')) {
   }
 
   const patches = [];
+  const visited = new Set();
   function visit(modules) {
     if (!fs.existsSync(modules)) return;
+    modules = fs.realpathSync(modules);
+    if (visited.has(modules)) return;
+    visited.add(modules);
     for (const entry of fs.readdirSync(modules, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      if (entry.name.startsWith('.')) continue;
       const dir = path.join(modules, entry.name);
+      if (
+        !entry.isDirectory() &&
+        (!entry.isSymbolicLink() || !fs.statSync(dir, { throwIfNoEntry: false })?.isDirectory())
+      ) {
+        continue;
+      }
       if (entry.name.startsWith('@')) {
         visit(dir);
         continue;
       }
-      const file = path.join(dir, 'package.json');
+      const realDir = fs.realpathSync(dir);
+      if (visited.has(realDir)) continue;
+      visited.add(realDir);
+      const file = path.join(realDir, 'package.json');
       if (fs.existsSync(file)) {
         const pkg = readJson(file);
         const original = AUDITED_PEERS.get(`${pkg.name}@${pkg.version}`);
@@ -71,7 +84,13 @@ function prepareTreeSitterBundle(packageRoot = path.resolve(__dirname, '..')) {
           patches.push({ file, pkg });
         }
       }
-      visit(path.join(dir, 'node_modules'));
+      visit(path.join(realDir, 'node_modules'));
+      // pnpm links packages into node_modules but places their dependencies
+      // beside the real package. Follow that container without traversing the
+      // entire virtual store; realpaths deduplicate aliases and break cycles.
+      let parent = path.dirname(realDir);
+      if (path.basename(parent).startsWith('@')) parent = path.dirname(parent);
+      if (path.basename(parent) === 'node_modules') visit(parent);
     }
   }
   visit(modulesRoot);
