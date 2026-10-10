@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shlex
 import shutil
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -467,6 +469,10 @@ def _prepare_untracked_for_diff(sandbox: SandboxSession) -> None:
     _sandbox_git(sandbox, ["add", "--intent-to-add", "-A"])
 
 
+def _synthetic_guidance_exclusions(sandbox: SandboxSession) -> list[str]:
+    return [f":(exclude,literal){path}" for path in sandbox.synthetic_guidance_paths]
+
+
 def implementation_diff_digest(
     sandbox: SandboxSession,
     orig_sha: str,
@@ -479,10 +485,11 @@ def implementation_diff_digest(
         raise ValueError(f"unsafe git object id: {orig_sha!r}")
     if prepare_untracked:
         _prepare_untracked_for_diff(sandbox)
+    exclusions = " ".join(shlex.quote(path) for path in _synthetic_guidance_exclusions(sandbox))
     command = (
         "/usr/bin/git -c core.fsmonitor=false diff --no-ext-diff --no-textconv --binary "
         f"{orig_sha} -- . ':(exclude)docs/plans' ':(exclude).claude/skills' "
-        "| /usr/bin/sha256sum"
+        f"{exclusions} | /usr/bin/sha256sum"
     )
     result = sandbox.run(
         ["/bin/sh", "-c", command],
@@ -519,6 +526,7 @@ def diff_churn(
             ".",
             ":(exclude)docs/plans",
             ":(exclude).claude/skills",
+            *_synthetic_guidance_exclusions(sandbox),
         ],
     )
     return parse_shortstat(output)
@@ -595,11 +603,32 @@ if returncode:
         "--",
         ".",
         ":(exclude).wfbench-artifact-*",
+        *_synthetic_guidance_exclusions(sandbox),
     ]
-    result = sandbox.run(command, timeout=60, env=build_sandbox_environment())
-    if not result.ok:
-        raise ManagedProcessError(command, result)
-    return _bounded_regular_bytes(patch, limit=MAX_PATCH_BYTES)
+    primary: BaseException | None = None
+    try:
+        result = sandbox.run(command, timeout=60, env=build_sandbox_environment())
+        if not result.ok:
+            raise ManagedProcessError(command, result)
+        return _bounded_regular_bytes(patch, limit=MAX_PATCH_BYTES)
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        # The returned bytes are the evidence; this temporary sink must not
+        # become an agent edit in later Git diffs or repeated captures.
+        try:
+            shutil.rmtree(artifact_dir)
+        except OSError as cleanup:
+            # A failed removal must neither discard the patch already read nor
+            # replace the real failure. The leftover directory is excluded from
+            # the patch pathspec above and dies with the disposable clone, so
+            # it cannot corrupt the evidence; still report it rather than hide it.
+            detail = f"patch artifact cleanup failed: {artifact_dir}: {type(cleanup).__name__}: {cleanup}"
+            if primary is not None:
+                primary.add_note(detail)
+            else:
+                print(f"warning: {detail}", file=sys.stderr, flush=True)
 
 
 def enforce_work_evidence(

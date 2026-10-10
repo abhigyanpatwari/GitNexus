@@ -366,7 +366,11 @@ function median(xs) {
 }
 
 function timeEmit(emit, src, file, reps) {
-  emit(src, `warmup-${file}`); // warm parser/query JIT (not counted)
+  // Stabilize parser/query JIT before collecting each size's samples.
+  // Keep sizes in separate batches so large allocations cannot bias small runs.
+  for (let i = 0; i < WARMUP_REPS; i++) {
+    emit(src, `warmup-${file}`);
+  }
   const samples = [];
   let count = 0;
   for (let i = 0; i < reps; i++) {
@@ -380,7 +384,8 @@ function timeEmit(emit, src, file, reps) {
 
 const SMALL = 250;
 const LARGE = 800;
-const REPS = 7;
+const WARMUP_REPS = 7;
+const REPS = 21;
 
 function measureLang(lang) {
   // Correctness fingerprint over the fixture corpus + a fixed 20-entity source.
@@ -389,7 +394,8 @@ function measureLang(lang) {
   const fixtures =
     lang.fixturePrefix === undefined ? [] : collectFixtures(lang.fixturePrefix, lang.exts);
   for (const { key, absPath } of fixtures) {
-    const matches = lang.emit(fs.readFileSync(absPath, 'utf8'), absPath);
+    // Scope policies contain file identities; hash stable fixture paths.
+    const matches = lang.emit(fs.readFileSync(absPath, 'utf8'), key);
     groups += matches.length;
     perFixture.push(`${key}\t${matches.length}\t${digestCaptures(matches)}`);
   }
@@ -422,7 +428,13 @@ function measureLang(lang) {
 // ---- run ----
 
 const CHECK = process.argv.includes('--check');
-const results = LANGS.map(measureLang);
+const results = [];
+for (const lang of LANGS) {
+  results.push(measureLang(lang));
+  // Let native tree/node finalizers run between languages. Longer sampling
+  // otherwise retains their allocations for the entire synchronous batch.
+  await new Promise(setImmediate);
+}
 
 if (!CHECK) {
   for (const r of results) process.stdout.write(JSON.stringify(r) + '\n');

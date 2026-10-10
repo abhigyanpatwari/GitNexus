@@ -1,23 +1,5 @@
 [
   {
-    "type": "_declaration",
-    "named": true,
-    "subtypes": [
-      {
-        "type": "class_definition",
-        "named": true
-      },
-      {
-        "type": "enum_declaration",
-        "named": true
-      },
-      {
-        "type": "import_specification",
-        "named": true
-      }
-    ]
-  },
-  {
     "type": "_literal",
     "named": true,
     "subtypes": [
@@ -92,6 +74,10 @@
         "named": true
       },
       {
+        "type": "empty_statement",
+        "named": true
+      },
+      {
         "type": "expression_statement",
         "named": true
       },
@@ -101,6 +87,10 @@
       },
       {
         "type": "if_statement",
+        "named": true
+      },
+      {
+        "type": "labeled_statement",
         "named": true
       },
       {
@@ -184,6 +174,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -354,6 +348,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -577,6 +575,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -697,6 +699,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -856,6 +862,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -1071,6 +1081,10 @@
             "named": true
           },
           {
+            "type": "dot_shorthand",
+            "named": true
+          },
+          {
             "type": "equality_expression",
             "named": true
           },
@@ -1176,6 +1190,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -1299,6 +1317,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -1430,6 +1452,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -1550,6 +1576,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -1726,6 +1756,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -1886,6 +1920,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -2204,6 +2242,7 @@
   {
     "type": "comment",
     "named": true,
+    "extra": true,
     "fields": {}
   },
   {
@@ -2267,6 +2306,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -2396,6 +2439,10 @@
             "named": true
           },
           {
+            "type": "dot_shorthand",
+            "named": true
+          },
+          {
             "type": "equality_expression",
             "named": true
           },
@@ -2516,6 +2563,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -2671,6 +2722,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "function_type",
           "named": true
         },
@@ -2737,6 +2792,10 @@
           "named": true
         },
         {
+          "type": "arguments",
+          "named": true
+        },
+        {
           "type": "assignment_expression",
           "named": true
         },
@@ -2770,6 +2829,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -3062,6 +3125,10 @@
       "required": true,
       "types": [
         {
+          "type": "abstract",
+          "named": true
+        },
+        {
           "type": "const_builtin",
           "named": true
         },
@@ -3091,6 +3158,10 @@
         },
         {
           "type": "getter_signature",
+          "named": true
+        },
+        {
+          "type": "identifier",
           "named": true
         },
         {
@@ -3185,7 +3256,23 @@
   {
     "type": "documentation_comment",
     "named": true,
+    "extra": true,
     "fields": {}
+  },
+  {
+    "type": "dot_shorthand",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
   },
   {
     "type": "dotted_identifier_list",
@@ -3201,6 +3288,11 @@
         }
       ]
     }
+  },
+  {
+    "type": "empty_statement",
+    "named": true,
+    "fields": {}
   },
   {
     "type": "enum_body",
@@ -3364,6 +3456,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -3456,100 +3552,6 @@
     "fields": {}
   },
   {
-    "type": "explicit_constructor_invocation",
-    "named": true,
-    "fields": {
-      "arguments": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "arguments",
-            "named": true
-          }
-        ]
-      },
-      "constructor": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "super",
-            "named": true
-          },
-          {
-            "type": "this",
-            "named": true
-          }
-        ]
-      },
-      "object": {
-        "multiple": true,
-        "required": false,
-        "types": [
-          {
-            "type": "_literal",
-            "named": true
-          },
-          {
-            "type": "const_object_expression",
-            "named": true
-          },
-          {
-            "type": "constructor_tearoff",
-            "named": true
-          },
-          {
-            "type": "function_expression",
-            "named": true
-          },
-          {
-            "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "new_expression",
-            "named": true
-          },
-          {
-            "type": "parenthesized_expression",
-            "named": true
-          },
-          {
-            "type": "scoped_identifier",
-            "named": true
-          },
-          {
-            "type": "super",
-            "named": true
-          },
-          {
-            "type": "switch_expression",
-            "named": true
-          },
-          {
-            "type": "this",
-            "named": true
-          },
-          {
-            "type": "unconditional_assignable_selector",
-            "named": true
-          }
-        ]
-      },
-      "type_arguments": {
-        "multiple": false,
-        "required": false,
-        "types": [
-          {
-            "type": "type_arguments",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
     "type": "expression_statement",
     "named": true,
     "fields": {},
@@ -3595,6 +3597,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -3804,6 +3810,76 @@
     }
   },
   {
+    "type": "extension_type_declaration",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "class_body",
+            "named": true
+          }
+        ]
+      },
+      "interfaces": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "interfaces",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "representation": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "representation_declaration",
+            "named": true
+          }
+        ]
+      },
+      "type_parameters": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type_parameters",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "annotation",
+          "named": true
+        },
+        {
+          "type": "const_builtin",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "factory_constructor_signature",
     "named": true,
     "fields": {},
@@ -3844,6 +3920,10 @@
           "named": true
         },
         {
+          "type": "assignment_expression",
+          "named": true
+        },
+        {
           "type": "bitwise_and_expression",
           "named": true
         },
@@ -3869,6 +3949,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -3908,11 +3992,19 @@
           "named": true
         },
         {
+          "type": "pattern_assignment",
+          "named": true
+        },
+        {
           "type": "postfix_expression",
           "named": true
         },
         {
           "type": "relational_expression",
+          "named": true
+        },
+        {
+          "type": "rethrow_expression",
           "named": true
         },
         {
@@ -3933,6 +4025,10 @@
         },
         {
           "type": "this",
+          "named": true
+        },
+        {
+          "type": "throw_expression",
           "named": true
         },
         {
@@ -3983,6 +4079,10 @@
         "required": true,
         "types": [
           {
+            "type": "?",
+            "named": false
+          },
+          {
             "type": "_literal",
             "named": true
           },
@@ -4020,6 +4120,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -4193,6 +4297,10 @@
             "named": true
           },
           {
+            "type": "dot_shorthand",
+            "named": true
+          },
+          {
             "type": "equality_expression",
             "named": true
           },
@@ -4328,6 +4436,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -4483,6 +4595,10 @@
             "named": true
           },
           {
+            "type": "dot_shorthand",
+            "named": true
+          },
+          {
             "type": "equality_expression",
             "named": true
           },
@@ -4618,6 +4734,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -4765,6 +4885,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -5106,6 +5230,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -5280,6 +5408,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -5553,6 +5685,10 @@
         "required": false,
         "types": [
           {
+            "type": "?",
+            "named": false
+          },
+          {
             "type": "_literal",
             "named": true
           },
@@ -5590,6 +5726,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -5707,6 +5847,10 @@
         "required": true,
         "types": [
           {
+            "type": "?",
+            "named": false
+          },
+          {
             "type": "_literal",
             "named": true
           },
@@ -5744,6 +5888,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -5907,6 +6055,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -6089,6 +6241,10 @@
             "named": true
           },
           {
+            "type": "dot_shorthand",
+            "named": true
+          },
+          {
             "type": "equality_expression",
             "named": true
           },
@@ -6204,6 +6360,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -6365,6 +6525,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -6601,6 +6765,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -6746,6 +6914,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -6914,6 +7086,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -7165,6 +7341,25 @@
     }
   },
   {
+    "type": "labeled_statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_statement",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "lambda_expression",
     "named": true,
     "fields": {
@@ -7238,7 +7433,7 @@
     "fields": {},
     "children": {
       "multiple": true,
-      "required": true,
+      "required": false,
       "types": [
         {
           "type": "annotation",
@@ -7301,6 +7496,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -7464,6 +7663,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -7684,6 +7887,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -7813,6 +8020,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -7961,6 +8172,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -8315,6 +8530,26 @@
           "named": true
         },
         {
+          "type": "additive_expression",
+          "named": true
+        },
+        {
+          "type": "bitwise_and_expression",
+          "named": true
+        },
+        {
+          "type": "bitwise_or_expression",
+          "named": true
+        },
+        {
+          "type": "bitwise_xor_expression",
+          "named": true
+        },
+        {
+          "type": "conditional_expression",
+          "named": true
+        },
+        {
           "type": "const_object_expression",
           "named": true
         },
@@ -8323,11 +8558,35 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
+          "type": "equality_expression",
+          "named": true
+        },
+        {
           "type": "function_expression",
           "named": true
         },
         {
           "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "if_null_expression",
+          "named": true
+        },
+        {
+          "type": "logical_and_expression",
+          "named": true
+        },
+        {
+          "type": "logical_or_expression",
+          "named": true
+        },
+        {
+          "type": "multiplicative_expression",
           "named": true
         },
         {
@@ -8347,7 +8606,15 @@
           "named": true
         },
         {
+          "type": "relational_expression",
+          "named": true
+        },
+        {
           "type": "selector",
+          "named": true
+        },
+        {
+          "type": "shift_expression",
           "named": true
         },
         {
@@ -8360,6 +8627,14 @@
         },
         {
           "type": "this",
+          "named": true
+        },
+        {
+          "type": "type_cast_expression",
+          "named": true
+        },
+        {
+          "type": "type_test_expression",
           "named": true
         },
         {
@@ -8424,6 +8699,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -8680,6 +8959,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -8852,6 +9135,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -9042,6 +9329,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -9279,6 +9570,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -9420,6 +9715,10 @@
         "required": true,
         "types": [
           {
+            "type": "?",
+            "named": false
+          },
+          {
             "type": "_literal",
             "named": true
           },
@@ -9457,6 +9756,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -9558,6 +9861,10 @@
         "required": true,
         "types": [
           {
+            "type": "?",
+            "named": false
+          },
+          {
             "type": "_literal",
             "named": true
           },
@@ -9595,6 +9902,10 @@
           },
           {
             "type": "constructor_tearoff",
+            "named": true
+          },
+          {
+            "type": "dot_shorthand",
             "named": true
           },
           {
@@ -9758,6 +10069,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -9958,6 +10273,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -10150,6 +10469,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -10367,6 +10690,7 @@
   {
     "type": "program",
     "named": true,
+    "root": true,
     "fields": {},
     "children": {
       "multiple": true,
@@ -10393,6 +10717,10 @@
           "named": true
         },
         {
+          "type": "extension_type_declaration",
+          "named": true
+        },
+        {
           "type": "final_builtin",
           "named": true
         },
@@ -10410,6 +10738,10 @@
         },
         {
           "type": "getter_signature",
+          "named": true
+        },
+        {
+          "type": "identifier_list",
           "named": true
         },
         {
@@ -10547,6 +10879,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -10651,7 +10987,7 @@
     "fields": {},
     "children": {
       "multiple": true,
-      "required": true,
+      "required": false,
       "types": [
         {
           "type": "_literal",
@@ -10695,6 +11031,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -10849,6 +11189,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -10984,11 +11328,47 @@
       "required": false,
       "types": [
         {
+          "type": "annotation",
+          "named": true
+        },
+        {
+          "type": "function_type",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "nullable_type",
+          "named": true
+        },
+        {
+          "type": "record_type",
+          "named": true
+        },
+        {
           "type": "record_type_field",
           "named": true
         },
         {
           "type": "record_type_named_field",
+          "named": true
+        },
+        {
+          "type": "type_arguments",
+          "named": true
+        },
+        {
+          "type": "type_identifier",
+          "named": true
+        },
+        {
+          "type": "typed_identifier",
+          "named": true
+        },
+        {
+          "type": "void_type",
           "named": true
         }
       ]
@@ -11163,6 +11543,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -11255,6 +11639,74 @@
     "fields": {}
   },
   {
+    "type": "representation_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": ".",
+            "named": false
+          },
+          {
+            "type": "Function",
+            "named": false
+          },
+          {
+            "type": "function_type",
+            "named": true
+          },
+          {
+            "type": "nullable_type",
+            "named": true
+          },
+          {
+            "type": "record_type",
+            "named": true
+          },
+          {
+            "type": "type_arguments",
+            "named": true
+          },
+          {
+            "type": "type_identifier",
+            "named": true
+          },
+          {
+            "type": "void_type",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "annotation",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "rest_pattern",
     "named": true,
     "fields": {},
@@ -11300,6 +11752,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -11490,6 +11946,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -11707,6 +12167,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -11920,6 +12384,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -12057,6 +12525,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -12200,6 +12672,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -12548,6 +13024,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -12777,6 +13257,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -12943,11 +13427,31 @@
     "named": true,
     "fields": {},
     "children": {
-      "multiple": false,
-      "required": true,
+      "multiple": true,
+      "required": false,
       "types": [
         {
+          "type": "additive_operator",
+          "named": true
+        },
+        {
+          "type": "equality_operator",
+          "named": true
+        },
+        {
           "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "multiplicative_operator",
+          "named": true
+        },
+        {
+          "type": "relational_operator",
+          "named": true
+        },
+        {
+          "type": "shift_operator",
           "named": true
         }
       ]
@@ -12999,6 +13503,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -13154,6 +13662,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -13290,6 +13802,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -13632,6 +14148,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -13836,6 +14356,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -13987,6 +14511,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -14227,6 +14755,10 @@
           "named": true
         },
         {
+          "type": "dot_shorthand",
+          "named": true
+        },
+        {
           "type": "equality_expression",
           "named": true
         },
@@ -14367,6 +14899,10 @@
         },
         {
           "type": "constructor_tearoff",
+          "named": true
+        },
+        {
+          "type": "dot_shorthand",
           "named": true
         },
         {
@@ -14721,10 +15257,6 @@
     "named": false
   },
   {
-    "type": "bool",
-    "named": false
-  },
-  {
     "type": "break_builtin",
     "named": true
   },
@@ -14770,10 +15302,6 @@
   },
   {
     "type": "do",
-    "named": false
-  },
-  {
-    "type": "dynamic",
     "named": false
   },
   {
@@ -14986,6 +15514,10 @@
   },
   {
     "type": "try",
+    "named": false
+  },
+  {
+    "type": "type",
     "named": false
   },
   {

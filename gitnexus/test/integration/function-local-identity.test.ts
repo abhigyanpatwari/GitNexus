@@ -393,7 +393,7 @@ describe('function-local value identity resolves through to emitted edges (#2736
       range: { startLine: 1, startCol: 0, endLine: 100, endCol: 0 },
       filePath,
       bindings: new Map(),
-      ownedDefs: [caller, topLevel],
+      ownedDefs: [topLevel],
       imports: [],
       typeBindings: new Map(),
     };
@@ -404,7 +404,7 @@ describe('function-local value identity resolves through to emitted edges (#2736
       range: { startLine: 3, startCol: 0, endLine: 6, endCol: 1 },
       filePath,
       bindings: new Map(),
-      ownedDefs: [local],
+      ownedDefs: [caller, local],
       imports: [],
       typeBindings: new Map(),
     };

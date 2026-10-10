@@ -12074,6 +12074,10 @@
           "named": true
         },
         {
+          "type": "throws_clause",
+          "named": true
+        },
+        {
           "type": "type_constraints",
           "named": true
         },
@@ -12279,6 +12283,10 @@
         {
           "type": "throws",
           "named": true
+        },
+        {
+          "type": "throws_clause",
+          "named": true
         }
       ]
     }
@@ -12297,6 +12305,10 @@
         },
         {
           "type": "throws",
+          "named": true
+        },
+        {
+          "type": "throws_clause",
           "named": true
         }
       ]
@@ -14763,6 +14775,10 @@
           "named": true
         },
         {
+          "type": "throws_clause",
+          "named": true
+        },
+        {
           "type": "type_constraints",
           "named": true
         },
@@ -15560,6 +15576,10 @@
         },
         {
           "type": "throws",
+          "named": true
+        },
+        {
+          "type": "throws_clause",
           "named": true
         }
       ]
@@ -22196,6 +22216,10 @@
           "named": true
         },
         {
+          "type": "throws_clause",
+          "named": true
+        },
+        {
           "type": "type_constraints",
           "named": true
         },
@@ -26616,6 +26640,70 @@
     "type": "throws",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "throws_clause",
+    "named": true,
+    "fields": {
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "array_type",
+            "named": true
+          },
+          {
+            "type": "dictionary_type",
+            "named": true
+          },
+          {
+            "type": "existential_type",
+            "named": true
+          },
+          {
+            "type": "function_type",
+            "named": true
+          },
+          {
+            "type": "metatype",
+            "named": true
+          },
+          {
+            "type": "opaque_type",
+            "named": true
+          },
+          {
+            "type": "optional_type",
+            "named": true
+          },
+          {
+            "type": "protocol_composition_type",
+            "named": true
+          },
+          {
+            "type": "suppressed_constraint",
+            "named": true
+          },
+          {
+            "type": "tuple_type",
+            "named": true
+          },
+          {
+            "type": "type_pack_expansion",
+            "named": true
+          },
+          {
+            "type": "type_parameter_pack",
+            "named": true
+          },
+          {
+            "type": "user_type",
+            "named": true
+          }
+        ]
+      }
+    }
   },
   {
     "type": "try_expression",

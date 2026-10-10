@@ -2124,8 +2124,8 @@ describe('PHP typed-property double-match dedup', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'php-typed-property-dedup'), () => {});
   }, 60000);
 
-  it('detects the Mixed class', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('Mixed');
+  it('detects the MixedProperties class', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('MixedProperties');
   });
 
   it('emits exactly one Property def for the typed property `$repo`', () => {

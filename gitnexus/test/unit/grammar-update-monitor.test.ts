@@ -7,8 +7,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 /**
  * Unit coverage for the ABI gate in the vendored-grammar update monitor
  * (.github/scripts/update-vendored-grammars.mjs). The gate is load-bearing: every
- * grammar is pinned to tree-sitter@0.21.1 (LANGUAGE_VERSION 13–14), so an update
- * is only auto-applied when the candidate parser.c's ABI is 13 or 14 — otherwise
+ * grammar is pinned to tree-sitter@0.25.1 (LANGUAGE_VERSION 13–15), so an update
+ * is only auto-applied when the candidate parser.c's ABI is 13, 14 or 15 — otherwise
  * the monitor would open PRs that can't build. We test the pure pieces (no
  * network): reading the ABI from a parser.c and the compatibility set. The module
  * is import-safe (its CLI is guarded behind an isMain check).
@@ -55,7 +55,7 @@ describe('readAbi', () => {
   it('reads LANGUAGE_VERSION 14 from src/parser.c', () => {
     expect(mod.readAbi(fixture('#define LANGUAGE_VERSION 14'))).toBe(14);
   });
-  it('reads LANGUAGE_VERSION 15 (an incompatible upstream)', () => {
+  it('reads LANGUAGE_VERSION 15 (a compatible upstream)', () => {
     expect(mod.readAbi(fixture('#define LANGUAGE_VERSION 15'))).toBe(15);
   });
   it('returns null when parser.c is absent (generated-at-build-time grammars)', () => {
@@ -64,11 +64,12 @@ describe('readAbi', () => {
 });
 
 describe('COMPATIBLE_ABI gate', () => {
-  it('accepts ABI 13 and 14, rejects 12 and 15', () => {
+  it('accepts ABI 13 through 15, rejects 12 and 16', () => {
     expect(mod.COMPATIBLE_ABI.has(13)).toBe(true);
     expect(mod.COMPATIBLE_ABI.has(14)).toBe(true);
     expect(mod.COMPATIBLE_ABI.has(12)).toBe(false);
-    expect(mod.COMPATIBLE_ABI.has(15)).toBe(false);
+    expect(mod.COMPATIBLE_ABI.has(15)).toBe(true);
+    expect(mod.COMPATIBLE_ABI.has(16)).toBe(false);
   });
 });
 
@@ -85,19 +86,15 @@ describe('GRAMMARS registry', () => {
     ]);
     expect(mod.GRAMMARS.swift.npm).toBe('tree-sitter-swift');
     expect(mod.GRAMMARS.dart.github).toContain('tree-sitter-dart');
-    expect(mod.GRAMMARS.zig.npm).toBe('@tree-sitter-grammars/tree-sitter-zig');
+    expect(mod.GRAMMARS.zig.github).toBe('tree-sitter-grammars/tree-sitter-zig');
   });
 
-  it('marks c, kotlin, and objc report-only; swift/dart/proto/zig are auto-updatable', () => {
-    expect(mod.GRAMMARS.c.npm).toBe('tree-sitter-c');
-    expect(mod.GRAMMARS.c.hold).toBeTruthy(); // ABI-pinned: detected/reported, never auto-applied
-    expect(mod.GRAMMARS.objc.npm).toBe('tree-sitter-objc');
-    expect(mod.GRAMMARS.objc.hold).toBeTruthy();
-    // kotlin is pinned to an unreleased fwcd main commit for `fun interface`
-    // support (#169); npm latest (0.3.8) lacks it, so the strict-inequality
-    // isNewer would auto-revert the pin without this hold.
-    expect(mod.GRAMMARS.kotlin.hold).toBeTruthy();
-    for (const k of ['swift', 'dart', 'proto', 'zig']) {
+  it('holds Swift recovery regressions and tracks upstream source for the other vendors', () => {
+    expect(mod.GRAMMARS.c.github).toBe('tree-sitter/tree-sitter-c');
+    expect(mod.GRAMMARS.objc.github).toBe('tree-sitter-grammars/tree-sitter-objc');
+    expect(mod.GRAMMARS.kotlin.github).toBe('fwcd/tree-sitter-kotlin');
+    expect(mod.GRAMMARS.swift.hold).toContain('declaration-ownership');
+    for (const k of ['c', 'objc', 'kotlin', 'dart', 'proto', 'zig']) {
       expect(mod.GRAMMARS[k].hold).toBeUndefined();
     }
   });
@@ -182,10 +179,10 @@ describe('detect() classification (offline, injected deps)', () => {
       ? { version: '9.9.9', ref: '9.9.9', kind: 'npm' }
       : { version: '1.0.0-gabc1234', ref: 'abc1234def0', kind: 'github' };
   const deps: DetectDeps = {
-    vendoredVersion: (g) => (g.name === 'tree-sitter-kotlin' ? '9.9.9' : '0.0.0'),
+    vendoredVersion: (g) => (g.name === 'tree-sitter-kotlin' ? '1.0.0-gabc1234' : '0.0.0'),
     resolveUpstream: baseResolveUpstream,
     fetchSource: (g) => g.name, // pass the name through to the fake readAbi
-    readAbi: (name) => (name === 'tree-sitter-swift' ? 15 : 14),
+    readAbi: (name) => (name === 'tree-sitter-zig' ? 16 : 15),
   };
   let report: Array<Record<string, unknown>>;
   const byKey = (k: string) =>
@@ -203,30 +200,30 @@ describe('detect() classification (offline, injected deps)', () => {
   });
 
   it('does not flag a same-version grammar, and skips its ABI fetch', () => {
-    expect(byKey('kotlin').update).toBe(false); // vendored == upstream 9.9.9
+    expect(byKey('kotlin').update).toBe(false); // vendored == upstream provenance
     expect(byKey('kotlin').abi).toBeNull();
     expect(byKey('kotlin').applicable).toBe(false);
   });
 
-  it('holds tree-sitter-c: update detected, ABI-compatible, but never applicable', () => {
-    const c = byKey('c');
+  it('holds Swift: update detected, ABI-compatible, but never applicable', () => {
+    const c = byKey('swift');
     expect(c.update).toBe(true);
-    expect(c.abi).toBe(14);
+    expect(c.abi).toBe(15);
     expect(c.abiCompatible).toBe(true);
     expect(c.hold).toBeTruthy();
     expect(c.applicable).toBe(false); // policy-hold gate
   });
 
-  it('refuses an ABI-incompatible candidate (15) — not applicable', () => {
-    const s = byKey('swift');
-    expect(s.abi).toBe(15);
+  it('refuses an ABI-incompatible candidate (16) — not applicable', () => {
+    const s = byKey('zig');
+    expect(s.abi).toBe(16);
     expect(s.abiCompatible).toBe(false);
     expect(s.applicable).toBe(false); // ABI gate
   });
 
-  it('marks a newer, un-held, ABI-14 grammar applicable', () => {
+  it('marks a newer, un-held, ABI-15 grammar applicable', () => {
     const d = byKey('dart');
-    expect(d.abi).toBe(14);
+    expect(d.abi).toBe(15);
     expect(d.applicable).toBe(true);
   });
 
@@ -306,7 +303,7 @@ describe('apply(--dry-run): resolves + validates but writes nothing', () => {
         vendoredVersion: () => '0.0.0',
         resolveUpstream: () => ({ version: '9.9.9', ref: '9.9.9abc', kind: 'github' }),
         fetchSource: () => 'unused',
-        readAbi: () => 14,
+        readAbi: () => 15,
       },
     });
     expect(version).toBe('9.9.9');
@@ -334,18 +331,18 @@ describe('apply() error branches throw ApplyExit (CLI maps to exit codes)', () =
     expect(codeOf(() => mod.apply('nope', { deps: {} }))).toBe(2);
   });
 
-  it('held grammar (c) → exit code 3 (short-circuits before the newer check)', () => {
-    expect(codeOf(() => mod.apply('c', { deps: {} }))).toBe(3);
+  it('held grammar (swift) → exit code 3 (short-circuits before the newer check)', () => {
+    expect(codeOf(() => mod.apply('swift', { deps: {} }))).toBe(3);
   });
 
-  it('ABI-incompatible candidate (15) → exit code 3', () => {
+  it('ABI-incompatible candidate (16) → exit code 3', () => {
     const code = codeOf(() =>
       mod.apply('dart', {
         deps: {
           vendoredVersion: () => '0.0.0', // newer than upstream → reaches the ABI gate
           resolveUpstream: () => ({ version: '9.9.9', ref: '9.9.9abc', kind: 'github' }),
           fetchSource: () => 'unused',
-          readAbi: () => 15,
+          readAbi: () => 16,
         },
       }),
     );

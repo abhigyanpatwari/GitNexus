@@ -42,6 +42,7 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { isPythonGlobalDeclaration, pythonFunctionDefinitionLabel } from './simple-hooks.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import { applyPythonLexicalBindings } from './lexical-bindings.js';
 import {
   beginPythonSubtypeDispatchCapture,
   recordPythonSimplePositionalCall,
@@ -286,10 +287,16 @@ export function emitPythonScopeCaptures(
   out.push(...synthesizePythonInheritanceReferences(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PYTHON_CALLABLE_CAPTURE_OPTIONS));
 
+  const lexicalCaptures = applyPythonLexicalBindings(
+    out,
+    tree.rootNode,
+    filePath,
+    notebookSegments === undefined ? undefined : (range) => remapRange(range, notebookSegments),
+  );
   if (notebookSegments !== undefined) {
-    return out.map((match) => remapCaptureMatch(match, notebookSegments));
+    return lexicalCaptures.map((match) => remapCaptureMatch(match, notebookSegments));
   }
-  return out;
+  return lexicalCaptures;
 }
 
 function resolveNotebookCaptureSource(

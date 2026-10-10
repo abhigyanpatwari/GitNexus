@@ -60,10 +60,10 @@
     "test:coverage": "vitest run --coverage",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
     "test:benchmarks": "node --import tsx scripts/run-benchmarks.ts",
-    "postinstall": "node scripts/build-tree-sitter-grammars.cjs",
+    "postinstall": "node scripts/prepare-tree-sitter-bundle.cjs && node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/assert-publish-fts-coverage.cjs && node scripts/build.js --web && node scripts/assert-web-assets.mjs web",
+    "prepack": "node scripts/prepare-tree-sitter-bundle.cjs && node scripts/assert-publish-grammar-coverage.cjs && node scripts/assert-publish-fts-coverage.cjs && node scripts/build.js --web && node scripts/assert-web-assets.mjs web",
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
@@ -95,17 +95,17 @@
     "pino-pretty": "^13.1.3",
     "proxy-addr": "^2.0.7",
     "smol-toml": "^1.8.0",
-    "tree-sitter": "0.21.1",
-    "tree-sitter-c-sharp": "0.23.1",
-    "tree-sitter-cpp": "0.23.2",
-    "tree-sitter-go": "^0.23.0",
-    "tree-sitter-java": "^0.23.5",
-    "tree-sitter-javascript": "^0.23.0",
-    "tree-sitter-php": "^0.23.0",
-    "tree-sitter-python": "0.23.4",
-    "tree-sitter-ruby": "^0.23.1",
-    "tree-sitter-rust": "0.23.1",
-    "tree-sitter-typescript": "^0.23.2",
+    "tree-sitter": "0.25.1",
+    "tree-sitter-c-sharp": "0.23.5",
+    "tree-sitter-cpp": "0.23.4",
+    "tree-sitter-go": "0.25.0",
+    "tree-sitter-java": "0.23.5",
+    "tree-sitter-javascript": "0.25.0",
+    "tree-sitter-php": "0.24.2",
+    "tree-sitter-python": "0.25.0",
+    "tree-sitter-ruby": "0.23.1",
+    "tree-sitter-rust": "0.24.0",
+    "tree-sitter-typescript": "0.23.2",
     "uuid": "^14.0.0"
   },
   "gitnexusEmbeddingStack": {
@@ -136,9 +136,23 @@
   },
   "overrides": {
     "adm-zip": ">=0.6.0",
-    "sharp": ">=0.35.0"
+    "sharp": ">=0.35.0",
+    "tree-sitter": "$tree-sitter"
   },
   "engines": {
     "node": "^22.18.0 || >=24.11.0"
-  }
+  },
+  "bundleDependencies": [
+    "tree-sitter",
+    "tree-sitter-c-sharp",
+    "tree-sitter-cpp",
+    "tree-sitter-go",
+    "tree-sitter-java",
+    "tree-sitter-javascript",
+    "tree-sitter-php",
+    "tree-sitter-python",
+    "tree-sitter-ruby",
+    "tree-sitter-rust",
+    "tree-sitter-typescript"
+  ]
 }

@@ -5,7 +5,7 @@ import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
 import CPP from 'tree-sitter-cpp';
 import Rust from 'tree-sitter-rust';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Go from 'tree-sitter-go';
 import {
   findEnclosingClassId,
