@@ -14,11 +14,9 @@ import { pythonNamespaceBindingIdentity, pythonNamespaceReceiverPaths } from './
 import {
   pythonModuleAccessorFact,
   pythonCallResultAssignmentIsStraightLine,
+  positionKey,
 } from './module-accessors.js';
 import { pythonSubtypeCallPositionalCount } from './subtype-dispatch.js';
-
-const positionKey = (range: Pick<Range, 'startLine' | 'startCol'>): string =>
-  `${range.startLine}:${range.startCol}`;
 
 const contains = (outer: Range, inner: Range): boolean =>
   (outer.startLine < inner.startLine ||
@@ -62,15 +60,17 @@ export const createPythonReceiverNamespaceResolver: NonNullable<
         visited.add(id);
         const scope = scopes.scopeTree.getScope(id);
         if (scope === undefined) continue;
-        if (scope.kind === 'Function') byPosition.set(positionKey(scope.range), scope);
+        if (scope.kind === 'Function') byPosition.set(positionKey(scope.range.startLine, scope.range.startCol), scope);
         pending.push(...scopes.scopeTree.getChildren(id));
       }
       fileScopes.set(candidate.filePath, byPosition);
     }
-    const functionScope = byPosition.get(`${position.line}:${position.column}`);
+    const functionScope = byPosition.get(positionKey(position.line, position.column));
     if (functionScope === undefined) return undefined;
     let cache = namespaceCaches.get(candidate.filePath);
     if (cache === undefined) {
+      // Same shape as a sealed disk-backed ParsedFile: the cache walks every
+      // scope from moduleScope through scopeTree.getChildren.
       cache = createNamespaceTargetCache(
         { moduleScope: moduleScope.id, scopes: [] },
         scopes,
@@ -103,11 +103,11 @@ export const createPythonReceiverNamespaceResolver: NonNullable<
       calls = new Map(
         parsed.referenceSites
           .filter((site) => site.kind === 'call' && site.explicitReceiver === undefined)
-          .map((site) => [positionKey(site.atRange), site]),
+          .map((site) => [positionKey(site.atRange.startLine, site.atRange.startCol), site]),
       );
       callIndexes.set(parsed, calls);
     }
-    return calls.get(positionKey(range));
+    return calls.get(positionKey(range.startLine, range.startCol));
   };
 
   const assignedCall = (

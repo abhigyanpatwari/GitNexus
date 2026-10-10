@@ -40,7 +40,8 @@ export interface PythonCaptureSideChannel {
 
 const accessorsByFile = new Map<string, Map<string, PythonModuleAccessorFact>>();
 const assignmentsByFile = new Map<string, Map<string, PythonCallResultAssignmentFact>>();
-const positionKey = (line: number, column: number): string => `${line}:${column}`;
+/** Shared by capture and replay so both sides key positions identically. */
+export const positionKey = (line: number, column: number): string => `${line}:${column}`;
 
 export function beginPythonModuleAccessorCapture(filePath: string): void {
   accessorsByFile.delete(filePath);
