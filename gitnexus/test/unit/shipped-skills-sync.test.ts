@@ -311,10 +311,13 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     },
   );
 
-  it("uses the rename API's text_search vocabulary in every refactoring copy", () => {
+  it('teaches semantic project-scoped preview in every refactoring copy', () => {
     for (const file of standardSkillCopies('gitnexus-refactoring')) {
       const content = fs.readFileSync(file, 'utf-8');
-      expect(content).toContain('text_search');
+      expect(content).toContain('rename_preview');
+      expect(content).toContain('tsconfig_path');
+      expect(content).toContain('confidence: "semantic"');
+      expect(content).not.toContain('graph (safe)');
       expect(content).not.toContain('ast_search');
     }
   });

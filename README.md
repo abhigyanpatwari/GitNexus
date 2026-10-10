@@ -158,7 +158,7 @@ flowchart TB
 
 ## What Your AI Agent Gets
 
-### 19 MCP tools (17 per-repo + 2 group)
+### 20 MCP tools (18 per-repo + 2 group)
 
 | Tool             | What It Does                                                           |
 | ---------------- | ---------------------------------------------------------------------- |
@@ -169,7 +169,8 @@ flowchart TB
 | `trace`          | Shortest directed path between two symbols (call + class-member edges) |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
 | `check`          | Read-only structural checks against the indexed graph                  |
-| `rename`         | Multi-file coordinated rename with graph + text search                 |
+| `rename_preview` | Read-only semantic rename preview for a configured TS/JS project       |
+| `rename`         | Preview or apply exact semantic rename occurrences                     |
 | `cypher`         | Raw Cypher graph queries                                               |
 | `route_map`      | API route map — which components fetch which endpoints, and handlers   |
 | `tool_map`       | MCP/RPC tool definitions — where they're defined and handled           |
@@ -372,7 +373,7 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 <details>
 <summary><strong>MCP read-only mode</strong></summary>
 
-Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. Raw `cypher`, rename and group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
+Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. The read-only `rename_preview` is available. Raw `cypher`, destructive `rename`, and group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
 
 The default is unchanged when the variable is unset or `0`. Any other value fails server startup rather than silently weakening the policy.
 
@@ -874,18 +875,48 @@ changed_symbols: [validateUser, AuthService, ...]
 affected_processes: [LoginFlow, RegistrationFlow, ...]
 ```
 
-### Rename (Multi-File)
+### Rename (Configured TypeScript/JavaScript Project)
 
+```js
+rename_preview({symbol_name: "validateUser", new_name: "verifyUser", repo: "my-app"})
+// If project selection is ambiguous, repeat with a returned tsconfig_path.
 ```
-rename({symbol_name: "validateUser", new_name: "verifyUser", dry_run: true})
 
+```text
+result_version: 2
 status: success
+planning_status: ready
+application_status: not_requested
+applied: false
 files_affected: 5
 total_edits: 8
-graph_edits: 6     (high confidence)
-text_search_edits: 2  (review carefully)
-changes: [...]
+semantic_edits: 8
+graph_edits: 0
+text_search_edits: 0
+text_search: not_used
+coverage: {name: "typescript", version: "5.9.3", scope: "project", tsconfig_path: "tsconfig.json", ...}
+changes: [{file_path, edits: [{start, length, old_text, new_text, line, confidence: "semantic"}]}]
 ```
+
+Review the exact UTF-16 spans and selected project, then call `rename` with the
+same selectors and `dry_run: false` to apply. `rename` still defaults to preview.
+Counts describe occurrences, including multiple edits on one line. Import/export
+aliases include compiler-provided prefix/suffix text in `new_text`. Comments,
+strings, and unrelated same-spelled symbols are not text-search replacements.
+
+Coverage is limited to one configured project, not the whole repository. Select
+`tsconfig_path` explicitly when several configs contain the declaration. Unsupported
+languages, project references, stale declarations, and unresolved targets fail
+closed without regex fallback. Both tools operate on the checkout and reject
+`branch`. The runtime compiler is pinned independently of the build compiler.
+
+Preview and apply recompute their plans independently. Source snapshots are
+checked before writes; this is not a cross-call preview token or transactional
+filesystem operation. On a write failure, `status: partial` and `failed_files`
+report the failure; `applied`, counts, and `changes` describe only landed edits.
+Inspect failures before retrying, and run type checking, tests, and
+`detect_changes` after applying. A valid identifier is not a guarantee against
+new-name collisions.
 
 ### Cypher Queries
 

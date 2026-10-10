@@ -103,6 +103,18 @@ const MUTATING_REPO_OMISSION =
 const HOT_READ_STALENESS_NOTE =
   "Object results attach `staleness` even when current. Read `staleness.branch`/`lastCommit` for which index answered and `status` for freshness. Re-analyze only for `behind` or `diverged` — `current` is this clone's HEAD, not necessarily the default branch; `unknown` is unmeasurable, not stale. Field is only on object results (not raw-array cypher, error envelopes, or `@group` calls).";
 
+const RENAME_PROPERTIES: ToolDefinition['inputSchema']['properties'] = {
+  symbol_name: { type: 'string', description: 'Current symbol name to rename' },
+  symbol_uid: { type: 'string', description: 'Direct symbol UID from prior tool results' },
+  new_name: { type: 'string', description: 'The new identifier for the symbol' },
+  file_path: { type: 'string', description: 'File path to disambiguate common names' },
+  tsconfig_path: {
+    type: 'string',
+    description:
+      'Repository-relative TypeScript/JavaScript project config; required when project selection is ambiguous',
+  },
+};
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
@@ -469,38 +481,41 @@ A graph too large to analyze at all returns \`{ error, truncated: true }\` with 
     },
   },
   {
+    name: 'rename_preview',
+    description: `Read-only semantic rename preview for one configured TypeScript/JavaScript project in the current checkout.
+Uses the TypeScript language service to report exact UTF-16 spans, including import/export alias affixes. Comments, strings, and unrelated same-spelled symbols are not text-search replacements.
+Pass symbol_uid from context() to select the declaration. If multiple project configs include it, select a returned candidate with tsconfig_path. Unsupported languages, project references, and unresolved declarations fail closed.
+Returns result_version:2, semantic_edits, and coverage identifying the selected project; coverage is not repository-wide. This tool cannot apply edits.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...RENAME_PROPERTIES,
+        repo: {
+          type: 'string',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
+      },
+      required: ['new_name'],
+    },
+  },
+  {
     name: 'rename',
-    description: `Multi-file coordinated rename using the knowledge graph + text search.
-Finds all references via graph (high confidence) and regex text search (lower confidence). Preview by default.
-
-WHEN TO USE: Renaming a function, class, method, or variable across the codebase. Safer than find-and-replace.
-AFTER THIS: Run detect_changes() to verify no unexpected side effects.
-
-Each edit is tagged with confidence:
-- "graph": found via knowledge graph relationships (high confidence, safe to accept)
-- "text_search": found via regex text search (lower confidence, review carefully)
-
-Handles disambiguation via context()'s payload verbatim: an ambiguous symbol_name returns status "ambiguous" with ranked candidates and totalCandidates — the TRUE match count, not candidates[].length — plus candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window. Re-call with symbol_uid.`,
+    description: `Semantic rename for one configured TypeScript/JavaScript project in the current checkout. Previews by default; dry_run:false applies exact compiler-selected occurrences after checking source snapshots.
+Use rename_preview for read-only clients. Pass symbol_uid from context() to select the declaration and tsconfig_path when project selection is ambiguous. Unsupported languages, project references, and unresolved declarations fail closed; there is no text-search fallback.
+Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, project coverage, and explicit planning/application status. graph_edits and text_search_edits are zero. Partial writes report only landed edits and failed_files; review failures before retrying. Separate preview/apply calls recompute the plan.
+Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates verbatim; re-call with symbol_uid. After application, run tests and detect_changes().`,
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
-        symbol_name: { type: 'string', description: 'Current symbol name to rename' },
-        symbol_uid: {
-          type: 'string',
-          description: 'Direct symbol UID from prior tool results (zero-ambiguity)',
-        },
-        new_name: { type: 'string', description: 'The new name for the symbol' },
-        file_path: { type: 'string', description: 'File path to disambiguate common names' },
+        ...RENAME_PROPERTIES,
         dry_run: {
           type: 'boolean',
           description: 'Preview edits without modifying files (default: true)',
           default: true,
         },
-        repo: {
-          type: 'string',
-          description: `Repository name or path. ${MUTATING_REPO_OMISSION}`,
-        },
+        repo: { type: 'string', description: `Repository name or path. ${MUTATING_REPO_OMISSION}` },
       },
       required: ['new_name'],
     },
@@ -1122,7 +1137,7 @@ Optional caseSensitive and literal match HTTP /api/grep (default: case-insensiti
  * loop below skips `branch` for `CHECKOUT_SOURCE_TOOLS` — a pin would label
  * checkout bytes with another commit.
  */
-export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep']);
+export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep', 'rename', 'rename_preview']);
 
 export const REPO_SCOPED_TOOLS = new Set([
   'read_file',
@@ -1136,6 +1151,7 @@ export const REPO_SCOPED_TOOLS = new Set([
   'check',
   'impact',
   'rename',
+  'rename_preview',
   'route_map',
   'tool_map',
   'shape_check',

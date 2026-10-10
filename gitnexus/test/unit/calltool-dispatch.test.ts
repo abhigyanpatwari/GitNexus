@@ -2534,20 +2534,31 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either symbol_name or symbol_uid');
   });
 
+  it('dispatches rename_preview as a forced dry run', async () => {
+    const rename = vi.spyOn(backend as any, 'rename').mockResolvedValue({ applied: false });
+    const result = await backend.callTool('rename_preview', { new_name: 'newName' });
+    expect(result.applied).toBe(false);
+    expect(rename).toHaveBeenCalledWith(expect.anything(), { new_name: 'newName', dry_run: true });
+  });
+
+  it.each(['rename', 'rename_preview'])('%s rejects branch-pinned checkout edits', async (tool) => {
+    const rename = vi.spyOn(backend as any, 'rename');
+    const result = await backend.callTool(tool, { new_name: 'newName', branch: 'main' });
+    expect(result.error).toMatch(/branch/);
+    expect(rename).not.toHaveBeenCalled();
+  });
+
   it('rename: a swallowed apply-edit write failure degrades to status:partial + failed_files (#2283)', async () => {
-    // Resolve the definition, no graph refs. readFile succeeds (so a def edit is
-    // recorded), but writeFile fails on apply — the failure is swallowed via
-    // logQueryError. The result must NOT report a clean success: it degrades to
-    // 'partial' and lists the unwritten file, instead of status:'success'.
+    // A real configured project produces an edit; only its final write fails.
     (executeParameterized as any)
       .mockResolvedValueOnce([
         {
-          id: 'func:oldName',
+          id: 'Function:src/target.ts:oldName',
           name: 'oldName',
           type: 'Function',
           filePath: 'src/target.ts',
           startLine: 1,
-          endLine: 5,
+          endLine: 1,
         },
       ])
       .mockResolvedValue([]);
@@ -2558,12 +2569,10 @@ describe('LocalBackend.callTool', () => {
     backend = new LocalBackend();
     await backend.init();
 
-    // The symbol is stored at 0-based startLine 1; context() presents it 1-based
-    // (line 2) and rename subtracts 1 to recover the 0-based file index (1), so
-    // `oldName` must sit on the file's 0-based line 1 for the definition edit to
-    // fire. (#2380: the mock previously put it on line 0, which stopped matching
-    // once context() went 1-based.)
-    const readSpy = vi.spyOn(fsPromises, 'readFile').mockResolvedValue('\nfunction oldName() {}\n');
+    // Graph lines are zero-based; context presents this declaration on line 2.
+    mkdirSync(path.join(repoDir, 'src'));
+    writeFileSync(path.join(repoDir, 'src/target.ts'), '\nfunction oldName() {}\n');
+    writeFileSync(path.join(repoDir, 'tsconfig.json'), '{"include":["src/**/*.ts"]}');
     const writeSpy = vi
       .spyOn(fsPromises, 'writeFile')
       .mockRejectedValue(new Error('EACCES: permission denied'));
@@ -2575,11 +2584,10 @@ describe('LocalBackend.callTool', () => {
       });
       expect(result.status).toBe('partial');
       expect(result.failed_files).toContain('src/target.ts');
-      // It DID attempt to apply (not a dry run) — `applied` stays true; the
-      // honest signal is the 'partial' status + failed_files, not `applied`.
-      expect(result.applied).toBe(true);
+      expect(result.applied).toBe(false);
+      expect(result.total_edits).toBe(0);
+      expect(result.application_status).toBe('failed');
     } finally {
-      readSpy.mockRestore();
       writeSpy.mockRestore();
       rmSync(repoDir, { recursive: true, force: true });
     }

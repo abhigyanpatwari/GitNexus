@@ -16,6 +16,7 @@ const READ_ONLY_TOOLS = [
   'pdg_query',
   'query',
   'read_file',
+  'rename_preview',
   'route_map',
   'shape_check',
   'tool_map',
@@ -65,6 +66,34 @@ afterEach(() => {
 });
 
 describe('MCP read-only mode', () => {
+  it('offers a read-only rename preview with no mutation or branch arguments', async () => {
+    enableReadOnly();
+    const session = await connect();
+    try {
+      const { tools } = await session.client.listTools();
+      const preview = tools.find((tool) => tool.name === 'rename_preview');
+      expect(preview?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+      expect(preview?.inputSchema.properties).not.toHaveProperty('dry_run');
+      expect(preview?.inputSchema.properties).not.toHaveProperty('branch');
+      await session.client.callTool({
+        name: 'rename_preview',
+        arguments: { symbol_uid: 'Method:src/writer.ts:Writer.close#0', new_name: 'closeWriter' },
+      });
+      expect(session.backend.callTool).toHaveBeenCalledWith('rename_preview', {
+        symbol_uid: 'Method:src/writer.ts:Writer.close#0',
+        new_name: 'closeWriter',
+      });
+      const invalid = await session.client.callTool({
+        name: 'rename_preview',
+        arguments: { new_name: 'closeWriter', dry_run: false },
+      });
+      expect(invalid.isError).toBe(true);
+      expect(session.backend.callTool).toHaveBeenCalledTimes(1);
+    } finally {
+      await session.close();
+    }
+  });
+
   it('discovers only proven single-repository read tools', async () => {
     enableReadOnly();
     const session = await connect();
@@ -237,7 +266,8 @@ describe('MCP read-only mode', () => {
       for (const uri of ['gitnexus://setup', 'gitnexus://repo/test/context']) {
         const resource = await session.client.readResource({ uri });
         const text = (resource.contents[0] as { text: string }).text;
-        expect(text).not.toMatch(/(?:^\s*-\s+|^\|\s*`)(?:rename|cypher)/mu);
+        expect(text).not.toMatch(/(?:^\s*-\s+|^\|\s*`)(?:rename|cypher)(?::|`)/mu);
+        expect(text).toContain('rename_preview');
         expect(text).not.toContain('gitnexus://group/');
       }
     } finally {

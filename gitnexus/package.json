@@ -52,7 +52,7 @@
     "serve": "tsx src/cli/index.ts serve",
     "dev": "tsx watch src/cli/index.ts",
     "test": "vitest run",
-    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
+    "typecheck:tests": "node node_modules/typescript/lib/tsc.js --noEmit -p tsconfig.test.json",
     "test:unit": "vitest run test/unit",
     "pretest:integration": "node scripts/build.js",
     "test:integration": "vitest run test/integration",
@@ -106,6 +106,7 @@
     "tree-sitter-ruby": "0.23.1",
     "tree-sitter-rust": "0.24.0",
     "tree-sitter-typescript": "0.23.2",
+    "typescript-language-service": "npm:typescript@5.9.3",
     "uuid": "^14.0.0"
   },
   "gitnexusEmbeddingStack": {

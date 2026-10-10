@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 19 tools are defined (per-repo + group_list/group_sync)
+ * - All 20 tools are defined (per-repo + group_list/group_sync)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -23,8 +23,8 @@ const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
 const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group + read_file + grep)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(19);
+  it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group + read_file + grep + rename_preview)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(20);
   });
 
   it('contains all expected tool names', () => {
@@ -38,6 +38,7 @@ describe('GITNEXUS_TOOLS', () => {
         'detect_changes',
         'check',
         'rename',
+        'rename_preview',
         'impact',
         'explain',
         'pdg_query',
@@ -357,7 +358,14 @@ describe('GITNEXUS_TOOLS', () => {
   });
 
   it('per-repo tools have an optional branch scope param (#2106); group/list and checkout file tools do not', () => {
-    const noBranch = new Set(['list_repos', 'read_file', 'grep', ...GROUP_TOOLS]);
+    const noBranch = new Set([
+      'list_repos',
+      'read_file',
+      'grep',
+      'rename',
+      'rename_preview',
+      ...GROUP_TOOLS,
+    ]);
     for (const tool of GITNEXUS_TOOLS) {
       if (noBranch.has(tool.name)) {
         expect(tool.inputSchema.properties.branch, tool.name).toBeUndefined();
