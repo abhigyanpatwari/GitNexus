@@ -119,6 +119,20 @@ def test_both_runtimes_grade_tasks_against_one_pinned_task_dependency_checkout()
     assert names.count("Resolve pinned task revision") == 1
 
 
+def test_both_release_graphs_are_materialized_before_any_paid_sessions():
+    steps = workflow("release-evaluation.yml")["jobs"]["evaluate"]["steps"]
+    preflight = next(step for step in steps if "workflow_bench.release_preflight" in step.get("run", ""))
+    paid = next(step for step in steps if "workflow_bench.runner" in step.get("run", ""))
+    assert steps.index(preflight) < steps.index(paid)
+    assert "for runtime in stable candidate; do" in preflight["run"]
+    assert "set -euo pipefail" in preflight["run"]
+    assert '--tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml"' in preflight["run"]
+    assert '--gitnexus-root "$GITHUB_WORKSPACE/$runtime"' in preflight["run"]
+    assert preflight.get("continue-on-error", False) is False
+    assert "secrets." not in json.dumps(preflight)
+    assert "if" not in paid  # A failed preflight must skip the paid step.
+
+
 @pytest.mark.parametrize(
     "name,paid", [("gitnexus-skill-evolution.yml", "evolve"), ("release-evaluation.yml", "evaluate")]
 )
