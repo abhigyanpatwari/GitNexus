@@ -177,7 +177,7 @@ install in this checkout alone does not verify the published bundle.
 `.github/vendored-grammars.json` is the **single source of truth** for the vendored tree-sitter grammar **set** and each grammar's policy `hold` (the ones shipped from `gitnexus/vendor/<name>` rather than installed from npm). It lists each grammar's name, upstream coords (`npm` or `github`), and any `hold`. The monitor resolves upstreams from it; the readiness report keeps its own upstream-drift coords and reads vendored ABIs from `gitnexus/vendor/`. Two workflows read it:
 
 - `grammar-update-monitor.yml` (`.github/scripts/update-vendored-grammars.mjs`) — weekly; opens auto-PRs re-vendoring ABI-compatible upstream updates.
-- `tree-sitter-upgrade-readiness.yml` (`.github/scripts/check-tree-sitter-upgrade-readiness.py`) — daily; renders the tree-sitter-0.25 readiness report (issue #858), reading each vendored grammar's ABI from `gitnexus/vendor/<name>/src/parser.c`.
+- `tree-sitter-upgrade-readiness.yml` (`.github/scripts/check-tree-sitter-upgrade-readiness.py`) — daily; renders the tree-sitter compatibility-workarounds report (pack-time peer patches, intentional pins, vendored holds; issue #858), reading each vendored grammar's ABI from `gitnexus/vendor/<name>/src/parser.c`.
 
 Sharing the manifest keeps the two aligned: a consistency-guard test asserts the manifest set equals the `gitnexus/vendor/tree-sitter-*` directories. **When you vendor a new grammar (or remove one), update `.github/vendored-grammars.json` in the same change** — otherwise that guard fails CI and the readiness report regresses to `?` placeholders.
 

@@ -224,7 +224,7 @@ function detect(deps = {}) {
       abiCompatible: abi == null ? null : COMPATIBLE_ABI.has(abi),
       hold: g.hold || null,
       // Auto-appliable only when there's an update, the ABI is known-compatible,
-      // AND the grammar is not on a policy hold (c).
+      // AND the grammar is not on a policy hold (e.g. swift).
       applicable: newer && abi != null && COMPATIBLE_ABI.has(abi) && !g.hold,
     });
   }

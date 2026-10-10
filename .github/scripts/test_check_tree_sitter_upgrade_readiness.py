@@ -46,7 +46,7 @@ _ROW_DIFF_RE = re.compile(r"\| `(tree-sitter-[^`]+)` \|.*\| ([^|]+?) \|$", re.M)
 _ISSUE_READY_RE = re.compile(
     r"- (\d+)/(\d+) npm-installed grammars already accept tree-sitter@"
 )
-_ISSUE_BLOCKER_RE = re.compile(r"\*\*Blocked\*\* — (\d+) grammars? ")
+_ISSUE_BLOCKER_RE = re.compile(r"\*\*Workarounds\*\* — (\d+) grammars? ")
 
 
 def _physical_vendor_grammars() -> set[str]:
@@ -279,9 +279,7 @@ class ReportRendering(TestCase):
         cls.rows = dict(_ROW_DIFF_RE.findall(cls.report))
 
     def test_no_bare_question_mark_anywhere(self):
-        # The only legitimate '?' is the "Satisfies 0.25?" column header.
-        sanitized = self.report.replace("Satisfies 0.25?", "Satisfies 0.25")
-        self.assertNotIn("?", sanitized, "report still contains a bare '?' placeholder")
+        self.assertNotIn("?", self.report, "report still contains a bare '?' placeholder")
 
     def test_malformed_npm_version_renders_unknown_in_prose_not_bare_question(self):
         # A successful (200) npm /latest response that omits `version` leaves
@@ -305,8 +303,7 @@ class ReportRendering(TestCase):
              contextlib.redirect_stdout(buf):
             readiness.main()
         report = buf.getvalue()
-        sanitized = report.replace("Satisfies 0.25?", "Satisfies 0.25")
-        self.assertNotIn("?", sanitized)
+        self.assertNotIn("?", report)
         # The Ready bucket prose line for go shows the labeled 'unknown', not '?'.
         self.assertRegex(report, r"`tree-sitter-go`.*npm latest `unknown`")
 
@@ -366,10 +363,30 @@ class ReportRendering(TestCase):
         # Counts are derived from _render_report()'s mock corpus (all npm peer
         # deps mocked permissive): of the 10 npm-installed grammars, 9 render
         # Ready and 1 — tree-sitter-cpp — is the intentional pin (#1242), so it is
-        # not counted ready. The remaining blockers are that intentional pin
+        # not counted ready. The remaining workarounds are that intentional pin
         # and Swift's declaration-recovery hold.
         self.assertEqual(ready.groups(), ("9", "10"))
         self.assertEqual(blockers.group(1), "2")
+
+    def test_lists_every_pack_time_peer_patch_with_its_drop_condition(self):
+        patched = readiness.read_patched_peers()
+        # Guards the AUDITED_PEERS regex: the bundle script patches 8 manifests today.
+        self.assertGreaterEqual(len(patched), 8)
+        self.assertIn(f"## Pack-time peer patches ({len(patched)})", self.report)
+        for name, version, _ in patched:
+            self.assertIn(f"- `{name}@{version}`", self.report)
+        line = lambda pkg: next(l for l in self.report.splitlines() if l.startswith(f"- `{pkg}`"))
+        # npm is mocked to a permissive 9.9.9, so a direct pin can be bumped away...
+        self.assertIn("can drop: bump to `9.9.9`", line("tree-sitter-java@0.23.5"))
+        # ...but not an intentional pin, nor a nested copy owned by another grammar.
+        self.assertIn("required while intentionally pinned", line("tree-sitter-cpp@0.23.4"))
+        self.assertIn("transitive", line("tree-sitter-javascript@0.23.1"))
+        self.assertIn("transitive", line("tree-sitter-c@0.23.6"))
+
+    def test_target_runtime_is_the_bundled_pin(self):
+        pkg = json.loads((_REPO_ROOT / "gitnexus" / "package.json").read_text())
+        self.assertEqual(readiness.TARGET_RUNTIME, pkg["dependencies"]["tree-sitter"])
+        self.assertIn(f"Bundled runtime `tree-sitter@{readiness.TARGET_RUNTIME}`", self.report)
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():
@@ -414,8 +431,7 @@ class OfflineMode(TestCase):
 
     def test_offline_report_has_no_bare_question_mark(self):
         report, _ = self._render_offline()
-        sanitized = report.replace("Satisfies 0.25?", "Satisfies 0.25")
-        self.assertNotIn("?", sanitized)
+        self.assertNotIn("?", report)
 
 
 class VendoredAbiBranches(TestCase):
