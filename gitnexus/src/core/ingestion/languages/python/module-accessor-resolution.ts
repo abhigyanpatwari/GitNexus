@@ -14,9 +14,8 @@ import { pythonNamespaceBindingIdentity, pythonNamespaceReceiverPaths } from './
 import {
   pythonModuleAccessorFact,
   pythonCallResultAssignmentIsStraightLine,
-  positionKey,
 } from './module-accessors.js';
-import { pythonSubtypeCallPositionalCount } from './subtype-dispatch.js';
+import { positionKey, pythonSubtypeCallPositionalCount } from './subtype-dispatch.js';
 
 const contains = (outer: Range, inner: Range): boolean =>
   (outer.startLine < inner.startLine ||
@@ -60,7 +59,8 @@ export const createPythonReceiverNamespaceResolver: NonNullable<
         visited.add(id);
         const scope = scopes.scopeTree.getScope(id);
         if (scope === undefined) continue;
-        if (scope.kind === 'Function') byPosition.set(positionKey(scope.range.startLine, scope.range.startCol), scope);
+        if (scope.kind === 'Function')
+          byPosition.set(positionKey(scope.range.startLine, scope.range.startCol), scope);
         pending.push(...scopes.scopeTree.getChildren(id));
       }
       fileScopes.set(candidate.filePath, byPosition);
