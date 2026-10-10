@@ -60,7 +60,7 @@
     "test:coverage": "vitest run --coverage",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
     "test:benchmarks": "node --import tsx scripts/run-benchmarks.ts",
-    "postinstall": "node scripts/build-tree-sitter-grammars.cjs",
+    "postinstall": "node scripts/prepare-tree-sitter-bundle.cjs && node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/prepare-tree-sitter-bundle.cjs && node scripts/assert-publish-grammar-coverage.cjs && node scripts/assert-publish-fts-coverage.cjs && node scripts/build.js --web && node scripts/assert-web-assets.mjs web",
