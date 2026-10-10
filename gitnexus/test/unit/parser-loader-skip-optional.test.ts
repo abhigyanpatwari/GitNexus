@@ -1,12 +1,13 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { getOptionalGrammarExtensions } from '../../src/cli/optional-grammars.js';
 
 /**
  * Runtime opt-out for optional grammars (#2091, #2093).
  *
  * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` used to be an install-time-only env (the
  * postinstall build scripts read it). `parser-loader` now also honors it at
- * analyze time: when set, genuinely-optional grammars (swift/dart/kotlin/zig)
+ * analyze time: when set, genuinely-optional grammars (swift/dart/kotlin/zig/lua)
  * report unavailable so the ingestion pipeline skips their files, mirroring a
  * genuinely-absent binding. Grammars that are required `dependencies` routed
  * through the optional machinery for ABI safety (C — `severity: 'error'`) are
@@ -34,6 +35,10 @@ afterEach(() => {
 });
 
 describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
+  it('includes Lua in the CLI optional-grammar preflight registry', () => {
+    expect(getOptionalGrammarExtensions()).toContain('.lua');
+  });
+
   it('skip=1 reports every optional grammar as unavailable', async () => {
     const { isLanguageAvailable } = await freshLoader('1');
     expect(isLanguageAvailable(SupportedLanguages.Swift)).toBe(false);
@@ -45,10 +50,13 @@ describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
   });
 
   it('a comma list can name zig on its own', async () => {
+    const base = await freshLoader(undefined);
+    const luaBase = base.isLanguageAvailable(SupportedLanguages.Lua);
     const { isLanguageAvailable, isGrammarRuntimeSkipped } = await freshLoader('zig');
     expect(isLanguageAvailable(SupportedLanguages.Zig)).toBe(false);
     expect(isGrammarRuntimeSkipped(SupportedLanguages.Zig)).toBe(true);
     expect(isGrammarRuntimeSkipped(SupportedLanguages.Swift)).toBe(false);
+    expect(isLanguageAvailable(SupportedLanguages.Lua)).toBe(luaBase);
   });
 
   it('skip=all/true/* also skip every optional grammar', async () => {
@@ -58,6 +66,7 @@ describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
       expect(isLanguageAvailable(SupportedLanguages.Dart), `value=${v}`).toBe(false);
       expect(isLanguageAvailable(SupportedLanguages.Kotlin), `value=${v}`).toBe(false);
       expect(isLanguageAvailable(SupportedLanguages.Zig), `value=${v}`).toBe(false);
+      expect(isLanguageAvailable(SupportedLanguages.Lua), `value=${v}`).toBe(false);
     }
   });
 

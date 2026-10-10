@@ -43,7 +43,7 @@ interface GrammarSource {
   /**
    * When true, this grammar may be disabled at runtime via
    * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`. Set ONLY on genuinely-optional grammars
-   * (optionalDependencies / vendored — swift/dart/kotlin/zig). Required dependencies
+   * (optionalDependencies / vendored — swift/dart/kotlin/zig/lua). Required dependencies
    * routed through the optional machinery for ABI safety (e.g. C, which is
    * `optional: true` + `severity: 'error'`) must NOT set this — opting out of a
    * required parser is always an install/platform problem, never a user choice.
@@ -188,6 +188,15 @@ const SOURCES: Record<string, GrammarSource> = {
       'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
       `See ${ISSUES_URL}/2107.`,
   },
+  [SupportedLanguages.Lua]: {
+    load: () => requireVendoredGrammar('tree-sitter-lua'),
+    optional: true,
+    userSkippable: true,
+    unavailableNote:
+      'Lua parsing disabled: vendored `tree-sitter-lua` (under ' +
+      '`gitnexus/vendor/tree-sitter-lua`) failed to load. ' +
+      'Likely cause: the native binding did not build at install or no prebuild exists for this platform.',
+  },
   [SupportedLanguages.Zig]: {
     load: () => requireVendoredGrammar('tree-sitter-zig'),
     optional: true,
@@ -226,7 +235,7 @@ const loadCache = new Map<string, LoadResult>();
 const logged = new Set<string>();
 
 /**
- * Runtime opt-out for genuinely-optional grammars (Swift/Dart/Kotlin).
+ * Runtime opt-out for genuinely-optional grammars (Swift/Dart/Kotlin/Lua).
  *
  * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` has historically been an *install-time*
  * env only — the postinstall build scripts read it to skip building the
@@ -240,7 +249,7 @@ const logged = new Set<string>();
  * Accepts `1` / `true` / `all` / `*` (every skippable grammar), or a
  * comma-separated list of language ids and/or package names
  * (e.g. `swift,tree-sitter-dart`). Only grammars flagged `userSkippable` (the
- * genuinely-optional swift/dart/kotlin) can be skipped — required dependencies
+ * genuinely-optional swift/dart/kotlin/lua) can be skipped — required dependencies
  * routed through the optional machinery for ABI safety (C) carry no
  * `userSkippable` and are never skippable here.
  */

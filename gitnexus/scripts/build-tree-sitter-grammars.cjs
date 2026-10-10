@@ -34,7 +34,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 // Registry. `display`/`ext` drive the human-readable warnings; `required`
 // grammars ignore the opt-out gate. Insertion order == build order (c first).
@@ -46,6 +46,8 @@ const GRAMMARS = {
   swift: { required: false, display: 'Swift', ext: '.swift' },
   kotlin: { required: false, display: 'Kotlin', ext: '.kt/.kts' },
   zig: { required: false, display: 'Zig', ext: '.zig' },
+  lua: { required: false, display: 'Lua', ext: '.lua' },
+
 };
 
 const skipOptional = process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1';
@@ -83,6 +85,7 @@ function buildGrammar(short) {
     try {
       require.resolve('node-addon-api');
       require.resolve('node-gyp-build');
+      require.resolve('node-gyp/bin/node-gyp.js');
     } catch (resolveErr) {
       console.warn(
         `${tag} Skipping build: hoisted build deps not resolvable (${resolveErr.message}).`,
@@ -94,7 +97,12 @@ function buildGrammar(short) {
     }
 
     console.log(`${tag} No prebuild for this platform — building native binding from source...`);
-    execSync('npx node-gyp rebuild', { cwd: dir, stdio: 'pipe', timeout: 180000 });
+    const nodeGyp = require.resolve('node-gyp/bin/node-gyp.js');
+    execFileSync(process.execPath, [nodeGyp, 'rebuild'], {
+      cwd: dir,
+      stdio: 'pipe',
+      timeout: 180000,
+    });
     console.log(`${tag} Native binding built successfully`);
   } catch (err) {
     console.warn(`${tag} Could not build native binding:`, err.message);

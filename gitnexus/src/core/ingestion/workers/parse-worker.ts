@@ -59,7 +59,8 @@ type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 // `isLanguageAvailable` must re-introduce the gate here. (The cleaner end-state
 // — routing this table through `parser-loader.getLanguageGrammar` so there is
 // one loader — is the deferred Tier-1 consolidation.)
-// Swift/Dart/Kotlin/C/Zig are vendored grammars loaded from `vendor/` by absolute
+// Swift/Dart/Kotlin/C/Zig/Lua/ObjectiveC are vendored grammars loaded from
+// `vendor/` by absolute
 // path (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Each
 // may be absent on a platform without a prebuild or a toolchain-less /
 // `--ignore-scripts` install, so every load is guarded so a missing binding
@@ -82,6 +83,11 @@ try {
 let C: TreeSitterLanguage | null = null;
 try {
   C = requireVendoredGrammar('tree-sitter-c') as TreeSitterLanguage;
+} catch {}
+
+let Lua: TreeSitterLanguage | null = null;
+try {
+  Lua = requireVendoredGrammar('tree-sitter-lua') as TreeSitterLanguage;
 } catch {}
 
 let Zig: TreeSitterLanguage | null = null;
@@ -606,6 +612,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
+  ...(Lua ? { [SupportedLanguages.Lua]: Lua } : {}),
   ...(Zig ? { [SupportedLanguages.Zig]: Zig } : {}),
 };
 

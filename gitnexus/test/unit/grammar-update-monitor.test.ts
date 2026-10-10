@@ -73,11 +73,12 @@ describe('COMPATIBLE_ABI gate', () => {
 });
 
 describe('GRAMMARS registry', () => {
-  it('covers all seven vendored grammars, including Objective-C and Zig', () => {
+  it('covers all eight vendored grammars, including Objective-C, Zig and Lua', () => {
     expect(Object.keys(mod.GRAMMARS).sort()).toEqual([
       'c',
       'dart',
       'kotlin',
+      'lua',
       'objc',
       'proto',
       'swift',
@@ -86,9 +87,10 @@ describe('GRAMMARS registry', () => {
     expect(mod.GRAMMARS.swift.npm).toBe('tree-sitter-swift');
     expect(mod.GRAMMARS.dart.github).toContain('tree-sitter-dart');
     expect(mod.GRAMMARS.zig.npm).toBe('@tree-sitter-grammars/tree-sitter-zig');
+    expect(mod.GRAMMARS.lua.npm).toBe('tree-sitter-lua');
   });
 
-  it('marks c, kotlin, and objc report-only; swift/dart/proto/zig are auto-updatable', () => {
+  it('marks c, kotlin, objc, and lua report-only; swift/dart/proto/zig are auto-updatable', () => {
     expect(mod.GRAMMARS.c.npm).toBe('tree-sitter-c');
     expect(mod.GRAMMARS.c.hold).toBeTruthy(); // ABI-pinned: detected/reported, never auto-applied
     expect(mod.GRAMMARS.objc.npm).toBe('tree-sitter-objc');
@@ -97,6 +99,10 @@ describe('GRAMMARS registry', () => {
     // support (#169); npm latest (0.3.8) lacks it, so the strict-inequality
     // isNewer would auto-revert the pin without this hold.
     expect(mod.GRAMMARS.kotlin.hold).toBeTruthy();
+    // lua ships nan-based bindings incompatible with the pinned tree-sitter
+    // runtime; vendored with a rebuilt Napi binding, so the monitor must not
+    // auto-bump until the runtime upgrades and upstream migrates to Napi.
+    expect(mod.GRAMMARS.lua.hold).toBeTruthy();
     for (const k of ['swift', 'dart', 'proto', 'zig']) {
       expect(mod.GRAMMARS[k].hold).toBeUndefined();
     }
