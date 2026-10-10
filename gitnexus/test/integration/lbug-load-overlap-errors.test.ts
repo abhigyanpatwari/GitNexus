@@ -59,6 +59,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   emitMock.mockReset();
+  vi.restoreAllMocks();
 });
 
 afterAll(async () => {
@@ -256,5 +257,193 @@ describe('loadGraphToLbug overlap error paths (#2226 F2)', () => {
     await expect(adapter.loadGraphToLbug(graph, tmpBase, storagePath)).rejects.toThrow(
       /Staging CSV for File is missing/,
     );
+  });
+});
+
+describe('graph write buffer exhaustion (#3526)', () => {
+  let fixtureId = 0;
+
+  const emitGraphCSVs = (malformedRelationship = false) => {
+    const prefix = `pool-${++fixtureId}`;
+    emitMock.mockImplementation(
+      async (_g: unknown, _r: unknown, dir: string, onNodes?: (n: NodeFiles) => void) => {
+        await fs.mkdir(dir, { recursive: true });
+        const csvPath = path.join(dir, 'file.csv');
+        await fs.writeFile(
+          csvPath,
+          'id,name,filePath,content\n' +
+            `"File:${prefix}-a.ts","a.ts","${prefix}-a.ts",""\n` +
+            `"File:${prefix}-b.ts","b.ts","${prefix}-b.ts",""\n`,
+        );
+        const nodeFiles = new Map([['File', { csvPath, rows: 2 }]]) as NodeFiles;
+        onNodes?.(nodeFiles);
+        const relPath = path.join(dir, 'rel_File_File.csv');
+        await fs.writeFile(
+          relPath,
+          REL_HEADER +
+            ',staticGated\n' +
+            `"File:${prefix}-a.ts","File:${prefix}-b.ts","IMPORTS",${malformedRelationship ? 'bad' : '1'},"first",0,0\n` +
+            `"File:${prefix}-b.ts","File:${prefix}-a.ts","IMPORTS",1,"second",0,0\n`,
+        );
+        return {
+          ...emptyResult(),
+          nodeFiles,
+          relsByPair: new Map([['File|File', { csvPath: relPath, rows: 2 }]]),
+          totalValidRels: 2,
+        };
+      },
+    );
+    return prefix;
+  };
+
+  // Keep real native results (including warning cursors and their cleanup),
+  // replacing only the particular statement that simulates the failure.
+  const injectQueries = async (replace: (sql: string) => Error | string | undefined) => {
+    const { default: lbug } = await import('@ladybugdb/core');
+    const originalQuery = lbug.Connection.prototype.query;
+    const seen: string[] = [];
+    vi.spyOn(lbug.Connection.prototype, 'query').mockImplementation(function (
+      this: unknown,
+      sql: string,
+      ...rest: unknown[]
+    ) {
+      seen.push(sql);
+      const replacement = replace(sql);
+      if (replacement instanceof Error) return Promise.reject(replacement);
+      return originalQuery.call(this, replacement ?? sql, ...rest);
+    });
+    return seen;
+  };
+
+  const isRelationshipCopy = (sql: string) => /^COPY CodeRelation\b/.test(sql);
+  const isFallbackInsert = (sql: string) => /CREATE \(a\)-\[:CodeRelation/.test(sql);
+
+  it.each(['node', 'relationship'])(
+    'aborts a first %s COPY exhaustion without retrying or falling back',
+    async (phase) => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      emitGraphCSVs();
+      const original = new Error('Unable to allocate memory! The buffer pool is full!');
+      const seen = await injectQueries((sql) => {
+        const target = phase === 'node' ? /^COPY File\(/.test(sql) : isRelationshipCopy(sql);
+        return target && !sql.includes('IGNORE_ERRORS') ? original : undefined;
+      });
+
+      const error = await adapter
+        .loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath)
+        .catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({ cause: original });
+      expect((error as Error).message).toContain(original.message);
+      expect((error as Error).message).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
+      expect(seen.some((sql) => sql.includes('IGNORE_ERRORS'))).toBe(false);
+      expect(seen.some(isFallbackInsert)).toBe(false);
+    },
+  );
+
+  it('aborts retry exhaustion before relationship fallback', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    emitGraphCSVs();
+    const original = new Error('Unable to allocate memory during relationship retry');
+    const seen = await injectQueries((sql) => {
+      if (isRelationshipCopy(sql)) {
+        return sql.includes('IGNORE_ERRORS') ? original : new Error('ordinary COPY failure');
+      }
+    });
+
+    const error = await adapter
+      .loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath)
+      .catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ cause: original });
+    expect((error as Error).message).toContain(original.message);
+    expect((error as Error).message).toContain('ordinary COPY failure');
+    expect((error as Error).message).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
+    expect(seen.filter(isRelationshipCopy)).toHaveLength(2);
+    expect(seen.some(isFallbackInsert)).toBe(false);
+  });
+
+  it('aborts when a retained resource warning is beyond the five logged samples', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    emitGraphCSVs();
+    const seen = await injectQueries((sql) => {
+      if (isRelationshipCopy(sql) && !sql.includes('IGNORE_ERRORS')) {
+        return new Error('ordinary COPY failure');
+      }
+      if (sql.startsWith('CALL SHOW_WARNINGS()')) {
+        return (
+          "UNWIND ['row one', 'row two', 'row three', 'row four', 'row five', " +
+          "'Unable to allocate memory in COPY'] AS message RETURN message, '' AS file_path, 1 AS line_number"
+        );
+      }
+    });
+
+    await expect(
+      adapter.loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath),
+    ).rejects.toThrow(/Unable to allocate memory.*GITNEXUS_LBUG_BUFFER_POOL_SIZE/);
+    expect(seen.some(isFallbackInsert)).toBe(false);
+  });
+
+  it('stops fallback on resource exhaustion before the next relationship', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    emitGraphCSVs();
+    const original = new Error('The buffer pool is full during CREATE');
+    const seen = await injectQueries((sql) => {
+      if (isRelationshipCopy(sql)) return new Error('ordinary COPY failure');
+      if (isFallbackInsert(sql)) return original;
+    });
+
+    const error = await adapter
+      .loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath)
+      .catch((err: unknown) => err);
+    expect(error).toMatchObject({ cause: original });
+    expect((error as Error).message).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
+    expect(seen.filter(isFallbackInsert)).toHaveLength(1);
+  });
+
+  it('still skips an ordinary fallback row error and inserts subsequent relationships', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const prefix = emitGraphCSVs();
+    let inserts = 0;
+    const seen = await injectQueries((sql) => {
+      if (isRelationshipCopy(sql)) return new Error('ordinary COPY failure');
+      if (isFallbackInsert(sql) && ++inserts === 1) return new Error('ordinary row failure');
+    });
+
+    await expect(
+      adapter.loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath),
+    ).resolves.toMatchObject({ success: true });
+    expect(seen.filter(isFallbackInsert)).toHaveLength(2);
+    const rows = await adapter.executeQuery(
+      `MATCH (a:File {id: 'File:${prefix}-b.ts'})-[r:CodeRelation]->(b) RETURN r.reason AS reason`,
+    );
+    expect(rows).toEqual([{ reason: 'second' }]);
+  });
+
+  it('loads a healthy graph through real COPY', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const prefix = emitGraphCSVs();
+    await expect(
+      adapter.loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath),
+    ).resolves.toMatchObject({ success: true, warnings: [] });
+    const rows = await adapter.executeQuery(
+      `MATCH (a:File)-[r:CodeRelation]->(b) WHERE a.id STARTS WITH 'File:${prefix}-' RETURN count(r) AS count`,
+    );
+    expect(Number(rows[0].count)).toBe(2);
+  });
+
+  it('still skips an ordinary malformed relationship during COPY retry without replaying it', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const prefix = emitGraphCSVs(true);
+    const seen = await injectQueries(() => undefined);
+    await expect(
+      adapter.loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath),
+    ).resolves.toMatchObject({ success: true });
+    expect(seen.filter(isRelationshipCopy)).toHaveLength(2);
+    expect(seen.some(isFallbackInsert)).toBe(false);
+    const rows = await adapter.executeQuery(
+      `MATCH (a:File)-[r:CodeRelation]->(b) WHERE a.id STARTS WITH 'File:${prefix}-' RETURN r.reason AS reason`,
+    );
+    expect(rows).toEqual([{ reason: 'second' }]);
   });
 });
