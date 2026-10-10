@@ -71,6 +71,10 @@ jobs:
               # deliberately contain use-before-init / unused-variable shapes).
               - '**/test/fixtures/**'
               - '**/test/**/fixtures/**'
+              # Parsed-only accuracy corpus includes deliberate command injection
+              # and broken Python imports/returns. It is never executed or packed;
+              # retain security analysis of the surrounding benchmark harness.
+              - 'gitnexus/bench/tool-accuracy/fixtures/**'
               # GET /api/grep intentionally builds RegExp from the query string
               # (literal=1 escapes). ReDoS is handled by worker terminate() —
               # see SECURITY.md. Inline codeql[] comments do not clear the

@@ -1,0 +1,56 @@
+name: Dedicated evolution runner power
+description: Use the protected environment's existing OIDC role to start or stop its EC2 runner.
+inputs:
+  operation:
+    description: start or stop
+    required: true
+  role-arn:
+    description: Existing scoped AWS OIDC role
+    required: true
+  instance-id:
+    description: Existing dedicated EC2 instance
+    required: true
+  region:
+    description: Instance region
+    required: true
+  stop-schedule:
+    description: Existing EventBridge weekly stop in DAY HH:MM UTC format
+    required: true
+outputs:
+  cleanup_required:
+    description: The instance was claimed and must be stopped, including on startup failure.
+    value: ${{ steps.power.outputs.cleanup_required }}
+  stop_deadline_epoch:
+    description: Earliest configured stop or 24-hour cap, as Unix seconds.
+    value: ${{ steps.power.outputs.stop_deadline_epoch }}
+runs:
+  using: composite
+  steps:
+    - name: Check startup configuration and stop window
+      if: inputs.operation == 'start'
+      shell: bash
+      env:
+        GITNEXUS_EVOLUTION_AWS_ROLE_ARN: ${{ inputs.role-arn }}
+        GITNEXUS_EVOLUTION_EC2_INSTANCE_ID: ${{ inputs.instance-id }}
+        GITNEXUS_EVOLUTION_AWS_REGION: ${{ inputs.region }}
+        GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC: ${{ inputs.stop-schedule }}
+      run: python3 .github/scripts/evolution-runner.py check
+    - name: Assume the existing protected AWS role
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.region }}
+        role-duration-seconds: 1800
+        mask-aws-account-id: true
+        retry-max-attempts: 3
+        unset-current-credentials: true
+    - name: Change power and verify the resulting state
+      id: power
+      shell: bash
+      env:
+        GITNEXUS_EVOLUTION_AWS_ROLE_ARN: ${{ inputs.role-arn }}
+        GITNEXUS_EVOLUTION_EC2_INSTANCE_ID: ${{ inputs.instance-id }}
+        GITNEXUS_EVOLUTION_AWS_REGION: ${{ inputs.region }}
+        GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC: ${{ inputs.stop-schedule }}
+      # The expression emits only literal command names, never supplied text.
+      run: python3 .github/scripts/evolution-runner.py ${{ inputs.operation == 'start' && 'start' || 'stop' }}

@@ -287,6 +287,7 @@ jobs:
       # id-token: write — npm provenance attestation.
       contents: write
       id-token: write
+      actions: read # Fetch exact-revision agent evidence from the trusted main workflow.
     outputs:
       # Two distinct step IDs feed this output; exactly one fires per run.
       vtag: ${{ steps.rc-tags.outputs.vtag || steps.stable-vtag.outputs.vtag }}
@@ -614,6 +615,17 @@ jobs:
           NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || 'latest' }}
         run: npm publish --dry-run --tag "$NPM_TAG"
 
+      # Every release carries this run's fixed-answer accuracy. Paid paired
+      # agent runs gate only stable releases; RCs are measured on a schedule.
+      - name: Download this release's tool accuracy
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-tool-accuracy
+          path: ${{ runner.temp }}/release-evidence
+      - name: Require paired agent evidence for this stable commit
+        if: needs.route.outputs.mode == 'stable'
+        uses: ./.github/actions/require-agent-release-evidence
+
       # ── Acquire the "rc lock" BEFORE publishing (idempotency anchor) ─────
       # We create two refs and push atomically:
       #   v<RC_VERSION>  → annotated tag on a detached release commit whose
@@ -842,6 +854,12 @@ jobs:
             echo "$NOTES" > /tmp/release-notes.md
             echo "fallback=false" >> "$GITHUB_OUTPUT"
           fi
+          {
+            printf '\n'
+            cat "$RUNNER_TEMP/release-evidence/accuracy.md"
+            printf '\n'
+            cat "$RUNNER_TEMP/release-evidence/agent-evaluation.md"
+          } >> /tmp/release-notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
@@ -853,11 +871,11 @@ jobs:
                 || steps.vtag-gate.outputs.vtag }}
           prerelease: ${{ needs.route.outputs.mode == 'rc' }}
           make_latest: ${{ needs.route.outputs.mode == 'stable' && 'true' || 'false' }}
-          # Stable: prefer CHANGELOG body, fall back to auto-generated.
-          # RC: always auto-generated + the prerelease body block below.
-          body_path: >-
-            ${{ needs.route.outputs.mode == 'stable' && steps.changelog.outputs.fallback == 'false'
-                && '/tmp/release-notes.md' || '' }}
+          # Stable: CHANGELOG body (or auto-generated notes) plus measured
+          # evidence. RC: auto-generated + the prerelease body block below.
+          body_path: ${{ needs.route.outputs.mode == 'stable' && '/tmp/release-notes.md' || '' }}
+          files: ${{ runner.temp }}/release-evidence/*
+          fail_on_unmatched_files: true
           generate_release_notes: >-
             ${{ needs.route.outputs.mode == 'rc'
                 || steps.changelog.outputs.fallback == 'true' }}
@@ -928,6 +946,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     permissions:
       contents: read
+      actions: read
       packages: write
       id-token: write
       attestations: write
