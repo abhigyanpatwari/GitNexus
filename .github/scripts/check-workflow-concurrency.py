@@ -19,6 +19,8 @@ Rules:
      This is checked by substring containment rather than prefix match because
      the group value is a conditional expression that resolves to a `CI-…` or
      `docker-build-push-…` literal at runtime.
+     The two dedicated EC2 workflows instead share the exact resource lock
+     `gitnexus-evolution-runner`, including their hosted cleanup jobs.
 
 We deliberately do not use a YAML library — keeps the script dependency-free
 on any vanilla runner. `on:` block parsing is line-based and handles both the
@@ -33,6 +35,7 @@ import sys
 
 
 REQUIRED_TOKENS = ("${{ github.workflow }}", "CI-", "docker-build-push-")
+EC2_WORKFLOWS = {"gitnexus-skill-evolution.yml", "release-evaluation.yml"}
 
 
 def is_reusable(lines: list[str]) -> bool:
@@ -151,7 +154,8 @@ def check(workflows_dir: pathlib.Path) -> int:
             fail = 1
             continue
 
-        if not any(token in group for token in REQUIRED_TOKENS):
+        shared_ec2_lock = path.name in EC2_WORKFLOWS and group == "gitnexus-evolution-runner"
+        if not shared_ec2_lock and not any(token in group for token in REQUIRED_TOKENS):
             print(
                 f"::error file={path}::concurrency.group `{group}` must "
                 f"reference one of {REQUIRED_TOKENS} (use ${{{{ github.workflow }}}} "
