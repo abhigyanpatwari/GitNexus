@@ -7,6 +7,41 @@ permissions:
   contents: read
 
 jobs:
+  tool-accuracy:
+    name: release / deterministic tool accuracy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Install ripgrep for rename text search
+        run: |
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install --yes --no-install-recommends ripgrep
+      - name: Check fixed answers against real tools
+        working-directory: gitnexus
+        run: node --import tsx bench/tool-accuracy/run.ts --check --out "$RUNNER_TEMP/tool-accuracy"
+      - name: Publish accuracy summary
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/tool-accuracy/accuracy.md" ]]; then
+            cat "$RUNNER_TEMP/tool-accuracy/accuracy.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload release accuracy evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-tool-accuracy
+          path: |
+            ${{ runner.temp }}/tool-accuracy/accuracy.json
+            ${{ runner.temp }}/tool-accuracy/accuracy.md
+          if-no-files-found: error
+          retention-days: 30
+
   # Ubuntu full-suite coverage, sharded. Each shard writes a vitest blob report
   # (carrying its slice of V8 coverage) with thresholds forced OFF — a single
   # shard's partial coverage can't meet the gate. The coverage-merge job below
@@ -1046,6 +1081,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Oracle controls replay the immutable historical task sources.
+          fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.18.0'
@@ -1091,9 +1128,23 @@ jobs:
           npm ci
           npm run build
         working-directory: gitnexus
+      # Release evaluation grades tasks with dependencies built at the pinned
+      # task commit; prove the hidden oracles against that same toolchain.
+      - name: Build the pinned task toolchain that grades release evaluation
+        working-directory: eval
+        run: |
+          set -euo pipefail
+          sha="$(uv run --locked --extra dev python -m workflow_bench.release_report task-sha)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          git -C .. worktree add --detach "${RUNNER_TEMP}/tasks-base" "$sha"
+          cd "${RUNNER_TEMP}/tasks-base"
+          npm ci --audit=false --fund=false
+          npm ci --prefix gitnexus --audit=false --fund=false
+          npm run build --prefix gitnexus
       - name: Prove process-tree and sandbox containment
         env:
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+          GITNEXUS_ORACLE_TASK_DEPENDENCIES: ${{ runner.temp }}/tasks-base
         run: >-
           uv run --locked --extra dev python -m pytest
           tests/test_process_control.py
@@ -1102,8 +1153,11 @@ jobs:
           tests/test_ce_plugin_runtime.py
           tests/test_offline_sweep_integration.py
           tests/test_mock_provider.py
+          tests/test_release_evaluation_smoke.py
           tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant
           tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
+          tests/test_oracle_assets.py::test_shipped_oracles_reject_task_base_and_accept_reference_fixes
+          tests/test_oracle_assets.py::test_in_flight_retry_oracle_rejects_startup_only_repairs
           -q --junitxml=pytest-ubuntu.xml
         working-directory: eval
       - name: Upload pytest execution report

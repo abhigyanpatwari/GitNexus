@@ -32,7 +32,7 @@ from .proposer_sandbox import (
     ReadOnlyMount,
     SandboxError,
     _prepare_clone_target,
-    _real_directory,
+    real_directory,
 )
 
 # The shipped index is roughly 428 MiB.  These are containment limits rather
@@ -130,8 +130,8 @@ class TaskAssetSnapshot:
     def materialize(self, clone: Path) -> None:
         """Replace every declared ``sandbox_copy`` root with its exact snapshot tree."""
 
-        clone = _real_directory(clone, label="asset-staging clone")
-        snapshot_root = _real_directory(self.root / "sandbox-copy", label="task asset snapshot")
+        clone = real_directory(clone, label="asset-staging clone")
+        snapshot_root = real_directory(self.root / "sandbox-copy", label="task asset snapshot")
         staging = Path(tempfile.mkdtemp(prefix=".wfbench-assets-", dir=clone.parent))
         fallback_bytes = 0
         try:
@@ -160,8 +160,8 @@ class TaskAssetSnapshot:
     def dependency_mounts(self, clone: Path) -> list[ReadOnlyMount]:
         """Mount only immutable captured dependency roots into an arm clone."""
 
-        clone = _real_directory(clone, label="dependency clone")
-        snapshot_root = _real_directory(self.root, label="task asset snapshot")
+        clone = real_directory(clone, label="dependency clone")
+        snapshot_root = real_directory(self.root, label="task asset snapshot")
         mounts: list[ReadOnlyMount] = []
         for dependency in self.dependencies:
             source = snapshot_root / Path(*dependency.snapshot_path.parts)
@@ -219,7 +219,7 @@ class TaskAssetCache:
 
         if self._closed:
             raise SandboxError("task asset cache is already closed")
-        repo_identity = _real_directory(repo, label="task asset repository")
+        repo_identity = real_directory(repo, label="task asset repository")
         declarations, relative_paths = _sandbox_copy_declarations(task)
         dependency_declarations = _sandbox_dependency_declarations(task)
         dependency_identity = tuple((declaration.source, declaration.target) for declaration in dependency_declarations)
@@ -572,7 +572,7 @@ def _is_harness_sandbox_copy(relative: PurePosixPath) -> bool:
 
 
 def _harness_sandbox_copy_root() -> Path:
-    return _real_directory(runtime_mounts.HARNESS_ROOT, label="harness sandbox_copy root")
+    return real_directory(runtime_mounts.HARNESS_ROOT, label="harness sandbox_copy root")
 
 
 def _harness_sandbox_copy_identity(relative_paths: tuple[PurePosixPath, ...]) -> str:
@@ -1114,7 +1114,7 @@ def stage_task_assets(
     for containment tests and external callers.
     """
 
-    repo_identity = _real_directory(repo, label="task asset repository")
+    repo_identity = real_directory(repo, label="task asset repository")
     declarations, _ = _sandbox_copy_declarations(task)
     if snapshot is not None:
         if snapshot.repo_identity != repo_identity or snapshot.declarations != declarations:

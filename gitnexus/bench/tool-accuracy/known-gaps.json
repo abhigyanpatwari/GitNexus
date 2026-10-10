@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "baselineSourceSha": "dd096e690c06e5d54ab3595c63b83f15e04b6191",
+  "gaps": [
+    {
+      "id": "rename.comments-strings",
+      "issue": 3486,
+      "reason": "Whole-file word replacement rewrites comments and strings (#3486).",
+      "baselineActual": [
+        "rename/writer.ts:10:// closeWriter is a comment, not a reference.",
+        "rename/writer.ts:11:export const title = 'closeWriter';"
+      ]
+    },
+    {
+      "id": "rename.homonyms",
+      "issue": 3486,
+      "reason": "Whole-file word replacement rewrites unrelated same-named symbols (#3486).",
+      "baselineActual": [
+        "rename/homonym.ts:1:export function closeWriter(): string {",
+        "rename/writer.ts:5:closeWriter(): void {}"
+      ]
+    },
+    {
+      "id": "routes.helper-registration",
+      "issue": 3487,
+      "reason": "A literal route forwarded through a local helper is not extracted (#3487).",
+      "baselineActual": []
+    },
+    {
+      "id": "api.template-wrapper",
+      "issue": 3488,
+      "reason": "Leading base-URL interpolation prevents wrapper consumer linking (#3488).",
+      "baselineActual": []
+    },
+    {
+      "id": "explain.inline-flow",
+      "issue": 3489,
+      "reason": "Inline route callbacks lack the cross-function source summary (#3489).",
+      "baselineActual": []
+    },
+    {
+      "id": "explain.guard",
+      "issue": 3490,
+      "reason": "Guard-style sanitizers are a documented taint limitation (#3490).",
+      "baselineActual": ["handleGuarded -> runGit command-injection"]
+    },
+    {
+      "id": "explain.cross-lines",
+      "issue": 3491,
+      "reason": "Cross-function declarations and hops are displayed 0-based (#3491).",
+      "baselineActual": [
+        "hop 0 handleUnsafe@13",
+        "hop 1 blameSummary@6",
+        "hop 2 runGit@3",
+        "sink runGit@3",
+        "source handleUnsafe@13"
+      ]
+    },
+    {
+      "id": "python.module-chain",
+      "issue": 3497,
+      "reason": "Compound receiver resolution does not follow module-return helpers (#3497).",
+      "baselineActual": []
+    },
+    {
+      "id": "python.module-local",
+      "issue": 3497,
+      "reason": "Module-return helper result is not bound as a namespace alias (#3497).",
+      "baselineActual": []
+    },
+    {
+      "id": "python.factory-conditional",
+      "issue": 3498,
+      "reason": "Conditional RHS loses annotated factory return type (#3498).",
+      "baselineActual": []
+    },
+    {
+      "id": "python.factory-qualified",
+      "issue": 3498,
+      "reason": "Module-qualified factory return type is not followed (#3498).",
+      "baselineActual": []
+    },
+    {
+      "id": "python.factory-boolean",
+      "issue": 3498,
+      "reason": "Boolean RHS loses annotated factory return type (#3498).",
+      "baselineActual": []
+    },
+    {
+      "id": "summary.omitted-lower-bound",
+      "issue": 3497,
+      "reason": "Capped-out dropped names ignore omittedNames and claim exact (#3497).",
+      "baselineActual": ["exact"]
+    }
+  ]
+}
