@@ -54,9 +54,9 @@ checkout and reports nothing changed, which reads as a verified refactor.
 
 ```
 - [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
-- [ ] rename({symbol_name: "oldName", new_name: "newName", dry_run: true}) — preview all edits
+- [ ] rename_preview({symbol_name: "oldName", new_name: "newName"}) — preview semantic edits
 - [ ] Confirm the previewed file paths are in the bound repository/worktree
-- [ ] Review graph edits (high confidence) and text_search edits (review carefully)
+- [ ] Review exact graph-backed semantic spans, coverage, and limitations
 - [ ] If satisfied: rename({..., dry_run: false}) — apply edits
 - [ ] detect_changes() — verify only expected files changed
 - [ ] Run tests for affected processes
@@ -89,14 +89,34 @@ checkout and reports nothing changed, which reads as a verified refactor.
 
 ## Tools
 
-**rename** — automated multi-file rename:
+**rename_preview** — read-only semantic rename preview:
 
 ```
-rename({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app", dry_run: true})
+rename_preview({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app"})
 → 12 edits across 8 files
-→ 10 graph edits (high confidence), 2 text_search edits (review)
-→ Changes: [{file_path, edits: [{line, old_text, new_text, confidence}]}]
+→ semantic_edits: 12, coverage: {name: "gitnexus-semantic", scope: "indexed-repository", limitations: [...]}
+→ changes: [{file_path, edits: [{start, length, line, old_text, new_text, confidence: "semantic"}]}]
 ```
+
+Rename uses the indexed graph and GitNexus's own semantic layer. Language
+providers resolve current source through scopes and bindings; no compiler or
+language service is loaded. Unsupported syntax, ambiguous bindings, stale
+declarations, and incomplete occurrence coverage fail closed. Coverage describes
+indexed files in the target language, excluding unindexed files and external consumers.
+Unsupported constructor/inheritance families, unclassified token roles, and
+computed references are refused. Any detected computed access in the analyzed
+language scope currently blocks rename, including accesses outside edited files.
+PHP rename is unsupported until providers cover case-insensitive symbol names.
+There is no regex fallback: legacy `graph_edits` and `text_search_edits` are zero.
+Comments, strings, and unrelated same-spelled symbols are not replacements.
+
+`rename` remains available with `dry_run: true` (default) or explicit
+`dry_run: false`. Both use the same planner. Results use `result_version: 2`;
+`total_edits` counts occurrences, not matching lines. Exact replacements are shown in `new_text`. Separate preview and apply calls recompute the plan.
+Check `planning_status`, `application_status`, and `applied`. After a write
+failure, `changes` and counts describe only landed edits; inspect `failed_files`
+before retrying. Run the project validation suite after applying.
+Neither tool accepts `branch`: they inspect the current checkout.
 
 **impact** — map all dependents first:
 
@@ -146,11 +166,11 @@ RETURN caller.name, caller.filePath ORDER BY caller.filePath
 0. list_repos {}
    → total: 2 (my-app, billing-api) — both define validateUser, so bind explicitly
 
-1. rename({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app", dry_run: true})
-   → 12 edits: 10 graph (safe), 2 text_search (review)
-   → Files: validator.ts, login.ts, middleware.ts, config.json...
+1. rename_preview({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app"})
+   → 12 semantic occurrences in the selected TypeScript project
+   → Files: validator.ts, login.ts, middleware.ts...
 
-2. Review text_search edits (config.json: dynamic reference!)
+2. Review semantic spans and project coverage; inspect dynamic references separately
 
 3. rename({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app", dry_run: false})
    → Applied 12 edits across 8 files

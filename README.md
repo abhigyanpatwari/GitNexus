@@ -158,7 +158,7 @@ flowchart TB
 
 ## What Your AI Agent Gets
 
-### 19 MCP tools (17 per-repo + 2 group)
+### 20 MCP tools (18 per-repo + 2 group)
 
 | Tool             | What It Does                                                           |
 | ---------------- | ---------------------------------------------------------------------- |
@@ -169,7 +169,8 @@ flowchart TB
 | `trace`          | Shortest directed path between two symbols (call + class-member edges) |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
 | `check`          | Read-only structural checks against the indexed graph                  |
-| `rename`         | Multi-file coordinated rename with graph + text search                 |
+| `rename_preview` | Read-only graph and semantic rename preview       |
+| `rename`         | Preview or apply exact semantic rename occurrences                     |
 | `cypher`         | Raw Cypher graph queries                                               |
 | `route_map`      | API route map — which components fetch which endpoints, and handlers   |
 | `tool_map`       | MCP/RPC tool definitions — where they're defined and handled           |
@@ -372,7 +373,7 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 <details>
 <summary><strong>MCP read-only mode</strong></summary>
 
-Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. Raw `cypher`, rename and group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
+Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. The read-only `rename_preview` is available. Raw `cypher`, destructive `rename`, and group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
 
 The default is unchanged when the variable is unset or `0`. Any other value fails server startup rather than silently weakening the policy.
 
@@ -874,18 +875,56 @@ changed_symbols: [validateUser, AuthService, ...]
 affected_processes: [LoginFlow, RegistrationFlow, ...]
 ```
 
-### Rename (Multi-File)
+### Rename (Graph and Semantic Layer)
 
+```js
+rename_preview({symbol_name: "validateUser", new_name: "verifyUser", repo: "my-app"})
+// For an ambiguous name, repeat with the symbol_uid from context().
 ```
-rename({symbol_name: "validateUser", new_name: "verifyUser", dry_run: true})
 
+```text
+result_version: 2
 status: success
+planning_status: ready
+application_status: not_requested
+applied: false
 files_affected: 5
 total_edits: 8
-graph_edits: 6     (high confidence)
-text_search_edits: 2  (review carefully)
-changes: [...]
+semantic_edits: 8
+graph_edits: 0
+text_search_edits: 0
+text_search: not_used
+coverage: {name: "gitnexus-semantic", scope: "indexed-repository", languages: [...], limitations: [...], ...}
+changes: [{file_path, edits: [{start, length, old_text, new_text, line, confidence: "semantic"}]}]
 ```
+
+Review the exact UTF-16 spans and coverage, then call `rename` with the same
+selectors and `dry_run: false` to apply. `rename` still defaults to preview.
+Counts describe occurrences, including multiple edits on one line. The graph
+selects indexed declarations and files; GitNexus's language providers rebuild
+semantic scopes from the current source and resolve exact name spans.
+
+Rename does not load a compiler or language service. Comments, strings, and
+unrelated same-spelled symbols are preserved. Unsupported syntax, ambiguous
+bindings, stale declarations, and incomplete occurrence coverage block writes.
+Coverage includes indexed files in the target language, excluding unindexed
+files and external consumers. Constructor, destructor, inheritance, and interface
+families require complete provider evidence; unsupported families, unclassified
+token roles, and computed references are refused. Any detected computed access
+in the analyzed language scope currently blocks rename until providers can prove
+its key and receiver are unrelated. Both tools operate on the current checkout
+and reject `branch`.
+
+PHP rename is currently unsupported because exact-spelling occurrence checks do
+not cover its case-insensitive symbol names.
+
+Preview and apply recompute their plans independently. Source snapshots are
+checked before writes; this is not a cross-call preview token or transactional
+filesystem operation. On a write failure, `status: partial` and `failed_files`
+report the failure; `applied`, counts, and `changes` describe only landed edits.
+Inspect failures before retrying, and run type checking, tests, and
+`detect_changes` after applying. A valid identifier is not a guarantee against
+new-name collisions.
 
 ### Cypher Queries
 

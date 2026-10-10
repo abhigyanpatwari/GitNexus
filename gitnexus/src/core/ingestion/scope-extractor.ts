@@ -780,6 +780,8 @@ function buildDefFromDeclarationMatch(
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
+    nameRange: nameCap.range,
+    declarationRange: anchor.range,
     filePath,
     type,
     ...(graphPosition !== undefined
@@ -1423,6 +1425,7 @@ function pass5CollectReferences(
 
     const site: ReferenceSite = {
       name: nameCap.text,
+      nameRange: nameCap.range,
       atRange: anchor.range,
       ...(match['@reference.lookup-purpose']?.text === 'type' ||
       match['@reference.lookup-purpose']?.text === 'value'

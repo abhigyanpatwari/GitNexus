@@ -15,6 +15,8 @@ import {
   unusedAxesForImpactWalk,
   getLanguageFromFilename,
   type ImpactRiskResult,
+  type GraphNode,
+  type NodeLabel,
 } from 'gitnexus-shared';
 import {
   initLbug,
@@ -151,6 +153,7 @@ import {
   CHECKOUT_SOURCE_TOOLS,
   READ_FILE_DEFAULT_MAX_LINES,
 } from '../tools.js';
+import { renameSymbol } from './rename/rename-plan.js';
 import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
@@ -3012,6 +3015,10 @@ export class LocalBackend {
         return this.check(repo, p);
       case 'rename':
         return this.rename(repo, p as unknown as Parameters<LocalBackend['rename']>[1]);
+      case 'rename_preview':
+        return this.rename(repo, { ...p, dry_run: true } as unknown as Parameters<
+          LocalBackend['rename']
+        >[1]);
       // Legacy aliases for backwards compatibility
       case 'search':
         return this.query(repo, p);
@@ -6757,11 +6764,7 @@ export class LocalBackend {
     };
   }
 
-  /**
-   * Rename tool — multi-file coordinated rename using graph + text search.
-   * Graph refs are tagged "graph" (high confidence).
-   * Additional refs found via text search are tagged "text_search" (lower confidence).
-   */
+  /** Resolve graph identity and indexed scope through GitNexus's semantic layer. */
   private async rename(
     repo: RepoHandle,
     params: {
@@ -6773,209 +6776,51 @@ export class LocalBackend {
     },
   ): Promise<any> {
     await this.ensureInitialized(repo);
-
-    const { new_name, file_path } = params;
-    const dry_run = params.dry_run ?? true;
-
     if (!params.symbol_name && !params.symbol_uid) {
       return { error: 'Either symbol_name or symbol_uid is required.' };
     }
-
-    /** Guard: ensure a file path resolves within the repo root (prevents path traversal) */
-    const assertSafePath = (filePath: string): string => {
-      const full = path.resolve(repo.repoPath, filePath);
-      const safePrefix = repo.repoPath.endsWith(path.sep)
-        ? repo.repoPath
-        : repo.repoPath + path.sep;
-      if (!full.startsWith(safePrefix) && full !== repo.repoPath) {
-        throw new Error(`Path traversal blocked: ${filePath}`);
-      }
-      return full;
-    };
-
-    // Step 1: Find the target symbol (reuse context's lookup)
     const lookupResult = await this.context(repo, {
       name: params.symbol_name,
       uid: params.symbol_uid,
-      file_path,
+      file_path: params.file_path,
     });
-
-    if (lookupResult.status === 'ambiguous') {
-      return lookupResult; // pass disambiguation through
-    }
-    if (lookupResult.error) {
-      return lookupResult;
-    }
-
-    const sym = lookupResult.symbol;
-    const oldName = sym.name;
-
-    if (oldName === new_name) {
-      return { error: 'New name is the same as the current name.' };
-    }
-
-    // Steps 2+3: Determine the set of files the apply step will rewrite, then
-    // enumerate every occurrence in each. The apply step (Step 4) does a
-    // whole-file `\boldName\b` global replace on every file in `changes`, so the
-    // reported edit list MUST enumerate every matching line in every such file —
-    // otherwise the preview under-reports what lands, and the same partial list
-    // comes back after apply (#2605). Building `changes` from one file set makes
-    // the preview enumerate exactly the files the apply loop rewrites, using the
-    // same word-boundary regex. (This is per-call consistency; the apply loop
-    // still re-reads each file, so an external write landing between preview and
-    // apply is a pre-existing gap this method does not lock against.)
-    type RenameEdit = {
-      line: number;
-      old_text: string;
-      new_text: string;
-      confidence: 'graph' | 'text_search';
-    };
-    const escapedOldName = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-    // Classify each file to rewrite by how it was discovered. Definition and
-    // graph-ref files carry graph confidence; files found only by text search
-    // carry text_search confidence. A graph-classified file is never downgraded.
-    const fileConfidence = new Map<string, 'graph' | 'text_search'>();
-
-    if (sym.filePath) {
-      fileConfidence.set(sym.filePath, 'graph');
-    }
-
-    // All incoming refs from graph (callers, importers, etc.)
-    const allIncoming = [
-      ...(lookupResult.incoming.calls || []),
-      ...(lookupResult.incoming.imports || []),
-      ...(lookupResult.incoming.extends || []),
-      ...(lookupResult.incoming.implements || []),
-    ];
-    for (const ref of allIncoming) {
-      if (ref.filePath) {
-        fileConfidence.set(ref.filePath, 'graph');
-      }
-    }
-
-    // Text search for files the graph might have missed entirely.
-    try {
-      const { execFileSync } = await import('child_process');
-      const rgArgs = [
-        '-l',
-        '--type-add',
-        'code:*.{ts,tsx,js,jsx,py,go,rs,java,c,h,cpp,cc,cxx,hpp,hxx,hh,cs,php,swift}',
-        '-t',
-        'code',
-        `\\b${oldName}\\b`,
-        '.',
-      ];
-      const output = execFileSync('rg', rgArgs, {
-        cwd: repo.repoPath,
-        encoding: 'utf-8',
-        timeout: 5000,
-        // Avoid ENOBUFS on large repos: rg -l can list many files.
-        maxBuffer: 256 * 1024 * 1024,
-        windowsHide: true,
-      });
-      const files = output
-        .trim()
-        .split('\n')
-        .filter((f) => f.length > 0);
-
-      for (const file of files) {
-        const normalizedFile = file.replace(/\\/g, '/').replace(/^\.\//, '');
-        // Never downgrade a graph-classified file to text_search.
-        if (!fileConfidence.has(normalizedFile)) {
-          fileConfidence.set(normalizedFile, 'text_search');
-        }
-      }
-    } catch (e) {
-      logQueryError('rename:ripgrep', e);
-    }
-
-    // Enumerate every `\boldName\b` line in each file to rewrite, so the previewed
-    // file set is exactly the set the apply loop below rewrites. A file with no
-    // matching line is dropped (apply would write nothing to it). `wordTest`
-    // (non-global) probes each line; `wordReplace` (global) rewrites it and is
-    // reused by the apply loop — compiled once each rather than once per line,
-    // and one escaping formula serves both passes.
-    const wordTest = new RegExp(`\\b${escapedOldName}\\b`);
-    const wordReplace = new RegExp(`\\b${escapedOldName}\\b`, 'g');
-    const changes = new Map<string, { file_path: string; edits: RenameEdit[] }>();
-
-    for (const [filePath, confidence] of fileConfidence) {
-      try {
-        const content = await fs.readFile(assertSafePath(filePath), 'utf-8');
-        const lines = content.split('\n');
-        const edits: RenameEdit[] = [];
-        for (let i = 0; i < lines.length; i++) {
-          if (!wordTest.test(lines[i])) {
-            continue;
-          }
-          edits.push({
-            line: i + 1,
-            old_text: lines[i].trim(),
-            new_text: lines[i].replace(wordReplace, new_name).trim(),
-            confidence,
-          });
-        }
-        if (edits.length > 0) {
-          changes.set(filePath, { file_path: filePath, edits });
-        }
-      } catch (e) {
-        logQueryError('rename:enumerate', e);
-      }
-    }
-
-    // Step 4: Apply or preview.
-    const failedFiles: string[] = [];
-    if (!dry_run) {
-      for (const change of changes.values()) {
-        try {
-          const fullPath = assertSafePath(change.file_path);
-          const content = await fs.readFile(fullPath, 'utf-8');
-          await fs.writeFile(fullPath, content.replace(wordReplace, new_name), 'utf-8');
-        } catch (e) {
-          // A swallowed write failure must not be reported as success (#2283):
-          // record the file so the result degrades to 'partial'.
-          logQueryError('rename:apply-edit', e);
-          failedFiles.push(change.file_path);
-        }
-      }
-      // A file whose write threw did not land, so drop its edits from the
-      // reported result — total_edits/changes must describe what actually
-      // reached disk, not what was attempted (#2605: the report matches reality
-      // even on partial failure). failed_files still names every dropped file.
-      for (const f of failedFiles) {
-        changes.delete(f);
-      }
-    }
-
-    // Counts derive from the reported set (dry-run: every enumerated file;
-    // apply: only files that landed), so the graph/text_search split always
-    // sums to total_edits and never overstates a partial apply.
-    const reported = Array.from(changes.values());
-    let graphEdits = 0;
-    let astSearchEdits = 0;
-    for (const change of reported) {
-      for (const edit of change.edits) {
-        if (edit.confidence === 'graph') {
-          graphEdits++;
-        } else {
-          astSearchEdits++;
-        }
-      }
-    }
-
-    return {
-      status: failedFiles.length > 0 ? 'partial' : 'success',
-      old_name: oldName,
-      new_name,
-      files_affected: reported.length,
-      total_edits: graphEdits + astSearchEdits,
-      graph_edits: graphEdits,
-      text_search_edits: astSearchEdits,
-      changes: reported,
-      applied: !dry_run,
-      ...(failedFiles.length > 0 && { failed_files: failedFiles }),
-    };
+    if (lookupResult.status === 'ambiguous' || lookupResult.error) return lookupResult;
+    // Read the indexed file and declaration inventory, without context()'s
+    // ranked/truncated incoming edges. Current sources rebuild semantic scopes;
+    // a graph edge alone never authorizes a textual replacement.
+    const rows = await executeQuery(
+      repo.lbugPath,
+      `MATCH (n) WHERE n.filePath IS NOT NULL AND n.filePath <> ''
+       RETURN n.id AS id, n.name AS name, n.filePath AS filePath,
+              n.startLine AS startLine, n.endLine AS endLine`,
+    );
+    const graphNodes: GraphNode[] = rows.map((row: any) => ({
+      id: row.id,
+      // Node IDs carry the actual label; labels(n)[0] is unreliable on LadybugDB.
+      label: row.id.split(':')[0] as NodeLabel,
+      properties: {
+        name: row.name,
+        filePath: row.filePath,
+        startLine: row.startLine ?? undefined,
+        endLine: row.endLine ?? undefined,
+      },
+    }));
+    const referenceRows = await executeParameterized(
+      repo.lbugPath,
+      `MATCH (source)-[r:CodeRelation]->(target {id: $uid})
+       WHERE r.type IN ['CALLS', 'USES', 'ACCESSES', 'EXTENDS', 'IMPLEMENTS']
+       RETURN DISTINCT source.filePath AS filePath`,
+      { uid: lookupResult.symbol.uid },
+    );
+    return renameSymbol(
+      repo.repoPath,
+      lookupResult.symbol,
+      params,
+      graphNodes,
+      referenceRows
+        .map((row: any) => row.filePath)
+        .filter((file: unknown): file is string => typeof file === 'string' && file.length > 0),
+    );
   }
 
   private async trace(repo: RepoHandle, params: TraceParams): Promise<any> {

@@ -88,15 +88,11 @@ export interface ResolveReferencesOutput {
   readonly stats: ResolveStats;
 }
 
-/**
- * Resolve every `ReferenceSite` in `scopes.referenceSites` against the
- * matching registry and produce a `ReferenceIndex` keyed by source scope
- * + target def.
- */
-export function resolveReferenceSites(input: ResolveReferencesInput): ResolveReferencesOutput {
-  const { scopes } = input;
-  const providers: RegistryProviders = input.providers ?? {};
-
+/** Preserve every candidate for callers that must reject ambiguous edits. */
+export function createReferenceLookup(
+  input: ResolveReferencesInput,
+): (site: ReferenceSite) => readonly Resolution[] {
+  const scopes = input.scopes;
   const ctx: RegistryContext = {
     scopes: scopes.scopeTree,
     defs: scopes.defs,
@@ -104,13 +100,23 @@ export function resolveReferenceSites(input: ResolveReferencesInput): ResolveRef
     moduleScopes: scopes.moduleScopes,
     ownedMembersByOwner: input.ownedMembersByOwner,
     methodDispatch: scopes.methodDispatch,
-    providers,
+    providers: input.providers ?? {},
   };
+  const classes = buildClassRegistry(ctx);
+  const methods = buildMethodRegistry(ctx);
+  const fields = buildFieldRegistry(ctx);
+  const macros = buildMacroRegistry(ctx);
+  return (site) => lookupForSite(site, classes, methods, fields, macros, scopes);
+}
 
-  const classRegistry = buildClassRegistry(ctx);
-  const methodRegistry = buildMethodRegistry(ctx);
-  const fieldRegistry = buildFieldRegistry(ctx);
-  const macroRegistry = buildMacroRegistry(ctx);
+/**
+ * Resolve every `ReferenceSite` in `scopes.referenceSites` against the
+ * matching registry and produce a `ReferenceIndex` keyed by source scope
+ * + target def.
+ */
+export function resolveReferenceSites(input: ResolveReferencesInput): ResolveReferencesOutput {
+  const { scopes } = input;
+  const lookup = createReferenceLookup(input);
 
   // bySourceScope is the canonical index; byTargetDef is derived from it.
   const bySourceScope = new Map<ScopeId, Reference[]>();
@@ -128,14 +134,7 @@ export function resolveReferenceSites(input: ResolveReferencesInput): ResolveRef
     if (site.kind === 'value-ref') continue;
     sitesProcessed++;
 
-    const resolutions = lookupForSite(
-      site,
-      classRegistry,
-      methodRegistry,
-      fieldRegistry,
-      macroRegistry,
-      scopes,
-    );
+    const resolutions = lookup(site);
     if (resolutions.length === 0) {
       unresolved++;
       continue;

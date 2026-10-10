@@ -10,6 +10,7 @@ export const MCP_READ_ONLY_TOOLS = new Set([
   'grep',
   'detect_changes',
   'check',
+  'rename_preview',
   'impact',
   'explain',
   'pdg_query',
