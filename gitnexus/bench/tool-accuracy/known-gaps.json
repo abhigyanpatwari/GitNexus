@@ -57,18 +57,6 @@
       ]
     },
     {
-      "id": "python.module-chain",
-      "issue": 3497,
-      "reason": "Compound receiver resolution does not follow module-return helpers (#3497).",
-      "baselineActual": []
-    },
-    {
-      "id": "python.module-local",
-      "issue": 3497,
-      "reason": "Module-return helper result is not bound as a namespace alias (#3497).",
-      "baselineActual": []
-    },
-    {
       "id": "python.factory-conditional",
       "issue": 3498,
       "reason": "Conditional RHS loses annotated factory return type (#3498).",
@@ -85,12 +73,6 @@
       "issue": 3498,
       "reason": "Boolean RHS loses annotated factory return type (#3498).",
       "baselineActual": []
-    },
-    {
-      "id": "summary.omitted-lower-bound",
-      "issue": 3497,
-      "reason": "Capped-out dropped names ignore omittedNames and claim exact (#3497).",
-      "baselineActual": ["exact"]
     }
   ]
 }
