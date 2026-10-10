@@ -103,6 +103,10 @@ program
     'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
   )
   .option(
+    '--context-file <path>',
+    'Write the GitNexus context block to one repo-relative file instead of root AGENTS.md and CLAUDE.md.',
+  )
+  .option(
     '--pdg',
     'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
       'for supported languages. Opt-in; off by default. (#2081 M1)',
@@ -121,9 +125,9 @@ program
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--self-commit',
-    'Auto-commit AGENTS.md/CLAUDE.md changes after analyze (opt-in, off by default). ' +
-      'Scoped to only those two files (never `git add -A`); no-ops if neither exists, ' +
-      'neither changed, or the repo has no git identity configured.',
+    'Auto-commit generated context file changes after analyze (opt-in, off by default). ' +
+      'Scoped to the selected context target(s) (never `git add -A`); no-ops if none exist, ' +
+      'none changed, or the repo has no git identity configured.',
   )
   .option(
     '--skip-skills',

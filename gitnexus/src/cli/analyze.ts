@@ -43,6 +43,7 @@ import {
   snapshotSelfCommitSafety,
 } from '../storage/git.js';
 import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
+import { assertContextFileTargetSafe, resolveContextFileTarget } from './context-file-target.js';
 import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
@@ -1002,6 +1003,20 @@ const analyzeCommandImpl = async (
     );
   }
 
+  let contextFile: string | undefined;
+  if (cliOptions?.contextFile !== undefined) {
+    try {
+      const target = resolveContextFileTarget(repoPath, cliOptions.contextFile);
+      await assertContextFileTargetSafe(repoPath, target.relative);
+      contextFile = target.relative;
+    } catch (err) {
+      cliError(`  ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  const contextFiles = contextFile ? [contextFile] : ['AGENTS.md', 'CLAUDE.md'];
+
   // Validate an explicit `--default-branch` up front so its errors are
   // attributed to the flag (with a CLI-specific recovery hint) rather than to
   // `.gitnexusrc`, which the user may not even have (#1996 tri-review).
@@ -1554,6 +1569,7 @@ const analyzeCommandImpl = async (
       verbose: options.verbose,
       skipGit: options.skipGit,
       skipAgentsMd,
+      contextFile,
       skipSkills,
       // CFG/PDG substrate opt-in (#2081 M1) — threaded to both sinks downstream.
       pdg: options.pdg === true,
@@ -1613,9 +1629,7 @@ const analyzeCommandImpl = async (
     // pre-existing unstaged user edit apart from this run's stats refresh
     // and refuse to sweep the former into the latter's commit.
     const selfCommitSafety =
-      options.selfCommit === true
-        ? snapshotSelfCommitSafety(repoPath, ['AGENTS.md', 'CLAUDE.md'])
-        : undefined;
+      options.selfCommit === true ? snapshotSelfCommitSafety(repoPath, contextFiles) : undefined;
     const result = await runFullAnalysis(repoPath, runOptions, runCallbacks, ...bootstrapArgs);
 
     if (result.alreadyUpToDate) {
@@ -1640,7 +1654,7 @@ const analyzeCommandImpl = async (
         try {
           const { refreshBaseRefLine } = await import('./ai-context.js');
           baseRefRefreshed = (
-            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd, contextFile })
           ).files;
         } catch {
           /* best-effort — never fail the fast path over a context refresh */
@@ -1669,7 +1683,7 @@ const analyzeCommandImpl = async (
       // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this
       // fast path (e.g. a base_ref refresh above). Best-effort — never throws.
       if (options.selfCommit === true && selfCommitSafety) {
-        selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
+        selfCommitContextFiles(repoPath, contextFiles, selfCommitSafety);
       }
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
@@ -1742,6 +1756,7 @@ const analyzeCommandImpl = async (
             skillResult.skills,
             {
               skipAgentsMd,
+              contextFile,
               skipSkills,
               // Same resolved branch as the main run (#243) so the --skills
               // re-generation of AGENTS.md/CLAUDE.md does not revert base_ref
@@ -1765,7 +1780,7 @@ const analyzeCommandImpl = async (
     // runFullAnalysis, and/or the --skills regeneration above). Best-effort
     // — never throws, so a missing git identity etc. can't fail `analyze`.
     if (options.selfCommit === true && selfCommitSafety) {
-      selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
+      selfCommitContextFiles(repoPath, contextFiles, selfCommitSafety);
     }
 
     const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
