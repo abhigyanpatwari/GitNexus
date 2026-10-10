@@ -144,4 +144,44 @@ describe('WAL corruption feedback in MCP responses (#1402)', () => {
       }),
     ).rejects.toThrow('Some other error');
   });
+
+  it('cypher keeps WAL recovery ahead of schema-looking diagnostics', async () => {
+    const backend = await makeBackend();
+    const message = 'Binder exception: Table Functon does not exist. Corrupted wal file';
+    lbugMocks.executeParameterized.mockRejectedValueOnce(new Error(message));
+    const result = await backend.callTool('cypher', {
+      repo: 'test-repo',
+      statement: 'MATCH (n) RETURN n',
+    });
+    expect(result.error).toBe(message);
+    expect(result.recoverySuggestion).toBeDefined();
+    expect(result).not.toHaveProperty('hint');
+  });
+
+  it('cypher keeps wrapped read-only failures ahead of schema-looking diagnostics', async () => {
+    const backend = await makeBackend();
+    lbugMocks.executeParameterized.mockRejectedValueOnce(
+      new Error('Binder exception: Table Functon does not exist.', {
+        cause: new Error('Cannot execute write operations in a read-only database!'),
+      }),
+    );
+    const result = await backend.callTool('cypher', {
+      repo: 'test-repo',
+      statement: 'CREATE (:Function)',
+    });
+    expect(result.error).toMatch(/^Write operations .* are not allowed/);
+    expect(result).not.toHaveProperty('hint');
+    expect(result).not.toHaveProperty('recoverySuggestion');
+  });
+
+  it('cypher preserves unrelated failures without adding a schema hint', async () => {
+    const backend = await makeBackend();
+    lbugMocks.executeParameterized.mockRejectedValueOnce(new Error('Connection failed'));
+    const result = await backend.callTool('cypher', {
+      repo: 'test-repo',
+      statement: 'MATCH (n) RETURN n',
+    });
+    expect(result.error).toBe('Connection failed');
+    expect(result).not.toHaveProperty('hint');
+  });
 });

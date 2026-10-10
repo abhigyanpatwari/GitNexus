@@ -11,6 +11,14 @@ import { loadMeta } from '../storage/repo-manager.js';
 import { ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION } from '../core/analyzer-identity.js';
 import { getIndexIncompleteReasons } from '../core/index-freshness.js';
 import {
+  EMBEDDING_SCHEMA,
+  EMBEDDING_TABLE_NAME,
+  NODE_SCHEMA_QUERIES,
+  NODE_TABLES,
+  RELATION_SCHEMA,
+  REL_TABLE_NAME,
+} from '../core/lbug/schema.js';
+import {
   checkoutIsDirectory,
   contentRetentionFromMeta,
   isFullSourceAvailable,
@@ -517,7 +525,19 @@ async function getProcessesResource(backend: LocalBackend, repoName?: string): P
  * Schema resource — graph structure for Cypher queries
  */
 function getSchemaResource(): string {
+  // Render the stored columns, not the richer ingestion-only symbol metadata.
+  const properties = (ddl: string): string =>
+    [...ddl.matchAll(/^\s+(\w+) ([A-Z][A-Z0-9]*(?:\[\d*\])?),?$/gm)]
+      .map(([, name, type]) => `${name} (${type})`)
+      .join(', ');
+  const nodeProperties = NODE_SCHEMA_QUERIES.map((ddl) => {
+    const table = ddl.match(/CREATE NODE TABLE `?(\w+)`?\s*\(/)?.[1];
+    return `  ${table}: "${properties(ddl)}"`;
+  }).join('\n');
+
   return `# GitNexus Graph Schema
+
+schema_scope: "Schema created by this GitNexus version; older indexes may differ. Properties vary by table."
 
 nodes:
   - File: Source code files
@@ -530,17 +550,18 @@ nodes:
   - Community: Auto-detected functional area (Leiden algorithm)
   - Process: Execution flow trace
 
-additional_node_types: "Multi-language: Struct, Enum, Macro, Typedef, Union, Namespace, Trait, Impl, TypeAlias, Const, Static, Property, Record, Delegate, Annotation, Constructor, Template, Module (use backticks in queries: \`Struct\`, \`Enum\`, etc.)"
+node_tables: "${NODE_TABLES.join(', ')} (use backticks in queries: \`Struct\`, \`Enum\`, etc.)"
 
 node_properties:
-  common: "name (STRING), filePath (STRING), startLine (INT32), endLine (INT32)"
+${nodeProperties}
+
+embedding_storage:
+  ${EMBEDDING_TABLE_NAME}: "${properties(EMBEDDING_SCHEMA)}"
+
+property_notes:
   line_numbers: "startLine/endLine on symbol nodes are 0-BASED (tree-sitter rows) in storage AND in raw Cypher results. The context, query, impact, group/cross-repo trace, and explain/pdg_query (symbol anchor) tools present them 1-BASED (editor / sed / less -N aligned), so a symbol spans editor lines (startLine+1)..(endLine+1) — e.g. sed '<startLine+1>,<endLine+1>!d' <file>. Single-repo trace symbol lines stay 0-BASED for now (full-parity follow-up). content holds the exact symbol span. (BasicBlock / PDG statement lines are separately 1-based.) (#2377, #2380)"
-  Method: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL), visibility (STRING), isStatic (BOOL), isAbstract (BOOL), isFinal (BOOL), isVirtual (BOOL), isOverride (BOOL), isAsync (BOOL), isPartial (BOOL), requiredParameterCount (INT32), parameterTypes (STRING[]), annotations (STRING[])"
-  Function: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL), visibility (STRING), isStatic (BOOL), isAbstract (BOOL), isFinal (BOOL), isAsync (BOOL), parameterTypes (STRING[]), annotations (STRING[])"
   Property: "declaredType (STRING) — the field's type annotation (e.g., 'Address', 'City'). Used for field-access chain resolution."
-  Constructor: "parameterCount (INT32), visibility (STRING), isStatic (BOOL), parameterTypes (STRING[])"
-  Community: "heuristicLabel (STRING), cohesion (DOUBLE), symbolCount (INT32), keywords (STRING[]), description (STRING), enrichedBy (STRING)"
-  Process: "heuristicLabel (STRING), processType (STRING — 'intra_community' or 'cross_community'), stepCount (INT32), communities (STRING[]), entryPointId (STRING), terminalId (STRING)"
+  Process: "processType is 'intra_community' or 'cross_community'."
 
 relationships:
   - CONTAINS: File/Folder contains child
@@ -558,12 +579,12 @@ relationships:
   - STEP_IN_PROCESS: Symbol is step N in process
 
 pdg_layers: "Recorded ONLY when indexed with 'gitnexus analyze --pdg'. Intra-procedural, basic-block granular; both endpoints are BasicBlock nodes. Prefer the pdg_query tool over raw Cypher."
-  - BasicBlock: "Basic-block node. Columns: id, filePath, startLine, endLine, text. id = 'BasicBlock:<filePath>:<fnStartLine>:<fnStartCol>:<blockIndex>'."
+  - BasicBlock: "Basic-block node; columns are listed in node_properties. id = 'BasicBlock:<filePath>:<fnStartLine>:<fnStartCol>:<blockIndex>'."
   - CFG: "Control-flow edge BasicBlock->BasicBlock. Edge kind (seq/cond-true/cond-false/loop-back/...) is in reason."
   - CDG: "Control-DEPENDENCE edge BasicBlock->BasicBlock — the source predicate gates the target's execution. Branch sense 'T'|'F' in reason. Query via pdg_query mode:'controls'."
   - REACHING_DEF: "Data-dependence (def->use) edge BasicBlock->BasicBlock. Source-level variable name is in reason. Query via pdg_query mode:'flows'."
 
-relationship_table: "All relationships use a single CodeRelation table with a 'type' property. Properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)"
+relationship_table: "All relationships use a single ${REL_TABLE_NAME} table with a 'type' property. Properties: ${properties(RELATION_SCHEMA)}"
 
 example_queries:
   find_callers: |

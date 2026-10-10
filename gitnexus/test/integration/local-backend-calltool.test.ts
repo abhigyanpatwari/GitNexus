@@ -6,8 +6,14 @@
  * end-to-end against seeded graph data with FTS indexes.
  */
 import fs from 'fs/promises';
+import path from 'node:path';
 import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { parseResourceUri, readResource } from '../../src/mcp/resources.js';
+import { createMcpRepositoryPolicy } from '../../src/mcp/repository-policy.js';
+import { createMCPServer } from '../../src/mcp/server.js';
 import { listRegisteredRepos, saveMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import {
@@ -694,6 +700,105 @@ withTestLbugDB(
   },
 );
 
+// Follow the hint through the real MCP resource handler, including its policy
+// gate, rather than reading the static schema body directly.
+withTestLbugDB(
+  'cypher-schema-hints-duplicate-names',
+  (handle) => {
+    it.each(['duplicate-two', 'duplicate two #% 编码'])(
+      'follows the schema hint for the allowed duplicate clone at %s',
+      async function followsDuplicateRepositorySchemaHint(directory) {
+        const selectedPath = path.join(handle.tmpHandle.dbPath, directory);
+        const deniedPath = path.join(handle.tmpHandle.dbPath, 'duplicate-one');
+        vi.mocked(listRegisteredRepos).mockResolvedValue([
+          {
+            name: 'duplicate',
+            path: deniedPath,
+            storagePath: path.join(deniedPath, '.gitnexus'),
+            indexedAt: new Date().toISOString(),
+            lastCommit: 'denied-clone',
+          },
+          {
+            name: 'duplicate',
+            path: selectedPath,
+            storagePath: handle.tmpHandle.dbPath,
+            indexedAt: new Date().toISOString(),
+            lastCommit: 'selected-clone',
+          },
+        ]);
+        const backend = new LocalBackend();
+        await backend.init();
+        const policy = await createMcpRepositoryPolicy(backend, {
+          GITNEXUS_MCP_ALLOWED_REPOS: selectedPath,
+        });
+        const server = createMCPServer(backend, { repositoryPolicy: policy });
+        const client = new Client({ name: 'schema-hint-client', version: '0.0.0' });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+        try {
+          await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+          // The implicit single-allowed-repo selection must query the real
+          // selected index, not the first same-named registry entry.
+          const selected = await client.callTool({
+            name: 'cypher',
+            arguments: { statement: 'MATCH (n:Function) RETURN n.name AS name' },
+          });
+          expect(selected.isError).not.toBe(true);
+          expect((selected.content[0] as { text: string }).text).toContain('selectedCloneOnly');
+
+          const response = await client.callTool({
+            name: 'cypher',
+            arguments: { statement: 'MATCH (n:UnrelatedMissingThing) RETURN n' },
+          });
+          const result = JSON.parse(
+            (response.content[0] as { text: string }).text.split('\n\n---\n')[0],
+          );
+          expect(result.error).toBe(
+            'Prepare failed: Binder exception: Table UnrelatedMissingThing does not exist.',
+          );
+          expect(result.hint).not.toContain('Did you mean');
+          const uri = result.hint.match(/gitnexus:\/\/\S+/)?.[0];
+          expect(uri).toBeDefined();
+
+          const schema = await client.readResource({ uri });
+          expect(schema.contents[0].mimeType).toBe('text/yaml');
+          expect((schema.contents[0] as { text: string }).text).toContain('node_properties:');
+          expect(uri).toBe(`gitnexus://repo/${encodeURIComponent(selectedPath)}/schema`);
+          const parsed = parseResourceUri(uri);
+          expect(parsed).toEqual({ kind: 'repo', repoName: selectedPath, resourceType: 'schema' });
+          if (parsed.kind !== 'repo') throw new Error('Expected a repository schema URI');
+          expect((await policy.scopeBackend(backend).resolveRepo(parsed.repoName)).repoPath).toBe(
+            selectedPath,
+          );
+
+          // Neither the ambiguous display name nor the denied peer's encoded
+          // path may become readable as a side effect of fixing the link.
+          for (const specifier of ['duplicate', deniedPath]) {
+            const denied = await client.readResource({
+              uri: `gitnexus://repo/${encodeURIComponent(specifier)}/schema`,
+            });
+            expect((denied.contents[0] as { text: string }).text).toMatch(/not available/i);
+            const deniedQuery = await client.callTool({
+              name: 'cypher',
+              arguments: { repo: specifier, statement: 'MATCH (n:Function) RETURN n' },
+            });
+            expect(deniedQuery.isError).toBe(true);
+            expect((deniedQuery.content[0] as { text: string }).text).toMatch(/not available/i);
+          }
+        } finally {
+          await client.close();
+          await server.close();
+        }
+      },
+    );
+  },
+  {
+    seed: ["CREATE (:Function {id: 'selected-only', name: 'selectedCloneOnly'})"],
+    poolAdapter: true,
+  },
+);
+
 // ─── impact BFS bound parameters (#1907 review F5) ───────────────────────
 // Isolated DB (not the shared seed) with a frontier node whose id contains a
 // single quote. Under the old string-interpolated query this id had to be
@@ -1045,6 +1150,207 @@ withTestLbugDB(
           indexedAt: new Date().toISOString(),
           lastCommit: 'abc123',
           stats: { files: 2, nodes: 4, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
+    },
+  },
+);
+
+// Schema-error hints must run without the optional FTS extension, including on
+// offline installs. Exercise the public dispatch and the real native binder.
+withTestLbugDB(
+  'cypher-schema-hints',
+  (handle) => {
+    let backend: LocalBackend;
+    let schemaUri: string;
+    beforeAll(() => {
+      backend = (handle as typeof handle & { _backend: LocalBackend })._backend;
+      schemaUri = `gitnexus://repo/${encodeURIComponent(handle.tmpHandle.dbPath)}/schema`;
+    });
+
+    it.each([
+      ['Functon', 'Function', 'MATCH (n:Functon) RETURN n'],
+      ['Protocool', 'Protocol', 'MATCH (n:Protocool) RETURN n'],
+      ['CodeRelaton', 'CodeRelation', 'MATCH ()-[r:CodeRelaton]->() RETURN r.type'],
+    ])(
+      'suggests the schema table for %s without replacing the error',
+      async (typo, table, statement) => {
+        const result = await backend.callTool('cypher', { statement });
+        expect(result.error).toBe(
+          `Prepare failed: Binder exception: Table ${typo} does not exist.`,
+        );
+        expect(result.hint).toContain(`Did you mean '${table}'?`);
+        expect(result.hint).toContain(schemaUri);
+        expect(result).not.toHaveProperty('recoverySuggestion');
+        const corrected = await backend.callTool('cypher', {
+          statement: statement.replace(typo, table),
+        });
+        expect(corrected).not.toHaveProperty('error');
+        expect(corrected).not.toHaveProperty('hint');
+      },
+    );
+
+    it.each([
+      ['MATCH (n:Function) RETURN n.filePth', 'filePth', 'filePath', 'n'],
+      ['MATCH (n:Method) RETURN n.parameterCont', 'parameterCont', 'parameterCount', 'n'],
+      ['MATCH ()-[r:CodeRelation]->() RETURN r.confidnce', 'confidnce', 'confidence', 'r'],
+    ])('suggests an actual schema property for %s', async (statement, typo, property, alias) => {
+      const result = await backend.callTool('cypher', { statement });
+      expect(result.error).toBe(
+        `Prepare failed: Binder exception: Cannot find property ${typo} for ${alias}.`,
+      );
+      expect(result.hint).toContain(`Did you mean '${property}'?`);
+      expect(result.hint).toContain('properties vary by table');
+    });
+
+    it('explains relationship values used as relationship tables', async () => {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH ()-[:CALLS]->() RETURN count(*)',
+      });
+      expect(result.error).toBe('Prepare failed: Binder exception: Table CALLS does not exist.');
+      expect(result.hint).toContain(":CodeRelation {type: 'CALLS'}");
+    });
+
+    it.each(['OVERRIDES', 'overrides'])(
+      'directs the legacy %s table spelling to current override edges',
+      async function recommendsCurrentOverrideEdges(table) {
+        const result = await backend.callTool('cypher', {
+          statement: `MATCH ()-[:${table}]->() RETURN count(*)`,
+        });
+        expect(result.error).toBe(
+          `Prepare failed: Binder exception: Table ${table} does not exist.`,
+        );
+        expect(result.hint).toContain(":CodeRelation {type: 'METHOD_OVERRIDES'}");
+        expect(result.hint).toMatch(/OVERRIDES.*legacy/);
+        expect(result.hint).toContain('older indexes');
+        const advisedPattern = result.hint.match(/:CodeRelation \{type: '[A-Z_]+'\}/)?.[0];
+        expect(advisedPattern).toBeDefined();
+        const corrected = await backend.callTool('cypher', {
+          statement: `MATCH (a)-[${advisedPattern}]->(b) RETURN a.id AS source, b.id AS target`,
+        });
+        expect(corrected.row_count).toBe(1);
+        expect(corrected.markdown).toContain('method:AuthService.authenticate');
+        expect(corrected.markdown).toContain('method:BaseService.authenticate');
+        expect(corrected).not.toHaveProperty('hint');
+      },
+    );
+
+    it('keeps the canonical METHOD_OVERRIDES hint unchanged', async function preservesCanonicalOverrideHint() {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH ()-[:METHOD_OVERRIDES]->() RETURN count(*)',
+      });
+      expect(result.error).toBe(
+        'Prepare failed: Binder exception: Table METHOD_OVERRIDES does not exist.',
+      );
+      expect(result.hint).toBe(
+        `Relationships use :CodeRelation {type: 'METHOD_OVERRIDES'}, not a 'METHOD_OVERRIDES' table. Read ${schemaUri} for the schema.`,
+      );
+    });
+
+    it('preserves a valid explicit legacy-type query instead of rewriting it', async function preservesLegacyOverrideQuery() {
+      const result = await backend.callTool('cypher', {
+        statement: "MATCH ()-[r:CodeRelation {type: 'OVERRIDES'}]->() RETURN r.reason AS reason",
+      });
+      expect(result.row_count).toBe(1);
+      expect(result.markdown).toContain('legacy-index-row');
+      expect(result.markdown).not.toContain('mro-resolution');
+      expect(result).not.toHaveProperty('hint');
+    });
+
+    it('preserves wrong-table property errors and links to accurate per-table columns', async function linksToAccuratePropertyColumns() {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH (n:Function) RETURN n.parameterCount',
+      });
+      expect(result.error).toBe(
+        'Prepare failed: Binder exception: Cannot find property parameterCount for n.',
+      );
+      expect(result.hint).not.toContain('Did you mean');
+      expect(result.hint).toContain('properties vary by table');
+      const resourceUri = result.hint.match(/gitnexus:\/\/\S+/)?.[0] ?? '';
+      expect(resourceUri).toBe(schemaUri);
+      const resource = await readResource(resourceUri, backend);
+      const properties = resource.split('node_properties:\n')[1].split('\n\n')[0];
+      expect(properties.match(/^  Function: (.+)$/m)?.[1]).not.toContain('parameterCount');
+      expect(properties.match(/^  Method: (.+)$/m)?.[1]).toContain('parameterCount (INT32)');
+    });
+
+    it.each([
+      'MATCH (n:UnrelatedMissingThing) RETURN n',
+      'MATCH (n:FunctionWithAnUnrelatedSuffix) RETURN n',
+      'MATCH (n:Function) RETURN n.unrelatedMissingProperty',
+      'MATCH (n:Function) RETURN n.heuristicLabel',
+      'MATCH (n:Stait) RETURN n',
+      'MATCH (n:Function) RETURN n.lebel',
+      'MATCH (n:Function) RETURN n.ix',
+      `MATCH (n:${'F'.repeat(65)}) RETURN n`,
+    ])('points to the schema without guessing for %s', async (statement) => {
+      const result = await backend.callTool('cypher', { statement });
+      expect(result.error).toContain('Binder exception:');
+      expect(result.hint).toContain(schemaUri);
+      expect(result.hint).not.toContain('Did you mean');
+      expect(result.hint).not.toContain('analyze');
+    });
+
+    it('preserves the executeCypher entrypoint used by internal callers', async () => {
+      const result = await backend.executeCypher('schema-hints-repo', 'MATCH (n:Functon) RETURN n');
+      expect(result.error).toBe('Prepare failed: Binder exception: Table Functon does not exist.');
+      expect(result.hint).toContain("Did you mean 'Function'?");
+    });
+
+    it('keeps corrected queries and statement precedence unchanged', async () => {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH (n:Function {name: $name}) RETURN n.filePath AS filePath',
+        query: 'MATCH (n:Functon) RETURN n',
+        params: { name: 'login' },
+      });
+      expect(result.row_count).toBe(1);
+      expect(result.markdown).toContain('src/auth.ts');
+      expect(result).not.toHaveProperty('hint');
+    });
+
+    it.each([
+      "MATCH (n:Function) WHERE n.name = '__missing__' RETURN n.name",
+      "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALS' RETURN r.type",
+    ])('does not diagnose a successful empty result for %s', async (statement) => {
+      expect(await backend.callTool('cypher', { statement })).toEqual([]);
+    });
+
+    it('preserves native case-insensitive names', async () => {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH (n:function) RETURN n.FilePath AS filePath',
+      });
+      expect(result.row_count).toBeGreaterThan(0);
+      expect(result).not.toHaveProperty('error');
+      expect(result).not.toHaveProperty('hint');
+    });
+
+    it('leaves parser and out-of-scope variable errors unchanged', async () => {
+      for (const statement of ['NOT CYPHER', 'MATCH (n:Function) RETURN missing']) {
+        const result = await backend.callTool('cypher', { statement });
+        expect(result.error).toBeDefined();
+        expect(result).not.toHaveProperty('hint');
+      }
+    });
+  },
+  {
+    seed: [
+      ...LOCAL_BACKEND_SEED_DATA,
+      `MATCH (a:Method {id: 'method:AuthService.authenticate'}),
+             (b:Method {id: 'method:BaseService.authenticate'})
+       CREATE (a)-[:CodeRelation {type: 'OVERRIDES', reason: 'legacy-index-row'}]->(b)`,
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'schema-hints-repo',
+          path: handle.tmpHandle.dbPath,
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
         },
       ]);
       const backend = new LocalBackend();
