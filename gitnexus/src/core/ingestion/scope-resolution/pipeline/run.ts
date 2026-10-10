@@ -29,6 +29,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { lookupOwnedMembersByOwner } from '../../model/owned-members-lookup.js';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { reconcileOwnership, validateOwnershipParity } from './reconcile-ownership.js';
 import { validateBindingsImmutability } from './validate-bindings-immutability.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
@@ -382,6 +383,11 @@ export type ScopeResolutionSubPhase =
   | 'linking symbols';
 
 interface RunScopeResolutionInput {
+  /** Observe the completed semantic pass without changing its graph output. */
+  readonly onResolved?: (result: {
+    readonly parsedFiles: readonly ParsedFile[];
+    readonly indexes: ScopeResolutionIndexes;
+  }) => void;
   readonly graph: KnowledgeGraph;
   /**
    * Semantic model populated by the legacy `parse` phase. Scope-
@@ -1896,6 +1902,7 @@ export function runScopeResolution(
   logHeapProbe('sr-end', `lang=${provider.language} parsedFiles=${parsedFiles.length}`);
 
   for (const outcome of resolutionOutcomes) input.recordResolutionOutcome?.(outcome);
+  input.onResolved?.({ parsedFiles, indexes });
 
   return {
     filesProcessed: parsedFiles.length,

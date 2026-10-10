@@ -16,7 +16,7 @@ Maintainer may widen scope per task.
 ## Non-negotiables
 
 1. **Never commit secrets** — API keys, tokens, real `.env` values, private URLs, session cookies. Use `.env.example` with placeholders.
-2. **Never rename with find-and-replace** in GitNexus-indexed projects — use `rename_preview` first for supported configured TS/JS projects, review exact semantic spans and project coverage, then apply with `rename` and `dry_run: false`. Unsupported targets fail closed; inspect and refactor them manually with language-aware tools. No separate `gitnexus rename` CLI exists.
+2. **Never rename with find-and-replace** in GitNexus-indexed projects — use `rename_preview` first, review exact graph-backed semantic spans and coverage, then apply with `rename` and `dry_run: false`. Unsupported targets fail closed; inspect and refactor them manually with language-aware tools. No separate `gitnexus rename` CLI exists.
 3. **Run impact analysis before editing shared symbols** — `impact` (upstream) for functions/classes/methods others call. Do not ignore HIGH/CRITICAL without maintainer sign-off.
 4. **Run `detect_changes` before commit** — confirm diffs map to expected symbols/processes when the graph is available.
 5. **Preserve embeddings** — plain `npx gitnexus analyze` now preserves any embeddings recorded in the index metadata (`.gitnexus/gitnexus.json`, mirrored to the legacy `meta.json`) — the previous behavior wiped them. Use `--embeddings` to also generate vectors for new/changed nodes; use `--drop-embeddings` only when an explicit wipe is intended (e.g., model swap).

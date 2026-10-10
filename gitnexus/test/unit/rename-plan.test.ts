@@ -21,10 +21,10 @@ describe('exact rename plan application', () => {
       symbol: { name: 'close', filePath: 'a.ts', startLine: 1 },
       new_name: 'finish',
       coverage: {
-        name: 'typescript',
-        version: '5.9.3',
-        scope: 'project',
-        tsconfig_path: 'tsconfig.json',
+        name: 'gitnexus-semantic',
+        scope: 'indexed-repository',
+        languages: ['typescript'],
+        limitations: [],
         source_file_count: Object.keys(files).length,
       },
       snapshots: new Map(

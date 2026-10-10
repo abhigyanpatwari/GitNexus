@@ -415,9 +415,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
     '  - explain: Persisted taint findings — source→sink data flows with per-hop variables (requires analyze --pdg)',
   );
   lines.push('  - detect_changes: Git-diff impact analysis (what do your changes affect)');
-  lines.push(
-    '  - rename_preview: Read-only semantic rename preview for a configured TS/JS project',
-  );
+  lines.push('  - rename_preview: Read-only graph and semantic rename preview');
   lines.push('  - rename: Preview or apply exact semantic occurrences in the selected project');
   lines.push('  - cypher: Raw graph queries');
   lines.push('  - list_repos: Discover all indexed repositories');
@@ -703,7 +701,7 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
       '| `context` | 360-degree symbol view — categorized refs, processes it participates in |',
       '| `impact` | Symbol blast radius — what breaks at depth 1/2/3 with confidence |',
       '| `detect_changes` | Git-diff impact — what do your current changes affect |',
-      '| `rename_preview` | Read-only exact-span rename preview for a configured TS/JS project |',
+      '| `rename_preview` | Read-only graph and semantic exact-span rename preview |',
       '| `rename` | Preview or apply semantic rename in the selected project |',
       '| `cypher` | Raw graph queries |',
       '| `list_repos` | Discover indexed repos |',

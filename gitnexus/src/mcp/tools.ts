@@ -108,11 +108,6 @@ const RENAME_PROPERTIES: ToolDefinition['inputSchema']['properties'] = {
   symbol_uid: { type: 'string', description: 'Direct symbol UID from prior tool results' },
   new_name: { type: 'string', description: 'The new identifier for the symbol' },
   file_path: { type: 'string', description: 'File path to disambiguate common names' },
-  tsconfig_path: {
-    type: 'string',
-    description:
-      'Repository-relative TypeScript/JavaScript project config; required when project selection is ambiguous',
-  },
 };
 
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
@@ -482,10 +477,10 @@ A graph too large to analyze at all returns \`{ error, truncated: true }\` with 
   },
   {
     name: 'rename_preview',
-    description: `Read-only semantic rename preview for one configured TypeScript/JavaScript project in the current checkout.
-Uses the TypeScript language service to report exact UTF-16 spans, including import/export alias affixes. Comments, strings, and unrelated same-spelled symbols are not text-search replacements.
-Pass symbol_uid from context() to select the declaration. If multiple project configs include it, select a returned candidate with tsconfig_path. Unsupported languages, project references, and unresolved declarations fail closed.
-Returns result_version:2, semantic_edits, and coverage identifying the selected project; coverage is not repository-wide. This tool cannot apply edits.`,
+    description: `Read-only rename preview using the indexed graph and GitNexus's own semantic layer in the current checkout.
+Graph identities and language-provider scope resolution select exact UTF-16 name spans. No compiler, language service, or text-search replacement is used.
+Pass symbol_uid from context() to select the declaration. Unsupported syntax, ambiguous bindings, stale declarations, and incomplete occurrence coverage fail closed.
+Returns result_version:2, semantic_edits, and coverage describing the indexed source scope and limitations. This tool cannot apply edits.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -501,9 +496,9 @@ Returns result_version:2, semantic_edits, and coverage identifying the selected 
   },
   {
     name: 'rename',
-    description: `Semantic rename for one configured TypeScript/JavaScript project in the current checkout. Previews by default; dry_run:false applies exact compiler-selected occurrences after checking source snapshots.
-Use rename_preview for read-only clients. Pass symbol_uid from context() to select the declaration and tsconfig_path when project selection is ambiguous. Unsupported languages, project references, and unresolved declarations fail closed; there is no text-search fallback.
-Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, project coverage, and explicit planning/application status. graph_edits and text_search_edits are zero. Partial writes report only landed edits and failed_files; review failures before retrying. Separate preview/apply calls recompute the plan.
+    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default; dry_run:false applies exact resolved name spans after checking source snapshots.
+Use rename_preview for read-only clients. Pass symbol_uid from context() to select the declaration. Unsupported syntax, ambiguous bindings, and incomplete coverage fail closed; no compiler or text-search fallback is used.
+Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Legacy graph_edits and text_search_edits are zero. Partial writes report only landed edits and failed_files; review failures before retrying. Separate preview/apply calls recompute the plan.
 Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates verbatim; re-call with symbol_uid. After application, run tests and detect_changes().`,
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {

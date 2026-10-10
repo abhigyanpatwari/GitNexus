@@ -26,6 +26,13 @@ vi.mock('child_process', async (importActual) => ({
 
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
+const { graphRows } = vi.hoisted(() => ({ graphRows: [] as Record<string, unknown>[] }));
+vi.mock('../../src/core/lbug/pool-adapter.js', async (importActual) => ({
+  ...(await importActual<typeof import('../../src/core/lbug/pool-adapter.js')>()),
+  executeQuery: vi.fn(async () => graphRows),
+  executeParameterized: vi.fn(async () => [{ filePath: 'src/caller.ts' }]),
+}));
+
 const SOURCE = `export class Writer {
   close() {}
 }
@@ -77,15 +84,59 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
 
   beforeEach(async () => {
     execFileSyncMock.mockClear();
+    graphRows.splice(
+      0,
+      graphRows.length,
+      ...['src/writer.ts', 'src/caller.ts'].map((filePath) => ({
+        id: `File:${filePath}`,
+        name: filePath,
+        filePath,
+      })),
+      {
+        id: 'Class:src/writer.ts:Writer',
+        name: 'Writer',
+        filePath: 'src/writer.ts',
+        startLine: 0,
+        endLine: 2,
+      },
+      {
+        id: 'Class:src/writer.ts:Other',
+        name: 'Other',
+        filePath: 'src/writer.ts',
+        startLine: 3,
+        endLine: 5,
+      },
+      {
+        id: 'Method:src/writer.ts:Writer.close#0',
+        name: 'close',
+        filePath: 'src/writer.ts',
+        startLine: 1,
+        endLine: 1,
+      },
+      {
+        id: 'Method:src/writer.ts:Other.close#0',
+        name: 'close',
+        filePath: 'src/writer.ts',
+        startLine: 4,
+        endLine: 4,
+      },
+      {
+        id: 'Function:src/writer.ts:run',
+        name: 'run',
+        filePath: 'src/writer.ts',
+        startLine: 6,
+        endLine: 11,
+      },
+      {
+        id: 'Function:src/caller.ts:caller',
+        name: 'caller',
+        filePath: 'src/caller.ts',
+        startLine: 1,
+        endLine: 1,
+      },
+    );
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3486-backend-'));
     await fs.mkdir(path.join(tmpDir, 'src'));
-    await fs.writeFile(
-      path.join(tmpDir, 'tsconfig.json'),
-      JSON.stringify({
-        compilerOptions: { target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext' },
-        include: ['src/**/*.ts'],
-      }),
-    );
     await fs.writeFile(path.join(tmpDir, 'src/writer.ts'), SOURCE);
     await fs.writeFile(path.join(tmpDir, 'src/caller.ts'), CALLER);
   });
@@ -97,7 +148,7 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
 
   it('previews bound occurrences, including callers absent from graph incoming files', async () => {
     const result = await callRename(stubbedBackend(), tmpDir);
-    expect(result).toMatchObject({
+    expect(result, JSON.stringify(result)).toMatchObject({
       status: 'success',
       applied: false,
       result_version: 2,
@@ -107,6 +158,7 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
       text_search_edits: 0,
       text_search: 'not_used',
       files_affected: 2,
+      coverage: { name: 'gitnexus-semantic', scope: 'indexed-repository' },
     });
     const edits = result.changes.flatMap((change: any) => change.edits);
     expect(edits.every((edit: any) => edit.confidence === 'semantic')).toBe(true);
@@ -122,7 +174,11 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
     const backend = stubbedBackend();
     const preview = await callRename(backend, tmpDir);
     const result = await callRename(backend, tmpDir, { dry_run: false });
-    expect(result).toMatchObject({ status: 'success', applied: true, total_edits: 4 });
+    expect(result, JSON.stringify(result)).toMatchObject({
+      status: 'success',
+      applied: true,
+      total_edits: 4,
+    });
     expect(result.changes).toEqual(preview.changes);
     expect(await fs.readFile(path.join(tmpDir, 'src/writer.ts'), 'utf8')).toBe(
       SOURCE.replace('  close() {}', '  closeWriter() {}').replaceAll(
@@ -135,7 +191,7 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
     );
   });
 
-  it('refuses unsupported languages without changing the target', async () => {
+  it('refuses targets missing from the indexed graph', async () => {
     const rust = 'fn close() {}\nfn use_it() { close(); }\n';
     await fs.writeFile(path.join(tmpDir, 'src/lib.rs'), rust);
     const backend = stubbedBackend({
@@ -146,7 +202,7 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
       endLine: 1,
     });
     const result = await callRename(backend, tmpDir, { dry_run: false });
-    expect(result).toMatchObject({ applied: false, planning_status: 'unsupported' });
+    expect(result, JSON.stringify(result)).toMatchObject({ applied: false, status: 'error' });
     expect(await fs.readFile(path.join(tmpDir, 'src/lib.rs'), 'utf8')).toBe(rust);
   });
 
@@ -164,7 +220,7 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
       return originalRename(source, destination);
     });
     const result = await callRename(stubbedBackend(), tmpDir, { dry_run: false });
-    expect(result).toMatchObject({
+    expect(result, JSON.stringify(result)).toMatchObject({
       status: 'partial',
       applied: true,
       total_edits: 1,

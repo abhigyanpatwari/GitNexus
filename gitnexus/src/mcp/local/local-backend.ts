@@ -15,6 +15,8 @@ import {
   unusedAxesForImpactWalk,
   getLanguageFromFilename,
   type ImpactRiskResult,
+  type GraphNode,
+  type NodeLabel,
 } from 'gitnexus-shared';
 import {
   initLbug,
@@ -6762,7 +6764,7 @@ export class LocalBackend {
     };
   }
 
-  /** Resolve graph identity, then let the language provider find exact occurrences. */
+  /** Resolve graph identity and indexed scope through GitNexus's semantic layer. */
   private async rename(
     repo: RepoHandle,
     params: {
@@ -6770,7 +6772,6 @@ export class LocalBackend {
       symbol_uid?: string;
       new_name: string;
       file_path?: string;
-      tsconfig_path?: string;
       dry_run?: boolean;
     },
   ): Promise<any> {
@@ -6784,8 +6785,42 @@ export class LocalBackend {
       file_path: params.file_path,
     });
     if (lookupResult.status === 'ambiguous' || lookupResult.error) return lookupResult;
-    // Incoming graph edges are discovery hints, not proof of source occurrences.
-    return renameSymbol(repo.repoPath, lookupResult.symbol, params);
+    // Read the indexed file and declaration inventory, without context()'s
+    // ranked/truncated incoming edges. Current sources rebuild semantic scopes;
+    // a graph edge alone never authorizes a textual replacement.
+    const rows = await executeQuery(
+      repo.lbugPath,
+      `MATCH (n) WHERE n.filePath IS NOT NULL AND n.filePath <> ''
+       RETURN n.id AS id, n.name AS name, n.filePath AS filePath,
+              n.startLine AS startLine, n.endLine AS endLine`,
+    );
+    const graphNodes: GraphNode[] = rows.map((row: any) => ({
+      id: row.id,
+      // Node IDs carry the actual label; labels(n)[0] is unreliable on LadybugDB.
+      label: row.id.split(':')[0] as NodeLabel,
+      properties: {
+        name: row.name,
+        filePath: row.filePath,
+        startLine: row.startLine ?? undefined,
+        endLine: row.endLine ?? undefined,
+      },
+    }));
+    const referenceRows = await executeParameterized(
+      repo.lbugPath,
+      `MATCH (source)-[r:CodeRelation]->(target {id: $uid})
+       WHERE r.type IN ['CALLS', 'USES', 'ACCESSES', 'EXTENDS', 'IMPLEMENTS']
+       RETURN DISTINCT source.filePath AS filePath`,
+      { uid: lookupResult.symbol.uid },
+    );
+    return renameSymbol(
+      repo.repoPath,
+      lookupResult.symbol,
+      params,
+      graphNodes,
+      referenceRows
+        .map((row: any) => row.filePath)
+        .filter((file: unknown): file is string => typeof file === 'string' && file.length > 0),
+    );
   }
 
   private async trace(repo: RepoHandle, params: TraceParams): Promise<any> {

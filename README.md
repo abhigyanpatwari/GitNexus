@@ -169,7 +169,7 @@ flowchart TB
 | `trace`          | Shortest directed path between two symbols (call + class-member edges) |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
 | `check`          | Read-only structural checks against the indexed graph                  |
-| `rename_preview` | Read-only semantic rename preview for a configured TS/JS project       |
+| `rename_preview` | Read-only graph and semantic rename preview       |
 | `rename`         | Preview or apply exact semantic rename occurrences                     |
 | `cypher`         | Raw Cypher graph queries                                               |
 | `route_map`      | API route map — which components fetch which endpoints, and handlers   |
@@ -875,11 +875,11 @@ changed_symbols: [validateUser, AuthService, ...]
 affected_processes: [LoginFlow, RegistrationFlow, ...]
 ```
 
-### Rename (Configured TypeScript/JavaScript Project)
+### Rename (Graph and Semantic Layer)
 
 ```js
 rename_preview({symbol_name: "validateUser", new_name: "verifyUser", repo: "my-app"})
-// If project selection is ambiguous, repeat with a returned tsconfig_path.
+// For an ambiguous name, repeat with the symbol_uid from context().
 ```
 
 ```text
@@ -894,21 +894,29 @@ semantic_edits: 8
 graph_edits: 0
 text_search_edits: 0
 text_search: not_used
-coverage: {name: "typescript", version: "5.9.3", scope: "project", tsconfig_path: "tsconfig.json", ...}
+coverage: {name: "gitnexus-semantic", scope: "indexed-repository", languages: [...], limitations: [...], ...}
 changes: [{file_path, edits: [{start, length, old_text, new_text, line, confidence: "semantic"}]}]
 ```
 
-Review the exact UTF-16 spans and selected project, then call `rename` with the
-same selectors and `dry_run: false` to apply. `rename` still defaults to preview.
-Counts describe occurrences, including multiple edits on one line. Import/export
-aliases include compiler-provided prefix/suffix text in `new_text`. Comments,
-strings, and unrelated same-spelled symbols are not text-search replacements.
+Review the exact UTF-16 spans and coverage, then call `rename` with the same
+selectors and `dry_run: false` to apply. `rename` still defaults to preview.
+Counts describe occurrences, including multiple edits on one line. The graph
+selects indexed declarations and files; GitNexus's language providers rebuild
+semantic scopes from the current source and resolve exact name spans.
 
-Coverage is limited to one configured project, not the whole repository. Select
-`tsconfig_path` explicitly when several configs contain the declaration. Unsupported
-languages, project references, stale declarations, and unresolved targets fail
-closed without regex fallback. Both tools operate on the checkout and reject
-`branch`. The runtime compiler is pinned independently of the build compiler.
+Rename does not load a compiler or language service. Comments, strings, and
+unrelated same-spelled symbols are preserved. Unsupported syntax, ambiguous
+bindings, stale declarations, and incomplete occurrence coverage block writes.
+Coverage includes indexed files in the target language, excluding unindexed
+files and external consumers. Constructor, destructor, inheritance, and interface
+families require complete provider evidence; unsupported families, unclassified
+token roles, and computed references are refused. Any detected computed access
+in the analyzed language scope currently blocks rename until providers can prove
+its key and receiver are unrelated. Both tools operate on the current checkout
+and reject `branch`.
+
+PHP rename is currently unsupported because exact-spelling occurrence checks do
+not cover its case-insensitive symbol names.
 
 Preview and apply recompute their plans independently. Source snapshots are
 checked before writes; this is not a cross-call preview token or transactional

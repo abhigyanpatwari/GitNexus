@@ -10,7 +10,7 @@
  */
 
 import type { NodeLabel } from '../graph/types.js';
-import type { SourcePosition } from './types.js';
+import type { Range, SourcePosition } from './types.js';
 
 export interface ParameterTypeClass {
   /** Normalized base type, matching the coarse `parameterTypes` vocabulary when known. */
@@ -58,6 +58,10 @@ export interface TypeParameter {
 }
 
 export interface SymbolDefinition {
+  /** Exact identifier capture, when the provider supplied a source name. */
+  readonly nameRange?: Range;
+  /** Full declaration capture, retained to validate persisted graph ranges. */
+  readonly declarationRange?: Range;
   nodeId: string;
   filePath: string;
   type: NodeLabel;

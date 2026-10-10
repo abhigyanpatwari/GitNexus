@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { GraphNode } from 'gitnexus-shared';
 
 export interface RenameSymbol {
   uid?: string;
@@ -13,16 +14,15 @@ export interface RenameSymbol {
 
 export interface RenameOptions {
   new_name: string;
-  tsconfig_path?: string;
   dry_run?: boolean;
 }
 
 export interface RenameCoverage {
   name: string;
-  version: string;
-  scope: 'project';
-  tsconfig_path: string;
+  scope: 'indexed-repository';
   source_file_count: number;
+  languages: string[];
+  limitations: string[];
 }
 
 export interface OccurrenceEdit {
@@ -38,7 +38,7 @@ export interface RenamePlan {
   symbol: RenameSymbol;
   new_name: string;
   coverage: RenameCoverage;
-  /** Includes all source/config files read by the provider, even without edits. */
+  /** Includes all source files used by semantic resolution, even without edits. */
   snapshots: Map<string, string>;
   edits: OccurrenceEdit[];
 }
@@ -316,19 +316,14 @@ export async function renameSymbol(
   repoPath: string,
   symbol: RenameSymbol,
   options: RenameOptions,
+  graphNodes: readonly GraphNode[],
+  referenceFiles: readonly string[] = [],
 ): Promise<RenameResult> {
   try {
-    if (!/\.(?:[cm]?[jt]s|[jt]sx)$/i.test(symbol.filePath)) {
-      throw new RenameFailure(
-        'unsupported_language',
-        'Semantic rename currently supports configured TypeScript and JavaScript projects only.',
-        'unsupported',
-      );
-    }
     if (options.dry_run !== undefined && typeof options.dry_run !== 'boolean')
       throw new RenameFailure('invalid_argument', 'dry_run must be a boolean.');
-    const { planTypeScriptRename } = await import('./typescript-rename.js');
-    const plan = planTypeScriptRename(repoPath, symbol, options);
+    const { planGraphRename } = await import('./graph-rename.js');
+    const plan = await planGraphRename(repoPath, symbol, options, graphNodes, referenceFiles);
     return await executeRenamePlan(repoPath, plan, options.dry_run ?? true);
   } catch (error) {
     return blocked(symbol, options.new_name, error);

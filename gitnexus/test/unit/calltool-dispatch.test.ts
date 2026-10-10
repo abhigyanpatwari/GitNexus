@@ -2549,7 +2549,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('rename: a swallowed apply-edit write failure degrades to status:partial + failed_files (#2283)', async () => {
-    // A real configured project produces an edit; only its final write fails.
+    // Real graph/semantic resolution produces an edit; staging its replacement fails.
     (executeParameterized as any)
       .mockResolvedValueOnce([
         {
@@ -2572,7 +2572,16 @@ describe('LocalBackend.callTool', () => {
     // Graph lines are zero-based; context presents this declaration on line 2.
     mkdirSync(path.join(repoDir, 'src'));
     writeFileSync(path.join(repoDir, 'src/target.ts'), '\nfunction oldName() {}\n');
-    writeFileSync(path.join(repoDir, 'tsconfig.json'), '{"include":["src/**/*.ts"]}');
+    lbugMocks.executeQuery.mockResolvedValue([
+      { id: 'File:src/target.ts', name: 'target.ts', filePath: 'src/target.ts' },
+      {
+        id: 'Function:src/target.ts:oldName',
+        name: 'oldName',
+        filePath: 'src/target.ts',
+        startLine: 1,
+        endLine: 1,
+      },
+    ]);
     const writeSpy = vi
       .spyOn(fsPromises, 'writeFile')
       .mockRejectedValue(new Error('EACCES: permission denied'));

@@ -51,9 +51,7 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           lifecycle-scripts: 'false'
-      # The runtime language-service alias also publishes a tsc bin. Select the
-      # build compiler explicitly so npm's bin-link order cannot change CI.
-      - run: node node_modules/typescript/lib/tsc.js --noEmit
+      - run: npx tsc --noEmit
         working-directory: gitnexus
       - name: Typecheck tests
         run: npm run typecheck:tests

@@ -56,7 +56,7 @@ checkout and reports nothing changed, which reads as a verified refactor.
 - [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
 - [ ] rename_preview({symbol_name: "oldName", new_name: "newName"}) — preview semantic edits
 - [ ] Confirm the previewed file paths are in the bound repository/worktree
-- [ ] Review exact semantic spans and coverage.tsconfig_path; select tsconfig_path if ambiguous
+- [ ] Review exact graph-backed semantic spans, coverage, and limitations
 - [ ] If satisfied: rename({..., dry_run: false}) — apply edits
 - [ ] detect_changes() — verify only expected files changed
 - [ ] Run tests for affected processes
@@ -94,23 +94,28 @@ checkout and reports nothing changed, which reads as a verified refactor.
 ```
 rename_preview({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app"})
 → 12 edits across 8 files
-→ semantic_edits: 12, coverage: {scope: "project", tsconfig_path: "tsconfig.json"}
+→ semantic_edits: 12, coverage: {name: "gitnexus-semantic", scope: "indexed-repository", limitations: [...]}
 → changes: [{file_path, edits: [{start, length, line, old_text, new_text, confidence: "semantic"}]}]
 ```
 
-Only configured TypeScript/JavaScript projects are supported. If multiple configs
-include the declaration, pass a returned `tsconfig_path` candidate. Coverage is
-limited to that project; project references and unsupported languages fail closed.
-There is no regex fallback: `graph_edits` and `text_search_edits` are zero.
+Rename uses the indexed graph and GitNexus's own semantic layer. Language
+providers resolve current source through scopes and bindings; no compiler or
+language service is loaded. Unsupported syntax, ambiguous bindings, stale
+declarations, and incomplete occurrence coverage fail closed. Coverage describes
+indexed files in the target language, excluding unindexed files and external consumers.
+Unsupported constructor/inheritance families, unclassified token roles, and
+computed references are refused. Any detected computed access in the analyzed
+language scope currently blocks rename, including accesses outside edited files.
+PHP rename is unsupported until providers cover case-insensitive symbol names.
+There is no regex fallback: legacy `graph_edits` and `text_search_edits` are zero.
 Comments, strings, and unrelated same-spelled symbols are not replacements.
 
 `rename` remains available with `dry_run: true` (default) or explicit
 `dry_run: false`. Both use the same planner. Results use `result_version: 2`;
-`total_edits` counts occurrences, not matching lines. Import/export alias affixes
-are part of `new_text`. Separate preview and apply calls recompute the plan.
+`total_edits` counts occurrences, not matching lines. Exact replacements are shown in `new_text`. Separate preview and apply calls recompute the plan.
 Check `planning_status`, `application_status`, and `applied`. After a write
 failure, `changes` and counts describe only landed edits; inspect `failed_files`
-before retrying. New-name collisions still require compiler and test verification.
+before retrying. Run the project validation suite after applying.
 Neither tool accepts `branch`: they inspect the current checkout.
 
 **impact** — map all dependents first:
