@@ -73,7 +73,7 @@ afterEach(() => {
 });
 
 describe('native parser bundle preparation', () => {
-  it('admits the tested runtime for direct and transitive peers without changing binaries', () => {
+  it('pins direct and transitive peers to the tested runtime without changing binaries', () => {
     const root = fixture();
     const native = path.join(root, 'node_modules/tree-sitter-cpp/parser.node');
     writeFileSync(native, Buffer.from([0, 1, 128, 255]));
@@ -83,7 +83,7 @@ describe('native parser bundle preparation', () => {
       read(path.join(root, 'node_modules/tree-sitter-cpp/package.json')).peerDependencies[
         'tree-sitter'
       ],
-    ).toBe('^0.21.1 || 0.25.1');
+    ).toBe('0.25.1');
     expect(
       read(
         path.join(
@@ -91,7 +91,7 @@ describe('native parser bundle preparation', () => {
           'node_modules/tree-sitter-typescript/node_modules/tree-sitter-javascript/package.json',
         ),
       ).peerDependencies['tree-sitter'],
-    ).toBe('^0.21.1 || 0.25.1');
+    ).toBe('0.25.1');
     expect(
       read(path.join(root, 'node_modules/tree-sitter-javascript/package.json')).peerDependencies[
         'tree-sitter'
@@ -100,6 +100,17 @@ describe('native parser bundle preparation', () => {
     expect(prepareTreeSitterBundle(root)).toHaveLength(8);
     expect(readFileSync(native)).toEqual(original);
     expect(read(path.join(root, 'package.json')).dependencies).toEqual(directVersions);
+  });
+
+  it('migrates previously widened peer ranges to the exact runtime', () => {
+    const root = fixture();
+    const file = path.join(root, 'node_modules/tree-sitter-cpp/package.json');
+    const pkg = read(file);
+    pkg.peerDependencies['tree-sitter'] = '^0.21.1 || 0.25.1';
+    write(file, pkg);
+    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
+    expect(read(file).peerDependencies['tree-sitter']).toBe('0.25.1');
+    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
   });
 
   it('rejects changed peer metadata before writing any package', () => {
