@@ -200,7 +200,7 @@ jobs:
       - id: gen
         run: |
           TOTAL=4         # cross-platform (windows/macOS) shards per OS
-          COV_TOTAL=3     # ubuntu coverage shards (merged before thresholds)
+          COV_TOTAL=4     # ubuntu coverage shards (merged before thresholds)
           if [ "$TOTAL" -lt 1 ] || [ "$COV_TOTAL" -lt 1 ]; then
             echo "shard totals must be >= 1" >&2; exit 1
           fi
