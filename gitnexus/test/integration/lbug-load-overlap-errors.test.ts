@@ -318,16 +318,18 @@ describe('graph write buffer exhaustion (#3526)', () => {
   const isRelationshipCopy = (sql: string) => /^COPY CodeRelation\b/.test(sql);
   const isFallbackInsert = (sql: string) => /CREATE \(a\)-\[:CodeRelation/.test(sql);
 
-  it.each(['node', 'relationship'])(
-    'aborts a first %s COPY exhaustion without retrying or falling back',
-    async (phase) => {
+  it.each([
+    { phase: 'node', isCopy: (sql: string) => /^COPY File\(/.test(sql) },
+    { phase: 'relationship', isCopy: isRelationshipCopy },
+  ])(
+    'aborts a first $phase COPY exhaustion without retrying or falling back',
+    async ({ isCopy }) => {
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       emitGraphCSVs();
       const original = new Error('Unable to allocate memory! The buffer pool is full!');
-      const seen = await injectQueries((sql) => {
-        const target = phase === 'node' ? /^COPY File\(/.test(sql) : isRelationshipCopy(sql);
-        return target && !sql.includes('IGNORE_ERRORS') ? original : undefined;
-      });
+      const seen = await injectQueries((sql) =>
+        isCopy(sql) && !sql.includes('IGNORE_ERRORS') ? original : undefined,
+      );
 
       const error = await adapter
         .loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath)
