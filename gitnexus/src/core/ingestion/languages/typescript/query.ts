@@ -220,6 +220,12 @@ export const TYPESCRIPT_SCOPE_QUERY = `
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
 
+;; Generator expressions have the same callable binding and scope anchor.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (generator_function) @declaration.function))
+
 (variable_declaration
   (variable_declarator
     name: (identifier) @declaration.name
@@ -229,6 +235,11 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (generator_function) @declaration.function))
 
 ;; CJS property-assignment exports (#2723) — see the matching block in
 ;; \`languages/javascript/query.ts\` for the rationale. Mirrored here because
@@ -1096,12 +1107,11 @@ export const TYPESCRIPT_SCOPE_QUERY = `
     function: (member_expression) @type-binding.type)) @type-binding.alias
 
 ;; Type bindings — for-of member-access iterable: \`for (const u of this.users)\`.
-;; Bind u to \`users\` (the attribute name); chain-follow resolves users
-;; via the enclosing class's field binding.
+;; Preserve the explicit receiver so class fields are resolved as members,
+;; without treating them as lexical names visible in method bodies.
 (for_in_statement
   left: (identifier) @type-binding.name
-  right: (member_expression
-    property: (property_identifier) @type-binding.type)) @type-binding.alias
+  right: (member_expression) @type-binding.type) @type-binding.alias
 
 ;; Type bindings — class field annotation: \`private city: City\`.
 (public_field_definition
@@ -1639,17 +1649,17 @@ export function getTsScopeQuery(filePath?: string): Parser.Query {
 
 /**
  * Validate that a cached `Tree` was produced by the grammar matching
- * `filePath` (TSX vs TypeScript). The runtime tree-sitter `Tree` exposes
- * `getLanguage()` (returning the grammar object the parser was bound
- * to); the .d.ts is incomplete, so we reach via a cast. Identity
+ * `filePath` (TSX vs TypeScript). Native tree-sitter exposes `language`;
+ * other Tree implementations expose `getLanguage()`. The .d.ts is
+ * incomplete, so we reach via a cast. Identity
  * comparison against `TSX_GRAMMAR` / `TS_GRAMMAR` is exact: the same
- * module instance produces both. If `getLanguage` is unavailable for
+ * module instance produces both. If neither grammar accessor is available for
  * any reason, return true to keep behavior backwards-compatible (the
  * original code never validated grammar at all).
  */
 export function tsCachedTreeMatchesGrammar(tree: unknown, filePath: string): boolean {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const lang = (tree as any)?.getLanguage?.();
+  const lang = (tree as any)?.getLanguage?.() ?? (tree as any)?.language;
   if (lang === undefined || lang === null) return true;
   return isTsxFile(filePath) ? lang === TSX_GRAMMAR : lang === TS_GRAMMAR;
 }

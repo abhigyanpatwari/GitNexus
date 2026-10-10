@@ -56,7 +56,18 @@ function canonicalizeMatch(match: CaptureMatch): string {
     // Scope-only lexical shadow metadata has dedicated extraction/resolution
     // tests. Exclude it from the historical capture fingerprint so adding
     // untyped parameter barriers does not rebaseline every Python fixture.
-    if (tag === '@scope.lexical-names') continue;
+    if (
+      [
+        '@scope.lexical-names',
+        '@scope.name-claims',
+        '@scope.lookup-policy',
+        '@binding.scope',
+        '@reference.lookup-scope',
+        '@reference.caller-scope',
+        '@type.lookup-scope',
+      ].includes(tag)
+    )
+      continue;
     const cap = match[tag]!;
     const r = cap.range;
     parts.push(`${tag}|${cap.text}|${r.startLine}:${r.startCol}-${r.endLine}:${r.endCol}`);

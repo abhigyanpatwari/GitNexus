@@ -46,15 +46,26 @@ describe('Rust trait implementation resolution', () => {
     expect(extends_.length).toBe(0);
   });
 
-  it('resolves exactly 1 IMPORTS edge: main.rs → button.rs', () => {
+  it('resolves imports through the declared trait and implementation modules', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    expect(imports.length).toBe(1);
-    expect(imports[0].source).toBe('main.rs');
-    expect(imports[0].target).toBe('button.rs');
+    expect(imports.map((edge) => `${edge.sourceFilePath} → ${edge.targetFilePath}`).sort()).toEqual(
+      [
+        'src/impls/button.rs → src/traits/mod.rs',
+        'src/main.rs → src/impls/button.rs',
+        'src/traits/mod.rs → src/traits/clickable.rs',
+        'src/traits/mod.rs → src/traits/drawable.rs',
+      ],
+    );
   });
 
-  it('detects 2 modules and functions (trait signatures + impls)', () => {
-    expect(getNodesByLabel(result, 'Module')).toEqual(['impls', 'traits']);
+  it('detects 5 modules and functions (trait signatures + impls)', () => {
+    expect(getNodesByLabel(result, 'Module')).toEqual([
+      'button',
+      'clickable',
+      'drawable',
+      'impls',
+      'traits',
+    ]);
     const fns = getNodesByLabel(result, 'Function');
     // With function_signature_item captured, trait abstract methods AND their
     // concrete impls both appear (distinct qualified IDs, same name)
@@ -192,14 +203,16 @@ describe('Rust ambiguous symbol resolution', () => {
   });
 
   it('import resolves to src/models/mod.rs (not src/other/mod.rs)', () => {
-    const imports = getRelationships(result, 'IMPORTS');
-    const modelsImport = imports.find((e) => e.targetFilePath.includes('models'));
-    expect(modelsImport).toBeDefined();
-    expect(modelsImport!.targetFilePath).toBe('src/models/mod.rs');
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (edge) => edge.sourceFilePath === 'src/services/mod.rs',
+    );
+    expect(imports.map((edge) => edge.targetFilePath)).toEqual(['src/models/mod.rs']);
   });
 
-  it('no import edge to src/other/', () => {
-    const imports = getRelationships(result, 'IMPORTS');
+  it('no services import edge to src/other/', () => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (edge) => edge.sourceFilePath === 'src/services/mod.rs',
+    );
     for (const imp of imports) {
       expect(imp.targetFilePath).not.toMatch(/src\/other\//);
     }

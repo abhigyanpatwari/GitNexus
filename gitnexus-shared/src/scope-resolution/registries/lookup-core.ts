@@ -67,27 +67,23 @@
  *   - No caching. Callers that want memoization can wrap this function.
  */
 
+import { lookupLexicalName } from '../name-claims.js';
 import type { NodeLabel } from '../../graph/types.js';
 import type { SymbolDefinition } from '../symbol-definition.js';
-import type {
-  BindingRef,
-  Callsite,
-  DefId,
-  LookupParams,
-  Resolution,
-  Scope,
-  ScopeId,
-} from '../types.js';
+import type { BindingRef, Callsite, DefId, LookupParams, Resolution, ScopeId } from '../types.js';
 import type { OriginForTieBreak } from '../origin-priority.js';
 import { composeEvidence, confidenceFromEvidence, type RawSignals } from './evidence.js';
 import { compareByConfidenceWithTiebreaks, type TieBreakKey } from './tie-breaks.js';
 import { lookupQualified } from './lookup-qualified.js';
 import type { ArityVerdict, OwnerScopedContributor, RegistryContext } from './context.js';
+import { CLASS_KINDS } from './context.js';
 
 // ─── Public entry point ─────────────────────────────────────────────────────
 
 /** Extended `LookupParams` narrowing `ownerScopedContributor` to the concrete shape. */
 export interface CoreLookupParams extends Omit<LookupParams, 'ownerScopedContributor'> {
+  /** A separate namespace whose ownership is determined only by accepted kinds. */
+  readonly independentKindNamespace?: boolean;
   readonly ownerScopedContributor: OwnerScopedContributor | null;
   /** Call-site description forwarded to `arityCompatibility`. Optional — for non-call lookups. */
   readonly callsite?: Callsite;
@@ -132,15 +128,22 @@ export function lookupCore(
     !IMPLICIT_RECEIVERS.includes(params.explicitReceiver.name);
   const lexicalShadowed = skipLexical
     ? false
-    : walkLexicalChain(name, startScope, acceptedKinds, ctx, perCandidate);
+    : walkLexicalChain(name, startScope, acceptedKinds, ctx, perCandidate, params);
 
   // ── Step 2: type-binding / MRO walk (methods/fields) ──────────────────
-  if (params.useReceiverTypeBinding && ctx.methodDispatch !== undefined) {
+  if (
+    (!lexicalShadowed || perCandidate.size > 0 || skipLexical) &&
+    params.useReceiverTypeBinding &&
+    ctx.methodDispatch !== undefined
+  ) {
     walkReceiverTypeBinding(name, startScope, acceptedKinds, params, ctx, perCandidate);
   }
 
   // ── Step 3: owner-scoped contributor ──────────────────────────────────
-  if (params.ownerScopedContributor !== null) {
+  if (
+    (!lexicalShadowed || perCandidate.size > 0 || skipLexical) &&
+    params.ownerScopedContributor !== null
+  ) {
     seedFromOwnerScopedContributor(
       name,
       params.ownerScopedContributor,
@@ -222,32 +225,50 @@ function walkLexicalChain(
   acceptedKinds: ReadonlySet<NodeLabel>,
   ctx: RegistryContext,
   perCandidate: Map<DefId, CandidateState>,
+  params: CoreLookupParams,
 ): boolean {
-  let currentId: ScopeId | null = startScope;
-  let depth = 0;
-  const visited = new Set<ScopeId>();
-
-  while (currentId !== null) {
-    if (visited.has(currentId)) return false;
-    visited.add(currentId);
-
-    const scope: Scope | undefined = ctx.scopes.getScope(currentId);
-    if (scope === undefined) return false;
-
-    const bindings = scope.bindings.get(name);
-    if (bindings !== undefined && bindings.length > 0) {
-      for (const binding of bindings) {
-        if (!acceptedKinds.has(binding.def.type)) continue;
-        recordLexicalHit(perCandidate, binding, depth);
+  if (params.independentKindNamespace === true) {
+    let id: ScopeId | null = startScope;
+    let depth = 0;
+    const visited = new Set<ScopeId>();
+    while (id !== null && !visited.has(id)) {
+      visited.add(id);
+      const scope = ctx.scopes.getScope(id);
+      if (scope === undefined) return true;
+      const bindings = (scope.bindings.get(name) ?? []).filter((binding) =>
+        acceptedKinds.has(binding.def.type),
+      );
+      if (bindings.length > 0) {
+        for (const binding of bindings) recordLexicalHit(perCandidate, binding, depth);
+        return true;
       }
-      return true; // hard shadow regardless of kind-filter survivorship
+      id = scope.lookupPolicy?.parentScope ?? scope.parent;
+      depth++;
     }
-
-    currentId = scope.parent;
-    depth++;
+    return id !== null;
   }
-
-  return false;
+  const options = { position: params.lookupPosition, purpose: params.lookupPurpose };
+  const claim = lookupLexicalName(startScope, name, { scopes: ctx.scopes }, options);
+  if (claim.status !== 'absent') {
+    let depth = 0;
+    let owner = ctx.scopes.getScope(startScope);
+    const visited = new Set<ScopeId>();
+    while (owner !== undefined && owner.id !== claim.scope?.id && !visited.has(owner.id)) {
+      visited.add(owner.id);
+      const parent = owner.lookupPolicy?.parentScope ?? owner.parent;
+      owner = parent === null ? undefined : ctx.scopes.getScope(parent);
+      depth++;
+    }
+    for (const binding of claim.bindings) {
+      if (acceptedKinds.has(binding.def.type)) recordLexicalHit(perCandidate, binding, depth);
+    }
+    return true;
+  }
+  const rootName = name.split('.', 1)[0]!;
+  return (
+    rootName !== name &&
+    lookupLexicalName(startScope, rootName, { scopes: ctx.scopes }, options).status !== 'absent'
+  );
 }
 
 function recordLexicalHit(
@@ -310,12 +331,12 @@ function resolveReceiverOwner(
   // ready resolveTypeRef call (that module is separate), we do a direct
   // lookup and trust the caller to have populated the binding.
   if (params.explicitReceiver !== undefined) {
-    return lookupReceiverType(startScope, params.explicitReceiver.name, ctx);
+    return lookupReceiverType(startScope, params.explicitReceiver.name, ctx, params);
   }
 
   // Implicit `self` / `this` — the scope's typeBindings should carry it.
   for (const implicitName of IMPLICIT_RECEIVERS) {
-    const owner = lookupReceiverType(startScope, implicitName, ctx);
+    const owner = lookupReceiverType(startScope, implicitName, ctx, params);
     if (owner !== undefined) return owner;
   }
   return undefined;
@@ -353,38 +374,38 @@ function lookupReceiverType(
   startScope: ScopeId,
   receiverName: string,
   ctx: RegistryContext,
+  params: CoreLookupParams,
 ): DefId | undefined {
-  let currentId: ScopeId | null = startScope;
-  const visited = new Set<ScopeId>();
-  while (currentId !== null) {
-    if (visited.has(currentId)) return undefined;
-    visited.add(currentId);
-
-    const scope = ctx.scopes.getScope(currentId);
-    if (scope === undefined) return undefined;
-
-    const typeRef = scope.typeBindings.get(receiverName);
-    if (typeRef !== undefined) {
-      // rawName must resolve to a def via qualifiedNames; if it doesn't, we
-      // can't claim the receiver type. No fallback — that's what
-      // `resolveTypeRef` would do, but we keep this path lean and let
-      // callers pre-resolve if they want the richer semantics.
-      const candidateIds = ctx.qualifiedNames.get(typeRef.rawName);
-      if (candidateIds.length === 1) return candidateIds[0];
-      // Ambiguous (≥ 2) or missing (0) — caller must pre-resolve via
-      // `resolveTypeRef` (#916) if they want the richer semantics. We
-      // intentionally do NOT re-implement a simple-name fallback here.
-      return undefined;
-    }
-    // The scope binds this receiver itself but carries no type for it — a
-    // JS/TS ordinary `function` whose `this` is bound at call time, not the
-    // enclosing instance (#2701). Stop rather than borrowing an enclosing
-    // scope's binding; see `Scope.ownsReceivers`. Mirrors the same gate in
-    // the ingestion-side twin of this walk, `findReceiverTypeBinding`.
-    if (scope.ownsReceivers?.has(receiverName) === true) return undefined;
-    currentId = scope.parent;
+  const claim = lookupLexicalName(
+    startScope,
+    receiverName,
+    { scopes: ctx.scopes },
+    {
+      position: params.lookupPosition,
+      purpose: 'value',
+    },
+  );
+  const typeRef = claim.typeBinding;
+  if (typeRef === undefined) return undefined;
+  const typeClaim = lookupLexicalName(
+    typeRef.declaredAtScope,
+    typeRef.rawName,
+    { scopes: ctx.scopes },
+    {
+      position: typeRef.lookupPosition,
+      purpose: typeRef.lookupPurpose ?? 'type',
+    },
+  );
+  if (typeClaim.status !== 'absent') {
+    const candidates = new Map(
+      typeClaim.bindings
+        .filter((binding) => CLASS_KINDS.includes(binding.def.type))
+        .map((binding) => [binding.def.nodeId, binding.def]),
+    );
+    return candidates.size === 1 ? candidates.keys().next().value : undefined;
   }
-  return undefined;
+  const candidateIds = ctx.qualifiedNames.get(typeRef.rawName);
+  return candidateIds.length === 1 ? candidateIds[0] : undefined;
 }
 
 function collectOwnedMembers(

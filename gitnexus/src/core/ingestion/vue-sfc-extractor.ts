@@ -10,9 +10,10 @@
 export interface VueScriptExtraction {
   /** Extracted script content (TypeScript/JavaScript) */
   scriptContent: string;
-  /** 1-based line number in the .vue file where the script content starts
-   * (used as offset from tree-sitter's 0-based row). */
+  /** Zero-based source row of the first extracted script block. */
   lineOffset: number;
+  /** Original zero-based source row for every row of the combined script. */
+  sourceLineMap: readonly number[];
   /** true if at least one block is <script setup> */
   isSetup: boolean;
   /** Value of the `lang` attribute on the extracted script block (e.g. "ts", "js", "tsx", "jsx", or "" for default). */
@@ -232,8 +233,7 @@ function parseScriptBlock(
   const isSetup = attrs != null && /\bsetup\b/.test(attrs);
   const langMatch = attrs?.match(/\blang\s*=\s*["']([^"']+)["']/);
   const lang = langMatch ? langMatch[1] : '';
-  // +1 for the newline after the opening <script...> tag
-  const lineOffset = countNewlines(precedingText) + 1;
+  const lineOffset = countNewlines(precedingText);
 
   return { content, lineOffset, isSetup, lang };
 }
@@ -252,7 +252,7 @@ export function extractVueScript(vueContent: string): VueScriptExtraction | null
   // Reset lastIndex for reuse of the global regex
   SCRIPT_RE.lastIndex = 0;
   while ((match = SCRIPT_RE.exec(vueContent)) !== null) {
-    const precedingText = vueContent.slice(0, match.index + match[0].indexOf(match[2]));
+    const precedingText = vueContent.slice(0, match.index + match[0].indexOf('>') + 1);
     blocks.push(parseScriptBlock(match[1], match[2], precedingText));
   }
 
@@ -264,14 +264,27 @@ export function extractVueScript(vueContent: string): VueScriptExtraction | null
   const ordered = [...nonSetupBlocks, ...setupBlocks];
   const combinedContent = ordered.map((b) => b.content).join('\n');
   const lineOffset = ordered[0].lineOffset;
+  const sourceLineMap = ordered.flatMap((block) =>
+    block.content.split('\n').map((_, row) => block.lineOffset + row),
+  );
   // Only use JavaScript grammar when ALL blocks are explicitly lang="js"
   // or lang="jsx". If any block omits lang or uses ts/tsx, TypeScript wins.
   const allBlocksJs = blocks.length > 0 && blocks.every((b) => b.lang === 'js' || b.lang === 'jsx');
-  const lang = allBlocksJs ? 'js' : '';
+  const hasJsx = blocks.some((block) => block.lang === 'jsx' || block.lang === 'tsx');
+  const lang = allBlocksJs
+    ? hasJsx
+      ? 'jsx'
+      : 'js'
+    : hasJsx
+      ? 'tsx'
+      : blocks.some((block) => block.lang === 'ts')
+        ? 'ts'
+        : '';
 
   return {
     scriptContent: combinedContent,
     lineOffset,
+    sourceLineMap,
     isSetup: blocks.some((b) => b.isSetup),
     lang,
   };

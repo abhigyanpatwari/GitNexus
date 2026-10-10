@@ -345,7 +345,13 @@ describe('Pass 3: raw imports', () => {
         interpretImport: () => named,
       }),
     );
-    expect(result.parsedImports).toEqual([{ ...named, declaredAtScope: result.moduleScope }]);
+    expect(result.parsedImports).toEqual([
+      {
+        ...named,
+        declaredAtScope: result.moduleScope,
+        atRange: { startLine: 3, startCol: 0, endLine: 3, endCol: 30 },
+      },
+    ]);
   });
 
   it('drops imports when `interpretImport` returns null', () => {
@@ -459,7 +465,13 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
       'a.ts',
       mockProvider({ interpretImport: () => named }),
     );
-    expect(result.parsedImports).toEqual([{ ...named, declaredAtScope: result.moduleScope }]);
+    expect(result.parsedImports).toEqual([
+      {
+        ...named,
+        declaredAtScope: result.moduleScope,
+        atRange: { startLine: 3, startCol: 0, endLine: 3, endCol: 30 },
+      },
+    ]);
   });
 
   // ─── The provider capability that opts out of the position rule ──────────
@@ -492,7 +504,11 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
     );
     // Scope provenance survives, without adding the execution-deferral flag.
     expect(result.parsedImports).toEqual([
-      { ...named, declaredAtScope: 'scope:a.c#2:0-99:0:Function' },
+      {
+        ...named,
+        declaredAtScope: 'scope:a.c#2:0-99:0:Function',
+        atRange: { startLine: 12, startCol: 0, endLine: 12, endCol: 30 },
+      },
     ]);
   });
 
@@ -507,7 +523,12 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
     expect(
       extract(captures, 'a.ts', mockProvider({ interpretImport: () => named })).parsedImports,
     ).toEqual([
-      { ...named, declaredAtScope: 'scope:a.ts#2:0-99:0:Function', runsOnlyWhenCalled: true },
+      {
+        ...named,
+        declaredAtScope: 'scope:a.ts#2:0-99:0:Function',
+        runsOnlyWhenCalled: true,
+        atRange: { startLine: 12, startCol: 0, endLine: 12, endCol: 30 },
+      },
     ]);
     // Absent must mean `true`, not merely "not false" — the default is the
     // safe direction (position defers), and only an explicit `false` withholds
@@ -519,7 +540,12 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
         mockProvider({ interpretImport: () => named, importsExecuteWhereWritten: true }),
       ).parsedImports,
     ).toEqual([
-      { ...named, declaredAtScope: 'scope:a.ts#2:0-99:0:Function', runsOnlyWhenCalled: true },
+      {
+        ...named,
+        declaredAtScope: 'scope:a.ts#2:0-99:0:Function',
+        runsOnlyWhenCalled: true,
+        atRange: { startLine: 12, startCol: 0, endLine: 12, endCol: 30 },
+      },
     ]);
   });
 });
@@ -997,7 +1023,11 @@ describe('end-to-end fixture (all 5 passes together)', () => {
 
     // Import collected.
     expect(result.parsedImports).toEqual([
-      { ...parsedImport, declaredAtScope: result.moduleScope },
+      {
+        ...parsedImport,
+        declaredAtScope: result.moduleScope,
+        atRange: { startLine: 3, startCol: 0, endLine: 3, endCol: 30 },
+      },
     ]);
 
     // Type binding attached to function scope.

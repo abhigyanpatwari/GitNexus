@@ -39,10 +39,9 @@
  * The TypeScript registry-primary path intentionally does NOT resolve
  * the following. Each is a conscious trade-off at migration time.
  *
- *   1. **Type-only import / export separation** — `import type { X }`
- *      and `import { X }` produce the same `ParsedImport` shape today;
- *      `def.type` on the resolved symbol is the only discriminator.
- *      Parity with the legacy path is preserved. Tracking in #927.
+ *   1. **Indirect local loaders** — literal require and immediately awaited
+ *      import bindings are supported. Computed sources, promise chains and
+ *      default/rest destructuring do not establish imported aliases.
  *   2. **Declaration merging for imports** — when `import { Foo }`
  *      brings in a symbol that is BOTH a class and a namespace in the
  *      source module, we currently surface a single binding per the
