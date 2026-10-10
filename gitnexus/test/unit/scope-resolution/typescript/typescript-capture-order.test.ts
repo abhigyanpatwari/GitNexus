@@ -32,9 +32,10 @@ function synthesizedCaptureFingerprint(): string {
 
 describe('TypeScript synthesized capture order', () => {
   it('preserves the ordered synthesized capture stream across the TypeScript fixture corpus', () => {
-    // Recorded from the full-tree traversal before the native-selection change.
+    // Recorded from the full-tree traversal before the native-selection change;
+    // re-recorded when #3532 added @reference.lookup-purpose (match order unchanged).
     expect(synthesizedCaptureFingerprint()).toBe(
-      'c86cc8e062025294654ab5b841cef9d096d33bcc9020477dbb16e7c32dbf08a9',
+      '2b848e344e6314b48277befdae8093cccadc3f7543fe71b0566756d5eb4b2ce0',
     );
   });
 

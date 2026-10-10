@@ -155,7 +155,9 @@ function computeFingerprint() {
   const perFixtureDigests = [];
   for (const { key, absPath } of collectPythonFixtures()) {
     const src = fs.readFileSync(absPath, 'utf8');
-    const matches = emitPythonScopeCaptures(src, absPath);
+    // Lexical policies carry scope IDs containing the input path. Keep the
+    // fingerprint independent of the checkout's absolute location.
+    const matches = emitPythonScopeCaptures(src, key);
     groups += matches.length;
     perFixtureDigests.push(`${key}\t${matches.length}\t${digestCaptures(matches)}`);
   }

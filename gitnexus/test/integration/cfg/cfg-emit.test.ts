@@ -140,6 +140,39 @@ describe('collectFunctionCfgs — lineOffset → file coordinates (#2195 P1, Vue
     const omitted = collectFunctionCfgs(tsRoot(code), visitor(), 'g.ts').cfgs;
     expect(JSON.stringify(withZero)).toBe(JSON.stringify(omitted));
   });
+
+  it.each(['source', 'parse-buffer'] as const)(
+    'remaps graph lines while retaining %s call-site coordinates',
+    (siteCoordinates) => {
+      const code = 'function caller() { return service.run(helper()); }';
+      const base = collectFunctionCfgs(tsRoot(code), visitor(), 'embedded').cfgs[0];
+      const mapped = collectFunctionCfgs(
+        tsRoot(code),
+        visitor(),
+        'embedded',
+        0,
+        0,
+        (row) => row + 10,
+        siteCoordinates,
+      ).cfgs[0];
+      const sites = (cfg: FunctionCfg) =>
+        cfg.blocks.flatMap((block) =>
+          (block.statements ?? []).flatMap((statement) => statement.sites ?? []),
+        );
+      const anchors = sites(base)
+        .filter((site) => site.at !== undefined)
+        .map((site) => site.at!);
+      expect(anchors).toHaveLength(2);
+      expect(mapped.functionStartLine).toBe(base.functionStartLine + 10);
+      expect(
+        sites(mapped)
+          .filter((site) => site.at !== undefined)
+          .map((site) => site.at),
+      ).toEqual(
+        anchors.map(([line, column]) => [siteCoordinates === 'source' ? line + 10 : line, column]),
+      );
+    },
+  );
 });
 
 describe('U4 — AC2: every BasicBlock is reachable from its function ENTRY', () => {

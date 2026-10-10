@@ -1,11 +1,12 @@
-import type { ParsedFile, Scope, ScopeId, TypeRef } from 'gitnexus-shared';
+import type { ParsedFile, Scope, TypeRef } from 'gitnexus-shared';
+import { lookupLexicalName } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getRustParser } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe, ParseTimeoutError } from '../../../tree-sitter/safe-parse.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { logger } from '../../../logger.js';
-import { lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
+import { lookupBindingsAt, lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 
 /**
  * Populate type bindings for patterns and iterators that the tree-sitter
@@ -18,6 +19,57 @@ import { lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
  * type bindings are available for lookup.
  */
 type RustTree = ReturnType<ReturnType<typeof getRustParser>['parse']>;
+
+interface ProducerReturn {
+  readonly rawType: string;
+  readonly typeRef: TypeRef;
+}
+
+function nodeRangeKey(node: SyntaxNode): string {
+  return `${node.startPosition.row + 1}:${node.startPosition.column}-${node.endPosition.row + 1}:${node.endPosition.column}`;
+}
+
+function indexScopeRanges(parsed: ParsedFile): ReadonlyMap<string, Scope> {
+  return new Map(
+    parsed.scopes.map((scope) => [
+      `${scope.range.startLine}:${scope.range.startCol}-${scope.range.endLine}:${scope.range.endCol}`,
+      scope,
+    ]),
+  );
+}
+
+function lexicalScopeForNode(
+  node: SyntaxNode,
+  scopeRanges: ReadonlyMap<string, Scope>,
+): Scope | undefined {
+  let current: SyntaxNode | null = node;
+  while (current !== null) {
+    const scope = scopeRanges.get(nodeRangeKey(current));
+    if (scope !== undefined) return scope;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+/** null means claimed but unusable; undefined alone permits the legacy fallback. */
+function producerAt(
+  func: SyntaxNode,
+  scopeRanges: ReadonlyMap<string, Scope>,
+  indexes: ScopeResolutionIndexes,
+  returnTypes: ReadonlyMap<string, ProducerReturn>,
+): ProducerReturn | null | undefined {
+  const scope = lexicalScopeForNode(func, scopeRanges);
+  if (scope === undefined || !indexes.scopeTree.has(scope.id)) return undefined;
+  const claim = lookupNameClaim(scope.id, func.text, indexes, {
+    position: { startLine: func.startPosition.row + 1, startCol: func.startPosition.column },
+    purpose: 'value',
+  });
+  if (claim.status === 'absent') return undefined;
+  if (claim.status === 'blocked') return null;
+  const defs = new Map(claim.bindings.map((binding) => [binding.def.nodeId, binding.def]));
+  if (defs.size !== 1) return null;
+  return returnTypes.get(defs.keys().next().value!) ?? null;
+}
 
 /**
  * Hold parsed trees for reuse across both prepass loops only when the whole
@@ -72,6 +124,11 @@ export function populateRustRangeBindings(
 ): void {
   const parser = getRustParser();
   const allReturnTypes = new Map<string, string>();
+  const producerReturns = new Map<string, ProducerReturn>();
+  const fieldsByDefinition = new Map<string, ReadonlyMap<string, TypeRef>>();
+  const scopeRangesByFile = new Map(
+    parsedFiles.map((parsed) => [parsed.filePath, indexScopeRanges(parsed)]),
+  );
   const ambiguousReturnTypes = new Set<string>();
   const allFieldTypes = new Map<string, Map<string, string>>();
   const ambiguousFieldTypes = new Set<string>();
@@ -94,6 +151,8 @@ export function populateRustRangeBindings(
   for (const parsed of parsedFiles) {
     const tree = getOrParseTree(parser, parsed.filePath, ctx, treeStore);
     if (tree === null) continue;
+    const scopeRanges = scopeRangesByFile.get(parsed.filePath)!;
+    const scopeMap = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
 
     for (const fn of tree.rootNode.descendantsOfType('function_item')) {
       const nameNode = fn.childForFieldName('name');
@@ -111,6 +170,33 @@ export function populateRustRangeBindings(
         }
         // Full-generic record per defining file for import-disambiguated lookup.
         recordByFile(returnTypeByFile, parsed.filePath, name, retType.text);
+        const declarationScope = scopeRanges.get(nodeRangeKey(fn));
+        if (declarationScope !== undefined) {
+          const declaredReturn =
+            declarationScope.parent === null
+              ? undefined
+              : scopeMap.get(declarationScope.parent)?.typeBindings.get(name);
+          for (const def of declarationScope.ownedDefs) {
+            if (def.type !== 'Function' && def.type !== 'Method') continue;
+            producerReturns.set(def.nodeId, {
+              rawType: retType.text,
+              typeRef: {
+                rawName:
+                  declaredReturn?.source === 'return-annotation'
+                    ? declaredReturn.rawName
+                    : normalizeFieldType(retType.text),
+                declaredSpelling: retType.text,
+                declaredAtScope: declarationScope.id,
+                lookupPosition: {
+                  startLine: retType.startPosition.row + 1,
+                  startCol: retType.startPosition.column,
+                },
+                lookupPurpose: 'type',
+                source: 'annotation',
+              },
+            });
+          }
+        }
       }
     }
 
@@ -119,11 +205,26 @@ export function populateRustRangeBindings(
       const body = structNode.childForFieldName('body');
       if (nameNode === null || body === null) continue;
       const fields = new Map<string, string>();
+      const fieldRefs = new Map<string, TypeRef>();
+      const declarationScope = scopeRanges.get(nodeRangeKey(structNode));
       for (const field of body.descendantsOfType('field_declaration')) {
         const fieldName = field.childForFieldName('name');
         const fieldType = field.childForFieldName('type');
         if (fieldName !== null && fieldType !== null) {
           fields.set(fieldName.text, normalizeFieldType(fieldType.text));
+          if (declarationScope !== undefined) {
+            fieldRefs.set(fieldName.text, {
+              rawName: normalizeFieldType(fieldType.text),
+              declaredSpelling: fieldType.text,
+              declaredAtScope: declarationScope.id,
+              lookupPosition: {
+                startLine: fieldType.startPosition.row + 1,
+                startCol: fieldType.startPosition.column,
+              },
+              lookupPurpose: 'type',
+              source: 'annotation',
+            });
+          }
         }
       }
       if (fields.size > 0) {
@@ -138,13 +239,15 @@ export function populateRustRangeBindings(
         }
         // Full-generic record per defining file for import-disambiguated lookup.
         recordByFile(fieldTypeByFile, parsed.filePath, name, fields);
+        for (const def of declarationScope?.ownedDefs ?? []) {
+          if (def.type === 'Struct') fieldsByDefinition.set(def.nodeId, fieldRefs);
+        }
       }
     }
 
     // Publish per-type member bindings for the whole workspace before resolving
     // assignments. Otherwise an importer processed before its defining file can
     // miss a field or identity-method type solely because of file order.
-    const scopeMap = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
     processFieldTypeBindings(tree.rootNode, parsed, scopeMap);
     processIdentityMethodBindings(parsed);
   }
@@ -154,6 +257,7 @@ export function populateRustRangeBindings(
     if (tree === null) continue;
 
     const scopeMap = new Map(parsed.scopes.map((s) => [s.id, s]));
+    const scopeRanges = scopeRangesByFile.get(parsed.filePath)!;
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
 
@@ -165,8 +269,10 @@ export function populateRustRangeBindings(
       allReturnTypes,
       indexes,
       returnTypeByFile,
+      producerReturns,
+      scopeRanges,
     );
-    processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope);
+    processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope, scopeRanges);
     processStructDestructuring(
       tree.rootNode,
       parsed,
@@ -175,6 +281,8 @@ export function populateRustRangeBindings(
       allFieldTypes,
       indexes,
       fieldTypeByFile,
+      fieldsByDefinition,
+      scopeRanges,
     );
     processPendingAssignments(
       tree.rootNode,
@@ -183,6 +291,9 @@ export function populateRustRangeBindings(
       scopeMap,
       moduleScope,
       allReturnTypes,
+      indexes,
+      producerReturns,
+      scopeRanges,
     );
   }
 }
@@ -322,6 +433,8 @@ function processForLoops(
   allReturnTypes: ReadonlyMap<string, string>,
   indexes: ScopeResolutionIndexes,
   returnTypeByFile: ReadonlyMap<string, Map<string, string>>,
+  producerReturns: ReadonlyMap<string, ProducerReturn>,
+  scopeRanges: ReadonlyMap<string, Scope>,
 ): void {
   for (const forNode of root.descendantsOfType('for_expression')) {
     const patternNode = forNode.childForFieldName('pattern');
@@ -339,10 +452,13 @@ function processForLoops(
       allReturnTypes,
       indexes,
       returnTypeByFile,
+      producerReturns,
+      scopeRanges,
     );
     if (elementType === null) continue;
 
-    const targetScope = findEnclosingFunctionScope(forNode, scopeMap) ?? moduleScope;
+    const targetScope =
+      lexicalScopeForNode(forNode.childForFieldName('body') ?? forNode, scopeRanges) ?? moduleScope;
     injectTypeBinding(targetScope, varName, elementType);
   }
 }
@@ -352,6 +468,7 @@ function processPatternBindings(
   parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
+  scopeRanges: ReadonlyMap<string, Scope>,
 ): void {
   for (const nodeType of ['let_condition', 'match_arm'] as const) {
     for (const node of root.descendantsOfType(nodeType)) {
@@ -362,12 +479,12 @@ function processPatternBindings(
       if (patternNode === null) continue;
 
       if (patternNode.type === 'captured_pattern') {
-        processCapturedPattern(patternNode, node, parsed, scopeMap, moduleScope);
+        processCapturedPattern(patternNode, node, parsed, scopeMap, moduleScope, scopeRanges);
         continue;
       }
 
       if (patternNode.type === 'tuple_struct_pattern') {
-        processTupleStructPattern(patternNode, node, parsed, scopeMap, moduleScope);
+        processTupleStructPattern(patternNode, node, parsed, scopeMap, moduleScope, scopeRanges);
       }
     }
   }
@@ -377,8 +494,9 @@ function processCapturedPattern(
   patternNode: SyntaxNode,
   contextNode: SyntaxNode,
   _parsed: ParsedFile,
-  scopeMap: ReadonlyMap<string, Scope>,
+  _scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
+  scopeRanges: ReadonlyMap<string, Scope>,
 ): void {
   const varNode = patternNode.namedChildren.find((c) => c.type === 'identifier');
   const structPatternNode = patternNode.namedChildren.find((c) => c.type === 'struct_pattern');
@@ -387,7 +505,7 @@ function processCapturedPattern(
   const typeName = structPatternNode.childForFieldName('type')?.text;
   if (typeName === undefined) return;
 
-  const targetScope = findEnclosingFunctionScope(contextNode, scopeMap) ?? moduleScope;
+  const targetScope = patternBindingScope(contextNode, scopeRanges) ?? moduleScope;
   injectTypeBinding(targetScope, varNode.text, typeName);
 }
 
@@ -397,6 +515,7 @@ function processTupleStructPattern(
   parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
+  scopeRanges: ReadonlyMap<string, Scope>,
 ): void {
   const wrapperNode = patternNode.childForFieldName('type');
   if (wrapperNode === null) return;
@@ -424,7 +543,14 @@ function processTupleStructPattern(
   const sourceVarName = sourceVarNode.type === 'identifier' ? sourceVarNode.text : null;
   if (sourceVarName === null) return;
 
-  const sourceType = lookupTypeInScopes(sourceVarName, contextNode, parsed, scopeMap, moduleScope);
+  const sourceType = lookupTypeInScopes(
+    sourceVarName,
+    contextNode,
+    parsed,
+    scopeMap,
+    moduleScope,
+    scopeRanges,
+  );
   if (sourceType === null) return;
 
   let resolvedType: string | null = null;
@@ -444,8 +570,24 @@ function processTupleStructPattern(
 
   if (resolvedType === null) return;
 
-  const targetScope = findEnclosingFunctionScope(contextNode, scopeMap) ?? moduleScope;
+  const targetScope = patternBindingScope(contextNode, scopeRanges) ?? moduleScope;
   injectTypeBinding(targetScope, varName, resolvedType);
+}
+
+function patternBindingScope(
+  contextNode: SyntaxNode,
+  scopeRanges: ReadonlyMap<string, Scope>,
+): Scope | undefined {
+  if (contextNode.type === 'match_arm') return lexicalScopeForNode(contextNode, scopeRanges);
+  let control = contextNode.parent;
+  while (
+    control !== null &&
+    control.type !== 'if_expression' &&
+    control.type !== 'while_expression'
+  )
+    control = control.parent;
+  const body = control?.childForFieldName('consequence') ?? control?.childForFieldName('body');
+  return body == null ? undefined : lexicalScopeForNode(body, scopeRanges);
 }
 
 function processStructDestructuring(
@@ -456,6 +598,8 @@ function processStructDestructuring(
   allFieldTypes: ReadonlyMap<string, Map<string, string>>,
   indexes: ScopeResolutionIndexes,
   fieldTypeByFile: ReadonlyMap<string, ReadonlyMap<string, Map<string, string>>>,
+  fieldsByDefinition: ReadonlyMap<string, ReadonlyMap<string, TypeRef>>,
+  scopeRanges: ReadonlyMap<string, Scope>,
 ): void {
   for (const letNode of root.descendantsOfType('let_declaration')) {
     const patternNode = letNode.childForFieldName('pattern');
@@ -467,7 +611,22 @@ function processStructDestructuring(
     const valueNode = letNode.childForFieldName('value');
     if (valueNode === null) continue;
 
-    const targetScope = findEnclosingFunctionScope(letNode, scopeMap) ?? moduleScope;
+    const targetScope = lexicalScopeForNode(letNode, scopeRanges) ?? moduleScope;
+    const claim = indexes.scopeTree.has(targetScope.id)
+      ? lookupNameClaim(targetScope.id, typeName, indexes, {
+          position: {
+            startLine: patternNode.startPosition.row + 1,
+            startCol: patternNode.startPosition.column,
+          },
+          purpose: 'type',
+        })
+      : undefined;
+    const claimedDefs = new Set(claim?.bindings.map((binding) => binding.def.nodeId));
+    const claimedFields =
+      claimedDefs.size === 1
+        ? fieldsByDefinition.get(claimedDefs.values().next().value!)
+        : undefined;
+    if (claim !== undefined && claim.status !== 'absent' && claimedFields === undefined) continue;
 
     for (const fieldNode of patternNode.namedChildren) {
       let fieldName: string | undefined;
@@ -477,6 +636,15 @@ function processStructDestructuring(
         fieldName = fieldNode.childForFieldName('name')?.text;
       }
       if (fieldName === undefined) continue;
+      const fieldPattern = fieldNode.childForFieldName('pattern');
+      const boundName = fieldPattern === null ? fieldName : extractVarName(fieldPattern);
+      if (boundName === null) continue;
+
+      if (claim !== undefined && claim.status !== 'absent') {
+        const fieldRef = claimedFields?.get(fieldName);
+        if (fieldRef !== undefined) injectTypeBinding(targetScope, boundName, fieldRef);
+        continue;
+      }
 
       let fieldType = lookupFieldType(typeName, fieldName, parsed, scopeMap, moduleScope);
       if (fieldType === null) {
@@ -489,7 +657,7 @@ function processStructDestructuring(
         fieldType = fields?.get(fieldName) ?? null;
       }
       if (fieldType !== null) {
-        injectTypeBinding(targetScope, fieldName, fieldType);
+        injectTypeBinding(targetScope, boundName, fieldType);
       }
     }
   }
@@ -527,6 +695,9 @@ function processPendingAssignments(
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
   allReturnTypes: ReadonlyMap<string, string>,
+  indexes: ScopeResolutionIndexes,
+  producerReturns: ReadonlyMap<string, ProducerReturn>,
+  scopeRanges: ReadonlyMap<string, Scope>,
 ): void {
   for (let pass = 0; pass < 3; pass++) {
     for (const letNode of root.descendantsOfType('let_declaration')) {
@@ -535,16 +706,51 @@ function processPendingAssignments(
       const varName = extractVarName(patternNode);
       if (varName === null) continue;
 
-      const targetScope = findEnclosingFunctionScope(letNode, scopeMap) ?? moduleScope;
-      if (targetScope.typeBindings.has(varName)) continue;
-
       const valueNode = letNode.childForFieldName('value');
       if (valueNode === null) continue;
 
+      const bindingScope = lexicalScopeForNode(letNode, scopeRanges) ?? moduleScope;
+      const func =
+        valueNode.type === 'call_expression' ? valueNode.childForFieldName('function') : null;
+      if (func?.type === 'identifier' && letNode.childForFieldName('type') === null) {
+        const producer = producerAt(func, scopeRanges, indexes, producerReturns);
+        if (producer !== undefined) {
+          const bindings = bindingScope.typeBindings as Map<string, TypeRef>;
+          if (producer === null) bindings.delete(varName);
+          else
+            bindings.set(varName, {
+              ...producer.typeRef,
+              bindingRange: {
+                startLine: letNode.startPosition.row + 1,
+                startCol: letNode.startPosition.column,
+                endLine: letNode.endPosition.row + 1,
+                endCol: letNode.endPosition.column,
+              },
+            });
+          continue;
+        }
+      }
+
+      const targetScope = bindingScope;
+      const existing = targetScope.typeBindings.get(varName);
+      if (
+        existing !== undefined &&
+        existing.source !== 'constructor-inferred' &&
+        existing.source !== 'assignment-inferred'
+      )
+        continue;
+
       if (valueNode.type === 'identifier') {
-        const rhsType = lookupTypeInScopes(valueNode.text, letNode, parsed, scopeMap, moduleScope);
+        const rhsType = lookupTypeInScopes(
+          valueNode.text,
+          letNode,
+          parsed,
+          scopeMap,
+          moduleScope,
+          scopeRanges,
+        );
         if (rhsType !== null) {
-          injectTypeBinding(targetScope, varName, rhsType);
+          injectTypeBinding(targetScope, varName, rhsType, true);
           continue;
         }
       }
@@ -559,11 +765,12 @@ function processPendingAssignments(
             parsed,
             scopeMap,
             moduleScope,
+            scopeRanges,
           );
           if (receiverType !== null) {
             const fieldType = findFieldTypeAcrossFiles(receiverType, field.text, allParsedFiles);
             if (fieldType !== null) {
-              injectTypeBinding(targetScope, varName, fieldType);
+              injectTypeBinding(targetScope, varName, fieldType, true);
             }
           }
         }
@@ -581,6 +788,7 @@ function processPendingAssignments(
               parsed,
               scopeMap,
               moduleScope,
+              scopeRanges,
             );
             if (receiverType !== null) {
               const retType = findMethodReturnTypeAcrossFiles(
@@ -589,7 +797,7 @@ function processPendingAssignments(
                 allParsedFiles,
               );
               if (retType !== null) {
-                injectTypeBinding(targetScope, varName, retType);
+                injectTypeBinding(targetScope, varName, retType, true);
               }
             }
           }
@@ -598,7 +806,7 @@ function processPendingAssignments(
         if (func !== null && func.type === 'identifier') {
           const rawReturn = allReturnTypes.get(func.text);
           if (rawReturn !== undefined) {
-            injectTypeBinding(targetScope, varName, normalizeFieldType(rawReturn));
+            injectTypeBinding(targetScope, varName, normalizeFieldType(rawReturn), true);
           }
         }
       }
@@ -614,14 +822,23 @@ function resolveIterableElementType(
   allReturnTypes: ReadonlyMap<string, string>,
   indexes: ScopeResolutionIndexes,
   returnTypeByFile: ReadonlyMap<string, ReadonlyMap<string, string>>,
-): string | null {
+  producerReturns: ReadonlyMap<string, ProducerReturn>,
+  scopeRanges: ReadonlyMap<string, Scope>,
+): string | TypeRef | null {
   let iterableNode = valueNode;
   if (iterableNode.type === 'reference_expression') {
     iterableNode = iterableNode.firstNamedChild ?? iterableNode;
   }
 
   if (iterableNode.type === 'identifier') {
-    const rawType = lookupTypeInScopes(iterableNode.text, valueNode, parsed, scopeMap, moduleScope);
+    const rawType = lookupTypeInScopes(
+      iterableNode.text,
+      valueNode,
+      parsed,
+      scopeMap,
+      moduleScope,
+      scopeRanges,
+    );
     if (rawType !== null) return unwrapGeneric(rawType);
   }
 
@@ -632,12 +849,29 @@ function resolveIterableElementType(
     if (func.type === 'field_expression') {
       const receiver = func.childForFieldName('value');
       if (receiver !== null && receiver.type === 'identifier') {
-        const rawType = lookupTypeInScopes(receiver.text, valueNode, parsed, scopeMap, moduleScope);
+        const rawType = lookupTypeInScopes(
+          receiver.text,
+          valueNode,
+          parsed,
+          scopeMap,
+          moduleScope,
+          scopeRanges,
+        );
         if (rawType !== null) return unwrapGeneric(rawType);
       }
     }
 
     if (func.type === 'identifier') {
+      const producer = producerAt(func, scopeRanges, indexes, producerReturns);
+      if (producer === null) return null;
+      if (producer !== undefined) {
+        const elementType = unwrapGeneric(producer.rawType);
+        return {
+          ...producer.typeRef,
+          rawName: normalizeFieldType(elementType),
+          declaredSpelling: elementType,
+        };
+      }
       const crossFileReturn = allReturnTypes.get(func.text);
       if (crossFileReturn !== undefined) return unwrapGeneric(crossFileReturn);
       const rawReturn = lookupRawFunctionReturnType(func.text, valueNode);
@@ -733,20 +967,25 @@ function lookupRawParameterType(paramName: string, contextNode: SyntaxNode): str
 function lookupTypeInScopes(
   name: string,
   contextNode: SyntaxNode,
-  parsed: ParsedFile,
+  _parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
   moduleScope: Scope,
+  scopeRanges: ReadonlyMap<string, Scope>,
 ): string | null {
-  const fnScope = findEnclosingFunctionScope(contextNode, scopeMap);
-  if (fnScope !== null) {
-    const tb = fnScope.typeBindings.get(name);
-    if (tb !== undefined) return tb.rawName;
-  }
-
-  const mtb = moduleScope.typeBindings.get(name);
-  if (mtb !== undefined) return mtb.rawName;
-
-  return null;
+  const scope = lexicalScopeForNode(contextNode, scopeRanges) ?? moduleScope;
+  const claim = lookupLexicalName(
+    scope.id,
+    name,
+    { scopes: { getScope: (id) => scopeMap.get(id) } },
+    {
+      position: {
+        startLine: contextNode.startPosition.row + 1,
+        startCol: contextNode.startPosition.column,
+      },
+      purpose: 'value',
+    },
+  );
+  return claim.typeBinding?.rawName ?? null;
 }
 
 function lookupReturnTypeInScopes(
@@ -851,34 +1090,29 @@ function extractVarName(node: SyntaxNode): string | null {
   return null;
 }
 
-function injectTypeBinding(scope: Scope, name: string, typeName: string): void {
-  if (scope.typeBindings.has(name)) return;
-  (scope.typeBindings as Map<string, TypeRef>).set(name, {
-    rawName: typeName,
-    declaredAtScope: scope.id,
-    source: 'annotation',
-  });
-}
-
-function findEnclosingFunctionScope(
-  node: SyntaxNode,
-  scopeMap: ReadonlyMap<ScopeId, Scope>,
-): Scope | null {
-  let current: SyntaxNode | null = node as SyntaxNode;
-  while (current !== null) {
-    if (current.type === 'function_item') {
-      for (const scope of scopeMap.values()) {
-        if (
-          scope.kind === 'Function' &&
-          scope.range.startLine === current.startPosition.row + 1 &&
-          scope.range.startCol === current.startPosition.column
-        ) {
-          return scope;
+function injectTypeBinding(
+  scope: Scope,
+  name: string,
+  typeName: string | TypeRef,
+  replaceInferred = false,
+): void {
+  const existing = scope.typeBindings.get(name);
+  if (
+    existing !== undefined &&
+    !(
+      replaceInferred &&
+      (existing.source === 'constructor-inferred' || existing.source === 'assignment-inferred')
+    )
+  )
+    return;
+  (scope.typeBindings as Map<string, TypeRef>).set(
+    name,
+    typeof typeName === 'string'
+      ? {
+          rawName: typeName,
+          declaredAtScope: scope.id,
+          source: 'annotation',
         }
-      }
-      break;
-    }
-    current = current.parent;
-  }
-  return null;
+      : typeName,
+  );
 }

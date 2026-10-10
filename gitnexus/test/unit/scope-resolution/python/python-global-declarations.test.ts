@@ -12,6 +12,32 @@ function bindingScopes(source: string, name: string) {
 }
 
 describe('Python global declaration ownership', () => {
+  it('keeps a class-body nonlocal function in its enclosing function namespace', () => {
+    const source = `def outer():
+    target = None
+    class Installer:
+        nonlocal target
+        def target(value): return value
+`;
+    const parsed = extractParsedFile(pythonProvider, source, 'globals.py')!;
+    const outer = parsed.scopes.find(
+      (scope) => scope.kind === 'Function' && scope.range.startLine === 1,
+    )!;
+    const installer = parsed.scopes.find((scope) => scope.kind === 'Class')!;
+    expect(installer.bindings.has('target')).toBe(false);
+    expect(outer.bindings.get('target')?.some((binding) => binding.def.type === 'Function')).toBe(
+      true,
+    );
+    expect(
+      emitPythonScopeCaptures(source, 'globals.py').some(
+        (match) => match['@type-binding.self'] !== undefined,
+      ),
+    ).toBe(false);
+    const tree = getPythonParser().parse(source);
+    const target = tree.rootNode.descendantsOfType('function_definition')[1]!;
+    expect(pythonFunctionDefinitionLabel(target, 'Function')).toBe('Function');
+  });
+
   it.each(['def target(): pass', 'class target: pass'])(
     'binds an explicitly global declaration at module scope: %s',
     (declaration) => {

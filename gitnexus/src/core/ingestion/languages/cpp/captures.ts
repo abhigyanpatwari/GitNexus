@@ -24,6 +24,11 @@ import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
 import { captureCppMemberLookupFacts } from './member-lookup.js';
 import { CPP_BRACED_INIT_TYPE_PREFIX } from './conversion-rank.js';
+import {
+  attachCppUsingClaims,
+  recordCppUsingDeclaration,
+  resetCppUsingDeclarations,
+} from './using-bindings.js';
 import { logger } from '../../../logger.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import {
@@ -171,6 +176,7 @@ export function emitCppScopeCaptures(
 
   const rawMatches = getCppScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
+  resetCppUsingDeclarations(filePath);
 
   // #2432: reset the per-file lookup index. The identifier-argument type
   // lookups below used to re-walk the AST per identifier (full-tree DFS in
@@ -238,6 +244,7 @@ export function emitCppScopeCaptures(
       if (usingNode !== null) {
         const split = splitCppUsingDecl(usingNode);
         if (split !== null) {
+          recordCppUsingDeclaration(filePath, split);
           out.push(split);
           continue;
         }
@@ -610,6 +617,16 @@ export function emitCppScopeCaptures(
       }
     }
 
+    const parameterNode = nodeMap['@type-binding.parameter'];
+    const parameterCapture = grouped['@type-binding.parameter'];
+    if (parameterNode !== undefined && parameterCapture !== undefined) {
+      // Parameter names in a prototype or nested function-pointer type are
+      // not locals in the containing function. Arity metadata still comes
+      // from the declaration AST, independently of these local type facts.
+      if (!isCppLexicalParameter(parameterNode)) continue;
+      grouped['@type-binding.lexical-parameter'] = parameterCapture;
+    }
+
     // Structural receiver chain for a call whose receiver is itself an
     // expression, so resolution can type it by folding over structure
     // instead of re-parsing the receiver's source text. Self-gating: a
@@ -638,7 +655,23 @@ export function emitCppScopeCaptures(
   captureCppMemberLookupFacts(tree.rootNode, filePath);
 
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, CPP_CALLABLE_CAPTURE_OPTIONS));
+  attachCppUsingClaims(out, filePath);
   return out;
+}
+
+/** Prototype and nested function-pointer parameter names do not bind the body. */
+function isCppLexicalParameter(node: SyntaxNode): boolean {
+  for (let parent = node.parent; parent !== null; parent = parent.parent) {
+    if (parent.type === 'function_definition' || parent.type === 'lambda_expression') return true;
+    if (
+      parent.type === 'declaration' ||
+      parent.type === 'field_declaration' ||
+      parent.type === 'parameter_declaration' ||
+      parent.type === 'optional_parameter_declaration'
+    )
+      return false;
+  }
+  return false;
 }
 
 function cppFunctionDeclaratorSignature(node: SyntaxNode): CallableCaptureSignature | undefined {

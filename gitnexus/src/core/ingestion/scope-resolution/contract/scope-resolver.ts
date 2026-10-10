@@ -280,6 +280,7 @@
 
 import type { DecorationStripper } from '../scope/walkers.js';
 import type {
+  NameLookupOptions,
   BindingRef,
   Callsite,
   ConstraintContext,
@@ -733,7 +734,9 @@ export interface ScopeResolver {
   ) => void;
 
   /**
-   * Optional workspace-wide enrichment of extracted reference sites. Runs
+   * Optional workspace-wide enrichment of extracted reference sites and their
+   * lexical name claims. Providers replace affected ParsedFile/scope records
+   * rather than mutating extraction snapshots or finalized indexes. Runs
    * after all files have been extracted and before reference finalization.
    * Use this when a per-file capture needs conservative facts from an
    * imported sibling (for example a compile-time branch constant).
@@ -1305,6 +1308,23 @@ export interface ScopeResolver {
     scopes: ScopeResolutionIndexes,
     parsedFiles: readonly ParsedFile[],
   ) => readonly SymbolDefinition[] | undefined;
+
+  /**
+   * Ordinary lexical lookup paired with `resolveAdlCandidates`. The provider
+   * preserves shared name-claim selection, then normalizes its declarations
+   * and reports whether the selected tier blocks argument-dependent lookup.
+   * Both hooks must be supplied to enable that additional candidate tier.
+   */
+  readonly resolveOrdinaryCallables?: (
+    startScope: ScopeId,
+    name: string,
+    scopes: ScopeResolutionIndexes,
+    options?: NameLookupOptions,
+  ) => {
+    readonly callables: readonly SymbolDefinition[];
+    readonly nonCallableFound: boolean;
+    readonly blockScopeDeclFound: boolean;
+  };
 
   /**
    * Optional resolver for a module-qualified FREE call — a call written with

@@ -159,7 +159,10 @@ export function resolveValueRefTarget(
 ): SymbolDefinition | undefined {
   const receiverName = site.explicitReceiver?.name;
   if (receiverName === undefined) {
-    return findCallableBindingInScope(site.inScope, site.name, scopes);
+    return findCallableBindingInScope(site.inScope, site.name, scopes, {
+      position: site.atRange,
+      purpose: 'value',
+    });
   }
   // NAMESPACE FIRST, and the order is load-bearing. `findClassBindingInScope`
   // does not stop at the scope chain: when its `isClassLike` walk misses — and a
@@ -205,7 +208,10 @@ export function resolveValueRefTarget(
     return viaNamespace === 'owned' ? undefined : viaNamespace;
   }
 
-  const owner = findClassBindingInScope(site.inScope, receiverName, scopes);
+  const owner = findClassBindingInScope(site.inScope, receiverName, scopes, undefined, {
+    position: site.atRange,
+    purpose: 'value',
+  });
   if (owner !== undefined) {
     // The container lookup is a CLASS-ONLY walk: `walkScopeChain` filters by
     // `isClassLike`, so it steps over a nearer binding that is a value and keeps
@@ -285,6 +291,7 @@ function findNamespaceValueRefTarget(
     collectNamespaceTargets({ moduleScope: moduleScopeId }, scopes, {
       ...namespaceOptions,
       inScope: site.inScope,
+      position: site.atRange,
     }).get(receiverName) ?? [];
   if (targetFiles.length === 0) return undefined;
   if (
@@ -293,6 +300,7 @@ function findNamespaceValueRefTarget(
       site.inScope,
       scopes,
       namespaceOptions?.skipEnclosingClasses,
+      site.atRange,
     )
   )
     return undefined;

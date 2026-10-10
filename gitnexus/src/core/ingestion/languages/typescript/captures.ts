@@ -49,6 +49,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeCjsModuleExports } from './cjs-module-exports.js';
+import { synthesizeTsLocalImports } from './local-loaders.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import {
   deriveDefaultExportHocName,
@@ -362,7 +363,9 @@ export function emitTsScopeCaptures(
   sourceText: string,
   filePath: string,
   cachedTree?: unknown,
+  sourceMeta?: { scriptLanguage?: string },
 ): readonly CaptureMatch[] {
+  const grammarPath = sourceMeta?.scriptLanguage === 'tsx' ? `${filePath}.tsx` : filePath;
   // Reuse a pre-parsed Tree when the caller passes one via `cachedTree`; a
   // miss re-parses. (The cache is currently always empty — its only producer,
   // the sequential parser, was removed — so this re-parses in practice.) The
@@ -377,11 +380,11 @@ export function emitTsScopeCaptures(
   // fresh parse if they disagree (e.g. a worker-mode parse landed
   // with the wrong grammar pinned).
   let tree = cachedTree as ReturnType<ReturnType<typeof getTsParser>['parse']> | undefined;
-  if (tree !== undefined && !tsCachedTreeMatchesGrammar(tree, filePath)) {
+  if (tree !== undefined && !tsCachedTreeMatchesGrammar(tree, grammarPath)) {
     tree = undefined;
   }
   if (tree === undefined) {
-    tree = parseSourceSafe(getTsParser(filePath), sourceText, undefined, {
+    tree = parseSourceSafe(getTsParser(grammarPath), sourceText, undefined, {
       bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
@@ -389,7 +392,7 @@ export function emitTsScopeCaptures(
     recordCacheHit();
   }
 
-  const rawMatches = getTsScopeQuery(filePath).matches(tree.rootNode);
+  const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
   const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
   const out: CaptureMatch[] = [];
@@ -733,7 +736,8 @@ export function emitTsScopeCaptures(
   // emitter: a `.ts` file in a CommonJS package uses the same forms, and
   // without this the default-export NODE was emitted with nothing declaring it
   // — the "found, zero callers" state this work exists to remove (#2729 F7).
-  synthesizeCjsModuleExports(tree.rootNode, filePath, out);
+  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out);
+  synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
 
   return out;
 }
@@ -805,7 +809,7 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
       for (const child of node.namedChildren) {
         if (child === null || child.type !== 'extends_type_clause') continue;
         for (const base of child.namedChildren) {
-          emitTsInheritanceBase(base, out);
+          emitTsInheritanceBase(base, out, 'type');
         }
       }
       continue;
@@ -833,11 +837,11 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
         // `extends Foo` / `extends Foo<T>` — the base is the `value:` field
         // (an identifier; generics live in a sibling `type_arguments`).
         const value = clause.childForFieldName('value') ?? clause.firstNamedChild;
-        emitTsInheritanceBase(value, out);
+        emitTsInheritanceBase(value, out, 'value');
       } else if (clause.type === 'implements_clause') {
         // `implements IFoo, IBar<T>` — each base type is a direct named child.
         for (const base of clause.namedChildren) {
-          emitTsInheritanceBase(base, out);
+          emitTsInheritanceBase(base, out, 'type');
         }
       }
     }
@@ -847,13 +851,18 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
 /** Emit one `@reference.inherits` match for a TS heritage base, normalizing
  *  the lookup name to its bare simple identifier. No-ops on null / non-type
  *  nodes or when the bare name can't be derived. */
-function emitTsInheritanceBase(base: SyntaxNode | null, out: CaptureMatch[]): void {
+function emitTsInheritanceBase(
+  base: SyntaxNode | null,
+  out: CaptureMatch[],
+  purpose: 'value' | 'type',
+): void {
   if (base === null) return;
   const nameNode = terminalTsTypeNameNode(base);
   if (nameNode === null) return;
   out.push({
     '@reference.inherits': nodeToCapture('@reference.inherits', base),
     '@reference.name': nodeToCapture('@reference.name', nameNode),
+    '@reference.lookup-purpose': syntheticCapture('@reference.lookup-purpose', base, purpose),
   });
 }
 

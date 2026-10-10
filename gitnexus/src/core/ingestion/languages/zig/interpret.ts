@@ -37,12 +37,14 @@ export function interpretZigImport(captures: CaptureMatch): ParsedImport | null 
   if (source === undefined) return null;
   const targetRaw = stripQuotes(source);
   if (targetRaw.length === 0) return null;
+  const lexical =
+    captures['@import.lexical'] !== undefined ? { bindsAtLexicalScope: true as const } : {};
 
   // `pub usingnamespace @import("x.zig");` — every pub decl of the target
   // becomes a decl of this container. A wildcard, expanded by
   // `expandZigWildcardNames` in the scope resolver.
   if (captures['@import.wildcard'] !== undefined) {
-    return { kind: 'wildcard', targetRaw };
+    return { kind: 'wildcard', targetRaw, ...lexical };
   }
   if (captures['@import.side-effect'] !== undefined) {
     return { kind: 'side-effect', targetRaw };
@@ -63,7 +65,14 @@ export function interpretZigImport(captures: CaptureMatch): ParsedImport | null 
     // still available (`isZigPublishingImport`).
     const republish = captures['@import.reexports'] !== undefined ? { reexportsName: true } : {};
     return imported === name
-      ? { kind: 'named', localName: name, importedName: imported, targetRaw, ...republish }
+      ? {
+          kind: 'named',
+          localName: name,
+          importedName: imported,
+          targetRaw,
+          ...republish,
+          ...lexical,
+        }
       : {
           kind: 'alias',
           localName: name,
@@ -71,6 +80,7 @@ export function interpretZigImport(captures: CaptureMatch): ParsedImport | null 
           alias: name,
           targetRaw,
           ...republish,
+          ...lexical,
         };
   }
 
@@ -79,6 +89,7 @@ export function interpretZigImport(captures: CaptureMatch): ParsedImport | null 
     localName: name,
     importedName: zigModuleNameOf(targetRaw),
     targetRaw,
+    ...lexical,
   };
 }
 

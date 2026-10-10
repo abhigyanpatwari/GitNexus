@@ -25,7 +25,11 @@ import {
   resolveDefGraphId,
   simpleQualifiedName,
 } from '../graph-bridge/ids.js';
-import { resolveInheritanceBaseInScope } from '../scope/walkers.js';
+import {
+  resolveInheritanceBaseInScope,
+  lookupNameClaim,
+  findReceiverTypeBinding,
+} from '../scope/walkers.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
 import { narrowOverloadCandidates } from './overload-narrowing.js';
 
@@ -125,7 +129,9 @@ export function collectDeferredIndirectCollection(
       for (const site of parsed.callableFlowSites ?? []) {
         const operand = flowCellOperand(site);
         if (operand !== undefined) {
-          flowCells.add(canonicalBindingKey(parsed.filePath, operand, scopes));
+          flowCells.add(
+            canonicalBindingKey(parsed.filePath, operand, scopes, site.kind !== 'store'),
+          );
         }
       }
     }
@@ -229,6 +235,8 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
 
   const bindingKey = (filePath: string, operand: CallableFlowOperand): string =>
     canonicalBindingKey(filePath, operand, input.scopes);
+  const destinationKey = (filePath: string, operand: CallableFlowOperand): string =>
+    canonicalBindingKey(filePath, operand, input.scopes, true);
   // Lexical binding lookup is suppressed ONLY for cells bound by formal
   // facts: a parameter whose grammar emits no declaration binding must not
   // adopt a same-named outer function. Value cells (copy/alias/store/load
@@ -239,7 +247,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   const formalConstrainedBindings = new Set<string>();
   for (const fact of facts) {
     if (fact.site.kind === 'formal') {
-      formalConstrainedBindings.add(bindingKey(fact.filePath, fact.site.binding));
+      formalConstrainedBindings.add(destinationKey(fact.filePath, fact.site.binding));
     }
   }
 
@@ -443,7 +451,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   // narrowing. No arbitrary first-overload choice is permitted.
   for (const fact of facts) {
     if (fact.site.kind !== 'seed') continue;
-    const destination = bindingKey(fact.filePath, fact.site.destination);
+    const destination = destinationKey(fact.filePath, fact.site.destination);
     const candidates = resolveSeedCandidates(
       fact.filePath,
       fact.site.destination.inScope,
@@ -503,7 +511,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   for (const fact of facts) {
     if (fact.site.kind !== 'address') continue;
     addAddress(
-      bindingKey(fact.filePath, fact.site.destination),
+      destinationKey(fact.filePath, fact.site.destination),
       bindingKey(fact.filePath, fact.site.source),
       `address:${fact.filePath}:${fact.site.source.name}`,
     );
@@ -527,9 +535,9 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     switch (site.kind) {
       case 'copy':
       case 'alias': {
+        const source = bindingKey(fact.filePath, site.source);
+        const destination = destinationKey(fact.filePath, site.destination);
         addWorkItem(() => {
-          const source = bindingKey(fact.filePath, site.source);
-          const destination = bindingKey(fact.filePath, site.destination);
           transferTargets(source, destination, context);
           transferAddresses(source, destination, context);
           if (site.kind === 'alias') {
@@ -540,8 +548,8 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
         break;
       }
       case 'load': {
+        const destination = destinationKey(fact.filePath, site.destination);
         addWorkItem(() => {
-          const destination = bindingKey(fact.filePath, site.destination);
           const reached = reachedCells(fact.filePath, site.pointer);
           if (reached.overflow) {
             markTargetOverflow(destination, context);
@@ -656,7 +664,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
       if (callOverflow) {
         for (const targetId of history ?? targetIds) {
           for (const formal of indexedFormals(targetId)) {
-            const formalKey = bindingKey(formal.filePath, formal.site.binding);
+            const formalKey = destinationKey(formal.filePath, formal.site.binding);
             markTargetOverflow(formalKey, `actual-formal-overflow:${callKey}`);
             markAddressOverflow(formalKey, `actual-formal-overflow:${callKey}`);
           }
@@ -669,7 +677,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
       const sourceTargets = operandTargets(fact.filePath, site.source);
       for (const targetId of targetIds) {
         for (const formal of indexedFormals(targetId)) {
-          const formalKey = bindingKey(formal.filePath, formal.site.binding);
+          const formalKey = destinationKey(formal.filePath, formal.site.binding);
           const context = `actual-formal:${callKey}:${site.parameterIndex}`;
           const contextualTargets = new Map(sourceTargets.targets);
           for (const target of resolveOperandCandidates(
@@ -1251,58 +1259,60 @@ function lexicalCallableLookup(
   scopes: ScopeResolutionIndexes,
   graphTargets: ReadonlyMap<string, Target>,
 ): { readonly targets: Target[]; readonly shadowed: boolean } {
-  let current: ScopeId | null = operand.inScope;
-  const visited = new Set<ScopeId>();
-  while (current !== null && !visited.has(current)) {
-    visited.add(current);
-    const scope = scopes.scopeTree.getScope(current);
-    if (scope === undefined) return { targets: [], shadowed: false };
-    const refs = nearestScopeBindings(current, operand.name, scope.bindings, scopes);
-    if (refs.length > 0) {
-      const out: Target[] = [];
-      for (const ref of refs) {
-        const target = targetForDef(ref.def, graphTargets);
-        if (target !== undefined) out.push(target);
-      }
-      return { targets: dedupeTargets(out), shadowed: true };
-    }
-    current = scope.parent;
-  }
-  return { targets: [], shadowed: false };
-}
-
-function nearestScopeBindings(
-  scopeId: ScopeId,
-  name: string,
-  local: ReadonlyMap<string, readonly { readonly def: SymbolDefinition }[]>,
-  scopes: ScopeResolutionIndexes,
-): readonly { readonly def: SymbolDefinition }[] {
-  const out: { readonly def: SymbolDefinition }[] = [];
-  const seen = new Set<string>();
-  const add = (refs: readonly { readonly def: SymbolDefinition }[] | undefined): void => {
-    for (const ref of refs ?? []) {
-      if (seen.has(ref.def.nodeId)) continue;
-      seen.add(ref.def.nodeId);
-      out.push(ref);
-    }
-  };
-  add(local.get(name));
-  add(scopes.bindings.get(scopeId)?.get(name));
-  add(scopes.bindingAugmentations.get(scopeId)?.get(name));
-  if (out.length === 0 && scopes.scopeTree.getScope(scopeId)?.kind === 'Module') {
-    add(scopes.workspaceFqnBindings.get(name));
-    for (const namespace of scopes.accessibleNamespacesByScope.get(scopeId) ?? []) {
-      add(scopes.namespaceFqnBindings.get(namespace)?.get(name));
-    }
-  }
-  return out;
+  const claim = lookupNameClaim(operand.inScope, operand.name, scopes, {
+    position: operand.atRange.startLine > 0 ? operand.atRange : undefined,
+    purpose: 'value',
+  });
+  const targets = claim.bindings
+    .map((binding) => targetForDef(binding.def, graphTargets))
+    .filter((target): target is Target => target !== undefined);
+  return { targets: dedupeTargets(targets), shadowed: claim.status !== 'absent' };
 }
 
 function canonicalBindingKey(
   filePath: string,
   operand: CallableFlowOperand,
   scopes: ScopeResolutionIndexes,
+  destination = false,
 ): string {
+  let position = operand.atRange.startLine > 0 ? operand.atRange : undefined;
+  if (destination && position !== undefined) {
+    const destinationPosition = position;
+    // A declaration writes its own cell even before its initializer finishes.
+    // Only activate the declaration that contains this destination; an earlier
+    // assignment must not be redirected to an unrelated later declaration.
+    let owner: ScopeId | null = operand.inScope;
+    const seen = new Set<ScopeId>();
+    while (owner !== null && !seen.has(owner)) {
+      seen.add(owner);
+      const scope = scopes.scopeTree.getScope(owner);
+      if (scope === undefined) break;
+      const declaration = scope.nameClaims?.find(
+        (claim) =>
+          claim.name === operand.name &&
+          (claim.range.startLine < destinationPosition.startLine ||
+            (claim.range.startLine === destinationPosition.startLine &&
+              claim.range.startCol <= destinationPosition.startCol)) &&
+          (claim.range.endLine > destinationPosition.startLine ||
+            (claim.range.endLine === destinationPosition.startLine &&
+              claim.range.endCol >= destinationPosition.startCol)),
+      );
+      if (declaration !== undefined) {
+        if (declaration.availableFrom !== undefined) {
+          position = { ...operand.atRange, ...declaration.availableFrom };
+        }
+        break;
+      }
+      owner = scope.lookupPolicy?.parentScope ?? scope.parent;
+    }
+  }
+  const claim = lookupNameClaim(operand.inScope, operand.name, scopes, {
+    position,
+    purpose: 'value',
+  });
+  if (claim.scope !== undefined) {
+    return `${filePath}\0${claim.scope.id}\0${operand.name}`;
+  }
   let current: ScopeId | null = operand.inScope;
   const visited = new Set<ScopeId>();
   let enclosingFunction: ScopeId | undefined;
@@ -1311,9 +1321,6 @@ function canonicalBindingKey(
     const scope = scopes.scopeTree.getScope(current);
     if (scope === undefined) break;
     if (enclosingFunction === undefined && scope.kind === 'Function') enclosingFunction = current;
-    if (nearestScopeBindings(current, operand.name, scope.bindings, scopes).length > 0) {
-      return `${filePath}\0${current}\0${operand.name}`;
-    }
     current = scope.parent;
   }
   // Some grammars emit parameter type-bindings but no declaration binding.
@@ -1539,17 +1546,10 @@ function receiverType(
   operand: CallableFlowOperand,
   scopes: ScopeResolutionIndexes,
 ): string | undefined {
-  let current: ScopeId | null = operand.inScope;
-  const visited = new Set<ScopeId>();
-  while (current !== null && !visited.has(current)) {
-    visited.add(current);
-    const scope = scopes.scopeTree.getScope(current);
-    if (scope === undefined) return undefined;
-    const hit = scope.typeBindings.get(operand.name);
-    if (hit !== undefined) return hit.rawName;
-    current = scope.parent;
-  }
-  return scopes.workspaceTypeBindings.get(operand.name)?.rawName;
+  return findReceiverTypeBinding(operand.inScope, operand.name, scopes, {
+    position: operand.atRange.startLine > 0 ? operand.atRange : undefined,
+    purpose: 'value',
+  })?.rawName;
 }
 
 function targetForDef(
