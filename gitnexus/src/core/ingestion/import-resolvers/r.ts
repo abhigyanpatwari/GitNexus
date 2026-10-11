@@ -20,6 +20,11 @@ import { getWorkspaceFileIndex } from './workspace-file-index.js';
 /**
  * Low-level R import resolver (internal helper).
  * Resolves library/require/source paths to matching .R files.
+ *
+ * `normToRaw` (normalized path → first raw path with that spelling, built once per pass by
+ * `getWorkspaceFileIndex`) answers the exact-path lookups of `source()` in O(1). Without it
+ * they fall back to `indexOf` over `normalizedFileList`, which picks the same file (the first
+ * in list order) but costs O(files) per `source()` import.
  */
 export function resolveRImportInternal(
   filePath: string,
@@ -28,20 +33,25 @@ export function resolveRImportInternal(
   allFileList: readonly string[],
   rConfig: RPackageConfig | null,
   index?: SuffixIndex,
+  normToRaw?: ReadonlyMap<string, string>,
 ): string | string[] | null {
+  const exactFile = (normalizedPath: string): string | undefined => {
+    if (normToRaw !== undefined) return normToRaw.get(normalizedPath);
+    const idx = normalizedFileList.indexOf(normalizedPath);
+    return idx >= 0 ? allFileList[idx] : undefined;
+  };
   const cleaned = rawImportPath.replace(/^["']|["']$/g, '');
 
   // source() with file path
   if (cleaned.endsWith('.R') || cleaned.endsWith('.r')) {
     if (path.isAbsolute(cleaned)) {
       const normalized = cleaned.replace(/\\/g, '/');
-      const idx = normalizedFileList.indexOf(normalized);
-      return idx >= 0 ? allFileList[idx] : null;
+      return exactFile(normalized) ?? null;
     }
     const dir = path.dirname(filePath);
     const resolved = path.join(dir, cleaned).replace(/\\/g, '/');
-    const idx = normalizedFileList.indexOf(resolved);
-    if (idx >= 0) return allFileList[idx];
+    const direct = exactFile(resolved);
+    if (direct !== undefined) return direct;
 
     const pathParts = cleaned.split('/').filter(Boolean);
     return suffixResolve(pathParts, normalizedFileList, allFileList, index);
@@ -234,6 +244,6 @@ export function resolveRImportTarget(
     );
   }
 
-  const { normalized, all, index } = getWorkspaceFileIndex(allFilePaths);
-  return resolveRImportInternal(fromFile, targetRaw, normalized, all, rConfig, index);
+  const { normalized, all, index, normToRaw } = getWorkspaceFileIndex(allFilePaths);
+  return resolveRImportInternal(fromFile, targetRaw, normalized, all, rConfig, index, normToRaw);
 }
