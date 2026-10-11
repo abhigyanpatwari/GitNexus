@@ -186,7 +186,7 @@ def read_patched_peers() -> list[tuple[str, str, str]]:
     """
     script = GITNEXUS_DIR / "scripts" / "prepare-tree-sitter-bundle.cjs"
     return re.findall(
-        r"\['(tree-sitter[\w-]*)@([\d.]+)',\s*'([^']+)'\]",
+        r"\['((?:@[\w.-]+/)?tree-sitter[\w-]*)@([\d.]+)',\s*'([^']+)'\]",
         script.read_text(encoding="utf-8"),
     )
 

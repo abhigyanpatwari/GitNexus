@@ -252,8 +252,7 @@ class ScopedGrammarName(TestCase):
         self.assertNotIn("@ladybugdb/core", pinned)
 
     def test_r_row_shows_its_pin_and_is_a_blocker_not_a_bump_candidate(self):
-        # Production-faithful R metadata: npm latest 1.1.2 (what package.json pins
-        # ^1.1.2 to) with peer ^0.21.0 — blocks 0.25 and is NOT behind latest.
+        # Production-faithful R metadata: npm latest 1.1.2 (what package.json pins) with peer ^0.21.0 — blocks 0.25 and is NOT behind latest.
         def fake_npm(pkg: str):
             if pkg == _R_GRAMMAR:
                 return {"version": "1.1.2", "peerDependencies": {"tree-sitter": "^0.21.0"}}
@@ -274,7 +273,7 @@ class ScopedGrammarName(TestCase):
         report = buf.getvalue()
         row = next(l for l in report.splitlines() if l.startswith(f"| `{_R_GRAMMAR}` |"))
         cells = [c.strip() for c in row.strip().strip("|").split("|")]
-        self.assertEqual(cells[1], "^1.1.2")  # Pinned
+        self.assertEqual(cells[1], "1.1.2")  # Pinned
         self.assertEqual(cells[-1], "Peer patch required")
         self.assertEqual(code, 1)
         self.assertIn(f"`{_R_GRAMMAR}@1.1.2` — peer `^0.21.0`", report)  # Blocked bucket
@@ -471,8 +470,10 @@ class ReportRendering(TestCase):
 
     def test_lists_every_pack_time_peer_patch_with_its_drop_condition(self):
         patched = readiness.read_patched_peers()
-        # Guards the AUDITED_PEERS regex: the bundle script patches 8 manifests today.
-        self.assertGreaterEqual(len(patched), 8)
+        # Guards the AUDITED_PEERS regex: the bundle script patches 9 manifests
+        # today, including the scoped R grammar.
+        self.assertGreaterEqual(len(patched), 9)
+        self.assertIn((_R_GRAMMAR, "1.1.2", "^0.21.0"), patched)
         self.assertIn(f"## Pack-time peer patches ({len(patched)})", self.report)
         for name, version, _ in patched:
             self.assertIn(f"- `{name}@{version}`", self.report)
@@ -483,6 +484,8 @@ class ReportRendering(TestCase):
         self.assertIn("required while intentionally pinned", line("tree-sitter-cpp@0.23.4"))
         self.assertIn("transitive", line("tree-sitter-javascript@0.23.1"))
         self.assertIn("transitive", line("tree-sitter-c@0.23.6"))
+        # The scoped R grammar is a direct pin, so its patch is listed like any other.
+        self.assertIn("can drop: bump to `9.9.9`", line(f"{_R_GRAMMAR}@1.1.2"))
 
     def test_target_runtime_is_the_bundled_pin(self):
         pkg = json.loads((_REPO_ROOT / "gitnexus" / "package.json").read_text())

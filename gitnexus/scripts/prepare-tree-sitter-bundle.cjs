@@ -13,6 +13,7 @@ const path = require('node:path');
 const RUNTIME = '0.25.1';
 // Upstream metadata is an input to validate, never the peer range we ship.
 const AUDITED_PEERS = new Map([
+  ['@eagleoutice/tree-sitter-r@1.1.2', '^0.21.0'],
   ['tree-sitter-c@0.23.6', '^0.22.1'],
   ['tree-sitter-cpp@0.23.4', '^0.21.1'],
   ['tree-sitter-java@0.23.5', '^0.21.1'],
@@ -30,8 +31,10 @@ function prepareTreeSitterBundle(packageRoot = path.resolve(__dirname, '..')) {
   if (manifest.dependencies['tree-sitter'] !== RUNTIME) {
     throw new Error(`Tree-sitter bundle is only validated for runtime ${RUNTIME}`);
   }
+  // A grammar is recognised by its package basename, so a scoped package such as
+  // @eagleoutice/tree-sitter-r is held to the same bundling and pinning rules.
   const grammars = Object.keys(manifest.dependencies).filter(
-    (name) => name === 'tree-sitter' || name.startsWith('tree-sitter-'),
+    (name) => name === 'tree-sitter' || name.split('/').pop().startsWith('tree-sitter-'),
   );
   for (const name of grammars) {
     if (

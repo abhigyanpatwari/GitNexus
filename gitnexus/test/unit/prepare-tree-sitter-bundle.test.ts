@@ -17,6 +17,7 @@ const { prepareTreeSitterBundle } = require('../../scripts/prepare-tree-sitter-b
 const roots: string[] = [];
 
 const directVersions: Record<string, string> = {
+  '@eagleoutice/tree-sitter-r': '1.1.2',
   'tree-sitter': '0.25.1',
   'tree-sitter-c-sharp': '0.23.5',
   'tree-sitter-cpp': '0.23.4',
@@ -30,6 +31,7 @@ const directVersions: Record<string, string> = {
   'tree-sitter-typescript': '0.23.2',
 };
 const peers: Record<string, string> = {
+  '@eagleoutice/tree-sitter-r': '^0.21.0',
   'tree-sitter-cpp': '^0.21.1',
   'tree-sitter-java': '^0.21.1',
   'tree-sitter-php': '^0.22.4',
@@ -119,11 +121,15 @@ describe('native parser bundle preparation', () => {
     const native = path.join(root, 'node_modules/tree-sitter-cpp/parser.node');
     writeFileSync(native, Buffer.from([0, 1, 128, 255]));
     const original = readFileSync(native);
-    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
+    expect(prepareTreeSitterBundle(root)).toHaveLength(9);
     expect(
       read(path.join(root, 'node_modules/tree-sitter-cpp/package.json')).peerDependencies[
         'tree-sitter'
       ],
+    ).toBe('0.25.1');
+    expect(
+      read(path.join(root, 'node_modules/@eagleoutice/tree-sitter-r/package.json'))
+        .peerDependencies['tree-sitter'],
     ).toBe('0.25.1');
     expect(
       read(
@@ -138,7 +144,7 @@ describe('native parser bundle preparation', () => {
         'tree-sitter'
       ],
     ).toBe('^0.25.0');
-    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
+    expect(prepareTreeSitterBundle(root)).toHaveLength(9);
     expect(readFileSync(native)).toEqual(original);
     expect(read(path.join(root, 'package.json')).dependencies).toEqual(directVersions);
   });
@@ -149,9 +155,9 @@ describe('native parser bundle preparation', () => {
     const pkg = read(file);
     pkg.peerDependencies['tree-sitter'] = '^0.21.1 || 0.25.1';
     write(file, pkg);
-    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
+    expect(prepareTreeSitterBundle(root)).toHaveLength(9);
     expect(read(file).peerDependencies['tree-sitter']).toBe('0.25.1');
-    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
+    expect(prepareTreeSitterBundle(root)).toHaveLength(9);
   });
 
   it('prepares pnpm symlinks, transitive siblings, and aliased cycles exactly once', () => {
@@ -159,7 +165,7 @@ describe('native parser bundle preparation', () => {
     const aliases = path.join(c, 'node_modules');
     mkdirSync(aliases);
     symlinkSync(c, path.join(aliases, 'tree-sitter-c'), 'junction');
-    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
+    expect(prepareTreeSitterBundle(root)).toHaveLength(9);
     for (const dir of [c, javascript, path.join(root, 'node_modules/tree-sitter-cpp')]) {
       expect(read(path.join(dir, 'package.json')).peerDependencies['tree-sitter']).toBe('0.25.1');
     }
@@ -168,7 +174,7 @@ describe('native parser bundle preparation', () => {
         'tree-sitter'
       ],
     ).toBe('^0.25.0');
-    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
+    expect(prepareTreeSitterBundle(root)).toHaveLength(9);
   });
 
   it('rejects drift behind pnpm symlinks before writing any package', () => {
@@ -222,6 +228,28 @@ describe('native parser bundle preparation', () => {
     pkg.bundleDependencies = ['tree-sitter'];
     write(file, pkg);
     expect(() => prepareTreeSitterBundle(root)).toThrow('must be bundled');
+  });
+
+  it('applies the bundling rule to the scoped R grammar', () => {
+    const root = fixture();
+    const file = path.join(root, 'package.json');
+    const pkg = read(file);
+    pkg.bundleDependencies = pkg.bundleDependencies.filter(
+      (name: string) => name !== '@eagleoutice/tree-sitter-r',
+    );
+    write(file, pkg);
+    expect(() => prepareTreeSitterBundle(root)).toThrow(
+      '@eagleoutice/tree-sitter-r must be bundled',
+    );
+  });
+
+  it('rejects a scoped R grammar whose peer metadata changed', () => {
+    const root = fixture();
+    const file = path.join(root, 'node_modules/@eagleoutice/tree-sitter-r/package.json');
+    const pkg = read(file);
+    pkg.peerDependencies['tree-sitter'] = '^0.26.0';
+    write(file, pkg);
+    expect(() => prepareTreeSitterBundle(root)).toThrow('Unexpected tree-sitter peer metadata');
   });
 
   it('rejects a runtime upgrade until its compatibility has been revalidated', () => {
