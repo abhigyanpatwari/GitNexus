@@ -374,6 +374,65 @@ describe('populateRNamespaceImports', () => {
     ]).toEqual([['run'], ['f', 'g'], false]);
   });
 
+  // 75eaac75: an importFrom() that resolveRNamedImport() rejects can never bind. A synthesised
+  // import for it would stay unresolved yet count as an explicit name claim, suppressing the
+  // documented 0.5-confidence `global-name-fallback`. Only `populate*` is exercised here, so
+  // these fail if the skip is removed (the integration suite used to be the only pin).
+  describe('skips importFrom() entries that can never bind', () => {
+    const wholePkg = (entries: readonly string[], provided: string[], exports?: string[]) => {
+      const files = [callerFile('analytics/R/a.R'), provider('scorelib/R/s.R', provided)];
+      populate(
+        files,
+        config(pkgs, {
+          analytics: { importFrom: entries.map((n) => ['scorelib', n] as const) },
+          ...(exports === undefined ? {} : { scorelib: { exports } }),
+        }),
+      );
+      return namedImportsOf(files[0]);
+    };
+
+    it('positive control: an exported, top-level, undotted name still binds', () => {
+      expect(wholePkg(['tidy_scores'], ['tidy_scores'], ['tidy_scores'])).toEqual([
+        'scorelib::tidy_scores',
+      ]);
+    });
+
+    it('skips a name the provider NAMESPACE does not export', () => {
+      expect(wholePkg(['hidden_fn'], ['hidden_fn', 'tidy_scores'], ['tidy_scores'])).toEqual([]);
+    });
+
+    it('skips a name no provider file defines at top level', () => {
+      expect(
+        wholePkg(['never_defined'], ['tidy_scores'], ['never_defined', 'tidy_scores']),
+      ).toEqual([]);
+    });
+
+    it('skips a dotted name, even when the provider exports and defines it', () => {
+      expect(wholePkg(['my.helper'], ['my.helper'], ['my.helper'])).toEqual([]);
+    });
+
+    it('skips a name defined beside a dotted S3-style def of the same tail', () => {
+      // finalize would index `print.tidy` under `tidy` and bind the wrong def.
+      expect(wholePkg(['tidy'], ['tidy', 'print.tidy'], ['tidy'])).toEqual([]);
+    });
+
+    it('skips only the unbindable entries and keeps the bindable ones', () => {
+      expect(
+        wholePkg(
+          ['tidy_scores', 'hidden_fn', 'never_defined', 'my.helper', 'tidy'],
+          ['tidy_scores', 'hidden_fn', 'my.helper', 'tidy', 'print.tidy'],
+          ['tidy_scores', 'never_defined', 'my.helper', 'tidy'],
+        ),
+      ).toEqual(['scorelib::tidy_scores']);
+    });
+
+    it('is decided against the files supplied, so a missing provider file drops the import', () => {
+      const files = [callerFile('analytics/R/a.R')];
+      populate(files, config(pkgs, { analytics: { importFrom: [['scorelib', 'tidy_scores']] } }));
+      expect(namedImportsOf(files[0])).toEqual([]);
+    });
+  });
+
   it('records nothing for an unrelated config object', () => {
     expect(rRecordedPackageTopLevelNames(config(pkgs))).toBeUndefined();
     expect(rRecordedPackageTopLevelNames(undefined)).toBeUndefined();
