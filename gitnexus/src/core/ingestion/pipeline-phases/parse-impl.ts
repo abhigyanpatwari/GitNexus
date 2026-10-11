@@ -71,6 +71,7 @@ import {
 } from '../languages/index.js';
 import { classifyContentLanguages } from '../content-language-classification.js';
 import { SCOPE_RESOLVERS } from '../scope-resolution/pipeline/registry.js';
+import { reconcileGoStructOwnerEdges } from '../languages/go/struct-owner-reconcile.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import type Parser from 'tree-sitter';
 import {
@@ -1523,6 +1524,12 @@ export async function runChunkedParseAndResolve(
   } finally {
     await workerPool?.terminate();
   }
+
+  // Cross-file Go struct-owner repair (#3558): every chunk is merged, so all
+  // packages' Struct nodes are in the graph. Owner edges minted by
+  // `findEnclosingClassInfo` from the METHOD's file dangle whenever the struct
+  // is declared in a sibling file; re-point them before any consumer walks.
+  reconcileGoStructOwnerEdges(graph);
 
   // Fetch calls + ORM queries were already extracted inside each worker
   // (returned in ParseWorkerResult, aggregated per chunk in applyChunkResults).
