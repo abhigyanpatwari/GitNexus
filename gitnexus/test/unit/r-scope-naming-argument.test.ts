@@ -2,12 +2,13 @@
  * R scope query: only the argument that names a class or an import yields
  * `@declaration.name` / `@import.source`. The query captures every candidate
  * argument; `emitRScopeCaptures` drops the rest. Each negative is paired with a
- * positive control, and a bounded-time group guards the cost against a quadratic
+ * positive control, and a scaling group guards the cost against a quadratic
  * regression (an argument-prefix pattern in the query was quadratic in the number
  * of leading comments and named arguments).
  */
 import { describe, expect, it } from 'vitest';
 import { emitRScopeCaptures } from '../../src/core/ingestion/languages/r/captures.js';
+import { MAX_RATIO, SHAPES, measureScaling } from '../helpers/r-argument-scaling.js';
 
 function tagTexts(source: string, tag: string): string[] {
   return emitRScopeCaptures(source, 'fixture.R')
@@ -16,8 +17,16 @@ function tagTexts(source: string, tag: string): string[] {
 }
 
 const importSources = (source: string) => tagTexts(source, '@import.source');
+/**
+ * Every class declared by the scope query. Selected by capture kind (the match carries
+ * `@declaration.class`), not by spelling, so a lowercase class or a wrongly captured
+ * lowercase string is visible.
+ */
 const classNames = (source: string) =>
-  tagTexts(source, '@declaration.name').filter((t) => /^[A-Z]/.test(t));
+  emitRScopeCaptures(source, 'fixture.R')
+    .filter((m) => m['@declaration.class'] !== undefined)
+    .map((m) => m['@declaration.name']?.text)
+    .filter((t): t is string => t !== undefined);
 
 describe('R scope query: imports name only their first argument', () => {
   it('imports the first argument (positive controls)', () => {
@@ -61,6 +70,19 @@ describe('R scope query: setClass declares only its naming argument', () => {
     expect(classNames('setRefClass("R", contains = "Base")')).toEqual(['R']);
   });
 
+  it('declares a lowercase class name (positive controls)', () => {
+    expect(classNames('setClass("a", contains = "VIRTUAL")')).toEqual(['a']);
+    expect(classNames('setRefClass("r")')).toEqual(['r']);
+    expect(classNames('setClass(Class = "a")')).toEqual(['a']);
+  });
+
+  it('does not declare a lowercase class from a non-naming argument', () => {
+    expect(classNames('setClass("A", contains = "numeric")')).toEqual(['A']);
+    expect(classNames('setRefClass("R", contains = "base")')).toEqual(['R']);
+    expect(classNames('setClass("a", contains = "numeric", package = "pkg")')).toEqual(['a']);
+    expect(classNames('setClass("A", representation("numeric", x = "character"))')).toEqual(['A']);
+  });
+
   it('declares only Class = when it follows an unnamed argument', () => {
     expect(classNames('setClass(a = "Q", "B", Class = "A")')).toEqual(['A']);
     expect(classNames('setRefClass("B", Class = "A")')).toEqual(['A']);
@@ -79,33 +101,49 @@ describe('R scope query: setClass declares only its naming argument', () => {
 });
 
 describe('R scope query: cost is linear in the argument count', () => {
-  const LIMIT_MS = 2500;
-  const N = 16000;
-  const named = (n: number) => Array.from({ length: n }, (_, k) => `a${k} = ${k}`).join(', ');
-  const timed = (source: string) => {
-    const start = Date.now();
-    const matches = emitRScopeCaptures(source, 'fixture.R').length;
-    return { ms: Date.now() - start, matches };
+  /** What the query kept: the match count and the naming captures, in source order. */
+  const run = (source: string) => () => {
+    const matches = emitRScopeCaptures(source, 'fixture.R');
+    const naming: string[] = [];
+    for (const m of matches) {
+      for (const tag of ['@declaration.name', '@import.source']) {
+        const text = m[tag]?.text;
+        if (text !== undefined) naming.push(`${tag}=${text}`);
+      }
+    }
+    return { count: matches.length, naming };
   };
 
-  it('one call with many named arguments', () => {
-    expect(timed(`x <- list(${named(N)})`).ms).toBeLessThan(LIMIT_MS);
-  });
+  // Every shape keeps exactly one naming capture regardless of the argument count: the
+  // count and the name are asserted at both sizes, so an early-return or empty parse
+  // cannot pass as "fast".
+  const cases = [
+    { shape: SHAPES.listNamedArguments, expected: { count: 2, naming: [] } },
+    { shape: SHAPES.setClassNamedBefore, expected: { count: 4, naming: ['@declaration.name=A'] } },
+    { shape: SHAPES.libraryNamedBefore, expected: { count: 3, naming: ['@import.source=pkg'] } },
+    {
+      shape: SHAPES.setClassCommentsBefore,
+      expected: { count: 4, naming: ['@declaration.name=A'] },
+    },
+    { shape: SHAPES.libraryCommentsBefore, expected: { count: 3, naming: ['@import.source=pkg'] } },
+    {
+      shape: SHAPES.setClassUnnamedStrings,
+      expected: { count: 4, naming: ['@declaration.name=s0'] },
+    },
+    {
+      shape: SHAPES.libraryUnnamedStrings,
+      expected: { count: 3, naming: ['@import.source="s0"'] },
+    },
+  ] as const;
 
-  it('setClass and library with many named arguments before the name', () => {
-    expect(timed(`setClass(${named(N / 2)}, "A")`).ms).toBeLessThan(LIMIT_MS);
-    expect(timed(`library(${named(N / 2)}, pkg)`).ms).toBeLessThan(LIMIT_MS);
-  });
-
-  it('setClass and library with many comments before the name', () => {
-    const comments = Array.from({ length: N / 2 }, (_, k) => `# c${k}`).join('\n');
-    expect(timed(`setClass(\n${comments}\n"A")`).ms).toBeLessThan(LIMIT_MS);
-    expect(timed(`library(\n${comments}\npkg)`).ms).toBeLessThan(LIMIT_MS);
-  });
-
-  it('setClass and library with many unnamed arguments', () => {
-    const strings = Array.from({ length: N }, (_, k) => `"s${k}"`).join(', ');
-    expect(timed(`setClass(${strings})`).ms).toBeLessThan(LIMIT_MS);
-    expect(timed(`library(${strings})`).ms).toBeLessThan(LIMIT_MS);
-  });
+  it.each(cases)(
+    '$shape.name',
+    ({ shape, expected }) => {
+      const { small, large, ratio } = measureScaling(run, shape.build);
+      expect(small).toEqual(expected);
+      expect(large).toEqual(expected);
+      expect(ratio).toBeLessThan(MAX_RATIO);
+    },
+    120_000,
+  );
 });

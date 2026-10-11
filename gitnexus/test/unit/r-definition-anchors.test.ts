@@ -15,6 +15,8 @@ import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
 import { R_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { isRNonNamingArgumentCapture } from '../../src/core/ingestion/languages/r/naming-argument.js';
+import { parseSourceSafe } from '../../src/core/tree-sitter/safe-parse.js';
+import { MAX_RATIO, SHAPES, measureScaling } from '../helpers/r-argument-scaling.js';
 
 const language = R as Parameters<Parser['setLanguage']>[0];
 const parser = new Parser();
@@ -23,10 +25,16 @@ const query = new Parser.Query(language, R_QUERIES);
 
 type Capture = { name: string; node: Parser.SyntaxNode };
 
+/**
+ * Parse like production does: `parseSourceSafe` avoids the native binding's crash on
+ * strings above 32 767 characters on Windows (the scaling group parses 100 K+ strings).
+ */
+const parseR = (source: string): Parser.Tree =>
+  parseSourceSafe(parser, source, undefined, { bufferSize: 1 << 24 });
+
 /** Matches the parse worker keeps: the provider's selection applied to the query's matches. */
 function keptMatches(source: string | Parser.Tree): Capture[][] {
-  const tree =
-    typeof source === 'string' ? parser.parse(source, undefined, { bufferSize: 1 << 24 }) : source;
+  const tree = typeof source === 'string' ? parseR(source) : source;
   const kept: Capture[][] = [];
   for (const match of query.matches(tree.rootNode)) {
     const captureMap: Record<string, Parser.SyntaxNode> = {};
@@ -273,45 +281,42 @@ describe('R naming argument: a later Class = retracts an earlier unnamed argumen
 /**
  * Selecting the naming argument must stay linear in the argument count: an earlier
  * query-level formulation (a repeated sibling group before the argument) was
- * quadratic and took seconds on a single call with thousands of arguments. The
- * bound is generous (a linear pass takes tens of milliseconds); the quadratic
- * shapes took 4s to 18s.
+ * quadratic and took seconds on a single call with thousands of arguments. The same
+ * work is run at two sizes and the time ratio is bounded (see
+ * `helpers/r-argument-scaling.ts`); the kept matches are asserted at both sizes.
  */
 describe('R_QUERIES: cost is linear in the argument count', () => {
-  const LIMIT_MS = 2500;
-  const N = 16000;
-  const named = (n: number) => Array.from({ length: n }, (_, k) => `a${k} = ${k}`).join(', ');
-  const timed = (source: string) => {
-    const tree = parser.parse(source, undefined, { bufferSize: 1 << 24 });
-    const start = Date.now();
-    const kept = keptMatches(tree).length;
-    return { ms: Date.now() - start, kept };
+  /** Parsing is set-up (untimed); the timed work is the query plus the provider's selection. */
+  const run = (source: string) => {
+    const tree = parseR(source);
+    return () => {
+      const kept = keptMatches(tree);
+      const defs: string[] = [];
+      for (const captures of kept) {
+        const def = captures.find((c) => c.name.startsWith('definition.'));
+        const name = captures.find((c) => c.name === 'name');
+        if (def && name) defs.push(`${def.name}:${name.node.text}`);
+      }
+      return { count: kept.length, defs };
+    };
   };
 
-  it('one call with many named arguments', () => {
-    expect(timed(`x <- list(${named(N)})`).ms).toBeLessThan(LIMIT_MS);
-  });
+  const cases = [
+    { shape: SHAPES.listNamedArguments, expected: { count: 1, defs: [] } },
+    { shape: SHAPES.setClassNamedBefore, expected: { count: 2, defs: ['definition.class:A'] } },
+    { shape: SHAPES.setClassCommentsBefore, expected: { count: 2, defs: ['definition.class:A'] } },
+    { shape: SHAPES.setClassUnnamedStrings, expected: { count: 2, defs: ['definition.class:s0'] } },
+    { shape: SHAPES.setClassNamedStrings, expected: { count: 2, defs: ['definition.class:A'] } },
+  ] as const;
 
-  it('setClass with many named arguments before the name', () => {
-    const { ms, kept } = timed(`setClass(${named(N / 2)}, "A")`);
-    expect(ms).toBeLessThan(LIMIT_MS);
-    expect(kept).toBeGreaterThan(0);
-  });
-
-  it('setClass with many comments before the name', () => {
-    const comments = Array.from({ length: N / 2 }, (_, k) => `# c${k}`).join('\n');
-    const { ms, kept } = timed(`setClass(\n${comments}\n"A")`);
-    expect(ms).toBeLessThan(LIMIT_MS);
-    expect(kept).toBeGreaterThan(0);
-  });
-
-  it('setClass with many unnamed string arguments', () => {
-    const strings = Array.from({ length: N }, (_, k) => `"s${k}"`).join(', ');
-    expect(timed(`setClass(${strings})`).ms).toBeLessThan(LIMIT_MS);
-  });
-
-  it('setClass with many named string arguments', () => {
-    const strings = Array.from({ length: N }, (_, k) => `a${k} = "s${k}"`).join(', ');
-    expect(timed(`setClass("A", ${strings})`).ms).toBeLessThan(LIMIT_MS);
-  });
+  it.each(cases)(
+    '$shape.name',
+    ({ shape, expected }) => {
+      const { small, large, ratio } = measureScaling(run, shape.build);
+      expect(small).toEqual(expected);
+      expect(large).toEqual(expected);
+      expect(ratio).toBeLessThan(MAX_RATIO);
+    },
+    120_000,
+  );
 });
