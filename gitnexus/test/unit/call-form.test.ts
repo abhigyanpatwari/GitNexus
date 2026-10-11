@@ -9,7 +9,7 @@ import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';

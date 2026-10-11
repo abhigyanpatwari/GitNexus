@@ -1,0 +1,45 @@
+--- a/gitnexus/src/core/ingestion/parsing-processor.ts
++++ b/gitnexus/src/core/ingestion/parsing-processor.ts
+@@ -1,3 +1,4 @@
++import { setTimeout as delay } from 'node:timers/promises';
+ import type { NodeLabel } from 'gitnexus-shared';
+ import { KnowledgeGraph } from '../graph/types.js';
+ import type { SymbolTableWriter } from './model/index.js';
+@@ -6,7 +7,7 @@
+ import { accumulateExportedTypesFromParsedNode, type ExportedTypeMap } from './call-processor.js';
+ 
+ import type { ParsedFile } from 'gitnexus-shared';
+-import { WorkerPool } from './workers/worker-pool.js';
++import { WorkerPool, WorkerPoolInitializationError } from './workers/worker-pool.js';
+ import type { DispatchGroup } from './workers/worker-pool.js';
+ import type { SkippedPath } from './workers/clone-safety.js';
+ import type { CfgSkipCounts } from './cfg/collect.js';
+@@ -268,12 +269,22 @@
+   const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+   if (dispatchGroups.every((group) => group.items.length === 0)) return groups.map(() => []);
+ 
+-  const perGroup = await workerPool.dispatchGroups<ParseWorkerInput, ParseWorkerResult>(
+-    dispatchGroups,
+-    (filesProcessed) => {
+-      onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
+-    },
+-  );
++  let perGroup: ParseWorkerResult[][];
++  for (let attempt = 0; ; attempt++) {
++    try {
++      perGroup = await workerPool.dispatchGroups<ParseWorkerInput, ParseWorkerResult>(
++        dispatchGroups,
++        (filesProcessed) => {
++          onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
++        },
++      );
++      break;
++    } catch (error) {
++      if (!(error instanceof WorkerPoolInitializationError) ||
++          error.crashClass !== 'transient-exhausted' || attempt >= 2) throw error;
++      await delay(10 * 2 ** attempt);
++    }
++  }
+   const chunkResults = perGroup.flat();
+ 
+   // Skipped-language telemetry (worker output, independent of the merge).

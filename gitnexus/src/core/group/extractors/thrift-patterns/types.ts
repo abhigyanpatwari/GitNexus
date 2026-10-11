@@ -15,6 +15,6 @@ export interface ThriftDetection {
 
 export interface ThriftLanguagePlugin {
   name: string;
-  language: unknown;
+  language: Parser.Language;
   scan(tree: Parser.Tree): ThriftDetection[];
 }

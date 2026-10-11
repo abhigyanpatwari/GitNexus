@@ -51,6 +51,8 @@ const javascriptScopeResolver: ScopeResolver = {
   language: SupportedLanguages.JavaScript,
   languageProvider: javascriptProvider,
   importEdgeReason: 'javascript-scope: import',
+  importsBindAtLexicalScope: true,
+  ownedMembersBindAtModuleScope: false,
 
   resolveImportTarget: makeJsResolveImportTarget(),
 

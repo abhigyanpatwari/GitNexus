@@ -1,0 +1,42 @@
+name: Require paired agent release evidence
+description: Verify fresh agent evidence for the checked out commit, measured by main's current evaluator
+
+runs:
+  using: composite
+  steps:
+    - name: Setup locked evaluation validator
+      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      with:
+        version: '0.11.23'
+        python-version: '3.13'
+        # Publishing must not restore caches populated by other runs.
+        enable-cache: false
+    # Release evaluation always measures with main's harness. Validate with that
+    # evaluator, not the release commit's older eval/ tree; the validator then
+    # rejects evidence whose harness differs from it in any evaluation input.
+    - name: Load main's current release evaluator
+      id: evaluator
+      shell: bash
+      run: |
+        set -euo pipefail
+        evaluator="$RUNNER_TEMP/release-evaluator"
+        rm -rf "$evaluator"
+        mkdir -p "$evaluator"
+        timeout 300 git fetch --no-tags --depth=1 origin refs/heads/main
+        sha="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
+        git archive "$sha" eval | tar -x -C "$evaluator"
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+    - name: Require paired evidence for this exact commit
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVALUATOR_SHA: ${{ steps.evaluator.outputs.sha }}
+      run: |
+        set -euo pipefail
+        runtime_sha="$(git rev-parse HEAD)"
+        cd "$RUNNER_TEMP/release-evaluator/eval"
+        # Locked base dependencies only: no dev extras or project build in this privileged job.
+        uv sync --locked --no-install-project
+        uv run --no-sync python -m workflow_bench.release_evidence \
+          --repo "$GITHUB_REPOSITORY" --runtime-sha "$runtime_sha" \
+          --evaluator-sha "$EVALUATOR_SHA" --out "$RUNNER_TEMP/release-evidence"

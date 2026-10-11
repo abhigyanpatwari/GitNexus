@@ -24,8 +24,8 @@ const count = ref(0);
     expect(result!.isSetup).toBe(true);
     expect(result!.scriptContent).toContain("import { ref } from 'vue'");
     expect(result!.scriptContent).toContain('const count = ref(0)');
-    // Line 0-3 is template + blank, line 4 is <script setup>, content starts at line 5
-    expect(result!.lineOffset).toBe(5);
+    // The extracted buffer starts with the opening tag's trailing empty row.
+    expect(result!.lineOffset).toBe(4);
   });
 
   it('extracts <script lang="ts"> (non-setup)', () => {
@@ -86,27 +86,27 @@ export default {};
     expect(result!.lang).toBe('');
   });
 
-  it('jsx lang triggers JS grammar (maps to lang=js)', () => {
+  it('preserves jsx language for the JSX query', () => {
     const vue = `<script lang="jsx">
 export default {};
 </script>
 `;
     const result = extractVueScript(vue);
     expect(result).not.toBeNull();
-    expect(result!.lang).toBe('js');
+    expect(result!.lang).toBe('jsx');
   });
 
-  it('ts lang returns empty (only js/jsx triggers JS grammar)', () => {
+  it('preserves the explicit ts language', () => {
     const vue = `<script lang="ts">
 export default {};
 </script>
 `;
     const result = extractVueScript(vue);
     expect(result).not.toBeNull();
-    expect(result!.lang).toBe('');
+    expect(result!.lang).toBe('ts');
   });
 
-  it('mixed js + ts blocks return empty lang (TypeScript wins)', () => {
+  it('selects TypeScript for mixed js and ts blocks', () => {
     const vue = `<script lang="js">
 export default {};
 </script>
@@ -116,7 +116,7 @@ import { ref } from 'vue';
 `;
     const result = extractVueScript(vue);
     expect(result).not.toBeNull();
-    expect(result!.lang).toBe('');
+    expect(result!.lang).toBe('ts');
   });
 
   it('isSetup is true when at least one block is setup', () => {
@@ -130,8 +130,8 @@ import { ref } from 'vue';
     const result = extractVueScript(vue);
     expect(result).not.toBeNull();
     expect(result!.isSetup).toBe(true);
-    // ts blocks — lang should be empty
-    expect(result!.lang).toBe('');
+    // Both blocks explicitly select TypeScript.
+    expect(result!.lang).toBe('ts');
   });
 
   it('returns null for .vue files with no <script> block', () => {
@@ -181,8 +181,8 @@ const x = 1;
 `;
     const result = extractVueScript(vue);
     expect(result).not.toBeNull();
-    // <script> tag is line 0, content starts at line 1
-    expect(result!.lineOffset).toBe(1);
+    // The buffer's initial empty row belongs to the opening tag's row.
+    expect(result!.lineOffset).toBe(0);
   });
 
   it('handles multiline script tag attributes', () => {

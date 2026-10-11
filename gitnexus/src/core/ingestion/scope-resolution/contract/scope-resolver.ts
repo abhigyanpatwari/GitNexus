@@ -280,6 +280,7 @@
 
 import type { DecorationStripper } from '../scope/walkers.js';
 import type {
+  NameLookupOptions,
   BindingRef,
   Callsite,
   ConstraintContext,
@@ -733,7 +734,9 @@ export interface ScopeResolver {
   ) => void;
 
   /**
-   * Optional workspace-wide enrichment of extracted reference sites. Runs
+   * Optional workspace-wide enrichment of extracted reference sites and their
+   * lexical name claims. Providers replace affected ParsedFile/scope records
+   * rather than mutating extraction snapshots or finalized indexes. Runs
    * after all files have been extracted and before reference finalization.
    * Use this when a per-file capture needs conservative facts from an
    * imported sibling (for example a compile-time branch constant).
@@ -1307,6 +1310,23 @@ export interface ScopeResolver {
   ) => readonly SymbolDefinition[] | undefined;
 
   /**
+   * Ordinary lexical lookup paired with `resolveAdlCandidates`. The provider
+   * preserves shared name-claim selection, then normalizes its declarations
+   * and reports whether the selected tier blocks argument-dependent lookup.
+   * Both hooks must be supplied to enable that additional candidate tier.
+   */
+  readonly resolveOrdinaryCallables?: (
+    startScope: ScopeId,
+    name: string,
+    scopes: ScopeResolutionIndexes,
+    options?: NameLookupOptions,
+  ) => {
+    readonly callables: readonly SymbolDefinition[];
+    readonly nonCallableFound: boolean;
+    readonly blockScopeDeclFound: boolean;
+  };
+
+  /**
    * Optional resolver for a module-qualified FREE call — a call written with
    * an explicit path but no value receiver (Rust `tools::dispatch(...)`, where
    * `tools` names a module, not a variable or a type).
@@ -1426,6 +1446,28 @@ export interface ScopeResolver {
   /** Enclosing class bodies are not lexical environments for namespace lookup.
    * The reference's own class scope remains visible for class-body expressions. */
   readonly namespaceSkipsEnclosingClasses?: boolean;
+
+  /** Prove namespace-valued receiver expressions using provider capture facts.
+   * Created once per receiver pass so providers can index local facts and memoize
+   * callable results. Targets feed the ordinary namespace-member path; declined
+   * call results retain their origin for final unresolved-call accounting. */
+  readonly createReceiverNamespaceResolver?: (
+    scopes: ScopeResolutionIndexes,
+    index: WorkspaceResolutionIndex,
+  ) => (
+    site: ReferenceSite,
+    parsed: ParsedFile,
+  ) =>
+    | {
+        readonly targetFiles?: readonly string[];
+        readonly callResultOrigin: {
+          readonly name: string;
+          readonly inScope: ScopeId;
+          /** False when this call is only one possible assignment origin. */
+          readonly isDefinite?: boolean;
+        };
+      }
+    | undefined;
 
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved

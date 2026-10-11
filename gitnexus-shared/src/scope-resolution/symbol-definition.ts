@@ -10,6 +10,7 @@
  */
 
 import type { NodeLabel } from '../graph/types.js';
+import type { SourcePosition } from './types.js';
 
 export interface ParameterTypeClass {
   /** Normalized base type, matching the coarse `parameterTypes` vocabulary when known. */
@@ -60,6 +61,9 @@ export interface SymbolDefinition {
   nodeId: string;
   filePath: string;
   type: NodeLabel;
+  /** Optional graph-source position (1-based line, 0-based column) for an
+   *  embedded source buffer. Lexical scope identity remains in `nodeId`. */
+  graphPosition?: SourcePosition;
   /** Canonical dot-separated qualified type name for class-like symbols
    *  (e.g. `App.Models.User`). Falls back to the simple symbol name when no
    *  package/namespace/module scope exists or no explicit qualified metadata is provided. */

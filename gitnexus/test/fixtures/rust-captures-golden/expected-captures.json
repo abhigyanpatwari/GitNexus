@@ -572,8 +572,8 @@
     "digest": "19b650be99256aa211356edc5a3dde83aff21e5d763e2c079322a24045bf69c9"
   },
   "rust-match-unwrap/src/main.rs": {
-    "captureGroups": 28,
-    "digest": "938f98b69f632575c614f683154aa86bc1fe2827511d4891c7c944e59ffd0e11"
+    "captureGroups": 30,
+    "digest": "6db3ca733b3c227e1e22926368bfac420f684718ab3b05dbb9cf74c61b0ad438"
   },
   "rust-match-unwrap/src/repo.rs": {
     "captureGroups": 9,
@@ -771,6 +771,10 @@
     "captureGroups": 36,
     "digest": "30b0e4e92385e7f7eb83ad97e78ed65b0eced81bbcb20bf52a846924c75ab5bb"
   },
+  "rust-traits/src/impls/mod.rs": {
+    "captureGroups": 3,
+    "digest": "80661b0e06de288bf9b460be28857b93c3895699e276ac37cda9ca9612320b90"
+  },
   "rust-traits/src/main.rs": {
     "captureGroups": 13,
     "digest": "0f78c887c5a94ea2b03e38d2060046253b1e09f096356b5ae21cf9c6992ed83a"
@@ -782,6 +786,10 @@
   "rust-traits/src/traits/drawable.rs": {
     "captureGroups": 9,
     "digest": "cee5091f041038722f1f012394a75ba4e16870d05b2dafa37371200e785198f0"
+  },
+  "rust-traits/src/traits/mod.rs": {
+    "captureGroups": 7,
+    "digest": "9978bbdbc0e14bdddd6855da1b94de0aa39eaae5e63f29ebb663e55779c564ab"
   },
   "rust-union/lib.rs": {
     "captureGroups": 10,

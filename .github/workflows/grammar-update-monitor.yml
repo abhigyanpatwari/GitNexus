@@ -2,19 +2,19 @@ name: Vendored grammar update monitor
 
 # Periodically checks each vendored tree-sitter grammar against its
 # source-of-origin and opens a PR re-vendoring any update that is ABI-COMPATIBLE
-# with the pinned tree-sitter@0.21.1 (LANGUAGE_VERSION 13–14, #1922). The version
+# with the bundled tree-sitter@0.25.1 (LANGUAGE_VERSION 13–15, #1922). The version
 # bump then triggers build-tree-sitter-prebuilds.yml, which cross-builds + ABI-
 # validates the prebuilds — so a re-vendor that is subtly wrong can never silently
 # ship: its PR's CI goes red.
 #
-# ABI-INCOMPATIBLE updates (the common case — upstreams move to newer tree-sitter)
-# are reported as a notice + job summary, NOT applied, so the monitor never opens
-# doomed PRs. tree-sitter-c is MONITORED but report-only: it is ABI-pinned at
-# 0.21.4 (#1242/#858), so an available c update is surfaced (notice + summary) but
-# never auto-bumped — a maintainer re-vendors it deliberately after a runtime
-# upgrade.
+# ABI-INCOMPATIBLE updates (upstreams that move past the runtime's ABI range) are
+# reported as a notice + job summary, NOT applied, so the monitor never opens
+# doomed PRs. A grammar with a policy `hold` (today: tree-sitter-swift) is
+# MONITORED but report-only: an available update is surfaced (notice + summary)
+# but never auto-bumped — a maintainer re-vendors it deliberately once the hold's
+# condition is met.
 #
-# The vendored set + per-grammar upstream coords + the tree-sitter-c hold live in
+# The vendored set + per-grammar upstream coords + policy holds live in
 # .github/vendored-grammars.json — the SHARED source of truth this monitor and
 # tree-sitter-upgrade-readiness.yml both read, so the two workflows can never
 # disagree about which grammars are vendored (#858). This monitor additionally
@@ -125,7 +125,7 @@ jobs:
               const body = [
                 `Automated re-vendor of **${name}** to \`${r.upstream}\` (from ${r.kind === 'npm' ? `npm \`${name}\`` : `\`${r.ref}\``}).`,
                 '',
-                `Verified ABI **${r.abi}** — compatible with the pinned \`tree-sitter@0.21.1\` (13–14).`,
+                `Verified ABI **${r.abi}** — compatible with the bundled \`tree-sitter@0.25.1\` (13–15).`,
                 'Source-build inputs refreshed; the GitNexus binding.gyp / README / prebuilds are preserved.',
                 'The version bump triggers `build-tree-sitter-prebuilds.yml` to rebuild + ABI-validate the',
                 'prebuilds — review its result before merging.',

@@ -458,6 +458,7 @@ export async function runChunkedParseAndResolve(
   allFetchWrapperDefs: FetchWrapperDef[];
   allExtractedRoutes: ExtractedRoute[];
   allDecoratorRoutes: ExtractedDecoratorRoute[];
+  selectedRoutes: ReadonlySet<ExtractedRoute | ExtractedDecoratorRoute>;
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
@@ -1941,6 +1942,7 @@ export async function runChunkedParseAndResolve(
       ),
     };
   });
+  const selectedRoutes = new Set<ExtractedRoute | ExtractedDecoratorRoute>();
   const routeHandlerSymbols = resolveRouteHandlerSymbols(
     model,
     allExtractedRoutes,
@@ -1956,6 +1958,7 @@ export async function runChunkedParseAndResolve(
         return typeof n?.properties.startLine === 'number' ? n.properties.startLine : undefined;
       },
     },
+    selectedRoutes,
   );
   return {
     exportedTypeMap,
@@ -1963,6 +1966,7 @@ export async function runChunkedParseAndResolve(
     allFetchWrapperDefs,
     allExtractedRoutes,
     allDecoratorRoutes,
+    selectedRoutes,
     allToolDefs,
     allORMQueries,
     bindingAccumulator,

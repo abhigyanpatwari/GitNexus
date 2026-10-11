@@ -53,6 +53,9 @@ type Snapshot = Record<string, FixtureSnapshot>;
 function canonicalizeMatch(match: CaptureMatch): string {
   const parts: string[] = [];
   for (const tag of Object.keys(match)) {
+    // Keep this legacy-shape digest stable as lexical ownership facts are
+    // added. Their semantics are asserted by the focused import-scope tests.
+    if (tag === '@scope.name-claims') continue;
     const cap = match[tag]!;
     const r = cap.range;
     parts.push(`${tag}|${cap.text}|${r.startLine}:${r.startCol}-${r.endLine}:${r.endCol}`);

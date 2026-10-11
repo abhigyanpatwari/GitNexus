@@ -40,7 +40,7 @@ describe('Vue CfgVisitor reuse — SFC <script> → TypeScript CFG', () => {
     const extraction = extractVueScript(sfc);
     expect(extraction).not.toBeNull();
     // `lang="ts"` ⇒ TypeScript grammar wins (the worker's mapping).
-    expect(extraction?.lang).toBe('');
+    expect(extraction?.lang).toBe('ts');
     expect(extraction?.isSetup).toBe(true);
 
     const cfgs = cfgsOfSfc(sfc);

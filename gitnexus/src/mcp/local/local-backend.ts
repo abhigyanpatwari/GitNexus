@@ -964,9 +964,9 @@ function scopeExtractionBoundaries(
  * Boundary notes for call sites the analyzer dropped because it could not type
  * their receiver, when the queried symbol's name is among them (#2744).
  *
- * Empty when the index records no drops for this name — including every index
- * written before the summary existed, which is why the schema version was
- * bumped rather than treating "absent" as "none".
+ * An absent name is uncertain when the in-program summary was truncated. Its
+ * omitted-name count cannot establish a dropped-call count for that name.
+ * Uncapped summaries and indexes predating the summary add no boundary.
  */
 function unresolvedReceiverBoundaries(
   summary: UnresolvedReceiverSummary | undefined,
@@ -975,7 +975,20 @@ function unresolvedReceiverBoundaries(
   if (symName.length === 0) return { notes: [], sites: 0, external: 0 };
   const sites = lookupUnresolvedCallCount(summary, symName);
   const external = lookupExternalCallCount(summary, symName) ?? 0;
-  if (sites === undefined) return { notes: [], sites: 0, external };
+  if (sites === undefined) {
+    const omittedNames = summary?.omittedNames ?? 0;
+    return {
+      notes:
+        Number.isSafeInteger(omittedNames) && omittedNames > 0
+          ? [
+              `The unresolved-receiver member summary was truncated, so the dropped-call count ` +
+                `for \`${symName}\` cannot be determined. Actual impact may be higher.`,
+            ]
+          : [],
+      sites: 0,
+      external,
+    };
+  }
   return {
     notes: [
       `${sites} call ${sites === 1 ? 'site' : 'sites'} invoking \`${symName}\` ${

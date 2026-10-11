@@ -28,7 +28,7 @@
  * function. Rare in practice; the alternative (cross-wired summaries) is unsound.
  */
 
-import type { ParsedImport, GraphNode } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport, GraphNode } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { computeReachingDefs, type ReachingDefsSolver } from '../cfg/reaching-defs.js';
 import { DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION } from '../cfg/emit.js';
@@ -112,8 +112,9 @@ export function harvestFileSummaries(
   maxFacts: number = DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
   // U12: shared per-file memoized solver (harvest/taint bucket — no maxBlockVisits).
   solve: ReachingDefsSolver = computeReachingDefs,
+  parsed?: ParsedFile,
 ): FileSummaryResult {
-  const importIndex = buildTaintImportIndex(parsedImports);
+  const importIndex = buildTaintImportIndex(parsedImports, parsed);
   const summaries: FunctionSummary[] = [];
   let unresolved = 0;
   let gaps = 0;

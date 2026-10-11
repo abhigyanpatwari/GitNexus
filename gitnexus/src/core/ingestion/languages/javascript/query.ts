@@ -139,6 +139,12 @@ export const JAVASCRIPT_SCOPE_QUERY = `
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
 
+;; Generator expressions have the same callable binding and scope anchor.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (generator_function) @declaration.function))
+
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
@@ -160,6 +166,11 @@ export const JAVASCRIPT_SCOPE_QUERY = `
   (variable_declarator
     name: (identifier) @declaration.name
     value: (function_expression) @declaration.function))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (generator_function) @declaration.function))
 
 ;; CJS property-assignment exports (#2723): \`exports.foo = function () {}\`,
 ;; \`module.exports.foo = (a) => a\`. The graph node for these comes from
@@ -728,8 +739,7 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 
 (for_in_statement
   left: (identifier) @type-binding.name
-  right: (member_expression
-    property: (property_identifier) @type-binding.type)) @type-binding.alias
+  right: (member_expression) @type-binding.type) @type-binding.alias
 
 ;; ── References ────────────────────────────────────────────────────────────
 
@@ -951,7 +961,7 @@ export function getJsScopeQuery(filePath?: string): Parser.Query {
 /** Validate that a cached Tree was produced by the JS grammar. */
 export function jsCachedTreeMatchesGrammar(tree: unknown): boolean {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const lang = (tree as any)?.getLanguage?.();
+  const lang = (tree as any)?.getLanguage?.() ?? (tree as any)?.language;
   if (lang === undefined || lang === null) return true;
   return lang === JS_GRAMMAR;
 }

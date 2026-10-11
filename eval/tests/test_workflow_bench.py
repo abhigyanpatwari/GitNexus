@@ -250,9 +250,14 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
         # set only on this job. Omitted from this list it skipped everywhere.
         "tests/test_mock_provider.py",
+        # Paired prepare/session/oracle/report composition uses that same native
+        # CLI and containment; it must execute here rather than skip everywhere.
+        "tests/test_release_evaluation_smoke.py",
         # These also need runtime dependencies absent from the locked pytest job.
         "tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant",
         "tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout",
+        "tests/test_oracle_assets.py::test_shipped_oracles_reject_task_base_and_accept_reference_fixes",
+        "tests/test_oracle_assets.py::test_in_flight_retry_oracle_rejects_startup_only_repairs",
         "-q",
         "--junitxml=pytest-ubuntu.xml",
     ]
@@ -346,6 +351,8 @@ def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_asset
         "inv-feature-list-repos-filter",
     ]
     assert skipped == ["cross-module-parse-retry"]
+    # v1.6.12 predates all four fixes, including the C fix already on main.
+    assert {task["ref"] for task in tasks} == {"c4ecf398de637cf779ab2238e69958cfd5d601ce"}
     assert all(not task.get("sandbox_copy") for task in tasks)
     assert all(task["sandbox_dependencies"] for task in tasks)
     assert all(

@@ -618,6 +618,8 @@ const HEAP_BUDGETED = [
   'go',
   'cpp',
   'objc',
+  // Lexical module lookup retains a workspace index over parsed Rust files.
+  'rust',
   // R retains the shared workspace file index (57.26 MiB at 32000 files, ratio
   // 0.970 against the 1.25 budget), so it takes the full ceiling + floor + ratio.
   'r',
@@ -649,7 +651,7 @@ const HEAP_BUDGETED = [
  * parameters cannot observe a context and are not listed, so their timed
  * numbers stay on the three-argument shape.
  */
-const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift', 'c', 'cpp', 'r'];
+const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift', 'rust', 'c', 'cpp', 'r'];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -2035,7 +2037,15 @@ function resolveOne(lang, from, target, pass) {
       { fromFile: from, allFilePaths, parsedFiles: pass.parsedFiles },
     );
   }
-  if (lang === 'rust') return resolveRustImportTarget(target, from, allFilePaths, undefined);
+  if (lang === 'rust') {
+    return resolveRustImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target }),
+    );
+  }
   // Quotes already stripped — `configs/zig.ts` strips them before this call in
   // production too. `null` build config: this arm pins the path walk alone
   // (see the header); the config legs are gated by their own unit tests.
@@ -2475,6 +2485,37 @@ function measureHeap(lang) {
  * argument at all.
  */
 const CONTEXT_PROBE = {
+  // A declared sibling module outranks a crate-root file with the same name.
+  // Empty module tables on the scaling corpora keep their existing target set;
+  // this probe witnesses the lexical branch that reads the workspace index.
+  rust: {
+    from: 'src/parent/mod.rs',
+    target: 'local::X',
+    parsedFiles: (() => {
+      const from = probeFile('src/parent/mod.rs', [['Namespace', 'local']]);
+      const def = from.localDefs[0];
+      return [
+        {
+          ...from,
+          scopes: [
+            {
+              id: from.moduleScope,
+              parent: null,
+              kind: 'Module',
+              filePath: from.filePath,
+              range: { startLine: 1, startCol: 0, endLine: 2, endCol: 0 },
+              bindings: new Map([['local', [{ def, origin: 'local' }]]]),
+              ownedDefs: [def],
+              imports: [],
+              typeBindings: new Map(),
+            },
+          ],
+        },
+        probeFile('src/parent/local.rs', [['Struct', 'X']]),
+        probeFile('src/local.rs', [['Struct', 'X']]),
+      ];
+    })(),
+  },
   /**
    * `use function App\Ns0\Dup;` where the CLASS `Dup` lives in `Dup.php` and
    * the FUNCTION `Dup` lives in `Helpers.php`. PHP keeps the two in separate

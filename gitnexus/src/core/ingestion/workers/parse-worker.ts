@@ -11,8 +11,7 @@ import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
 import CPP from 'tree-sitter-cpp';
-// Explicit subpath import — see parser-loader.ts for rationale (#1013).
-import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
+import { getLanguageGrammar } from '../../tree-sitter/parser-loader.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import R from '@eagleoutice/tree-sitter-r';
@@ -46,6 +45,11 @@ import type {
 
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
+
+// Avoid the upstream C# wrapper's top-level await: terminating a ready worker
+// can race V8's async module completion and abort the process. Reuse the
+// synchronous native loader and node-type metadata used by the main thread.
+const CSharp = getLanguageGrammar(SupportedLanguages.CSharp);
 
 // ── Worker grammar loading — enforcement boundary (#2091/#2093, #2101) ───────
 // The worker maintains its own grammar table (the guarded vendored-grammar
@@ -125,7 +129,11 @@ import {
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
-import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
+import {
+  countCallArguments,
+  extractCallArgTypes,
+  type MixedChainStep,
+} from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
@@ -1630,17 +1638,23 @@ const processFileGroup = (
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
     let scopeSourceKind: ScopeCaptureSourceKind = 'full-file';
+    let scriptLanguage: string | undefined;
     let lineOffset = 0;
+    let sourceLineMap: readonly number[] | undefined;
     let isVueSetup = false;
     let notebookSegments: readonly NotebookLineSegment[] | undefined;
     const mapRow = (row: number): number =>
-      notebookSegments ? mapExtractLine(row, notebookSegments) : row + lineOffset;
+      notebookSegments
+        ? mapExtractLine(row, notebookSegments)
+        : (sourceLineMap?.[row] ?? row + lineOffset);
     if (language === SupportedLanguages.Vue) {
       const extracted = extractVueScript(file.content);
       if (!extracted) continue; // skip .vue files with no script block
       parseContent = extracted.scriptContent;
       scopeSourceKind = 'pre-extracted-script';
       lineOffset = extracted.lineOffset;
+      sourceLineMap = extracted.sourceLineMap;
+      scriptLanguage = extracted.lang;
       isVueSetup = extracted.isSetup;
     } else if (language === SupportedLanguages.Python && isNotebookPath(file.path)) {
       const extracted = extractNotebookPython(file.content);
@@ -1654,6 +1668,22 @@ const processFileGroup = (
     // Length-preserving — see LanguageProvider.preprocessSource contract.
     parseContent =
       getProvider(language).preprocessSource?.(parseContent, file.path) ?? parseContent;
+
+    const embeddedGrammar =
+      scriptLanguage !== undefined
+        ? getProvider(language).selectEmbeddedGrammar?.(scriptLanguage)
+        : undefined;
+    if (embeddedGrammar && parser.getLanguage() !== embeddedGrammar) {
+      parser.setLanguage(embeddedGrammar);
+      let queries = compiledQueries.get(embeddedGrammar);
+      if (!queries) {
+        queries = new Map();
+        compiledQueries.set(embeddedGrammar, queries);
+      }
+      const cached = queries.get(queryString);
+      query = cached ?? new Parser.Query(embeddedGrammar, queryString);
+      if (!cached) queries.set(queryString, query);
+    }
 
     clearCaches(); // Reset memoization before each new file
 
@@ -1722,6 +1752,9 @@ const processFileGroup = (
       tree,
       scopeSourceKind,
       notebookSegments,
+      lineOffset,
+      scriptLanguage,
+      sourceLineMap,
     );
     if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
     if (parsedFile !== undefined) {
@@ -1768,7 +1801,8 @@ const processFileGroup = (
             // `lineOffset` in the file — shift the CFG into file coordinates so
             // it joins its graph node and BasicBlock lines map to source.
             lineOffset,
-            notebookSegments ? mapRow : undefined,
+            notebookSegments || sourceLineMap ? mapRow : undefined,
+            sourceLineMap ? 'parse-buffer' : 'source',
           );
           if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
           // Surface per-function CFG skips per-language (#2195): merged + logged
@@ -2048,6 +2082,10 @@ const processFileGroup = (
           // HTTP client calls like axios.get('/api/users') that match the same pattern
           // as Express route registrations.
           const callNode = captureMap['express_route'];
+          // route(path) returns a builder; verb registrations need a handler.
+          // Count arguments without comments, which are also named AST children.
+          const minimumArguments = method === 'route' ? 1 : 2;
+          if ((countCallArguments(callNode) ?? 0) < minimumArguments) continue;
           const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
           // Walk through nested member_expressions and call_expressions to
           // reach the innermost receiver identifier.  Handles chains like:
@@ -2085,17 +2123,49 @@ const processFileGroup = (
             continue;
           }
 
-          const httpMethod =
-            method === 'all' || method === 'use' || method === 'route'
-              ? 'GET'
-              : method.toUpperCase();
-          result.decoratorRoutes.push({
-            filePath: file.path,
-            routePath,
-            httpMethod,
-            decoratorName: `express.${method}`,
-            lineNumber: captureMap['express_route'].startPosition.row + lineOffset,
-          });
+          const registrations: { method: string; node: SyntaxNode }[] = [];
+          if (method === 'route') {
+            // A builder alone registers nothing. Follow only direct chained
+            // verb calls, each of which must supply a non-comment handler arg.
+            let builderNode = callNode;
+            while (builderNode.parent?.type === 'member_expression') {
+              const member = builderNode.parent;
+              const registration = member.parent;
+              const verb = member.childForFieldName('property')?.text;
+              if (
+                member.childForFieldName('object')?.id !== builderNode.id ||
+                registration?.type !== 'call_expression' ||
+                registration.childForFieldName('function')?.id !== member.id ||
+                !verb ||
+                !EXPRESS_ROUTE_METHODS.has(verb) ||
+                verb === 'route' ||
+                verb === 'use'
+              ) {
+                break;
+              }
+              if ((countCallArguments(registration) ?? 0) >= 1) {
+                registrations.push({ method: verb, node: registration });
+              }
+              builderNode = registration;
+            }
+          } else {
+            registrations.push({ method, node: callNode });
+          }
+          for (const registration of registrations) {
+            const httpMethod =
+              registration.method === 'all'
+                ? '*'
+                : registration.method === 'use'
+                  ? 'GET'
+                  : registration.method.toUpperCase();
+            result.decoratorRoutes.push({
+              filePath: file.path,
+              routePath,
+              httpMethod,
+              decoratorName: `express.${registration.method}`,
+              lineNumber: registration.node.startPosition.row + lineOffset,
+            });
+          }
         }
         continue;
       }

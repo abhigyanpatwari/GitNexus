@@ -8,6 +8,10 @@ export default {
     setupFiles: [],
     globalSetup: [],
     passWithNoTests: false,
+    // Cold source CLI loads can exceed Vitest's five-second default.
+    testTimeout: 120_000,
+    // Declared dependency trees are mounted read-only during verification.
+    cache: false,
     include: ['../.wfbench-oracle-*/*.oracle.test.ts'],
     exclude: [],
   },

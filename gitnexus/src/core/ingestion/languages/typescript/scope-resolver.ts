@@ -87,6 +87,8 @@ const typescriptScopeResolver: ScopeResolver = {
   language: SupportedLanguages.TypeScript,
   languageProvider: typescriptProvider,
   importEdgeReason: 'typescript-scope: import',
+  importsBindAtLexicalScope: true,
+  ownedMembersBindAtModuleScope: false,
 
   resolveImportTarget: makeTsResolveImportTarget(),
 
@@ -297,6 +299,8 @@ function hasLocalBindingInScopeChain(
     visited.add(cursor);
     const scope = indexes.scopeTree.getScope(cursor);
     if (!scope) return false;
+    if (scope.nameClaims?.some((claim) => claim.name === name && claim.purpose !== 'type'))
+      return true;
 
     const localBindings = scope.bindings.get(name);
     if (
@@ -317,15 +321,6 @@ function hasLocalBindingInScopeChain(
     // belongs to callable space, so a same-file presence check here cannot
     // over-suppress a legitimate auto-import.
     //
-    // Residual (known limitation): this catches parameters whose annotation the
-    // TS scope query records as a type-binding (`p: Named`, generics, unions,
-    // predefined, arrays). Function-typed params (`p: () => void`), untyped
-    // params, destructured locals (`const { x } = …`), and catch-clause vars
-    // are captured by NEITHER map — the scope query emits no `@declaration` /
-    // `@type-binding` for them — so those shadow forms still leak an edge.
-    // Closing that needs shared TS scope-query/extractor changes that alter call
-    // resolution beyond Nuxt, so it is deferred to a follow-up rather than fixed
-    // here.
     if (scope.filePath === filePath && scope.typeBindings.has(name)) {
       return true;
     }

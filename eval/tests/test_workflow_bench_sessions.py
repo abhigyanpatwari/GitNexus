@@ -7,6 +7,8 @@ import os
 import shutil
 import subprocess
 import sys
+from contextlib import nullcontext
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +17,7 @@ import pytest
 from workflow_bench import evolve, runner, runner_artifacts, runner_sessions, runtime_mounts
 from workflow_bench.evolution import skill_fingerprint
 from workflow_bench.process_control import ManagedProcessError, ManagedProcessResult
-from workflow_bench.proposer_sandbox import SandboxError
+from workflow_bench.proposer_sandbox import SandboxError, build_claude_settings
 from workflow_bench.runner import snapshot_plan_docs
 
 
@@ -195,12 +197,11 @@ def test_run_claude_forwards_xhigh_effort_to_every_session(monkeypatch, tmp_path
     assert captured[captured.index("--effort") + 1] == "xhigh"
 
 
-def test_run_claude_restricts_tools_via_tools_flag_outside_bare(monkeypatch, tmp_path):
-    # Outside --bare, the built-in toolset defaults to everything (subagents,
-    # WebFetch, Task, ...) and --allowedTools only pre-approves within that —
-    # it does not narrow it. --tools is what actually restricts the set, so a
-    # non-bare arm session must pass it or it silently gets a far wider
-    # toolset than intended.
+def test_run_claude_restricts_tools_via_tools_flag(monkeypatch, tmp_path):
+    # The built-in toolset defaults to everything (subagents, WebFetch, Task,
+    # ...) and --allowedTools only pre-approves within that -- it does not
+    # narrow it. --tools is what actually restricts the set, so an arm session
+    # must pass it or it silently gets a far wider toolset than intended.
     captured: list[str] = []
 
     def fake_run(command, **kwargs):
@@ -213,36 +214,12 @@ def test_run_claude_restricts_tools_via_tools_flag_outside_bare(monkeypatch, tmp
         tmp_path,
         claude_bin="claude",
         timeout=5,
-        bare=False,
         allowed_tools=["Read", "Edit", "Bash", "Skill"],
     )
     tools_idx = captured.index("--tools")
     assert captured[tools_idx + 1 : tools_idx + 5] == ["Read", "Edit", "Bash", "Skill"]
     allowed_idx = captured.index("--allowedTools")
     assert captured[allowed_idx + 1 : allowed_idx + 5] == ["Read", "Edit", "Bash", "Skill"]
-
-
-def test_run_claude_omits_tools_flag_under_bare(monkeypatch, tmp_path):
-    # --bare already hard-restricts to Bash/Edit/Read on its own (a Claude
-    # Code design choice, not something --tools/--allowedTools can widen or
-    # narrow further), so bare sessions must not also pass --tools.
-    captured: list[str] = []
-
-    def fake_run(command, **kwargs):
-        captured.extend(command)
-        return fake_cli_result(VALID_REPORT)
-
-    monkeypatch.setattr(runner_sessions, "run_managed", fake_run)
-    runner.run_claude(
-        "task",
-        tmp_path,
-        claude_bin="claude",
-        timeout=5,
-        bare=True,
-        allowed_tools=["Read", "Edit", "Bash", "Skill"],
-    )
-    assert "--tools" not in captured
-    assert "--allowedTools" in captured
 
 
 @pytest.mark.parametrize(
@@ -335,18 +312,15 @@ def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, t
     ]
     assert "Write" in review_tools
     assert "Edit" not in review_tools
-    assert implementation == [
-        *runner.BUILTIN_AGENT_TOOLS,
-        *runner.GITNEXUS_READ_ONLY_TOOLS,
-        *runner.GITNEXUS_MUTATING_TOOLS,
-    ]
+    assert implementation == read_only
+    assert not (set(runner.GITNEXUS_MUTATING_TOOLS) & set(implementation))
     assert no_mcp == list(runner.BUILTIN_AGENT_TOOLS)
     assert not any(tool.startswith("mcp__") for tool in no_mcp)
 
     captured: list[dict[str, object]] = []
 
     def fake_run_claude(*args, **kwargs):
-        captured.append(dict(kwargs))
+        captured.append(dict(kwargs, prompt=args[0]))
         return session_record()
 
     monkeypatch.setattr(runner, "run_claude", fake_run_claude)
@@ -364,18 +338,176 @@ def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, t
     assert captured[0]["allowed_tools"] == read_only  # planning
     assert captured[1]["allowed_tools"] == review_tools  # review
     assert captured[2]["allowed_tools"] == implementation
-    assert captured[3]["allowed_tools"] == list(runner.BUILTIN_AGENT_TOOLS)
+    assert captured[3]["allowed_tools"] == [tool for tool in runner.BUILTIN_AGENT_TOOLS if tool != "Skill"]
     assert captured[3]["mcp_config_json"] == '{"mcpServers":{}}'
     assert captured[3]["disallowed_tools"] == ["Skill", "mcp__gitnexus"]
+    assert "GitNexus tools are unavailable" in captured[3]["prompt"]
 
-    # --bare hard-disables the Skill tool and every mcp__* tool regardless of
-    # --allowedTools (a Claude Code design choice, not something the harness
-    # can override) -- every arm here except baseline_nomcp needs Skill
-    # and/or MCP tools, so only baseline_nomcp may still run under --bare.
-    assert captured[0]["bare"] is False  # workflow: planning session
-    assert captured[1]["bare"] is False  # review
-    assert captured[2]["bare"] is False  # workflow_direct
-    assert captured[3]["bare"] is True  # baseline_nomcp
+    # Both tool-enabled and no-MCP arms retain ordinary CLAUDE.md startup
+    # context. The latter explicitly disables all skills/commands instead.
+    assert all("bare" not in session for session in captured[:4])
+    assert captured[3]["disable_slash_commands"] is True
+
+
+def test_nomcp_and_tool_arms_load_repository_context_with_the_same_startup_mode(monkeypatch, tmp_path):
+    commands = []
+
+    def capture_cli(command, **kwargs):
+        commands.append(command)
+        return fake_cli_result(VALID_REPORT)
+
+    monkeypatch.setattr(runner_sessions, "run_managed", capture_cli)
+    monkeypatch.setattr(runner, "run_verify", lambda *_a, **_k: (True, "ok"))
+    sandbox = fake_sandbox(tmp_path)
+    sandbox.settings_json = build_claude_settings()
+    for arm in ("baseline", "baseline_nomcp"):
+        runner.run_arm(
+            arm, {"prompt": "Edit source and run its tests.", "verify": "true"}, tmp_path, bench_args(), sandbox=sandbox
+        )
+
+    assert len(commands) == 2
+    assert all("--bare" not in command for command in commands), "ordinary CLAUDE.md context must load in both arms"
+    assert "--disable-slash-commands" not in commands[0]
+    assert "--disable-slash-commands" in commands[1]
+    assert commands[1][commands[1].index("--mcp-config") + 1] == '{"mcpServers":{}}'
+    builtin_end = commands[1].index("--allowedTools")
+    baseline_tools = commands[1][commands[1].index("--tools") + 1 : builtin_end]
+    assert "Skill" not in baseline_tools
+    assert not any(tool.startswith("mcp__") for tool in baseline_tools)
+    for command in commands:
+        settings = json.loads(command[command.index("--settings") + 1])
+        assert settings["disableAllHooks"] is True
+
+
+def _probe_cell_provisioning(monkeypatch, tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    dependencies = runner.ReadOnlyMount(tmp_path / "dependencies", "/workspace/gitnexus/node_modules")
+    runtime = runner.ReadOnlyMount(tmp_path / "runtime", runner.SANDBOX_GITNEXUS)
+    registry = runner.ReadOnlyMount(tmp_path / "registry", runner.SANDBOX_GITNEXUS_REGISTRY)
+    graph_calls = []
+    registry_calls = []
+    sandbox_calls = []
+
+    def materialize(worktree, **_kwargs):
+        graph_calls.append(worktree)
+        index = worktree / ".gitnexus"
+        index.mkdir()
+        (index / "lbug").write_text("prebuilt graph")
+
+    def registry_mount(worktree, *_args):
+        registry_calls.append(worktree)
+        return registry
+
+    def probe_sandbox(**kwargs):
+        sandbox_calls.append(kwargs)
+        raise SandboxError("provisioning probe complete")
+
+    monkeypatch.setattr(runner, "make_worktree", lambda *_a: clone)
+    monkeypatch.setattr(runner, "sanitize_clone_for_hidden_oracles", lambda *_a: "b" * 40)
+    monkeypatch.setattr(runner, "stage_task_assets", lambda *_a, **_k: [dependencies])
+    monkeypatch.setattr(runner, "isolated_gitnexus_registry_mount", registry_mount)
+    monkeypatch.setattr(runner, "prepare_sandbox", probe_sandbox)
+    monkeypatch.setattr(runner, "remove_clone", lambda *_a: None)
+    out = tmp_path / "out"
+    out.mkdir()
+    ctx = runner.TaskCellContext(
+        task={"id": "fixture", "prompt": "Edit the GitNexus source and run its tests."},
+        oracle_snapshot=SimpleNamespace(digest="oracle", command_digest="command", manifest_digest="manifest"),
+        repo=tmp_path / "repo",
+        task_sha="a" * 40,
+        graph_snapshot=SimpleNamespace(digest="graph", manifest_digest="graph-manifest", materialize=materialize),
+        graph_snapshot_error=None,
+        asset_snapshot=SimpleNamespace(
+            digest="assets",
+            manifest_digest="assets-manifest",
+            dependency_content_digest="deps",
+            dependency_manifest_digest="deps-manifest",
+        ),
+        asset_snapshot_error=None,
+        args=bench_args(proposer_model=None),
+        out_dir=out,
+        ce_plugin_snapshot=None,
+        trees_dir=tmp_path,
+        bwrap_bin=tmp_path / "bwrap",
+        runtime_mounts=(runtime,),
+        candidate_overlay=None,
+        overlay_digest=None,
+    )
+    return ctx, clone, dependencies, runtime, registry, graph_calls, registry_calls, sandbox_calls
+
+
+def test_nomcp_cell_does_not_provision_a_graph_registry_or_runtime(monkeypatch, tmp_path):
+    ctx, clone, dependencies, _, _, graph_calls, registry_calls, sandbox_calls = _probe_cell_provisioning(
+        monkeypatch, tmp_path
+    )
+    record = runner.run_cell(ctx, 0, "baseline_nomcp")
+
+    assert not graph_calls, "baseline_nomcp was supplied a prebuilt GitNexus graph"
+    assert not (clone / ".gitnexus" / "lbug").exists()
+    assert not registry_calls, "baseline_nomcp was supplied a repository registry"
+    assert sandbox_calls[0]["read_only_mounts"] == [dependencies]
+    assert sandbox_calls[0]["gitnexus_available"] is False
+    assert record["sanitized_graph_snapshot_digest"] is None
+
+
+def test_graph_enabled_cell_retains_its_graph_registry_and_runtime(monkeypatch, tmp_path):
+    ctx, clone, dependencies, runtime, registry, graph_calls, registry_calls, sandbox_calls = _probe_cell_provisioning(
+        monkeypatch, tmp_path
+    )
+    runner.run_cell(ctx, 0, "workflow_direct")
+
+    assert graph_calls == [clone]
+    assert registry_calls == [clone]
+    assert sandbox_calls[0]["read_only_mounts"] == [dependencies, runtime, registry]
+
+
+def test_nomcp_cell_does_not_require_an_available_graph(monkeypatch, tmp_path):
+    ctx, _, dependencies, _, _, _, _, sandbox_calls = _probe_cell_provisioning(monkeypatch, tmp_path)
+    ctx = replace(ctx, graph_snapshot=None, graph_snapshot_error=RuntimeError("graph unavailable"))
+    runner.run_cell(ctx, 0, "baseline_nomcp")
+    assert sandbox_calls[0]["read_only_mounts"] == [dependencies]
+
+
+@pytest.mark.parametrize(
+    "arm",
+    ["workflow", "workflow_direct", "candidate_workflow", "candidate_workflow_direct", "review", "baseline_nomcp"],
+)
+def test_cell_seeds_selected_release_skills_before_setup_and_fingerprinting(monkeypatch, tmp_path, arm):
+    ctx, clone, *_ = _probe_cell_provisioning(monkeypatch, tmp_path)
+    ctx.task["setup"] = "fixture setup"
+    release = tmp_path / "release"
+    ctx.args.gitnexus_root = release
+    execution_arm = runner.CANDIDATE_ARMS.get(arm, arm)
+    if arm in runner.CANDIDATE_ARMS:
+        ctx = replace(ctx, candidate_overlay=tmp_path / "overlay", overlay_digest="candidate")
+    events = []
+    sandbox = fake_sandbox(clone)
+    sandbox.run = lambda *_a, **_k: events.append("setup") or fake_cli_result("")
+    monkeypatch.setattr(runner, "prepare_sandbox", lambda **_k: nullcontext(sandbox))
+    monkeypatch.setattr(
+        runner,
+        "seed_evaluated_skills",
+        lambda source, worktree, **kwargs: events.append(("seed", source, worktree, kwargs["arm"])),
+    )
+    monkeypatch.setattr(runner, "skill_fingerprint", lambda *_a: events.append("fingerprint") or "digest")
+    monkeypatch.setattr(runner, "require_skill_fingerprint", lambda *_a, **_k: events.append("check"))
+    monkeypatch.setattr(runner, "_sandbox_git", lambda *_a: "c" * 40)
+    monkeypatch.setattr(runner, "implementation_diff_digest", lambda *_a, **_k: "")
+    monkeypatch.setattr(runner, "apply_candidate_overlay", lambda *_a, **_k: events.append("overlay") or "candidate")
+
+    def finish_probe(*_a, **_k):
+        events.append("session")
+        raise SandboxError("session probe complete")
+
+    monkeypatch.setattr(runner, "run_arm", finish_probe)
+    runner.run_cell(ctx, 0, arm)
+    expected = ["fingerprint", "setup", "check", "session"]
+    if arm != "baseline_nomcp":
+        expected.insert(0, ("seed", release, clone, execution_arm))
+    if arm in runner.CANDIDATE_ARMS:
+        expected[-1:-1] = ["overlay", "fingerprint"]
+    assert events == expected
 
 
 def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tmp_path):
@@ -402,9 +534,13 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
 
     assert runner.SANDBOX_GITNEXUS_ENTRYPOINT in command_line
     assert not any(value.startswith("/workspace/") for value in command_line)
-    assert f"GITNEXUS_HOME={runner.SANDBOX_GITNEXUS_REGISTRY}" in command_line
-    assert "GITNEXUS_MCP_ALLOWED_REPOS=/workspace" in command_line
-    assert "GITNEXUS_MCP_DEFAULT_REPO=/workspace" in command_line
+    for key, value in (
+        ("GITNEXUS_HOME", runner.SANDBOX_GITNEXUS_REGISTRY),
+        ("GITNEXUS_MCP_ALLOWED_REPOS", "/workspace"),
+        ("GITNEXUS_MCP_DEFAULT_REPO", "/workspace"),
+    ):
+        index = command_line.index(key)
+        assert command_line[index - 1:index + 2] == ["--setenv", key, value]
     mounts = runner.trusted_gitnexus_runtime_mounts()
     assert [(mount.source, mount.target) for mount in mounts] == [
         (runtime / "dist", f"{runner.SANDBOX_GITNEXUS}/dist"),
@@ -450,8 +586,24 @@ def _install_pinned_runtime(root: Path) -> None:
     (shared / "package.json").write_text(json.dumps({"name": "gitnexus-shared"}))
 
 
+def test_runtime_mounts_use_the_explicit_release_checkout(monkeypatch, tmp_path):
+    harness = tmp_path / "harness"
+    release = tmp_path / "release"
+    _install_pinned_runtime(harness)
+    _install_pinned_runtime(release)
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", harness)
+
+    mounts = runner.trusted_gitnexus_runtime_mounts(root=release)
+    assert all(mount.source.is_relative_to(release) for mount in mounts)
+    args = runner.build_parser().parse_args(
+        ["--tasks", "fixture.yaml", "--model", "fixture-model", "--gitnexus-root", str(release)]
+    )
+    assert args.gitnexus_root == release
+
+
+@pytest.mark.parametrize("explicit_root", [False, True])
 def test_runtime_mounts_reuse_primary_checkout_node_modules_from_a_worktree(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, explicit_root
 ) -> None:
     primary = tmp_path / "primary"
     worktree = tmp_path / "worktree"
@@ -464,9 +616,9 @@ def test_runtime_mounts_reuse_primary_checkout_node_modules_from_a_worktree(
         target_is_directory=True,
     )
     (worktree / ".git").write_text(f"gitdir: {primary / '.git' / 'worktrees' / 'wt'}\n")
-    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", worktree)
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", tmp_path / "different-harness" if explicit_root else worktree)
 
-    mounts = runner.trusted_gitnexus_runtime_mounts()
+    mounts = runner.trusted_gitnexus_runtime_mounts(root=worktree if explicit_root else None)
     by_target = {mount.target: mount.source for mount in mounts}
 
     assert by_target[f"{runner.SANDBOX_GITNEXUS}/node_modules"] == (
@@ -656,7 +808,7 @@ def test_resolved_implementation_without_repository_work_fails_closed():
 
 
 @pytest.mark.skipif(os.name == "nt", reason="sandbox patch streaming uses POSIX executable paths")
-def test_capture_patch_materializes_only_the_bounded_prefix(tmp_path):
+def test_capture_patch_materializes_only_the_bounded_prefix(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
@@ -688,6 +840,8 @@ def test_capture_patch_materializes_only_the_bounded_prefix(tmp_path):
     changed.write_text("changed line\n" * 100_000)
 
     class LocalSandbox:
+        synthetic_guidance_paths = ()
+
         def run(self, command, **kwargs):
             translated = [
                 str(repo) + item.removeprefix("/workspace") if item.startswith("/workspace/") else item
@@ -709,11 +863,19 @@ def test_capture_patch_materializes_only_the_bounded_prefix(tmp_path):
                 duration_s=0.0,
             )
 
+    read_bytes = runner_artifacts._bounded_regular_bytes
+    materialized_sizes = []
+
+    def inspect_bounded_sink(path, *, limit):
+        materialized_sizes.append(path.stat().st_size)
+        return read_bytes(path, limit=limit)
+
+    monkeypatch.setattr(runner_artifacts, "_bounded_regular_bytes", inspect_bounded_sink)
     patch = runner.capture_patch(LocalSandbox(), repo, orig_sha)
 
     assert len(patch) == runner.MAX_PATCH_BYTES
-    materialized = next(repo.glob(".wfbench-artifact-*/final.patch"))
-    assert materialized.stat().st_size == runner.MAX_PATCH_BYTES
+    assert materialized_sizes == [runner.MAX_PATCH_BYTES]
+    assert not list(repo.glob(".wfbench-artifact-*"))
 
 
 def test_workflow_never_starts_work_after_failed_or_invalid_planning(monkeypatch, tmp_path):

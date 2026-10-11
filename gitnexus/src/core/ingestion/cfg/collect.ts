@@ -83,11 +83,17 @@ function shiftCfgLines(cfg: FunctionCfg, offset: number): FunctionCfg {
   };
 }
 
-function remapCfgLines(cfg: FunctionCfg, mapLine: (row: number) => number): FunctionCfg {
+function remapCfgLines(
+  cfg: FunctionCfg,
+  mapLine: (row: number) => number,
+  siteCoordinates: 'source' | 'parse-buffer',
+): FunctionCfg {
   // CFG visitors store 1-based source lines; `mapLine` maps 0-based tree-sitter rows.
   const map1 = (line: number): number => mapLine(line - 1) + 1;
   const mapSite = (site: SiteRecord): SiteRecord =>
-    site.at !== undefined ? { ...site, at: [map1(site.at[0]), site.at[1]] } : site;
+    site.at !== undefined && siteCoordinates === 'source'
+      ? { ...site, at: [map1(site.at[0]), site.at[1]] }
+      : site;
   return {
     ...cfg,
     functionStartLine: map1(cfg.functionStartLine),
@@ -115,6 +121,8 @@ export function collectFunctionCfgs(
   maxFunctionLines = 0,
   lineOffset = 0,
   mapLine?: (row: number) => number,
+  // Site anchors must match the coordinate space of scope reference captures.
+  siteCoordinates: 'source' | 'parse-buffer' = 'source',
 ): CollectedCfgs {
   const cfgs: FunctionCfg[] = [];
   let tooManyLines = 0;
@@ -136,7 +144,11 @@ export function collectFunctionCfgs(
         try {
           const cfg = visitor.buildFunctionCfg(node, filePath);
           if (cfg) {
-            cfgs.push(mapLine ? remapCfgLines(cfg, mapLine) : shiftCfgLines(cfg, lineOffset));
+            cfgs.push(
+              mapLine
+                ? remapCfgLines(cfg, mapLine, siteCoordinates)
+                : shiftCfgLines(cfg, lineOffset),
+            );
           }
         } catch (err) {
           if (err instanceof CfgNestingDepthError) tooDeeplyNested++;

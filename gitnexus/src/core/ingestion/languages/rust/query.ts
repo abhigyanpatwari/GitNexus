@@ -15,6 +15,7 @@ const RUST_SCOPE_QUERY = `
 (block) @scope.block
 (if_expression) @scope.block
 (match_expression) @scope.block
+(match_arm) @scope.block
 (for_expression) @scope.block
 (while_expression) @scope.block
 (loop_expression) @scope.block

@@ -82,6 +82,8 @@ const vueScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Vue,
   languageProvider: vueProvider,
   importEdgeReason: 'vue-scope: import',
+  importsBindAtLexicalScope: true,
+  ownedMembersBindAtModuleScope: false,
 
   resolveImportTarget: makeVueResolveImportTarget(),
 

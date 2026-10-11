@@ -4489,6 +4489,18 @@ async function runFullAnalysisInner(
       existingMeta?.graphWriteCollapsed,
     );
     if (graphWriteCollapsed) {
+      if (useAtomicSwap) {
+        // A collapsed staging DB can be discarded before it replaces the live
+        // index. In-place writes below still need their incomplete stamp.
+        throw new Error(
+          `Graph write incomplete — the pipeline produced ${expectedRelationships} ` +
+            `relationships but only ${persistedRelationships} are readable from the staged index. ` +
+            `Analysis aborted before publication; the previous index, if any, is left intact. ` +
+            `Review COPY warnings and available memory and disk space. If the native buffer pool ` +
+            `was exhausted, set GITNEXUS_LBUG_BUFFER_POOL_SIZE to a larger byte value that fits ` +
+            `available memory, then re-run \`gitnexus analyze --force\`.`,
+        );
+      }
       log(
         `Warning: graph write incomplete — the pipeline produced ${expectedRelationships} ` +
           `relationships but only ${persistedRelationships} are readable from the index. Recording the ` +

@@ -788,6 +788,43 @@ describe('finalize', () => {
   });
 
   describe('module-scope binding materialization', () => {
+    it.each([
+      [true, undefined, true],
+      [true, false, false],
+      [false, true, true],
+      [false, undefined, false],
+    ] as const)(
+      'honors lexical policy %s with per-import override %s',
+      (providerPolicy, override, lexical) => {
+        const target = file('target', [def('def:target.User', 'Class', 'target.User')]);
+        const source = file(
+          'source',
+          [],
+          [
+            {
+              ...named('User', 'User', 'target'),
+              declaredAtScope: 'scope:source#function',
+              ...(override === undefined ? {} : { bindsAtLexicalScope: override }),
+            },
+          ],
+        );
+        const files = [source, target];
+        const result = finalize(
+          { files, workspaceIndex: undefined },
+          {
+            ...defaultHooks(files),
+            importsBindAtLexicalScope: providerPolicy,
+          },
+        );
+        const expected = lexical ? 'scope:source#function' : source.moduleScope;
+        const absent = lexical ? source.moduleScope : 'scope:source#function';
+        expect(bindingsFor(result, expected, 'User').map((binding) => binding.def.nodeId)).toEqual([
+          'def:target.User',
+        ]);
+        expect(bindingsFor(result, absent, 'User')).toEqual([]);
+        expect(result.imports.get(expected)).toHaveLength(1);
+      },
+    );
     it('lays down local defs with origin=local', () => {
       const a = file('a', [def('def:a.X', 'Class', 'a.X')]);
       const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));

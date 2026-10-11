@@ -80,6 +80,7 @@ jobs:
   #   3. The concurrency group key starts with `${{ github.workflow }}` or
   #      the literal `CI-` prefix (the documented ci.yml exception for
   #      reusable-workflow-safe grouping).
+  #      The two EC2 workflows share an explicit resource lock through cleanup.
   # Reusability is detected by parsing each workflow's `on:` block, not an
   # allowlist, so new reusable workflows never produce false positives.
   workflow-convention:

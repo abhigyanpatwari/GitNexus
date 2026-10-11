@@ -8,10 +8,12 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from workflow_bench import oracle_assets, runner
 from workflow_bench.evolution import evaluate_candidate
@@ -547,6 +549,140 @@ def test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert sentinel.read_text() == "ran:candidate-workspace"
+
+
+@pytest.fixture(scope="module")
+def scenario_control_base(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, dict[str, dict[str, object]]]:
+    """Use the immutable task source with the dependencies that grade it.
+
+    Release evaluation grades tasks with a toolchain built at the pinned task
+    commit. CI points GITNEXUS_ORACLE_TASK_DEPENDENCIES at that build; local runs
+    fall back to the current checkout's dependencies.
+    """
+
+    repository = Path(__file__).resolve().parents[2]
+    dependencies = Path(os.environ.get("GITNEXUS_ORACLE_TASK_DEPENDENCIES") or repository)
+    if not (dependencies / "gitnexus" / "node_modules" / ".bin" / "vitest").is_file():
+        pytest.skip("GitNexus Vitest dependencies are not installed")
+    tasks = yaml.safe_load((repository / "eval/workflow_bench/tasks.scenarios.yaml").read_text())["tasks"]
+    refs = {task["ref"] for task in tasks}
+    assert refs == {"c4ecf398de637cf779ab2238e69958cfd5d601ce"}
+    ref = next(iter(refs))
+    environment = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+    revision = subprocess.run(
+        ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
+        cwd=repository,
+        env=environment,
+        check=False,
+        capture_output=True,
+    )
+    if revision.returncode:
+        pytest.skip("pinned v1.6.12 task history is not available in this checkout")
+
+    workspace = tmp_path_factory.mktemp("oracle-controls")
+    archive = workspace / "task-base.tar"
+    with archive.open("wb") as output:
+        archived = subprocess.run(
+            [
+                "git",
+                "archive",
+                ref,
+                "gitnexus/src",
+                "gitnexus/vendor",
+                "gitnexus/package.json",
+                "gitnexus-shared/package.json",
+            ],
+            cwd=repository,
+            env=environment,
+            stdout=output,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=120,
+        )
+    if archived.returncode:
+        pytest.skip("pinned task source blobs are unavailable; fetch v1.6.12 before running oracle controls")
+    base = workspace / "base"
+    base.mkdir()
+    if not hasattr(tarfile, "data_filter"):
+        pytest.skip("oracle controls need tarfile extraction filters (Python 3.11.4+)")
+    with tarfile.open(archive) as source:
+        source.extractall(base, filter="data")
+    for relative in ("node_modules", "gitnexus/node_modules", "gitnexus-shared/dist"):
+        (base / relative).symlink_to(dependencies / relative, target_is_directory=True)
+    subprocess.run(["git", "init", "--quiet", str(base)], check=True, capture_output=True)
+    return base, {task["id"]: task for task in tasks}
+
+
+def _oracle_control_candidate(base: Path, destination: Path) -> Path:
+    shutil.copytree(base, destination, symlinks=True, ignore=shutil.ignore_patterns("vendor"))
+    (destination / "gitnexus/vendor").symlink_to(base / "gitnexus/vendor", target_is_directory=True)
+    return destination
+
+
+def _verify_shipped_oracle(candidate: Path, task: dict[str, object]) -> subprocess.CompletedProcess[str]:
+    snapshot = capture_task_oracle(task)
+    with staged_task_oracle(candidate, snapshot) as staged:
+        return subprocess.run(
+            ["/bin/sh", "-c", snapshot.command],
+            cwd=candidate,
+            env={**os.environ, oracle_assets.ORACLE_ENV_VAR: str(staged)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=180,
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="oracle controls use POSIX dependency symlinks and shell commands")
+@pytest.mark.parametrize(
+    ("task_id", "reference"),
+    [
+        ("trivial-status-json-alias", "trivial-status-json-alias"),
+        ("inv-bug-c-system-include", "inv-bug-c-system-include"),
+        ("inv-feature-list-repos-filter", "inv-feature-list-repos-filter"),
+        ("cross-module-parse-retry", "cross-module-parse-retry"),
+        ("cross-module-parse-retry", "cross-module-parse-retry-pool"),
+    ],
+)
+def test_shipped_oracles_reject_task_base_and_accept_reference_fixes(
+    tmp_path: Path,
+    scenario_control_base: tuple[Path, dict[str, dict[str, object]]],
+    task_id: str,
+    reference: str,
+) -> None:
+    base, tasks = scenario_control_base
+    candidate = _oracle_control_candidate(base, tmp_path / "candidate")
+    negative = _verify_shipped_oracle(candidate, tasks[task_id])
+    assert negative.returncode == 1, negative.stdout + negative.stderr
+    assert "AssertionError" in negative.stdout + negative.stderr
+
+    patches = Path(__file__).resolve().parents[1] / "workflow_bench/oracles/reference"
+    subprocess.run(["git", "apply", str(patches / f"{reference}.patch")], cwd=candidate, check=True)
+    positive = _verify_shipped_oracle(candidate, tasks[task_id])
+    assert positive.returncode == 0, positive.stdout + positive.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="oracle controls use POSIX dependency symlinks and shell commands")
+@pytest.mark.parametrize(
+    "reference",
+    ["cross-module-parse-retry-startup-only", "cross-module-parse-retry-pool-startup-only"],
+)
+def test_in_flight_retry_oracle_rejects_startup_only_repairs(
+    tmp_path: Path,
+    scenario_control_base: tuple[Path, dict[str, dict[str, object]]],
+    reference: str,
+) -> None:
+    base, tasks = scenario_control_base
+    candidate = _oracle_control_candidate(base, tmp_path / "candidate")
+    patches = Path(__file__).resolve().parents[1] / "workflow_bench/oracles/reference"
+    subprocess.run(["git", "apply", str(patches / f"{reference}.patch")], cwd=candidate, check=True)
+
+    rejected = _verify_shipped_oracle(candidate, tasks["cross-module-parse-retry"])
+    output = rejected.stdout + rejected.stderr
+    assert rejected.returncode == 1, output
+    assert "AssertionError" in output
+    assert "recovers the same file after two transient" in output
+    assert "stops after two retries" in output
 
 
 def test_weakened_authored_tests_cannot_produce_a_promotion_decision() -> None:

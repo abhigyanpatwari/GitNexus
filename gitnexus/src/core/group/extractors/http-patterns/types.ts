@@ -93,9 +93,7 @@ export interface HttpFileDetections {
  * compiled pattern bundles internally (see the shared scanner's
  * `runCompiledPatterns` helper).
  *
- * `language` is typed as `unknown` for the same reason as
- * `LanguagePatterns.language` in `tree-sitter-scanner.ts` — the
- * grammar modules export different shapes.
+ * `language` is the concrete grammar selected from its package exports.
  */
 /**
  * Per-repo state a plugin can build during a `prepareRepo` pass before
@@ -113,7 +111,7 @@ export interface HttpLanguagePlugin {
   /** Human-readable plugin name for diagnostics. */
   name: string;
   /** tree-sitter grammar object (passed to the shared parser). */
-  language: unknown;
+  language: Parser.Language;
   /**
    * Whether ingestion is known to emit a `Route` graph node for EVERY
    * provider route in this language (Spring/FastAPI/Laravel annotations are

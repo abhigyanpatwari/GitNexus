@@ -400,7 +400,9 @@ function closureWritesName(stmt: Parser.SyntaxNode, name: string): boolean {
  * when the block leaves `name` alone.
  */
 function bareBlockWrite(block: Parser.SyntaxNode, name: string): Binding {
-  const stmts = codeChildren(block);
+  // tree-sitter-go 0.25 exposes a statement_list between a block and its
+  // statements; older grammars put those statements directly in the block.
+  const stmts = codeChildren(block.namedChildren.find((c) => c.type === 'statement_list') ?? block);
   const declIndex = stmts.findIndex(
     (s) =>
       (s.type === 'short_var_declaration' || s.type === 'var_declaration') &&
@@ -492,6 +494,7 @@ function lookupBinding(ident: Parser.SyntaxNode, from?: Parser.SyntaxNode | null
     }
     if (
       node.type === 'block' ||
+      node.type === 'statement_list' ||
       node.type === 'expression_case' ||
       node.type === 'type_case' ||
       node.type === 'communication_case' ||

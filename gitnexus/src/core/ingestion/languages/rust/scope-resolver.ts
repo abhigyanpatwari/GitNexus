@@ -160,8 +160,8 @@ export const rustScopeResolver: ScopeResolver = {
   importEdgeReason: 'rust-scope: use',
   loadResolutionConfig: loadRustCargoTargets,
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
-    resolveRustImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) =>
+    resolveRustImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, context),
 
   mergeBindings: (existing, incoming, scopeId) => rustMergeBindings(existing, incoming, scopeId),
 

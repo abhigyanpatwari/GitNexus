@@ -95,6 +95,7 @@ Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:
   - `workflow_run` scope (e.g. `ci-report.yml`): `${{ github.workflow }}-${{ github.event.workflow_run.pull_requests[0].number || format('{0}/{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) }}` — the fork fallback must be stable across reruns (never `workflow_run.id`, which is per-run-unique and defeats serialization).
   - Global single-slot (manual dispatch utilities): `${{ github.workflow }}`
   - **Reusable workflows invoked via `workflow_call`:** do NOT use `${{ github.workflow }}` in the group key — in called-workflow context its evaluation is ambiguous and can resolve to the caller's name, which would deadlock against the caller's own group. Use a hardcoded literal prefix and a `github.event_name`-aware expression that falls through to `github.run_id` for reusable invocations (see `ci.yml` for the canonical form). Approved literal prefixes: `CI-` (`ci.yml`) and `docker-build-push-` (`docker.yml`). The `check-workflow-concurrency.py` validation script must be updated whenever a new approved literal prefix is added.
+  - **Shared EC2 resource:** `gitnexus-skill-evolution.yml` and `release-evaluation.yml` use the exact group `gitnexus-evolution-runner` with `cancel-in-progress: false`. They must serialize startup, paid work and hosted shutdown across both workflows. This exception is limited to those two files.
   - **Merge queue (`merge_group`)**: when this event is added, use `${{ github.workflow }}-${{ github.event.merge_group.head_ref }}` with `cancel-in-progress: false` (every queue entry is a distinct ref; never cancel).
 - **`cancel-in-progress` policy:**
 
@@ -155,12 +156,36 @@ Re-invoking `/autofix` after a successful apply is a safe no-op — the workflow
 
 **Sensitive paths.** The apply workflow refuses any patch that touches `.github/` (workflow files, CODEOWNERS, dependabot config). A malicious PR could ship a custom prettier or ESLint config that reformats workflow YAML; if accepted, those edits would be pushed under `contents: write` without human review. Apply formatter changes to files under `.github/` manually in a normal commit so they get the same review every other workflow change gets.
 
+### Native tree-sitter npm packages
+
+The CLI pins and bundles the native `tree-sitter` runtime and its npm grammars.
+Several compatible grammars still declare older runtime peer ranges. Root npm
+`overrides` do not propagate to consumers, and older npm versions validate bundled
+peers against their original ranges even when an override is configured. The
+lockfile therefore pins the same eight audited peers to exactly `0.25.1`.
+`gitnexus/scripts/prepare-tree-sitter-bundle.cjs` runs during `postinstall`
+and `prepack` to keep installed dependency manifests consistent with that lockfile
+and the published bundle. It leaves grammar sources and native binaries unchanged
+and rejects unexpected versions, peer ranges, or dependency layouts before writing
+any manifests. The upstream ranges remain in the script only as validation inputs;
+installed and published audited manifests require exactly `0.25.1`.
+
+When upgrading these packages, update the exact pins, lockfile, and audited peer
+list together. If regenerating the lockfile restores upstream's older peer ranges,
+restore the same audited `0.25.1` peer pins before committing it. Verify ordinary
+`npm ci` and a subsequent `npm install` complete without peer-resolution warnings.
+Run the parser, extraction, CFG, and worker tests, then use a real
+`npm pack` (including `prepack`) to test a fresh consumer's `npm install`,
+`npm ci`, `npm ls`, and a subsequent dependency install. Check native parser
+loading on the supported Node.js versions and release platforms. A successful
+install in this checkout alone does not verify the published bundle.
+
 ### Vendored tree-sitter grammars
 
 `.github/vendored-grammars.json` is the **single source of truth** for the vendored tree-sitter grammar **set** and each grammar's policy `hold` (the ones shipped from `gitnexus/vendor/<name>` rather than installed from npm). It lists each grammar's name, upstream coords (`npm` or `github`), and any `hold`. The monitor resolves upstreams from it; the readiness report keeps its own upstream-drift coords and reads vendored ABIs from `gitnexus/vendor/`. Two workflows read it:
 
 - `grammar-update-monitor.yml` (`.github/scripts/update-vendored-grammars.mjs`) — weekly; opens auto-PRs re-vendoring ABI-compatible upstream updates.
-- `tree-sitter-upgrade-readiness.yml` (`.github/scripts/check-tree-sitter-upgrade-readiness.py`) — daily; renders the tree-sitter-0.25 readiness report (issue #858), reading each vendored grammar's ABI from `gitnexus/vendor/<name>/src/parser.c`.
+- `tree-sitter-upgrade-readiness.yml` (`.github/scripts/check-tree-sitter-upgrade-readiness.py`) — daily; renders the tree-sitter compatibility-workarounds report (pack-time peer patches, intentional pins, vendored holds; issue #858), reading each vendored grammar's ABI from `gitnexus/vendor/<name>/src/parser.c`.
 
 Sharing the manifest keeps the two aligned: a consistency-guard test asserts the manifest set equals the `gitnexus/vendor/tree-sitter-*` directories. **When you vendor a new grammar (or remove one), update `.github/vendored-grammars.json` in the same change** — otherwise that guard fails CI and the readiness report regresses to `?` placeholders.
 
@@ -184,7 +209,12 @@ routes between two modes based on the triggering event:
   `gitnexus-claude-plugin/.codex-plugin/plugin.json`,
   `.agents/plugins/marketplace.json`, and the matching `CHANGELOG.md` entry in
   lockstep — the always-on `gitnexus` unit suite now fails if those manifest
-  versions drift.
+  versions drift. Stable publication also requires paired agent evidence for
+  the exact tagged commit: run **Release evaluation** from `main` with
+  `candidate_ref` set to the full commit SHA, confirm the run started and
+  passed, and push the tag within seven days. Without that evidence, npm and
+  Docker publication fail. See `eval/workflow_bench/README.md` § Release
+  evaluation.
 - **Release-candidate mode** — runs on every push to `main` (typically a
   merged PR) plus manual `workflow_dispatch`. Docs-only changes are skipped
   via `paths-ignore`. Publishes to the `rc` dist-tag with version
@@ -197,6 +227,9 @@ routes between two modes based on the triggering event:
     the cycle from `latest`.
   - `N` is auto-incremented against existing `X.Y.Z-rc.*` entries on the
     registry. First rc for a given base is `rc.1`.
+  - The RC is gated by CI, including the fixed-answer tool-accuracy check
+    (`gitnexus/bench/tool-accuracy/`); its report is attached to every
+    release. RCs do not wait for a paid agent evaluation.
   - After the npm publish succeeds, the workflow calls `docker.yml` as a
     reusable workflow to build and push the corresponding RC Docker images
     (e.g. `ghcr.io/abhigyanpatwari/gitnexus:1.7.0-rc.1`, mirrored to

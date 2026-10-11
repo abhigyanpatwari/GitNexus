@@ -26,6 +26,7 @@ from .proposer_sandbox import (
     SANDBOX_TMP,
     SANDBOX_WORKSPACE,
     SandboxError,
+    mcp_sandbox_prefix,
     redact_text,
 )
 
@@ -365,29 +366,33 @@ GITNEXUS_MUTATING_TOOLS = ("mcp__gitnexus__rename",)
 BUILTIN_AGENT_TOOLS = ("Read", "Grep", "Glob", "Edit", "Write", "Bash", "Skill")
 
 
-def sandbox_mcp_config() -> str:
-    """Credential-free MCP configuration using only the pinned harness runtime."""
+def sandbox_mcp_config(*, unsafe_host: bool = False) -> str:
+    """Launch the pinned MCP runtime behind its own read-only boundary.
+
+    The explicitly unsafe diagnostic backend retains its credential-free host
+    launch; it cannot establish nested namespaces or produce release evidence.
+    """
 
     entrypoint = PurePosixPath(SANDBOX_GITNEXUS_ENTRYPOINT)
     workspace = PurePosixPath(SANDBOX_WORKSPACE)
     if not entrypoint.is_absolute() or entrypoint == workspace or workspace in entrypoint.parents:
         raise SandboxError(f"GitNexus MCP executable must stay outside {SANDBOX_WORKSPACE}")
 
+    prefix = mcp_sandbox_prefix() if not unsafe_host else [
+        "/usr/bin/env", "-i",
+        f"HOME={SANDBOX_HOME}", f"TMPDIR={SANDBOX_TMP}",
+        f"GITNEXUS_HOME={SANDBOX_GITNEXUS_REGISTRY}",
+        f"GITNEXUS_MCP_ALLOWED_REPOS={SANDBOX_WORKSPACE}",
+        f"GITNEXUS_MCP_DEFAULT_REPO={SANDBOX_WORKSPACE}",
+        "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "GIT_TERMINAL_PROMPT=0",
+    ]
     config = {
         "mcpServers": {
             "gitnexus": {
                 "type": "stdio",
-                "command": "/usr/bin/env",
+                "command": prefix[0],
                 "args": [
-                    "-i",
-                    f"HOME={SANDBOX_HOME}",
-                    f"TMPDIR={SANDBOX_TMP}",
-                    f"GITNEXUS_HOME={SANDBOX_GITNEXUS_REGISTRY}",
-                    f"GITNEXUS_MCP_ALLOWED_REPOS={SANDBOX_WORKSPACE}",
-                    f"GITNEXUS_MCP_DEFAULT_REPO={SANDBOX_WORKSPACE}",
-                    "PATH=/usr/local/bin:/usr/bin:/bin",
-                    "LANG=C.UTF-8",
-                    "GIT_TERMINAL_PROMPT=0",
+                    *prefix[1:],
                     SANDBOX_NODE,
                     SANDBOX_GITNEXUS_ENTRYPOINT,
                     "mcp",
@@ -404,11 +409,12 @@ def allowed_agent_tools(
     include_mcp: bool = True,
     allow_edit: bool = True,
 ) -> list[str]:
+    # Retain the caller parameter for compatibility; all MCP phases are
+    # read-only so only the agent's own tools can author credited changes.
+    del implementation
     tools = [tool for tool in BUILTIN_AGENT_TOOLS if allow_edit or tool != "Edit"]
     if include_mcp:
         tools.extend(GITNEXUS_READ_ONLY_TOOLS)
-    if include_mcp and implementation:
-        tools.extend(GITNEXUS_MUTATING_TOOLS)
     return tools
 
 
@@ -627,7 +633,6 @@ def run_claude(
     expected_skill: str | None = None,
     command_prefix: list[str] | None = None,
     require_pid_namespace: bool = False,
-    bare: bool = False,
     settings_json: str | None = None,
     strict_mcp_config: bool = False,
     allowed_tools: list[str] | None = None,
@@ -658,8 +663,6 @@ def run_claude(
         "stream-json",
         "--verbose",
     ]
-    if bare:
-        cmd.append("--bare")
     for plugin_dir in plugin_dirs:
         cmd += ["--plugin-dir", plugin_dir]
     if settings_json is not None:
@@ -667,13 +670,11 @@ def run_claude(
     if strict_mcp_config:
         cmd += ["--strict-mcp-config", "--mcp-config", mcp_config_json or '{"mcpServers":{}}']
     if allowed_tools:
-        # --bare's own hard-coded Bash/Edit/Read ceiling already scopes bare
-        # sessions; outside --bare the built-in toolset defaults to
-        # everything (subagents, WebFetch, Task, ...), so --tools is needed
-        # to actually restrict it — --allowedTools only pre-approves within
-        # whatever set is available, it does not narrow that set.
-        if not bare:
-            cmd += ["--tools", *allowed_tools]
+        # The built-in toolset defaults to everything (subagents, WebFetch,
+        # Task, ...), so --tools is needed to actually restrict it --
+        # --allowedTools only pre-approves within whatever set is available,
+        # it does not narrow that set.
+        cmd += ["--tools", *allowed_tools]
         cmd += ["--allowedTools", *allowed_tools]
     if disable_slash_commands:
         cmd.append("--disable-slash-commands")

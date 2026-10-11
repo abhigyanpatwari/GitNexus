@@ -413,6 +413,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         let scopeFilePaths: Set<string>;
         let contents: Map<string, string>;
         if (provider.collectScopeContextPaths !== undefined) {
+          // Context hooks consume worker facts too. Load primary records before
+          // the hook, or a disk-backed run needlessly re-extracts those files.
+          await loadStoreFor(new Set(primaryFilePaths));
           // Context-expanding providers (e.g. Vue) need every primary file's
           // source up front for the closure hook, so load it all.
           const entryFileContents = await readFileContents(ctx.repoPath, primaryFilePaths);
@@ -427,7 +430,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           const extraPaths = [...scopeFilePaths].filter((p) => !entryFileContents.has(p));
           const extraContents = await readFileContents(ctx.repoPath, extraPaths);
           contents = new Map([...entryFileContents, ...extraContents]);
-          await loadStoreFor(scopeFilePaths);
+          await loadStoreFor(new Set(extraPaths));
         } else {
           scopeFilePaths = new Set(primaryFilePaths);
           await loadStoreFor(scopeFilePaths);

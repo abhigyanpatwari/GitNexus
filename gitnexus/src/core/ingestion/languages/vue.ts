@@ -2,7 +2,7 @@
  * Vue language provider.
  *
  * Vue SFCs are preprocessed by extracting the <script> / <script setup>
- * block content, which is then parsed as TypeScript. This provider reuses
+ * block content, which is then parsed as TypeScript or TSX. This provider reuses
  * nearly all TypeScript infrastructure — queries, type config, field
  * extraction, and named binding extraction.
  *
@@ -37,6 +37,7 @@ import {
   resolveTsImportTarget,
 } from './typescript/index.js';
 import { emitVueScopeCaptures } from './vue/captures.js';
+import { getTsParser } from './typescript/query.js';
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 
 const VUE_SPECIFIC_BUILT_INS = [
@@ -89,13 +90,14 @@ export const vueProvider = defineLanguage({
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: vueClassExtractor,
   builtInNames: VUE_BUILT_INS,
-  // Vue SFC <script> blocks are extracted and parsed with the TypeScript
-  // grammar (parse-worker GRAMMAR_BY_LANGUAGE[Vue] = TypeScript.typescript),
+  // Vue SFC <script> blocks use the TypeScript or TSX grammar,
   // so the TS CFG visitor builds CFGs for the script's functions verbatim —
   // no Vue-specific visitor needed (#2195).
   cfgVisitor: createTypeScriptCfgVisitor(),
   // Scope-resolution pipeline hooks (RFC #909 Ring 3)
   emitScopeCaptures: emitVueScopeCaptures,
+  selectEmbeddedGrammar: (lang) =>
+    getTsParser(lang === 'jsx' || lang === 'tsx' ? 'embedded.tsx' : 'embedded.ts').getLanguage(),
   interpretImport: interpretTsImport,
   interpretTypeBinding: interpretTsTypeBinding,
   bindingScopeFor: tsBindingScopeFor,

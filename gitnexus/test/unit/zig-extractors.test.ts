@@ -9,7 +9,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
-import { SupportedLanguages, type BindingRef, type SymbolDefinition } from 'gitnexus-shared';
+import {
+  SupportedLanguages,
+  lookupLexicalName,
+  type BindingRef,
+  type SymbolDefinition,
+} from 'gitnexus-shared';
 import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
@@ -935,12 +940,14 @@ pub fn f() !void {
         localName: '@import("dump.zig")',
         importedName: 'dump',
         targetRaw: 'dump.zig',
+        bindsAtLexicalScope: true,
       },
       {
         kind: 'namespace',
         localName: '@import("../id.zig")',
         importedName: 'id',
         targetRaw: '../id.zig',
+        bindsAtLexicalScope: true,
       },
       { kind: 'side-effect', targetRaw: 'x.zig' },
     ]);
@@ -1300,6 +1307,20 @@ pub fn helper() u32 { return 1; }
       expect(isZigTypeShadowingBinding(nsDecl)).toBe(false);
     });
 
+    it('selects the file Struct through its @This() lexical claim', () => {
+      const parsed = extractScopes(
+        emitZigScopeCaptures(FILE_STRUCT, 'src/Page.zig'),
+        'src/Page.zig',
+        zigProvider,
+      );
+      const selected = lookupLexicalName(parsed.moduleScope, 'Page', {
+        scopes: { getScope: (id) => parsed.scopes.find((scope) => scope.id === id) },
+      });
+      expect(selected.status).toBe('resolved');
+      expect(selected.bindings.map((binding) => binding.def.type)).toEqual(['Struct']);
+      expect(selected.bindings[0]?.def.filePath).toBe('src/Page.zig');
+    });
+
     it('rewrites @This() aliases in type position to the container name (`self: *SigHandler` in Sighandler.zig, nested `Self`)', () => {
       const src = `
 const SigHandler = @This();
@@ -1350,9 +1371,8 @@ fn f() void {
         ['hidden', false], // no `pub`
         ['ns', false],
         ['Bar', true], // pub alias of a namespace member
-        // fn-local: binds locally under its per-callable key (`Local$f`, see
-        // `zigFunctionLocalImportKey` — review 8.9), publishes nothing
-        ['Local$f', false],
+        // Function-local names keep their spelling and bind in their block.
+        ['Local', false],
       ]);
     });
 
@@ -1953,7 +1973,7 @@ pub const B = struct {
     ]);
   });
 
-  it('8.9 — a fn-local `@import` binding and its uses are keyed per callable', () => {
+  it('8.9 — local imports keep source names in distinct lexical scopes', () => {
     const src = `
 const std = @import("std");
 fn f_sib_a() void {
@@ -1971,17 +1991,25 @@ fn f_sib_b() void {
     const importNames = matches
       .filter((m) => m['@import.statement'] !== undefined && m['@import.imported'] === undefined)
       .map((m) => m['@import.name']!.text);
-    // The module-level handle is untouched; each fn-local `m` gets its own key.
-    expect(importNames).toEqual(['std', 'm$f_sib_a', 'm$f_sib_b']);
+    expect(importNames).toEqual(['std', 'm', 'm']);
     const receivers = matches
       .filter((m) => m['@reference.receiver'] !== undefined)
       .map((m) => `${m['@reference.receiver']!.text}.${m['@reference.name']!.text}`);
-    expect(receivers).toEqual(['m$f_sib_a.Thing', 't.go', 'm$f_sib_a.hello', 'm$f_sib_b.hello']);
-    // The constructor type binding follows the same key.
+    expect(receivers).toEqual(['m.Thing', 't.go', 'm.hello', 'm.hello']);
     const tBinding = matches.find(
       (m) => m['@type-binding.constructor'] !== undefined && m['@type-binding.name']?.text === 't',
     );
-    expect(tBinding?.['@type-binding.type']?.text).toBe('m$f_sib_a.Thing');
+    expect(tBinding?.['@type-binding.type']?.text).toBe('m.Thing');
+    const parsed = extractScopes(matches, 'src/main.zig', zigProvider);
+    const imports = parsed.parsedImports.filter(
+      (i) => i.kind === 'namespace' && i.localName === 'm',
+    );
+    expect(imports.map((i) => i.targetRaw)).toEqual(['qa.zig', 'qb.zig']);
+    expect(new Set(imports.map((i) => i.declaredAtScope)).size).toBe(2);
+    expect(imports.every((i) => i.bindsAtLexicalScope === true)).toBe(true);
+    expect(
+      imports.every((i) => parsed.scopes.find((s) => s.id === i.declaredAtScope)?.kind === 'Block'),
+    ).toBe(true);
     // The string literal inside `@import("m.zig")` is never touched.
     const inString = emitZigScopeCaptures(
       'fn g() void {\n    const m = @import("m.zig");\n    m.run();\n}\n',

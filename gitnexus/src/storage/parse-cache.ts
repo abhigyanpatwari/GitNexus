@@ -838,7 +838,27 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v131 (#3504): Python namespace imports retain explicit alias syntax. Warm
 // v130 ParsedFiles lack this fact and can bind a root-spelled alias to the
 // package root instead of the imported module.
-// v132: R provider fixes, collapsed into one bump because none of them has
+// v132 (#3487, #3505): merge the parallel Express route capture changes.
+// Require semantic handler arguments, retain route(path) builders, and preserve
+// app.all as method-agnostic. Both branches used v131 for different captures,
+// so invalidate either branch's cache before reusing the combined schema.
+// v133 (#3505): route(path) builders emit only chained verb registrations
+// with semantic handler arguments. Warm v132 caches can retain phantom GET
+// routes for bare builders and lose the actual methods of chained handlers.
+// v134: lexical local-import ownership, activation, lookup positions and
+// provider side-channel facts now survive worker transport and durable reuse.
+// Explicit JS/JSX embedded scripts retain their provider capture semantics.
+// Invalidate both stores together: v133 can replay file-wide import ownership
+// or TypeScript captures for an explicitly JavaScript embedded script.
+// v135: review fixes retain unambiguous conditional Python imports and ordinary
+// mutable TS/JS type facts, and preserve unchanged destructured CJS re-exports.
+// v134 stores contain the old blocked claims and must be extracted again.
+// v136: Python parameter annotations retain enclosing lookup ownership; Vue
+// JSX/TSX captures and multi-block declarations retain their source grammar
+// and original graph positions. Both stores must re-extract v135 captures.
+// v137: Python module-accessor syntax proofs and exact assigned-call provenance
+// join the existing subtype capture payload. Re-extract v136 in both stores.
+// v138: R provider fixes, collapsed into one bump because none of them has
 // shipped. R scope queries anchor a `@scope.function` on every named-function
 // assignment and named function-valued argument (the same nodes the
 // `@declaration.function`/`@declaration.method` anchors use), so each def is
@@ -856,7 +876,7 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // facts replayed verbatim from the warm cache, so stale ones (the pre-fix scope
 // tree, the unqualified call-site shape, the mis-selected arguments) would
 // persist on unchanged files; both stores must re-extract.
-const SCHEMA_BUMP = 132;
+const SCHEMA_BUMP = 138;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -1065,7 +1085,7 @@ export const computeChunkHash = (
   // default-cap runs share a key. The emit-time edge cap is deliberately
   // absent — see the PdgCacheKey doc comment.
   //
-  // NAMESPACE VERSION (`pdg:5`): bumped when the worker-emitted
+  // NAMESPACE VERSION (`pdg:6`): bumped when the worker-emitted
   // `cfgSideChannel` SHAPE changes for pdg-mode runs only — pdg:1→2 in #2083
   // M3 U1 (TsHarvester emits taint `sites` on StatementFacts); pdg:2→3 in the
   // #2227 follow-up U1 (every C-family / TS harvester now stamps the call-site
@@ -1085,7 +1105,9 @@ export const computeChunkHash = (
   // byte-identical, so non-pdg users pay nothing. Deliberately NOT a SCHEMA_BUMP —
   // that gates the whole cache version and would force a full cold re-parse on
   // EVERY user (the M1 bump comment above records that cost).
-  const ns = `pdg:5;maxFn=${opts.maxFunctionLines ?? 'def'}`;
+  // pdg:5→6 preserves parse-buffer call anchors when embedded graph lines are
+  // remapped, restoring the exact-position resolved-callee join (#3532).
+  const ns = `pdg:6;maxFn=${opts.maxFunctionLines ?? 'def'}`;
   return sha256Hex(`${ns}\n${joined}`);
 };
 

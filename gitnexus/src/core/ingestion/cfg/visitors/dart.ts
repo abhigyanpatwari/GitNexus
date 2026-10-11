@@ -52,10 +52,9 @@
  *    (`break [label] ;`), `continue_statement` (`continue [label] ;`),
  *    `throw_expression` (in an `expression_statement`), `rethrow_expression`
  *    (`rethrow ;`), `assert_statement` (`assert ( … ) ;` — may throw).
- *  - a labeled LOOP (`outer: for …`) parses as a stray `ERROR [identifier :]`
- *    SIBLING immediately before the `for_statement` (tree-sitter-dart does not
- *    model a statement label outside a switch); the visitor reads that ERROR
- *    sibling as a pending label, so `break outer` still resolves.
+ *  - `labeled_statement` wraps a label and its statement. Nested labels name
+ *    the same loop/switch frame, or a labeled block's exit. An ERROR-sibling
+ *    recovery path remains for older or malformed label syntax.
  *
  * Edge-kind contract (matches the existing visitors — RD/CDG consume these):
  *  - if / else → `cond-true` / `cond-false`
@@ -143,6 +142,7 @@ const CONTROL_FLOW_TYPES = new Set([
   'break_statement',
   'continue_statement',
   'assert_statement',
+  'labeled_statement',
 ]);
 
 /** Comment node types tree-sitter-dart surfaces. */
@@ -282,6 +282,33 @@ class DartCfgWalk {
     if (isThrowStatement(stmt)) return this.visitThrow(stmt);
     if (isRethrowStatement(stmt)) return this.visitRethrow(stmt);
     switch (stmt.type) {
+      case 'labeled_statement': {
+        // Upstream now wraps labels and their statement. Collect nested labels
+        // before dispatch so each one names the same loop/switch or block.
+        const labels = this.takeLabels();
+        let body: SyntaxNode | undefined = stmt;
+        while (body?.type === 'labeled_statement') {
+          const children = body.namedChildren;
+          const label = children.find((child) => child.type === 'identifier');
+          if (label) labels.push(label.text);
+          body = children.find((child) => child.id !== label?.id && !isComment(child));
+        }
+        if (!body) return null;
+        if (
+          ['for_statement', 'while_statement', 'do_statement', 'switch_statement'].includes(
+            body.type,
+          )
+        ) {
+          this.pendingLabels = labels;
+          return this.visitStmt(body);
+        }
+        const join = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
+        this.cfc.pushLabeledBlock(join, labels);
+        const result = this.visitStmt(body);
+        this.cfc.pop();
+        if (result) this.builder.connect(result.exits, join, 'seq');
+        return { entry: result?.entry ?? join, exits: [join] };
+      }
       case 'local_variable_declaration': {
         // `var x = switch (v) { … }` (#2207): the value is a value-position
         // branch — model it as control flow and bind the result on the rejoin.

@@ -34,11 +34,13 @@
  * paths that refer to that same namespace object; sibling scopes are invisible.
  */
 
-import type { ParsedFile, ScopeId } from 'gitnexus-shared';
+import type { ParsedFile, ScopeId, SourcePosition, ImportEdge } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
+import { lookupNameClaim } from './walkers.js';
 
 export interface NamespaceTargetOptions {
+  readonly position?: SourcePosition;
   /** Reference scope for providers that bind imports lexically. */
   readonly inScope?: ScopeId;
   /** `ScopeResolver.namespaceReceiverPaths` for the file's language. Absent
@@ -71,7 +73,7 @@ export function collectNamespaceTargets(
       scopeIds.push(scopeId);
     }
     if (scopeId === parsed.moduleScope) break;
-    scopeId = scope?.parent ?? null;
+    scopeId = scope?.lookupPolicy?.parentScope ?? scope?.parent ?? null;
   }
 
   const addTarget = (key: string, targetFile: string): void => {
@@ -85,9 +87,54 @@ export function collectNamespaceTargets(
 
   const moduleFileExists = options?.moduleFileExists ?? ((): boolean => false);
 
+  const selectionCache = new Map<string, ReturnType<typeof lookupNameClaim>>();
+  const initialScope = options?.inScope ?? parsed.moduleScope;
+  const useClaims = scopes.scopeTree?.getScope(initialScope)?.bindings !== undefined;
+  const edgeVisible = (edge: ImportEdge): boolean => {
+    if (!useClaims) return true; // compatibility with legacy import-only index views
+    let claim = selectionCache.get(edge.localName);
+    if (claim === undefined) {
+      claim = lookupNameClaim(initialScope, edge.localName, scopes, {
+        position: options?.position,
+        purpose: 'value',
+        skipEnclosingClasses: options?.skipEnclosingClasses,
+      });
+      selectionCache.set(edge.localName, claim);
+    }
+    if (claim.imports.includes(edge)) return true;
+    // A provider may prove that a nearer import and an outer dotted path denote
+    // the same namespace object. Keep that path without admitting other names.
+    if (
+      claim.status !== 'resolved' ||
+      options?.bindingIdentity === undefined ||
+      edge.targetFile === null ||
+      edge.kind !== 'namespace'
+    )
+      return false;
+    const identity = options.bindingIdentity({
+      localName: edge.localName,
+      importPath: edge.targetExportedName,
+      targetFile: edge.targetFile,
+      explicitAlias: edge.explicitAlias,
+    });
+    return (
+      identity !== undefined &&
+      claim.imports.some(
+        (candidate) =>
+          candidate.kind === 'namespace' &&
+          candidate.targetFile !== null &&
+          options.bindingIdentity!({
+            localName: candidate.localName,
+            importPath: candidate.targetExportedName,
+            targetFile: candidate.targetFile,
+            explicitAlias: candidate.explicitAlias,
+          }) === identity,
+      )
+    );
+  };
   const claimedNames = new Map<string, string | undefined>();
   for (const id of scopeIds) {
-    const edges = scopes.imports.get(id) ?? [];
+    const edges = (scopes.imports.get(id) ?? []).filter(edgeVisible);
     const namesHere = new Map<string, string | undefined>();
     const conflictingNames = new Set<string>();
     const candidates = edges.map((edge) => {

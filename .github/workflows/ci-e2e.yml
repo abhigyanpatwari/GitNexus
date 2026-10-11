@@ -20,6 +20,9 @@ jobs:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v3
         id: filter
         with:
+          # Generated parser diffs can exceed GitHub's PR-files API limits.
+          # Use the action's local Git comparison against the PR base instead.
+          token: ''
           filters: |
             web:
               - 'gitnexus-web/**'

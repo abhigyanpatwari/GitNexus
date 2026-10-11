@@ -68,6 +68,12 @@ export type ReferenceKind =
 export type CallForm = 'free' | 'member' | 'constructor' | 'index';
 
 export interface ReferenceSite {
+  /** Graph caller for a synthesized invocation whose callable is looked up elsewhere.
+   *  Never changes lexical resolution from `inScope` (for example FastAPI Depends). */
+  readonly callerScope?: ScopeId;
+  /** Lexical lookup anchor when it differs from the reference's structural owner. */
+  readonly lookupScope?: ScopeId;
+  readonly lookupPurpose?: import('./types.js').LookupPurpose;
   /** The name being referenced (e.g., `'save'`, `'User'`, `'count'`). */
   readonly name: string;
   /**

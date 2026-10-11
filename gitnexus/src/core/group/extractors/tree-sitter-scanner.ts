@@ -35,17 +35,14 @@ export interface PatternSpec<TMeta> {
  * A set of patterns owned by one language plugin, bound to a specific
  * tree-sitter grammar.
  *
- * `language` is typed as `unknown` because tree-sitter's TypeScript
- * declarations use `any` for the grammar object, and the grammar modules
- * export different shapes (plain grammar vs. namespace with `typescript`
- * / `tsx` members). Callers pass the concrete grammar object; this
- * module forwards it to `parser.setLanguage` / `new Parser.Query`.
+ * Callers select a concrete Parser.Language from each grammar package
+ * before passing it to `parser.setLanguage` / `new Parser.Query`.
  */
 export interface LanguagePatterns<TMeta> {
   /** Human-readable plugin name for diagnostics. */
   name: string;
   /** tree-sitter grammar object. */
-  language: unknown;
+  language: Parser.Language;
   /** Patterns authored against `language`. */
   patterns: PatternSpec<TMeta>[];
 }
@@ -58,7 +55,7 @@ export interface LanguagePatterns<TMeta> {
  */
 export interface CompiledPatterns<TMeta> {
   name: string;
-  language: unknown;
+  language: Parser.Language;
   patterns: CompiledPattern<TMeta>[];
 }
 

@@ -84,7 +84,9 @@
  * declaration (the scope chain binds the name; the declaration is in the same
  * file; the index proves the name is a template family; the file has no
  * cross-file class channel to be absent from). `py-erased-grounding` pins the
- * refusal and `py-generic-grounding-mirrors`, `cpp-csharp-index-channel` and the
+ * refusal, including a compound receiver head: an unresolved import of `Mapped`
+ * blocks the unrelated workspace class throughout `m.inner.ping()` as well.
+ * `py-generic-grounding-mirrors`, `cpp-csharp-index-channel` and the
  * `-crossfile` rows pin the four shapes that would break if it were stricter.
  *
  * ── GAPS THIS FILE ONCE PINNED, NOW CLOSED ───────────────────────────────────
@@ -134,10 +136,6 @@
  *   - A C++ node id drops the namespace, so two same-named specializations in
  *     ONE file collapse to one node. `cpp-spec-lexical-shadowing` puts its two
  *     `Box<bool>` declarations in two FILES for exactly that reason.
- *   - A chain HEAD whose own type was erased still binds through the
- *     bare-identifier branch's callable-alias retry: `m.inner.ping()` where
- *     `m: Mapped[User]` resolves, while the one-segment-shallower `m.save(u)`
- *     correctly refuses. `py-erased-grounding` / `run_head_chain` pins it.
  *
  * ── THE NEGATIVE CONTROLS ─────────────────────────────────────────────────────
  *
@@ -1764,8 +1762,8 @@ def run_no_import_channel(m: Mapped[BUser], u: BUser) -> None:
       },
       {
         caller: 'run_head_chain',
-        targets: ['Method:other.py:Inner.ping#0'],
-        note: 'REMAINING WRONG EDGE, pinned at its measured value so closing it is a visible flip. `m.inner.ping()` binds the unrelated workspace `Mapped` through a route that survives the refusal, while the one-segment-shallower `m.save(u)` (`run_param`, above) correctly declines — same receiver, same declared type, one more segment. The obvious one-line guard in the bare-identifier branch (decline every retry once an erased application failed to ground) was tried and MEASURED not to close it, so the surviving route is elsewhere and this needs its own diagnosis rather than a guess. Deliberately not fixed here: a broader refusal would change chain-head resolution for every language without pinning the shape it is meant to fix.',
+        targets: [],
+        note: 'The unresolved external import of Mapped owns the name throughout compound receiver lookup. `m.inner.ping()` cannot borrow the unrelated workspace Mapped class; the same-file and no-import-channel rows retain positive controls.',
       },
       {
         caller: 'run_param',

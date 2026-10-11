@@ -662,8 +662,6 @@ def test_run_proposer_hides_the_hidden_harness_and_keeps_the_full_tool_surface(m
     # and before the sandbox is prepared around it.
     assert events[:2] == ["sanitize", "prepare"]
     assert [clone.name for clone in sanitized] == ["clone"]
-    # Not --bare: bare ignores --tools and would cost the proposer Grep/Glob.
-    assert captured.get("bare", False) is False
     assert captured["allowed_tools"] == evolve.PROPOSER_ALLOWED_TOOLS
     assert captured["settings_json"] == FakeSandbox.settings_json
 

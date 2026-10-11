@@ -563,20 +563,22 @@ describe('TypeScript export type re-export chain resolution', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
   });
 
-  it('resolves new User() through export type re-export chain to base.ts', () => {
+  it('does not resolve runtime construction through a type-only re-export chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetLabel === 'Class');
-    expect(userCtor).toBeDefined();
-    expect(userCtor!.source).toBe('main');
-    expect(userCtor!.targetFilePath).toBe('src/base.ts');
+    expect(calls.filter((c) => c.source === 'main' && c.targetLabel === 'Class')).toEqual([]);
   });
 
-  it('resolves user.save() through export type re-export chain to base.ts', () => {
+  it('does not infer receiver types from invalid type-only construction', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save');
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.source).toBe('main');
-    expect(saveCall!.targetFilePath).toBe('src/base.ts');
+    expect(calls.filter((c) => c.source === 'main')).toEqual([]);
+  });
+
+  it('resolves annotated parameter receivers through the type-only re-export chain', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'typed');
+    expect(calls.map((c) => [c.target, c.targetFilePath]).sort()).toEqual([
+      ['persist', 'src/base.ts'],
+      ['save', 'src/base.ts'],
+    ]);
   });
 });
 
@@ -1845,6 +1847,13 @@ describe('TypeScript member access iterable for-loop', () => {
         c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo'),
     );
     expect(repoSave).toBeDefined();
+  });
+
+  it('does not borrow a parameter type for a nonexistent receiver field', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((c) => c.source === 'processMissingUsers' && c.target === 'save')).toEqual(
+      [],
+    );
   });
 });
 

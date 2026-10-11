@@ -27,7 +27,11 @@ const workflowDocument = load(workflow) as {
   jobs?: Record<
     string,
     {
+      name?: string;
       environment?: unknown;
+      needs?: string | string[];
+      permissions?: Record<string, string>;
+      'runs-on'?: string | string[];
       env?: Record<string, string>;
       if?: unknown;
       'timeout-minutes'?: unknown;
@@ -57,6 +61,108 @@ function stepRun(stepName: string): string {
   const step = findStep(stepName);
   return typeof step?.run === 'string' ? step.run : '';
 }
+
+describe('dedicated runner readiness', () => {
+  it('bounds offline runner pickup from trusted hosted main before paid work', () => {
+    const check = workflowDocument.jobs?.['check-runner'];
+    expect(check?.['runs-on']).toBe('ubuntu-latest');
+    expect(check?.environment).toBe('gitnexus-evolution');
+    expect(check?.permissions).toEqual({ contents: 'read', actions: 'write' });
+    expect(check?.['timeout-minutes']).toBe(10);
+    expect(String(check?.if)).toContain("github.ref == 'refs/heads/main'");
+    expect(String(check?.if)).toContain("github.repository == 'abhigyanpatwari/GitNexus'");
+    expect(evolveJob?.needs).toEqual(['start-runner', 'check-runner', 'runner-ready']);
+    const pickup = check?.steps?.find(
+      (step) => step.name === "Verify the current run's native pickup probe",
+    );
+    expect(pickup?.run).toBe('python3 .github/scripts/evolution-runner-ready.py');
+    expect(pickup?.env).toEqual({ GH_TOKEN: '${{ github.token }}' });
+    const cancel = check?.steps?.at(-1);
+    expect(cancel?.if).toBe('failure()');
+    expect(cancel?.run).toBe(
+      'gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"',
+    );
+    const ready = workflowDocument.jobs?.['runner-ready'];
+    expect(ready?.needs).toEqual(['start-runner']);
+    expect(ready?.if).toBe(check?.if);
+    expect(ready?.permissions).toEqual({});
+    expect(ready?.steps?.some((step) => String(step.run).includes('git --version'))).toBe(true);
+    expect(String(evolveJob?.if)).toContain('inputs.runner_only != true');
+  });
+
+  it('reuses the existing credentials and schedule variables with only the historical AWS configuration', () => {
+    const release = readFileSync(
+      path.join(REPO_ROOT, '.github/workflows/release-evaluation.yml'),
+      'utf8',
+    );
+    const existingSecrets = new Set([
+      'GITNEXUS_BENCH_ANTHROPIC_API_KEY',
+      'GITNEXUS_BENCH_AUTH_TOKEN',
+      'GITNEXUS_BENCH_OPENAI_API_KEY',
+      'GITNEXUS_EVOLUTION_AWS_ROLE_ARN',
+      'GITNEXUS_EVOLUTION_EC2_INSTANCE_ID',
+      'RELEASE_APP_ID',
+      'RELEASE_APP_PRIVATE_KEY',
+    ]);
+    const existingVariables = new Set([
+      'GITNEXUS_EVOLUTION_ENABLED',
+      'GITNEXUS_EVOLUTION_WORKERS',
+      'GITNEXUS_EVOLUTION_AWS_REGION',
+      'GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC',
+    ]);
+    for (const text of [workflow, release]) {
+      for (const match of text.matchAll(/secrets\.([A-Z_][A-Z_0-9]*)/g)) {
+        expect(existingSecrets.has(match[1]), match[1]).toBe(true);
+      }
+      for (const match of text.matchAll(/vars\.([A-Z_][A-Z_0-9]*)/g)) {
+        expect(existingVariables.has(match[1]), match[1]).toBe(true);
+      }
+      expect(text).not.toContain('configure-aws-credentials');
+    }
+    for (const job of ['check-runner', 'runner-ready', 'watch-evolve-pickup']) {
+      expect(workflowDocument.jobs?.[job]?.env).toBeUndefined();
+      for (const step of workflowDocument.jobs?.[job]?.steps ?? []) {
+        expect(Object.keys(step.env ?? {}).every((key) => key === 'GH_TOKEN')).toBe(true);
+      }
+    }
+    const releaseDocument = load(release) as typeof workflowDocument;
+    expect(Object.keys(releaseDocument.jobs?.evaluate?.env ?? {}).sort()).toEqual([
+      'EFFORT',
+      'INPUT_REF',
+      'MODEL',
+    ]);
+    expect(String(releaseDocument.jobs?.evaluate?.if)).toContain(
+      "vars.GITNEXUS_EVOLUTION_ENABLED == 'true'",
+    );
+    expect(String(releaseDocument.jobs?.evaluate?.if)).toContain(
+      "vars.GITNEXUS_EVOLUTION_WORKERS == '3'",
+    );
+  });
+
+  it('watches actual paid pickup concurrently after the readiness gate', () => {
+    const watch = workflowDocument.jobs?.['watch-evolve-pickup'];
+    expect(watch?.needs).toEqual(evolveJob?.needs);
+    expect(watch?.['runs-on']).toBe('ubuntu-latest');
+    expect(watch?.environment).toBeUndefined();
+    expect(watch?.['timeout-minutes']).toBe(10);
+    expect(watch?.permissions).toEqual({ contents: 'read', actions: 'write' });
+    expect(watch?.if).toBe('inputs.runner_only != true');
+    expect(evolveJob?.needs).not.toContain('watch-evolve-pickup');
+    // The watchdog matches by job name, so a rename must update both together.
+    expect(evolveJob?.name).toBe('Propose, benchmark, and gate skill candidates');
+    expect(
+      watch?.steps?.some(
+        (step) =>
+          step.run ===
+          `python3 .github/scripts/evolution-runner-ready.py --job-name "${evolveJob?.name}"`,
+      ),
+    ).toBe(true);
+    expect(watch?.steps?.at(-1)?.if).toBe('failure()');
+    expect(watch?.steps?.at(-1)?.run).toBe(
+      'gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/cancel"',
+    );
+  });
+});
 
 // The seed step's usability check is the proposer's OWN preflight
 // (select_evidence + proposer_evidence_entries), invoked through uv. Stubbing
