@@ -2,12 +2,15 @@ import type { SymbolDefinition } from 'gitnexus-shared';
 import type { RenameIssue, RenameSemanticContext } from '../rename-provider.js';
 import { buildGraphNodeLookup } from '../scope-resolution/graph-bridge/node-lookup.js';
 import { resolveDefGraphId } from '../scope-resolution/graph-bridge/ids.js';
+import { findEnclosingClassDef } from '../scope-resolution/scope/walkers.js';
 
 export interface RenameFamilyPolicy {
   /** A possible language-level coupling; absence of proof for this pair refuses. */
   readonly matches: (left: SymbolDefinition, right: SymbolDefinition) => boolean;
   /** Validate provider syntax (visibility, staticness, signature) for a graph pair. */
   readonly canCouple?: (left: SymbolDefinition, right: SymbolDefinition) => boolean;
+  /** The provider's syntax explicitly requires this declaration to override a base member. */
+  readonly requiresBaseMember?: (member: SymbolDefinition) => boolean;
   /** Multiple declarations of one symbol, established by the provider. */
   readonly sameDeclarationGroup?: (left: SymbolDefinition, right: SymbolDefinition) => boolean;
 }
@@ -18,6 +21,27 @@ export function graphRenameFamily(
   policy: RenameFamilyPolicy,
 ): readonly SymbolDefinition[] | RenameIssue {
   const { definitions, target, graph, indexes } = context;
+  // A missing base cannot prove the absence of an override. Preserve the
+  // unresolved heritage facts, including those on a transitively indexed base.
+  const incompleteOwners = new Set<string>();
+  const derivedOwners = new Map<string, string[]>();
+  for (const site of indexes.referenceSites) {
+    if (site.kind !== 'inherits') continue;
+    const owner = findEnclosingClassDef(site.inScope, indexes);
+    if (!owner) continue;
+    const binding = context.referenceBindings.get(site);
+    if (binding?.status !== 'resolved' || binding.targetDefIds.length !== 1) {
+      incompleteOwners.add(owner.nodeId);
+      continue;
+    }
+    const baseId = binding.targetDefIds[0]!;
+    const derived = derivedOwners.get(baseId) ?? [];
+    derived.push(owner.nodeId);
+    derivedOwners.set(baseId, derived);
+  }
+  for (const ownerId of incompleteOwners) {
+    for (const derivedId of derivedOwners.get(ownerId) ?? []) incompleteOwners.add(derivedId);
+  }
   const lookup = buildGraphNodeLookup(graph);
   const graphDefs = new Map<string, SymbolDefinition[]>();
   for (const def of definitions) {
@@ -79,9 +103,24 @@ export function graphRenameFamily(
     indexes.methodDispatch.mroFor(right).includes(left) ||
     indexes.methodDispatch.implementorsOf(left).includes(right) ||
     indexes.methodDispatch.implementorsOf(right).includes(left);
+  const overridingMembers = new Set(
+    pairs
+      .filter(([member, base]) => member.ownerId !== base.ownerId)
+      .map(([member]) => member.nodeId),
+  );
   for (const member of selected.values()) {
     if (uncertain.has(member.nodeId)) return incompleteFamily();
+    if (policy.requiresBaseMember?.(member) && !overridingMembers.has(member.nodeId))
+      return incompleteFamily();
     if (!member.ownerId) continue;
+    if (
+      policy.matches(member, member) &&
+      (!policy.canCouple || policy.canCouple(member, member)) &&
+      [member.ownerId, ...indexes.methodDispatch.mroFor(member.ownerId)].some((ownerId) =>
+        incompleteOwners.has(ownerId),
+      )
+    )
+      return incompleteFamily();
     for (const candidate of definitions) {
       if (
         selected.has(candidate.nodeId) ||

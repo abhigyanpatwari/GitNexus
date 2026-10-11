@@ -59,7 +59,9 @@ function fixture(edge: boolean) {
     definitions,
     graph,
     target: definitions[2]!,
+    referenceBindings: new Map(),
     indexes: {
+      referenceSites: [],
       methodDispatch: {
         mroFor: (id: string) => (id === definitions[1]!.nodeId ? [definitions[0]!.nodeId] : []),
         implementorsOf: () => [],

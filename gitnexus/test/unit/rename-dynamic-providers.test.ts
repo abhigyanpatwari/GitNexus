@@ -44,7 +44,7 @@ export const shared = new Root();
     [
       'computed write',
       'const root = new Root();\nroot.branch["leaf"] = { score: 12 };\n',
-      'unsupported_occurrence',
+      'ambiguous_reference',
     ],
     [
       'unknown computed write',
@@ -106,7 +106,7 @@ export const shared = new Root();
     [
       'computed',
       'const alias: OtherBranch = root.branch;\nalias["leaf"] = { score: 12 };\n',
-      'unsupported_occurrence',
+      'ambiguous_reference',
     ],
     [
       'parameter',

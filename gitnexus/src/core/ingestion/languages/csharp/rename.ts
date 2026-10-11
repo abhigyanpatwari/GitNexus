@@ -119,14 +119,19 @@ export const csharpRenameProvider: RenameProvider = {
         ?.type === 'destructor_declaration';
     const method = (def: typeof context.target) =>
       ['Method', 'Function'].includes(def.type) && !!def.ownerId;
-    const isInstance = (def: typeof context.target) =>
-      !context.files
+    const declaration = (def: typeof context.target) =>
+      context.files
         .get(def.filePath)
-        ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)
-        ?.node?.parent?.namedChildren.some(
-          (node) => node.type === 'modifier' && ['private', 'static'].includes(node.text),
-        );
+        ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)?.node?.parent;
+    const isInstance = (def: typeof context.target) =>
+      !declaration(def)?.namedChildren.some(
+        (node) => node.type === 'modifier' && ['private', 'static'].includes(node.text),
+      );
     return graphRenameFamily(context, {
+      requiresBaseMember: (def) =>
+        declaration(def)?.namedChildren.some(
+          (node) => node.type === 'modifier' && node.text === 'override',
+        ) === true,
       matches: (left, right) =>
         method(left) &&
         method(right) &&

@@ -327,6 +327,43 @@ try {
       .map(key);
   });
 
+  await capture('rename typed-parameter refusal', async () => {
+    const anchor = FIXTURE_ANCHORS.typedWriterFlushDeclaration;
+    const target = [...pipeline.graph.iterNodes()].find(
+      (node) =>
+        node.label === 'Method' &&
+        node.properties.filePath === anchor.file &&
+        node.properties.startLine === anchor.line - 1,
+    );
+    need(target, 'DeferredWriter.flush symbol missing');
+    const before = await fixtureDigest(repoPath);
+    const params = { symbol_uid: target!.id, new_name: 'flushPending' };
+    // Refusal is the expected public response; call() rejects error results.
+    const result = await backend!.callTool('rename_preview', { ...params, repo });
+    toolOutputs.push({ tool: 'rename_preview', params, result });
+    need(
+      result &&
+        result.result_version === 2 &&
+        typeof result.status === 'string' &&
+        typeof result.planning_status === 'string' &&
+        typeof result.application_status === 'string' &&
+        typeof result.code === 'string' &&
+        typeof result.applied === 'boolean' &&
+        integer(result.total_edits) &&
+        integer(result.semantic_edits) &&
+        integer(result.graph_edits) &&
+        integer(result.text_search_edits) &&
+        integer(result.files_affected) &&
+        Array.isArray(result.changes),
+      'Malformed rename refusal',
+    );
+    observations['rename.typed-parameter-refusal'] = [
+      `status=${result.status} planning=${result.planning_status} application=${result.application_status} code=${result.code}`,
+      `edits=${result.total_edits} semantic=${result.semantic_edits} graph=${result.graph_edits} text_search=${result.text_search_edits} files=${result.files_affected} applied=${result.applied} changes=${result.changes.length}`,
+      `sources=${(await fixtureDigest(repoPath)) === before ? 'unchanged' : 'changed'}`,
+    ];
+  });
+
   await capture('routes', async () => {
     const result = await call('route_map');
     need(

@@ -87,6 +87,19 @@ export interface RenameOccurrenceContext extends RenameSemanticContext {
 export interface RenameProvider {
   /** Related source providers that share this provider's resolution workspace. */
   readonly acceptsSourceProvider?: (provider: LanguageProvider, filePath: string) => boolean;
+  /**
+   * Providers whose indexed sources can refer to this language but whose bindings
+   * are not yet proven by the rename workspace. Their name inventory is refusal
+   * evidence only; it must never supply edits or inferred reference identities.
+   */
+  readonly interoperatesWithSourceProvider?: (
+    provider: LanguageProvider,
+    filePath: string,
+  ) => boolean;
+  /** Additional foreign spellings, such as generated accessor names, for refusal checks. */
+  readonly interopNames?: (name: string) => readonly string[];
+  /** Opaque source names unavailable as semantic occurrences; refusal evidence only. */
+  readonly additionalInteropNames?: (source: RenameSource) => readonly string[];
   /** Validate provider qualification after the graph bridge and source range agree. */
   readonly matchesGraphIdentity?: (context: {
     readonly definition: SymbolDefinition;

@@ -14,6 +14,16 @@ export const FIXTURE_ANCHORS = {
     text: '// close is a comment, not a reference.',
   },
   writerString: { file: 'rename/writer.ts', line: 12, text: "export const title = 'close';" },
+  typedWriterFlushDeclaration: {
+    file: 'rename/typed-writer.ts',
+    line: 2,
+    text: 'flush(): void {}',
+  },
+  typedWriterFlushCall: {
+    file: 'rename/typed-writer.ts',
+    line: 5,
+    text: 'writer.flush();',
+  },
   runGit: {
     file: 'src/security.ts',
     line: 4,
@@ -79,6 +89,16 @@ export const EXPECTATIONS = [
     issue: 3486,
     title: 'Unrelated methods and functions receive no edits',
     expected: [],
+  },
+  {
+    id: 'rename.typed-parameter-refusal',
+    issue: 3486,
+    title: 'A structural parameter receiver blocks rename without edits or source changes',
+    expected: [
+      'status=error planning=unsupported application=not_started code=ambiguous_reference',
+      'edits=0 semantic=0 graph=0 text_search=0 files=0 applied=false changes=0',
+      'sources=unchanged',
+    ],
   },
   {
     id: 'routes.production-handler',

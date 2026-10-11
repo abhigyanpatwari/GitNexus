@@ -1,4 +1,12 @@
 {
+  "ruby-accessor-dispatch/app.rb": {
+    "captureGroups": 34,
+    "digest": "9cbd09825a1c376dbba6d30132224aadf8ba0f729e4e388a114e057b25d4cdf0"
+  },
+  "ruby-accessor-dispatch/model.rb": {
+    "captureGroups": 35,
+    "digest": "8b086a53c7ce1c810db1a25b9c0013ca4d602bc0b44f0aa21b2280eaaa326420"
+  },
   "ruby-ambiguous/lib/user_handler.rb": {
     "captureGroups": 10,
     "digest": "b8a871dabb894b4b43c2efd8b4b7616b116a86041abae8cfac6a3d43b717e6e4"

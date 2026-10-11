@@ -1,7 +1,13 @@
 import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
 import type { RenameProvider, RenameSource } from '../../rename-provider.js';
 import { createTreeSitterRenameSource } from '../rename-tree-sitter.js';
-import { cNameReference, cNameRole, checkCMacroSafety, withParameterClaims } from '../c/rename.js';
+import {
+  cMacroNames,
+  cNameReference,
+  cNameRole,
+  checkCMacroSafety,
+  withParameterClaims,
+} from '../c/rename.js';
 import { callableDeclarationFamilies } from '../../scope-resolution/passes/callable-value-flow.js';
 import { buildGraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
@@ -88,6 +94,8 @@ function withCppLexicalBindings(source: RenameSource): RenameSource {
 }
 
 export const cppRenameProvider: RenameProvider = {
+  additionalInteropNames: cMacroNames,
+  interoperatesWithSourceProvider: (provider) => provider.id === SupportedLanguages.ObjectiveC,
   checkSafety: checkCMacroSafety,
   canonicalName: (name) => name.replace(/^~/, ''),
   acceptsSourceProvider: (provider) =>
@@ -173,6 +181,18 @@ export const cppRenameProvider: RenameProvider = {
       return [...selected.values()];
     }
     return graphRenameFamily(context, {
+      requiresBaseMember: (def) => {
+        const name = context.files
+          .get(def.filePath)
+          ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)?.node;
+        const declarator =
+          name?.parent?.type === 'qualified_identifier' ? name.parent.parent : name?.parent;
+        return (
+          declarator?.namedChildren.some(
+            (node) => node.type === 'virtual_specifier' && node.text === 'override',
+          ) === true
+        );
+      },
       matches: (left, right) =>
         !!left.ownerId &&
         !!right.ownerId &&

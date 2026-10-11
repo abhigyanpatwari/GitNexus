@@ -99,16 +99,22 @@ export const swiftRenameProvider: RenameProvider = {
         .get(def.filePath)
         ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)?.node?.parent
         ?.parent?.id;
-    const isInstance = (def: typeof context.target) =>
-      !context.files
+    const declaration = (def: typeof context.target) =>
+      context.files
         .get(def.filePath)
-        ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)
-        ?.node?.parent?.namedChildren.some(
-          (node) =>
-            node.type === 'modifiers' &&
-            node.children.some((child) => ['private', 'static'].includes(child.text)),
-        );
+        ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)?.node?.parent;
+    const isInstance = (def: typeof context.target) =>
+      !declaration(def)?.namedChildren.some(
+        (node) =>
+          node.type === 'modifiers' &&
+          node.children.some((child) => ['private', 'static'].includes(child.text)),
+      );
     return graphRenameFamily(context, {
+      requiresBaseMember: (def) =>
+        declaration(def)?.namedChildren.some(
+          (node) =>
+            node.type === 'modifiers' && node.children.some((child) => child.text === 'override'),
+        ) === true,
       matches: (left, right) =>
         method(left) &&
         method(right) &&

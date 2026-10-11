@@ -114,6 +114,17 @@ describe.each(STANDARD_SKILL_NAMES)('standard skill distribution for %s', (name)
 });
 
 describe('intended standard-skill improvements stay in every applicable copy', () => {
+  it('ships byte-identical refactoring guidance in every distribution', () => {
+    const canonical = fs.readFileSync(
+      path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus-refactoring', 'SKILL.md'),
+    );
+    const copies = standardSkillCopies('gitnexus-refactoring');
+    expect(copies).toHaveLength(4);
+    for (const file of copies) {
+      expect(fs.readFileSync(file).equals(canonical), file).toBe(true);
+    }
+  });
+
   it('documents the PDG analyze flag in every CLI copy', () => {
     for (const file of standardSkillCopies('gitnexus-cli')) {
       expect(fs.readFileSync(file, 'utf-8')).toContain('`--pdg`');
@@ -126,8 +137,8 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
-  // These copies are NOT byte-compared (only the engineering FAMILY above is),
-  // so a runner added to resolve-analyze-cmd.cjs can silently miss them. The
+  // These CLI copies are not byte-compared, so a runner added to
+  // resolve-analyze-cmd.cjs can silently miss them. The
   // audience that most needs bunx documented — a bun-only machine with no npm,
   // npx or pnpm — is exactly the one an npx/pnpm-only bootstrap line strands.
   it('documents the bunx runner and bootstrap in every CLI copy', () => {
@@ -158,9 +169,8 @@ describe('intended standard-skill improvements stay in every applicable copy', (
   // This assertion exists because its absence let real drift ship: the canonical
   // `.claude/` copy lost the UNKNOWN block while the plugin mirror kept it, and
   // this suite passed 54/54 with the two copies contradicting each other. The
-  // byte-identical check above covers only the plan/work/review/lfg family, and
-  // the fragment lists are the only guard the standard skills get — so a fragment
-  // that is not listed is a fragment nothing protects.
+  // byte-identical checks do not cover impact-analysis, so a fragment
+  // that is not listed here is a fragment nothing protects.
   it('keeps the UNKNOWN-risk guidance in every impact-analysis copy', () => {
     const required = [
       '| **Zero callers found**         | **UNKNOWN** |',
@@ -271,8 +281,8 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
-  // Same reasoning as the UNKNOWN guard above: these copies are not
-  // byte-compared, so an edit to one copy alone silently ships four
+  // Same reasoning as the UNKNOWN guard above: most of these skills are not
+  // byte-compared, so an edit to one copy alone can silently ship four
   // distributions that disagree about whether identity is required. The
   // fragments are matched against whitespace-normalized text because the
   // copies wrap the same sentences at different columns.

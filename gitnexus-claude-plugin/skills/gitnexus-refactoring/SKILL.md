@@ -114,10 +114,22 @@ Comments, strings, and unrelated same-spelled symbols are not replacements.
 `rename` remains available with `dry_run: true` (default) or explicit
 `dry_run: false`. Both use the same planner. Results use `result_version: 2`;
 `total_edits` counts occurrences, not matching lines. Exact replacements are shown in `new_text`. Separate preview and apply calls recompute the plan.
-Check `planning_status`, `application_status`, and `applied`. After a write
-failure, `changes` and counts describe only landed edits; inspect `failed_files`
-before retrying. Run the project validation suite after applying.
-Neither tool accepts `branch`: they inspect the current checkout.
+Check `planning_status`, `application_status`, and `applied`. A completed apply
+has `status: "success"`, `application_status: "applied"`, and `applied: true`.
+A successful preview has not written files. Neither tool accepts `branch`:
+they inspect the current checkout.
+
+Recover from a blocked or incomplete rename before applying again:
+
+| Result | Next step |
+| --- | --- |
+| `stale_graph` | Re-analyze the bound repository, then run `rename_preview` again. |
+| `source_changed` | Run a fresh `rename_preview` against the current source and review it. |
+| `unsupported_*` | Stop automated rename and inspect the reported limitation. Use a language-aware manual refactor if needed. |
+| Ambiguous target | Inspect the returned candidates or `context`, then preview with the chosen `symbol_uid`. |
+| `application_status: "partial"` or `"failed"` | Inspect landed `changes`, their counts, and `failed_files`. Reconcile the current files, re-index, and review a fresh preview; never blindly retry the apply call. |
+
+Run the project validation suite after applying.
 
 **impact** — map all dependents first:
 

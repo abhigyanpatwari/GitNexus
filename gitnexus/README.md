@@ -212,7 +212,7 @@ Note that the bundled Graphology path is no longer the slow option it once was: 
 
 ## MCP Tools
 
-Your AI agent gets **19 tools** (17 per-repo + 2 group) automatically:
+Your AI agent gets **20 tools** (including 2 group tools) automatically:
 
 | Tool             | What It Does                                                                                                                                      |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -223,7 +223,8 @@ Your AI agent gets **19 tools** (17 per-repo + 2 group) automatically:
 | `trace`          | Shortest directed path between two symbols (call + class-member edges)                                                                            |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes                                                                                        |
 | `check`          | Read-only structural checks against the indexed graph                                                                                             |
-| `rename`         | Multi-file coordinated rename with graph + text search                                                                                            |
+| `rename_preview` | Read-only preview of exact graph-backed semantic edits and indexed-source coverage                                                               |
+| `rename`         | Preview or apply semantic edits; unsupported or ambiguous occurrences block the rename                                                            |
 | `cypher`         | Raw Cypher graph queries                                                                                                                          |
 | `route_map`      | API route map — which components fetch which endpoints, and handlers                                                                              |
 | `tool_map`       | MCP/RPC tool definitions — where they're defined and handled                                                                                      |
@@ -236,7 +237,7 @@ Your AI agent gets **19 tools** (17 per-repo + 2 group) automatically:
 | `group_list`     | List configured repository groups                                                                                                                 |
 | `group_sync`     | Rebuild a group's Contract Registry and cross-repo links                                                                                          |
 
-> Read-only tools can omit `repo` when one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout. Otherwise—and for mutating tools with multiple indexed repos and no MCP default—specify it explicitly: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file` and `grep`, which read the checkout and do not accept `branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
+> Read-only tools can omit `repo` when one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout. Otherwise—and for mutating tools with multiple indexed repos and no MCP default—specify it explicitly: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file`, `grep`, `rename_preview`, and `rename`, which use the current checkout and do not accept `branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ## MCP Resources
 

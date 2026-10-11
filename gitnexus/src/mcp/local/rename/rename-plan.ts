@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { GraphNode } from 'gitnexus-shared';
+import { logger } from '../../../core/logger.js';
 
 export interface RenameSymbol {
   uid?: string;
@@ -297,7 +298,7 @@ export async function executeRenamePlan(
       return {
         ...result(plan.symbol, plan.new_name, landed),
         coverage: plan.coverage,
-        status: 'partial',
+        status: landed.length ? 'partial' : 'error',
         applied: landed.length > 0,
         application_status: landed.length ? 'partial' : 'failed',
         code: error instanceof RenameFailure ? error.code : 'write_failed',
@@ -333,6 +334,11 @@ export async function renameSymbol(
     const plan = await planGraphRename(repoPath, symbol, options, graphNodes, referenceFiles);
     return await executeRenamePlan(repoPath, plan, options.dry_run ?? true);
   } catch (error) {
+    if (!(error instanceof RenameFailure))
+      logger.error(
+        { err: error, symbolUid: symbol.uid, filePath: symbol.filePath },
+        'Semantic rename planning failed',
+      );
     return blocked(symbol, options.new_name, error);
   }
 }

@@ -117,6 +117,21 @@ export const dartRenameProvider: RenameProvider = {
     if (method(context.target) && !isInstance(context.target))
       return context.definitions.filter((definition) => sameMethod(context.target, definition));
     return graphRenameFamily(context, {
+      requiresBaseMember: (def) => {
+        const signature = context.files
+          .get(def.filePath)
+          ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)?.node
+          ?.parent?.parent;
+        if (signature?.type !== 'method_signature') return false;
+        for (
+          let node = signature.previousNamedSibling;
+          node?.type === 'annotation';
+          node = node.previousNamedSibling
+        ) {
+          if (node.childForFieldName('name')?.text === 'override') return true;
+        }
+        return false;
+      },
       matches: (left, right) =>
         method(left) &&
         method(right) &&

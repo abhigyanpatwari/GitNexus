@@ -1,4 +1,5 @@
 import type Parser from 'tree-sitter';
+import { SupportedLanguages } from 'gitnexus-shared';
 import type {
   Capture,
   CaptureMatch,
@@ -14,6 +15,7 @@ import type {
   RenameSource,
 } from '../../rename-provider.js';
 import { syntheticCapture } from '../../utils/ast-helpers.js';
+import { cMacroNames } from '../c/rename.js';
 import {
   createTreeSitterRenameSource,
   innermostRenameScope,
@@ -424,6 +426,9 @@ async function parseSource(
 }
 
 export const objectiveCRenameProvider: RenameProvider = {
+  additionalInteropNames: cMacroNames,
+  interoperatesWithSourceProvider: (provider) =>
+    provider.id === SupportedLanguages.C || provider.id === SupportedLanguages.CPlusPlus,
   canonicalName,
   parseSource,
   validateName(name) {

@@ -11,6 +11,7 @@ import type {
   RenameOccurrence,
   RenameOccurrenceContext,
   RenameProvider,
+  RenameSemanticContext,
   RenameSource,
 } from '../../rename-provider.js';
 import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
@@ -198,7 +199,7 @@ function hoistedVarScope(token: Parser.SyntaxNode): number | undefined {
 }
 
 function importedReceiverIsReassigned(
-  context: RenameOccurrenceContext,
+  context: RenameSemanticContext & { readonly site?: ReferenceSite },
   source: RenameSource,
   declarationId: string,
 ): boolean {
@@ -251,7 +252,7 @@ function importedReceiverIsReassigned(
 }
 
 function constructorOwner(
-  context: RenameOccurrenceContext,
+  context: RenameSemanticContext & { readonly site?: ReferenceSite },
   source: RenameSource,
   constructor: Parser.SyntaxNode | undefined,
 ): SymbolDefinition | undefined {
@@ -272,7 +273,7 @@ function constructorOwner(
 }
 
 function provesReceiverType(
-  context: RenameOccurrenceContext,
+  context: RenameSemanticContext & { readonly site?: ReferenceSite },
   constructedOwner: SymbolDefinition,
   type: TypeRef,
   position = context.site?.atRange,
@@ -321,7 +322,7 @@ function provesReceiverType(
 }
 
 function checkReceiverBinding(
-  context: RenameOccurrenceContext,
+  context: RenameSemanticContext & { readonly site?: ReferenceSite },
   name: string,
   site: Pick<ReferenceSite, 'inScope' | 'atRange'> | undefined = context.site,
 ): SymbolDefinition | RenameIssue | undefined {
@@ -404,7 +405,7 @@ function checkReceiverBinding(
 }
 
 function ownedMembers(
-  context: RenameOccurrenceContext,
+  context: RenameSemanticContext & { readonly site?: ReferenceSite },
   owner: SymbolDefinition,
   name: string,
 ): readonly SymbolDefinition[] {
@@ -641,6 +642,94 @@ function isConstantLiteralReceiver(
   );
 }
 
+/** Keys carry a member identity independently of any value or local binding. */
+function memberKey(node: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
+  if (node.type === 'pair' || node.type === 'pair_pattern')
+    return node.childForFieldName('key') ?? undefined;
+  if (node.type === 'method_definition' && node.parent?.type === 'object')
+    return node.childForFieldName('name') ?? undefined;
+  if (
+    node.type === 'shorthand_property_identifier' ||
+    node.type === 'shorthand_property_identifier_pattern'
+  )
+    return node;
+  return undefined;
+}
+
+function keyMayMatch(key: Parser.SyntaxNode, names: ReadonlySet<string>): boolean {
+  if (key.type === 'computed_property_name')
+    return !key.firstNamedChild || keyMayMatch(key.firstNamedChild, names);
+  if (key.type === 'number') return false;
+  if (key.type === 'string') return key.text.includes('\\') || names.has(key.text.slice(1, -1));
+  if (
+    key.type === 'property_identifier' ||
+    key.type === 'shorthand_property_identifier' ||
+    key.type === 'shorthand_property_identifier_pattern'
+  )
+    return names.has(canonicalTypeScriptName(key.text));
+  // A computed identifier/expression describes a runtime key, not its spelling.
+  return true;
+}
+
+function unrelatedKeyOwner(
+  context: RenameSemanticContext,
+  source: RenameSource,
+  key: Parser.SyntaxNode,
+  family: ReadonlySet<string>,
+): boolean {
+  let container = key.parent;
+  if (container?.type === 'computed_property_name') container = container.parent;
+  if (
+    ['pair', 'pair_pattern', 'method_definition', 'object_assignment_pattern'].includes(
+      container?.type ?? '',
+    )
+  )
+    container = container!.parent;
+  const parent = container?.parent;
+  let owner: SymbolDefinition | RenameIssue | undefined;
+  if (container?.type === 'object_pattern') {
+    const receiver =
+      parent?.type === 'variable_declarator'
+        ? parent.childForFieldName('value')
+        : parent?.type === 'assignment_expression'
+          ? parent.childForFieldName('right')
+          : undefined;
+    if (!receiver || !['identifier', 'this', 'super'].includes(receiver.type)) return false;
+    const inScope = innermostRenameScope(source.parsed, receiver);
+    if (!inScope) return false;
+    owner = checkReceiverBinding(context, canonicalTypeScriptName(receiver.text), {
+      inScope,
+      atRange: nodeRange(receiver),
+    });
+  } else if (
+    container?.type === 'object' &&
+    parent?.childForFieldName('value')?.id === container.id
+  ) {
+    // A direct contextual annotation can establish an independent member owner.
+    // Untyped literals and values passed through calls or aliases stay unproven.
+    const type = parent.childForFieldName('type')?.firstNamedChild;
+    const inScope = type && innermostRenameScope(source.parsed, type);
+    if (!type || type.type !== 'type_identifier' || !inScope) return false;
+    const owners = new Map(
+      lookupNameClaim(inScope, canonicalTypeScriptName(type.text), context.indexes, {
+        position: nodeRange(type),
+        purpose: 'type',
+      })
+        .bindings.filter(({ def }) => CLASS_KINDS.includes(def.type))
+        .map(({ def }) => [def.nodeId, def]),
+    );
+    if (owners.size !== 1) return false;
+    owner = owners.values().next().value;
+  }
+  if (!owner || isReceiverIssue(owner)) return false;
+  const members = ownedMembers(
+    context,
+    owner,
+    canonicalTypeScriptName(simpleQualifiedName(context.target) ?? ''),
+  );
+  return members.length > 0 && members.every((member) => !family.has(member.nodeId));
+}
+
 export const typescriptRenameProvider: RenameProvider = {
   acceptsSourceProvider: (provider) =>
     [SupportedLanguages.TypeScript, SupportedLanguages.JavaScript, SupportedLanguages.Vue].includes(
@@ -705,9 +794,27 @@ export const typescriptRenameProvider: RenameProvider = {
         (node) => node.type === 'import_statement' || node.type === 'export_statement',
       );
     if (!context.target.ownerId && !scriptGlobal) return;
+    const memberNames = new Set([
+      canonicalTypeScriptName(simpleQualifiedName(context.target) ?? ''),
+      canonicalTypeScriptName(context.newName),
+    ]);
+    let family: ReadonlySet<string> | undefined;
     for (const source of context.files.values()) {
       if (!source.tree) continue;
       for (const node of walkNamedNodes(source.tree.rootNode)) {
+        const memberName = context.target.ownerId ? memberKey(node) : undefined;
+        if (memberName && keyMayMatch(memberName, memberNames)) {
+          if (!family) {
+            const result = typescriptRenameProvider.symbolFamily!(context);
+            if ('code' in result) return result;
+            family = new Set(result.map((member) => member.nodeId));
+          }
+          if (!unrelatedKeyOwner(context, source, memberName, family))
+            return issue(
+              'An object or destructuring key has no proven unrelated member owner.',
+              'ambiguous_reference',
+            );
+        }
         if (node.type !== 'subscript_expression') continue;
         const key = node.childForFieldName('index');
         if (key?.type === 'number') continue;

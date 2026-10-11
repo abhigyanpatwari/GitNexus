@@ -1,5 +1,5 @@
 import type Parser from 'tree-sitter';
-import { CLASS_KINDS } from 'gitnexus-shared';
+import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
 import type { RenameOccurrence, RenameProvider, RenameSource } from '../../rename-provider.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
 import {
@@ -73,6 +73,15 @@ function reference(node: Parser.SyntaxNode, source: RenameSource) {
 
 export const kotlinRenameProvider: RenameProvider = {
   canonicalName,
+  interoperatesWithSourceProvider: (provider) => provider.id === SupportedLanguages.Java,
+  interopNames(name) {
+    const suffix = name[0].toUpperCase() + name.slice(1);
+    return [
+      `get${suffix}`,
+      `set${suffix}`,
+      ...(/^is[A-Z]/.test(name) ? [`set${name.slice(2)}`] : []),
+    ];
+  },
   validateName(name) {
     const canonical = canonicalName(name);
     if (
@@ -110,15 +119,21 @@ export const kotlinRenameProvider: RenameProvider = {
         .get(def.filePath)
         ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)?.node?.parent
         ?.parent?.id;
-    const isInstance = (def: typeof context.target) =>
-      !context.files
+    const declaration = (def: typeof context.target) =>
+      context.files
         .get(def.filePath)
-        ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)
-        ?.node?.parent?.namedChildren.some(
-          (node) =>
-            node.type === 'modifiers' && node.children.some((child) => child.text === 'private'),
-        );
+        ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)?.node?.parent;
+    const isInstance = (def: typeof context.target) =>
+      !declaration(def)?.namedChildren.some(
+        (node) =>
+          node.type === 'modifiers' && node.children.some((child) => child.text === 'private'),
+      );
     return graphRenameFamily(context, {
+      requiresBaseMember: (def) =>
+        declaration(def)?.namedChildren.some(
+          (node) =>
+            node.type === 'modifiers' && node.children.some((child) => child.text === 'override'),
+        ) === true,
       matches: (left, right) =>
         method(left) &&
         method(right) &&

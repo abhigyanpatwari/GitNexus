@@ -122,6 +122,52 @@ describe('exact rename plan application', () => {
     expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe('close()');
   });
 
+  it.each([{ start: -1 }, { start: 0.5 }, { length: 0 }, { length: 9 }, { old_text: 'wrong' }])(
+    'refuses invalid edit spans before any write: %j',
+    async (invalid) => {
+      const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()' });
+      Object.assign(p.edits[1], invalid);
+      for (const dryRun of [true, false]) {
+        expect(await executeRenamePlan(root, p, dryRun)).toMatchObject({
+          status: 'error',
+          code: 'invalid_edit',
+          planning_status: 'blocked',
+          application_status: 'not_started',
+          applied: false,
+          total_edits: 0,
+          files_affected: 0,
+          changes: [],
+        });
+        expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe('close()');
+        expect(await fs.readFile(path.join(root, 'b.ts'), 'utf8')).toBe('close()');
+      }
+    },
+  );
+
+  it('refuses two paths to the same physical source before any write', async () => {
+    const p = await plan({ 'a.ts': 'close()' });
+    await fs.symlink(
+      root,
+      path.join(root, 'alias'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    p.edits.push({ ...p.edits[0], file_path: 'alias/a.ts' });
+    p.snapshots.set(path.join(root, 'alias/a.ts'), 'close()');
+    for (const dryRun of [true, false]) {
+      expect(await executeRenamePlan(root, p, dryRun)).toMatchObject({
+        status: 'error',
+        code: 'duplicate_file',
+        planning_status: 'blocked',
+        application_status: 'not_started',
+        applied: false,
+        total_edits: 0,
+        files_affected: 0,
+        changes: [],
+      });
+      expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe('close()');
+    }
+  });
+
   it('accepts landed outputs while applying an ordinary multi-file plan', async () => {
     const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()' });
     expect(await executeRenamePlan(root, p, false)).toMatchObject({
@@ -148,7 +194,7 @@ describe('exact rename plan application', () => {
         if (calls++ === changeAt) await original(path.join(root, 'c.ts'), 'close();');
       });
       expect(await executeRenamePlan(root, p, false)).toMatchObject({
-        status: 'partial',
+        status: changeAt ? 'partial' : 'error',
         applied: changeAt > 0,
         application_status: changeAt ? 'partial' : 'failed',
         code: 'source_changed',
@@ -200,13 +246,13 @@ describe('exact rename plan application', () => {
     });
     const result = await executeRenamePlan(root, p, false);
     expect(result).toMatchObject({
-      status: 'partial',
+      status: failAt ? 'partial' : 'error',
       applied: failAt > 0,
       application_status: failAt ? 'partial' : 'failed',
       total_edits: failAt,
       files_affected: failAt,
     });
-    expect(result.failed_files).toContain(failAt ? 'b.ts' : 'a.ts');
+    expect(result.failed_files).toEqual(failAt ? ['b.ts'] : ['a.ts', 'b.ts']);
     expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe(
       failAt ? 'finish()' : 'close()',
     );
@@ -247,7 +293,7 @@ describe('exact rename plan application', () => {
       await original(path.join(root, 'a.ts'), 'user edit');
     });
     expect(await executeRenamePlan(root, p, false)).toMatchObject({
-      status: 'partial',
+      status: 'error',
       applied: false,
       code: 'source_changed',
       total_edits: 0,
@@ -270,7 +316,7 @@ describe('exact rename plan application', () => {
     });
 
     expect(await executeRenamePlan(root, p, false)).toMatchObject({
-      status: 'partial',
+      status: 'error',
       applied: false,
       application_status: 'failed',
       code: 'source_changed',

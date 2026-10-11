@@ -4,6 +4,7 @@ import type {
   RenameIssue,
   RenameOccurrence,
   RenameProvider,
+  RenameSemanticContext,
   RenameSource,
 } from '../../rename-provider.js';
 import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
@@ -163,6 +164,60 @@ function receiverWrite(token: Parser.SyntaxNode): boolean {
   return false;
 }
 
+function checkModuleExports(
+  context: RenameSemanticContext,
+  targetName: string,
+): RenameIssue | void {
+  const oldName = canonicalName(targetName);
+  const newName = canonicalName(context.newName);
+  for (const source of context.files.values()) {
+    // An unaliased import can publish the selected definition from another
+    // module. Unrelated modules and nested declarations do not share that name.
+    const moduleBinding = lookupNameClaim(source.parsed.moduleScope, oldName, context.indexes, {
+      purpose: 'value',
+    });
+    if (!moduleBinding.bindings.some((binding) => binding.def.nodeId === context.target.nodeId))
+      continue;
+    for (const occurrence of source.occurrences) {
+      const node = occurrence.node;
+      if (occurrence.name !== '__all__' || !node) continue;
+      const parent = node.parent;
+      if (parent?.type === 'attribute' && parent.childForFieldName('attribute')?.id === node.id)
+        continue;
+      const scope = innermostRenameScope(source.parsed, node);
+      if (!scope) continue;
+      // Class-body assignments become visible after their value is evaluated;
+      // looking up the left-hand token itself would select an outer __all__.
+      const assignment =
+        parent?.type === 'assignment' && parent.childForFieldName('left')?.id === node.id;
+      const claim = lookupNameClaim(scope, '__all__', context.indexes, {
+        position: assignment
+          ? { startLine: parent.endPosition.row + 1, startCol: parent.endPosition.column }
+          : nodeRange(node),
+        purpose: 'value',
+      });
+      if ((claim.scope?.id ?? scope) !== source.parsed.moduleScope) continue;
+      const value = parent?.childForFieldName('right');
+      if (
+        assignment &&
+        value &&
+        ['list', 'tuple'].includes(value.type) &&
+        value.namedChildren.every((item) => {
+          if (item.type === 'comment') return true;
+          const name = pythonStringLiteral(item);
+          return name !== undefined && name !== oldName && name !== newName;
+        })
+      )
+        continue;
+      // Mutations, aliases, and computed lists need a complete export-value
+      // model. Only a literal sequence with unrelated names proves safety.
+      return unsupported(
+        `A Python module export list may contain the selected symbol or its destination name: ${source.path}:${node.startPosition.row + 1}.`,
+      );
+    }
+  }
+}
+
 export const pythonRenameProvider: RenameProvider = {
   canonicalName,
   symbolFamily(context) {
@@ -192,6 +247,8 @@ export const pythonRenameProvider: RenameProvider = {
   }),
   checkSafety(context) {
     const targetName = simpleQualifiedName(context.target) ?? '';
+    const exportIssue = checkModuleExports(context, targetName);
+    if (exportIssue) return exportIssue;
     if (context.target.ownerId && targetName.startsWith('__') && !targetName.endsWith('__'))
       return unsupported(
         'A private Python member requires its mangled external spellings in the symbol family.',

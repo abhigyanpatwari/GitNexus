@@ -38,7 +38,8 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `impact`         | Symbol blast radius — what breaks at depth 1/2/3 with confidence         |
 | `trace`          | Shortest path between two symbols — "how does A reach B?" in one call     |
 | `detect_changes` | Git-diff impact — what do your current changes affect                    |
-| `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
+| `rename_preview` | Read-only preview of exact graph-backed semantic edits and coverage     |
+| `rename`         | Preview or apply semantic edits; inspect application status and failures |
 | `cypher`         | Raw graph queries (read `gitnexus://repo/{name}/schema` first)           |
 | `explain`        | Persisted taint findings — source→sink data flows (needs `analyze --pdg`) |
 | `pdg_query`      | Control/data dependence — what gates X (CDG) / where Y flows (REACHING_DEF); needs `analyze --pdg` |

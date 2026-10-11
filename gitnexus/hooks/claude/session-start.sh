@@ -30,7 +30,8 @@ This codebase is indexed by GitNexus, providing a knowledge graph with execution
 - `context` — 360-degree symbol view (categorized refs, process participation)
 - `impact` — Blast radius analysis (what breaks if you change a symbol)
 - `detect_changes` — Git-diff impact analysis (what do your changes affect)
-- `rename` — Multi-file coordinated rename with confidence tags
+- `rename_preview` — Read-only preview of exact graph-backed semantic edits and coverage
+- `rename` — Apply reviewed semantic edits with `dry_run: false`; inspect application status and failures
 - `cypher` — Raw graph queries
 - `list_repos` — Discover indexed repos
 

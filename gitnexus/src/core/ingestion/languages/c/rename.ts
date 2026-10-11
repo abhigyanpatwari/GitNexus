@@ -31,25 +31,31 @@ const names = new Set([
   'statement_identifier',
 ]);
 
+export function cMacroNames(source: RenameSource): readonly string[] {
+  const names: string[] = [];
+  if (!source.tree) return names;
+  for (const node of walkNamedNodes(source.tree.rootNode)) {
+    if (node.type !== 'preproc_arg') continue;
+    // Macro replacement lists are opaque to tree-sitter. Inventory identifiers,
+    // excluding complete literals/comments; never infer an expansion binding.
+    const tokens =
+      node.text.match(
+        /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/[^\n]*|[_\p{ID_Start}][_\p{ID_Continue}]*/gu,
+      ) ?? [];
+    names.push(...tokens.filter((token) => /^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(token)));
+  }
+  return names;
+}
+
 export function checkCMacroSafety(context: RenameSemanticContext): RenameIssue | void {
   const targetName = simpleQualifiedName(context.target);
   for (const source of context.files.values()) {
-    if (!source.tree) continue;
-    for (const node of walkNamedNodes(source.tree.rootNode)) {
-      if (node.type !== 'preproc_arg') continue;
-      // Macro replacement lists are opaque to tree-sitter. Inventory their
-      // identifier tokens, but never infer a binding or rewrite an expansion.
-      const tokens: readonly string[] =
-        node.text.match(
-          /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/[^\n]*|[_\p{ID_Start}][_\p{ID_Continue}]*/gu,
-        ) ?? [];
-      if (tokens.includes(targetName ?? ''))
-        return {
-          code: 'unsupported_occurrence',
-          status: 'unsupported',
-          message: 'A macro replacement list contains this name without a proven source binding.',
-        };
-    }
+    if (cMacroNames(source).includes(targetName ?? ''))
+      return {
+        code: 'unsupported_occurrence',
+        status: 'unsupported',
+        message: 'A macro replacement list contains this name without a proven source binding.',
+      };
   }
 }
 
@@ -180,6 +186,9 @@ const parseSource = createTreeSitterRenameSource({
 
 export const cRenameProvider: RenameProvider = {
   checkSafety: checkCMacroSafety,
+  additionalInteropNames: cMacroNames,
+  interoperatesWithSourceProvider: (provider) =>
+    provider.id === SupportedLanguages.CPlusPlus || provider.id === SupportedLanguages.ObjectiveC,
   acceptsSourceProvider: (provider, filePath) =>
     provider.id === SupportedLanguages.C ||
     (provider.id === SupportedLanguages.CPlusPlus && filePath.endsWith('.h')),

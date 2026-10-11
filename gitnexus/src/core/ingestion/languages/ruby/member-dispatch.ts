@@ -14,6 +14,12 @@ interface RubyDispatchFacts {
     readonly column: number;
     readonly singleton: boolean;
   }>;
+  readonly properties?: ReadonlyArray<{
+    readonly line: number;
+    readonly column: number;
+    readonly singleton: boolean;
+    readonly readable: boolean;
+  }>;
 }
 
 const factsByFile = new Map<string, RubyDispatchFacts>();
@@ -46,8 +52,15 @@ export function configureRubySingletonAncestors(
 /** Only plain declaration facts cross the worker boundary. */
 export function recordRubyMemberDispatch(root: SyntaxNode, filePath: string): void {
   const methods: Array<{ line: number; column: number; singleton: boolean }> = [];
+  const properties: NonNullable<RubyDispatchFacts['properties']>[number][] = [];
   walkNamedTree(root, (node) => {
-    if (node.type !== 'method' && node.type !== 'singleton_method') return;
+    const accessor = node.type === 'call' ? node.childForFieldName('method')?.text : undefined;
+    if (
+      node.type !== 'method' &&
+      node.type !== 'singleton_method' &&
+      !['attr_reader', 'attr_writer', 'attr_accessor'].includes(accessor ?? '')
+    )
+      return;
     let singleton = node.type === 'singleton_method';
     for (let parent = node.parent; parent; parent = parent.parent) {
       if (
@@ -62,13 +75,25 @@ export function recordRubyMemberDispatch(root: SyntaxNode, filePath: string): vo
         break;
       }
     }
-    methods.push({
-      line: node.startPosition.row + 1,
-      column: node.startPosition.column,
-      singleton,
-    });
+    if (accessor) {
+      for (const argument of node.childForFieldName('arguments')?.namedChildren ?? []) {
+        if (argument.type !== 'simple_symbol') continue;
+        properties.push({
+          line: argument.startPosition.row + 1,
+          column: argument.startPosition.column,
+          singleton,
+          readable: accessor !== 'attr_writer',
+        });
+      }
+    } else {
+      methods.push({
+        line: node.startPosition.row + 1,
+        column: node.startPosition.column,
+        singleton,
+      });
+    }
   });
-  factsByFile.set(filePath, { kind: 'ruby', methods });
+  factsByFile.set(filePath, { kind: 'ruby', methods, properties });
 }
 
 export function collectRubyMemberDispatch(filePath: string): RubyDispatchFacts | undefined {
@@ -82,13 +107,11 @@ export function applyRubyMemberDispatch(parsed: ParsedFile): void {
 
 export function isRubySingleton(definition: SymbolDefinition): boolean | undefined {
   const position = definitionIdPosition(definition.nodeId, definition.filePath);
-  return (
-    position &&
-    factsByFile
-      .get(definition.filePath)
-      ?.methods.find((entry) => entry.line === position.line && entry.column === position.column)
-      ?.singleton
-  );
+  const facts = factsByFile.get(definition.filePath);
+  if (!position || !facts) return undefined;
+  const atDefinition = (entry: { line: number; column: number }) =>
+    entry.line === position.line && entry.column === position.column;
+  return (facts.methods.find(atDefinition) ?? facts.properties?.find(atDefinition))?.singleton;
 }
 
 export const resolveRubyReceiverMember: NonNullable<ScopeResolver['resolveReceiverMember']> = (
@@ -135,7 +158,26 @@ export const resolveRubyReceiverMember: NonNullable<ScopeResolver['resolveReceiv
     const candidates = model.methods
       .lookupAllByOwner(ancestor.ownerId, name)
       .filter((def) => isRubySingleton(def) === ancestor.singleton);
-    if (!candidates.length) continue;
+    if (!candidates.length) {
+      // Attribute macros create methods, but ingestion stores their declarations
+      // in the field registry. Check each owner before advancing to its parent.
+      const property = model.fields.lookupAllByOwner(ancestor.ownerId, name).find((def) => {
+        const position = definitionIdPosition(def.nodeId, def.filePath);
+        const facts =
+          position &&
+          factsByFile
+            .get(def.filePath)
+            ?.properties?.find(
+              (entry) => entry.line === position.line && entry.column === position.column,
+            );
+        return facts?.singleton === ancestor.singleton && facts.readable;
+      });
+      if (property)
+        return site.arity === undefined || site.arity === 0
+          ? { kind: 'resolved', definition: property }
+          : { kind: 'ambiguous', candidateIds: [] };
+      continue;
+    }
     const compatible = narrowOverloadCandidates(candidates, site.arity, site.argumentTypes);
     return compatible.length === 1
       ? { kind: 'resolved', definition: compatible[0]! }

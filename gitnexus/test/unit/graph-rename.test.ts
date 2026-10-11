@@ -881,7 +881,7 @@ describe('graph and SemanticModel rename', () => {
 
   it('renames only the member owned by the selected graph class', async () => {
     const source =
-      'class Writer {\n close() {}\n}\nclass Other {\n close() {}\n}\nconst writer = new Writer();\nconst other = new Other();\nwriter.close();\nother.close();\nconst unrelated = { close: 1 };\n';
+      'class Writer {\n close() {}\n}\nclass Other {\n close() {}\n}\nconst writer = new Writer();\nconst other = new Other();\nwriter.close();\nother.close();\nconst unrelated: Other = { close() {} };\n';
     const file = 'model.ts';
     const nodes = await fixture(file, source, [
       {

@@ -862,7 +862,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // ownership must not reuse older capture or CFG side channels.
 // v139: real rename fixtures expose missing field/read/write chains, callable
 // scopes and declaration metadata. Re-extract both stores with provider fixes.
-const SCHEMA_BUMP = 139;
+// v140: Ruby accessor captures retain reader visibility and singleton ownership.
+// Older worker and durable captures cannot prove property-reader dispatch.
+const SCHEMA_BUMP = 140;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

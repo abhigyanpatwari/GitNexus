@@ -2548,7 +2548,7 @@ describe('LocalBackend.callTool', () => {
     expect(rename).not.toHaveBeenCalled();
   });
 
-  it('rename: a swallowed apply-edit write failure degrades to status:partial + failed_files (#2283)', async () => {
+  it('rename: a first apply-edit write failure reports status:error + failed_files (#2283)', async () => {
     // Real graph/semantic resolution produces an edit; staging its replacement fails.
     (executeParameterized as any)
       .mockResolvedValueOnce([
@@ -2591,7 +2591,7 @@ describe('LocalBackend.callTool', () => {
         new_name: 'newName',
         dry_run: false,
       });
-      expect(result.status).toBe('partial');
+      expect(result.status).toBe('error');
       expect(result.failed_files).toContain('src/target.ts');
       expect(result.applied).toBe(false);
       expect(result.total_edits).toBe(0);

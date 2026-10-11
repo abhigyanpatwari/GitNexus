@@ -102,21 +102,34 @@ Rename uses the indexed graph and GitNexus's own semantic layer. Language
 providers resolve current source through scopes and bindings; no compiler or
 language service is loaded. Unsupported syntax, ambiguous bindings, stale
 declarations, and incomplete occurrence coverage fail closed. Coverage describes
-indexed files in the target language, excluding unindexed files and external consumers.
-Unsupported constructor/inheritance families, unclassified token roles, and
-computed references are refused. Any detected computed access in the analyzed
-language scope currently blocks rename, including accesses outside edited files.
-PHP rename is unsupported until providers cover case-insensitive symbol names.
+indexed files accepted by the selected provider, including supported embedded sources,
+and excludes unindexed files and external consumers. All registered source-language
+providers supply rename rules. Declaration and override families require complete
+semantic evidence. Dynamic or computed references block a rename when the provider
+cannot resolve them or exclude them from the selected family. Provider-specific
+limits, including class renames requiring a file move, remain explicit in results.
 There is no regex fallback: legacy `graph_edits` and `text_search_edits` are zero.
 Comments, strings, and unrelated same-spelled symbols are not replacements.
 
 `rename` remains available with `dry_run: true` (default) or explicit
 `dry_run: false`. Both use the same planner. Results use `result_version: 2`;
 `total_edits` counts occurrences, not matching lines. Exact replacements are shown in `new_text`. Separate preview and apply calls recompute the plan.
-Check `planning_status`, `application_status`, and `applied`. After a write
-failure, `changes` and counts describe only landed edits; inspect `failed_files`
-before retrying. Run the project validation suite after applying.
-Neither tool accepts `branch`: they inspect the current checkout.
+Check `planning_status`, `application_status`, and `applied`. A completed apply
+has `status: "success"`, `application_status: "applied"`, and `applied: true`.
+A successful preview has not written files. Neither tool accepts `branch`:
+they inspect the current checkout.
+
+Recover from a blocked or incomplete rename before applying again:
+
+| Result | Next step |
+| --- | --- |
+| `stale_graph` | Re-analyze the bound repository, then run `rename_preview` again. |
+| `source_changed` | Run a fresh `rename_preview` against the current source and review it. |
+| `unsupported_*` | Stop automated rename and inspect the reported limitation. Use a language-aware manual refactor if needed. |
+| Ambiguous target | Inspect the returned candidates or `context`, then preview with the chosen `symbol_uid`. |
+| `application_status: "partial"` or `"failed"` | Inspect landed `changes`, their counts, and `failed_files`. Reconcile the current files, re-index, and review a fresh preview; never blindly retry the apply call. |
+
+Run the project validation suite after applying.
 
 **impact** — map all dependents first:
 
@@ -167,10 +180,10 @@ RETURN caller.name, caller.filePath ORDER BY caller.filePath
    → total: 2 (my-app, billing-api) — both define validateUser, so bind explicitly
 
 1. rename_preview({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app"})
-   → 12 semantic occurrences in the selected TypeScript project
+   → 12 semantic occurrences in the indexed repository's supported provider scope
    → Files: validator.ts, login.ts, middleware.ts...
 
-2. Review semantic spans and project coverage; inspect dynamic references separately
+2. Review semantic spans and provider coverage; inspect dynamic references separately
 
 3. rename({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app", dry_run: false})
    → Applied 12 edits across 8 files

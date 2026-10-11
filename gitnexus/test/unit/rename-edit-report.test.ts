@@ -42,7 +42,7 @@ export class Other {
 export function run() {
   const writer = new Writer();
   const other = new Other();
-  const hooks = { close: () => writer.close() }; writer.close(); other.close();
+  const hooks: Other = { close() { writer.close(); } }; writer.close(); other.close();
   // close should remain in this comment.
   const title = 'close';
   return { hooks, title };

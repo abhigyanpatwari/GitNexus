@@ -1,5 +1,5 @@
 import type Parser from 'tree-sitter';
-import { CLASS_KINDS } from 'gitnexus-shared';
+import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
 import type { RenameOccurrence, RenameProvider, RenameSource } from '../../rename-provider.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
 import {
@@ -81,6 +81,12 @@ function reference(node: Parser.SyntaxNode, source: RenameSource) {
 }
 
 export const javaRenameProvider: RenameProvider = {
+  interoperatesWithSourceProvider: (provider) => provider.id === SupportedLanguages.Kotlin,
+  interopNames(name) {
+    // Kotlin can spell a Java accessor call as a synthetic property read/write.
+    const suffix = /^(?:get|set)([A-Z].*)$/.exec(name)?.[1];
+    return suffix ? [suffix[0].toLowerCase() + suffix.slice(1), suffix, `is${suffix}`] : [];
+  },
   canonicalName,
   matchesGraphIdentity({ definition, definitions, node, graph }) {
     let name = definition.qualifiedName;
@@ -159,16 +165,29 @@ export const javaRenameProvider: RenameProvider = {
     const name = (def: typeof context.target) => canonicalName(simpleQualifiedName(def) ?? '');
     const method = (def: typeof context.target) =>
       ['Method', 'Function'].includes(def.type) && !!def.ownerId;
-    const isInstance = (def: typeof context.target) =>
-      !context.files
+    const declaration = (def: typeof context.target) =>
+      context.files
         .get(def.filePath)
-        ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)
-        ?.node?.parent?.namedChildren.some(
+        ?.occurrences.find((occurrence) => occurrence.definitionId === def.nodeId)?.node?.parent;
+    const isInstance = (def: typeof context.target) =>
+      !declaration(def)?.namedChildren.some(
+        (node) =>
+          node.type === 'modifiers' &&
+          node.children.some((child) => ['private', 'static'].includes(child.text)),
+      );
+    return graphRenameFamily(context, {
+      requiresBaseMember: (def) =>
+        declaration(def)?.namedChildren.some(
           (node) =>
             node.type === 'modifiers' &&
-            node.children.some((child) => ['private', 'static'].includes(child.text)),
-        );
-    return graphRenameFamily(context, {
+            node.namedChildren.some(
+              (child) =>
+                ['marker_annotation', 'annotation'].includes(child.type) &&
+                ['Override', 'java.lang.Override'].includes(
+                  canonicalName(child.childForFieldName('name')?.text ?? ''),
+                ),
+            ),
+        ) === true,
       matches: (left, right) =>
         method(left) &&
         method(right) &&

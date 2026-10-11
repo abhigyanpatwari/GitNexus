@@ -120,6 +120,7 @@ export async function planGraphRename(
   }
   reject(provider.validateName?.(options.new_name));
   const sourceResolvers = new Map<string, ScopeResolver>();
+  const boundarySnapshots = new Map<string, string>();
   for (const node of graphNodes) {
     if (node.label !== 'File') continue;
     const filenameProvider = getProviderForFile(node.properties.filePath);
@@ -127,19 +128,68 @@ export async function planGraphRename(
       !needsContentLanguageClassification(node.properties.filePath) &&
       (!filenameProvider ||
         (filenameProvider.id !== language &&
-          !provider.acceptsSourceProvider?.(filenameProvider, node.properties.filePath)))
+          !provider.acceptsSourceProvider?.(filenameProvider, node.properties.filePath) &&
+          !provider.interoperatesWithSourceProvider?.(filenameProvider, node.properties.filePath)))
     )
       continue;
     const sourceProvider = getProviderForFileContent(
       node.properties.filePath,
       await readSource(node.properties.filePath),
     );
+    if (!sourceProvider) continue;
     if (
-      !sourceProvider ||
-      (sourceProvider.id !== language &&
-        !provider.acceptsSourceProvider?.(sourceProvider, node.properties.filePath))
-    )
+      sourceProvider.id !== language &&
+      !provider.acceptsSourceProvider?.(sourceProvider, node.properties.filePath)
+    ) {
+      if (provider.interoperatesWithSourceProvider?.(sourceProvider, node.properties.filePath)) {
+        const filePath = node.properties.filePath;
+        const content = contents.get(filePath)!;
+        if (!content.trim()) {
+          boundarySnapshots.set(repositoryPath(repoPath, filePath), content);
+          continue;
+        }
+        const sourceResolver = SCOPE_RESOLVERS.get(sourceProvider.id);
+        const sourceRename = sourceResolver?.languageProvider.rename;
+        if (!sourceResolver || !sourceRename)
+          throw new RenameFailure(
+            'unsupported_boundary',
+            `An interoperating indexed source has no name inventory: ${filePath}`,
+            'unsupported',
+          );
+        let boundary: RenameSource;
+        try {
+          boundary = await parseSource(sourceRename, sourceResolver, filePath, content);
+        } catch {
+          throw new RenameFailure(
+            'unsupported_boundary',
+            `Cannot establish the name inventory of an interoperating indexed source: ${filePath}`,
+            'unsupported',
+          );
+        }
+        const spellings = new Set(
+          [canonical(symbol.name), canonical(options.new_name)].flatMap((name) => [
+            name,
+            ...(provider.interopNames?.(name) ?? []),
+          ]),
+        );
+        if (
+          boundary.occurrences.some((occurrence) =>
+            spellings.has(
+              sourceRename.canonicalName?.(occurrence.name, { occurrence }) ?? occurrence.name,
+            ),
+          ) ||
+          sourceRename.additionalInteropNames?.(boundary).some((name) => spellings.has(name))
+        )
+          throw new RenameFailure(
+            'unsupported_boundary',
+            `An interoperating indexed source contains the selected or replacement name without a proven binding: ${filePath}`,
+            'unsupported',
+          );
+        // Absence of names is part of the safety proof and must survive apply.
+        boundarySnapshots.set(repositoryPath(repoPath, filePath), content);
+      }
       continue;
+    }
     const sourceResolver = SCOPE_RESOLVERS.get(sourceProvider.id);
     if (!sourceResolver?.languageProvider.rename) {
       throw new RenameFailure(
@@ -164,7 +214,7 @@ export async function planGraphRename(
       'unsupported',
     );
   }
-  const snapshots = new Map<string, string>();
+  const snapshots = new Map(boundarySnapshots);
   const files = new Map<string, RenameSource>();
   for (const filePath of filePaths) {
     const absolute = repositoryPath(repoPath, filePath);
