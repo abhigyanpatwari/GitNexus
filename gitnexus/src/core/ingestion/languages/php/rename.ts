@@ -10,6 +10,8 @@ import type { RenameOccurrence, RenameProvider, RenameSource } from '../../renam
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
 import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 import { graphRenameFamily } from '../rename-family.js';
+import { extractMixedChain } from '../../utils/call-analysis.js';
+import { encodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
   createTreeSitterRenameSource,
   innermostRenameScope,
@@ -122,6 +124,10 @@ function reference(node: Parser.SyntaxNode, source: RenameSource): ReferenceSite
     parent.childForFieldName('name')?.id === node.id
   ) {
     const receiver = parent.childForFieldName('object');
+    const chain = receiver && extractMixedChain(receiver);
+    const receiverChain = chain?.baseReceiverName
+      ? encodeReceiverChain(chain.baseReceiverName, chain.chain)
+      : undefined;
     return receiver
       ? {
           name: node.text,
@@ -130,6 +136,7 @@ function reference(node: Parser.SyntaxNode, source: RenameSource): ReferenceSite
           inScope,
           kind: 'read',
           explicitReceiver: { name: receiver.text },
+          ...(receiverChain ? { receiverChain } : {}),
         }
       : undefined;
   }

@@ -157,6 +157,11 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/rename-provider-matrix.test.ts',
+  'test/integration/rename-provider-matrix-part2.test.ts',
+  'test/integration/rename-provider-matrix-part3.test.ts',
+  'test/integration/rename-provider-matrix-part4.test.ts',
+  'test/integration/pdg-explicit-owner.test.ts',
   'test/integration/skip-fts.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
   'test/integration/lbug-vector-extension.test.ts',

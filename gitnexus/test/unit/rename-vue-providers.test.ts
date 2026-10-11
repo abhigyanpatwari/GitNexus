@@ -66,6 +66,23 @@ async function expectRename(
 }
 
 describe('Vue semantic rename through the production graph pipeline', () => {
+  it('keeps custom raw blocks opaque until their exact escaped closing tag', async () => {
+    const raw =
+      '<docs.data>\nLiteral </docs.data.extra> text.\n<template>{{ target() }}</template>\n</docs.data>\n';
+    await expectRename(
+      {
+        'App.vue':
+          '<script setup>\nfunction target() {}\n</script>\n<template>{{ target() }}</template>\n' +
+          raw,
+      },
+      {
+        'App.vue':
+          '<script setup>\nfunction renamed() {}\n</script>\n<template>{{ renamed() }}</template>\n' +
+          raw,
+      },
+    );
+  }, 60_000);
+
   it.each(['target', "'target()'", '"target()"', 'target()'])(
     'renames executable CSS v-bind(%s) at original offsets',
     async (binding) => {

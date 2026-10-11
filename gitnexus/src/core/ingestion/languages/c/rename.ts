@@ -130,6 +130,47 @@ export function withParameterClaims(source: RenameSource): RenameSource {
   };
 }
 
+/** C local values enter scope after their declarator, including inside an initializer. */
+function withLocalValueClaims(source: RenameSource): RenameSource {
+  const occurrences = new Map(
+    source.occurrences
+      .filter((occurrence) => occurrence.definitionId)
+      .map((occurrence) => [occurrence.definitionId, occurrence]),
+  );
+  return {
+    ...source,
+    parsed: {
+      ...source.parsed,
+      scopes: source.parsed.scopes.map((scope) => {
+        const claims = [...(scope.nameClaims ?? [])];
+        for (const [name, bindings] of scope.bindings) {
+          for (const { origin, def } of bindings) {
+            if (origin !== 'local' || !['Variable', 'Const'].includes(def.type)) continue;
+            const occurrence = occurrences.get(def.nodeId);
+            if (!occurrence?.node) continue;
+            let declarator = occurrence.node;
+            while (
+              declarator.parent?.type.includes('declarator') &&
+              declarator.parent.type !== 'init_declarator'
+            )
+              declarator = declarator.parent;
+            const range = nodeRange(declarator);
+            claims.push({
+              name,
+              range: occurrence.range,
+              kind: 'binding',
+              purpose: 'value',
+              inactive: 'outer',
+              availableFrom: { startLine: range.endLine, startCol: range.endCol },
+            });
+          }
+        }
+        return { ...scope, nameClaims: claims };
+      }),
+    },
+  };
+}
+
 const parseSource = createTreeSitterRenameSource({
   isName: (node) => names.has(node.type),
   skip: (node) => node.type === 'comment',
@@ -158,5 +199,5 @@ export const cRenameProvider: RenameProvider = {
     if (!/^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(name) || cKeywords.has(name))
       return { code: 'invalid_name', message: 'Choose a valid nonreserved C identifier.' };
   },
-  parseSource: async (input) => withParameterClaims(await parseSource(input)),
+  parseSource: async (input) => withLocalValueClaims(withParameterClaims(await parseSource(input))),
 };

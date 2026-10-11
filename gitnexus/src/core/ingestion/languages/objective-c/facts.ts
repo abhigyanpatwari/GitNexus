@@ -10,7 +10,7 @@ import type {
 } from '../../language-provider.js';
 import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.9';
+export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.10';
 export const OBJECTIVE_C_GRAMMAR_PACKAGE = 'tree-sitter-objc';
 export const OBJECTIVE_C_GRAMMAR_VERSION = '3.0.2';
 
@@ -127,6 +127,8 @@ export interface ObjCMessageFact {
   readonly receiverType?: ObjCTypeInfo;
   /** Member name retained when its type must be resolved across files. */
   readonly receiverMemberName?: string;
+  /** Statically written property/ivar hops after the classified receiver. */
+  readonly receiverMemberPath?: readonly string[];
   readonly sourceMethodQualifiedName: string;
   readonly sourceMethodId: string;
   readonly sourceOwnerQualifiedName: string;
@@ -858,6 +860,7 @@ function classifyReceiver(
   kind: ObjCMessageFact['receiverKind'];
   type?: ObjCTypeInfo;
   memberName?: string;
+  memberPath?: readonly string[];
   unresolvedReason?: string;
 } {
   const text = receiver.text;
@@ -907,17 +910,26 @@ function classifyReceiver(
   }
 
   if (receiver.type === 'field_expression') {
-    const parts = directNamedChildren(receiver);
-    const base = parts[0];
-    const field = parts[1];
-    if (base?.text === 'self' && field !== undefined) {
-      const hostOwner =
-        method.hostClass !== undefined
-          ? objcClassQualifiedName(method.hostClass)
-          : method.ownerQualifiedName;
-      const memberType = membersByOwner.get(hostOwner)?.get(field.text);
-      if (memberType !== undefined) return { kind: 'property', type: memberType };
-      return { kind: 'property', memberName: field.text };
+    const base = receiver.childForFieldName('argument');
+    const field = receiver.childForFieldName('field');
+    if (base?.text === 'self' && field) {
+      const hostOwner = method.hostClass
+        ? objcClassQualifiedName(method.hostClass)
+        : method.ownerQualifiedName;
+      const type = membersByOwner.get(hostOwner)?.get(field.text);
+      return type ? { kind: 'property', type } : { kind: 'property', memberName: field.text };
+    }
+    if (base && field) {
+      const classified = classifyReceiver(
+        base,
+        selector,
+        method,
+        methodBindings,
+        membersByOwner,
+        macroNames,
+        classNames,
+      );
+      return { ...classified, memberPath: [...(classified.memberPath ?? []), field.text] };
     }
   }
   return {
@@ -944,7 +956,12 @@ function collectMethodMessages(
   if (methodBody)
     walkNamedTree(methodBody, (node) => {
       const field = node.type === 'field_expression' ? node.childForFieldName('field') : undefined;
-      const bare = node.type === 'identifier' && !['self', 'super'].includes(node.text);
+      // Only instance methods have an implicit instance receiver. A class
+      // method's bare C names cannot refer to an instance ivar.
+      const bare =
+        method.methodKind === '-' &&
+        node.type === 'identifier' &&
+        !['self', 'super'].includes(node.text);
       if (!field && !bare) return;
       if (
         bare &&
@@ -973,6 +990,9 @@ function collectMethodMessages(
         ...('type' in classified && classified.type ? { receiverType: classified.type } : {}),
         ...('memberName' in classified && classified.memberName
           ? { receiverMemberName: classified.memberName }
+          : {}),
+        ...('memberPath' in classified && classified.memberPath
+          ? { receiverMemberPath: classified.memberPath }
           : {}),
         sourceMethodQualifiedName: method.qualifiedName,
         sourceMethodId: method.nodeId,
@@ -1007,6 +1027,7 @@ function collectMethodMessages(
       receiverKind: classified.kind,
       ...(classified.type !== undefined ? { receiverType: classified.type } : {}),
       ...(classified.memberName !== undefined ? { receiverMemberName: classified.memberName } : {}),
+      ...(classified.memberPath !== undefined ? { receiverMemberPath: classified.memberPath } : {}),
       sourceMethodQualifiedName: method.qualifiedName,
       sourceMethodId: method.nodeId,
       sourceOwnerQualifiedName: method.ownerQualifiedName,
@@ -1727,6 +1748,15 @@ export function buildObjectiveCScopeCaptures(
   ];
 
   const seenDeclarations = new Set<string>();
+  const functionNodes = new Map<string, { declaration: SyntaxNode; name: SyntaxNode }>();
+  walkNamedTree(root, (node) => {
+    if (node.type !== 'function_definition' && node.type !== 'declaration') return;
+    for (const declarator of node.childrenForFieldName('declarator')) {
+      const name = objectiveCDeclaratorName(declarator);
+      if (name)
+        functionNodes.set(`${node.startPosition.row}:${name.text}`, { declaration: node, name });
+    }
+  });
   for (const container of facts.containers) {
     const kind = declarationCaptureKind(container.kind);
     if (kind === undefined) continue;
@@ -1746,10 +1776,94 @@ export function buildObjectiveCScopeCaptures(
 
   for (const fn of facts.functions) {
     if (!seenDeclarations.add(`function:${fn.qualifiedName}`)) continue;
-    captures.push(
-      declarationMatch('function', fn.name, fn.qualifiedName, fn.startLine, fn.endLine),
-    );
+    const source = functionNodes.get(`${fn.startLine}:${fn.name}`);
+    captures.push({
+      ...declarationMatch('function', fn.name, fn.qualifiedName, fn.startLine, fn.endLine),
+      ...(source
+        ? {
+            '@declaration.function': nodeToCapture('@declaration.function', source.declaration),
+            '@declaration.name': nodeToCapture('@declaration.name', source.name),
+          }
+        : {}),
+    });
   }
+
+  // C calls use the ordinary scope resolver, with lexical bindings preventing
+  // a parameter or function-pointer local from borrowing a global function.
+  const methodsByLocation = new Map(
+    facts.methods.map((method) => [
+      `${method.ownerQualifiedName}:${method.startLine}:${method.methodKind}:${method.selector}`,
+      method,
+    ]),
+  );
+  walkNamedTree(root, (node) => {
+    if (
+      node.type === 'function_definition' ||
+      node.type === 'method_definition' ||
+      node.type === 'block_literal'
+    ) {
+      captures.push({ '@scope.function': nodeToCapture('@scope.function', node) });
+      if (node.type === 'method_definition') {
+        let owner: ObjCContainerFact | null = null;
+        for (let parent = node.parent; parent && !owner; parent = parent.parent)
+          owner = parseContainer(parent, facts.filePath);
+        const method = methodsByLocation.get(
+          `${owner?.qualifiedName}:${node.startPosition.row}:${methodKind(node)}:${methodSelector(node)}`,
+        );
+        const name = objectiveCSelectorParts(node)[0]?.node;
+        if (method && name)
+          captures.push({
+            '@declaration.method': nodeToCapture('@declaration.method', node),
+            '@declaration.name': {
+              ...nodeToCapture('@declaration.name', name),
+              text: method.selector,
+            },
+            '@declaration.qualified_name': {
+              ...nodeToCapture('@declaration.qualified_name', name),
+              text: method.qualifiedName,
+            },
+            '@declaration.binding-name': {
+              ...nodeToCapture('@declaration.binding-name', name),
+              text: `${method.methodKind}${method.selector}`,
+            },
+          });
+      }
+    } else if (node.type === 'compound_statement')
+      captures.push({ '@scope.block': nodeToCapture('@scope.block', node) });
+    else if (
+      (node.type === 'parameter_declaration' || node.type === 'declaration') &&
+      functionInfos(node).length === 0
+    ) {
+      if (node.type === 'parameter_declaration') {
+        for (let parent = node.parent; parent; parent = parent.parent) {
+          if (parent.type === 'block_literal' || parent.type === 'function_definition') break;
+          if (parent.type === 'declaration' || parent.type === 'parameter_declaration') return;
+        }
+      }
+      for (const declarator of node.childrenForFieldName('declarator')) {
+        const name = objectiveCDeclaratorName(declarator);
+        if (name)
+          captures.push({
+            '@declaration.variable': nodeToCapture('@declaration.variable', name),
+            '@declaration.name': nodeToCapture('@declaration.name', name),
+          });
+      }
+    } else if (node.type === 'method_parameter' || node.type === 'keyword_declarator') {
+      const name = directIdentifiers(node).at(-1);
+      if (name)
+        captures.push({
+          '@declaration.variable': nodeToCapture('@declaration.variable', name),
+          '@declaration.name': nodeToCapture('@declaration.name', name),
+        });
+    } else if (node.type === 'call_expression') {
+      const callee = node.childForFieldName('function');
+      if (callee?.type === 'identifier')
+        captures.push({
+          '@reference.call.free': nodeToCapture('@reference.call.free', node),
+          '@reference.name': nodeToCapture('@reference.name', callee),
+        });
+    }
+  });
 
   for (const imp of facts.imports) {
     const anchor = captureAt('@import.statement', imp.raw, imp.startLine, imp.endLine);

@@ -324,9 +324,19 @@ class ZigCfgWalk {
     if (!condition)
       condition = this.simple(node, { line: node.startPosition.row + 1, defs: [], uses: [] });
     const join = this.empty(node);
-    const step = update ? this.visit(update) : null;
-    const continueTo = step?.entry ?? condition.entry;
     this.cleanupDepth.set(join, this.cleanup.length);
+    let step: Result = null;
+    if (update) {
+      // The continuation is inside the loop: its breaks must see this exit,
+      // including cleanup registered by a block-valued continuation.
+      const updateEntry = this.empty(update);
+      this.cleanupDepth.set(updateEntry, this.cleanup.length);
+      this.context.pushLoop(updateEntry, join, label ? [label] : []);
+      step = this.visit(update);
+      this.context.pop();
+      this.builder.edge(updateEntry, step?.entry ?? condition.entry, 'seq');
+    }
+    const continueTo = step?.entry ?? condition.entry;
     this.cleanupDepth.set(continueTo, this.cleanup.length);
     this.context.pushLoop(continueTo, join, label ? [label] : []);
     const loopBody = this.body(body, payload);

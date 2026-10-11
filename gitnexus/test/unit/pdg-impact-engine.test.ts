@@ -47,6 +47,65 @@ describe('splitCalleeIds', () => {
 });
 
 describe('runImpactPDG', () => {
+  it('classifies paragraph dependencies by seed program ownership across synthetic owner boundaries', async () => {
+    // Deliberately synthetic: the COBOL provider does not emit cross-program
+    // REACHING_DEF edges. Keep this defensive engine case in the unit layer;
+    // the integration fixture indexes real source and never manufactures edges.
+    const seed = 'BasicBlock:program.cbl:5:0:0';
+    const local = 'BasicBlock:program.cbl:5:0:1';
+    const foreign = 'BasicBlock:program.cbl:12:0:1';
+    const outer = 'Module:program.cbl:Outer';
+    const inner = 'Module:program.cbl:Inner';
+    const exec: RunPdgImpactDeps['executeParameterized'] = async (_repo, query) => {
+      if (query.includes('MATCH (a:BasicBlock) WHERE')) return [{ id: seed, ownerId: outer }];
+      if (query.includes('MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)')) {
+        return [{ id: local }, { id: foreign }];
+      }
+      if (query.includes('RETURN b.id AS id, b.ownerId AS ownerId')) {
+        return [
+          { id: local, ownerId: outer },
+          { id: foreign, ownerId: inner },
+        ];
+      }
+      if (query.includes('s.id IN $ownerIds')) {
+        return [
+          { id: outer, name: 'Outer', label: 'Module', filePath: 'program.cbl', startLine: 0 },
+          { id: inner, name: 'Inner', label: 'Module', filePath: 'program.cbl', startLine: 9 },
+        ];
+      }
+      if (query.includes('MATCH (b:BasicBlock) WHERE b.id IN $ids')) {
+        return [
+          { id: local, line: 6, text: 'DISPLAY OUTER-TOTAL', ownerId: outer },
+          { id: foreign, line: 13, text: 'DISPLAY INNER-TOTAL', ownerId: inner },
+        ];
+      }
+      return [];
+    };
+    const result = await runImpactPDG({
+      repo: { lbugPath: 'repo' },
+      sym: {
+        id: 'Function:program.cbl:Outer:main',
+        name: 'main',
+        filePath: 'program.cbl',
+        startLine: 4,
+        endLine: 6,
+      },
+      symType: 'Function',
+      direction: 'downstream',
+      maxDepth: 1,
+      limit: 50,
+      line: 5,
+      executeParameterized: exec,
+    });
+    expect(result).toMatchObject({
+      seedBlocks: [seed],
+      affectedStatements: [
+        { line: 6, scope: 'intra' },
+        { line: 13, scope: 'inter' },
+      ],
+    });
+  });
+
   it('projects an explicitly owned executable region to its graph owner', async () => {
     const seed = 'BasicBlock:program.cbl:8:0:0';
     const affected = 'BasicBlock:program.cbl:8:0:2';

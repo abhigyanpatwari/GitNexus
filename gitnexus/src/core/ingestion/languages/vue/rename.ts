@@ -32,6 +32,8 @@ function tagAt(content: string, start: number): Tag | undefined {
   const head = /^<(\/)?([A-Za-z][\w:.-]*)/.exec(content.slice(start));
   if (!head) return undefined;
   let cursor = start + head[0].length;
+  const boundary = content[cursor];
+  if (boundary !== undefined && !/[\s/>]/.test(boundary)) unsupported('Unsupported Vue tag name.');
   const attributes: Attribute[] = [];
   while (cursor < content.length) {
     while (/\s/.test(content[cursor] ?? '') && cursor < content.length) cursor++;
@@ -288,7 +290,8 @@ function projectSfc(content: string): Projection {
         cursor = tag.end;
         continue;
       }
-      const close = new RegExp(`</${tag.name.replace(/\./g, '\\.')}\\b[^>]*>`, 'ig');
+      const escapedName = tag.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const close = new RegExp(`</${escapedName}\\s*>`, 'ig');
       close.lastIndex = tag.end;
       const end = close.exec(content);
       if (!end) unsupported('Unclosed Vue raw block.');

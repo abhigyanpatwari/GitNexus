@@ -1,0 +1,43 @@
+{
+  "language": "c",
+  "description": "Rename a header prototype and external definition through a cross-file call chain; keep a shadowing parameter and literal text. C has no native class polymorphism.",
+  "categories": ["cross-file", "call-graph", "shadowing", "declaration-family"],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "api.c"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "outer",
+        "kind": "Function",
+        "file": "main.c"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "main.c"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "main.c"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "api.c"
+      }
+    }
+  ]
+}

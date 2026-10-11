@@ -1,0 +1,22 @@
+{
+  "language": "ruby",
+  "description": "Rename a public setter through a chain of return-inferred methods while preserving an unrelated setter and local binding.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "setter",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "score=",
+    "kind": "Method",
+    "file": "model.rb",
+    "startLine": 1
+  },
+  "newName": "points=",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": []
+}

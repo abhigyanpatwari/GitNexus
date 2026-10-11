@@ -6,7 +6,7 @@
  * scope-resolution types that reference it can live in the shared package
  * alongside their consumers (`gitnexus/` and `gitnexus-web/`).
  *
- * Shape is unchanged from the prior local definition.
+ * Providers add optional source and semantic metadata to this shared contract.
  */
 
 import type { NodeLabel } from '../graph/types.js';

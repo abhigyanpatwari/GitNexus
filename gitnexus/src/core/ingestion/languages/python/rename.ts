@@ -17,6 +17,9 @@ import {
 } from '../rename-tree-sitter.js';
 import { graphRenameFamily } from '../rename-family.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
+import { extractMixedChain } from '../../utils/call-analysis.js';
+import { encodeReceiverChain } from '../../utils/receiver-chain-codec.js';
+import { pythonStringLiteral } from './string-literal.js';
 
 const canonicalName = (name: string): string => name.normalize('NFKC');
 const keywords = new Set(
@@ -67,11 +70,26 @@ function bareReference(node: Parser.SyntaxNode, source: RenameSource) {
     ['function_definition', 'class_definition'].includes(parent.type)
   )
     return undefined;
-  if (parent.type === 'attribute' && parent.childForFieldName('attribute')?.id === node.id)
-    return undefined;
   const range = nodeRange(node);
   const scope = innermostRenameScope(source.parsed, node);
   if (!scope) return undefined;
+  if (parent.type === 'attribute' && parent.childForFieldName('attribute')?.id === node.id) {
+    const receiver = parent.childForFieldName('object');
+    if (!receiver) return undefined;
+    const chain = extractMixedChain(receiver);
+    const receiverChain = chain?.baseReceiverName
+      ? encodeReceiverChain(chain.baseReceiverName, chain.chain)
+      : undefined;
+    return {
+      name: canonicalName(node.text),
+      nameRange: range,
+      atRange: nodeRange(parent),
+      inScope: scope,
+      kind: 'read' as const,
+      explicitReceiver: { name: receiver.text },
+      ...(receiverChain ? { receiverChain } : {}),
+    };
+  }
   // The provider's lexical claims establish assignment/comprehension ownership.
   return {
     name: canonicalName(node.text),
@@ -202,7 +220,19 @@ export const pythonRenameProvider: RenameProvider = {
           )
         )
           continue;
-        const receiver = node.childForFieldName('arguments')?.firstNamedChild;
+        const args = node
+          .childForFieldName('arguments')
+          ?.namedChildren.filter((child) => child.type !== 'comment');
+        const attribute = args?.[1] && pythonStringLiteral(args[1]);
+        // Runtime attribute strings are exact; Python only normalizes identifiers.
+        // The destination name can collide with an existing dynamic attribute.
+        if (
+          attribute !== undefined &&
+          attribute !== canonicalName(targetName) &&
+          attribute !== canonicalName(context.newName)
+        )
+          continue;
+        const receiver = args?.[0];
         if (!receiver) continue;
         const scope = innermostRenameScope(source.parsed, receiver);
         const claim =
@@ -218,7 +248,9 @@ export const pythonRenameProvider: RenameProvider = {
           purpose: 'type',
         }).bindings;
         if (!owners.length || owners.some((owner) => owner.def.nodeId === context.target.ownerId))
-          return unsupported('Dynamic attribute access may denote the selected member.');
+          return unsupported(
+            'Dynamic attribute access may denote the selected member or its destination name.',
+          );
       }
     }
   },

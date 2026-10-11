@@ -9,9 +9,8 @@ import {
   nodeRange,
 } from '../rename-tree-sitter.js';
 import { graphRenameFamily } from '../rename-family.js';
+import { canonicalName } from './identifiers.js';
 
-const canonicalName = (name: string): string =>
-  name.startsWith('`') && name.endsWith('`') ? name.slice(1, -1) : name;
 const names = new Set(['simple_identifier', 'type_identifier']);
 const keywords = new Set(
   'associatedtype class deinit enum extension fileprivate func import init inout internal let open operator private precedencegroup protocol public rethrows static struct subscript typealias var break case continue default defer do else fallthrough for guard if in repeat return switch where while as Any catch false is nil super self Self throw throws true try'.split(

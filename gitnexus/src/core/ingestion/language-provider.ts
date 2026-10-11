@@ -411,6 +411,9 @@ interface LanguageProviderConfig {
     ancestorNode: SyntaxNode,
   ) => { funcName: string; label: NodeLabel } | null;
 
+  /** Free functions have distinct graph identities for each callable signature. */
+  readonly overloadsFreeFunctions?: boolean;
+
   // ── Template constraint extraction (SFINAE / `requires`) ────────────
   /**
    * Extract a per-language template-constraint payload for a templated

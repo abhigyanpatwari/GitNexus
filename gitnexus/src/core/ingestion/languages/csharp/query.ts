@@ -133,11 +133,12 @@ const CSHARP_SCOPE_QUERY = `
 (indexer_declaration) @declaration.property
 
 ;; Fields — \`int x;\` at class scope. variable_declarator inside
-;; field_declaration carries the name.
+;; field_declaration carries the name. Fields are addressable members, like
+;; properties; local variables remain lexical bindings below.
 (field_declaration
   (variable_declaration
     (variable_declarator
-      name: (identifier) @declaration.name))) @declaration.variable
+      name: (identifier) @declaration.name))) @declaration.property
 
 ;; Local variables — \`int x = 1;\` inside a method body
 (local_declaration_statement

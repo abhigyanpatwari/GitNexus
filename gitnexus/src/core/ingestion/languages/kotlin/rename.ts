@@ -9,9 +9,8 @@ import {
   nodeRange,
 } from '../rename-tree-sitter.js';
 import { graphRenameFamily } from '../rename-family.js';
+import { canonicalName } from './identifiers.js';
 
-const canonicalName = (name: string): string =>
-  name.startsWith('`') && name.endsWith('`') ? name.slice(1, -1) : name;
 const names = new Set(['simple_identifier', 'type_identifier']);
 const keywords = new Set(
   'as break class continue do else false for fun if in interface is null object package return super this throw true try typealias typeof val var when while'.split(

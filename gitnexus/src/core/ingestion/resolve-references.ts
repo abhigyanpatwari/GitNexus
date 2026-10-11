@@ -160,24 +160,26 @@ export function createReferenceLookup(
         });
         return [];
       }
-      // An imported qualifier must keep its own target files. Otherwise reuse
-      // the existing exact qualified-name path, without the bare-tail fallback.
-      const definition =
-        claim.imports.length > 0
-          ? findClassBindingInScope(scope, qualified, scopes, undefined, {
-              ...options,
-              uniqueQualifiedNameFallback: false,
-            })
-          : resolveQualifiedInheritanceBase(
-              scope,
-              site.rawQualifiedName,
-              scopes,
-              findEnclosingClassDef(scope, scopes),
-            );
+      // Namespace aliases are file handles; imported type/module definitions
+      // are owners. Preserve the former's file constraint and require the
+      // latter to own the exact qualified declaration.
+      const namespaceImport = claim.imports.some((edge) => edge.kind === 'namespace');
+      const definition = namespaceImport
+        ? findClassBindingInScope(scope, qualified, scopes, undefined, {
+            ...options,
+            uniqueQualifiedNameFallback: false,
+          })
+        : resolveQualifiedInheritanceBase(
+            scope,
+            site.rawQualifiedName,
+            scopes,
+            findEnclosingClassDef(scope, scopes),
+          );
       if (
         definition === undefined ||
-        (claim.imports.length === 0 &&
-          !claim.bindings.every(({ def }) => qualifierOwnsDefinition(def, definition, scopes)))
+        (!namespaceImport &&
+          ((claim.imports.length > 0 && claim.bindings.length === 0) ||
+            !claim.bindings.every(({ def }) => qualifierOwnsDefinition(def, definition, scopes))))
       ) {
         input.recordSourceBinding?.(site, {
           status: 'unresolved',

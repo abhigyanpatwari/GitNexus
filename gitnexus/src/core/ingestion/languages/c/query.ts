@@ -169,6 +169,15 @@ const C_SCOPE_QUERY = `
   declarator: (init_declarator
     declarator: (identifier) @type-binding.name)) @type-binding.assignment
 
+;; Type bindings — struct and union fields, including pointers.
+(field_declaration
+  type: (_) @type-binding.type
+  declarator: (field_identifier) @type-binding.name) @type-binding.field
+(field_declaration
+  type: (_) @type-binding.type
+  declarator: (pointer_declarator
+    declarator: (field_identifier) @type-binding.name)) @type-binding.field
+
 ;; References — free calls
 ;; Note: This also captures calls through function pointer variables (e.g. fp(x))
 ;; since tree-sitter-c produces structurally identical AST nodes for both direct

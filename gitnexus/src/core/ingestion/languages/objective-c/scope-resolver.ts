@@ -102,6 +102,20 @@ export const objectiveCScopeResolver: ScopeResolver = {
   emitPostResolutionEdges(graph, parsedFiles, _nodeLookup, indexes, context) {
     const facts = objectiveCFactsFromParsedFiles(parsedFiles);
     if (facts.length === 0) return;
+    // Persisted inventories retain stable IDs but may omit qualifiedName.
+    // Restore only missing metadata from the exact provider-owned identity;
+    // contradictory stored metadata remains available to the caller's checks.
+    for (const file of facts)
+      for (const fact of [
+        ...file.containers,
+        ...file.methods,
+        ...file.members,
+        ...file.functions,
+      ]) {
+        const node = graph.getNode(fact.nodeId);
+        if (node && node.properties.qualifiedName === undefined)
+          node.properties.qualifiedName = fact.qualifiedName;
+      }
     const workspace = buildObjectiveCWorkspaceFacts(facts);
     const renameFiles = parsedFiles.filter(
       (parsed) => objectiveCRenameEvidence(parsed) !== undefined,
@@ -868,6 +882,27 @@ function resolveMessageReceiver(
   message: ObjCMessageFact,
   workspace: ObjCWorkspaceFacts,
 ): ObjectiveCReceiver | undefined {
+  let receiver = resolveBaseMessageReceiver(message, workspace);
+  for (const name of message.receiverMemberPath ?? []) {
+    if (!receiver) return undefined;
+    const members = findMembersOnReceiver(receiver, workspace, (member) => member.name === name);
+    const types = members.map((member) => parseObjCType(member.declaredType));
+    const type = types[0];
+    if (
+      !type?.name ||
+      (type.kind !== 'class' && type.kind !== 'protocol') ||
+      types.some((candidate) => candidate?.kind !== type.kind || candidate.name !== type.name)
+    )
+      return undefined;
+    receiver = { kind: type.kind, name: type.name, methodKind: '-' };
+  }
+  return receiver;
+}
+
+function resolveBaseMessageReceiver(
+  message: ObjCMessageFact,
+  workspace: ObjCWorkspaceFacts,
+): ObjectiveCReceiver | undefined {
   if (message.receiverKind === 'dynamic') return undefined;
   if (message.receiverKind === 'class')
     return {
@@ -924,8 +959,9 @@ function findMembersOnReceiver(
     const members = (workspace.membersByOwner.get(qualified) ?? []).filter(
       (member) =>
         predicate(member) &&
-        (member.kind !== 'property' ||
-          (member.accessors?.methodKind ?? '-') === receiver.methodKind),
+        (member.kind === 'property'
+          ? (member.accessors?.methodKind ?? '-') === receiver.methodKind
+          : receiver.methodKind === '-'),
     );
     if (members.length) return members;
     const parent = workspace.superclassByClass.get(owner);

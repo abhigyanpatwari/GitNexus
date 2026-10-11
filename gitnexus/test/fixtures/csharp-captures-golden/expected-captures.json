@@ -117,7 +117,7 @@
   },
   "csharp-collection-accessor/Services/Renderer.cs": {
     "captureGroups": 16,
-    "digest": "b116c898071aab598ab151b9619ec8517fed67ad96b5bfd575138f62c5369f82"
+    "digest": "36bfb545a75a942e4e03512fef1f6033478459640a28bb05e3ef78e286fd8d54"
   },
   "csharp-deep-field-chain/Models.cs": {
     "captureGroups": 25,
@@ -125,7 +125,7 @@
   },
   "csharp-deep-field-chain/Service.cs": {
     "captureGroups": 14,
-    "digest": "daeb42918323c3f79de9b72ffc72d2c61bb085a65ffb1f67ca3a0d9a78ec06e8"
+    "digest": "d4570a2711736e865b58b38de6cdb33cf99fe37cc3de3a964b13bd3a03528caa"
   },
   "csharp-dictionary-keys-values/App.cs": {
     "captureGroups": 21,
@@ -365,7 +365,7 @@
   },
   "csharp-nested-member-foreach/App.cs": {
     "captureGroups": 19,
-    "digest": "e4a193bdab13753422287500c3933ddf8fde1290c2250c3fecc838968f3092e9"
+    "digest": "2525d8e28eb807bd1d716c14372470bfdefa5c377af7de06e28c59f26fc50b89"
   },
   "csharp-nested-member-foreach/Repo.cs": {
     "captureGroups": 7,
@@ -425,7 +425,7 @@
   },
   "csharp-overload-interface/App/Caller.cs": {
     "captureGroups": 15,
-    "digest": "5769b1eda360cd588192335e47035683dae751b9f67e0528cccc066b1e4ed887"
+    "digest": "1f184c5beba9ecd5a414583fbf678f4e2f596b6870bb8e7037e32f6b9bcf1637"
   },
   "csharp-overload-interface/App/Logger.cs": {
     "captureGroups": 17,
@@ -513,7 +513,7 @@
   },
   "csharp-proj/Services/UserService.cs": {
     "captureGroups": 22,
-    "digest": "a4fc29294bd36aaf9263d956a878ef620a178a97f3650912597e9385b3e6ebb4"
+    "digest": "9dd22fc875cac241bcb6bd6f4fd63ec00c3f451f4093d194dbf26ae7865b270e"
   },
   "csharp-qualified-base/src/Domain.cs": {
     "captureGroups": 16,
@@ -581,7 +581,7 @@
   },
   "csharp-return-type/Models/User.cs": {
     "captureGroups": 25,
-    "digest": "11fb1ba45df665c6bf3fc3ecdf2aa8f94515a875221ef5b4f7e07566f4181d9c"
+    "digest": "e020f06c4d79be4bd08111b68a44eee0948ca461712524543f7dae3687486ceb"
   },
   "csharp-return-type/Services/App.cs": {
     "captureGroups": 16,
@@ -709,6 +709,6 @@
   },
   "synthetic:dao-20": {
     "captureGroups": 283,
-    "digest": "46c220ee1170e628eea5549097504cc1d394c7fadd7bf3672048ba687127029d"
+    "digest": "3a94a40a8c6e4ec915981b9d1dafae9e2f104a3582e5f03bfea25bb16569255d"
   }
 }

@@ -444,6 +444,7 @@ export const cProvider = defineLanguage({
 });
 
 export const cppProvider = defineLanguage({
+  overloadsFreeFunctions: true,
   rename: cppRenameProvider,
   id: SupportedLanguages.CPlusPlus,
   // CUDA files route through tree-sitter-cpp as a conservative C++-subset parser:

@@ -1,13 +1,7 @@
 import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
 import type { RenameProvider, RenameSource } from '../../rename-provider.js';
 import { createTreeSitterRenameSource } from '../rename-tree-sitter.js';
-import {
-  cKeywords,
-  cNameReference,
-  cNameRole,
-  checkCMacroSafety,
-  withParameterClaims,
-} from '../c/rename.js';
+import { cNameReference, cNameRole, checkCMacroSafety, withParameterClaims } from '../c/rename.js';
 import { callableDeclarationFamilies } from '../../scope-resolution/passes/callable-value-flow.js';
 import { buildGraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
@@ -17,12 +11,13 @@ import { isStaticName } from '../c/static-linkage.js';
 import { normalizeQualifiedName } from '../../utils/qualified-name.js';
 import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 
-const keywords = new Set([
-  ...cKeywords,
-  ...'and and_eq asm bitand bitor catch class compl concept consteval constinit const_cast co_await co_return co_yield decltype delete dynamic_cast explicit export friend mutable namespace new noexcept not not_eq operator or or_eq private protected public reinterpret_cast requires static_cast template this throw try typeid typename using virtual wchar_t xor xor_eq char8_t char16_t char32_t'.split(
+// C++ [lex.key], including alternative operator tokens. C-only keywords such as
+// restrict are valid C++ identifiers and must not enter this provider's set.
+const keywords = new Set(
+  'alignas alignof and and_eq asm auto bitand bitor bool break case catch char char8_t char16_t char32_t class compl concept const consteval constexpr constinit const_cast continue contract_assert co_await co_return co_yield decltype default delete do double dynamic_cast else enum explicit export extern false float for friend goto if inline int long mutable namespace new noexcept not not_eq nullptr operator or or_eq private protected public register reinterpret_cast requires return short signed sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union unsigned using virtual void volatile wchar_t while xor xor_eq'.split(
     ' ',
   ),
-]);
+);
 const names = new Set([
   'identifier',
   'type_identifier',
@@ -189,7 +184,12 @@ export const cppRenameProvider: RenameProvider = {
     });
   },
   validateName(name) {
-    if (!/^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(name) || keywords.has(name))
+    if (
+      !/^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(name) ||
+      keywords.has(name) ||
+      name.includes('__') ||
+      /^_[A-Z]/.test(name)
+    )
       return { code: 'invalid_name', message: 'Choose a valid nonreserved C++ identifier.' };
   },
   parseSource: async (input) =>

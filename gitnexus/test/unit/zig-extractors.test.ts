@@ -1993,7 +1993,11 @@ fn f_sib_b() void {
       .map((m) => m['@import.name']!.text);
     expect(importNames).toEqual(['std', 'm', 'm']);
     const receivers = matches
-      .filter((m) => m['@reference.receiver'] !== undefined)
+      .filter(
+        (m) =>
+          m['@reference.receiver'] !== undefined &&
+          Object.keys(m).some((key) => key.startsWith('@reference.call.')),
+      )
       .map((m) => `${m['@reference.receiver']!.text}.${m['@reference.name']!.text}`);
     expect(receivers).toEqual(['m.Thing', 't.go', 'm.hello', 'm.hello']);
     const tBinding = matches.find(
@@ -2051,7 +2055,11 @@ fn f() void {
       },
     ]);
     const sites = matches
-      .filter((m) => m['@reference.receiver'] !== undefined)
+      .filter(
+        (m) =>
+          m['@reference.receiver'] !== undefined &&
+          Object.keys(m).some((key) => key.startsWith('@reference.call.')),
+      )
       .map(
         (m) =>
           `${m['@reference.call.member'] !== undefined ? 'call' : 'ctor'} ${m['@reference.receiver']!.text} . ${m['@reference.name']!.text}`,
@@ -2060,6 +2068,16 @@ fn f() void {
       'call @import("lib.zig").B . work',
       'call lib.B . work',
       'ctor lib.Outer . Inner',
+    ]);
+    expect(
+      matches.filter((m) => m['@reference.read']).map((m) => m['@reference.read']!.text),
+    ).toEqual([
+      '@import("lib.zig").B',
+      '@import("lib.zig").B.work',
+      'lib.B',
+      'lib.B.work',
+      'lib.Outer',
+      'lib.Outer.Inner',
     ]);
     // No free-call site named `chosen` survives to be resolved by simple name.
     expect(

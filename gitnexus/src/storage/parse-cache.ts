@@ -860,7 +860,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // join the existing subtype capture payload. Re-extract v136 in both stores.
 // v138: provider-owned source occurrences and new flow visitors/explicit region
 // ownership must not reuse older capture or CFG side channels.
-const SCHEMA_BUMP = 138;
+// v139: real rename fixtures expose missing field/read/write chains, callable
+// scopes and declaration metadata. Re-extract both stores with provider fixes.
+const SCHEMA_BUMP = 139;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

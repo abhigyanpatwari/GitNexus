@@ -187,7 +187,12 @@ export const csharpProvider = defineLanguage({
       patterns: ['DbContext', 'DbSet<', 'OnModelCreating'],
     },
   ] satisfies AstFrameworkPatternConfig[],
-  treeSitterQueries: CSHARP_QUERIES,
+  treeSitterQueries: `${CSHARP_QUERIES}
+; Fields are graph-addressable members, alongside C# properties.
+(field_declaration
+  (variable_declaration
+    (variable_declarator name: (identifier) @name))) @definition.property
+`,
   typeConfig: csharpConfig,
   exportChecker: csharpExportChecker,
   importResolver: createImportResolver(csharpImportConfig),

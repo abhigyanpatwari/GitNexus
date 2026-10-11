@@ -38,14 +38,20 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { canonicalizeWorkspaceBindings } from '../../scope-resolution/scope/canonicalize-bindings.js';
+import { canonicalTypeScriptName } from '../typescript/identifiers.js';
 import { javascriptProvider } from '../typescript.js';
 import { jsMergeBindings } from './merge-bindings.js';
 import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
+import { typescriptModuleExports } from '../typescript/module-exports.js';
 import { loadNodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
 
 const javascriptScopeResolver: ScopeResolver = {
+  postExtractSourceTextPolicy: 'uncached-files',
+  populateWorkspaceReferences: (parsedFiles) =>
+    canonicalizeWorkspaceBindings(parsedFiles, canonicalTypeScriptName),
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.JavaScript,
@@ -55,6 +61,7 @@ const javascriptScopeResolver: ScopeResolver = {
   ownedMembersBindAtModuleScope: false,
 
   resolveImportTarget: makeJsResolveImportTarget(),
+  moduleExports: typescriptModuleExports,
 
   // JavaScript resolution reads the same declared inputs TypeScript does —
   // `jsconfig.json` is a tsconfig by another name, and `package.json` is shared

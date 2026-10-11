@@ -1,5 +1,5 @@
 import type Parser from 'tree-sitter';
-import type { BindingRef, ParsedFile, Range, ReferenceSite } from 'gitnexus-shared';
+import type { ParsedFile, Range, ReferenceSite } from 'gitnexus-shared';
 import { createParserForLanguage } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { extractParsedFile } from '../scope-extractor-bridge.js';
@@ -154,51 +154,4 @@ export function innermostRenameScope(
   return result?.id;
 }
 
-/** Normalize lookup spellings while retaining source identities and coordinates. */
-export function canonicalizeRenameBindings(
-  parsed: ParsedFile,
-  canonicalName: (name: string) => string,
-): ParsedFile {
-  const bindingsOf = (scope: ParsedFile['scopes'][number]) => {
-    const bindings = new Map<string, BindingRef[]>();
-    for (const [name, values] of scope.bindings) {
-      const key = canonicalName(name);
-      bindings.set(key, [...(bindings.get(key) ?? []), ...values]);
-    }
-    return bindings;
-  };
-  return {
-    ...parsed,
-    scopes: parsed.scopes.map((scope) => ({
-      ...scope,
-      bindings: bindingsOf(scope),
-      lexicalNames: scope.lexicalNames && new Set([...scope.lexicalNames].map(canonicalName)),
-      nameClaims: scope.nameClaims?.map((claim) => ({ ...claim, name: canonicalName(claim.name) })),
-      typeBindings: new Map(
-        [...scope.typeBindings].map(([name, type]) => [
-          canonicalName(name),
-          {
-            ...type,
-            rawName: canonicalName(type.rawName),
-            ...(type.declaredSpelling
-              ? { declaredSpelling: canonicalName(type.declaredSpelling) }
-              : {}),
-          },
-        ]),
-      ),
-    })),
-    parsedImports: parsed.parsedImports.map((entry) => ({
-      ...entry,
-      ...('localName' in entry ? { localName: canonicalName(entry.localName) } : {}),
-      ...('importedName' in entry ? { importedName: canonicalName(entry.importedName) } : {}),
-      ...('alias' in entry && entry.alias ? { alias: canonicalName(entry.alias) } : {}),
-    })),
-    referenceSites: parsed.referenceSites.map((site) => ({
-      ...site,
-      name: canonicalName(site.name),
-      ...(site.explicitReceiver
-        ? { explicitReceiver: { name: canonicalName(site.explicitReceiver.name) } }
-        : {}),
-    })),
-  };
-}
+export { canonicalizeBindings as canonicalizeRenameBindings } from '../scope-resolution/scope/canonicalize-bindings.js';

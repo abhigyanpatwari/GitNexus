@@ -61,7 +61,7 @@ function withLexicalClaims(source: RenameSource): RenameSource {
           name: occurrence.name,
           range: occurrence.range,
           kind: 'binding',
-          purpose: 'value',
+          purpose: occurrence.node.parent?.type === 'type_parameter_declaration' ? 'both' : 'value',
           hoisted: true,
         },
       ]);

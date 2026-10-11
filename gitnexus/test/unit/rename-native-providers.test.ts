@@ -56,7 +56,11 @@ describe('native provider rename through the production parsing pipeline', () =>
 
   it.each([
     [SupportedLanguages.C, 'int'],
+    [SupportedLanguages.C, 'restrict'],
     [SupportedLanguages.CPlusPlus, 'class'],
+    [SupportedLanguages.CPlusPlus, 'co_await'],
+    [SupportedLanguages.CPlusPlus, '_Atomic'],
+    [SupportedLanguages.CPlusPlus, 'internal__name'],
     [SupportedLanguages.Rust, 'fn'],
     [SupportedLanguages.Go, 'func'],
     [SupportedLanguages.Zig, 'comptime'],
@@ -65,6 +69,50 @@ describe('native provider rename through the production parsing pipeline', () =>
     expect(provider).toBeDefined();
     expect(provider!.validateName!(name)).toMatchObject({ code: 'invalid_name' });
   });
+
+  it('accepts restrict as a C++ type identifier', async () => {
+    await expectRename(
+      { 'model.cpp': 'struct Target {};\nvoid caller(struct Target value) {}\n' },
+      { 'model.cpp': 'struct restrict {};\nvoid caller(struct restrict value) {}\n' },
+      'Target',
+      'Struct',
+      'restrict',
+    );
+  }, 60000);
+
+  it('preserves Go type-parameter bindings when renaming an outer type', async () => {
+    await expectRename(
+      {
+        'model.go':
+          'package model\ntype Target struct {}\ntype Container[Target any] struct { Item Target }\nfunc identity[Target any](value Target) Target { return value }\nfunc concrete(value Target) Target { return value }\n',
+      },
+      {
+        'model.go':
+          'package model\ntype Renamed struct {}\ntype Container[Target any] struct { Item Target }\nfunc identity[Target any](value Target) Target { return value }\nfunc concrete(value Renamed) Renamed { return value }\n',
+      },
+      'Target',
+      'Struct',
+      'Renamed',
+    );
+  }, 60000);
+
+  it('blocks a Go type rename captured by a generic type parameter', async () => {
+    const content =
+      'package model\ntype Target struct {}\nfunc identity[Element any](value Target, item Element) Target { return value }\n';
+    const { root, nodes, symbol } = await fixture({ 'model.go': content }, 'Target', 'Struct');
+    for (const dry_run of [true, false]) {
+      expect(
+        await renameSymbol(root, symbol, { new_name: 'Element', dry_run }, nodes),
+      ).toMatchObject({
+        status: 'error',
+        code: 'name_collision',
+        planning_status: 'blocked',
+        applied: false,
+        total_edits: 0,
+      });
+      expect(await fs.readFile(path.join(root, 'model.go'), 'utf8')).toBe(content);
+    }
+  }, 60000);
 
   it.each([
     [
@@ -383,6 +431,36 @@ describe('native provider rename through the production parsing pipeline', () =>
     },
     60000,
   );
+
+  it('allows a C call before a later local declaration of the proposed name', async () => {
+    await expectRename(
+      {
+        'model.c':
+          'int target(void) { return 1; }\nint caller(void) { int result = target(); int renamed = 0; return result + renamed; }\n',
+      },
+      {
+        'model.c':
+          'int renamed(void) { return 1; }\nint caller(void) { int result = renamed(); int renamed = 0; return result + renamed; }\n',
+      },
+    );
+  }, 60000);
+
+  it('rejects a C capture inside the local declaration initializer', async () => {
+    const content =
+      'int target(void) { return 1; }\nint caller(void) { int renamed = target(); return renamed; }\n';
+    const { root, nodes, symbol } = await fixture({ 'model.c': content });
+    for (const dry_run of [true, false]) {
+      expect(
+        await renameSymbol(root, symbol, { new_name: 'renamed', dry_run }, nodes),
+      ).toMatchObject({
+        status: 'error',
+        code: 'name_collision',
+        applied: false,
+        total_edits: 0,
+      });
+      expect(await fs.readFile(path.join(root, 'model.c'), 'utf8')).toBe(content);
+    }
+  }, 60000);
 
   it.each([
     [

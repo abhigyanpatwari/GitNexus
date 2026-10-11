@@ -11,6 +11,7 @@ import type { LanguageProvider } from './language-provider.js';
 import type { SemanticModel } from './model/semantic-model.js';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
 import type { ScopeResolver } from './scope-resolution/contract/scope-resolver.js';
+import type { SourceBindingResolution } from './scope-resolution/source-binding-resolution.js';
 
 /** A source span uses JavaScript string offsets in the ORIGINAL source. */
 export interface RenameSpan {
@@ -64,6 +65,7 @@ export interface RenameSemanticContext {
   readonly definitions: readonly SymbolDefinition[];
   readonly files: ReadonlyMap<string, RenameSource>;
   readonly indexes: ScopeResolutionIndexes;
+  readonly referenceBindings: ReadonlyMap<ReferenceSite, SourceBindingResolution>;
   readonly model: SemanticModel;
   readonly graph: KnowledgeGraph;
   readonly newName: string;

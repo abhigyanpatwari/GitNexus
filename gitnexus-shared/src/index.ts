@@ -131,7 +131,11 @@ export type {
 } from './scope-resolution/method-dispatch-index.js';
 
 // SCC-aware cross-file finalize (RFC §3.2 Phase 2; Ring 2 SHARED #915)
-export { finalize } from './scope-resolution/finalize-algorithm.js';
+export {
+  finalize,
+  indexExportsByName,
+  indexTopLevelExportsByName,
+} from './scope-resolution/finalize-algorithm.js';
 export type {
   FinalizeInput,
   FinalizeFile,

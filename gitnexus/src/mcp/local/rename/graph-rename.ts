@@ -232,6 +232,7 @@ export async function planGraphRename(
     definitions,
     files,
     indexes,
+    referenceBindings,
     model: before.model,
     graph: before.graph,
     newName: options.new_name,
@@ -574,6 +575,7 @@ export async function planGraphRename(
     definitions: afterDefinitions,
     files: updatedFiles,
     indexes: after.observation.indexes,
+    referenceBindings: after.observation.referenceBindings,
     model: after.model,
     graph: after.graph,
     newName: options.new_name,
@@ -897,7 +899,18 @@ function matchDefinitions(
       offsetOf(source, position.line, position.column),
       edits.get(def.filePath) ?? [],
     );
-    const group = candidates.get(`${def.filePath}:${def.type}:${offset}`);
+    const atPosition = candidates.get(`${def.filePath}:${def.type}:${offset}`);
+    // Synthetic accessors share their property's range but remain distinct
+    // declarations. Their signatures survive renaming and distinguish them.
+    const group =
+      atPosition && atPosition.length > 1
+        ? atPosition.filter(
+            (candidate) =>
+              candidate.parameterCount === def.parameterCount &&
+              candidate.requiredParameterCount === def.requiredParameterCount &&
+              JSON.stringify(candidate.parameterTypes) === JSON.stringify(def.parameterTypes),
+          )
+        : atPosition;
     if (group?.length !== 1) {
       throw new RenameFailure(
         'name_collision',
@@ -967,19 +980,31 @@ function assertBindingsPreserved(
           .map((entry) => entry.site)
       : nextSites.get(`${source.path}:${site.kind}:${site.callForm ?? ''}:${offset}`);
     const previous = before.referenceBindings.get(site);
-    const matches =
-      previous &&
-      candidates?.filter((candidate) => {
-        const next = after.referenceBindings.get(candidate);
-        return (
-          next &&
-          previous.status === next.status &&
-          previous.candidatesComplete === next.candidatesComplete &&
-          bindingIds(previous, definitions) === bindingIds(next) &&
-          (previous.importAlias !== undefined) === (next.importAlias !== undefined)
-        );
-      });
-    if (matches?.length !== 1) {
+    const matches = previous
+      ? (candidates ?? []).filter((candidate) => {
+          const next = after.referenceBindings.get(candidate);
+          return (
+            next &&
+            previous.status === next.status &&
+            previous.candidatesComplete === next.candidatesComplete &&
+            bindingIds(previous, definitions) === bindingIds(next) &&
+            (previous.importAlias !== undefined) === (next.importAlias !== undefined)
+          );
+        })
+      : [];
+    const positionOf = (candidate: ReferenceSite): number => {
+      const nextRange = candidate.nameRange ?? candidate.atRange;
+      return offsetOf(updated.get(source.path)!, nextRange.startLine, nextRange.startCol);
+    };
+    const matchedPositions = new Set(matches.map(positionOf));
+    // Capture queries can describe the same reference more than once. Accept
+    // equivalent evidence at one token, but never conflicting bindings there
+    // or multiple matching tokens inside an expanded shorthand replacement.
+    if (
+      matchedPositions.size !== 1 ||
+      candidates?.filter((candidate) => matchedPositions.has(positionOf(candidate))).length !==
+        matches.length
+    ) {
       throw new RenameFailure(
         'name_collision',
         `The proposed name changes a source binding in ${source.path}:${range.startLine}.`,

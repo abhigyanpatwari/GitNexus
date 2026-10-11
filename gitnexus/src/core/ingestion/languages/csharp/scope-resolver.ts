@@ -12,6 +12,11 @@ import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import { populateCsharpNamespacePrefixes } from './qualified-type-names.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import {
+  canonicalizeWorkspaceBindings,
+  canonicalModuleExports,
+} from '../../scope-resolution/scope/canonicalize-bindings.js';
+import { canonicalName } from './identifiers.js';
 import { csharpProvider } from '../csharp.js';
 import {
   csharpArityCompatibility,
@@ -30,6 +35,9 @@ const declarationImports = new WeakMap<
 >();
 
 const csharpScopeResolver: ScopeResolver = {
+  moduleExports: (parsed) => canonicalModuleExports(parsed, canonicalName),
+  populateWorkspaceReferences: (parsedFiles) =>
+    canonicalizeWorkspaceBindings(parsedFiles, canonicalName),
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.CSharp,

@@ -18,6 +18,13 @@ const keywords = new Set(
     ' ',
   ),
 );
+// Built-in identifiers remain legal member names, but cannot name types,
+// extensions or import prefixes: https://dart.dev/language/keywords.
+const builtInIdentifiers = new Set(
+  'abstract as covariant deferred dynamic export extension external factory Function get implements import interface late library mixin operator part required set static type typedef'.split(
+    ' ',
+  ),
+);
 
 function role(node: Parser.SyntaxNode): RenameOccurrence['role'] {
   const parent = node.parent;
@@ -82,6 +89,17 @@ export const dartRenameProvider: RenameProvider = {
     transformParsed: (parsed) => canonicalizeRenameBindings(parsed, canonicalName),
     reference,
   }),
+  checkSafety({ target, definitions, newName }) {
+    const type =
+      target.type === 'Constructor'
+        ? definitions.find((definition) => definition.nodeId === target.ownerId)
+        : target;
+    if (type && CLASS_KINDS.includes(type.type) && builtInIdentifiers.has(canonicalName(newName)))
+      return {
+        code: 'invalid_name',
+        message: 'A built-in identifier cannot name a type, extension or import prefix.',
+      };
+  },
   symbolFamily(context) {
     const name = (def: typeof context.target) => canonicalName(simpleQualifiedName(def) ?? '');
     const method = (def: typeof context.target) =>

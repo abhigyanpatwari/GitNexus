@@ -1,0 +1,21 @@
+{
+  "language": "python",
+  "description": "Refuse a string attribute that decodes to the selected member.",
+  "categories": [
+    "dynamic-attribute",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  }
+}

@@ -14,6 +14,25 @@
 import { describe, it, expect } from 'vitest';
 import { emitJavaScopeCaptures } from '../../../../src/core/ingestion/languages/java/captures.js';
 
+describe('Java invocation classification', () => {
+  it('does not also emit free references for qualified member calls', () => {
+    const captures = emitJavaScopeCaptures(
+      'class Delivery { void send(Courier courier) { courier.dispatch(); this.dispatch(); super.dispatch(); dispatch(); } }',
+      'Delivery.java',
+    );
+    expect(
+      captures
+        .filter((match) => match['@reference.call.free'])
+        .map((match) => match['@reference.call.free']?.text),
+    ).toEqual(['dispatch()']);
+    expect(
+      captures
+        .filter((match) => match['@reference.call.member'])
+        .map((match) => match['@reference.receiver']?.text),
+    ).toEqual(['courier', 'this', 'super']);
+  });
+});
+
 function wrapExpr(expr: string): string {
   return `class C { void m() { ${expr}; } }`;
 }

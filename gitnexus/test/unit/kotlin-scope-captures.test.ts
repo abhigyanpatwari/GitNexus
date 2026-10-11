@@ -8,6 +8,48 @@ function captureTexts(source: string): Array<Record<string, string>> {
 }
 
 describe('Kotlin scope captures', () => {
+  it('uses an explicit function type to constrain a free callable reference', () => {
+    const captures = captureTexts('fun use() { val callback: () -> String = ::encode }');
+    const reference = captures.find((match) => match['@reference.call.free'] === '::encode');
+    expect(reference?.['@reference.arity']).toBe('0');
+  });
+
+  it('does not treat the receiver parameter of an unbound reference as method arity', () => {
+    const captures = captureTexts('fun use() { val callback: (Worker) -> Unit = Worker::run }');
+    const reference = captures.find((match) => match['@reference.call.member'] === 'Worker::run');
+    expect(reference).toBeDefined();
+    expect(reference?.['@reference.arity']).toBeUndefined();
+  });
+
+  it('does not infer a free callable arity from an extension function type', () => {
+    const captures = captureTexts('fun use() { val callback: Worker.() -> Unit = ::run }');
+    const reference = captures.find((match) => match['@reference.call.free'] === '::run');
+    expect(reference).toBeDefined();
+    expect(reference?.['@reference.arity']).toBeUndefined();
+  });
+
+  it('reads assignment receiver prefixes and writes only the terminal property', () => {
+    const captures = captureTexts(
+      'fun update(session: Session, badge: String) { session.account.profile.badge = badge }',
+    );
+    const members = captures.filter(
+      (match) =>
+        match['@reference.read.member'] !== undefined ||
+        match['@reference.write.member'] !== undefined,
+    );
+    expect(
+      members.map((match) => ({
+        kind: match['@reference.write.member'] === undefined ? 'read' : 'write',
+        name: match['@reference.name'],
+        receiver: match['@reference.receiver'],
+      })),
+    ).toEqual([
+      { kind: 'read', name: 'account', receiver: 'session' },
+      { kind: 'read', name: 'profile', receiver: 'session.account' },
+      { kind: 'write', name: 'badge', receiver: 'session.account.profile' },
+    ]);
+  });
+
   it('emits required arity equal to total arity when no parameters have defaults', () => {
     const captures = captureTexts(`
       fun greet(name: String, greeting: String) {}

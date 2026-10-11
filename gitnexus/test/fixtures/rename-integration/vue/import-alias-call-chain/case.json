@@ -1,0 +1,49 @@
+{
+  "language": "vue",
+  "description": "Rename a shared function used through stable aliases in Vue script, template and CSS, and directly through a TypeScript call graph.",
+  "categories": [
+    "cross-file",
+    "alias",
+    "call-graph",
+    "template",
+    "css-binding"
+  ],
+  "target": {
+    "name": "color",
+    "kind": "Function",
+    "file": "api.ts"
+  },
+  "newName": "shade",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "middle.ts"
+      },
+      "to": {
+        "name": "color",
+        "kind": "Function",
+        "file": "api.ts"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "App.vue"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "middle.ts"
+      }
+    }
+  ]
+}

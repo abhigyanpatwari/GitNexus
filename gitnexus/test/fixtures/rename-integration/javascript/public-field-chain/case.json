@@ -1,0 +1,21 @@
+{
+  "language": "javascript",
+  "description": "Rename an inferred public class field through a three-hop constructed receiver, preserving another owner.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "read-write"
+  ],
+  "target": {
+    "name": "score",
+    "kind": "Property",
+    "file": "model.js",
+    "startLine": 1
+  },
+  "newName": "points",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": []
+}

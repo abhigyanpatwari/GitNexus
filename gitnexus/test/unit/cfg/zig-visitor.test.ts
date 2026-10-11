@@ -93,6 +93,30 @@ describe.skipIf(!grammar)('Zig provider CFG / shared PDG pipeline', () => {
     expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
+  it('keeps breaks in a while continuation inside that loop and runs its cleanup', () => {
+    const cfg = harness().cfgOf(`fn f(flag: bool, stop: bool) void {
+      while (flag) : ({
+        defer cleanup();
+        if (stop) break;
+        update();
+      }) { work(); continue; } else { exhausted(); }
+      done();
+    }`);
+    const brk = block(cfg, 'break');
+    expect(reaches(cfg, brk, block(cfg, 'done()'))).toBe(true);
+    expect(reaches(cfg, brk, block(cfg, 'exhausted()'))).toBe(false);
+    expect(reaches(cfg, brk, block(cfg, 'update()'))).toBe(false);
+    const cleanup = cfg.edges.find((edge) => edge.from === brk && edge.kind === 'break');
+    expect(cfg.blocks[cleanup!.to].text).toContain('cleanup()');
+    expect(reaches(cfg, block(cfg, 'continue'), block(cfg, 'update()'))).toBe(true);
+    expect(computeControlDependence(cfg).edges).toContainEqual({
+      controllerBlock: block(cfg, 'stop'),
+      dependentBlock: brk,
+      label: 'T',
+    });
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
   it('binds for payloads to their body and has a structural infinite-loop escape', () => {
     const cfg = harness().cfgOf(`fn f(xs: []i32) void {
       for (xs, 0..) |*item, index| { use(item, index); } else { empty(); }
