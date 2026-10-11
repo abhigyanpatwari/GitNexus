@@ -37,9 +37,9 @@ for (const language of (await fs.readdir(fixtures, { withFileTypes: true })).fil
 renameCases.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 
 // Separate files let CI distribute these real indexing runs across its shards.
-export function defineRenameFixtureTests(partition: number): void {
+export function defineRenameFixtureTests(language: string): void {
   describe('persisted semantic rename across providers (no mocks)', () => {
-    it.each(renameCases.filter((_, index) => index % 4 === partition))(
+    it.each(renameCases.filter((fixture) => fixture.language === language))(
       '$id',
       async ({ directory }) => {
         const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rename-integration-'));
@@ -53,7 +53,7 @@ export function defineRenameFixtureTests(partition: number): void {
           GITNEXUS_INDEX_LOCK_BACKEND: 'file',
           GITNEXUS_CONTENT_RETENTION: 'full',
           GITNEXUS_LBUG_EXTENSION_INSTALL: 'off',
-          GITNEXUS_WORKER_READY_TIMEOUT_MS: '15000',
+          GITNEXUS_WORKER_READY_TIMEOUT_MS: process.env.GITNEXUS_WORKER_READY_TIMEOUT_MS ?? '15000',
         };
         delete env.CODEX_HOME;
         delete env.GITNEXUS_STORAGE_ROOT;

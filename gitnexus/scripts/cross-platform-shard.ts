@@ -44,6 +44,27 @@
  * partition depend on the very machine load it is trying to protect against.
  */
 export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
+  // Conservative estimates from Windows run 38144297115: persisted
+  // rename cases include native indexing and take up to ~25s each. Keep
+  // each language together while charging its complete fixture inventory.
+  'test/integration/rename-provider-c.test.ts': 175,
+  'test/integration/rename-provider-cobol.test.ts': 75,
+  'test/integration/rename-provider-cpp.test.ts': 250,
+  'test/integration/rename-provider-csharp.test.ts': 200,
+  'test/integration/rename-provider-dart.test.ts': 425,
+  'test/integration/rename-provider-go.test.ts': 125,
+  'test/integration/rename-provider-java.test.ts': 300,
+  'test/integration/rename-provider-javascript.test.ts': 225,
+  'test/integration/rename-provider-kotlin.test.ts': 300,
+  'test/integration/rename-provider-objective-c.test.ts': 150,
+  'test/integration/rename-provider-php.test.ts': 100,
+  'test/integration/rename-provider-python.test.ts': 375,
+  'test/integration/rename-provider-ruby.test.ts': 100,
+  'test/integration/rename-provider-rust.test.ts': 75,
+  'test/integration/rename-provider-swift.test.ts': 200,
+  'test/integration/rename-provider-typescript.test.ts': 625,
+  'test/integration/rename-provider-vue.test.ts': 200,
+  'test/integration/rename-provider-zig.test.ts': 75,
   // Re-measured after the analyze --watch e2e landed in #3072. The previous
   // 361 s entry undercharged this suite and left shard 1 close to the watchdog.
   'test/integration/cli-e2e.test.ts': 621,

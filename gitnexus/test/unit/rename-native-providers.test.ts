@@ -9,6 +9,100 @@ import { renameSymbol } from '../../src/mcp/local/rename/rename-plan.js';
 const { fixture, expectRename } = createRenameFixtureHelpers();
 
 describe('native provider rename through the production parsing pipeline', () => {
+  it('refuses a reserved C++ identifier in the global namespace before preview or apply', async () => {
+    const content = 'int target() { return 1; }\nint caller() { return target(); }\n';
+    const { root, nodes, symbol } = await fixture({ 'model.cpp': content });
+    for (const dry_run of [true, false]) {
+      const result = await renameSymbol(root, symbol, { new_name: '_value', dry_run }, nodes);
+      expect(result).toMatchObject({
+        status: 'error',
+        code: 'invalid_name',
+        applied: false,
+        total_edits: 0,
+      });
+      expect(await fs.readFile(path.join(root, 'model.cpp'), 'utf8')).toBe(content);
+    }
+  }, 60000);
+
+  it('allows a leading underscore for a C++ class member', async () => {
+    await expectRename(
+      {
+        'model.cpp':
+          'struct Model {\nint target() { return 1; }\n};\nint caller(Model &model) { return model.target(); }\n',
+      },
+      {
+        'model.cpp':
+          'struct Model {\nint _value() { return 1; }\n};\nint caller(Model &model) { return model._value(); }\n',
+      },
+      'target',
+      'Method',
+      '_value',
+    );
+  }, 60000);
+
+  it('refuses a leading underscore for a C++ type declared in the global namespace', async () => {
+    const content = 'struct Target {};\nvoid caller(Target value) {}\n';
+    const { root, nodes, symbol } = await fixture({ 'model.cpp': content }, 'Target', 'Struct');
+    for (const dry_run of [true, false]) {
+      const result = await renameSymbol(root, symbol, { new_name: '_value', dry_run }, nodes);
+      expect(result).toMatchObject({
+        status: 'error',
+        code: 'invalid_name',
+        applied: false,
+        total_edits: 0,
+      });
+      expect(await fs.readFile(path.join(root, 'model.cpp'), 'utf8')).toBe(content);
+    }
+  }, 60000);
+
+  it('refuses a reserved C++ type name when its constructor is selected', async () => {
+    const content = 'struct Target {\n Target() {}\n};\nTarget caller() { return Target(); }\n';
+    const { root, nodes, symbol } = await fixture({ 'model.cpp': content }, 'Target', 'Method');
+    for (const dry_run of [true, false]) {
+      const result = await renameSymbol(root, symbol, { new_name: '_value', dry_run }, nodes);
+      expect(result).toMatchObject({
+        status: 'error',
+        code: 'invalid_name',
+        applied: false,
+        total_edits: 0,
+      });
+      expect(await fs.readFile(path.join(root, 'model.cpp'), 'utf8')).toBe(content);
+    }
+  }, 60000);
+
+  it.each(['await', 'yield'])(
+    'refuses Dart contextual identifier %s inside an async body',
+    async (new_name) => {
+      const content = 'int target() => 1;\nFuture<int> caller() async { return target(); }\n';
+      const { root, nodes, symbol } = await fixture({ 'model.dart': content });
+      for (const dry_run of [true, false]) {
+        const result = await renameSymbol(root, symbol, { new_name, dry_run }, nodes);
+        expect(result).toMatchObject({
+          status: 'error',
+          code: 'invalid_name',
+          applied: false,
+          total_edits: 0,
+        });
+        expect(await fs.readFile(path.join(root, 'model.dart'), 'utf8')).toBe(content);
+      }
+    },
+    60000,
+  );
+
+  it.each(['yield'])(
+    'allows Dart contextual identifier %s in a synchronous body',
+    async (newName) => {
+      await expectRename(
+        { 'model.dart': 'int target() => 1;\nint caller() { return target(); }\n' },
+        { 'model.dart': `int ${newName}() => 1;\nint caller() { return ${newName}(); }\n` },
+        'target',
+        'Function',
+        newName,
+      );
+    },
+    60000,
+  );
+
   it.each(['local', 'target'])(
     'records Rust alias identity even with equal spelling: %s',
     async (alias) => {

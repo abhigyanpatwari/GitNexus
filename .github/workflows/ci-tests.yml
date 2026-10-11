@@ -195,7 +195,7 @@ jobs:
     steps:
       - id: gen
         run: |
-          TOTAL=4         # cross-platform (windows/macOS) shards per OS
+          TOTAL=8         # cross-platform (windows/macOS) shards per OS
           COV_TOTAL=4     # ubuntu coverage shards (merged before thresholds)
           if [ "$TOTAL" -lt 1 ] || [ "$COV_TOTAL" -lt 1 ]; then
             echo "shard totals must be >= 1" >&2; exit 1
@@ -619,6 +619,11 @@ jobs:
         # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
         # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
         run: node --import tsx bench/scope-capture/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Rename output construction scaling guard
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/rename/measure.mjs --check
         working-directory: gitnexus
 
       - name: Callable-value-flow target-index guards (#2693)

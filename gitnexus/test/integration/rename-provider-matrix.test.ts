@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { defineRenameFixtureTests, renameCases } from '../helpers/rename-integration-cases.js';
+import { renameCases } from '../helpers/rename-integration-cases.js';
 
 describe('persisted semantic rename coverage', () => {
   it('has successful rename fixtures for every supported language', () => {
@@ -11,5 +11,3 @@ describe('persisted semantic rename coverage', () => {
     ).toEqual(new Set(Object.values(SupportedLanguages)));
   });
 });
-
-defineRenameFixtureTests(0);

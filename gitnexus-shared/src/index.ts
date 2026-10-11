@@ -246,3 +246,9 @@ export type {
   NameClaimSources,
   ScopeClaimSelection,
 } from './scope-resolution/name-claims.js';
+
+export * from './rename/types.js';
+export * from './rename/results.js';
+export * from './rename/edits.js';
+export * from './rename/positions.js';
+export * from './rename/family.js';

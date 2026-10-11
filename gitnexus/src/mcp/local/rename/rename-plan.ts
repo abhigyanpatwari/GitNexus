@@ -1,93 +1,31 @@
+import {
+  RenameFailure,
+  applyEdits,
+  prepareRenameEdits,
+  renameResult as result,
+  blockedRenameResult as blocked,
+} from 'gitnexus-shared';
+import type {
+  RenameSymbol,
+  RenameOptions,
+  RenameResult,
+  RenamePlan,
+  FileChange,
+  OccurrenceEdit,
+} from 'gitnexus-shared';
+export { RenameFailure } from 'gitnexus-shared';
+export type {
+  RenameSymbol,
+  RenameOptions,
+  RenameResult,
+  RenamePlan,
+  RenameCoverage,
+  OccurrenceEdit,
+} from 'gitnexus-shared';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { GraphNode } from 'gitnexus-shared';
 import { logger } from '../../../core/logger.js';
-
-export interface RenameSymbol {
-  uid?: string;
-  name: string;
-  kind?: string;
-  filePath: string;
-  /** Graph display ranges are one-based, inclusive. */
-  startLine: number;
-  endLine?: number;
-}
-
-export interface RenameOptions {
-  new_name: string;
-  dry_run?: boolean;
-}
-
-export interface RenameCoverage {
-  name: string;
-  scope: 'indexed-repository';
-  source_file_count: number;
-  languages: string[];
-  limitations: string[];
-}
-
-export interface OccurrenceEdit {
-  file_path: string;
-  /** Offsets into the unchanged source, in UTF-16 code units. */
-  start: number;
-  length: number;
-  old_text: string;
-  new_text: string;
-}
-
-export interface RenamePlan {
-  symbol: RenameSymbol;
-  new_name: string;
-  coverage: RenameCoverage;
-  /** Includes all source files used by semantic resolution, even without edits. */
-  snapshots: Map<string, string>;
-  edits: OccurrenceEdit[];
-}
-
-interface ReportedEdit extends Omit<OccurrenceEdit, 'file_path'> {
-  line: number;
-  confidence: 'semantic';
-  before: string;
-  after: string;
-}
-
-interface FileChange {
-  file_path: string;
-  edits: ReportedEdit[];
-}
-
-export interface RenameResult {
-  result_version: 2;
-  status: 'success' | 'error' | 'partial';
-  planning_status: 'ready' | 'blocked' | 'unsupported';
-  application_status: 'not_requested' | 'not_started' | 'applied' | 'partial' | 'failed';
-  applied: boolean;
-  old_name: string;
-  new_name: string;
-  files_affected: number;
-  total_edits: number;
-  semantic_edits: number;
-  graph_edits: 0;
-  text_search_edits: 0;
-  text_search: 'not_used';
-  changes: FileChange[];
-  coverage?: RenameCoverage;
-  error?: string;
-  code?: string;
-  candidates?: string[];
-  failed_files?: string[];
-}
-
-export class RenameFailure extends Error {
-  constructor(
-    public readonly code: string,
-    message: string,
-    public readonly planningStatus: 'blocked' | 'unsupported' = 'blocked',
-    public readonly candidates?: string[],
-  ) {
-    super(message);
-  }
-}
 
 /** Lexical containment must be checked before resolving symlinks. */
 export function repositoryPath(repoPath: string, filePath: string): string {
@@ -115,41 +53,16 @@ async function checkedRealPath(repoPath: string, filePath: string): Promise<stri
   return real;
 }
 
-function result(symbol: RenameSymbol, newName: string, changes: FileChange[] = []): RenameResult {
-  const count = changes.reduce((sum, file) => sum + file.edits.length, 0);
-  return {
-    result_version: 2,
-    status: 'success',
-    planning_status: 'ready',
-    application_status: 'not_requested',
-    applied: false,
-    old_name: symbol.name,
-    new_name: newName,
-    files_affected: changes.length,
-    total_edits: count,
-    semantic_edits: count,
-    graph_edits: 0,
-    text_search_edits: 0,
-    text_search: 'not_used',
-    changes,
-  };
-}
-
-function blocked(symbol: RenameSymbol, newName: string, error: unknown): RenameResult {
-  return {
-    ...result(symbol, newName),
-    status: 'error',
-    application_status: 'not_started',
-    planning_status: error instanceof RenameFailure ? error.planningStatus : 'blocked',
-    code: error instanceof RenameFailure ? error.code : 'rename_failed',
-    error: error instanceof Error ? error.message : String(error),
-    ...(error instanceof RenameFailure && error.candidates ? { candidates: error.candidates } : {}),
-  };
-}
-
-async function validateSnapshots(snapshots: ReadonlyMap<string, string>): Promise<void> {
-  for (const [file, snapshot] of snapshots) {
-    if (!(await fs.readFile(file)).equals(Buffer.from(snapshot, 'utf8'))) {
+async function validateSnapshots(snapshots: ReadonlyMap<string, Buffer>): Promise<void> {
+  const entries = [...snapshots];
+  // Bound concurrent reads so large repositories cannot exhaust descriptors.
+  // Every source is still checked before each replacement, including unedited files.
+  for (let start = 0; start < entries.length; start += 8) {
+    const batch = entries.slice(start, start + 8);
+    const contents = await Promise.all(batch.map(([file]) => fs.readFile(file)));
+    for (let index = 0; index < batch.length; index++) {
+      const [file, snapshot] = batch[index]!;
+      if (contents[index]!.equals(snapshot)) continue;
       throw new RenameFailure(
         'source_changed',
         `Source changed while planning rename: ${file}. Retry from current sources.`,
@@ -165,10 +78,12 @@ export async function executeRenamePlan(
   dryRun = true,
 ): Promise<RenameResult> {
   const changes: FileChange[] = [];
-  const files = new Map<
-    string,
-    { absolute: string; real: string; snapshot: string; output: string }
-  >();
+  // Reuse encoded snapshots across the full-scope checks instead of encoding
+  // every unchanged source again for every file that is written.
+  const expectedSnapshots = new Map(
+    [...plan.snapshots].map(([file, snapshot]) => [file, Buffer.from(snapshot, 'utf8')]),
+  );
+  const files = new Map<string, { absolute: string; real: string; output: string }>();
   try {
     if (!plan.edits.length)
       throw new RenameFailure('no_locations', 'The provider returned no rename locations.');
@@ -193,66 +108,18 @@ export async function executeRenamePlan(
       const snapshot = plan.snapshots.get(absolute);
       if (snapshot === undefined)
         throw new RenameFailure('missing_snapshot', `No source snapshot for ${file}.`);
-      const edits: OccurrenceEdit[] = [];
-      for (const edit of unsorted.sort((a, b) => a.start - b.start || a.length - b.length)) {
-        if (
-          !Number.isSafeInteger(edit.start) ||
-          !Number.isSafeInteger(edit.length) ||
-          edit.start < 0 ||
-          edit.length <= 0 ||
-          edit.start + edit.length > snapshot.length ||
-          snapshot.slice(edit.start, edit.start + edit.length) !== edit.old_text
-        ) {
-          throw new RenameFailure(
-            'invalid_edit',
-            `Invalid rename span or expected text in ${file}.`,
-          );
-        }
-        const previous = edits.at(-1);
-        if (previous && previous.start + previous.length > edit.start) {
-          if (
-            previous.start === edit.start &&
-            previous.length === edit.length &&
-            previous.old_text === edit.old_text &&
-            previous.new_text === edit.new_text
-          )
-            continue;
-          throw new RenameFailure('overlapping_edits', `Conflicting rename spans in ${file}.`);
-        }
-        edits.push(edit);
-      }
-      let output = snapshot;
-      for (const edit of [...edits].reverse())
-        output =
-          output.slice(0, edit.start) + edit.new_text + output.slice(edit.start + edit.length);
-      files.set(file, { absolute, real, snapshot, output });
-      changes.push({
-        file_path: file,
-        edits: edits.map(({ file_path: _file, ...edit }) => {
-          const lineStart = snapshot.lastIndexOf('\n', edit.start - 1) + 1;
-          const nextLine = snapshot.indexOf('\n', edit.start);
-          const lineEnd = nextLine < 0 ? snapshot.length : nextLine;
-          return {
-            ...edit,
-            confidence: 'semantic',
-            line: snapshot.slice(0, edit.start).split('\n').length,
-            before: snapshot.slice(lineStart, lineEnd),
-            after:
-              snapshot.slice(lineStart, edit.start) +
-              edit.new_text +
-              snapshot.slice(edit.start + edit.length, lineEnd),
-          };
-        }),
-      });
+      const { edits, reports } = prepareRenameEdits(snapshot, unsorted, file);
+      const output = applyEdits(snapshot, edits);
+      files.set(file, { absolute, real, output });
+      changes.push({ file_path: file, edits: reports });
     }
-    await validateSnapshots(plan.snapshots);
+    await validateSnapshots(expectedSnapshots);
   } catch (error) {
     return { ...blocked(plan.symbol, plan.new_name, error), coverage: plan.coverage };
   }
 
   if (dryRun) return { ...result(plan.symbol, plan.new_name, changes), coverage: plan.coverage };
   const landed: FileChange[] = [];
-  const expectedSnapshots = new Map(plan.snapshots);
   for (const change of changes) {
     const file = files.get(change.file_path)!;
     let temporaryDirectory: string | undefined;
@@ -261,7 +128,7 @@ export async function executeRenamePlan(
       // change after an earlier write is reported as a partial operation.
       if (
         (await checkedRealPath(repoPath, change.file_path)) !== file.real ||
-        !(await fs.readFile(file.absolute)).equals(Buffer.from(file.snapshot, 'utf8'))
+        !(await fs.readFile(file.absolute)).equals(expectedSnapshots.get(file.absolute)!)
       ) {
         throw new RenameFailure(
           'source_changed',
@@ -284,7 +151,7 @@ export async function executeRenamePlan(
       // last; validation and replacement remain separate filesystem operations.
       if (
         (await checkedRealPath(repoPath, change.file_path)) !== file.real ||
-        !(await fs.readFile(file.absolute)).equals(Buffer.from(file.snapshot, 'utf8'))
+        !(await fs.readFile(file.absolute)).equals(expectedSnapshots.get(file.absolute)!)
       ) {
         throw new RenameFailure(
           'source_changed',
@@ -292,7 +159,7 @@ export async function executeRenamePlan(
         );
       }
       await fs.rename(replacement, file.real);
-      expectedSnapshots.set(file.absolute, file.output);
+      expectedSnapshots.set(file.absolute, Buffer.from(file.output, 'utf8'));
       landed.push(change);
     } catch (error) {
       return {

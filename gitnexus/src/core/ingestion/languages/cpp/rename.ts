@@ -1,5 +1,5 @@
-import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
-import type { RenameProvider, RenameSource } from '../../rename-provider.js';
+import { CLASS_KINDS, SupportedLanguages, type SymbolDefinition } from 'gitnexus-shared';
+import type { RenameProvider, RenameSource, RenameSemanticContext } from '../../rename-provider.js';
 import { createTreeSitterRenameSource } from '../rename-tree-sitter.js';
 import {
   cMacroNames,
@@ -93,10 +93,56 @@ function withCppLexicalBindings(source: RenameSource): RenameSource {
   };
 }
 
+function classRenameTarget(context: RenameSemanticContext): SymbolDefinition | undefined {
+  if (CLASS_KINDS.includes(context.target.type)) return context.target;
+  const owner =
+    context.target.ownerId &&
+    context.definitions.find((def) => def.nodeId === context.target.ownerId);
+  return owner &&
+    (simpleQualifiedName(context.target) ?? '').replace(/^~/, '') === simpleQualifiedName(owner)
+    ? owner
+    : undefined;
+}
+
 export const cppRenameProvider: RenameProvider = {
   additionalInteropNames: cMacroNames,
   interoperatesWithSourceProvider: (provider) => provider.id === SupportedLanguages.ObjectiveC,
-  checkSafety: checkCMacroSafety,
+  checkSafety(context) {
+    const macroIssue = checkCMacroSafety(context);
+    if (macroIssue) return macroIssue;
+    if (!context.newName.startsWith('_')) return;
+    const target = classRenameTarget(context) ?? context.target;
+    const occurrence = context.files
+      .get(target.filePath)
+      ?.occurrences.find((candidate) => candidate.definitionId === target.nodeId);
+    for (let node = occurrence?.node?.parent; node; node = node.parent ?? undefined) {
+      const declaredName = node.childForFieldName('name');
+      const isOwnName =
+        declaredName &&
+        occurrence?.node &&
+        declaredName.startIndex <= occurrence.node.startIndex &&
+        declaredName.endIndex >= occurrence.node.endIndex;
+      if (
+        ['namespace_definition', 'class_specifier', 'struct_specifier', 'union_specifier'].includes(
+          node.type,
+        ) &&
+        !isOwnName
+      )
+        return;
+      if (node.type === 'qualified_identifier' && !node.text.startsWith('::')) return;
+      if (
+        node.type === 'function_definition' &&
+        !['Function', 'Method', 'Constructor'].includes(target.type)
+      )
+        return;
+    }
+    // [lex.name]: identifiers beginning with an underscore are reserved in
+    // the global namespace. Class, namespace and local names remain legal.
+    return {
+      code: 'invalid_name',
+      message: 'A leading underscore is reserved in the C++ global namespace.',
+    };
+  },
   canonicalName: (name) => name.replace(/^~/, ''),
   acceptsSourceProvider: (provider) =>
     [SupportedLanguages.C, SupportedLanguages.CPlusPlus].includes(provider.id),
@@ -156,16 +202,7 @@ export const cppRenameProvider: RenameProvider = {
           isStaticName(def.filePath, simpleQualifiedName(def) ?? '')),
       writtenQualifications,
     );
-    const owner =
-      context.target.ownerId &&
-      context.definitions.find((def) => def.nodeId === context.target.ownerId);
-    const classTarget = CLASS_KINDS.includes(context.target.type)
-      ? context.target
-      : owner &&
-          (simpleQualifiedName(context.target) ?? '').replace(/^~/, '') ===
-            simpleQualifiedName(owner)
-        ? owner
-        : undefined;
+    const classTarget = classRenameTarget(context);
     if (classTarget) {
       const className = simpleQualifiedName(classTarget);
       const selected = new Map([[classTarget.nodeId, classTarget]]);

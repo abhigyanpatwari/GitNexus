@@ -1,3 +1,3 @@
 import { defineRenameFixtureTests } from '../helpers/rename-integration-cases.js';
 
-defineRenameFixtureTests(2);
+defineRenameFixtureTests('ruby');

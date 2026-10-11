@@ -1,3 +1,5 @@
+import type { RenameSpan, RenameIssue, RenameReplacement } from 'gitnexus-shared';
+export type { RenameSpan, RenameIssue, RenameReplacement } from 'gitnexus-shared';
 import type Parser from 'tree-sitter';
 import type {
   GraphNode,
@@ -12,12 +14,6 @@ import type { SemanticModel } from './model/semantic-model.js';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
 import type { ScopeResolver } from './scope-resolution/contract/scope-resolver.js';
 import type { SourceBindingResolution } from './scope-resolution/source-binding-resolution.js';
-
-/** A source span uses JavaScript string offsets in the ORIGINAL source. */
-export interface RenameSpan {
-  readonly start: number;
-  readonly length: number;
-}
 
 /** One written name may have several spans (for example a multipart selector). */
 export interface RenameOccurrence {
@@ -38,17 +34,6 @@ export interface RenameSource {
   readonly parsed: ParsedFile;
   readonly tree?: Parser.Tree;
   readonly occurrences: readonly RenameOccurrence[];
-}
-
-export interface RenameIssue {
-  readonly code: string;
-  readonly message: string;
-  readonly status?: 'unsupported' | 'error';
-}
-
-export interface RenameReplacement extends RenameSpan {
-  readonly oldText: string;
-  readonly newText: string;
 }
 
 export interface RenameParseInput {

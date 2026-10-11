@@ -100,6 +100,19 @@ export const dartRenameProvider: RenameProvider = {
         message: 'A built-in identifier cannot name a type, extension or import prefix.',
       };
   },
+  checkOccurrence({ selected, occurrence, newName }) {
+    if (!selected || !['await', 'yield'].includes(newName)) return;
+    for (let node = occurrence.node?.parent; node; node = node.parent ?? undefined) {
+      if (node.type !== 'function_body') continue;
+      if (node.children.some((child) => ['async', 'async*', 'sync*'].includes(child.text)))
+        return {
+          code: 'invalid_name',
+          message: 'await and yield cannot be identifiers in an async or generator body.',
+        };
+      // A nested synchronous function has its own identifier context.
+      return;
+    }
+  },
   symbolFamily(context) {
     const name = (def: typeof context.target) => canonicalName(simpleQualifiedName(def) ?? '');
     const method = (def: typeof context.target) =>
