@@ -10,7 +10,7 @@ import type {
 } from '../../language-provider.js';
 import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.8';
+export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.9';
 export const OBJECTIVE_C_GRAMMAR_PACKAGE = 'tree-sitter-objc';
 export const OBJECTIVE_C_GRAMMAR_VERSION = '3.0.2';
 
@@ -72,6 +72,23 @@ export interface ObjCMemberFact {
   readonly filePath: string;
   readonly startLine: number;
   readonly endLine: number;
+  readonly accessors?: {
+    readonly getter: string;
+    readonly setter?: string;
+    readonly custom: boolean;
+    readonly methodKind: ObjCMethodKind;
+  };
+}
+
+export interface ObjCMemberAccessFact extends ObjCMessageFact {
+  readonly accessKind: 'property' | 'ivar';
+}
+
+export interface ObjCPropertyImplementationFact {
+  readonly ownerQualifiedName: string;
+  readonly property: string;
+  readonly ivar?: string;
+  readonly dynamic: boolean;
 }
 
 export interface ObjCFunctionFact {
@@ -143,6 +160,8 @@ export interface ObjCFileFacts {
   readonly imports: readonly ObjCImportFact[];
   readonly messages: readonly ObjCMessageFact[];
   readonly unresolvedMessages: readonly ObjCUnresolvedMessageFact[];
+  readonly memberAccesses?: readonly ObjCMemberAccessFact[];
+  readonly propertyImplementations?: readonly ObjCPropertyImplementationFact[];
 }
 
 export interface ObjCCaptureSideChannel {
@@ -365,43 +384,48 @@ function methodTypeText(node: SyntaxNode): string | undefined {
   return cleanType(typeNode?.text);
 }
 
-function methodSelector(node: SyntaxNode): string {
+/** Written selector pieces shared by graph extraction and source refactoring. */
+export function objectiveCSelectorParts(
+  node: SyntaxNode,
+): readonly { node: SyntaxNode; colon: boolean }[] {
   const children = directChildren(node);
+  if (node.type === 'message_expression') {
+    const parts: { node: SyntaxNode; colon: boolean }[] = [];
+    for (let i = 2; i < children.length; i++) {
+      const child = children[i];
+      if (child.type !== 'identifier' && child.type !== 'field_identifier') continue;
+      if (children[i + 1]?.text === ':') parts.push({ node: child, colon: true });
+      else if (parts.length === 0 && children[i + 1]?.text === ']')
+        parts.push({ node: child, colon: false });
+    }
+    return parts;
+  }
   const keywordDeclarators = children.filter((child) => child.type === 'keyword_declarator');
   if (keywordDeclarators.length > 0) {
     return keywordDeclarators
-      .map((declarator) => directIdentifiers(declarator)[0]?.text)
-      .filter((name): name is string => name !== undefined)
-      .map((name) => `${name}:`)
-      .join('');
+      .map((declarator) => directIdentifiers(declarator)[0])
+      .filter((name): name is SyntaxNode => name !== undefined)
+      .map((node) => ({ node, colon: true }));
   }
-
-  const pieces: string[] = [];
+  const pieces: { node: SyntaxNode; colon: boolean }[] = [];
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
     if (child.type !== 'identifier') continue;
     const next = children[i + 1];
     if (next?.type === 'method_parameter') {
-      pieces.push(`${child.text}:`);
+      pieces.push({ node: child, colon: true });
       continue;
     }
-    if (pieces.length === 0) pieces.push(child.text);
+    if (pieces.length === 0) pieces.push({ node: child, colon: false });
   }
-  return pieces.join('');
+  return pieces;
 }
 
-function messageSelector(node: SyntaxNode): string {
-  const children = directChildren(node);
-  const pieces: string[] = [];
-  for (let i = 2; i < children.length; i++) {
-    const child = children[i];
-    if (child.type !== 'identifier' && child.type !== 'field_identifier') continue;
-    const next = children[i + 1];
-    if (next?.text === ':') pieces.push(`${child.text}:`);
-    else if (pieces.length === 0 && next?.text === ']') pieces.push(child.text);
-  }
-  return pieces.join('');
-}
+const methodSelector = (node: SyntaxNode): string =>
+  objectiveCSelectorParts(node)
+    .map((part) => `${part.node.text}${part.colon ? ':' : ''}`)
+    .join('');
+const messageSelector = methodSelector;
 
 function methodParameterInfo(node: SyntaxNode): {
   parameterTypes: string[];
@@ -427,19 +451,49 @@ function methodParameterInfo(node: SyntaxNode): {
   return { parameterTypes, parameterNames, typeBindings };
 }
 
-function propertyInfos(node: SyntaxNode): Array<{ name: string; type?: string }> {
+function propertyInfos(
+  node: SyntaxNode,
+): Array<{ name: string; type?: string; accessors: NonNullable<ObjCMemberFact['accessors']> }> {
   const structDecl = directNamedChildren(node).find((child) => child.type === 'struct_declaration');
   if (structDecl === undefined) return [];
-  return declarationNamesAndType(structDecl);
-}
-
-function declarationNameAndType(node: SyntaxNode): { name: string; type?: string } | null {
-  return declarationNamesAndType(node)[0] ?? null;
+  const attributes = directNamedChildren(node).find(
+    (child) => child.type === 'property_attributes_declaration',
+  );
+  const values = new Map(
+    attributes?.namedChildren.map((attribute) => {
+      const ids = directIdentifiers(attribute);
+      return [ids[0]?.text ?? attribute.text, ids[1]?.text];
+    }),
+  );
+  return declarationNamesAndType(structDecl).map((property) => ({
+    ...property,
+    accessors: {
+      getter: values.get('getter') ?? property.name,
+      ...(values.has('readonly')
+        ? {}
+        : {
+            setter: values.has('setter')
+              ? `${values.get('setter')}:`
+              : `set${property.name[0].toUpperCase()}${property.name.slice(1)}:`,
+          }),
+      custom: values.has('getter') || values.has('setter'),
+      methodKind: values.has('class') ? '+' : '-',
+    },
+  }));
 }
 
 function declarationNamesAndType(node: SyntaxNode): Array<{ name: string; type?: string }> {
   const type = cleanType(firstTypeNode(node)?.text);
   return declaratorNames(node).map((name) => (type !== undefined ? { name, type } : { name }));
+}
+
+/** The declared identifier, excluding initializer and nested prototype names. */
+export function objectiveCDeclaratorName(node: SyntaxNode): SyntaxNode | undefined {
+  if (node.type === 'identifier') return node;
+  const child =
+    node.childForFieldName('declarator') ??
+    (node.type === 'parenthesized_declarator' ? node.firstNamedChild : null);
+  return child ? objectiveCDeclaratorName(child) : undefined;
 }
 
 function declaratorNames(node: SyntaxNode): string[] {
@@ -609,7 +663,7 @@ function directProtocolNames(node: SyntaxNode): string[] {
   return Array.from(new Set(out));
 }
 
-function parseContainer(node: SyntaxNode, filePath: string): ObjCContainerFact | null {
+export function parseContainer(node: SyntaxNode, filePath: string): ObjCContainerFact | null {
   if (
     node.type !== 'class_interface' &&
     node.type !== 'class_implementation' &&
@@ -694,7 +748,7 @@ interface ObjCBinding {
 function enclosingCompoundScope(node: SyntaxNode, methodBody: SyntaxNode): SyntaxNode {
   let current = node.parent;
   while (current !== null && current !== methodBody) {
-    if (current.type === 'compound_statement') return current;
+    if (current.type === 'compound_statement' || current.type === 'for_statement') return current;
     current = current.parent;
   }
   return methodBody;
@@ -717,19 +771,35 @@ function collectMethodBindings(
     scopeEndIndex: methodBody.endIndex,
   }));
   walkNamedTree(methodBody, (node) => {
-    if (node.type !== 'declaration') return;
-    const info = declarationNameAndType(node);
-    if (info === null) return;
-    const type = parseObjCType(info.type);
-    if (type === undefined) return;
-    const scope = enclosingCompoundScope(node, methodBody);
-    bindings.push({
-      name: info.name,
-      type,
-      declarationIndex: node.endIndex,
-      scopeStartIndex: scope.startIndex,
-      scopeEndIndex: scope.endIndex,
-    });
+    if (node.type !== 'declaration' && node.type !== 'parameter_declaration') return;
+    let scope: SyntaxNode | undefined;
+    if (node.type === 'parameter_declaration') {
+      // Block parameters own the block body; names in a function-pointer type
+      // only describe its prototype and cannot shadow enclosing values.
+      for (let parent = node.parent; parent && parent !== methodBody; parent = parent.parent) {
+        if (parent.type === 'function_declarator') return;
+        if (parent.type === 'block_literal') {
+          scope = parent;
+          break;
+        }
+      }
+      if (!scope) return;
+    } else scope = enclosingCompoundScope(node, methodBody);
+    const type = parseObjCType(firstTypeNode(node)?.text) ?? {
+      kind: 'unknown' as const,
+      raw: node.text,
+    };
+    for (const declarator of node.childrenForFieldName('declarator')) {
+      const name = objectiveCDeclaratorName(declarator);
+      if (!name) continue;
+      bindings.push({
+        name: name.text,
+        type,
+        declarationIndex: name.endIndex,
+        scopeStartIndex: scope.startIndex,
+        scopeEndIndex: scope.endIndex,
+      });
+    }
   });
   return bindings;
 }
@@ -865,8 +935,57 @@ function collectMethodMessages(
   classNames: ReadonlySet<string>,
   messages: ObjCMessageFact[],
   unresolvedMessages: ObjCUnresolvedMessageFact[],
+  memberAccesses: ObjCMemberAccessFact[],
 ): void {
   const methodBindings = collectMethodBindings(methodNode, parameterTypes);
+  const methodBody = directNamedChildren(methodNode).find(
+    (node) => node.type === 'compound_statement',
+  );
+  if (methodBody)
+    walkNamedTree(methodBody, (node) => {
+      const field = node.type === 'field_expression' ? node.childForFieldName('field') : undefined;
+      const bare = node.type === 'identifier' && !['self', 'super'].includes(node.text);
+      if (!field && !bare) return;
+      if (
+        bare &&
+        (bindingAt(methodBindings, node.text, node.startIndex) ||
+          (node.parent?.type === 'message_expression' &&
+            objectiveCSelectorParts(node.parent).some((part) => part.node.id === node.id)))
+      )
+        return;
+      const token = field ?? node;
+      const receiver = field ? node.childForFieldName('argument') : undefined;
+      const classified = receiver
+        ? classifyReceiver(
+            receiver,
+            token.text,
+            method,
+            methodBindings,
+            membersByOwner,
+            macroNames,
+            classNames,
+          )
+        : { kind: 'self' as const };
+      memberAccesses.push({
+        selector: token.text,
+        receiverText: receiver?.text ?? 'self',
+        receiverKind: classified.kind,
+        ...('type' in classified && classified.type ? { receiverType: classified.type } : {}),
+        ...('memberName' in classified && classified.memberName
+          ? { receiverMemberName: classified.memberName }
+          : {}),
+        sourceMethodQualifiedName: method.qualifiedName,
+        sourceMethodId: method.nodeId,
+        sourceOwnerQualifiedName: method.ownerQualifiedName,
+        sourceOwnerName: method.ownerName,
+        sourceMethodKind: method.methodKind,
+        filePath: method.filePath,
+        startLine: token.startPosition.row,
+        startCol: token.startPosition.column,
+        accessKind:
+          field && node.children.some((child) => child.text === '.') ? 'property' : 'ivar',
+      });
+    });
   walkNamedTree(methodNode, (messageNode) => {
     if (messageNode.type !== 'message_expression') return;
     const receiver = messageReceiver(messageNode);
@@ -921,6 +1040,8 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
   const imports: ObjCImportFact[] = [];
   const messages: ObjCMessageFact[] = [];
   const unresolvedMessages: ObjCUnresolvedMessageFact[] = [];
+  const memberAccesses: ObjCMemberAccessFact[] = [];
+  const propertyImplementations: ObjCPropertyImplementationFact[] = [];
   const membersByOwner = new Map<string, Map<string, ObjCTypeInfo>>();
   const macroNames = new Set<string>();
   const classNames = new Set<string>();
@@ -1076,6 +1197,7 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
             classNames,
             messages,
             unresolvedMessages,
+            memberAccesses,
           );
         } else if (inner.type === 'property_declaration') {
           const { startLine, endLine } = range(inner);
@@ -1092,6 +1214,7 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
               ownerLabel: ownerLabel(container.kind),
               ...(container.hostClass !== undefined ? { hostClass: container.hostClass } : {}),
               ...(prop.type !== undefined ? { declaredType: prop.type } : {}),
+              accessors: prop.accessors,
               filePath,
               startLine,
               endLine,
@@ -1121,6 +1244,23 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
             }
           });
         } else if (inner.type === 'implementation_definition') {
+          const propertyNode = directNamedChildren(inner).find(
+            (node) => node.type === 'property_implementation',
+          );
+          if (propertyNode) {
+            const ids = directIdentifiers(propertyNode);
+            const dynamic = propertyNode.child(0)?.text === '@dynamic';
+            for (let index = 0; index < ids.length; index++) {
+              const property = ids[index];
+              const explicitIvar = property.nextSibling?.text === '=' ? ids[++index] : undefined;
+              propertyImplementations.push({
+                ownerQualifiedName: container.qualifiedName,
+                property: property.text,
+                ...(dynamic ? {} : { ivar: explicitIvar?.text ?? property.text }),
+                dynamic,
+              });
+            }
+          }
           const functionNode = directNamedChildren(inner).find(
             (node) => node.type === 'function_definition',
           );
@@ -1166,6 +1306,7 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
               classNames,
               messages,
               unresolvedMessages,
+              memberAccesses,
             );
           }
         }
@@ -1190,6 +1331,8 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
     imports,
     messages,
     unresolvedMessages,
+    memberAccesses,
+    propertyImplementations,
   };
 }
 

@@ -7,6 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { csharpRenameProvider } from './csharp/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { csharpClassConfig } from '../class-extractors/configs/csharp.js';
 import { defineLanguage } from '../language-provider.js';
@@ -134,6 +135,7 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const csharpProvider = defineLanguage({
+  rename: csharpRenameProvider,
   id: SupportedLanguages.CSharp,
   extensions: ['.cs'],
   entryPointPatterns: [

@@ -23,7 +23,7 @@
  * Plan: `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
-import type { ParsedFile, RegistryProviders, Scope } from 'gitnexus-shared';
+import type { ParsedFile, ReferenceSite, RegistryProviders, Scope } from 'gitnexus-shared';
 import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
@@ -35,6 +35,11 @@ import { validateBindingsImmutability } from './validate-bindings-immutability.j
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { finalizeScopeModel } from '../../finalize-orchestrator.js';
 import { resolveReferenceSites, type ResolveStats } from '../../resolve-references.js';
+import {
+  sourceBindingForDefinition,
+  type SourceBindingRecorder,
+  type SourceBindingResolution,
+} from '../source-binding-resolution.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import {
   emitFileCfgs,
@@ -48,6 +53,7 @@ import {
   REACHING_DEF_FACTS_PER_EDGE_CAP,
 } from '../../cfg/emit.js';
 import { createMemoizedReachingDefs } from '../../cfg/reaching-defs.js';
+import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../../cfg/collect.js';
 import {
   emitFileTaint,
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
@@ -225,6 +231,7 @@ function preEmitInheritanceEdges(
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
   recordTypeArguments: HeritageTypeArgumentSink,
   unresolvedInheritanceByClass: Set<string>,
+  recordSourceBinding?: SourceBindingRecorder,
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -273,6 +280,7 @@ function preEmitInheritanceEdges(
       unresolvedInheritanceByClass.add(callerClass.nodeId);
       continue;
     }
+    recordSourceBinding?.(site, sourceBindingForDefinition(targetDef, 'inheritance'));
     const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
     const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
     if (
@@ -383,10 +391,13 @@ export type ScopeResolutionSubPhase =
   | 'linking symbols';
 
 interface RunScopeResolutionInput {
+  /** Source-backed providers use the same executable-region cap as workers. */
+  readonly pdgMaxFunctionLines?: number;
   /** Observe the completed semantic pass without changing its graph output. */
   readonly onResolved?: (result: {
     readonly parsedFiles: readonly ParsedFile[];
     readonly indexes: ScopeResolutionIndexes;
+    readonly referenceBindings: ReadonlyMap<ReferenceSite, SourceBindingResolution>;
   }) => void;
   readonly graph: KnowledgeGraph;
   /**
@@ -623,6 +634,14 @@ export function runScopeResolution(
   const callableFlowOnly = provider.scopeResolutionEdgeMode === 'callable-flow-only';
   const onWarn = input.onWarn ?? (() => {});
   const resolutionOutcomes: ResolutionOutcome[] = [];
+  const referenceBindings =
+    input.onResolved === undefined ? undefined : new Map<ReferenceSite, SourceBindingResolution>();
+  const recordSourceBinding: SourceBindingRecorder | undefined =
+    referenceBindings === undefined
+      ? undefined
+      : (site, binding) => {
+          referenceBindings.set(site, binding);
+        };
   const undecidedSatisfaction: UndecidedSatisfaction[] = [];
   const recordResolutionOutcome: ResolutionOutcomeRecorder = (outcome) => {
     resolutionOutcomes.push(outcome);
@@ -680,6 +699,28 @@ export function runScopeResolution(
         if (extractionWarned) scopeExtractionFailedPaths.push(file.path);
         continue;
       }
+      if (input.pdg === true && provider.languageProvider.collectSourceCfgs) {
+        const warnCfg = (message: string): void => {
+          logger.warn(message);
+          input.onWarn?.(message);
+        };
+        try {
+          const { cfgs, skipped } = provider.languageProvider.collectSourceCfgs(
+            file.content,
+            file.path,
+            input.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
+          );
+          if (cfgs.length) parsed = { ...parsed, cfgSideChannel: cfgs };
+          if (skipped.tooManyLines || skipped.tooDeeplyNested || skipped.buildError) {
+            warnCfg(
+              `[cfg] ${file.path}: skipped source regions (tooManyLines=${skipped.tooManyLines}, ` +
+                `tooDeeplyNested=${skipped.tooDeeplyNested}, buildError=${skipped.buildError})`,
+            );
+          }
+        } catch (error) {
+          warnCfg(`[cfg] ${file.path}: source CFG extraction failed: ${String(error)}`);
+        }
+      }
     }
     // Worker-boundary restore: a pre-extracted ParsedFile was produced by
     // `extractParsedFile` running INSIDE a worker, so any capture-time
@@ -728,6 +769,8 @@ export function runScopeResolution(
   // for repositories that use the provider but no first-class callables.
   if (
     callableFlowOnly &&
+    input.pdg !== true &&
+    input.onResolved === undefined &&
     !parsedFiles.some((parsed) => (parsed.callableFlowSites?.length ?? 0) > 0)
   ) {
     return {
@@ -852,6 +895,14 @@ export function runScopeResolution(
       namedImportsBindTopLevelOnly: provider.namedImportsBindTopLevelOnly === true,
     },
   });
+  if (referenceBindings !== undefined) {
+    for (const site of finalized.referenceSites)
+      referenceBindings.set(site, {
+        status: 'unresolved',
+        targetDefIds: [],
+        basis: 'unresolved',
+      });
+  }
   logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
   // `export *` collisions the shared finalize refused to bind (WS1 C2). Recorded
   // as outcomes so the refusal is auditable next to the name-fallback census —
@@ -890,6 +941,7 @@ export function runScopeResolution(
         nodeLookup,
         recordHeritageTypeArguments,
         unresolvedInheritanceByClass,
+        recordSourceBinding,
       );
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
@@ -1022,6 +1074,13 @@ export function runScopeResolution(
   const { referenceIndex, stats: resolveStats } = resolveReferenceSites({
     scopes: indexes,
     providers: registryProviders,
+    recordSourceBinding:
+      recordSourceBinding === undefined
+        ? undefined
+        : (site, binding) => {
+            // Inheritance already passed through its qualified/provider-aware seam.
+            if (site.kind !== 'inherits') recordSourceBinding(site, binding);
+          },
     ownedMembersByOwner: (ownerDefId, memberName) =>
       lookupOwnedMembersByOwner(readonlyModel, ownerDefId, memberName),
   });
@@ -1177,6 +1236,7 @@ export function runScopeResolution(
         readonlyModel,
         {
           recordResolutionOutcome,
+          recordSourceBinding,
           calleeIdSink: calleeIdAccumulator,
           // The pass's only source of positive EXTERNAL evidence for a dropped
           // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
@@ -1250,6 +1310,7 @@ export function runScopeResolution(
           conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
           constraintCompatibility: provider.constraintCompatibility,
           recordResolutionOutcome,
+          recordSourceBinding,
           calleeIdSink: calleeIdAccumulator,
           skipSites: deferredIndirectSites,
         },
@@ -1277,6 +1338,7 @@ export function runScopeResolution(
       readonlyModel,
       {
         calleeIdSink: calleeIdAccumulator,
+        recordSourceBinding,
         isBuiltInName: provider.languageProvider.isBuiltInName,
         heritageTypeArguments,
         unresolvedInheritanceByClass,
@@ -1361,6 +1423,7 @@ export function runScopeResolution(
         emitParsedFiles,
         postHeritageNodeLookup,
         uniqueNameSkipSites,
+        recordSourceBinding,
       );
 
   // A language that opts out of name fallback still gets DETECTION. Skipping
@@ -1433,6 +1496,7 @@ export function runScopeResolution(
           skipEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
           moduleFileExists: (filePath) => indexes.moduleScopes.get(filePath) !== undefined,
         },
+        recordSourceBinding,
       );
   if (propertyDispatch.skippedKeys > 0) {
     // Never drop dispatch coverage silently: a hook table larger than the
@@ -1482,10 +1546,14 @@ export function runScopeResolution(
   // Language-specific supplementary edges (e.g. Vue template-derived
   // BINDS_EVENT_HANDLER / EMITS_EVENT / CALLS / ACCESSES edges).
   // Runs last so the full graph — including import edges — is visible.
-  if (!callableFlowOnly && provider.emitPostResolutionEdges !== undefined) {
+  if (
+    (!callableFlowOnly || recordSourceBinding !== undefined) &&
+    provider.emitPostResolutionEdges !== undefined
+  ) {
     provider.emitPostResolutionEdges(graph, emitParsedFiles, postHeritageNodeLookup, indexes, {
       fileContents: getFileContents(),
       resolutionConfig,
+      recordSourceBinding,
     });
   }
 
@@ -1902,7 +1970,7 @@ export function runScopeResolution(
   logHeapProbe('sr-end', `lang=${provider.language} parsedFiles=${parsedFiles.length}`);
 
   for (const outcome of resolutionOutcomes) input.recordResolutionOutcome?.(outcome);
-  input.onResolved?.({ parsedFiles, indexes });
+  input.onResolved?.({ parsedFiles, indexes, referenceBindings: referenceBindings! });
 
   return {
     filesProcessed: parsedFiles.length,

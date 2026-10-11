@@ -7,7 +7,7 @@
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import { populateCsharpNamespacePrefixes } from './qualified-type-names.js';
@@ -24,6 +24,11 @@ import { loadCsharpResolutionConfig, type CsharpResolutionConfig } from './resol
 import { unwrapCsharpElementType } from './accessor-unwrap.js';
 import { emitRazorViewComponentEdges } from './razor-view-components.js';
 
+const declarationImports = new WeakMap<
+  readonly ParsedFile[],
+  ReadonlyMap<string, readonly string[]>
+>();
+
 const csharpScopeResolver: ScopeResolver = {
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
@@ -33,7 +38,33 @@ const csharpScopeResolver: ScopeResolver = {
 
   loadResolutionConfig: (repoPath) => loadCsharpResolutionConfig(repoPath),
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
+    // A using names a declaration, independently of its containing filename.
+    // Prefer the already-extracted namespace identity; file suffixes are only
+    // the fallback for imports with no source declaration in this workspace.
+    const target = targetRaw.replace(/^global::/, '').replace(/@/g, '');
+    let declarations = context && declarationImports.get(context.parsedFiles);
+    if (context && !declarations) {
+      const filesByName = new Map<string, Set<string>>();
+      for (const parsed of context.parsedFiles) {
+        for (const def of parsed.localDefs) {
+          if (!CLASS_KINDS.includes(def.type) && def.type !== 'Namespace') continue;
+          const qualified =
+            def.namespacePrefix && !def.qualifiedName?.startsWith(def.namespacePrefix + '.')
+              ? def.namespacePrefix + '.' + def.qualifiedName
+              : def.qualifiedName;
+          if (!qualified) continue;
+          const key = qualified.replace(/@/g, '');
+          const paths = filesByName.get(key) ?? new Set<string>();
+          paths.add(parsed.filePath);
+          filesByName.set(key, paths);
+        }
+      }
+      declarations = new Map([...filesByName].map(([name, paths]) => [name, [...paths].sort()]));
+      declarationImports.set(context.parsedFiles, declarations);
+    }
+    const exactFiles = declarations?.get(target);
+    if (exactFiles?.length) return exactFiles;
     const config = resolutionConfig as CsharpResolutionConfig | undefined;
     const ws: CsharpResolveContext = {
       fromFile,

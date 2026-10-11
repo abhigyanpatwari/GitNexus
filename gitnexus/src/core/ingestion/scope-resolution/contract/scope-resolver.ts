@@ -279,6 +279,7 @@
  */
 
 import type { DecorationStripper } from '../scope/walkers.js';
+import type { SourceBindingRecorder } from '../source-binding-resolution.js';
 import type {
   NameLookupOptions,
   BindingRef,
@@ -1479,7 +1480,7 @@ export interface ScopeResolver {
   readonly resolveReceiverMember?: (
     ownerDef: SymbolDefinition,
     memberName: string,
-    callsite: Callsite,
+    callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
@@ -1804,6 +1805,9 @@ export interface ScopeResolver {
     ctx: {
       readonly fileContents: ReadonlyMap<string, string>;
       readonly resolutionConfig?: unknown;
+      /** Observe the source declaration at the provider's actual decision,
+       * before runtime target expansion or graph edge deduplication. */
+      readonly recordSourceBinding?: SourceBindingRecorder;
     },
   ) => void;
 

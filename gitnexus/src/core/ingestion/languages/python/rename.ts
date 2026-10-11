@@ -1,0 +1,269 @@
+import type Parser from 'tree-sitter';
+import { CLASS_KINDS } from 'gitnexus-shared';
+import type {
+  RenameIssue,
+  RenameOccurrence,
+  RenameProvider,
+  RenameSource,
+} from '../../rename-provider.js';
+import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
+import {
+  canonicalizeRenameBindings,
+  containsRange,
+  createTreeSitterRenameSource,
+  innermostRenameScope,
+  nodeRange,
+  walkNamedNodes,
+} from '../rename-tree-sitter.js';
+import { graphRenameFamily } from '../rename-family.js';
+import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
+
+const canonicalName = (name: string): string => name.normalize('NFKC');
+const keywords = new Set(
+  'False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'.split(
+    ' ',
+  ),
+);
+const unsupported = (message: string, code = 'unsupported_occurrence'): RenameIssue => ({
+  code,
+  message,
+  status: 'unsupported',
+});
+
+function role(node: Parser.SyntaxNode): RenameOccurrence['role'] {
+  const parent = node.parent;
+  if (!parent) return 'name';
+  if (parent.type === 'aliased_import' && parent.childForFieldName('alias')?.id === node.id)
+    return 'alias';
+  if (
+    parent.type === 'dotted_name' &&
+    (parent.parent?.type === 'import_from_statement' || parent.parent?.type === 'aliased_import')
+  )
+    return 'imported';
+  if (parent.type === 'keyword_argument' && parent.childForFieldName('name')?.id === node.id)
+    return 'unrelated';
+  if (
+    parent.type === 'parameters' ||
+    (['default_parameter', 'typed_default_parameter'].includes(parent.type) &&
+      parent.childForFieldName('name')?.id === node.id) ||
+    (['typed_parameter', 'list_splat_pattern', 'dictionary_splat_pattern'].includes(parent.type) &&
+      parent.firstNamedChild?.id === node.id)
+  )
+    return 'binding';
+  return 'name';
+}
+
+function bareReference(node: Parser.SyntaxNode, source: RenameSource) {
+  const parent = node.parent;
+  if (
+    !parent ||
+    ['dotted_name', 'aliased_import', 'global_statement', 'nonlocal_statement'].includes(
+      parent.type,
+    )
+  )
+    return undefined;
+  if (
+    parent.childForFieldName('name')?.id === node.id &&
+    ['function_definition', 'class_definition'].includes(parent.type)
+  )
+    return undefined;
+  if (parent.type === 'attribute' && parent.childForFieldName('attribute')?.id === node.id)
+    return undefined;
+  const range = nodeRange(node);
+  const scope = innermostRenameScope(source.parsed, node);
+  if (!scope) return undefined;
+  // The provider's lexical claims establish assignment/comprehension ownership.
+  return {
+    name: canonicalName(node.text),
+    nameRange: range,
+    atRange: range,
+    inScope: scope,
+    kind: 'read' as const,
+  };
+}
+
+function within(node: Parser.SyntaxNode, container: Parser.SyntaxNode): boolean {
+  return containsRange(nodeRange(container), nodeRange(node));
+}
+
+function bindsInClassBody(token: Parser.SyntaxNode, declaration: Parser.SyntaxNode): boolean {
+  for (let node = token.parent; node && node.id !== declaration.id; node = node.parent) {
+    if (node.type !== 'function_definition' && node.type !== 'lambda') continue;
+    const body = node.childForFieldName('body');
+    if (body && within(token, body)) return false;
+    const parameters = node.childForFieldName('parameters');
+    if (parameters && within(token, parameters)) {
+      let parameter = token;
+      while (parameter.parent && parameter.parent.id !== parameters.id)
+        parameter = parameter.parent;
+      const value = parameter.childForFieldName('value');
+      const annotation = parameter.childForFieldName('type');
+      if (!(value && within(token, value)) && !(annotation && within(token, annotation)))
+        return false;
+    }
+  }
+  return true;
+}
+
+function hasMangledNames(className: Parser.SyntaxNode): boolean {
+  const declaration = className.parent;
+  if (declaration?.type !== 'class_definition') return false;
+  const pending = [...declaration.namedChildren];
+  const isPrivate = (name: string) => name.startsWith('__') && !name.endsWith('__');
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node.type === 'class_definition') {
+      if (isPrivate(node.childForFieldName('name')?.text ?? '')) return true;
+      const body = node.childForFieldName('body');
+      pending.push(...node.namedChildren.filter((child) => child.id !== body?.id));
+      continue;
+    }
+    if (
+      node.type === 'identifier' &&
+      (isPrivate(node.text) || (node.text === '__slots__' && bindsInClassBody(node, declaration)))
+    )
+      return true;
+    pending.push(...node.namedChildren);
+  }
+  return false;
+}
+
+function receiverWrite(token: Parser.SyntaxNode): boolean {
+  for (let node = token.parent; node; node = node.parent) {
+    if (node.type === 'attribute') return false;
+    if (
+      node.type.includes('assignment') ||
+      node.type === 'for_statement' ||
+      node.type === 'for_in_clause' ||
+      node.type === 'named_expression'
+    ) {
+      const left = node.childForFieldName('left') ?? node.childForFieldName('name');
+      if (left && within(token, left)) return true;
+    }
+    if (node.type.includes('statement') || node.type.includes('definition')) return false;
+  }
+  return false;
+}
+
+export const pythonRenameProvider: RenameProvider = {
+  canonicalName,
+  symbolFamily(context) {
+    return graphRenameFamily(context, {
+      matches: (left, right) =>
+        left.type === 'Method' &&
+        right.type === 'Method' &&
+        canonicalName(simpleQualifiedName(left) ?? '') ===
+          canonicalName(simpleQualifiedName(right) ?? ''),
+    });
+  },
+  validateName(name) {
+    if (
+      !/^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(name) ||
+      !/^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(canonicalName(name)) ||
+      keywords.has(canonicalName(name))
+    )
+      return { code: 'invalid_name', message: 'Choose a valid nonreserved Python identifier.' };
+  },
+  parseSource: createTreeSitterRenameSource({
+    isName: (node) => node.type === 'identifier',
+    skip: (node) => node.type === 'comment',
+    role,
+    canonicalName,
+    transformParsed: (parsed) => canonicalizeRenameBindings(parsed, canonicalName),
+    reference: bareReference,
+  }),
+  checkSafety(context) {
+    const targetName = simpleQualifiedName(context.target) ?? '';
+    if (context.target.ownerId && targetName.startsWith('__') && !targetName.endsWith('__'))
+      return unsupported(
+        'A private Python member requires its mangled external spellings in the symbol family.',
+        'unsupported_symbol_family',
+      );
+    if (CLASS_KINDS.includes(context.target.type)) {
+      const source = context.files.get(context.target.filePath);
+      const name = source?.occurrences.find(
+        (occurrence) => occurrence.definitionId === context.target.nodeId,
+      )?.node;
+      if (name && hasMangledNames(name))
+        return unsupported(
+          'Renaming a Python class with private-name or slot coupling requires a complete symbol-family plan.',
+          'unsupported_symbol_family',
+        );
+    }
+    if (!context.target.ownerId) return;
+    // A string literal attribute name is meaningful only on the relevant receiver.
+    for (const source of context.files.values()) {
+      if (!source.tree) continue;
+      for (const node of walkNamedNodes(source.tree.rootNode)) {
+        if (
+          node.type !== 'call' ||
+          !['getattr', 'setattr', 'delattr', 'hasattr'].includes(
+            node.childForFieldName('function')?.text ?? '',
+          )
+        )
+          continue;
+        const receiver = node.childForFieldName('arguments')?.firstNamedChild;
+        if (!receiver) continue;
+        const scope = innermostRenameScope(source.parsed, receiver);
+        const claim =
+          scope &&
+          lookupNameClaim(scope, receiver.text, context.indexes, {
+            position: nodeRange(receiver),
+            purpose: 'value',
+          });
+        const type = claim && claim.typeBinding;
+        if (!type) return unsupported('A dynamic attribute receiver cannot be proven unrelated.');
+        const owners = lookupNameClaim(type.declaredAtScope, type.rawName, context.indexes, {
+          position: nodeRange(receiver),
+          purpose: 'type',
+        }).bindings;
+        if (!owners.length || owners.some((owner) => owner.def.nodeId === context.target.ownerId))
+          return unsupported('Dynamic attribute access may denote the selected member.');
+      }
+    }
+  },
+  checkOccurrence(context) {
+    const { site } = context;
+    if (!site?.explicitReceiver) return;
+    const name = site.explicitReceiver.name;
+    const claim = lookupNameClaim(site.inScope, name, context.indexes, {
+      position: site.atRange,
+      purpose: 'value',
+    });
+    const type = claim.typeBinding;
+    if (
+      type?.source === 'decorator-unknown' ||
+      (type?.declaredSpelling && type.declaredSpelling !== type.rawName)
+    )
+      return unsupported(
+        'The receiver type does not prove an object identity.',
+        'ambiguous_reference',
+      );
+    const source = claim.scope && context.files.get(claim.scope.filePath);
+    if (!source) return;
+    for (const occurrence of source.occurrences) {
+      const node = occurrence.node;
+      if (occurrence.name !== name || !node || !receiverWrite(node)) continue;
+      if (
+        type?.source === 'constructor-inferred' &&
+        type.bindingRange &&
+        containsRange(type.bindingRange, nodeRange(node))
+      )
+        continue;
+      const scope = innermostRenameScope(source.parsed, node);
+      const written =
+        scope &&
+        lookupNameClaim(scope, name, context.indexes, {
+          position: nodeRange(node),
+          purpose: 'value',
+        });
+      if (
+        !written ||
+        !written.scope ||
+        written.claims.length === 0 ||
+        written.scope.id === claim.scope?.id
+      )
+        return unsupported('The receiver binding is reassigned.', 'ambiguous_reference');
+    }
+  },
+};

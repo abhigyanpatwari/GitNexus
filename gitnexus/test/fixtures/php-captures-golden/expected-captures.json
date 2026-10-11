@@ -528,8 +528,8 @@
     "digest": "474a7bac44ce6026b3cb4489d8d3d8e359959c32f43a10b32e006a1869ff0995"
   },
   "php-use-function-const/app/Config/constants.php": {
-    "captureGroups": 2,
-    "digest": "c045ce0a40c3396cdfbbf0fbbe24792fe2bba6dfba14f739b15a4bb5ae90a778"
+    "captureGroups": 3,
+    "digest": "f140ba6989fa70597842fb7f3115563a863c8542adcd4a5dac9ee79d6f0e3afc"
   },
   "php-use-function-const/app/Models/User.php": {
     "captureGroups": 10,

@@ -16,6 +16,7 @@ import {
 } from '../utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { dartRenameProvider } from './dart/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { dartClassConfig } from '../class-extractors/configs/dart.js';
 import { defineLanguage } from '../language-provider.js';
@@ -82,6 +83,7 @@ const dartEnclosingFunctionFinder = (
 };
 
 export const dartProvider = defineLanguage({
+  rename: dartRenameProvider,
   id: SupportedLanguages.Dart,
   extensions: ['.dart'],
   entryPointPatterns: [

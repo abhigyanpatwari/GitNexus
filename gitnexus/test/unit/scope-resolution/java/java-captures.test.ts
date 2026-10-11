@@ -432,3 +432,19 @@ describe('emitJavaScopeCaptures — local-type identities (#2562)', () => {
     expect(visibility?.['@scope.block']?.range.endLine).toBe(6);
   });
 });
+
+it('captures primitive parameter bindings so they shadow lexical names', () => {
+  const captures = emitJavaScopeCaptures(
+    'class Model { void use(int first, double second, boolean third) {} }',
+    'model.java',
+  );
+  expect(
+    captures
+      .filter((capture) => capture['@type-binding.parameter'])
+      .map((capture) => [capture['@type-binding.name']?.text, capture['@type-binding.type']?.text]),
+  ).toEqual([
+    ['first', 'int'],
+    ['second', 'double'],
+    ['third', 'boolean'],
+  ]);
+});

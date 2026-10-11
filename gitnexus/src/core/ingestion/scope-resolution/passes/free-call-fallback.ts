@@ -40,11 +40,14 @@ import { GLOBAL_NAME_FALLBACK_REASON } from '../../../graph/edge-reasons.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
+  sourceBindingForDefinition,
+  type SourceBindingRecorder,
+} from '../source-binding-resolution.js';
+import {
   lookupNameClaim,
   hasExplicitNameClaim,
   findAllCallableBindingCandidatesInScope,
   findAllCallableBindingsInScope,
-  findCallableBindingInScope,
   findClassBindingInScope,
   findEnclosingClassDef,
   isClassFileImportGrounded,
@@ -120,6 +123,7 @@ export function emitFreeCallFallback(
     readonly freeCallsRequireInstanceOwnership?: boolean;
     readonly implicitThisWalksMro?: boolean;
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+    readonly recordSourceBinding?: SourceBindingRecorder;
     /** Call sites owned by a later precise pass (for example callable-value-flow). */
     readonly skipSites?: ReadonlySet<string>;
     /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
@@ -222,6 +226,11 @@ export function emitFreeCallFallback(
       if (site.kind !== 'call') continue;
       if (site.explicitReceiver !== undefined) continue;
       if (options.skipSites?.has(siteKey(parsed.filePath, site)) === true) continue;
+      options.recordSourceBinding?.(site, {
+        status: 'unresolved',
+        targetDefIds: [],
+        basis: 'free-call',
+      });
       const lookupOptions = { position: site.atRange, purpose: 'value' as const };
       const nameClaim = lookupNameClaim(site.inScope, site.name, scopes, lookupOptions);
       const strictClaim = hasExplicitNameClaim(nameClaim, site.name);
@@ -239,8 +248,15 @@ export function emitFreeCallFallback(
                 b.def.type === 'Record',
             )));
       if (blocksCall) {
+        options.recordSourceBinding?.(site, {
+          status: 'blocked',
+          targetDefIds: [],
+          basis: 'lexical-name-claim',
+        });
         if (options.resolveAdlCandidates !== undefined) {
           recordSuppressedOutcome(options.recordResolutionOutcome, {
+            recordSourceBinding: options.recordSourceBinding,
+            site,
             phase: 'free-call-fallback',
             filePath: parsed.filePath,
             name: site.name,
@@ -258,6 +274,8 @@ export function emitFreeCallFallback(
       // to the Class node itself (implicit constructor). Legacy emits
       // the same two targets; see test expectations.
       let fnDef: SymbolDefinition | undefined;
+      let writtenDefinition: SymbolDefinition | undefined;
+      let sourceCandidates: readonly SymbolDefinition[] | undefined;
       // Guess flag starts here so the constructor unique-class pick can mark
       // the same class of guess as `pickUniqueGlobalCallable` below. The
       // veto/label path keys off this flag; declaring it after that pick left
@@ -302,6 +320,7 @@ export function emitFreeCallFallback(
           }
         }
         if (classDef !== undefined && classDef.type !== 'Interface') {
+          writtenDefinition = classDef;
           // Most languages link `Type(...)` to the explicit Constructor def
           // when one exists (else the Class). Languages that model the call
           // as a reference to the type itself opt into
@@ -383,7 +402,13 @@ export function emitFreeCallFallback(
           }
           let eligibleBindingCandidates: readonly CallableBindingCandidate[] | undefined;
           if (bindingCandidates === undefined) {
-            fnDef = findCallableBindingInScope(site.inScope, site.name, scopes, lookupOptions);
+            sourceCandidates = findAllCallableBindingsInScope(
+              site.inScope,
+              site.name,
+              scopes,
+              lookupOptions,
+            );
+            fnDef = sourceCandidates[0];
           } else {
             eligibleBindingCandidates = bindingCandidates.filter((candidate) => {
               const def = candidate.def;
@@ -401,8 +426,11 @@ export function emitFreeCallFallback(
               return ownerReachable || staticallyImported;
             });
             fnDef = eligibleBindingCandidates[0]?.def;
+            sourceCandidates = eligibleBindingCandidates.map((candidate) => candidate.def);
             if (fnDef === undefined && bindingCandidates.length > 0) {
               recordSuppressedOutcome(options.recordResolutionOutcome, {
+                recordSourceBinding: options.recordSourceBinding,
+                site,
                 phase: 'free-call-fallback',
                 filePath: parsed.filePath,
                 name: site.name,
@@ -468,6 +496,7 @@ export function emitFreeCallFallback(
               );
               if (narrowed.length === 1) {
                 fnDef = narrowed[0];
+                sourceCandidates = narrowed;
               } else if (narrowed.length > 1) {
                 // Multiple survivors after conversion-rank scoring.
                 // Suppress when all candidates share the same file (true
@@ -476,6 +505,8 @@ export function emitFreeCallFallback(
                 const sameFile = narrowed.every((d) => d.filePath === narrowed[0]!.filePath);
                 if (sameFile) {
                   recordSuppressedOutcome(options.recordResolutionOutcome, {
+                    recordSourceBinding: options.recordSourceBinding,
+                    site,
                     phase: 'free-call-fallback',
                     filePath: parsed.filePath,
                     name: site.name,
@@ -492,6 +523,7 @@ export function emitFreeCallFallback(
               }
               // narrowed.length === 0: keep the first-match fnDef —
               // preserves local-shadows-import.
+              if (narrowed.length === 0) sourceCandidates = [];
             }
           }
         } else {
@@ -520,6 +552,8 @@ export function emitFreeCallFallback(
           const key = siteKey(parsed.filePath, site);
           if (adlSuppressed && ordinary.length === 0) {
             recordSuppressedOutcome(options.recordResolutionOutcome, {
+              recordSourceBinding: options.recordSourceBinding,
+              site,
               phase: 'free-call-fallback',
               filePath: parsed.filePath,
               name: site.name,
@@ -544,6 +578,7 @@ export function emitFreeCallFallback(
             const canNarrow = hasConstraints || options.conversionRankFn !== undefined;
             if (ordinary.length === 0 || !canNarrow) {
               fnDef = ordinary[0];
+              sourceCandidates = ordinary;
             } else {
               const narrowed = narrowOverloadCandidates(ordinary, site.arity, site.argumentTypes, {
                 argumentTypeClasses: site.argumentTypeClasses,
@@ -554,6 +589,7 @@ export function emitFreeCallFallback(
               });
               if (narrowed.length === 1) {
                 fnDef = narrowed[0];
+                sourceCandidates = narrowed;
               } else if (narrowed.length === 0) {
                 handledSites.add(key);
                 continue;
@@ -561,6 +597,8 @@ export function emitFreeCallFallback(
                 // These candidates share the selected lexical tier. Different
                 // files do not establish precedence between imported overloads.
                 recordSuppressedOutcome(options.recordResolutionOutcome, {
+                  recordSourceBinding: options.recordSourceBinding,
+                  site,
                   phase: 'free-call-fallback',
                   filePath: parsed.filePath,
                   name: site.name,
@@ -596,11 +634,14 @@ export function emitFreeCallFallback(
             });
             if (narrowed.length === 1) {
               fnDef = narrowed[0];
+              sourceCandidates = narrowed;
             } else if (narrowed.length === 0) {
               handledSites.add(key);
               continue;
             } else if (narrowed.length > 1) {
               recordSuppressedOutcome(options.recordResolutionOutcome, {
+                recordSourceBinding: options.recordSourceBinding,
+                site,
                 phase: 'free-call-fallback',
                 filePath: parsed.filePath,
                 name: site.name,
@@ -707,9 +748,45 @@ export function emitFreeCallFallback(
           continue;
         }
       }
-      if (fnDef === undefined) continue;
+      if (fnDef === undefined) {
+        // A class called with ordinary call syntax still names its type, even
+        // when no constructor method exists for a runtime CALLS edge.
+        if (options.recordSourceBinding !== undefined) {
+          const classes = [
+            ...new Map(
+              nameClaim.bindings
+                .filter(
+                  (binding) =>
+                    binding.def.type === 'Class' ||
+                    binding.def.type === 'Struct' ||
+                    binding.def.type === 'Record',
+                )
+                .map((binding) => [binding.def.nodeId, binding.def]),
+            ).values(),
+          ];
+          if (classes.length === 1)
+            options.recordSourceBinding(
+              site,
+              sourceBindingForDefinition(
+                classes[0]!,
+                'construction',
+                nameClaim.bindings,
+                nameClaim.scope?.id,
+              ),
+            );
+          else if (classes.length > 1)
+            options.recordSourceBinding(site, {
+              status: 'ambiguous',
+              targetDefIds: classes.map((candidate) => candidate.nodeId),
+              basis: 'construction',
+            });
+        }
+        continue;
+      }
       if (fnDef.isDeleted === true) {
         recordSuppressedOutcome(options.recordResolutionOutcome, {
+          recordSourceBinding: options.recordSourceBinding,
+          site,
           phase: 'free-call-fallback',
           filePath: parsed.filePath,
           name: site.name,
@@ -731,8 +808,60 @@ export function emitFreeCallFallback(
           scopes,
         })
       ) {
+        options.recordSourceBinding?.(site, {
+          status: 'blocked',
+          targetDefIds: [fnDef.nodeId],
+          basis: 'callable-visibility',
+        });
         handledSites.add(siteKey(parsed.filePath, site));
         continue;
+      }
+      // Observe the source declaration BEFORE constructor retargeting, caller
+      // mapping and edge collapse can discard or change its identity.
+      if (options.recordSourceBinding !== undefined) {
+        const sourceDef = writtenDefinition ?? fnDef;
+        const candidateIds = [
+          ...new Set(sourceCandidates?.map((candidate) => candidate.nodeId) ?? [sourceDef.nodeId]),
+        ];
+        options.recordSourceBinding(
+          site,
+          fnDefFromGlobalNameFallback
+            ? {
+                status: 'unresolved',
+                targetDefIds: [sourceDef.nodeId],
+                basis: 'global-name-fallback',
+              }
+            : candidateIds.length === 0
+              ? {
+                  status: 'unresolved',
+                  targetDefIds: [sourceDef.nodeId],
+                  basis: 'free-call-incompatible',
+                }
+              : candidateIds.length > 1
+                ? {
+                    ...sourceBindingForDefinition(
+                      sourceDef,
+                      'free-call-candidates',
+                      nameClaim.bindings,
+                      nameClaim.scope?.id,
+                    ),
+                    status: 'ambiguous',
+                    targetDefIds: candidateIds,
+                    basis: 'free-call-candidates',
+                    ...(sourceCandidates !== undefined &&
+                    candidateIds.every((id) =>
+                      nameClaim.bindings.some((binding) => binding.def.nodeId === id),
+                    )
+                      ? { candidatesComplete: true as const }
+                      : {}),
+                  }
+                : sourceBindingForDefinition(
+                    sourceDef,
+                    writtenDefinition === undefined ? 'free-call' : 'construction',
+                    nameClaim.bindings,
+                    nameClaim.scope?.id,
+                  ),
+        );
       }
       const callerGraphId = resolveCallerGraphId(
         site.callerScope ?? site.inScope,
@@ -891,8 +1020,16 @@ function recordSuppressedOutcome(
     };
     readonly reason: ResolutionSuppressionReason;
     readonly candidates: readonly SymbolDefinition[];
+    readonly site?: ReferenceSite;
+    readonly recordSourceBinding?: SourceBindingRecorder;
   },
 ): void {
+  if (input.site !== undefined)
+    input.recordSourceBinding?.(input.site, {
+      status: input.candidates.length > 1 ? 'ambiguous' : 'blocked',
+      targetDefIds: input.candidates.map((candidate) => candidate.nodeId),
+      basis: input.reason,
+    });
   record?.({
     kind: 'suppressed',
     phase: input.phase,

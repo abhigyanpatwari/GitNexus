@@ -90,6 +90,7 @@ function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } 
 type ReceiverTypeRecorder = (spelling: string, defId: string) => void;
 
 interface ResolveCompoundReceiverOptions {
+  readonly onNameFallback?: () => void;
   readonly lookupPosition?: TypeRef['lookupPosition'];
   readonly namespaceTargetsAt?: (
     scope: ScopeId,
@@ -285,6 +286,7 @@ function resolveConstructionExpressionClass(
   }
 
   const direct = findClassBindingInScope(inScope, calleeName, scopes, undefined, {
+    onNameFallback: options.onNameFallback,
     position: options.lookupPosition,
     purpose: 'value',
   });
@@ -292,6 +294,7 @@ function resolveConstructionExpressionClass(
 
   if (baseName.length > 0 && baseName !== calleeName) {
     const viaBaseName = findClassBindingInScope(inScope, baseName, scopes, undefined, {
+      onNameFallback: options.onNameFallback,
       position: options.lookupPosition,
       purpose: 'value',
     });
@@ -312,11 +315,15 @@ function resolveConstructionExpressionClass(
   const qualifiedIds = scopes.qualifiedNames.get(baseName);
   if (qualifiedIds.length === 1) {
     const qualified = scopes.defs.get(qualifiedIds[0]!);
-    if (qualified !== undefined && isClassLike(qualified.type)) return qualified;
+    if (qualified !== undefined && isClassLike(qualified.type)) {
+      options.onNameFallback?.();
+      return qualified;
+    }
   }
   const simpleName = baseName.slice(lastDot + 1);
   if (simpleName.length === 0) return undefined;
   const viaSimpleName = findClassBindingInScope(inScope, simpleName, scopes, undefined, {
+    onNameFallback: options.onNameFallback,
     position: options.lookupPosition,
     purpose: 'value',
   });
@@ -421,6 +428,7 @@ function classOfDeclaredType(
   scopes: ScopeResolutionIndexes,
   stripDecoration?: DecorationStripper,
   recordReceiverType?: ReceiverTypeRecorder,
+  onNameFallback?: () => void,
 ): SymbolDefinition | undefined {
   // `declaredAtScope`, never a scope the caller chose: all five sites passed
   // exactly this `TypeRef`'s own anchor, and taking it as a parameter is what
@@ -432,7 +440,7 @@ function classOfDeclaredType(
     spelling,
     scopes,
     stripDecoration,
-    { position: typeRef.lookupPosition, purpose: typeRef.lookupPurpose ?? 'type' },
+    { position: typeRef.lookupPosition, purpose: typeRef.lookupPurpose ?? 'type', onNameFallback },
   );
   return noteReceiverType(recordReceiverType, spelling, def);
 }
@@ -476,10 +484,12 @@ function classOfReturnType(
   retType: TypeRef,
   scopes: ScopeResolutionIndexes,
   record: ReceiverTypeRecorder | undefined,
+  onNameFallback?: () => void,
 ): SymbolDefinition | undefined {
   const def = findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
     position: retType.lookupPosition,
     purpose: retType.lookupPurpose ?? 'type',
+    onNameFallback,
   });
   if (def === undefined || record === undefined) return def;
   return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
@@ -503,6 +513,7 @@ function typeOfMemberOnClass(
         scopes,
         options.stripTypePreservingDecoration,
         options.recordReceiverType,
+        options.onNameFallback,
       );
       // The declared type is reported even when it resolved to no class:
       // `Promise<User>` and `[]Repo` name nothing in the workspace, and an
@@ -539,6 +550,7 @@ function typeOfMemberOnClass(
             scopes,
             options.stripTypePreservingDecoration,
             options.recordReceiverType,
+            options.onNameFallback,
           );
           // Identical to the primary branch: a declared type that named no
           // class is still a usable position when the next step unwraps it.
@@ -672,7 +684,11 @@ export function foldReceiverChain(
         element,
         scopes,
         options.stripTypePreservingDecoration,
-        { position: current.lookupPosition, purpose: 'type' },
+        {
+          onNameFallback: options.onNameFallback,
+          position: current.lookupPosition,
+          purpose: 'type',
+        },
       );
       if (elementClass === undefined) return undefined;
       current = {
@@ -833,6 +849,7 @@ export function resolveCompoundReceiverClass(
     // resolve to the CAST type, not the underlying expression's type.
     if (stripped.castType !== undefined) {
       const cls = findClassBindingInScope(inScope, stripped.castType, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
         position: options.lookupPosition,
         purpose: 'value',
       });
@@ -856,6 +873,7 @@ export function resolveCompoundReceiverClass(
       const arg = extractShallowMapTypeArgByIndex(rhsTb.rawName, mapTuple.tupleIdx);
       if (arg === undefined) return undefined;
       return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
         position: rhsTb.lookupPosition,
         purpose: rhsTb.lookupPurpose ?? 'type',
       });
@@ -891,6 +909,7 @@ export function resolveCompoundReceiverClass(
         const arg = extractShallowMapTypeArgByIndex(rhsTb.rawName, boundMapTuple.tupleIdx);
         if (arg === undefined) return undefined;
         return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes, undefined, {
+          onNameFallback: options.onNameFallback,
           position: rhsTb.lookupPosition,
           purpose: rhsTb.lookupPurpose ?? 'type',
         });
@@ -901,6 +920,7 @@ export function resolveCompoundReceiverClass(
         scopes,
         options.stripTypePreservingDecoration,
         options.recordReceiverType,
+        options.onNameFallback,
       );
       if (viaTb !== undefined) return viaTb;
 
@@ -963,6 +983,7 @@ export function resolveCompoundReceiverClass(
     // cascade keeps its historical fallthrough so no existing edge moves.
     if (tb !== undefined && options.strictBaseBinding === true) return undefined;
     return findClassBindingInScope(inScope, workingText, scopes, undefined, {
+      onNameFallback: options.onNameFallback,
       position: options.lookupPosition,
       purpose: 'value',
     });
@@ -1002,7 +1023,12 @@ export function resolveCompoundReceiverClass(
         const viaReturn =
           retType === undefined
             ? undefined
-            : classOfReturnType(retType, scopes, options.recordReceiverType);
+            : classOfReturnType(
+                retType,
+                scopes,
+                options.recordReceiverType,
+                options.onNameFallback,
+              );
         if (viaReturn !== undefined) return viaReturn;
       }
       // Inline construction — `Service(db).m()` / `new Service(db).m()`.
@@ -1044,6 +1070,7 @@ export function resolveCompoundReceiverClass(
       !objExpr.includes('(') &&
       !objExpr.includes('.') &&
       findClassBindingInScope(inScope, objExpr, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
         position: options.lookupPosition,
         purpose: 'value',
       })?.nodeId === objClass.nodeId;
@@ -1100,6 +1127,8 @@ export function resolveCompoundReceiverClass(
             fieldType.declaredAtScope,
             fieldType.rawName,
             scopes,
+            undefined,
+            { onNameFallback: options.onNameFallback },
           );
           if (fieldClass === undefined) continue;
           const fcs = classScopeByDefId.get(fieldClass.nodeId);
@@ -1127,7 +1156,7 @@ export function resolveCompoundReceiverClass(
     }
 
     if (retType === undefined) return undefined;
-    return classOfReturnType(retType, scopes, options.recordReceiverType);
+    return classOfReturnType(retType, scopes, options.recordReceiverType, options.onNameFallback);
   }
 
   // Mixed dotted + call chain: `obj.field.method().field.method()…`.
@@ -1168,6 +1197,7 @@ export function resolveCompoundReceiverClass(
         const segment = parts[i];
         if (segment === undefined) break;
         const cls = findClassBindingInScope(cur.declaredAtScope, cur.rawName, scopes, undefined, {
+          onNameFallback: options.onNameFallback,
           position: cur.lookupPosition,
           purpose: cur.lookupPurpose ?? 'type',
         });
@@ -1189,6 +1219,7 @@ export function resolveCompoundReceiverClass(
       const elemName = options.elementTypeOf(prefixType.rawName, { kind: 'accessor', name: last });
       if (elemName !== undefined) {
         return findClassBindingInScope(prefixType.declaredAtScope, elemName, scopes, undefined, {
+          onNameFallback: options.onNameFallback,
           position: prefixType.lookupPosition,
           purpose: prefixType.lookupPurpose ?? 'type',
         });
@@ -1215,8 +1246,15 @@ export function resolveCompoundReceiverClass(
   // two had a fixture. See `classOfDeclaredType` for why this cannot change a
   // `TypeRef` that was never reduced.
   let currentClass: SymbolDefinition | undefined = headType
-    ? classOfDeclaredType(headType, scopes, undefined, options.recordReceiverType)
+    ? classOfDeclaredType(
+        headType,
+        scopes,
+        undefined,
+        options.recordReceiverType,
+        options.onNameFallback,
+      )
     : findClassBindingInScope(inScope, headMemberName, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
         position: options.lookupPosition,
         purpose: 'value',
       });
@@ -1370,9 +1408,15 @@ export function resolveCompoundReceiverClass(
     // grounds fell through here — a declined fold is documented as "no answer",
     // never a veto — and this walk re-minted `other.py:Mapped` from the
     // workspace index. Same rule, same lookup, so the two routes now agree.
-    let nextClass = classOfDeclaredType(memberType, scopes, undefined, options.recordReceiverType);
+    let nextClass = classOfDeclaredType(
+      memberType,
+      scopes,
+      undefined,
+      options.recordReceiverType,
+      options.onNameFallback,
+    );
     if (nextClass === undefined) {
-      const fromMap = unwrapMapValueToClass(memberType, scopes);
+      const fromMap = unwrapMapValueToClass(memberType, scopes, options.onNameFallback);
       if (fromMap !== undefined) nextClass = fromMap;
     }
     currentClass = nextClass;
@@ -1578,12 +1622,14 @@ function extractShallowMapTypeArgByIndex(mapText: string, wantIndex: number): st
 function unwrapMapValueToClass(
   memberType: TypeRef,
   scopes: ScopeResolutionIndexes,
+  onNameFallback?: () => void,
 ): SymbolDefinition | undefined {
   const v = extractShallowMapTypeArgByIndex(memberType.rawName, 1);
   if (v === undefined) return undefined;
   return findClassBindingInScope(memberType.declaredAtScope, v, scopes, undefined, {
     position: memberType.lookupPosition,
     purpose: memberType.lookupPurpose ?? 'type',
+    onNameFallback,
   });
 }
 
@@ -1609,10 +1655,12 @@ function resolveMapValueTypeNameFromPrefix(
   });
   let currentClass: SymbolDefinition | undefined = headType
     ? findClassBindingInScope(headType.declaredAtScope, headType.rawName, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
         position: headType.lookupPosition,
         purpose: headType.lookupPurpose ?? 'type',
       })
     : findClassBindingInScope(inScope, headMemberName, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
         position: options.lookupPosition,
         purpose: 'value',
       });
@@ -1659,10 +1707,14 @@ function resolveMapValueTypeNameFromPrefix(
       memberType.rawName,
       scopes,
       undefined,
-      { position: memberType.lookupPosition, purpose: memberType.lookupPurpose ?? 'type' },
+      {
+        onNameFallback: options.onNameFallback,
+        position: memberType.lookupPosition,
+        purpose: memberType.lookupPurpose ?? 'type',
+      },
     );
     if (nextClass === undefined) {
-      const fromMap = unwrapMapValueToClass(memberType, scopes);
+      const fromMap = unwrapMapValueToClass(memberType, scopes, options.onNameFallback);
       if (fromMap !== undefined) nextClass = fromMap;
     }
     currentClass = nextClass;

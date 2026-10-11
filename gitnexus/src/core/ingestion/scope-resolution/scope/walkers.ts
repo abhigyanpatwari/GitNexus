@@ -879,6 +879,9 @@ function soleBoundBaseName(bound: string): string | undefined {
 }
 
 export type ClassBindingLookup = NameLookupOptions & {
+  /** A selected class came from a workspace-name guess, rather than a
+   * binding/namespace decision. Observers must not treat it as edit proof. */
+  readonly onNameFallback?: () => void;
   /**
    * When false, skip the workspace-unique QualifiedNameIndex hit (and the
    * dotted-tail variant). Default true — Go inheritance still needs that
@@ -971,7 +974,10 @@ export function findClassBindingInScope(
     const qnames = scopes.qualifiedNames.get(receiverName);
     if (qnames.length === 1) {
       const def = scopes.defs.get(qnames[0]!);
-      if (def !== undefined && isClassLike(def.type)) return def;
+      if (def !== undefined && isClassLike(def.type)) {
+        lookup?.onNameFallback?.();
+        return def;
+      }
     }
     // Second fallback: dotted names like "models.User" — try the simple
     // name (tail after last dot) for languages where defs are indexed by
@@ -982,7 +988,10 @@ export function findClassBindingInScope(
         const simpleIds = scopes.qualifiedNames.get(simple);
         if (simpleIds.length === 1) {
           const def = scopes.defs.get(simpleIds[0]!);
-          if (def !== undefined && isClassLike(def.type)) return def;
+          if (def !== undefined && isClassLike(def.type)) {
+            lookup?.onNameFallback?.();
+            return def;
+          }
         }
       }
     }
@@ -1489,7 +1498,7 @@ export function resolveInheritanceBaseInScope(
  * unknown, or genuinely ambiguous at a key (refuse-on-tie — never guess; a
  * wrong EXTENDS edge silently corrupts impact analysis).
  */
-function resolveQualifiedInheritanceBase(
+export function resolveQualifiedInheritanceBase(
   startScope: ScopeId,
   rawQualifiedName: string,
   scopes: ScopeResolutionIndexes,
@@ -1770,8 +1779,16 @@ export function findValueBindingInScope(
   startScope: ScopeId,
   receiverName: string,
   scopes: ScopeResolutionIndexes,
+  observeClaim?: (claim: NameClaimResult) => void,
 ): SymbolDefinition | undefined {
-  return walkScopeChain(startScope, receiverName, scopes, (def) => isOwnableValueLabel(def.type));
+  return walkScopeChain(
+    startScope,
+    receiverName,
+    scopes,
+    (def) => isOwnableValueLabel(def.type),
+    undefined,
+    observeClaim,
+  );
 }
 
 /**
@@ -1810,8 +1827,10 @@ function walkScopeChain(
   scopes: ScopeResolutionIndexes,
   predicate: (def: SymbolDefinition) => boolean,
   options?: NameLookupOptions,
+  observeClaim?: (claim: NameClaimResult) => void,
 ): SymbolDefinition | undefined {
   const claim = lookupMatchingNameClaim(startScope, name, scopes, predicate, options);
+  observeClaim?.(claim);
   return claim.bindings.find((binding) => predicate(binding.def))?.def;
 }
 

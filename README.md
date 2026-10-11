@@ -726,7 +726,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
-**Control flow (CFG, opt-in `--pdg`)** — per-function control-flow graphs (`BasicBlock` nodes + `CFG` edges) feeding the PDG/taint substrate, currently **TypeScript & JavaScript** (#2081 M1); other languages planned. Off by default.
+**Control flow (CFG, opt-in `--pdg`)** — provider-owned control-flow graphs (`BasicBlock` nodes + `CFG` edges) feed control dependence and reaching definitions across the registered source languages. AST providers describe callable regions; COBOL uses source-backed program regions. Unsupported constructs and region limits produce explicit skips. Off by default.
 
 ### Multi-Repo Architecture
 
@@ -907,20 +907,25 @@ semantic scopes from the current source and resolve exact name spans.
 Rename does not load a compiler or language service. Comments, strings, and
 unrelated same-spelled symbols are preserved. Unsupported syntax, ambiguous
 bindings, stale declarations, and incomplete occurrence coverage block writes.
-Coverage includes indexed files in the target language, excluding unindexed
-files and external consumers. Constructor, destructor, inheritance, and interface
-families require complete provider evidence; unsupported families, unclassified
-token roles, and computed references are refused. Any detected computed access
-in the analyzed language scope currently blocks rename until providers can prove
-its key and receiver are unrelated. Both tools operate on the current checkout
-and reject `branch`.
+Coverage includes indexed files accepted by the selected language provider,
+including its supported embedded-language sources, and excludes unindexed files
+and external consumers. Each registered source-language provider supplies rename
+rules. Constructor, destructor, inheritance, and interface families require
+complete provider evidence. Dynamic or computed references block a rename when
+the provider cannot prove their binding or exclude them from the selected family.
+Both tools operate on the current checkout and reject `branch`.
 
-PHP rename is currently unsupported because exact-spelling occurrence checks do
-not cover its case-insensitive symbol names.
+Language-specific limits remain explicit in the result. For example, PHP handles
+case-insensitive function/class names separately from case-sensitive constants
+and properties, but refuses class renames that require moving a PSR-4 file.
+Java also refuses public top-level type renames that require a source-file move.
+Rename edits source spans; it does not move files or rewrite dynamic string names.
 
 Preview and apply recompute their plans independently. Source snapshots are
 checked before writes; this is not a cross-call preview token or transactional
-filesystem operation. On a write failure, `status: partial` and `failed_files`
+filesystem operation. The final destination check and replacement are separate
+operations, so another process can still change a file between them. Avoid
+concurrent source writes during application. On a write failure, `status: partial` and `failed_files`
 report the failure; `applied`, counts, and `changes` describe only landed edits.
 Inspect failures before retrying, and run type checking, tests, and
 `detect_changes` after applying. A valid identifier is not a guarantee against

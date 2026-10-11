@@ -181,6 +181,7 @@ import {
   makePdgLayerDegradedResult,
   pdgLayerStatus,
   pdgStampForMode,
+  resolvePdgBlockAnchor,
   runImpactPDG,
   validateImpactMode,
   pdgBridgeEvidenceForImpact,
@@ -302,12 +303,15 @@ function ambiguityReport(
 const SOURCE_FILE_EXTENSIONS: readonly string[] = EXTENSIONS.filter(
   (e) => e.startsWith('.') && !e.includes('/'),
 );
-/** A target is path-ish if it has a path separator or ends in a known source
- *  extension. A bare dotted symbol (`UserController.create`) is NOT path-ish. */
+/** Recognize indexed source files and existing import suffixes; a bare dotted
+ *  symbol (`UserController.create`) remains a symbol target. */
 function looksLikeFilePath(target: string): boolean {
   if (/[\\/]/.test(target)) return true;
   const lower = target.toLowerCase();
-  return SOURCE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+  return (
+    getLanguageFromFilename(target) !== null ||
+    SOURCE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))
+  );
 }
 
 /**
@@ -5716,40 +5720,19 @@ export class LocalBackend {
       };
     }
     const sym = outcome.symbol;
-    const idPrefix = `BasicBlock:${sym.filePath}:`;
-    if (
-      typeof sym.startLine === 'number' &&
-      typeof sym.endLine === 'number' &&
-      sym.endLine >= sym.startLine
-    ) {
-      // BasicBlock startLine is 1-based; the symbol span is 0-based. Shift BOTH
-      // bounds +1 so the window is the function's true block span: the lower +1
-      // excludes a neighbor's block on the line directly above, the upper +1
-      // keeps a guard/def/use on the final line (#2188 review).
-      return {
-        anchorClause:
-          'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd',
-        queryParams: {
-          idPrefix,
-          symStart: toOneBasedLine(sym.startLine),
-          symEnd: toOneBasedLine(sym.endLine),
-        },
-        // Display anchor is 1-based, matching the ambiguous-candidate branch and
-        // the context/query/impact tools (#2380). This is display-only — the
-        // BasicBlock join above targets the CFG's own 1-based id space.
-        anchor: {
-          file: sym.filePath,
-          symbol: sym.name,
-          startLine: toDisplayLine(sym.startLine),
-          endLine: toDisplayLine(sym.endLine),
-        },
-      };
+    const resolved = await resolvePdgBlockAnchor(repo.lbugPath, sym, executeParameterized);
+    if ('error' in resolved) {
+      return { anchorClause: '', queryParams: {}, anchor: { file: sym.filePath }, early: resolved };
     }
-    // No usable span — degrade to the file-level filter (documented).
     return {
-      anchorClause: 'a.id STARTS WITH $idPrefix',
-      queryParams: { idPrefix },
-      anchor: { file: sym.filePath, symbol: sym.name },
+      anchorClause: resolved.anchorClause,
+      queryParams: resolved.queryParams,
+      anchor: {
+        file: sym.filePath,
+        symbol: sym.name,
+        startLine: toDisplayLine(sym.startLine),
+        endLine: toDisplayLine(sym.endLine),
+      },
     };
   }
 

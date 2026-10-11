@@ -256,8 +256,8 @@ export async function executeRenamePlan(
     const file = files.get(change.file_path)!;
     let temporaryDirectory: string | undefined;
     try {
-      // Recheck each destination immediately before its write. A concurrent edit
-      // after an earlier write is a partial operation, never a successful rename.
+      // Recheck each destination before staging its replacement. A detected source
+      // change after an earlier write is reported as a partial operation.
       if (
         (await checkedRealPath(repoPath, change.file_path)) !== file.real ||
         !(await fs.readFile(file.absolute)).equals(Buffer.from(file.snapshot, 'utf8'))
@@ -276,15 +276,20 @@ export async function executeRenamePlan(
       const replacement = path.join(temporaryDirectory, 'replacement');
       await fs.writeFile(replacement, file.output, 'utf8');
       await fs.chmod(replacement, mode);
-      if ((await checkedRealPath(repoPath, change.file_path)) !== file.real) {
+      // Unedited sources also contribute semantic evidence. Already installed
+      // files must match their landed outputs rather than their old snapshots.
+      await validateSnapshots(expectedSnapshots);
+      // A later evidence read can race with an edit to this destination. Recheck
+      // last; validation and replacement remain separate filesystem operations.
+      if (
+        (await checkedRealPath(repoPath, change.file_path)) !== file.real ||
+        !(await fs.readFile(file.absolute)).equals(Buffer.from(file.snapshot, 'utf8'))
+      ) {
         throw new RenameFailure(
           'source_changed',
           `Source changed before replacing ${change.file_path}.`,
         );
       }
-      // Unedited sources also contribute semantic evidence. Already installed
-      // files must match their landed outputs rather than their old snapshots.
-      await validateSnapshots(expectedSnapshots);
       await fs.rename(replacement, file.real);
       expectedSnapshots.set(file.absolute, file.output);
       landed.push(change);

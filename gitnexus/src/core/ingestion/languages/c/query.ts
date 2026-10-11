@@ -14,8 +14,8 @@ import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 const C_SCOPE_QUERY = `
 ;; Scopes
 (translation_unit) @scope.module
-(struct_specifier) @scope.class
-(union_specifier) @scope.class
+(struct_specifier body: (field_declaration_list)) @scope.class
+(union_specifier body: (field_declaration_list)) @scope.class
 (function_definition) @scope.function
 (compound_statement) @scope.block
 (if_statement) @scope.block
@@ -153,6 +153,15 @@ const C_SCOPE_QUERY = `
 (parameter_declaration
   type: (_) @type-binding.type
   declarator: (identifier) @type-binding.name) @type-binding.parameter
+(parameter_declaration
+  type: (_) @type-binding.type
+  declarator: (pointer_declarator
+    declarator: (identifier) @type-binding.name)) @type-binding.parameter
+(parameter_declaration
+  type: (_) @type-binding.type
+  declarator: (pointer_declarator
+    declarator: (pointer_declarator
+      declarator: (identifier) @type-binding.name))) @type-binding.parameter
 
 ;; Type bindings — variable with type (init_declarator)
 (declaration

@@ -59,6 +59,27 @@ describe('graph and SemanticModel rename', () => {
     }
   }
 
+  async function expectSupportedPreviewAndApply(
+    file: string,
+    source: string,
+    symbol: RenameSymbol,
+    nodes: GraphNode[],
+    expected: string,
+    newName = 'Renamed',
+  ) {
+    const preview = await renameSymbol(root, symbol, { new_name: newName, dry_run: true }, nodes);
+    expect(preview, JSON.stringify(preview)).toMatchObject({ status: 'success', applied: false });
+    expect(preview.total_edits).toBeGreaterThan(0);
+    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(source);
+    const applied = await renameSymbol(root, symbol, { new_name: newName, dry_run: false }, nodes);
+    expect(applied, JSON.stringify(applied)).toMatchObject({
+      status: 'success',
+      applied: true,
+      changes: preview.changes,
+    });
+    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(expected);
+  }
+
   it.each([
     [
       'escaped JS reference',
@@ -66,6 +87,7 @@ describe('graph and SemanticModel rename', () => {
       'function target() {}\nt\\u0061rget();\n',
       'target',
       'Function',
+      'function Renamed() {}\nRenamed();\n',
     ],
     [
       'escaped TS reference',
@@ -73,6 +95,7 @@ describe('graph and SemanticModel rename', () => {
       'function target() {}\ntar\\u{67}et();\n',
       'target',
       'Function',
+      'function Renamed() {}\nRenamed();\n',
     ],
     [
       'escaped shadow binder',
@@ -80,39 +103,34 @@ describe('graph and SemanticModel rename', () => {
       'function target() {}\nfunction other(t\\u0061rget) { target(); }\n',
       'target',
       'Function',
+      'function Renamed() {}\nfunction other(t\\u0061rget) { target(); }\n',
     ],
     [
-      'escaped replacement collision',
-      'model.ts',
-      'function target() {}\nconst Re\\u006eamed = 1;\ntarget();\n',
-      'target',
+      'Python normalized reference',
+      'model.py',
+      'def K(): pass\nK()\n',
+      'K',
       'Function',
+      'def Renamed(): pass\nRenamed()\n',
     ],
-    ['Python normalized reference', 'model.py', 'def K(): pass\nK()\n', 'K', 'Function'],
     [
       'Python normalized shadow binder',
       'model.py',
       'def K(): pass\ndef other(K):\n    K()\n',
       'K',
       'Function',
-    ],
-    [
-      'C# verbatim type reference',
-      'model.cs',
-      'class Target {}\nclass Use { @Target value; }\n',
-      'Target',
-      'Class',
+      'def Renamed(): pass\ndef other(K):\n    K()\n',
     ],
   ] as const)(
-    'blocks preview and apply for an unsupported %s',
-    async (_name, file, source, name, kind) => {
+    'renames the provider-canonical binding and preserves shadows for %s',
+    async (_name, file, source, name, kind, expected) => {
       const nodes = await fixture(file, source);
       nodes[1] = {
         id: `${kind}:${file}:${name}`,
         label: kind,
         properties: { name, filePath: file, startLine: 0, endLine: 0 },
       };
-      await expectBlockedPreviewAndApply(
+      await expectSupportedPreviewAndApply(
         file,
         source,
         {
@@ -123,10 +141,42 @@ describe('graph and SemanticModel rename', () => {
           startLine: 1,
         },
         nodes,
-        'unsupported_identifier',
+        expected,
       );
     },
   );
+
+  it('refuses a collision with a provider-canonical escaped declaration', async () => {
+    const file = 'model.ts';
+    const source = 'function target() {}\nconst Re\\u006eamed = 1;\ntarget();\n';
+    const nodes = await fixture(file, source);
+    nodes[1]!.properties.startLine = 0;
+    await expectBlockedPreviewAndApply(
+      file,
+      source,
+      { uid: nodes[1]!.id, name: 'target', filePath: file, startLine: 1 },
+      nodes,
+      'name_collision',
+    );
+  });
+
+  it('renames a provider-proven verbatim type reference', async () => {
+    const file = 'model.cs';
+    const source = 'class Target {}\nclass Use { @Target value; }\n';
+    const nodes = await fixture(file, source);
+    nodes[1] = {
+      id: 'Class:model.cs:Target',
+      label: 'Class',
+      properties: { name: 'Target', filePath: file, startLine: 0, endLine: 0 },
+    };
+    await expectSupportedPreviewAndApply(
+      file,
+      source,
+      { uid: nodes[1]!.id, name: 'Target', kind: 'Class', filePath: file, startLine: 1 },
+      nodes,
+      'class Renamed {}\nclass Use { @Renamed value; }\n',
+    );
+  });
 
   it.each(['<Target />'])(
     'blocks JSX component-to-intrinsic renames in preview and apply: %s',
@@ -593,11 +643,11 @@ describe('graph and SemanticModel rename', () => {
     ]);
   });
 
-  it('blocks PHP preview and apply until case-insensitive names have provider coverage', async () => {
+  it('renames PHP case-insensitive callable names through its provider', async () => {
     const file = 'model.php';
     const source = '<?php\nfunction target() {}\nTARGET();\n';
     const nodes = await fixture(file, source);
-    await expectBlockedPreviewAndApply(
+    await expectSupportedPreviewAndApply(
       file,
       source,
       {
@@ -608,7 +658,7 @@ describe('graph and SemanticModel rename', () => {
         startLine: 2,
       },
       nodes,
-      'unsupported_language',
+      '<?php\nfunction Renamed() {}\nRenamed();\n',
     );
   });
 
@@ -630,7 +680,7 @@ describe('graph and SemanticModel rename', () => {
     ],
     ['C# destructor', 'model.cs', 'class Writer {\n ~Writer() {}\n}\n'],
     ['C++ destructor', 'model.cpp', 'class Writer {\n public: ~Writer() {}\n};\n'],
-  ])('blocks preview and apply for a class with a name-coupled %s', async (_name, file, source) => {
+  ])('renames a class with a name-coupled %s', async (_name, file, source) => {
     const uid = `Class:${file}:Writer`;
     const nodes = await fixture(file!, source!, [
       {
@@ -639,7 +689,7 @@ describe('graph and SemanticModel rename', () => {
         properties: { name: 'Writer', filePath: file!, startLine: 0 },
       },
     ]);
-    await expectBlockedPreviewAndApply(
+    await expectSupportedPreviewAndApply(
       file!,
       source!,
       {
@@ -650,7 +700,7 @@ describe('graph and SemanticModel rename', () => {
         startLine: 1,
       },
       nodes,
-      'unsupported_symbol_family',
+      source!.replaceAll('Writer', 'Renamed'),
     );
   });
 
@@ -705,12 +755,12 @@ describe('graph and SemanticModel rename', () => {
     expect(await fs.readFile(path.join(root, file!))).toEqual(Buffer.from(expected));
   });
 
-  it('blocks unclassified JSX expression occurrences instead of inventing a binding role', async () => {
+  it('renames the provider-captured value binding inside a JSX expression', async () => {
     const file = 'model.tsx';
     const source = 'function target() {}\nconst element = <a title={target} />;\n';
     const nodes = await fixture(file, source);
     nodes[1]!.properties.startLine = 0;
-    await expectBlockedPreviewAndApply(
+    await expectSupportedPreviewAndApply(
       file,
       source,
       {
@@ -721,7 +771,7 @@ describe('graph and SemanticModel rename', () => {
         startLine: 1,
       },
       nodes,
-      'incomplete_semantics',
+      'function Renamed() {}\nconst element = <a title={Renamed} />;\n',
     );
   });
 
@@ -804,6 +854,29 @@ describe('graph and SemanticModel rename', () => {
         nodes,
       ),
     ).rejects.toMatchObject({ code: 'stale_graph' });
+  });
+
+  it('permits an existing replacement name in an unrelated lexical scope', async () => {
+    const file = 'model.ts';
+    const source =
+      'function target() {}\n' +
+      'function other() { const renamed = 1; return renamed; }\n' +
+      'target();\n';
+    const nodes = await fixture(file, source);
+    nodes[1]!.properties.startLine = 0;
+    nodes[1]!.properties.endLine = 0;
+    const symbol = { uid: nodes[1]!.id, name: 'target', filePath: file, startLine: 1 };
+    const result = await renameSymbol(root, symbol, { new_name: 'renamed', dry_run: false }, nodes);
+    expect(result, JSON.stringify(result)).toMatchObject({
+      status: 'success',
+      applied: true,
+      total_edits: 2,
+    });
+    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(
+      'function renamed() {}\n' +
+        'function other() { const renamed = 1; return renamed; }\n' +
+        'renamed();\n',
+    );
   });
 
   it('renames only the member owned by the selected graph class', async () => {
@@ -891,6 +964,106 @@ describe('graph and SemanticModel rename', () => {
     ]);
   });
 
+  it('preserves a shorthand property key while renaming its value binding', async () => {
+    const source = 'function target() {}\nconst object = { target };\n';
+    const nodes = await fixture('model.ts', source);
+    nodes[1]!.properties.startLine = 0;
+    const symbol = { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 };
+    const result = await renameSymbol(root, symbol, { new_name: 'renamed', dry_run: false }, nodes);
+    expect(result, JSON.stringify(result)).toMatchObject({
+      status: 'success',
+      applied: true,
+      total_edits: 2,
+    });
+    expect(await fs.readFile(path.join(root, 'model.ts'), 'utf8')).toBe(
+      'function renamed() {}\nconst object = { target: renamed };\n',
+    );
+  });
+
+  it('preserves an explicit import alias even when it has the exported spelling', async () => {
+    const source = 'export function target() {}\n';
+    const nodes = await fixture('model.ts', source);
+    nodes[1]!.properties.startLine = 0;
+    const consumer = 'import { target as target } from "./model";\ntarget();\n';
+    await fs.writeFile(path.join(root, 'consumer.ts'), consumer);
+    nodes.push({
+      id: 'File:consumer.ts',
+      label: 'File',
+      properties: { name: 'consumer.ts', filePath: 'consumer.ts' },
+    });
+    const symbol = { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 };
+    const result = await renameSymbol(root, symbol, { new_name: 'renamed', dry_run: false }, nodes);
+    expect(result, JSON.stringify(result)).toMatchObject({
+      status: 'success',
+      applied: true,
+      total_edits: 2,
+    });
+    expect(await fs.readFile(path.join(root, 'consumer.ts'), 'utf8')).toBe(
+      'import { renamed as target } from "./model";\ntarget();\n',
+    );
+  });
+
+  it('renames through a provider-approved mixed source workspace', async () => {
+    const source = 'export function target() {}\n';
+    const nodes = await fixture('model.ts', source);
+    nodes[1]!.properties.startLine = 0;
+    const consumer = 'import { target } from "./model.js";\ntarget();\n';
+    await fs.writeFile(path.join(root, 'consumer.js'), consumer);
+    nodes.push({
+      id: 'File:consumer.js',
+      label: 'File',
+      properties: { name: 'consumer.js', filePath: 'consumer.js' },
+    });
+    const symbol = { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 };
+    const result = await renameSymbol(root, symbol, { new_name: 'renamed', dry_run: false }, nodes);
+    expect(result, JSON.stringify(result)).toMatchObject({
+      status: 'success',
+      applied: true,
+      total_edits: 3,
+    });
+    expect(await fs.readFile(path.join(root, 'consumer.js'), 'utf8')).toBe(
+      'import { renamed } from "./model.js";\nrenamed();\n',
+    );
+  });
+
+  it('refuses capture of an existing reference that receives no source edit', async () => {
+    const source = 'function target() {}\nfunction caller() { return renamed; }\ntarget();\n';
+    const nodes = await fixture('model.ts', source);
+    nodes[1]!.properties.startLine = 0;
+    await expectBlockedPreviewAndApply(
+      'model.ts',
+      source,
+      { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 },
+      nodes,
+      'name_collision',
+      'renamed',
+    );
+  });
+
+  it.each([
+    [
+      'export alias',
+      'function target() {}\nexport { target as publicTarget };\n',
+      'function renamed() {}\nexport { renamed as publicTarget };\n',
+    ],
+    [
+      'unrelated destructuring key',
+      'function target() {}\nconst { target: other } = object;\n',
+      'function renamed() {}\nconst { target: other } = object;\n',
+    ],
+  ])('preserves the independent source name in an %s', async (_name, source, expected) => {
+    const nodes = await fixture('model.ts', source!);
+    nodes[1]!.properties.startLine = 0;
+    await expectSupportedPreviewAndApply(
+      'model.ts',
+      source!,
+      { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 },
+      nodes,
+      expected!,
+      'renamed',
+    );
+  });
+
   it('resolves a constructed member through finalized cross-file import bindings', async () => {
     const file = 'model.ts';
     const nodes = await fixture(file, 'export class Writer {\n close() {}\n}\n', [
@@ -935,11 +1108,6 @@ describe('graph and SemanticModel rename', () => {
   it.each([
     ['unknown receiver', 'function target() {}\nunknown.target();\n', 'ambiguous_reference'],
     [
-      'shorthand property',
-      'function target() {}\nconst object = { target };\n',
-      'unsupported_occurrence',
-    ],
-    [
       'parameter capture',
       'function target() {}\nfunction other(renamed) { target(); }\n',
       'name_collision',
@@ -947,16 +1115,6 @@ describe('graph and SemanticModel rename', () => {
     ['keyword replacement', 'function target() {}\ntarget();\n', 'invalid_name'],
     ['keyword declaration only', 'function target() {}\n', 'invalid_name'],
     ['computed member', 'function target() {}\nobject["target"]();\n', 'unsupported_occurrence'],
-    [
-      'export alias',
-      'function target() {}\nexport { target as publicTarget };\n',
-      'unsupported_occurrence',
-    ],
-    [
-      'destructuring',
-      'function target() {}\nconst { target: other } = object;\n',
-      'unsupported_occurrence',
-    ],
   ])('refuses %s', async (_name, source, code) => {
     const nodes = await fixture('model.ts', source);
     nodes[1]!.properties.startLine = 0;
@@ -984,7 +1142,7 @@ describe('graph and SemanticModel rename', () => {
     ).rejects.toMatchObject({ code: 'unsupported_boundary' });
   });
 
-  it('refuses a member with an override family', async () => {
+  it('renames the complete provider-proven override family', async () => {
     const file = 'model.ts';
     const source = 'class Base {\n close() {}\n}\nclass Derived extends Base {\n close() {}\n}\n';
     const nodes = await fixture(file, source, [
@@ -1009,20 +1167,61 @@ describe('graph and SemanticModel rename', () => {
         properties: { name: 'close', filePath: file, startLine: 4, endLine: 4 },
       },
     ]);
-    await expect(
-      planGraphRename(
-        root,
-        {
-          uid: `Method:${file}:Base.close#0`,
-          name: 'close',
-          kind: 'Method',
-          filePath: file,
-          startLine: 2,
-        },
-        { new_name: 'finish' },
-        nodes,
-      ),
-    ).rejects.toMatchObject({ code: 'unsupported_symbol_family' });
+    await expectSupportedPreviewAndApply(
+      file,
+      source,
+      {
+        uid: `Method:${file}:Base.close#0`,
+        name: 'close',
+        kind: 'Method',
+        filePath: file,
+        startLine: 2,
+      },
+      nodes,
+      'class Base {\n finish() {}\n}\nclass Derived extends Base {\n finish() {}\n}\n',
+      'finish',
+    );
+  });
+
+  it('refuses a new inherited family collision even without call sites', async () => {
+    const file = 'model.ts';
+    const source = 'class Base {\n finish() {}\n}\nclass Derived extends Base {\n close() {}\n}\n';
+    const nodes = await fixture(file, source, [
+      {
+        id: `Class:${file}:Base`,
+        label: 'Class',
+        properties: { name: 'Base', filePath: file, startLine: 0, endLine: 2 },
+      },
+      {
+        id: `Class:${file}:Derived`,
+        label: 'Class',
+        properties: { name: 'Derived', filePath: file, startLine: 3, endLine: 5 },
+      },
+      {
+        id: `Method:${file}:Base.finish#0`,
+        label: 'Method',
+        properties: { name: 'finish', filePath: file, startLine: 1, endLine: 1 },
+      },
+      {
+        id: `Method:${file}:Derived.close#0`,
+        label: 'Method',
+        properties: { name: 'close', filePath: file, startLine: 4, endLine: 4 },
+      },
+    ]);
+    await expectBlockedPreviewAndApply(
+      file,
+      source,
+      {
+        uid: `Method:${file}:Derived.close#0`,
+        name: 'close',
+        kind: 'Method',
+        filePath: file,
+        startLine: 5,
+      },
+      nodes,
+      'name_collision',
+      'finish',
+    );
   });
 
   it('preserves a same-spelled import alias bound to a different symbol', async () => {

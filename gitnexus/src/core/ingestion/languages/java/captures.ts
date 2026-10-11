@@ -217,6 +217,7 @@ export function emitJavaScopeCaptures(
 
     const typeDeclaration = [
       nodeMap['@declaration.class'],
+      nodeMap['@declaration.annotation'],
       nodeMap['@declaration.enum'],
       nodeMap['@declaration.record'],
       nodeMap['@declaration.interface'],

@@ -64,6 +64,15 @@ export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): 
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
   }
+  for (const [lang, counts] of Object.entries(src.cfgSkipped ?? {})) {
+    const skipped = (target.cfgSkipped ??= {});
+    const previous = skipped[lang];
+    skipped[lang] = {
+      tooManyLines: (previous?.tooManyLines ?? 0) + counts.tooManyLines,
+      tooDeeplyNested: (previous?.tooDeeplyNested ?? 0) + counts.tooDeeplyNested,
+      buildError: (previous?.buildError ?? 0) + counts.buildError,
+    };
+  }
   if (src.skippedPaths && src.skippedPaths.length > 0) {
     appendAll((target.skippedPaths ??= []), src.skippedPaths);
   }

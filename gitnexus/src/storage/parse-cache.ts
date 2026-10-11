@@ -858,7 +858,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // and original graph positions. Both stores must re-extract v135 captures.
 // v137: Python module-accessor syntax proofs and exact assigned-call provenance
 // join the existing subtype capture payload. Re-extract v136 in both stores.
-const SCHEMA_BUMP = 137;
+// v138: provider-owned source occurrences and new flow visitors/explicit region
+// ownership must not reuse older capture or CFG side channels.
+const SCHEMA_BUMP = 138;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

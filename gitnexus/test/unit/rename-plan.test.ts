@@ -256,6 +256,31 @@ describe('exact rename plan application', () => {
     expect(await fs.readdir(root)).toEqual(['a.ts']);
   });
 
+  it('preserves a destination edited during the final scan of unedited sources', async () => {
+    const p = await plan({ 'a.ts': 'close()', 'z.ts': '// no references' });
+    p.edits.pop();
+    const destination = path.join(root, 'a.ts');
+    const original = fs.readFile.bind(fs);
+    let evidenceReads = 0;
+    vi.spyOn(fs, 'readFile').mockImplementation(async (...args) => {
+      const contents = await original(...args);
+      if (args[0] === path.join(root, 'z.ts') && ++evidenceReads === 2)
+        await fs.writeFile(destination, 'user edit');
+      return contents;
+    });
+
+    expect(await executeRenamePlan(root, p, false)).toMatchObject({
+      status: 'partial',
+      applied: false,
+      application_status: 'failed',
+      code: 'source_changed',
+      total_edits: 0,
+      failed_files: ['a.ts'],
+    });
+    expect(await fs.readFile(destination, 'utf8')).toBe('user edit');
+    expect((await fs.readdir(root)).sort()).toEqual(['a.ts', 'z.ts']);
+  });
+
   it('preserves the destination mode after replacement', async () => {
     const p = await plan({ 'a.ts': 'close()' });
     await fs.chmod(path.join(root, 'a.ts'), 0o750);

@@ -39,6 +39,7 @@ import {
 import { emitVueScopeCaptures } from './vue/captures.js';
 import { getTsParser } from './typescript/query.js';
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
+import { vueRenameProvider } from './vue/rename.js';
 
 const VUE_SPECIFIC_BUILT_INS = [
   'ref',
@@ -78,6 +79,7 @@ const vueClassExtractor = createClassExtractor(vueClassConfig);
 
 export const vueProvider = defineLanguage({
   id: SupportedLanguages.Vue,
+  rename: vueRenameProvider,
   extensions: ['.vue'],
   entryPointPatterns: [],
   astFrameworkPatterns: [],

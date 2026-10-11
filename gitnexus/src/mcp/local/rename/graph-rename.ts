@@ -1,25 +1,35 @@
 import fs from 'node:fs/promises';
-import type Parser from 'tree-sitter';
 import {
   CLASS_KINDS,
-  SupportedLanguages,
-  getLanguageFromFilename,
+  METHOD_KINDS,
   type GraphNode,
-  type ParsedFile,
   type Range,
   type ReferenceSite,
   type SymbolDefinition,
 } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../../core/graph/graph.js';
 import { createSemanticModel } from '../../../core/ingestion/model/semantic-model.js';
-import type { ScopeResolutionIndexes } from '../../../core/ingestion/model/scope-resolution-indexes.js';
-import { lookupOwnedMembersByOwner } from '../../../core/ingestion/model/owned-members-lookup.js';
-import { createReferenceLookup } from '../../../core/ingestion/resolve-references.js';
-import { extractParsedFile } from '../../../core/ingestion/scope-extractor-bridge.js';
+import { computeMRO } from '../../../core/ingestion/mro-processor.js';
+import {
+  getProviderForFile,
+  getProviderForFileContent,
+  needsContentLanguageClassification,
+} from '../../../core/ingestion/languages/index.js';
+import type {
+  RenameIssue,
+  RenameOccurrence,
+  RenameProvider,
+  RenameReplacement,
+  RenameSemanticContext,
+  RenameSource,
+} from '../../../core/ingestion/rename-provider.js';
+import type { ScopeResolver } from '../../../core/ingestion/scope-resolution/contract/scope-resolver.js';
 import { SCOPE_RESOLVERS } from '../../../core/ingestion/scope-resolution/pipeline/registry.js';
 import { runScopeResolution } from '../../../core/ingestion/scope-resolution/pipeline/run.js';
+import type { SourceBindingResolution } from '../../../core/ingestion/scope-resolution/source-binding-resolution.js';
 import {
   buildGraphNodeLookup,
+  LINKABLE_LABELS,
   qualifiedKey,
 } from '../../../core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
 import {
@@ -28,17 +38,6 @@ import {
 } from '../../../core/ingestion/scope-resolution/graph-bridge/ids.js';
 import { lookupNameClaim } from '../../../core/ingestion/scope-resolution/scope/walkers.js';
 import { definitionIdPosition } from '../../../core/ingestion/scope-resolution/utils/definition-id.js';
-import { createParserForLanguage } from '../../../core/tree-sitter/parser-loader.js';
-import {
-  constructorForReceiver,
-  hasPythonMangledNames,
-  hasUnsupportedIdentifiers,
-  inDynamicWithScope,
-  isReceiverWrite,
-  jsxTagRole,
-  sameHoistedVarBinding,
-  unsupportedIdentifierSpelling,
-} from './rename-safety.js';
 import {
   RenameFailure,
   repositoryPath,
@@ -48,18 +47,11 @@ import {
   type OccurrenceEdit,
 } from './rename-plan.js';
 
-interface SourceFile {
-  path: string;
-  content: string;
-  tree: Parser.Tree;
-  parsed: ParsedFile;
-  tokens: Parser.SyntaxNode[];
-  namedOccurrences: Parser.SyntaxNode[];
-  tokensByRange: Map<string, Parser.SyntaxNode>;
-  tokensByStart: Map<number, Parser.SyntaxNode>;
-}
+type SemanticObservation = Parameters<
+  NonNullable<Parameters<typeof runScopeResolution>[0]['onResolved']>
+>[0];
 
-/** A fresh semantic pass uses indexed graph identities, never name-search edits. */
+/** A fresh provider-owned semantic pass uses graph identities, never text-search edits. */
 export async function planGraphRename(
   repoPath: string,
   symbol: RenameSymbol,
@@ -67,22 +59,6 @@ export async function planGraphRename(
   graphNodes: readonly GraphNode[],
   referenceFiles: readonly string[] = [],
 ): Promise<RenamePlan> {
-  const language = getLanguageFromFilename(symbol.filePath);
-  const resolver = language === undefined ? undefined : SCOPE_RESOLVERS.get(language);
-  if (!language || !resolver || resolver.scopeResolutionEdgeMode === 'callable-flow-only') {
-    throw new RenameFailure(
-      'unsupported_language',
-      'This language has no complete semantic rename provider.',
-      'unsupported',
-    );
-  }
-  if (language === SupportedLanguages.PHP) {
-    throw new RenameFailure(
-      'unsupported_language',
-      'The PHP provider does not yet prove complete rename coverage for case-insensitive names.',
-      'unsupported',
-    );
-  }
   const targetNode = graphNodes.find((node) => node.id === symbol.uid);
   if (
     !targetNode ||
@@ -98,30 +74,83 @@ export async function planGraphRename(
       'The selected graph declaration does not match this checkout. Re-analyze first.',
     );
   }
+  const root = await fs.realpath(repoPath);
+  const contents = new Map<string, string>();
+  const readSource = async (filePath: string): Promise<string> => {
+    const existing = contents.get(filePath);
+    if (existing !== undefined) return existing;
+    const absolute = repositoryPath(repoPath, filePath);
+    repositoryPath(root, await fs.realpath(absolute));
+    const bytes = await fs.readFile(absolute);
+    const content = bytes.toString('utf8');
+    if (!Buffer.from(content, 'utf8').equals(bytes)) {
+      throw new RenameFailure(
+        'unsupported_encoding',
+        `Source is not lossless UTF-8: ${filePath}`,
+        'unsupported',
+      );
+    }
+    contents.set(filePath, content);
+    return content;
+  };
+  const targetProvider = getProviderForFileContent(
+    symbol.filePath,
+    await readSource(symbol.filePath),
+  );
+  const resolver = targetProvider && SCOPE_RESOLVERS.get(targetProvider.id);
+  const provider = resolver?.languageProvider.rename;
+  if (!targetProvider || !resolver || !provider) {
+    throw new RenameFailure(
+      'unsupported_language',
+      'This language has no semantic rename provider.',
+      'unsupported',
+    );
+  }
+  const language = targetProvider.id;
+  const canonical = (
+    name: string,
+    context?: Parameters<NonNullable<RenameProvider['canonicalName']>>[1],
+  ) => provider.canonicalName?.(name, context) ?? name;
   if (
     typeof options.new_name !== 'string' ||
     !options.new_name ||
-    options.new_name === symbol.name ||
-    unsupportedIdentifierSpelling(options.new_name, language)
+    options.new_name === symbol.name
   ) {
     throw new RenameFailure('invalid_name', 'Choose a different, nonempty identifier.');
   }
-  const graph = createKnowledgeGraph();
-  for (const node of graphNodes) graph.addNode(node);
-  const nodeLookup = buildGraphNodeLookup(graph);
-  const model = createSemanticModel();
-  const snapshots = new Map<string, string>();
-  const files = new Map<string, SourceFile>();
-  const filePaths = [
-    ...new Set(
-      graphNodes
-        .filter(
-          (node) =>
-            node.label === 'File' && getLanguageFromFilename(node.properties.filePath) === language,
-        )
-        .map((node) => node.properties.filePath),
-    ),
-  ];
+  reject(provider.validateName?.(options.new_name));
+  const sourceResolvers = new Map<string, ScopeResolver>();
+  for (const node of graphNodes) {
+    if (node.label !== 'File') continue;
+    const filenameProvider = getProviderForFile(node.properties.filePath);
+    if (
+      !needsContentLanguageClassification(node.properties.filePath) &&
+      (!filenameProvider ||
+        (filenameProvider.id !== language &&
+          !provider.acceptsSourceProvider?.(filenameProvider, node.properties.filePath)))
+    )
+      continue;
+    const sourceProvider = getProviderForFileContent(
+      node.properties.filePath,
+      await readSource(node.properties.filePath),
+    );
+    if (
+      !sourceProvider ||
+      (sourceProvider.id !== language &&
+        !provider.acceptsSourceProvider?.(sourceProvider, node.properties.filePath))
+    )
+      continue;
+    const sourceResolver = SCOPE_RESOLVERS.get(sourceProvider.id);
+    if (!sourceResolver?.languageProvider.rename) {
+      throw new RenameFailure(
+        'unsupported_boundary',
+        `A workspace source has no rename provider: ${node.properties.filePath}`,
+        'unsupported',
+      );
+    }
+    sourceResolvers.set(node.properties.filePath, sourceResolver);
+  }
+  const filePaths = [...sourceResolvers.keys()].sort();
   if (!filePaths.includes(symbol.filePath)) {
     throw new RenameFailure(
       'stale_graph',
@@ -135,95 +164,538 @@ export async function planGraphRename(
       'unsupported',
     );
   }
-  const root = await fs.realpath(repoPath);
-  for (const filePath of filePaths.sort()) {
+  const snapshots = new Map<string, string>();
+  const files = new Map<string, RenameSource>();
+  for (const filePath of filePaths) {
     const absolute = repositoryPath(repoPath, filePath);
-    repositoryPath(root, await fs.realpath(absolute));
-    const bytes = await fs.readFile(absolute);
-    const content = bytes.toString('utf8');
-    if (!Buffer.from(content, 'utf8').equals(bytes)) {
-      throw new RenameFailure(
-        'unsupported_encoding',
-        `Source is not lossless UTF-8: ${filePath}`,
-        'unsupported',
-      );
-    }
+    const content = contents.get(filePath)!;
     snapshots.set(absolute, content);
-    if (!content.trim()) continue;
-    const parser = await createParserForLanguage(language, filePath);
+    const sourceResolver = sourceResolvers.get(filePath)!;
+    if (content.trim())
+      files.set(
+        filePath,
+        await parseSource(
+          sourceResolver.languageProvider.rename!,
+          sourceResolver,
+          filePath,
+          content,
+        ),
+      );
+  }
+  const resolutionConfig = resolver.captureResolutionConfig
+    ? await resolver.captureResolutionConfig(repoPath, filePaths)
+    : await resolver.loadResolutionConfig?.(repoPath);
+  const before = resolveSources(files, graphNodes, resolver, resolutionConfig);
+  const { parsedFiles, indexes, referenceBindings } = before.observation;
+  const definitions = parsedFiles.flatMap((file) => [...file.localDefs]);
+  const nodeLookup = buildGraphNodeLookup(
+    before.graph,
+    new Set([...LINKABLE_LABELS, ...definitions.map((def) => def.type)]),
+  );
+  const targetDefs = definitions.filter((def) => {
+    const position = definitionIdPosition(def.nodeId, def.filePath);
     if (
-      parser
-        .getLanguage()
-        .nodeTypeInfo.some((info) => !info.named && info.type === options.new_name)
-    ) {
-      throw new RenameFailure(
-        'invalid_name',
-        'The proposed name is a reserved syntax token in this language.',
-      );
+      def.filePath !== symbol.filePath ||
+      canonical(simpleQualifiedName(def) ?? '', { definition: def }) !==
+        canonical(symbol.name, { definition: def }) ||
+      (position?.line ?? def.declarationRange?.startLine) !== symbol.startLine ||
+      (symbol.endLine !== undefined && def.declarationRange?.endLine !== symbol.endLine) ||
+      resolveDefGraphId(def.filePath, def, nodeLookup) !== targetNode.id
+    )
+      return false;
+    if (provider.matchesGraphIdentity)
+      return provider.matchesGraphIdentity({
+        definition: def,
+        node: targetNode,
+        definitions,
+        graph: before.graph,
+        files,
+      });
+    if (def.qualifiedName === undefined) return def.nodeId === targetNode.id;
+    const qualifiedName =
+      def.namespacePrefix && !def.qualifiedName.startsWith(`${def.namespacePrefix}.`)
+        ? `${def.namespacePrefix}.${def.qualifiedName}`
+        : def.qualifiedName;
+    return (
+      nodeLookup.get(qualifiedKey(def.filePath, targetNode.label, qualifiedName)) === targetNode.id
+    );
+  });
+  if (targetDefs.length !== 1 || targetDefs[0]!.isSynthetic) {
+    throw new RenameFailure(
+      'stale_graph',
+      'The graph identity is not a unique current source declaration.',
+    );
+  }
+  const target = targetDefs[0]!;
+  const context: RenameSemanticContext = {
+    target,
+    definitions,
+    files,
+    indexes,
+    model: before.model,
+    graph: before.graph,
+    newName: options.new_name,
+  };
+  reject(provider.checkSafety?.(context));
+  const familyResult = provider.symbolFamily?.(context) ?? [target];
+  if (isIssue(familyResult)) reject(familyResult);
+  const family = familyResult as readonly SymbolDefinition[];
+  const familyIds = new Set(family.map((def) => def.nodeId));
+  if (
+    !familyIds.has(target.nodeId) ||
+    family.some((def) => !definitions.includes(def) || def.isSynthetic)
+  ) {
+    throw new RenameFailure(
+      'incomplete_semantics',
+      'The provider did not identify a complete source symbol family.',
+    );
+  }
+  assertDeclarationCollisions(context, familyIds, provider);
+  const edits = new Map<string, OccurrenceEdit>();
+  const accounted = new Set<string>();
+  const add = (
+    source: RenameSource,
+    occurrence: RenameOccurrence,
+    selected: boolean,
+    targetDefIds: readonly string[],
+    site?: ReferenceSite,
+  ) => {
+    const sourceProvider = sourceResolvers.get(source.path)!.languageProvider.rename!;
+    const key = occurrenceKey(source.path, occurrence);
+    reject(
+      sourceProvider.checkOccurrence?.({
+        ...context,
+        source,
+        occurrence,
+        selected,
+        targetDefIds,
+        site,
+      }),
+    );
+    accounted.add(key);
+    if (!selected) return;
+    const replacementResult =
+      sourceProvider.rewrite?.({ ...context, source, occurrence, newName: options.new_name }) ??
+      (occurrence.spans.length === 1
+        ? occurrence.spans.map((span) => ({
+            ...span,
+            oldText: source.content.slice(span.start, span.start + span.length),
+            newText: options.new_name,
+          }))
+        : {
+            code: 'unsupported_occurrence',
+            message: `The provider has no multipart name rewrite in ${source.path}.`,
+            status: 'unsupported' as const,
+          });
+    if (isIssue(replacementResult)) reject(replacementResult);
+    for (const replacement of replacementResult as readonly RenameReplacement[]) {
+      if (
+        replacement.start < 0 ||
+        replacement.length <= 0 ||
+        source.content.slice(replacement.start, replacement.start + replacement.length) !==
+          replacement.oldText
+      )
+        throw new RenameFailure(
+          'unsupported_occurrence',
+          `The provider returned an invalid source span in ${source.path}.`,
+          'unsupported',
+        );
+      const edit: OccurrenceEdit = {
+        file_path: source.path,
+        start: replacement.start,
+        length: replacement.length,
+        old_text: replacement.oldText,
+        new_text: replacement.newText,
+      };
+      const id = `${source.path}:${edit.start}:${edit.length}`;
+      const previous = edits.get(id);
+      if (previous && previous.new_text !== edit.new_text) {
+        throw new RenameFailure(
+          'unsupported_occurrence',
+          'Two symbol identities require incompatible source rewrites.',
+          'unsupported',
+        );
+      }
+      edits.set(id, edit);
     }
-    const parseText = resolver.languageProvider.preprocessSource?.(content, filePath) ?? content;
-    if (parseText !== content) {
-      throw new RenameFailure(
-        'unsupported_source',
-        `Rename cannot prove offsets for transformed source: ${filePath}`,
-        'unsupported',
-      );
-    }
-    const tree = parser.parse(content);
-    if (!tree || tree.rootNode.hasError) {
-      throw new RenameFailure('parse_error', `Cannot establish semantic coverage for ${filePath}.`);
-    }
-    if (hasUnsupportedIdentifiers(tree.rootNode, language)) {
-      throw new RenameFailure(
-        'unsupported_identifier',
-        `The provider cannot prove equivalent identifier spellings in ${filePath}.`,
-        'unsupported',
-      );
-    }
-    const parsed = extractParsedFile(resolver.languageProvider, content, filePath, undefined, tree);
-    if (!parsed)
+  };
+  for (const def of definitions) {
+    const selected = familyIds.has(def.nodeId);
+    if (
+      !selected &&
+      canonical(simpleQualifiedName(def) ?? '', { definition: def }) !==
+        canonical(symbol.name, { definition: def })
+    )
+      continue;
+    const source = files.get(def.filePath);
+    if (!source)
       throw new RenameFailure(
         'incomplete_semantics',
-        `Scope extraction is unavailable for ${filePath}.`,
+        'A declaration lies outside the indexed source set.',
       );
-    resolver.populateOwners(parsed);
-    for (const def of parsed.localDefs) {
-      const name = simpleQualifiedName(def);
-      if (name) model.symbols.add(filePath, name, def.nodeId, def.type, def);
-    }
-    const tokens = sourceTokens(tree.rootNode);
-    const namedOccurrences = tokens.filter((token) => token.text === symbol.name);
-    const tokensByRange = new Map<string, Parser.SyntaxNode>();
-    const tokensByStart = new Map<number, Parser.SyntaxNode>();
-    for (const token of namedOccurrences) {
-      const range = tokenRangeKey(token);
-      if (!tokensByRange.has(range)) tokensByRange.set(range, token);
-      if (!tokensByStart.has(token.startIndex)) tokensByStart.set(token.startIndex, token);
-    }
-    files.set(filePath, {
-      path: filePath,
-      content,
-      tree,
-      parsed,
-      tokens,
-      namedOccurrences,
-      tokensByRange,
-      tokensByStart,
-    });
+    const occurrence =
+      source.occurrences.find((candidate) => candidate.definitionId === def.nodeId) ??
+      occurrenceAt(source, def.nameRange);
+    add(source, occurrence, selected, [def.nodeId]);
   }
-  let observation:
-    | { readonly parsedFiles: readonly ParsedFile[]; readonly indexes: ScopeResolutionIndexes }
-    | undefined;
+  for (const [scopeId, imports] of indexes.imports) {
+    const scope = indexes.scopeTree.getScope(scopeId);
+    const source = scope && files.get(scope.filePath);
+    if (!source) continue;
+    for (const edge of imports) {
+      const selected = edge.targetDefId !== undefined && familyIds.has(edge.targetDefId);
+      const matchesExport =
+        canonical(edge.targetExportedName, { definition: target }) ===
+        canonical(symbol.name, { definition: target });
+      const matchesLocal =
+        canonical(edge.localName, { definition: target }) ===
+        canonical(symbol.name, { definition: target });
+      if (!selected && !matchesExport && !matchesLocal) continue;
+      if (!edge.atRange || edge.linkStatus === 'unresolved') {
+        throw new RenameFailure(
+          'incomplete_semantics',
+          `An import of ${symbol.name} is unresolved in ${source.path}.`,
+        );
+      }
+      const candidates = source.occurrences.filter(
+        (candidate) =>
+          contains(edge.atRange!, candidate.range) &&
+          canonical(candidate.name, { occurrence: candidate }) ===
+            canonical(symbol.name, { occurrence: candidate }),
+      );
+      if (
+        candidates.length === 0 &&
+        (edge.kind === 'wildcard-expanded' || edge.kind === 'namespace')
+      )
+        continue;
+      // Distinct imported/local identities are supplied by the provider. A
+      // shared span needs an explicit rewrite; guessing by source order is unsafe.
+      const exported = candidates.filter(
+        (candidate) =>
+          candidate.role === 'imported' ||
+          (candidate.definitionId !== undefined && candidate.definitionId === edge.targetDefId),
+      );
+      if (exported.length) {
+        for (const occurrence of exported)
+          add(source, occurrence, selected, edge.targetDefId ? [edge.targetDefId] : []);
+        for (const occurrence of candidates) {
+          if (!exported.includes(occurrence)) add(source, occurrence, false, []);
+        }
+      } else if (candidates.length === 1) {
+        add(
+          source,
+          candidates[0]!,
+          selected && (matchesExport || !matchesLocal),
+          edge.targetDefId ? [edge.targetDefId] : [],
+        );
+      } else if (candidates.length !== 0 || matchesExport) {
+        throw new RenameFailure(
+          'unsupported_occurrence',
+          `The import has no unambiguous source identity in ${source.path}.`,
+          'unsupported',
+        );
+      }
+    }
+  }
+  for (const site of indexes.referenceSites) {
+    const binding = referenceBindings.get(site);
+    const matches = canonical(site.name, { site }) === canonical(symbol.name, { site });
+    const selected = binding?.targetDefIds.some((id) => familyIds.has(id)) === true;
+    if (!matches && !selected) continue;
+    const scope = indexes.scopeTree.getScope(site.inScope);
+    const source = scope && files.get(scope.filePath);
+    if (!source)
+      throw new RenameFailure(
+        'incomplete_semantics',
+        'A reference lies outside the indexed source set.',
+      );
+    const occurrence =
+      source.occurrences.find((candidate) => candidate.referenceSite === site) ??
+      occurrenceAt(source, site.nameRange);
+    if (accounted.has(occurrenceKey(source.path, occurrence))) continue;
+    const completeFamily =
+      binding?.status === 'ambiguous' &&
+      binding.candidatesComplete === true &&
+      binding.targetDefIds.length > 0 &&
+      binding.targetDefIds.every((id) => familyIds.has(id));
+    if (
+      !binding ||
+      (binding.status !== 'resolved' && binding.status !== 'blocked' && !completeFamily)
+    ) {
+      throw new RenameFailure(
+        'ambiguous_reference',
+        `Cannot prove the written binding of ${site.name} at ${source.path}:${site.atRange.startLine}.`,
+      );
+    }
+    if (selected && binding.targetDefIds.some((id) => !familyIds.has(id))) {
+      throw new RenameFailure(
+        'ambiguous_reference',
+        `The written name denotes several symbol families in ${source.path}.`,
+      );
+    }
+    add(
+      source,
+      occurrence,
+      selected && binding.importAlias === undefined,
+      binding.targetDefIds,
+      site,
+    );
+  }
+  for (const source of files.values()) {
+    for (const occurrence of source.occurrences) {
+      if (
+        canonical(occurrence.name, { occurrence }) !== canonical(symbol.name, { occurrence }) ||
+        accounted.has(occurrenceKey(source.path, occurrence))
+      )
+        continue;
+      if (occurrence.role === 'unrelated') {
+        add(source, occurrence, false, []);
+        continue;
+      }
+      if (occurrence.role === 'binding') {
+        const scope = innermostScope(source, occurrence.range);
+        if (
+          scope &&
+          lookupNameClaim(scope, occurrence.name, indexes, {
+            position: occurrence.range,
+            purpose: 'value',
+          }).status === 'blocked'
+        ) {
+          add(source, occurrence, false, []);
+          continue;
+        }
+      }
+      throw new RenameFailure(
+        'incomplete_semantics',
+        `Uncovered occurrence in ${source.path}:${occurrence.range.startLine}.`,
+      );
+    }
+  }
+  const ordered = [...edits.values()].sort(
+    (a, b) => a.file_path.localeCompare(b.file_path) || a.start - b.start,
+  );
+  const editsByFile = new Map<string, OccurrenceEdit[]>();
+  for (const edit of ordered) {
+    const group = editsByFile.get(edit.file_path) ?? [];
+    if (
+      group.length &&
+      group[group.length - 1]!.start + group[group.length - 1]!.length > edit.start
+    ) {
+      throw new RenameFailure(
+        'unsupported_occurrence',
+        'Provider source rewrites overlap.',
+        'unsupported',
+      );
+    }
+    group.push(edit);
+    editsByFile.set(edit.file_path, group);
+  }
+  const updatedFiles = new Map<string, RenameSource>();
+  // Re-extract EVERY source: resolution mutates semantic captures and unchanged
+  // callers can be captured by a new name without receiving an edit themselves.
+  for (const source of files.values()) {
+    const fileEdits = editsByFile.get(source.path) ?? [];
+    const sourceResolver = sourceResolvers.get(source.path)!;
+    const sourceProvider = sourceResolver.languageProvider.rename!;
+    const updated = await parseSource(
+      sourceProvider,
+      sourceResolver,
+      source.path,
+      applyEdits(source.content, fileEdits),
+    );
+    reject(
+      sourceProvider.validateRewrite?.({
+        ...context,
+        source,
+        updated,
+        edits: fileEdits.map(asReplacement),
+      }),
+    );
+    updatedFiles.set(source.path, updated);
+  }
+  const updatedDefinitions = [...updatedFiles.values()].flatMap((file) => [
+    ...file.parsed.localDefs,
+  ]);
+  const offsetOf = createOffsetLookup();
+  const definitionMap = matchDefinitions(
+    definitions,
+    updatedDefinitions,
+    files,
+    updatedFiles,
+    editsByFile,
+    offsetOf,
+  );
+  const definitionsByGraphId = new Map(
+    definitions.flatMap((def) => {
+      const id = resolveDefGraphId(def.filePath, def, nodeLookup);
+      return id ? [[id, def] as const] : [];
+    }),
+  );
+  const updatedDefinitionsById = new Map(updatedDefinitions.map((def) => [def.nodeId, def]));
+  const updatedNodes = graphNodes.map((node) => {
+    const original = definitionsByGraphId.get(node.id);
+    const replacementId = original && definitionMap.get(original.nodeId);
+    const replacement = replacementId && updatedDefinitionsById.get(replacementId);
+    const updatedSource = replacement && updatedFiles.get(replacement.filePath);
+    const replacementName =
+      replacement && updatedSource && familyIds.has(original!.nodeId)
+        ? (
+            updatedSource.occurrences.find(
+              (occurrence) => occurrence.definitionId === replacement.nodeId,
+            ) ?? occurrenceAt(updatedSource, replacement.nameRange)
+          ).name
+        : node.properties.name;
+    return replacement
+      ? {
+          ...node,
+          properties: {
+            ...node.properties,
+            name: replacementName,
+            qualifiedName: replacement.qualifiedName,
+            startLine:
+              (replacement.declarationRange?.startLine ?? node.properties.startLine! + 1) - 1,
+            endLine: (replacement.declarationRange?.endLine ?? node.properties.endLine! + 1) - 1,
+          },
+        }
+      : node;
+  });
+  const after = resolveSources(updatedFiles, updatedNodes, resolver, resolutionConfig);
+  const afterDefinitions = after.observation.parsedFiles.flatMap((file) => [...file.localDefs]);
+  const afterTarget = afterDefinitions.find(
+    (def) => def.nodeId === definitionMap.get(target.nodeId),
+  );
+  if (!afterTarget)
+    throw new RenameFailure(
+      'name_collision',
+      'The proposed name changes the selected declaration identity.',
+    );
+  const afterFamily = provider.symbolFamily?.({
+    target: afterTarget,
+    definitions: afterDefinitions,
+    files: updatedFiles,
+    indexes: after.observation.indexes,
+    model: after.model,
+    graph: after.graph,
+    newName: options.new_name,
+  }) ?? [afterTarget];
+  const expectedFamily = new Set(family.map((def) => definitionMap.get(def.nodeId)));
+  if (
+    isIssue(afterFamily) ||
+    afterFamily.length !== expectedFamily.size ||
+    afterFamily.some((def) => !expectedFamily.has(def.nodeId))
+  ) {
+    throw new RenameFailure(
+      'name_collision',
+      'The proposed name changes the declaration or override family.',
+    );
+  }
+  assertBindingsPreserved(
+    before.observation,
+    after.observation,
+    files,
+    updatedFiles,
+    editsByFile,
+    definitionMap,
+    offsetOf,
+  );
+  return {
+    symbol,
+    new_name: options.new_name,
+    snapshots,
+    edits: ordered,
+    coverage: {
+      name: 'gitnexus-semantic',
+      scope: 'indexed-repository',
+      source_file_count: filePaths.length,
+      languages: [
+        ...new Set([...sourceResolvers.values()].map((sourceResolver) => sourceResolver.language)),
+      ],
+      limitations: ['Only indexed source files covered by this language provider are included.'],
+    },
+  };
+}
+
+function isIssue(value: unknown): value is RenameIssue {
+  return value !== null && typeof value === 'object' && 'code' in value && 'message' in value;
+}
+
+function reject(issue: RenameIssue | void): void {
+  if (issue)
+    throw new RenameFailure(
+      issue.code,
+      issue.message,
+      issue.status === 'unsupported' ? 'unsupported' : 'blocked',
+    );
+}
+
+async function parseSource(
+  provider: RenameProvider,
+  resolver: ScopeResolver,
+  path: string,
+  content: string,
+): Promise<RenameSource> {
+  let source: RenameSource;
+  try {
+    source = await provider.parseSource({
+      filePath: path,
+      content,
+      languageProvider: resolver.languageProvider,
+      scopeResolver: resolver,
+    });
+  } catch (error) {
+    if (isIssue(error)) reject(error);
+    throw error;
+  }
+  if (source.path !== path || source.content !== content || source.parsed.filePath !== path) {
+    throw new RenameFailure(
+      'incomplete_semantics',
+      `The provider returned a different source identity for ${path}.`,
+    );
+  }
+  return source;
+}
+
+function resolveSources(
+  files: ReadonlyMap<string, RenameSource>,
+  nodes: readonly GraphNode[],
+  resolver: ScopeResolver,
+  resolutionConfig: unknown,
+) {
+  const graph = createKnowledgeGraph();
+  const languages = new Map(
+    [...files].map(([path, source]) => [path, getProviderForFileContent(path, source.content)?.id]),
+  );
+  for (const node of nodes)
+    graph.addNode({
+      ...node,
+      properties: {
+        ...node.properties,
+        language: languages.get(node.properties.filePath) ?? node.properties.language,
+      },
+    });
+  const model = createSemanticModel();
+  for (const source of files.values()) {
+    resolver.populateOwners(source.parsed);
+    const sourceProvider = getProviderForFileContent(source.path, source.content)?.rename;
+    for (const def of source.parsed.localDefs) {
+      const rawName = simpleQualifiedName(def);
+      const name =
+        rawName && (sourceProvider?.canonicalName?.(rawName, { definition: def }) ?? rawName);
+      if (name) model.symbols.add(source.path, name, def.nodeId, def.type, def);
+    }
+  }
+  let observation: SemanticObservation | undefined;
   const warnings: string[] = [];
   const stats = runScopeResolution(
     {
       graph,
       model,
       files: [...files.values()],
-      treeCache: new Map([...files].map(([filePath, file]) => [filePath, file.tree])),
-      preExtractedParsedFiles: new Map(
-        [...files].map(([filePath, file]) => [filePath, file.parsed]),
+      resolutionConfig,
+      treeCache: new Map(
+        [...files].flatMap(([path, source]) => (source.tree ? [[path, source.tree] as const] : [])),
       ),
+      preExtractedParsedFiles: new Map([...files].map(([path, source]) => [path, source.parsed])),
       onWarn: (warning) => warnings.push(warning),
       onResolved: (result) => {
         observation = result;
@@ -242,578 +714,276 @@ export async function planGraphRename(
       'The semantic pass could not verify every indexed source file.',
     );
   }
-  const { parsedFiles, indexes } = observation;
-  if (
-    [...files.values()].some((file) => file.tokens.some((token) => token.text === options.new_name))
-  ) {
-    throw new RenameFailure(
-      'name_collision',
-      'The proposed name already occurs in the indexed language scope.',
-    );
-  }
-  const definitions = parsedFiles.flatMap((file) => [...file.localDefs]);
-  const targetDefs = definitions.filter(
-    (def) =>
-      def.filePath === symbol.filePath &&
-      simpleQualifiedName(def) === symbol.name &&
-      definitionIdPosition(def.nodeId, def.filePath)?.line === symbol.startLine &&
-      (symbol.endLine === undefined || def.declarationRange?.endLine === symbol.endLine) &&
-      def.qualifiedName !== undefined &&
-      nodeLookup.get(
-        qualifiedKey(
-          def.filePath,
-          targetNode.label,
-          def.namespacePrefix && !def.qualifiedName.startsWith(`${def.namespacePrefix}.`)
-            ? `${def.namespacePrefix}.${def.qualifiedName}`
-            : def.qualifiedName,
-        ),
-      ) === targetNode.id &&
-      resolveDefGraphId(def.filePath, def, nodeLookup) === targetNode.id,
+  // The ordinary ingestion MRO phase consumes source ownership edges emitted
+  // by parsing. Reconstruct those exact edges from the fresh owned definitions
+  // before invoking the same phase here; inheritance alone is not an override.
+  const definitions = new Map(
+    observation.parsedFiles.flatMap((file) =>
+      file.localDefs.map((def) => [def.nodeId, def] as const),
+    ),
   );
-  if (targetDefs.length !== 1 || targetDefs[0]!.isSynthetic) {
-    throw new RenameFailure(
-      'stale_graph',
-      'The graph identity is not a unique current source declaration.',
-    );
+  const lookup = buildGraphNodeLookup(graph);
+  for (const def of definitions.values()) {
+    const graphId = resolveDefGraphId(def.filePath, def, lookup);
+    const node = graphId && graph.getNode(graphId);
+    if (!node) continue;
+    node.properties.parameterCount = def.parameterCount;
+    node.properties.parameterTypes = def.parameterTypes ? [...def.parameterTypes] : undefined;
+    const owner = def.ownerId && definitions.get(def.ownerId);
+    const ownerGraphId =
+      owner && CLASS_KINDS.includes(owner.type) && resolveDefGraphId(owner.filePath, owner, lookup);
+    if (ownerGraphId && METHOD_KINDS.includes(def.type))
+      graph.addRelationship({
+        id: `HAS_METHOD:${ownerGraphId}->${node.id}`,
+        sourceId: ownerGraphId,
+        targetId: node.id,
+        type: 'HAS_METHOD',
+        confidence: 1,
+        reason: 'fresh-source-ownership',
+      });
   }
-  const target = targetDefs[0]!;
-  if (
-    language === SupportedLanguages.Python &&
-    CLASS_KINDS.includes(target.type) &&
-    files
-      .get(target.filePath)!
-      .namedOccurrences.some(
-        (token) =>
-          target.nameRange && contains(target.nameRange, token) && hasPythonMangledNames(token),
-      )
-  ) {
-    throw new RenameFailure(
-      'unsupported_symbol_family',
-      'Renaming a Python class with private-name or slot coupling requires a complete symbol-family plan.',
-      'unsupported',
-    );
-  }
-  if (
-    CLASS_KINDS.includes(target.type) &&
-    (definitions.some(
-      (def) => def.ownerId === target.nodeId && simpleQualifiedName(def) === symbol.name,
-    ) ||
-      [...files.values()].some((file) =>
-        file.namedOccurrences.some((token) => isNameCoupledDeclaration(token)),
-      ))
-  ) {
-    throw new RenameFailure(
-      'unsupported_symbol_family',
-      'Renaming a class with name-coupled constructors or destructors requires a complete symbol-family plan.',
-      'unsupported',
-    );
-  }
-  if (target.ownerId) {
-    const owner = definitions.find((def) => def.nodeId === target.ownerId);
-    if (owner && CLASS_KINDS.includes(owner.type) && simpleQualifiedName(owner) === symbol.name) {
-      throw new RenameFailure(
-        'unsupported_symbol_family',
-        'Renaming a name-coupled constructor or destructor requires a complete symbol-family plan.',
-        'unsupported',
-      );
-    }
-    const ownerGraphId = owner && resolveDefGraphId(owner.filePath, owner, nodeLookup);
-    if (
-      ownerGraphId &&
-      [...graph.iterRelationships()].some(
-        (edge) =>
-          (edge.type === 'EXTENDS' || edge.type === 'IMPLEMENTS') &&
-          (edge.sourceId === ownerGraphId || edge.targetId === ownerGraphId),
-      )
-    ) {
-      throw new RenameFailure(
-        'unsupported_symbol_family',
-        'Renaming an inherited or interface member requires a complete symbol-family plan.',
-        'unsupported',
-      );
-    }
-  }
-  if (definitions.some((def) => simpleQualifiedName(def) === options.new_name)) {
-    throw new RenameFailure(
-      'name_collision',
-      'The proposed name already belongs to a definition in the indexed language scope.',
-    );
-  }
-  const lookup = createReferenceLookup({
-    scopes: indexes,
-    providers: { arityCompatibility: resolver.arityCompatibility },
-    ownedMembersByOwner: (owner, name) => lookupOwnedMembersByOwner(model, owner, name),
-  });
-  const isJsTs =
-    language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript;
-  const receiverWrites = new Map<string, boolean>();
-  const constructorProofs = new Map<string, boolean>();
-  const boundMembers = (site: ReferenceSite): readonly SymbolDefinition[] | undefined => {
-    if (!site.explicitReceiver) return undefined;
-    const receiverClaim = lookupNameClaim(site.inScope, site.explicitReceiver.name, indexes, {
-      position: site.atRange,
-      purpose: 'value',
-    });
-    const type = receiverClaim.typeBinding;
-    const receiverFile = receiverClaim.scope && files.get(receiverClaim.scope.filePath);
-    if (receiverFile && receiverClaim.scope) {
-      const bindingKey = `${receiverClaim.scope.id}:${site.explicitReceiver.name}:${JSON.stringify(type?.bindingRange)}`;
-      let hasWrites = receiverWrites.get(bindingKey);
-      if (hasWrites === undefined) {
-        const initializer =
-          isJsTs &&
-          type &&
-          constructorForReceiver(receiverFile.tree.rootNode, site.explicitReceiver.name, type);
-        hasWrites = receiverFile.tokens.some((token) => {
-          if (token.text !== site.explicitReceiver!.name || !isReceiverWrite(token)) return false;
-          // Only this exact constructor declaration is an initial value proof.
-          // Any other initialized declaration may reassign a hoisted var.
-          if (initializer && initializer.parent?.parent?.childForFieldName('name')?.id === token.id)
-            return false;
-          if (initializer && sameHoistedVarBinding(token, initializer)) return true;
-          // Python and similar grammars use assignment for the initial binding.
-          // JS/TS declarations have a distinct declarator; every assignment is
-          // an additional write even when it supplied the merged TypeRef.
-          if (
-            !isJsTs &&
-            type?.source === 'constructor-inferred' &&
-            type.bindingRange &&
-            contains(type.bindingRange, token)
-          )
-            return false;
-          const scope = innermostScope(receiverFile.parsed, token);
-          const writeClaim =
-            scope &&
-            lookupNameClaim(scope, token.text, indexes, {
-              position: {
-                startLine: token.startPosition.row + 1,
-                startCol: token.startPosition.column,
-              },
-              purpose: 'value',
-            });
-          // A constructor-inferred fact in a nested function can claim a name
-          // without declaring it. Only lexical claims prove an unrelated write.
-          return (
-            !writeClaim ||
-            !writeClaim.scope ||
-            writeClaim.claims.length === 0 ||
-            writeClaim.scope.id === receiverClaim.scope!.id
-          );
-        });
-        receiverWrites.set(bindingKey, hasWrites);
-      }
-      if (hasWrites) return [];
-    }
-    if (
-      type?.source === 'decorator-unknown' ||
-      (type?.declaredSpelling && type.declaredSpelling !== type.rawName)
-    )
-      return [];
-    const owners = type
-      ? lookupNameClaim(type.declaredAtScope, type.rawName, indexes, {
-          position: type.lookupPosition ?? site.atRange,
-          purpose: 'type',
-        }).bindings
-      : receiverClaim.bindings;
-    const classOwners = [
-      ...new Map(
-        owners
-          .filter((binding) => CLASS_KINDS.includes(binding.def.type))
-          .map((binding) => [binding.def.nodeId, binding.def]),
-      ).values(),
-    ];
-    if (classOwners.length !== 1) return undefined;
-    if (type && type.source !== 'self' && isJsTs) {
-      const proofKey = `${receiverClaim.scope?.id}:${site.explicitReceiver.name}:${JSON.stringify(type)}:${classOwners[0]!.nodeId}`;
-      let proven = constructorProofs.get(proofKey);
-      if (proven === undefined) {
-        const constructor =
-          receiverFile &&
-          constructorForReceiver(receiverFile.tree.rootNode, site.explicitReceiver.name, type);
-        const constructorScope = constructor && innermostScope(receiverFile!.parsed, constructor);
-        const constructorOwners =
-          constructor && constructorScope && constructor.type === 'identifier'
-            ? lookupNameClaim(constructorScope, constructor.text, indexes, {
-                position: {
-                  startLine: constructor.startPosition.row + 1,
-                  startCol: constructor.startPosition.column,
-                },
-                purpose: 'value',
-              }).bindings
-            : [];
-        const ids = new Set(constructorOwners.map((owner) => owner.def.nodeId));
-        proven = ids.size === 1 && ids.has(classOwners[0]!.nodeId);
-        constructorProofs.set(proofKey, proven);
-      }
-      if (!proven) return [];
-    }
-    return lookupOwnedMembersByOwner(model, classOwners[0]!.nodeId, site.name);
-  };
-  const edits = new Map<string, OccurrenceEdit>();
-  const accounted = new Set<string>();
-  const key = (file: string, start: number) => `${file}:${start}`;
-  const add = (file: SourceFile, token: Parser.SyntaxNode, rename: boolean) => {
-    const id = key(file.path, token.startIndex);
-    accounted.add(id);
-    if (!rename) return;
-    // Shorthand keys and bindings have a second semantic identity. Until a
-    // provider describes its rewrite, changing only the token would corrupt it.
-    if (token.type.includes('shorthand') || token.parent?.type.includes('shorthand')) {
-      throw new RenameFailure(
-        'unsupported_occurrence',
-        `Shorthand occurrence needs a provider rewrite: ${file.path}:${token.startPosition.row + 1}`,
-        'unsupported',
-      );
-    }
-    edits.set(id, {
-      file_path: file.path,
-      start: token.startIndex,
-      length: token.endIndex - token.startIndex,
-      old_text: symbol.name,
-      new_text: options.new_name,
-    });
-  };
-  const tokenAtRange = (file: SourceFile, range: Range | undefined): Parser.SyntaxNode => {
-    const token =
-      range &&
-      file.tokensByRange.get(
-        `${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}`,
-      );
-    if (!token)
-      throw new RenameFailure(
-        'unsupported_occurrence',
-        `The provider has no exact identifier span in ${file.path}.`,
-        'unsupported',
-      );
-    return token;
-  };
-  for (const def of definitions) {
-    if (simpleQualifiedName(def) !== symbol.name) continue;
-    const file = files.get(def.filePath)!;
-    add(file, tokenAtRange(file, def.nameRange), def.nodeId === target.nodeId);
-  }
-  // Finalized import provenance identifies the exported token. Aliased local
-  // names retain their spelling; their later usages are a separate binding.
-  for (const [scopeId, imports] of indexes.imports) {
-    const scope = indexes.scopeTree.getScope(scopeId);
-    const file = scope && files.get(scope.filePath);
-    if (!file) continue;
-    for (const edge of imports) {
-      if (edge.targetExportedName !== symbol.name && edge.localName !== symbol.name) continue;
-      if (!edge.atRange || edge.linkStatus === 'unresolved') {
-        throw new RenameFailure(
-          'incomplete_semantics',
-          `An import of ${symbol.name} is unresolved in ${file.path}.`,
-        );
-      }
-      const candidates = file.namedOccurrences.filter((token) => contains(edge.atRange!, token));
-      const isTarget = edge.targetDefId === target.nodeId;
-      if (candidates.length !== 1) {
-        throw new RenameFailure(
-          'unsupported_occurrence',
-          `The import has no unambiguous source token in ${file.path}.`,
-          'unsupported',
-        );
-      }
-      add(file, candidates[0]!, isTarget && edge.targetExportedName === symbol.name);
-    }
-  }
-  for (const site of indexes.referenceSites) {
-    if (site.name !== symbol.name) continue;
-    const scope = indexes.scopeTree.getScope(site.inScope);
-    const file = scope && files.get(scope.filePath);
-    if (!file)
-      throw new RenameFailure(
-        'incomplete_semantics',
-        'A reference points outside the indexed source set.',
-      );
-    const token = tokenAtRange(file, site.nameRange);
-    if (isJsTs && inDynamicWithScope(token)) {
-      throw new RenameFailure(
-        'unsupported_occurrence',
-        `A dynamic with environment prevents lexical rename proof in ${file.path}.`,
-        'unsupported',
-      );
-    }
-    if (accounted.has(key(file.path, token.startIndex))) continue;
-    const claim =
-      site.explicitReceiver === undefined
-        ? lookupNameClaim(site.lookupScope ?? site.inScope, site.name, indexes, {
-            position: site.atRange,
-            purpose:
-              site.lookupPurpose ??
-              (site.kind === 'type-reference' || site.kind === 'inherits' ? 'type' : 'value'),
-          })
-        : undefined;
-    const members = boundMembers(site);
-    const resolutions =
-      members !== undefined || claim?.bindings.length || claim?.status === 'blocked'
-        ? []
-        : lookup(site);
-    if (
-      resolutions.some(
-        (resolution) =>
-          !resolution.evidence.some((evidence) => evidence.kind === 'type-binding') ||
-          !resolution.evidence.some((evidence) => evidence.kind === 'owner-match') ||
-          resolution.evidence.some(
-            (evidence) =>
-              evidence.kind === 'global-name' ||
-              evidence.kind === 'global-qualified' ||
-              evidence.kind === 'dynamic-import-unresolved',
-          ),
-      )
-    ) {
-      throw new RenameFailure(
-        'ambiguous_reference',
-        `Only heuristic evidence resolves ${symbol.name} at ${file.path}:${site.atRange.startLine}.`,
-      );
-    }
-    const candidates =
-      members ??
-      (claim?.bindings.length
-        ? claim.bindings.map((binding) => binding.def)
-        : claim?.status === 'blocked'
-          ? []
-          : resolutions.map((resolution) => resolution.def));
-    const ids = new Set(candidates.map((def) => def.nodeId));
-    if (ids.size > 1 || (ids.size === 0 && claim?.status !== 'blocked')) {
-      throw new RenameFailure(
-        'ambiguous_reference',
-        `Cannot prove the target of ${symbol.name} at ${file.path}:${site.atRange.startLine}.`,
-      );
-    }
-    add(file, token, ids.has(target.nodeId));
-  }
-  // Audit every source identifier with the same spelling. This catches syntax
-  // that a provider has not captured instead of claiming a complete rename.
-  for (const file of files.values()) {
-    if (hasComputedAccess(file.tree.rootNode)) {
-      throw new RenameFailure(
-        'unsupported_occurrence',
-        `A computed member access prevents complete rename coverage in ${file.path}.`,
-        'unsupported',
-      );
-    }
-    for (const token of file.tokens) {
-      if (token.text === symbol.name && hasCompoundBinding(token)) {
-        throw new RenameFailure(
-          'unsupported_occurrence',
-          `An alias or destructuring binding needs a provider rewrite in ${file.path}.`,
-          'unsupported',
-        );
-      }
-      if (token.text !== symbol.name || accounted.has(key(file.path, token.startIndex))) continue;
-      if (isUnrelatedLabel(token)) {
-        add(file, token, false);
-        continue;
-      }
-      // Parameters may be represented by a scope blocker rather than a symbol
-      // definition. That proof can preserve the binder, but must never authorize
-      // an edit to an uncaptured token. Only provider reference sites do that.
-      if (isParameterBinder(token)) {
-        const scope = innermostScope(file.parsed, token);
-        if (
-          scope &&
-          lookupNameClaim(scope, token.text, indexes, {
-            position: {
-              startLine: token.startPosition.row + 1,
-              startCol: token.startPosition.column,
-            },
-            purpose: 'value',
-          }).status === 'blocked'
-        ) {
-          add(file, token, false);
-          continue;
-        }
-      }
-      throw new RenameFailure(
-        'incomplete_semantics',
-        `Uncovered occurrence in ${file.path}:${token.startPosition.row + 1}.`,
-      );
-    }
-  }
-  const ordered = [...edits.values()].sort(
-    (a, b) => a.file_path.localeCompare(b.file_path) || a.start - b.start,
-  );
-  const editsByFile = new Map<string, OccurrenceEdit[]>();
-  for (const edit of ordered) {
-    const group = editsByFile.get(edit.file_path) ?? [];
-    group.push(edit);
-    editsByFile.set(edit.file_path, group);
-  }
-  for (const file of files.values()) {
-    const fileEdits = editsByFile.get(file.path);
-    if (!fileEdits) continue;
-    const pieces: string[] = [];
-    let cursor = 0;
-    for (const edit of fileEdits) {
-      pieces.push(file.content.slice(cursor, edit.start), edit.new_text);
-      cursor = edit.start + edit.length;
-    }
-    pieces.push(file.content.slice(cursor));
-    const updated = pieces.join('');
-    const parser = await createParserForLanguage(language, file.path);
-    const validated = parser.parse(updated);
-    const updatedTokens = new Map<number, Parser.SyntaxNode>();
-    for (const token of validated ? sourceTokens(validated.rootNode) : []) {
-      if (!updatedTokens.has(token.startIndex)) updatedTokens.set(token.startIndex, token);
-    }
-    let delta = 0;
-    for (const edit of fileEdits) {
-      const original = file.tokensByStart.get(edit.start)!;
-      const replacement = updatedTokens.get(edit.start + delta);
-      if (
-        !validated ||
-        validated.rootNode.hasError ||
-        !replacement ||
-        replacement.text !== options.new_name ||
-        replacement.type !== original.type ||
-        replacement.parent?.type !== original.parent?.type ||
-        jsxTagRole(replacement) !== jsxTagRole(original)
-      ) {
-        throw new RenameFailure(
-          'invalid_name',
-          'The proposed name does not preserve the source identifier syntax.',
-        );
-      }
-      delta += edit.new_text.length - edit.length;
-    }
-  }
-  return {
-    symbol,
-    new_name: options.new_name,
-    snapshots,
-    edits: ordered,
-    coverage: {
-      name: 'gitnexus-semantic',
-      scope: 'indexed-repository',
-      source_file_count: filePaths.length,
-      languages: [language],
-      limitations: [
-        'Only indexed files in this language are covered.',
-        'Computed accesses, incomplete symbol families, and uncaptured identifier roles are refused.',
-      ],
-    },
-  };
+  computeMRO(graph);
+  return { observation, graph, model };
 }
 
-function contains(range: Range, node: Parser.SyntaxNode): boolean {
-  const startLine = node.startPosition.row + 1;
-  const endLine = node.endPosition.row + 1;
+function occurrenceKey(path: string, occurrence: RenameOccurrence): string {
+  return `${path}:${occurrence.spans.map((span) => `${span.start}:${span.length}`).join(',')}`;
+}
+
+function rangeKey(range: Range): string {
+  return `${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}`;
+}
+
+function contains(outer: Range, inner: Range): boolean {
   return (
-    (startLine > range.startLine ||
-      (startLine === range.startLine && node.startPosition.column >= range.startCol)) &&
-    (endLine < range.endLine ||
-      (endLine === range.endLine && node.endPosition.column <= range.endCol))
+    (inner.startLine > outer.startLine ||
+      (inner.startLine === outer.startLine && inner.startCol >= outer.startCol)) &&
+    (inner.endLine < outer.endLine ||
+      (inner.endLine === outer.endLine && inner.endCol <= outer.endCol))
   );
 }
 
-function sourceTokens(root: Parser.SyntaxNode): Parser.SyntaxNode[] {
-  const tokens: Parser.SyntaxNode[] = [];
-  const pending = [root];
-  while (pending.length) {
-    const node = pending.pop()!;
-    if (node.type.includes('comment')) continue;
-    if (node.namedChildCount === 0) {
-      if (
-        node.isNamed &&
-        !node.type.includes('string') &&
-        !node.type.includes('template_chars') &&
-        !node.type.includes('escape')
-      )
-        tokens.push(node);
-    } else pending.push(...node.namedChildren);
+function occurrenceAt(source: RenameSource, range: Range | undefined): RenameOccurrence {
+  const matches =
+    range &&
+    source.occurrences.filter((occurrence) => rangeKey(occurrence.range) === rangeKey(range));
+  if (!matches || matches.length !== 1) {
+    throw new RenameFailure(
+      'unsupported_occurrence',
+      `The provider has no exact source-name span in ${source.path}.`,
+      'unsupported',
+    );
   }
-  return tokens;
+  return matches[0]!;
 }
 
-function innermostScope(parsed: ParsedFile, token: Parser.SyntaxNode): string | undefined {
-  let result: ParsedFile['scopes'][number] | undefined;
-  for (const scope of parsed.scopes) {
-    if (
-      contains(scope.range, token) &&
-      (!result ||
-        scope.range.startLine > result.range.startLine ||
-        (scope.range.startLine === result.range.startLine &&
-          scope.range.startCol >= result.range.startCol))
-    )
+function innermostScope(source: RenameSource, range: Range): string | undefined {
+  let result: RenameSource['parsed']['scopes'][number] | undefined;
+  for (const scope of source.parsed.scopes) {
+    if (contains(scope.range, range) && (!result || contains(result.range, scope.range)))
       result = scope;
   }
   return result?.id;
 }
 
-function hasComputedAccess(root: Parser.SyntaxNode): boolean {
-  const pending = [root];
-  while (pending.length) {
-    const node = pending.pop()!;
-    if (node.type.includes('comment')) continue;
-    // Raw key spelling cannot establish identity: variables, concatenations,
-    // escapes, and runtime receivers may all denote the selected member. Until
-    // providers expose complete key/owner proofs, refuse every computed access.
-    if (
-      node.childForFieldName('index') ||
-      node.childForFieldName('subscript') ||
-      [
-        'subscript_expression',
-        'subscript',
-        'element_access_expression',
-        'index_expression',
-        'array_access',
-        'element_reference',
-        'computed_property_name',
-      ].includes(node.type)
-    )
-      return true;
-    pending.push(...node.namedChildren);
+function assertDeclarationCollisions(
+  context: RenameSemanticContext,
+  family: ReadonlySet<string>,
+  provider: RenameProvider,
+): void {
+  const canonical = (name: string, definition: SymbolDefinition) =>
+    provider.canonicalName?.(name, { definition }) ?? name;
+  for (const source of context.files.values()) {
+    for (const scope of source.parsed.scopes) {
+      const selected = [...scope.bindings.values()]
+        .flat()
+        .find((binding) => family.has(binding.def.nodeId) && binding.origin === 'local');
+      if (!selected) continue;
+      for (const [name, bindings] of scope.bindings) {
+        if (canonical(name, selected.def) !== canonical(context.newName, selected.def)) continue;
+        if (bindings.some((binding) => !family.has(binding.def.nodeId))) {
+          throw new RenameFailure(
+            'name_collision',
+            'The proposed name already belongs to another declaration in this scope.',
+          );
+        }
+      }
+    }
   }
-  return false;
 }
 
-function isNameCoupledDeclaration(token: Parser.SyntaxNode): boolean {
+function asReplacement(edit: OccurrenceEdit): RenameReplacement {
+  return { start: edit.start, length: edit.length, oldText: edit.old_text, newText: edit.new_text };
+}
+
+function applyEdits(content: string, edits: readonly OccurrenceEdit[]): string {
+  let cursor = 0;
+  const pieces: string[] = [];
+  for (const edit of edits) {
+    pieces.push(content.slice(cursor, edit.start), edit.new_text);
+    cursor = edit.start + edit.length;
+  }
+  pieces.push(content.slice(cursor));
+  return pieces.join('');
+}
+
+function createOffsetLookup(): (source: RenameSource, line: number, column: number) => number {
+  const lineStarts = new WeakMap<RenameSource, readonly number[]>();
+  return (source, line, column) => {
+    let starts = lineStarts.get(source);
+    if (starts === undefined) {
+      const entries = [0];
+      for (
+        let next = source.content.indexOf('\n');
+        next !== -1;
+        next = source.content.indexOf('\n', next + 1)
+      ) {
+        entries.push(next + 1);
+      }
+      starts = entries;
+      lineStarts.set(source, starts);
+    }
+    const offset = starts[line <= 1 ? 0 : line - 1];
+    return offset === undefined ? source.content.length + 1 : offset + column;
+  };
+}
+
+function relocated(offset: number, edits: readonly OccurrenceEdit[], end = false): number {
+  let delta = 0;
+  for (const edit of edits) {
+    if (offset < edit.start || (offset === edit.start && !end)) break;
+    if (offset < edit.start + edit.length)
+      return edit.start + delta + (end ? edit.new_text.length : 0);
+    delta += edit.new_text.length - edit.length;
+  }
+  return offset + delta;
+}
+
+function declarationPosition(def: SymbolDefinition): { line: number; column: number } | undefined {
+  const position = definitionIdPosition(def.nodeId, def.filePath);
   return (
-    token.parent?.type === 'destructor_name' ||
-    ((token.parent?.type === 'constructor_declaration' ||
-      token.parent?.type === 'compact_constructor_declaration' ||
-      token.parent?.type === 'destructor_declaration') &&
-      token.parent.childForFieldName('name')?.id === token.id)
+    position ??
+    (def.declarationRange && {
+      line: def.declarationRange.startLine,
+      column: def.declarationRange.startCol,
+    })
   );
 }
 
-function isUnrelatedLabel(token: Parser.SyntaxNode): boolean {
-  const parent = token.parent;
-  if (!parent) return false;
-  if (parent.childForFieldName('key')?.id === token.id) return true;
-  if (parent.type === 'keyword_argument' && parent.childForFieldName('name')?.id === token.id)
-    return true;
-  if (parent.type === 'jsx_attribute' && parent.firstNamedChild?.id === token.id) return true;
-  return jsxTagRole(token) === 'intrinsic';
-}
-
-function isParameterBinder(token: Parser.SyntaxNode): boolean {
-  const parent = token.parent;
-  if (!parent) return false;
-  return (
-    ((parent.type === 'required_parameter' || parent.type === 'optional_parameter') &&
-      parent.childForFieldName('pattern')?.id === token.id) ||
-    parent.type === 'formal_parameters' ||
-    parent.type === 'parameters'
-  );
-}
-
-function hasCompoundBinding(token: Parser.SyntaxNode): boolean {
-  let parent = token.parent;
-  while (parent) {
-    if (
-      parent.type.includes('pattern') ||
-      (parent.type.includes('export') && parent.childForFieldName('alias'))
-    )
-      return true;
-    if (parent.type.includes('statement') || parent.type.includes('declaration')) break;
-    parent = parent.parent;
+function matchDefinitions(
+  before: readonly SymbolDefinition[],
+  after: readonly SymbolDefinition[],
+  files: ReadonlyMap<string, RenameSource>,
+  updated: ReadonlyMap<string, RenameSource>,
+  edits: ReadonlyMap<string, readonly OccurrenceEdit[]>,
+  offsetOf: ReturnType<typeof createOffsetLookup>,
+): ReadonlyMap<string, string> {
+  const candidates = new Map<string, SymbolDefinition[]>();
+  for (const def of after) {
+    const position = declarationPosition(def);
+    const source = updated.get(def.filePath);
+    if (!position || !source) continue;
+    const key = `${def.filePath}:${def.type}:${offsetOf(source, position.line, position.column)}`;
+    const group = candidates.get(key) ?? [];
+    group.push(def);
+    candidates.set(key, group);
   }
-  return false;
+  const matches = new Map<string, string>();
+  for (const def of before) {
+    const position = declarationPosition(def);
+    const source = files.get(def.filePath);
+    if (!position || !source) continue;
+    const offset = relocated(
+      offsetOf(source, position.line, position.column),
+      edits.get(def.filePath) ?? [],
+    );
+    const group = candidates.get(`${def.filePath}:${def.type}:${offset}`);
+    if (group?.length !== 1) {
+      throw new RenameFailure(
+        'name_collision',
+        `The proposed rewrite changes declaration identity in ${def.filePath}.`,
+      );
+    }
+    matches.set(def.nodeId, group[0]!.nodeId);
+  }
+  return matches;
 }
 
-function tokenRangeKey(token: Parser.SyntaxNode): string {
-  return `${token.startPosition.row + 1}:${token.startPosition.column}:${token.endPosition.row + 1}:${token.endPosition.column}`;
+function bindingIds(binding: SourceBindingResolution, map?: ReadonlyMap<string, string>): string {
+  return [...new Set(binding.targetDefIds.map((id) => map?.get(id) ?? id))].sort().join('\0');
+}
+
+function assertBindingsPreserved(
+  before: SemanticObservation,
+  after: SemanticObservation,
+  files: ReadonlyMap<string, RenameSource>,
+  updated: ReadonlyMap<string, RenameSource>,
+  edits: ReadonlyMap<string, readonly OccurrenceEdit[]>,
+  definitions: ReadonlyMap<string, string>,
+  offsetOf: ReturnType<typeof createOffsetLookup>,
+): void {
+  const nextSites = new Map<string, ReferenceSite[]>();
+  const nextPositions = new Map<string, { offset: number; site: ReferenceSite }[]>();
+  for (const site of after.indexes.referenceSites) {
+    const path = after.indexes.scopeTree.getScope(site.inScope)?.filePath;
+    const source = path && updated.get(path);
+    const range = site.nameRange ?? site.atRange;
+    if (!source) continue;
+    const offset = offsetOf(source, range.startLine, range.startCol);
+    const prefix = `${source.path}:${site.kind}:${site.callForm ?? ''}`;
+    const key = `${prefix}:${offset}`;
+    const group = nextSites.get(key) ?? [];
+    group.push(site);
+    nextSites.set(key, group);
+    const positions = nextPositions.get(prefix) ?? [];
+    positions.push({ offset, site });
+    nextPositions.set(prefix, positions);
+  }
+  for (const site of before.indexes.referenceSites) {
+    const path = before.indexes.scopeTree.getScope(site.inScope)?.filePath;
+    const source = path && files.get(path);
+    const range = site.nameRange ?? site.atRange;
+    if (!source)
+      throw new RenameFailure(
+        'incomplete_semantics',
+        'A reference lies outside the validated source set.',
+      );
+    const originalOffset = offsetOf(source, range.startLine, range.startCol);
+    const fileEdits = edits.get(source.path) ?? [];
+    const offset = relocated(originalOffset, fileEdits);
+    const replacement = fileEdits.find(
+      (edit) => originalOffset >= edit.start && originalOffset < edit.start + edit.length,
+    );
+    // A provider may expand a shared token into several names. Match the
+    // original binding inside that exact replacement, never by global spelling.
+    const replacementStart = replacement && relocated(replacement.start, fileEdits);
+    const candidates = replacement
+      ? (nextPositions.get(`${source.path}:${site.kind}:${site.callForm ?? ''}`) ?? [])
+          .filter(
+            (entry) =>
+              entry.offset >= replacementStart! &&
+              entry.offset < replacementStart! + replacement.new_text.length,
+          )
+          .map((entry) => entry.site)
+      : nextSites.get(`${source.path}:${site.kind}:${site.callForm ?? ''}:${offset}`);
+    const previous = before.referenceBindings.get(site);
+    const matches =
+      previous &&
+      candidates?.filter((candidate) => {
+        const next = after.referenceBindings.get(candidate);
+        return (
+          next &&
+          previous.status === next.status &&
+          previous.candidatesComplete === next.candidatesComplete &&
+          bindingIds(previous, definitions) === bindingIds(next) &&
+          (previous.importAlias !== undefined) === (next.importAlias !== undefined)
+        );
+      });
+    if (matches?.length !== 1) {
+      throw new RenameFailure(
+        'name_collision',
+        `The proposed name changes a source binding in ${source.path}:${range.startLine}.`,
+      );
+    }
+  }
 }
