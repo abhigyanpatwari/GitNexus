@@ -21,6 +21,9 @@ import { compileRExportPattern } from '../../src/core/ingestion/languages/r/expo
 import { _captureLogger } from '../../src/core/logger.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 
+/** The `gitnexus/` package root: child processes run from here so `--import tsx` resolves. */
+const GITNEXUS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+
 // Seeded generator so the corpus is the same on every run.
 const rng = (seed: number) => () => {
   seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
@@ -301,33 +304,37 @@ describe('a hostile exportPattern stays within its work budget', () => {
       const names = Array.from({ length: 50000 }, (_, i) => 'a'.repeat(94) + String(i).padStart(5, '0') + 'a');
       const out = [];
       for (const p of ${JSON.stringify(HOSTILE)}) {
-        const t0 = performance.now();
         const m = compileRExportPattern(p);
         let hits = 0;
         for (const n of names) if (m.test(n)) hits++;
-        out.push({ hits, exhausted: m.exhausted, ms: performance.now() - t0 });
+        out.push({ hits, exhausted: m.exhausted, work: m.work, states: m.stateCount });
       }
       console.log('RESULT' + JSON.stringify(out));
     `;
     const res = spawnSync(
       process.execPath,
       ['--import', 'tsx', '--input-type=module', '-e', script],
-      { encoding: 'utf-8', timeout: 60_000 },
+      // `cwd` pins how `--import tsx` resolves (vitest may be run from the repository root).
+      { encoding: 'utf-8', timeout: 60_000, cwd: GITNEXUS_ROOT },
     );
+    // The spawn is only a hang guard; the bound below is on the deterministic work counter.
     expect(res.error, 'hostile patterns stalled past the 60 s guard').toBeUndefined();
     expect(res.status, res.stderr).toBe(0);
     const line = res.stdout.split('\n').find((l) => l.startsWith('RESULT'));
     const rows = JSON.parse((line ?? '').slice('RESULT'.length)) as Array<{
       hits: number;
       exhausted: boolean;
-      ms: number;
+      work: number;
+      states: number;
     }>;
     expect(rows).toHaveLength(HOSTILE.length);
-    // The budget allows about 0.5 s on the development machine; this guard is generous
-    // so that a slow runner does not fail it, while an unbounded matcher (minutes) does.
+    // Bounded by state visits (see MAX_TOTAL_WORK), not by time: a backtracking matcher
+    // has no `work` counter at all and fails the type check.
     for (const row of rows) {
       expect(row.hits).toBe(0);
-      expect(row.ms).toBeLessThan(10_000);
+      expect(typeof row.work).toBe('number');
+      expect(row.work).toBeGreaterThan(0);
+      expect(row.work).toBeLessThanOrEqual(MAX_TOTAL_WORK + 4 * row.states);
     }
   }, 90_000);
 });

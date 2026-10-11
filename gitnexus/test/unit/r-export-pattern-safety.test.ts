@@ -7,6 +7,7 @@ import {
   compileLinearRegex,
   compileLinearRegexDetailed,
   MAX_STATES,
+  MAX_TOTAL_WORK,
 } from '../../src/core/ingestion/languages/r/linear-regex.js';
 
 // Names every characterisation row is evaluated against.
@@ -653,12 +654,14 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
 
 // A hostile pattern must not be able to stall the analyzer. The matching runs in a child
 // process with a hard timeout so that a regression fails the test instead of hanging the
-// whole suite for minutes.
+// whole suite for minutes. The timeout is only that hang guard: the bound itself is on the
+// matcher's deterministic state-visit counter, never on wall-clock time.
 describe('compileRExportPattern is linear-time on catastrophic patterns', () => {
   const modulePath = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     '../../src/core/ingestion/languages/r/export-pattern.ts',
   );
+  const GITNEXUS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const HOSTILE = [
     '^(a+)+$',
     '^(a|a)+$',
@@ -670,17 +673,16 @@ describe('compileRExportPattern is linear-time on catastrophic patterns', () => 
     '^(a?){30}a{30}$',
   ];
 
-  it('completes every hostile pattern in under 100 ms on 40 and 10,000 character names', () => {
+  it('does linear work on every hostile pattern for 40 and 10,000 character names', () => {
     const script = `
       const { compileRExportPattern } = await import(${JSON.stringify(pathToFileURL(modulePath).href)});
       const out = [];
       for (const p of ${JSON.stringify(HOSTILE)}) {
         for (const len of [40, 10000]) {
           const name = 'a'.repeat(len - 1) + '!';
-          const t0 = performance.now();
           const m = compileRExportPattern(p);
           const r = m ? m.test(name) : false;
-          out.push({ p, len, r, ms: performance.now() - t0 });
+          out.push({ p, len, r, work: m?.work, states: m?.stateCount, exhausted: m?.exhausted });
         }
       }
       console.log('RESULT' + JSON.stringify(out));
@@ -691,6 +693,8 @@ describe('compileRExportPattern is linear-time on catastrophic patterns', () => 
       {
         encoding: 'utf-8',
         timeout: 30_000,
+        // `cwd` pins how `--import tsx` resolves (vitest may be run from the repository root).
+        cwd: GITNEXUS_ROOT,
       },
     );
     expect(res.error, 'hostile pattern stalled past the 30 s guard').toBeUndefined();
@@ -701,12 +705,23 @@ describe('compileRExportPattern is linear-time on catastrophic patterns', () => 
       p: string;
       len: number;
       r: boolean;
-      ms: number;
+      work?: number;
+      states?: number;
+      exhausted?: boolean;
     }>;
     expect(rows).toHaveLength(HOSTILE.length * 2);
     for (const row of rows) {
-      expect(row.ms, `${row.p} on ${row.len} characters`).toBeLessThan(100);
+      const label = `${row.p} on ${row.len} characters`;
       expect(row.r, `${row.p} must not match`).toBe(false);
+      // A backtracking RegExp has no counter: `work` would be undefined and this fails.
+      expect(typeof row.work, label).toBe('number');
+      expect(row.exhausted, label).toBe(false);
+      // Linear: at most a few state visits per input character per NFA state (measured
+      // peak is ~1.6), and nowhere near the per-matcher budget.
+      expect(row.work as number, label).toBeLessThanOrEqual(
+        3 * (row.states as number) * (row.len + 1),
+      );
+      expect(row.work as number, label).toBeLessThan(MAX_TOTAL_WORK);
     }
   }, 60_000);
 
