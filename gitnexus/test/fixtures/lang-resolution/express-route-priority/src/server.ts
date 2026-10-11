@@ -5,6 +5,8 @@ function mcp() { return 'mcp'; }
 app.get('/api/info', realInfo);
 app.post('/api/query', realQuery);
 app.all('/api/mcp', mcp);
+app.use('/api/mcp', middleware);
+app.get(/^\/web(?:\/|$)/, realInfo);
 app.route('/api/chained').get(realInfo);
 app.route('/api/chained-post').post(realQuery);
 app.route('/api/chained-multi').get(realInfo).post(realQuery);

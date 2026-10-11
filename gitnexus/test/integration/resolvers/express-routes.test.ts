@@ -102,6 +102,10 @@ describe('Express route identity and source priority', () => {
     expect(mcpRoutes[0].properties.method).toBe('*');
   });
 
+  it('does not turn an Express RegExp matcher into an invented URL', () => {
+    expect(getNodesByLabel(result, 'Route')).not.toContain('/web');
+  });
+
   it.each(['/ghost', '/ghost-block-comment', '/ghost-line-comment'])(
     'does not classify the one-argument Map.get lookup %s as a route',
     (route) => {
