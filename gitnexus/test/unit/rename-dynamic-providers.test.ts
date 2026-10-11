@@ -525,7 +525,7 @@ def inspect_unknown(receiver):
       'function target() {}\nconst other = target => target;\ntarget();\n',
       'function renamed() {}\nconst other = target => target;\nrenamed();\n',
     ],
-  ])('renames source-supported occurrences in %s', async (file, content, expected) => {
+  ])('renames source-supported occurrences in %s (case %#)', async (file, content, expected) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rename-provider-'));
     try {
       await fs.writeFile(path.join(root, file), content);

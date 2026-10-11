@@ -158,7 +158,7 @@ describe('native provider rename through the production parsing pipeline', () =>
     [SupportedLanguages.Rust, 'fn'],
     [SupportedLanguages.Go, 'func'],
     [SupportedLanguages.Zig, 'comptime'],
-  ])('rejects reserved replacement names in %s', (language, name) => {
+  ])('rejects reserved replacement names in %s: %s', (language, name) => {
     const provider = SCOPE_RESOLVERS.get(language)!.languageProvider.rename;
     expect(provider).toBeDefined();
     expect(provider!.validateName!(name)).toMatchObject({ code: 'invalid_name' });

@@ -14,6 +14,7 @@ const cases = [
   'typescript/member-object-method-refusal',
   'typescript/member-object-pair-refusal',
   'typescript/member-keys-unrelated-owner',
+  'typescript/inherited-computed-member-refusal',
   'javascript/member-destructure-refusal',
   'javascript/member-object-key-refusal',
   'vue/member-destructure-refusal',
@@ -31,12 +32,16 @@ async function sources(directory: string): Promise<Record<string, string>> {
   );
 }
 
-async function expectRefusal(files: Record<string, string>, targetFile = 'model.ts') {
+async function expectRefusal(
+  files: Record<string, string>,
+  targetFile = 'model.ts',
+  code = 'ambiguous_reference',
+) {
   const { root, nodes, symbol } = await fixture(files, 'close', 'Method', targetFile);
   for (const dry_run of [true, false]) {
     expect(await renameSymbol(root, symbol, { new_name: 'finish', dry_run }, nodes)).toMatchObject({
       status: 'error',
-      code: 'ambiguous_reference',
+      code,
       planning_status: 'unsupported',
       applied: false,
     });
@@ -63,7 +68,7 @@ describe('TypeScript-family member-key safety', () => {
           'finish',
           specification.target.file,
         );
-      } else await expectRefusal(before, specification.target.file);
+      } else await expectRefusal(before, specification.target.file, specification.expect.code);
     },
     60_000,
   );

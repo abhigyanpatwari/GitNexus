@@ -843,7 +843,16 @@ export const typescriptRenameProvider: RenameProvider = {
           position: nodeRange(receiver),
           purpose: 'type',
         }).bindings;
-        if (!owners.length || owners.some((owner) => owner.def.nodeId === context.target.ownerId))
+        if (
+          !owners.length ||
+          owners.some(
+            (owner) =>
+              owner.def.nodeId === context.target.ownerId ||
+              context.indexes.methodDispatch
+                .mroFor(owner.def.nodeId)
+                .some((ancestor) => ancestor === context.target.ownerId),
+          )
+        )
           return issue('A computed access may denote the selected member.');
       }
     }

@@ -68,7 +68,7 @@ describe('managed provider rename through the production parsing pipeline', () =
     ['Annotation', '@interface Writer {}\n'],
     ['Annotation', 'public class Outer { public @interface Writer {} }\n'],
   ])(
-    'renames a package-private or nested Java %s without requiring a file move',
+    'renames a package-private or nested Java %s without requiring a file move (case %#)',
     async (kind, content) => {
       await expectRename(
         { 'Outer.java': content },
