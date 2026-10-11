@@ -19,9 +19,11 @@
  *     kept: today's behaviour, unchanged;
  *   - the global-name-fallback veto allows a candidate inside the named package.
  *
- * Seven tests in `r.test.ts` and `r-namespace-imports.test.ts` assert the qualifier-aware
- * result rather than a name-only guess (each is marked "qualifier flip"). `pkgB::CleanData` (`r.test.ts` ~:99, ~:1211) stays green:
- * one definition, bound by import already.
+ * Six tests assert the qualifier-aware result rather than a name-only guess (each is marked
+ * "qualifier flip"): five in the integration suite `r.test.ts` and one in the unit suite
+ * `scope-resolution/r/r-namespace-imports.test.ts`. The `pkgB::CleanData` tests in `r.test.ts`
+ * ("resolves cross-package pkgB::CleanData call" and "binds the pkgB::CleanData call by
+ * import instead of the name guess") stay green: one definition, bound by import already.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';

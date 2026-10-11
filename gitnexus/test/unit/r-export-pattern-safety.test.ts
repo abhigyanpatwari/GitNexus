@@ -652,6 +652,23 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
   });
 });
 
+// docs/languages/r-provider.md: "Character classes use ASCII semantics." R's TRE engine would
+// match a locale's letters; the translator deliberately does not, so this is pinned.
+describe('compileRExportPattern: POSIX classes are ASCII-only', () => {
+  it.each([
+    ['^[[:alpha:]]+$', 'abc', 'caf\u00e9'],
+    ['^[[:alnum:]]+$', 'ab12', 'na\u00efve1'],
+    ['^[[:upper:]]+$', 'ABC', '\u00c9COLE'],
+    ['^[[:lower:]]+$', 'abc', 'stra\u00dfe'],
+    ['^[[:punct:]]+$', '!?', '\u00bf'],
+  ])('%s matches %s but not %s', (source, ascii, nonAscii) => {
+    const matcher = compileRExportPattern(source);
+    expect(matcher).not.toBeNull();
+    expect(matcher?.test(ascii)).toBe(true);
+    expect(matcher?.test(nonAscii)).toBe(false);
+  });
+});
+
 // A hostile pattern must not be able to stall the analyzer. The matching runs in a child
 // process with a hard timeout so that a regression fails the test instead of hanging the
 // whole suite for minutes. The timeout is only that hang guard: the bound itself is on the

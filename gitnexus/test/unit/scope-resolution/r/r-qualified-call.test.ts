@@ -9,6 +9,7 @@
  *  - the global-name-fallback veto's qualifier rule (`isRGlobalNameFallbackPlausible`).
  */
 import { describe, expect, it, vi } from 'vitest';
+import { cleanupTempDirSync } from '../../../helpers/test-db.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -193,7 +194,7 @@ describe('loadRPackageConfig: zero packages found', () => {
       await build(root);
       return await loadRPackageConfig(root);
     } finally {
-      await fs.rm(root, { recursive: true, force: true });
+      cleanupTempDirSync(root);
     }
   }
 
@@ -249,7 +250,7 @@ describe('loadRPackageConfig: packageDirs', () => {
         ['top', ''],
       ]);
     } finally {
-      await fs.rm(root, { recursive: true, force: true });
+      cleanupTempDirSync(root);
     }
   });
 });
@@ -292,7 +293,7 @@ describe('loadRPackageConfig: truncation only when a skipped subtree hides an un
       await build(root);
       return await loadRPackageConfig(root);
     } finally {
-      await fs.rm(root, { recursive: true, force: true });
+      cleanupTempDirSync(root);
     }
   }
 
@@ -417,7 +418,7 @@ describe('hidesUndiscoveredPackage', () => {
       expect(await hidesUndiscoveredPackage([a, b], new Set(), 4)).toBe(false);
       expect(await hidesUndiscoveredPackage([a, b], new Set(), 3)).toBe(true);
     } finally {
-      await fs.rm(root, { recursive: true, force: true });
+      cleanupTempDirSync(root);
     }
   });
 
@@ -442,7 +443,7 @@ describe('loadRPackageConfig: directory cap', () => {
       expect([...(cfg?.packages ?? [])]).toEqual([['rootpkg', '']]);
       expect(cfg?.truncated).toBe(false);
     } finally {
-      await fs.rm(root, { recursive: true, force: true });
+      cleanupTempDirSync(root);
     }
   });
 });

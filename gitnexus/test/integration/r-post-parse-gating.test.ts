@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { runPipelineFromRepo, writeFixtureRepo } from './resolvers/helpers.js';
+import { cleanupTempDirSync } from '../helpers/test-db.js';
 import { rProvider } from '../../src/core/ingestion/languages/r.js';
 
 const MANIFEST = /[\\/](DESCRIPTION|NAMESPACE)$/;
@@ -46,7 +47,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
+  for (const root of roots) cleanupTempDirSync(root);
 });
 
 describe('R post-parse gating', () => {

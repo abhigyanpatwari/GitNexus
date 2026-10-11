@@ -167,7 +167,7 @@ const SOLO_SRC = 'solo <- function(x) g(x)';
 const MEMBER_SRC = 'obj$f <- function(x) g(x)\nx[["k"]] <- function(y) g(y)\n';
 
 describe('R scope function anchors', () => {
-  // ─── Sanity (plain, HEAD-passing) ─────────────────────────────────────────
+  // ─── Sanity ───────────────────────────────────────────────────────────────
   it('parses every source in this file', () => {
     const parsed = [
       FORMS_SRC,
@@ -186,7 +186,7 @@ describe('R scope function anchors', () => {
   describe('named assignment forms', () => {
     const scopes = scopesOf(FORMS_SRC);
 
-    // HEAD-failing: the def is owned by a Function scope whose range is
+    // Assignment-anchored ownership: the def is owned by a Function scope whose range is
     // the assignment (the def's anchor) and whose parent is the Module.
     for (const form of FORMS) {
       it(`${form.label}: the def is owned by its own assignment-anchored Function scope`, () => {
@@ -198,13 +198,13 @@ describe('R scope function anchors', () => {
       });
     }
 
-    // HEAD-failing: the Module scope no longer owns any callable.
+    // Assignment-anchored ownership: the Module scope no longer owns any callable.
     it('the Module scope owns no callable def', () => {
       const callables = (moduleOf(scopes)?.ownedDefs ?? []).filter((d) => d.type === 'Function');
       expect(defNames(callables)).toEqual([]);
     });
 
-    // HEAD-passing: the binding of each name is visible from the Module.
+    // Behaviour the anchoring leaves unchanged: the binding of each name is visible from the Module.
     for (const form of FORMS) {
       it(`binds ${form.label} name in the Module scope with origin local`, () => {
         const refs = moduleOf(scopes)?.bindings.get(form.name) ?? [];
@@ -212,12 +212,12 @@ describe('R scope function anchors', () => {
       });
     }
 
-    // HEAD-passing: scope ids stay unique per file.
+    // Behaviour the anchoring leaves unchanged: scope ids stay unique per file.
     it('keeps scope ids unique', () => {
       expect(new Set(scopes.map((s) => s.id)).size).toBe(scopes.length);
     });
 
-    // HEAD-passing: the def id still encodes the assignment start.
+    // Behaviour the anchoring leaves unchanged: the def id still encodes the assignment start.
     it('keeps the def node ids anchored at the assignment start', () => {
       const expected = FORMS.map((f) => `def:${FILE}#${f.row}:0:Function:${f.name}`).sort();
       expect(
@@ -232,7 +232,7 @@ describe('R scope function anchors', () => {
   describe('nested functions', () => {
     const scopes = scopesOf(NESTED_SRC);
 
-    // HEAD-failing
+    // Assignment-anchored ownership.
     it("the inner def is owned by inner's own assignment-anchored Function scope", () => {
       expect(ownerInfo(scopes, 'Function', 'inner')).toEqual({
         kind: 'Function',
@@ -251,13 +251,13 @@ describe('R scope function anchors', () => {
       ).toEqual([]);
     });
 
-    // HEAD-passing: the inner binding lives in outer's function_definition scope.
+    // Behaviour the anchoring leaves unchanged: the inner binding lives in outer's function_definition scope.
     it("binds the inner name in outer's function_definition scope", () => {
       const refs = scopeByRange(scopes, 'Function', OUTER_FN)?.bindings.get('inner') ?? [];
       expect(refs.map((r) => r.origin)).toEqual(['local']);
     });
 
-    // HEAD-passing: anonymous / named-argument lambdas own nothing
+    // Behaviour the anchoring leaves unchanged: anonymous / named-argument lambdas own nothing
     // and hang (transitively) under outer's function_definition scope.
     for (const snippet of ['function(z) h(z)', 'function(z) h2(z)', 'function(e) h3(e)']) {
       const anonymous = scopeByRange(scopes, 'Function', spanOf(NESTED_SRC, snippet));
@@ -280,7 +280,7 @@ describe('R scope function anchors', () => {
     const classOwns = (scopes: readonly Scope[]): string[] =>
       (scopes.find((s) => s.kind === 'Class')?.ownedDefs ?? []).map((d) => d.type);
 
-    // HEAD-failing: one test each.
+    // Assignment-anchored ownership: one test each.
     const cases = [
       {
         label: 'R6 public',
@@ -330,7 +330,7 @@ describe('R scope function anchors', () => {
       });
     }
 
-    // HEAD-passing: ownerId + qualifiedName after populateClassOwnedMembers.
+    // Behaviour the anchoring leaves unchanged: ownerId + qualifiedName after populateClassOwnedMembers.
     // HEAD reaches this through branch 2 (defs owned by the Class scope); after
     // the fix through branch 1 (Function scope under Class): the invariant must
     // survive the mechanism swap.
@@ -371,13 +371,13 @@ describe('R scope function anchors', () => {
   describe('class-body field default', () => {
     const scopes = scopesOf(FIELD_SRC);
 
-    // HEAD-failing: the Class scope owns ONLY the class def.
+    // Assignment-anchored ownership: the Class scope owns ONLY the class def.
     it('the Class scope owns only the class def', () => {
       const owned = scopes.find((s) => s.kind === 'Class')?.ownedDefs ?? [];
       expect(owned.map((d) => d.type)).toEqual(['Class']);
     });
 
-    // HEAD-passing: no Function scope contains the field-default call, so the
+    // Behaviour the anchoring leaves unchanged: no Function scope contains the field-default call, so the
     // caller walk from it ends at the Class scope (the source is the Class node).
     it('has no Function scope around the field-default call', () => {
       const call = spanOf(FIELD_SRC, 'build_cache()');
@@ -401,7 +401,7 @@ describe('R scope function anchors', () => {
       expect(new Set(scopes.map((s) => s.id)).size).toBe(scopes.length);
     });
 
-    // HEAD-failing
+    // Assignment-anchored ownership.
     it('the def is owned by a Function scope whose parent is the Module', () => {
       expect(ownerInfo(scopes, 'Function', 'solo')).toEqual({
         kind: 'Function',

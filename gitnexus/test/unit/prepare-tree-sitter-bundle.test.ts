@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { cleanupTempDirSync } from '../helpers/test-db.js';
 
 const require = createRequire(import.meta.url);
 const { prepareTreeSitterBundle } = require('../../scripts/prepare-tree-sitter-bundle.cjs');
@@ -112,7 +113,7 @@ function pnpmFixture() {
 }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) cleanupTempDirSync(root);
 });
 
 describe('native parser bundle preparation', () => {

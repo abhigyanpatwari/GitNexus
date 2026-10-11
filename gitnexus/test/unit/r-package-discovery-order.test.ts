@@ -8,6 +8,7 @@
  * happens to list entries sorted.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanupTempDirSync } from '../helpers/test-db.js';
 import fsReal from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -88,7 +89,7 @@ describe('R package discovery is independent of readdir order', () => {
   });
   afterAll(async () => {
     box.order = 'asc';
-    await fsReal.rm(tmp, { recursive: true, force: true });
+    cleanupTempDirSync(tmp);
   });
   beforeEach(() => {
     box.order = 'asc';

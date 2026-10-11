@@ -75,10 +75,18 @@ describe.each([
     expect(out.get(win(`${prefix}R/a.R`) + ':hidden')).toBe(false);
     expect(out.get(win(`${prefix}tests/testthat/x.R`) + ':helper')).toBe(true);
   });
+});
 
-  it('does not take a sibling directory sharing the package directory name as a prefix', () => {
-    if (dir === '') return;
-    const out = run(config(), [{ name: 'hidden', filePath: `${dir}-extra/R/a.R` }]);
+// Only a nested package has a directory name for a sibling to share, so this is not part of the
+// root-level/nested table above (a skipped table row would count as an unexecuted test in CI).
+describe('refineRExportStatus: sibling directory sharing the package directory name', () => {
+  it('is not taken as inside the package', () => {
+    const dir = 'pkgs/foo';
+    const config: RPackageConfig = {
+      packages: new Map([['foo', dir]]),
+      namespaceInfoByPackageDir: new Map([[dir, info({ namedExports: new Set(['pub']) })]]),
+    };
+    const out = run(config, [{ name: 'hidden', filePath: `${dir}-extra/R/a.R` }]);
     expect(out.get(`${dir}-extra/R/a.R:hidden`)).toBe(true);
   });
 });

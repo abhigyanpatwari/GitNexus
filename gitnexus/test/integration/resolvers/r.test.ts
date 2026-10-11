@@ -723,12 +723,13 @@ describe('R caller attribution', () => {
 });
 
 /**
- * R native pipe (`|>`) chains: characterisation of the current behaviour. Every
- * assertion here passes without any pipe-specific production support.
+ * R native pipe (`|>`) chains: characterisation of the current behaviour. There is no
+ * pipe-specific production support; the stages resolve as ordinary calls.
  * The fixture is synthetic (`r-native-pipes/`, three packages); one function per
  * scenario so each assertion is an exact `source -> targets` set.
  * magrittr `%>%` is deliberately NOT covered (no support claimed either way).
- * The `pkg::fn` stages are bound by their qualifier, not guessed by name.
+ * The `pkg::fn` stages are bound by their qualifier, not guessed by name (the cases marked
+ * "qualifier flip" differ from a name-only guess).
  */
 describe('R native pipe chains', () => {
   let result: PipelineResult;

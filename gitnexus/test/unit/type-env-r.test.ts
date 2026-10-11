@@ -75,7 +75,7 @@ AddOutlierStatuses <- function(data, outliers) {
       expect(flatGet(typeEnv, 'outliers')).toBe('DataFrame');
     });
 
-    it('skips lowercase type names (primitive types)', () => {
+    it('binds nothing for a type the file does not define (primitive or capitalised)', () => {
       const tree = parse(`
 #' @param x numeric
 #' @param name Character

@@ -279,6 +279,45 @@ describe('R naming argument: a later Class = retracts an earlier unnamed argumen
 });
 
 /**
+ * docs/languages/r-provider.md, "Limits": argument matching does not model partial
+ * argument names, and members are read only from the named forms. These pin the documented
+ * gaps so a change in either direction is deliberate.
+ */
+describe('R_QUERIES: documented argument-matching limits', () => {
+  it.each([
+    ['setClass', 'setClass(Cla = "D")'],
+    ['setRefClass', 'setRefClass(Cla = "A")'],
+  ])('does not recognise a partial argument name in %s', (_label, source) => {
+    expect(definitions(source)).toEqual([]);
+  });
+
+  it('positive control: the full formal name is recognised', () => {
+    expect(definitions('setClass(Class = "D")')).toEqual(['definition.class:D']);
+  });
+
+  it('creates no member from the positional second argument of setRefClass()', () => {
+    expect(definitions('setRefClass("A", list(x = "numeric"))')).toEqual(['definition.class:A']);
+  });
+
+  it('creates no member from the positional second argument of R6Class()', () => {
+    expect(definitions('X <- R6Class("X", list(m = function() 1, f = 2))')).toEqual([
+      'definition.class:X',
+    ]);
+  });
+
+  it('positive control: the named forms do create members', () => {
+    expect(definitions('setRefClass("A", fields = list(x = "numeric"))')).toEqual([
+      'definition.class:A',
+      'definition.property:x',
+    ]);
+    expect(definitions('X <- R6Class("X", public = list(m = function() 1))')).toEqual([
+      'definition.class:X',
+      'definition.method:m',
+    ]);
+  });
+});
+
+/**
  * Selecting the naming argument must stay linear in the argument count: an earlier
  * query-level formulation (a repeated sibling group before the argument) was
  * quadratic and took seconds on a single call with thousands of arguments. The same

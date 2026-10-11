@@ -7,6 +7,7 @@
  * directory called `renv-tools`.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { cleanupTempDirSync } from '../helpers/test-db.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -68,7 +69,7 @@ describe('R package discovery skips vendored and generated trees', () => {
     tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-r-vendored-'));
   });
   afterAll(async () => {
-    await fs.rm(tmp, { recursive: true, force: true });
+    cleanupTempDirSync(tmp);
   });
 
   it('a renv library below the depth limit neither adds a package nor truncates discovery', async () => {
