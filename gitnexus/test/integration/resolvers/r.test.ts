@@ -374,20 +374,44 @@ describe('R function definitions and calls', () => {
     expect(itemsField).toBeDefined();
     expect(itemsField!.properties.visibility).toBe('public');
   });
+});
 
-  // --- Negative tests ---
+/**
+ * Files the R provider must not index. The `r-non-indexed` fixture holds a
+ * `.Rprofile`, `.Renviron`, `.Rmd` and `.qmd`, each defining a function, next to a plain
+ * `real.R` positive control (docs/languages/r-provider.md, "Limits").
+ */
+describe('R files that are not indexed', () => {
+  let result: PipelineResult;
 
-  it('does not index .Rprofile or .Renviron files', () => {
-    const allNodes: string[] = [];
-    result.graph.forEachNode((n) => {
-      if (
-        n.properties.filePath?.includes('.Rprofile') ||
-        n.properties.filePath?.includes('.Renviron')
-      ) {
-        allNodes.push(n.properties.name);
-      }
-    });
-    expect(allNodes).toHaveLength(0);
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-non-indexed'), () => {});
+  }, 60000);
+
+  it('indexes the plain .R control file (so the negatives below are not vacuous)', () => {
+    expect(getNodesByLabel(result, 'Function')).toEqual(['indexed_control']);
+  });
+
+  // The scanner may still record a bare File node for these; what must not exist is any
+  // parsed symbol (Function, Variable, ...) from them.
+  it.each(['.Rprofile', '.Renviron', 'analysis.Rmd', 'report.qmd'])(
+    'creates no symbol node for %s',
+    (name) => {
+      const hits: string[] = [];
+      result.graph.forEachNode((n) => {
+        if (n.label !== 'File' && n.properties.filePath?.endsWith(name)) {
+          hits.push(`${n.label}:${n.properties.name}`);
+        }
+      });
+      expect(hits).toEqual([]);
+    },
+  );
+
+  it('defines no function from the non-indexed files', () => {
+    const functions = getNodesByLabel(result, 'Function');
+    expect(functions).not.toContain('rprofile_fn');
+    expect(functions).not.toContain('rmd_fn');
+    expect(functions).not.toContain('qmd_fn');
   });
 });
 

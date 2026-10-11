@@ -159,6 +159,18 @@ describe('getLanguageFromFilename', () => {
     it.each(['.r', '.R'])('detects %s files', (ext) => {
       expect(getLanguageFromFilename(`analysis${ext}`)).toBe(SupportedLanguages.R);
     });
+
+    // docs/languages/r-provider.md: only `.r` / `.R` are handled.
+    it.each([
+      'analysis.Rmd',
+      'report.qmd',
+      '.Rprofile',
+      '.Renviron',
+      'Rprofile.site',
+      'x.Rhistory',
+    ])('returns null for %s', (name) => {
+      expect(getLanguageFromFilename(name)).toBeNull();
+    });
   });
 
   describe('unsupported', () => {
