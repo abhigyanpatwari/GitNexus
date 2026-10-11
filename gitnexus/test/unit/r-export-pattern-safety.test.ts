@@ -494,6 +494,10 @@ const CHARACTERISATION: ReadonlyArray<readonly [string, readonly string[] | null
   ['^(get|set)[A-Z]', ['getX', 'setY']],
   ['a.c', ['abc', 'a.c']],
   ['^.{3}$', ['foo', 'bar', 'aaa', 'abc', 'Abc', 'a.c', 'a|b', 'x.y']],
+  // Leading `]` in a bracket expression WITHOUT a POSIX class: these two rows record the
+  // JS-RegExp reading (`[]` is an empty class), not TRE's. They cannot tell a working
+  // matcher from a never-matching one; the discriminating checks are in the
+  // 'leading ] in a bracket expression' block below.
   ['[]a]', []],
   ['[^]a]', []],
   ['^[\\]]', [']']],
@@ -542,6 +546,52 @@ describe('compileRExportPattern characterisation', () => {
     }
     expect(matcher).not.toBeNull();
     expect(NAMES.filter((n) => matcher?.test(n) === true)).toEqual(expected);
+  });
+});
+
+// R compiles exportPattern() with TRE (POSIX extended): a `]` in first position of a bracket
+// expression, after an optional `^`, is a literal member. The translator only applies that
+// rule when the pattern also contains a POSIX class (`[:`); otherwise the text reaches the
+// matcher verbatim and is read as a JavaScript RegExp, where `[]` is an empty class and
+// `[^]` matches any character. The first block characterises what the code does today with
+// names that discriminate (`a`, `]`, `xa]`, `5`); the second states the TRE expectation and
+// is marked `it.fails` until export-pattern.ts translates the leading `]` unconditionally.
+describe('compileRExportPattern: leading ] in a bracket expression', () => {
+  const BRACKET_NAMES = ['a', ']', 'b', '5', 'xa]', 'ba]', 'a]', 'x]', ']a'];
+  const matched = (pattern: string): readonly string[] | null => {
+    const matcher = compileRExportPattern(pattern);
+    return matcher === null ? null : BRACKET_NAMES.filter((n) => matcher.test(n));
+  };
+
+  describe('current behaviour (characterisation, JS-RegExp reading)', () => {
+    it.each([
+      ['[]a]', []],
+      ['[]]', []],
+      ['[^]a]', ['xa]', 'ba]']],
+      ['[^]]', ['xa]', 'ba]', 'a]', 'x]']],
+    ] as const)('%s matches %j', (pattern, expected) => {
+      expect(matched(pattern)).toEqual(expected);
+    });
+
+    it('applies the TRE rule once a POSIX class is present (translated path)', () => {
+      expect(matched('[]a[:digit:]]')).toEqual(['a', ']', '5', 'xa]', 'ba]', 'a]', 'x]', ']a']);
+      expect(matched('[^]a[:digit:]]')).toEqual(['b', 'xa]', 'ba]', 'x]']);
+    });
+  });
+
+  describe('TRE expectation (known gap)', () => {
+    // The expected sets come from the equivalent JavaScript RegExp with the leading `]`
+    // escaped, so the expectation is computed, not hand-listed, and is never empty by luck.
+    it.fails.each([
+      ['[]a]', /[\]a]/],
+      ['[]]', /[\]]/],
+      ['[^]a]', /[^\]a]/],
+      ['[^]]', /[^\]]/],
+    ] as const)('%s behaves like its escaped equivalent', (pattern, oracle) => {
+      const expected = BRACKET_NAMES.filter((n) => oracle.test(n));
+      expect(expected.length).toBeGreaterThan(0);
+      expect(matched(pattern)).toEqual(expected);
+    });
   });
 });
 
