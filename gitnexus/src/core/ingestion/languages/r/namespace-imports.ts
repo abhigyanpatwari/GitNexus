@@ -42,6 +42,7 @@
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import type { RPackageConfig } from './package-config.js';
 import { unescapeRString } from './export-pattern.js';
+import { resolveRNamedImport } from '../../import-resolvers/r.js';
 
 /** One `importFrom(pkg, name)` pair, in NAMESPACE file order. */
 export interface RNamespaceImportFromEntry {
@@ -622,6 +623,11 @@ export function populateRNamespaceImports(
     const synthesised: Extract<ParsedImport, { kind: 'named' }>[] = [];
     for (const [name, pkg] of plan.bindable) {
       if (ownNames?.has(name) === true) continue;
+      // `null` means the name can never bind. A synthesised import for it would stay unresolved
+      // yet count as an explicit name claim, suppressing the documented `global-name-fallback`.
+      // (Importing the resolver forms a cycle with import-resolvers/r.ts; every use is deferred
+      // to call time, so it is safe at runtime.)
+      if (resolveRNamedImport(cfg, pkg, name, parsedFiles) === null) continue;
       synthesised.push({ kind: 'named', localName: name, importedName: name, targetRaw: pkg });
     }
     if (synthesised.length === 0) continue;

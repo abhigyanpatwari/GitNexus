@@ -28,7 +28,7 @@ Types:
 Imports:
 
 - `library()` and `require()` resolve to local packages, and `source()` to local files. The argument is `package=` / `file=` wherever it sits, else the first unnamed argument after any named one; named-first arguments such as `lib.loc=` and `local=` are not imports.
-- NAMESPACE `importFrom()` names bind to definitions in local packages.
+- NAMESPACE `importFrom()` names bind to definitions in local packages. A name that can never bind (not exported, not defined at top level, or dotted) creates no import, so its calls keep the `global-name-fallback` guess.
 
 Calls:
 

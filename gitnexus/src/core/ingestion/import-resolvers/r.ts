@@ -158,7 +158,7 @@ const stripBackticks = (s: string): string => s.replace(/^`+|`+$/g, '');
  * layout where the bare def comes first). `null` degrades the call site to the
  * baseline `global-name-fallback` guess. Never builds a workspace file index.
  */
-function resolveRNamedImport(
+export function resolveRNamedImport(
   rConfig: RPackageConfig | null,
   targetRaw: string,
   importedName: string,
