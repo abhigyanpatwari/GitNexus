@@ -176,6 +176,8 @@ describe('generateAIContextFiles', () => {
         expect(content).toContain('detect_changes({scope: "all"})');
         expect(content).toContain('node .gitnexus/run.cjs detect-changes --scope all --repo .');
         expect(content).toContain('target branch "develop"');
+        expect(content).toContain("git fetch origin -- 'develop'");
+        expect(content).toContain("git merge-base 'origin/develop' HEAD");
         expect(content).toContain(
           'detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})',
         );
@@ -1468,6 +1470,8 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     const stats = { nodes: 50, edges: 100, processes: 5 };
     const develop = generateGitNexusContent('P', stats, { defaultBranch: 'develop' });
     expect(develop).toContain('target branch "develop"');
+    expect(develop).toContain("git fetch origin -- 'develop'");
+    expect(develop).toContain("git merge-base 'origin/develop' HEAD");
     expect(develop).toContain('base_ref: "<merge-base SHA>"');
     expect(develop).not.toContain('base_ref: "develop"');
   });
@@ -1475,6 +1479,8 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
   it('defaults the review target to main without comparing to the main tip (#243, #3509)', () => {
     const content = generateGitNexusContent('P', { nodes: 50, edges: 100, processes: 5 });
     expect(content).toContain('target branch "main"');
+    expect(content).toContain("git fetch origin -- 'main'");
+    expect(content).toContain("git merge-base 'origin/main' HEAD");
     expect(content).toContain('base_ref: "<merge-base SHA>"');
     expect(content).not.toContain('base_ref: "main"');
   });
@@ -1511,6 +1517,7 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     // and closes exactly one).
     expect((line.match(/`/g) || []).length % 2).toBe(0);
     expect(line).not.toContain('main`evil');
+    expect(line).toContain("git fetch origin -- 'mainevil'");
     expect(markdownSafeBranch('a`b`c')).toBe('abc');
   });
 
@@ -1541,6 +1548,8 @@ For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\` 
       for (const f of ['AGENTS.md', 'CLAUDE.md']) {
         const after = await fs.readFile(path.join(dir, f), 'utf-8');
         expect(after).toContain('target branch "develop"');
+        expect(after).toContain("git fetch origin -- 'develop'");
+        expect(after).toContain("git merge-base 'origin/develop' HEAD");
         expect(after).toContain('base_ref: "<merge-base SHA>"');
         expect(after).not.toContain('base_ref: "develop"');
         expect(after).not.toContain('base_ref: "main"');

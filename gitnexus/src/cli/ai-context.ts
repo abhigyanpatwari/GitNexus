@@ -118,11 +118,15 @@ export function markdownSafeBranch(branch: string): string {
 }
 
 function regressionReviewGuidance(defaultBranch: string, runner?: string): string {
-  const target = JSON.stringify(markdownSafeBranch(defaultBranch));
+  const safeBranch = markdownSafeBranch(defaultBranch);
+  const target = JSON.stringify(safeBranch);
+  const shellQuote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+  const fetchTarget = shellQuote(safeBranch);
+  const remoteRef = shellQuote(`origin/${safeBranch}`);
   const cliFallback = runner
     ? ` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\``
     : '';
-  return `For regression review of target branch ${target}, run \`git merge-base <target> HEAD\` and pass its SHA: \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
+  return `For target branch ${target}: \`git fetch origin -- ${fetchTarget}\`; pass \`git merge-base ${remoteRef} HEAD\`'s SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
 }
 
 /** Options for {@link generateGitNexusContent} (collapsed from positional
@@ -756,7 +760,6 @@ export async function refreshBaseRefLine(
   options?: { skipAgentsMd?: boolean },
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
-  const targetReplacement = `For regression review of target branch ${JSON.stringify(markdownSafeBranch(defaultBranch))}`;
   const updated: string[] = [];
   for (const name of ['AGENTS.md', 'CLAUDE.md']) {
     const filePath = path.join(repoPath, name);
@@ -780,10 +783,13 @@ export async function refreshBaseRefLine(
       /or `([^`\n]+?) detect-changes --scope compare --base-ref\b/,
     )?.[1];
     const mergeBaseGuidance = regressionReviewGuidance(defaultBranch, legacyRunner);
-    let newBlock = block.replace(
-      /For regression review of target branch "(?:[^"\\]|\\.)*"/,
-      targetReplacement,
-    );
+    let newBlock = block;
+    if (!block.includes(mergeBaseGuidance) && block.includes('base_ref: "<merge-base SHA>"')) {
+      newBlock = block.replace(
+        /(?:For regression review of )?target branch "(?:[^"\\]|\\.)*"[^\n]*/,
+        mergeBaseGuidance,
+      );
+    }
     if (newBlock === block) {
       // Migrate the legacy generated sentence.
       newBlock = block.replace(
