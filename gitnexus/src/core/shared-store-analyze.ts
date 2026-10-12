@@ -372,6 +372,7 @@ export const publishSharedGraph = async (
   repoPath: string,
   currentCommit: string,
   log: Log,
+  registryOptions: { name?: string; allowDuplicateName?: boolean } = {},
 ): Promise<void> => {
   const slot = layout.checkoutSlot;
   const meta = await loadMeta(slot);
@@ -493,7 +494,11 @@ export const publishSharedGraph = async (
   const moved =
     previous !== undefined &&
     !registryPathEquals(canonicalizePath(previous.storagePath), canonicalizePath(slot));
-  await registerRepo(repoPath, meta, { storagePath: slot, dropBranches: moved });
+  await registerRepo(repoPath, meta, {
+    ...registryOptions,
+    storagePath: slot,
+    dropBranches: moved,
+  });
   await writeSharedStorePointer(repoPath, layout);
 };
 

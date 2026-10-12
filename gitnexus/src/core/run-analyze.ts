@@ -1363,7 +1363,10 @@ export async function runFullAnalysis(
         runnerIdentityAtBootstrap,
       );
       if (flatShared) {
-        await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log);
+        await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log, {
+          name: options.registryName,
+          allowDuplicateName: options.allowDuplicateName,
+        });
       } else if (!writeTarget.sharedStore) {
         // Also for a `--branch` run routed to a local branch sub-slot: the
         // checkout still leaves the store.
