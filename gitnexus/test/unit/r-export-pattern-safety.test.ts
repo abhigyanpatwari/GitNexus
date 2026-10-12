@@ -556,6 +556,7 @@ describe('compileRExportPattern characterisation', () => {
 // `[^]` matches any character. The first block characterises what the code does today with
 // names that discriminate (`a`, `]`, `xa]`, `5`); the second states the TRE expectation and
 // is marked `it.fails` until export-pattern.ts translates the leading `]` unconditionally.
+// The gap is listed under the limits in docs/languages/r-provider.md.
 describe('compileRExportPattern: leading ] in a bracket expression', () => {
   const BRACKET_NAMES = ['a', ']', 'b', '5', 'xa]', 'ba]', 'a]', 'x]', ']a'];
   const matched = (pattern: string): readonly string[] | null => {

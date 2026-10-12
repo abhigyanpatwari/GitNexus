@@ -87,6 +87,7 @@ Not supported:
 - Argument matching follows R for named and reordered arguments but does not model partial argument names: `setClass(Cla = "D")`, `new(Cla = "E")`, `setRefClass(Cla = "A")` and `setMethod("show", sig = "Foo")` are not recognised, so no definition or owner is attached.
 - Members are read only from the named forms. The positional second argument of `setClass("A", representation(x = "numeric"))`, `R6Class("X", list(...))` and `setRefClass("A", list(...))` creates no field or slot nodes; use `slots=` / `representation=`, `public =` / `private =` / `active =` and `fields =`.
 - For `S3method(generic, class, method)` the positional third argument names the exported method. A named third argument such as `S3method(print, foo, method = impl)` is not read: R registers `impl`, but the export is recorded for `print.foo`.
+- A leading `]` in a bracket expression of a NAMESPACE `exportPattern()` (for example `[]a]` or `[^]a]`) is read with JavaScript RegExp semantics, not POSIX/TRE, unless the pattern also contains a POSIX class such as `[:digit:]`; R would treat that `]` as a literal member.
 
 ### Bounds on NAMESPACE exportPattern matching
 
