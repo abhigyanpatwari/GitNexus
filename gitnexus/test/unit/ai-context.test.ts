@@ -8,6 +8,7 @@ import {
   refreshBaseRefLine,
   markdownSafeBranch,
 } from '../../src/cli/ai-context.js';
+import { resolveContextFileTarget } from '../../src/cli/context-file-target.js';
 import { _captureLogger } from '../../src/core/logger.js';
 
 describe('generateAIContextFiles', () => {
@@ -49,6 +50,70 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('gitnexus:start');
     expect(content).toContain('gitnexus:end');
     expect(content).toContain('TestProject');
+  });
+
+  it('writes only a nested custom context file and refreshes its base_ref', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-context-file-'));
+    const storage = path.join(dir, '.gitnexus');
+    const target = path.join(dir, '.claude', 'CLAUDE.md');
+    try {
+      await fs.mkdir(storage);
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), 'root agents\n');
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), 'root claude\n');
+      const options = {
+        contextFile: '.claude/CLAUDE.md',
+        defaultBranch: 'main',
+        skipSkills: true,
+      };
+      const first = await generateAIContextFiles(
+        dir,
+        storage,
+        'CustomProject',
+        {},
+        undefined,
+        options,
+      );
+      expect(first.files).toContain('.claude/CLAUDE.md (created)');
+      expect(await fs.readFile(target, 'utf-8')).toContain('base_ref: "main"');
+      await generateAIContextFiles(dir, storage, 'CustomProject', {}, undefined, options);
+      expect((await fs.readFile(target, 'utf-8')).match(/<!-- gitnexus:start -->/g)).toHaveLength(
+        1,
+      );
+
+      expect(
+        (await refreshBaseRefLine(dir, 'develop', { contextFile: options.contextFile })).files,
+      ).toEqual(['.claude/CLAUDE.md']);
+      expect(await fs.readFile(target, 'utf-8')).toContain('base_ref: "develop"');
+      expect(await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8')).toBe('root agents\n');
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe('root claude\n');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects custom paths outside the repo or through symlinks', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-context-target-'));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-context-outside-'));
+    try {
+      for (const invalid of ['../outside.md', path.join(outside, 'CLAUDE.md'), 'C:\\outside.md']) {
+        expect(() => resolveContextFileTarget(dir, invalid)).toThrow();
+      }
+      await fs.symlink(
+        outside,
+        path.join(dir, '.claude'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      await expect(
+        generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'Unsafe', {}, undefined, {
+          contextFile: '.claude/CLAUDE.md',
+          skipSkills: true,
+        }),
+      ).rejects.toThrow(/symlinked path/);
+      await expect(fs.access(path.join(outside, 'CLAUDE.md'))).rejects.toThrow();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 
   it('omits volatile counts when noStats option is set (#1477)', async () => {

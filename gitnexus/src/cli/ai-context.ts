@@ -15,6 +15,7 @@ import { type GeneratedSkillInfo } from './generated-skill.js';
 import { STANDARD_SKILL_CATALOG } from './standard-skills.js';
 import { isEnoent } from './editor-targets.js';
 import { logger } from '../core/logger.js';
+import { assertContextFileTargetSafe, resolveContextFileTarget } from './context-file-target.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -31,6 +32,7 @@ interface RepoStats {
 
 export interface AIContextOptions {
   skipAgentsMd?: boolean;
+  contextFile?: string;
   noStats?: boolean;
   skipSkills?: boolean;
   /**
@@ -656,27 +658,22 @@ export async function generateAIContextFiles(
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {
-    // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
-    const agentsPath = path.join(repoPath, 'AGENTS.md');
-    const agentsResult = await upsertGitNexusSection(
-      agentsPath,
-      content,
-      projectName,
-      stats,
-      options?.noStats,
-    );
-    createdFiles.push(`AGENTS.md (${agentsResult})`);
-
-    // Create CLAUDE.md (for Claude Code)
-    const claudePath = path.join(repoPath, 'CLAUDE.md');
-    const claudeResult = await upsertGitNexusSection(
-      claudePath,
-      content,
-      projectName,
-      stats,
-      options?.noStats,
-    );
-    createdFiles.push(`CLAUDE.md (${claudeResult})`);
+    const targets = options?.contextFile ? [options.contextFile] : ['AGENTS.md', 'CLAUDE.md'];
+    for (const target of targets) {
+      const { relative, absolute } = resolveContextFileTarget(repoPath, target);
+      if (options?.contextFile) {
+        await assertContextFileTargetSafe(repoPath, relative);
+        await fs.mkdir(path.dirname(absolute), { recursive: true });
+      }
+      const result = await upsertGitNexusSection(
+        absolute,
+        content,
+        projectName,
+        stats,
+        options?.noStats,
+      );
+      createdFiles.push(`${relative} (${result})`);
+    }
   } else {
     createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
@@ -726,8 +723,8 @@ export async function generateAIContextFiles(
 }
 
 /**
- * Refresh only the `base_ref: "..."` value inside the GitNexus block of an
- * already-generated AGENTS.md / CLAUDE.md, in place (#1996 tri-review P2).
+ * Refresh only the `base_ref: "..."` value inside an already-generated
+ * context file, in place (#1996 tri-review P2).
  *
  * The `alreadyUpToDate` analyze fast path returns before the normal
  * {@link generateAIContextFiles} call, so a changed `.gitnexusrc` defaultBranch
@@ -743,13 +740,14 @@ export async function generateAIContextFiles(
 export async function refreshBaseRefLine(
   repoPath: string,
   defaultBranch: string,
-  options?: { skipAgentsMd?: boolean },
+  options?: { skipAgentsMd?: boolean; contextFile?: string },
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
   const replacement = `base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}`;
   const updated: string[] = [];
-  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
-    const filePath = path.join(repoPath, name);
+  for (const target of options?.contextFile ? [options.contextFile] : ['AGENTS.md', 'CLAUDE.md']) {
+    const { relative: name, absolute: filePath } = resolveContextFileTarget(repoPath, target);
+    if (options?.contextFile) await assertContextFileTargetSafe(repoPath, name);
     if (!(await fileExists(filePath))) continue;
     let content: string;
     try {
