@@ -117,9 +117,12 @@ export function markdownSafeBranch(branch: string): string {
   return branch.replace(/`/g, '');
 }
 
-function regressionReviewGuidance(defaultBranch: string, runner: string): string {
+function regressionReviewGuidance(defaultBranch: string, runner?: string): string {
   const target = JSON.stringify(markdownSafeBranch(defaultBranch));
-  return `For regression review of target branch ${target}, pass the merge-base SHA resolved by \`gitnexus-review\`: \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\`.`;
+  const cliFallback = runner
+    ? ` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\``
+    : '';
+  return `For regression review of target branch ${target}, run \`git merge-base <target> HEAD\` and pass its SHA: \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
 }
 
 /** Options for {@link generateGitNexusContent} (collapsed from positional
@@ -773,9 +776,9 @@ export async function refreshBaseRefLine(
     // Preserve the runner emitted with the block. Its location follows the
     // configured storage path, so assuming `.gitnexus/run.cjs` would break the
     // CLI fallback when migrating guidance generated for an external store.
-    const legacyRunner =
-      block.match(/or `([^`\n]+?) detect-changes --scope compare --base-ref\b/)?.[1] ??
-      'node .gitnexus/run.cjs';
+    const legacyRunner = block.match(
+      /or `([^`\n]+?) detect-changes --scope compare --base-ref\b/,
+    )?.[1];
     const mergeBaseGuidance = regressionReviewGuidance(defaultBranch, legacyRunner);
     let newBlock = block.replace(
       /For regression review of target branch "(?:[^"\\]|\\.)*"/,
@@ -784,8 +787,17 @@ export async function refreshBaseRefLine(
     if (newBlock === block) {
       // Migrate the legacy generated sentence.
       newBlock = block.replace(
-        /For regression review:(?=[^\n]*base_ref:)[^\n]*/,
+        /For regression review: `detect_changes\(\{scope: "compare", base_ref: "(?:[^"\\]|\\.)*"\}\)`(?: or `[^`\n]+? detect-changes --scope compare --base-ref "(?:[^"\\]|\\.)*" --repo \.\`)?\./,
         mergeBaseGuidance,
+      );
+    }
+    if (newBlock === block) {
+      // Older compact blocks used this exact generated bullet rather than the
+      // prose sentence. Keep the anchor narrow so user-authored compare calls
+      // elsewhere in the managed block remain untouched.
+      newBlock = block.replace(
+        /- run detect_changes\(\{scope: "compare", base_ref: "(?:[^"\\]|\\.)*"\}\)(?=\s*(?:\n|$))/,
+        `- ${mergeBaseGuidance}`,
       );
     }
     if (newBlock === block) continue; // no base_ref line present, or already current

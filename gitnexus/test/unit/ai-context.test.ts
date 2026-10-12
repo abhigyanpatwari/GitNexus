@@ -1636,19 +1636,47 @@ For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\` 
     }
   });
 
-  it('uses Node for a legacy line without a CLI fallback (#3509)', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-no-runner-'));
+  it('preserves same-line custom text after legacy guidance (#3509)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-suffix-'));
     try {
       const seed = `<!-- gitnexus:start -->
+For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\`. Always inspect src/security.ts before release.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
+
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['AGENTS.md']);
+      const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
+      expect(after).toContain('target branch "develop"');
+      expect(after).toContain('Always inspect src/security.ts before release.');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps MCP-only legacy guidance MCP-only and migrates the compact shape (#3509)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-mcp-only-'));
+    try {
+      const prose = `<!-- gitnexus:start -->
 For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\`.
 <!-- gitnexus:end -->
 `;
-      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed, 'utf-8');
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), prose, 'utf-8');
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['AGENTS.md']);
+      const afterProse = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
+      expect(afterProse).toContain('target branch "develop"');
+      expect(afterProse).not.toContain('.gitnexus/run.cjs');
+      await fs.rm(path.join(dir, 'AGENTS.md'));
 
-      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['CLAUDE.md']);
-      const after = await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8');
-      expect(after).toContain('`node .gitnexus/run.cjs detect-changes');
-      expect(after).toContain('base_ref: "<merge-base SHA>"');
+      const compact = `<!-- gitnexus:start -->
+- run detect_changes({scope: "compare", base_ref: "main"})
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), compact, 'utf-8');
+      expect((await refreshBaseRefLine(dir, 'release')).files).toEqual(['CLAUDE.md']);
+      const afterCompact = await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8');
+      expect(afterCompact).toContain('target branch "release"');
+      expect(afterCompact).toContain('git merge-base');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
