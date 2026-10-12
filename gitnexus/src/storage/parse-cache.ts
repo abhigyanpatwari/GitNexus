@@ -858,7 +858,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // and original graph positions. Both stores must re-extract v135 captures.
 // v137: Python module-accessor syntax proofs and exact assigned-call provenance
 // join the existing subtype capture payload. Re-extract v136 in both stores.
-const SCHEMA_BUMP = 137;
+// v138 (#3561): Express middleware registrations no longer emit endpoints,
+// and dispatch guards ignore stored route metadata. Warm v137 shards retain
+// those phantom routes, so both parse stores must re-extract unchanged files.
+const SCHEMA_BUMP = 138;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

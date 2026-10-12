@@ -24,3 +24,7 @@ counts.get('/ghost-block-comment' /* cached key */);
 counts.get(
   '/ghost-line-comment', // cached key
 );
+
+function inspectRoute(route) {
+  return route.routePath === '/comparison-ghost';
+}

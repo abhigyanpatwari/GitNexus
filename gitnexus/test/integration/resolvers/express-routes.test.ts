@@ -11,6 +11,7 @@ import {
 } from '../../../src/storage/parse-cache.js';
 import {
   getDurableParsedFileDir,
+  loadDurableParsedFileIndex,
   pruneAndSaveDurableParsedFileStore,
 } from '../../../src/storage/parsedfile-store.js';
 import {
@@ -112,6 +113,10 @@ describe('Express route identity and source priority', () => {
       expect(getNodesByLabel(result, 'Route')).not.toContain(route);
     },
   );
+
+  it('does not turn stored route metadata into a dispatch guard', () => {
+    expect(getNodesByLabel(result, 'Route')).not.toContain('/comparison-ghost');
+  });
 
   it.each([
     ['/api/chained', ['GET']],
@@ -234,6 +239,54 @@ describe('Express route identity and source priority', () => {
       expect(coldProjection).toEqual({ routes: expected, handled: expected });
       expect(project(warmResult)).toEqual(coldProjection);
       expect(project(mixedResult)).toEqual(coldProjection);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('reparses route captures from a same-package v137 cache on upgrade', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-express-route-upgrade-'));
+    const repoDir = path.join(tempDir, 'repo');
+    const storageDir = path.join(tempDir, 'storage');
+    const previousVersion = `137+${PARSE_CACHE_VERSION.split('+').slice(1).join('+')}`;
+    try {
+      fs.cpSync(path.join(FIXTURES, 'express-route-priority'), repoDir, { recursive: true });
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set<string>(),
+        storagePath: storageDir,
+        onDiskKeys: new Set<string>(),
+      };
+      const initial = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: cache,
+        workerPoolSize: 1,
+      });
+      expect(initial.reparsedFileCount).toBe(2);
+      pruneCache(cache, cache.usedKeys);
+      cache.version = previousVersion;
+      const savedKeys = await saveParseCache(storageDir, cache);
+      expect(savedKeys).toHaveLength(2);
+      const durableDir = getDurableParsedFileDir(storageDir);
+      await pruneAndSaveDurableParsedFileStore(durableDir, previousVersion, new Set(savedKeys));
+      expect((await loadDurableParsedFileIndex(durableDir, previousVersion)).size).toBe(2);
+
+      const upgraded = await loadParseCache(storageDir);
+      expect(upgraded.onDiskKeys?.size ?? 0).toBe(0);
+      expect(await loadDurableParsedFileIndex(durableDir, PARSE_CACHE_VERSION)).toEqual(new Map());
+      const result = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: upgraded,
+        workerPoolSize: 1,
+      });
+      expect(result.reparsedFileCount).toBe(2);
+      expect(result.parseCacheHitFileCount).toBe(0);
+      const routes = getNodesByLabel(result, 'Route');
+      expect(routes).toContain('/api/info');
+      expect(routes).not.toContain('/ghost');
+      expect(routes).not.toContain('/comparison-ghost');
+      expect(
+        getNodesByLabelFull(result, 'Route').filter((node) => node.name === '/api/mcp'),
+      ).toHaveLength(1);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
