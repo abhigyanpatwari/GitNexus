@@ -20,7 +20,12 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-import { SupportedLanguages, type BindingRef, type ScopeId } from 'gitnexus-shared';
+import {
+  SupportedLanguages,
+  type BindingRef,
+  type ScopeId,
+  type SymbolDefinition,
+} from 'gitnexus-shared';
 import { emitLuaScopeCaptures } from '../../../src/core/ingestion/languages/lua/index.js';
 import { collectLuaCaptureSideChannel } from '../../../src/core/ingestion/languages/lua/capture-side-channel.js';
 import { luaScopeResolver } from '../../../src/core/ingestion/languages/lua/scope-resolver.js';
@@ -78,7 +83,7 @@ describe('Lua scope resolver import extensions', () => {
 
 describe('Lua scope resolver arity compatibility', () => {
   it('does not narrow calls by positional arity', () => {
-    const def = {
+    const def: SymbolDefinition = {
       nodeId: 'fixed',
       filePath: 'x.lua',
       type: 'Function',
@@ -86,7 +91,7 @@ describe('Lua scope resolver arity compatibility', () => {
       parameterCount: 2,
       requiredParameterCount: 2,
       parameterTypes: [],
-    } as const;
+    };
     expect(luaScopeResolver.arityCompatibility({ arity: 0 }, def)).toBe('unknown');
     expect(luaScopeResolver.arityCompatibility({ arity: 2 }, def)).toBe('unknown');
     expect(luaScopeResolver.arityCompatibility({ arity: 5 }, def)).toBe('unknown');
