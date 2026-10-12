@@ -36,8 +36,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | `context`        | Callers, callees, processes for one symbol                                                                                     |
 | `impact`         | Blast radius (upstream/downstream) with risk summary                                                                           |
 | `detect_changes` | Map git diffs to affected symbols and processes                                                                                |
-| `rename_preview` | Read-only preview of exact graph-backed semantic edits and coverage                                                           |
-| `rename`         | Preview or apply semantic edits after checking source snapshots                                                               |
+| `rename`         | Semantic rename: previews by default (`dry_run` omitted/true), applies with `dry_run: false`                                   |
 | `api_impact`     | Pre-change impact report for an API route handler                                                                              |
 | `trace`          | Shortest directed path between two symbols (call + class-member edges); group-aware (`repo: "@<group>"`) for cross-repo traces |
 | `route_map`      | API route → handler → consumer mappings                                                                                        |
@@ -279,7 +278,7 @@ Pipeline phase: `scopeResolutionPhase` in `scope-resolution/pipeline/phase.ts` �
 
 ### Semantic rename
 
-`rename_preview` and `rename` share the graph-backed planner in `mcp/local/rename/graph-rename.ts`. The selected graph declaration must match the current source. Each language's `LanguageProvider.rename` supplies original-source name spans, spelling rules, declaration families, and syntax-specific rewrites. Embedded and standalone providers retain their own parsing strategy; shared planning does not classify language syntax or invoke compiler/language-service APIs.
+`rename` plans through the graph-backed planner in `mcp/local/rename/graph-rename.ts`; `dry_run` (omitted or `true`) stops after planning, `dry_run: false` also applies. In MCP read-only mode the same tool is listed preview-only and any other `dry_run` is rejected before backend dispatch (`mcp/read-only-policy.ts`). The selected graph declaration must match the current source. Each language's `LanguageProvider.rename` supplies original-source name spans, spelling rules, declaration families, and syntax-specific rewrites. Embedded and standalone providers retain their own parsing strategy; shared planning does not classify language syntax or invoke compiler/language-service APIs.
 
 The planner runs the existing scope-resolution pipeline before and after the proposed edits. An opt-in source-binding observer records the declaration selected for a written name, separately from runtime dispatch expansion. Provider capture metadata travels with each parsed file, so both passes retain ordinary import and ownership evidence. Provider-proven declaration families use the existing inheritance, implementation, and declaration relationships. Re-resolution checks edited references, untouched bindings, collisions, and changes in those families.
 

@@ -1,4 +1,5 @@
 import type Parser from 'tree-sitter';
+import { SupportedLanguages } from 'gitnexus-shared';
 import type { RenameOccurrence, RenameProvider, RenameSource } from '../../rename-provider.js';
 import {
   canonicalizeRenameBindings,
@@ -78,6 +79,8 @@ function reference(node: Parser.SyntaxNode, source: RenameSource) {
 
 export const rustRenameProvider: RenameProvider = {
   canonicalName,
+  // An indexed C source may call a function exported with `#[no_mangle] extern "C"`.
+  interoperatesWithSourceProvider: (provider) => provider.id === SupportedLanguages.C,
   matchesGraphIdentity({ definition, definitions, node, graph }) {
     let name = definition.qualifiedName;
     if (!name) return false;

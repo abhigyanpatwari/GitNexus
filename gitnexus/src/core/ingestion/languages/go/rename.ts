@@ -1,5 +1,5 @@
 import type Parser from 'tree-sitter';
-import type { NameClaim } from 'gitnexus-shared';
+import { SupportedLanguages, type NameClaim } from 'gitnexus-shared';
 import type { RenameOccurrence, RenameProvider, RenameSource } from '../../rename-provider.js';
 import {
   createTreeSitterRenameSource,
@@ -12,6 +12,8 @@ import {
   buildGraphNodeLookup,
   qualifiedKey,
 } from '../../scope-resolution/graph-bridge/node-lookup.js';
+import { isExportedGoName } from './name-fallback-visibility.js';
+import { goPackageDir, inferGoPackageName } from './package-clause.js';
 
 const keywords = new Set(
   'break default func interface select case defer go map struct chan else goto package switch const fallthrough if range type continue for import return var'.split(
@@ -135,7 +137,47 @@ function reference(node: Parser.SyntaxNode, source: RenameSource) {
   };
 }
 
+type GoSourceFile = Pick<RenameSource, 'path' | 'content'>;
+
+const packageKeys = new WeakMap<GoSourceFile, string | undefined>();
+
+/**
+ * A Go package is a directory plus its package clause: `api` and its external
+ * test package `api_test` share a directory but cannot see each other's
+ * unexported names. Undefined when the clause cannot be read, which proves no
+ * package identity at all.
+ */
+function goPackageKey(file: GoSourceFile): string | undefined {
+  if (packageKeys.has(file)) return packageKeys.get(file);
+  const name = inferGoPackageName(file.content);
+  const key = name === null ? undefined : `${goPackageDir(file.path)}\0${name}`;
+  packageKeys.set(file, key);
+  return key;
+}
+
+/**
+ * Whether renaming `oldName` to `newName` stops `user` from naming a symbol
+ * declared in `declaring`. Only an exported name crosses a package boundary, so
+ * an exported-to-unexported rename is safe exactly when every use stays in the
+ * declaring package. The re-resolution pass cannot catch this: it resolves the
+ * unexported name back to the same declaration, so identity is unchanged while
+ * the program no longer compiles.
+ */
+export function hidesExportFromPackage(input: {
+  readonly oldName: string;
+  readonly newName: string;
+  readonly declaring: GoSourceFile | undefined;
+  readonly user: GoSourceFile;
+}): boolean {
+  if (!isExportedGoName(input.oldName) || isExportedGoName(input.newName)) return false;
+  if (input.declaring?.path === input.user.path) return false;
+  const home = input.declaring && goPackageKey(input.declaring);
+  return home === undefined || goPackageKey(input.user) !== home;
+}
+
 export const goRenameProvider: RenameProvider = {
+  // An indexed C source may call a function exported with a cgo `//export` directive.
+  interoperatesWithSourceProvider: (provider) => provider.id === SupportedLanguages.C,
   matchesGraphIdentity({ definition, node, graph, files }) {
     const ownName = definition.qualifiedName;
     if (!ownName) return false;
@@ -164,6 +206,22 @@ export const goRenameProvider: RenameProvider = {
   validateName(name) {
     if (!/^[_\p{L}][_\p{L}\p{Nd}]*$/u.test(name) || name === '_' || keywords.has(name))
       return { code: 'invalid_name', message: 'Choose a valid nonreserved Go identifier.' };
+  },
+  checkOccurrence({ selected, source, occurrence, target, files, newName }) {
+    const oldName = simpleQualifiedName(target) ?? '';
+    if (
+      selected &&
+      hidesExportFromPackage({
+        oldName,
+        newName,
+        declaring: files.get(target.filePath),
+        user: source,
+      })
+    )
+      return {
+        code: 'invalid_name',
+        message: `Go exports an identifier only when it begins with a Unicode uppercase letter; ${newName} would hide ${oldName} from ${source.path}:${occurrence.range.startLine}, outside its declaring package.`,
+      };
   },
   parseSource: async (input) => withLexicalClaims(await parseSource(input)),
 };

@@ -187,8 +187,16 @@ const parseSource = createTreeSitterRenameSource({
 export const cRenameProvider: RenameProvider = {
   checkSafety: checkCMacroSafety,
   additionalInteropNames: cMacroNames,
+  // Sources that declare or call a C function by its own name, without a proven binding.
   interoperatesWithSourceProvider: (provider) =>
-    provider.id === SupportedLanguages.CPlusPlus || provider.id === SupportedLanguages.ObjectiveC,
+    [
+      SupportedLanguages.CPlusPlus,
+      SupportedLanguages.ObjectiveC,
+      SupportedLanguages.Swift,
+      SupportedLanguages.Rust,
+      SupportedLanguages.Go,
+      SupportedLanguages.Zig,
+    ].includes(provider.id),
   acceptsSourceProvider: (provider, filePath) =>
     provider.id === SupportedLanguages.C ||
     (provider.id === SupportedLanguages.CPlusPlus && filePath.endsWith('.h')),

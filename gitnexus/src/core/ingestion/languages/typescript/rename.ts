@@ -2,6 +2,7 @@ import type Parser from 'tree-sitter';
 import {
   CLASS_KINDS,
   SupportedLanguages,
+  type Range,
   type ReferenceSite,
   type SymbolDefinition,
   type TypeRef,
@@ -131,26 +132,70 @@ function bareReference(node: Parser.SyntaxNode, source: RenameSource) {
   };
 }
 
+// A parse tree is immutable, so its declarators are indexed by range once
+// instead of being rediscovered by a full walk for every checked call.
+const declaratorsByRange = new WeakMap<Parser.Tree, Map<string, Parser.SyntaxNode[]>>();
+
+function declaratorsAt(tree: Parser.Tree, range: Range): readonly Parser.SyntaxNode[] {
+  let index = declaratorsByRange.get(tree);
+  if (!index) {
+    index = new Map();
+    for (const node of walkNamedNodes(tree.rootNode)) {
+      if (node.type !== 'variable_declarator') continue;
+      const key = rangeKey(nodeRange(node));
+      const group = index.get(key);
+      if (group) group.push(node);
+      else index.set(key, [node]);
+    }
+    declaratorsByRange.set(tree, index);
+  }
+  return index.get(rangeKey(range)) ?? [];
+}
+
+/** The constructor expression that initializes a receiver, with the facts every
+ * call through that receiver would otherwise recompute from the syntax tree. */
+interface ReceiverConstructor {
+  readonly node: Parser.SyntaxNode;
+  /** The declarator name this constructor initializes. */
+  readonly declaredNameId: number | undefined;
+  readonly hoistedScope: number | undefined;
+}
+
+const receiverConstructors = new WeakMap<Parser.Tree, Map<string, ReceiverConstructor | null>>();
+
 function receiverConstructor(
-  root: Parser.SyntaxNode,
+  tree: Parser.Tree,
   name: string,
   type: TypeRef,
-): Parser.SyntaxNode | undefined {
+): ReceiverConstructor | undefined {
   if (!type.bindingRange) return undefined;
-  for (const node of walkNamedNodes(root)) {
+  let known = receiverConstructors.get(tree);
+  if (!known) {
+    known = new Map();
+    receiverConstructors.set(tree, known);
+  }
+  const key = `${rangeKey(type.bindingRange)}\0${name}`;
+  const cached = known.get(key);
+  if (cached !== undefined) return cached ?? undefined;
+  let found: ReceiverConstructor | undefined;
+  for (const declarator of declaratorsAt(tree, type.bindingRange)) {
+    const value = declarator.childForFieldName('value');
     if (
-      node.type !== 'variable_declarator' ||
-      rangeKey(nodeRange(node)) !== rangeKey(type.bindingRange)
+      canonicalTypeScriptName(declarator.childForFieldName('name')?.text ?? '') !== name ||
+      value?.type !== 'new_expression'
     )
       continue;
-    const value = node.childForFieldName('value');
-    if (
-      canonicalTypeScriptName(node.childForFieldName('name')?.text ?? '') === name &&
-      value?.type === 'new_expression'
-    )
-      return value.childForFieldName('constructor') ?? undefined;
+    const node = value.childForFieldName('constructor');
+    if (node)
+      found = {
+        node,
+        declaredNameId: node.parent?.parent?.childForFieldName('name')?.id,
+        hoistedScope: hoistedVarScope(node),
+      };
+    break;
   }
-  return undefined;
+  known.set(key, found ?? null);
+  return found;
 }
 
 function receiverWrite(token: Parser.SyntaxNode): boolean {
@@ -196,6 +241,71 @@ function hoistedVarScope(token: Parser.SyntaxNode): number | undefined {
     )
       return node.id;
   return undefined;
+}
+
+/** What one write to a receiver name means, whichever binding asks about it. */
+interface ReceiverWrite {
+  readonly nodeId: number;
+  readonly hoistedScope: number | undefined;
+  /** The scope owning the written binding; undefined when no declaration claims it. */
+  readonly writtenScope: string | undefined;
+}
+
+interface ReceiverWriteIndex {
+  readonly occurrencesByName: ReadonlyMap<string, readonly RenameOccurrence[]>;
+  readonly writesByName: Map<string, readonly ReceiverWrite[]>;
+}
+
+// One immutable source and its lexical indexes serve a whole plan, so every
+// checked call shares these instead of rescanning each occurrence of the file.
+const receiverWriteIndexes = new WeakMap<
+  RenameSemanticContext['indexes'],
+  WeakMap<RenameSource, ReceiverWriteIndex>
+>();
+
+function receiverWritesOf(
+  context: RenameSemanticContext,
+  source: RenameSource,
+  name: string,
+): readonly ReceiverWrite[] {
+  let bySource = receiverWriteIndexes.get(context.indexes);
+  if (!bySource) {
+    bySource = new WeakMap();
+    receiverWriteIndexes.set(context.indexes, bySource);
+  }
+  let index = bySource.get(source);
+  if (!index) {
+    const occurrencesByName = new Map<string, RenameOccurrence[]>();
+    for (const occurrence of source.occurrences) {
+      const group = occurrencesByName.get(occurrence.name);
+      if (group) group.push(occurrence);
+      else occurrencesByName.set(occurrence.name, [occurrence]);
+    }
+    index = { occurrencesByName, writesByName: new Map() };
+    bySource.set(source, index);
+  }
+  const known = index.writesByName.get(name);
+  if (known) return known;
+  const writes: ReceiverWrite[] = [];
+  for (const occurrence of index.occurrencesByName.get(name) ?? []) {
+    const node = occurrence.node;
+    if (!node || !receiverWrite(node)) continue;
+    const scope = innermostRenameScope(source.parsed, node);
+    const written =
+      scope &&
+      lookupNameClaim(scope, name, context.indexes, {
+        position: nodeRange(node),
+        purpose: 'value',
+      });
+    writes.push({
+      nodeId: node.id,
+      hoistedScope: hoistedVarScope(node),
+      writtenScope:
+        written && written.scope && written.claims.length > 0 ? written.scope.id : undefined,
+    });
+  }
+  index.writesByName.set(name, writes);
+  return writes;
 }
 
 function importedReceiverIsReassigned(
@@ -353,7 +463,8 @@ function checkReceiverBinding(
     (type.declaredSpelling && type.declaredSpelling !== type.rawName)
   )
     return issue('The receiver type does not prove an object identity.', 'ambiguous_reference');
-  const constructor = receiverConstructor(source.tree.rootNode, bindingName, type);
+  const receiver = receiverConstructor(source.tree, bindingName, type);
+  const constructor = receiver?.node;
   if (
     importedDefinition &&
     !constructor?.parent?.parent?.parent?.children.some((child) => child.type === 'const')
@@ -374,26 +485,15 @@ function checkReceiverBinding(
   const bindingScope = constructor
     ? innermostRenameScope(source.parsed, constructor)
     : claim.scope?.id;
-  for (const occurrence of source.occurrences) {
-    const node = occurrence.node;
-    if (occurrence.name !== bindingName || !node || !receiverWrite(node)) continue;
-    if (constructor?.parent?.parent?.childForFieldName('name')?.id === node.id) continue;
+  for (const write of receiverWritesOf(context, source, bindingName)) {
+    if (write.nodeId === receiver?.declaredNameId) continue;
     if (
       constructor &&
-      hoistedVarScope(node) !== undefined &&
-      hoistedVarScope(node) === hoistedVarScope(constructor)
+      write.hoistedScope !== undefined &&
+      write.hoistedScope === receiver?.hoistedScope
     )
       return issue('A hoisted receiver binding is reassigned.', 'ambiguous_reference');
-    const scope = innermostRenameScope(source.parsed, node);
-    const written =
-      scope &&
-      lookupNameClaim(scope, bindingName, indexes, { position: nodeRange(node), purpose: 'value' });
-    if (
-      !written ||
-      !written.scope ||
-      written.claims.length === 0 ||
-      written.scope.id === bindingScope
-    )
+    if (write.writtenScope === undefined || write.writtenScope === bindingScope)
       return issue('The receiver binding is reassigned.', 'ambiguous_reference');
   }
   if (
@@ -730,6 +830,15 @@ function unrelatedKeyOwner(
   return members.length > 0 && members.every((member) => !family.has(member.nodeId));
 }
 
+/** The first occurrence with a span at each offset, as a linear-time `find`. */
+function occurrencesBySpanStart(source: RenameSource): ReadonlyMap<number, RenameOccurrence> {
+  const byStart = new Map<number, RenameOccurrence>();
+  for (const occurrence of source.occurrences)
+    for (const span of occurrence.spans)
+      if (!byStart.has(span.start)) byStart.set(span.start, occurrence);
+  return byStart;
+}
+
 export const typescriptRenameProvider: RenameProvider = {
   acceptsSourceProvider: (provider) =>
     [SupportedLanguages.TypeScript, SupportedLanguages.JavaScript, SupportedLanguages.Vue].includes(
@@ -871,14 +980,12 @@ export const typescriptRenameProvider: RenameProvider = {
     }));
   },
   validateRewrite({ source, updated, edits }) {
+    const originalAt = occurrencesBySpanStart(source);
+    const updatedAt = occurrencesBySpanStart(updated);
     let delta = 0;
     for (const edit of edits) {
-      const original = source.occurrences.find((item) =>
-        item.spans.some((span) => span.start === edit.start),
-      );
-      const replacement = updated.occurrences.find((item) =>
-        item.spans.some((span) => span.start === edit.start + delta),
-      );
+      const original = originalAt.get(edit.start);
+      const replacement = updatedAt.get(edit.start + delta);
       if (
         original?.node &&
         jsxTagRole(original.node) &&

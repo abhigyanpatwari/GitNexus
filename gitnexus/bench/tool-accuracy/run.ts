@@ -337,10 +337,10 @@ try {
     );
     need(target, 'DeferredWriter.flush symbol missing');
     const before = await fixtureDigest(repoPath);
-    const params = { symbol_uid: target!.id, new_name: 'flushPending' };
+    const params = { symbol_uid: target!.id, new_name: 'flushPending', dry_run: true };
     // Refusal is the expected public response; call() rejects error results.
-    const result = await backend!.callTool('rename_preview', { ...params, repo });
-    toolOutputs.push({ tool: 'rename_preview', params, result });
+    const result = await backend!.callTool('rename', { ...params, repo });
+    toolOutputs.push({ tool: 'rename', params, result });
     need(
       result &&
         result.result_version === 2 &&

@@ -11,7 +11,16 @@ The harness executes prepared semantic plans against real temporary files. It
 checks exact output, edit counts, line numbers, UTF-16 offsets and CRLF reports;
 previews must preserve the source. Native parsing and graph resolution are
 covered by the per-language persisted integration suites, rather than included
-in these construction timings.
+in the construction timings below.
+
+A second workload runs the whole semantic planner (`planGraphRename`: parsing,
+scope resolution, provider receiver proofs, rewrite validation and before/after
+binding verification) over one generated TypeScript module. It renames a method
+called 2,000 and then 8,000 times from receivers constructed in 20-call
+functions, and checks that the produced edits rewrite exactly the declaration and
+every call. The normalized planning ratio must stay below 2. This catches
+per-occurrence rescans of a file's occurrences, syntax tree or edit list, which
+make planning quadratic in file size while leaving small fixtures untouched.
 
 The preview workload grows from 1,000 to 4,000 edits. The normalized scaling
 ratio must stay below 2, and the large preview must remain below a generous

@@ -200,7 +200,8 @@ describe('exact rename plan application', () => {
         code: 'source_changed',
         total_edits: changeAt,
         files_affected: changeAt,
-        failed_files: changeAt ? ['b.ts'] : ['a.ts', 'b.ts'],
+        failed_files: changeAt ? ['b.ts'] : ['a.ts'],
+        unattempted_files: changeAt ? [] : ['b.ts'],
       });
       expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe(
         changeAt ? 'finish()' : 'close()',
@@ -233,32 +234,51 @@ describe('exact rename plan application', () => {
     }
   });
 
-  it.each([0, 1])('reports exactly landed edits when writing file %i fails', async (failAt) => {
-    const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()' });
-    const original = fs.writeFile.bind(fs);
-    let calls = 0;
-    vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
-      if (calls++ === failAt) {
-        await original(args[0], String(args[1]).slice(0, 3), args[2]);
-        throw new Error('disk full');
-      }
-      return original(...args);
-    });
-    const result = await executeRenamePlan(root, p, false);
-    expect(result).toMatchObject({
-      status: failAt ? 'partial' : 'error',
-      applied: failAt > 0,
-      application_status: failAt ? 'partial' : 'failed',
-      total_edits: failAt,
-      files_affected: failAt,
-    });
-    expect(result.failed_files).toEqual(failAt ? ['b.ts'] : ['a.ts', 'b.ts']);
-    expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe(
-      failAt ? 'finish()' : 'close()',
-    );
-    expect(await fs.readFile(path.join(root, 'b.ts'), 'utf8')).toBe('close()');
-    expect((await fs.readdir(root)).sort()).toEqual(['a.ts', 'b.ts']);
-  });
+  const writeFailures: {
+    failAt: number;
+    landed: string[];
+    failed: string[];
+    unattempted: string[];
+  }[] = [
+    { failAt: 0, landed: [], failed: ['a.ts'], unattempted: ['b.ts', 'c.ts'] },
+    { failAt: 1, landed: ['a.ts'], failed: ['b.ts'], unattempted: ['c.ts'] },
+    { failAt: 2, landed: ['a.ts', 'b.ts'], failed: ['c.ts'], unattempted: [] },
+  ];
+
+  it.each(writeFailures)(
+    'separates landed, failed and never-attempted files when writing file $failAt fails',
+    async ({ failAt, landed, failed, unattempted }) => {
+      const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()', 'c.ts': 'close()' });
+      const original = fs.writeFile.bind(fs);
+      let calls = 0;
+      vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+        if (calls++ === failAt) {
+          await original(args[0], String(args[1]).slice(0, 3), args[2]);
+          throw new Error('disk full');
+        }
+        return original(...args);
+      });
+      const result = await executeRenamePlan(root, p, false);
+      expect(result).toMatchObject({
+        status: failAt ? 'partial' : 'error',
+        applied: failAt > 0,
+        application_status: failAt ? 'partial' : 'failed',
+        code: 'write_failed',
+        total_edits: failAt,
+        files_affected: failAt,
+        failed_files: failed,
+        unattempted_files: unattempted,
+      });
+      expect(result.changes.map((change) => change.file_path)).toEqual(landed);
+      expect(result.error).toContain('failed_files and unattempted_files');
+      expect(result.error).toContain('not transactional');
+      for (const file of ['a.ts', 'b.ts', 'c.ts'])
+        expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(
+          landed.includes(file) ? 'finish()' : 'close()',
+        );
+      expect((await fs.readdir(root)).sort()).toEqual(['a.ts', 'b.ts', 'c.ts']);
+    },
+  );
 
   it.each(['a.ts', 'b.ts'])(
     'reports a race in %s after an earlier write as partial',
@@ -277,6 +297,7 @@ describe('exact rename plan application', () => {
         code: 'source_changed',
         total_edits: 1,
         failed_files: ['b.ts'],
+        unattempted_files: [],
       });
       expect(await fs.readFile(path.join(root, changedFile), 'utf8')).toBe('user edit');
       if (changedFile === 'a.ts')
@@ -322,6 +343,7 @@ describe('exact rename plan application', () => {
       code: 'source_changed',
       total_edits: 0,
       failed_files: ['a.ts'],
+      unattempted_files: [],
     });
     expect(await fs.readFile(destination, 'utf8')).toBe('user edit');
     expect((await fs.readdir(root)).sort()).toEqual(['a.ts', 'z.ts']);

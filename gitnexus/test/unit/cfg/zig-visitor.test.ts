@@ -9,11 +9,58 @@ import { computeControlDependence } from '../../../src/core/ingestion/cfg/contro
 import { isExitReachableFromAllBlocks } from '../../../src/core/ingestion/cfg/post-dominators.js';
 import { collectFunctionCfgs } from '../../../src/core/ingestion/cfg/collect.js';
 import {
+  basicBlockId,
   emitFileCfgs,
   emitFileReachingDefs,
   emitFileCdg,
 } from '../../../src/core/ingestion/cfg/emit.js';
+import { decodeReachingDefReason } from '../../../src/core/ingestion/cfg/reaching-def-reason-codec.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
+
+/**
+ * Backward dependence slice over the EMITTED graph (production REACHING_DEF + CDG
+ * emitters): from the block whose text contains `from`, follow each incoming
+ * REACHING_DEF edge to its defining block and each incoming CDG edge to its
+ * controller. Reports the parameters whose entry definitions the slice reaches and
+ * the controller blocks it visited.
+ */
+function backwardSlice(
+  cfg: FunctionCfg,
+  from: string,
+  followed: readonly string[] = ['REACHING_DEF', 'CDG'],
+) {
+  const graph = createKnowledgeGraph();
+  emitFileReachingDefs(graph, [cfg]);
+  emitFileCdg(graph, [cfg]);
+  const id = (index: number) =>
+    basicBlockId(cfg.filePath, cfg.functionStartLine, cfg.functionStartColumn, index);
+  const indexOf = new Map(cfg.blocks.map((b) => [id(b.index), b.index]));
+  const incoming = new Map<number, { type: string; source: number; reason: string }[]>();
+  for (const r of graph.iterRelationships()) {
+    if (!followed.includes(r.type)) continue;
+    const target = indexOf.get(r.targetId)!;
+    const list = incoming.get(target) ?? [];
+    list.push({ type: r.type, source: indexOf.get(r.sourceId)!, reason: r.reason });
+    incoming.set(target, list);
+  }
+  const visited = new Set<number>([block(cfg, from)]);
+  const queue = [...visited];
+  const entryDefs = new Set<string>();
+  const controllers = new Set<string>();
+  for (const current of queue) {
+    for (const edge of incoming.get(current) ?? []) {
+      if (edge.type === 'CDG') controllers.add(cfg.blocks[edge.source].text);
+      else if (edge.source === cfg.entryIndex)
+        entryDefs.add(decodeReachingDefReason(edge.reason).name);
+      if (!visited.has(edge.source)) {
+        visited.add(edge.source);
+        queue.push(edge.source);
+      }
+    }
+  }
+  return { entryDefs: [...entryDefs].sort(), controllers: [...controllers].sort() };
+}
 
 let grammar: ReturnType<typeof requireVendoredGrammar> | undefined;
 try {
@@ -192,6 +239,263 @@ describe.skipIf(!grammar)('Zig provider CFG / shared PDG pipeline', () => {
         .map((s) => s.callee)
         .sort(),
     ).toEqual(['left', 'other', 'right', 'small', 'zero']);
+  });
+
+  it.each([
+    [
+      'if expression',
+      'return x',
+      ['flag', 'input'],
+      `fn f(flag: bool, input: i32) i32 {
+      const x = if (flag) input else 0;
+      return x;
+    }`,
+    ],
+    [
+      'if payload',
+      'return x',
+      ['opt', 'other'],
+      `fn f(opt: ?i32, other: i32) i32 {
+      const x = if (opt) |v| v else other;
+      return x;
+    }`,
+    ],
+    [
+      'switch expression',
+      'return x',
+      ['a', 'b', 'kind'],
+      `fn f(kind: i32, a: i32, b: i32) i32 {
+      const x = switch (kind) { 0 => a, else => b, };
+      return x;
+    }`,
+    ],
+    [
+      'switch payload',
+      'return x',
+      ['u'],
+      `fn f(u: Union) i32 {
+      const x = switch (u) { .one => |v| v, else => 0, };
+      return x;
+    }`,
+    ],
+    [
+      'orelse',
+      'return x',
+      ['fallback', 'maybe'],
+      `fn f(maybe: ?i32, fallback: i32) i32 {
+      const x = maybe orelse fallback;
+      return x;
+    }`,
+    ],
+    [
+      'catch with payload',
+      'return x',
+      ['input', 'other'],
+      `fn f(input: i32, other: i32) i32 {
+      const x = read(input) catch |err| handle(err, other);
+      return x;
+    }`,
+    ],
+    [
+      'try',
+      'return x',
+      ['input'],
+      `fn f(input: i32) !i32 {
+      const x = try read(input);
+      return x;
+    }`,
+    ],
+    [
+      'labeled block',
+      'return x',
+      ['flag', 'input'],
+      `fn f(flag: bool, input: i32) i32 {
+      const x = blk: { if (flag) break :blk input; break :blk 0; };
+      return x;
+    }`,
+    ],
+    [
+      'compound assignment',
+      'return x',
+      ['flag', 'input'],
+      `fn f(flag: bool, input: i32) i32 {
+      var x: i32 = 0;
+      x += if (flag) input else 1;
+      return x;
+    }`,
+    ],
+    [
+      'returned value',
+      'return if',
+      ['flag', 'input'],
+      `fn f(flag: bool, input: i32) i32 {
+      return if (flag) input else 0;
+    }`,
+    ],
+    [
+      'call argument',
+      'return x',
+      ['flag', 'input'],
+      `fn f(flag: bool, input: i32) i32 {
+      const x = pick(if (flag) input else 0);
+      return x;
+    }`,
+    ],
+    [
+      'branch condition',
+      'return x',
+      ['a', 'b', 'input'],
+      `fn f(a: bool, b: bool, input: i32) i32 {
+      var x: i32 = 0;
+      if (a and b) { x = input; }
+      return x;
+    }`,
+    ],
+    [
+      'else-if chain',
+      'return x',
+      ['a', 'b', 'p', 'q', 'r'],
+      `fn f(a: bool, b: bool, p: i32, q: i32, r: i32) i32 {
+      const x = if (a) p else if (b) q else r;
+      return x;
+    }`,
+    ],
+    [
+      'loop break value',
+      'return x',
+      ['limit', 'seed'],
+      `fn f(limit: i32, seed: i32) i32 {
+      const x = while (cond(limit)) { break seed; } else 0;
+      return x;
+    }`,
+    ],
+    [
+      'loop else value',
+      'return x',
+      ['fallback'],
+      `fn f(limit: i32, fallback: i32) i32 {
+      const x = while (cond(limit)) { work(); } else fallback;
+      return x;
+    }`,
+    ],
+    [
+      'labeled switch continue',
+      'return x',
+      ['first', 'next'],
+      `fn f(first: i32, next: i32) i32 {
+      const x = dispatch: switch (first) { 0 => continue :dispatch next, else => |v| break :dispatch v, };
+      return x;
+    }`,
+    ],
+    [
+      'store target',
+      'obj.field =',
+      ['flag', 'input', 'obj'],
+      `fn f(flag: bool, input: i32, obj: Object) Object {
+      obj.field = if (flag) input else 0;
+      return obj;
+    }`,
+    ],
+  ])(
+    'carries %s results into the destination definition (backward slice)',
+    (_name, from, expected, source) => {
+      const cfg = harness().cfgOf(source);
+      const slice = backwardSlice(cfg, from);
+      expect(computeReachingDefs(cfg).status).toBe('computed');
+      expect(slice.entryDefs).toEqual(expect.arrayContaining(expected));
+    },
+  );
+
+  it.each([
+    ['if', 'use(v)', ['opt'], 'fn f(opt: ?i32) void { if (opt) |v| { use(v); } }'],
+    [
+      'else error',
+      'fail(err)',
+      ['result'],
+      'fn f(result: anyerror!i32) void { if (result) |v| { use(v); } else |err| { fail(err); } }',
+    ],
+    ['for', 'use(item)', ['xs'], 'fn f(xs: []i32) void { for (xs) |item| { use(item); } }'],
+    [
+      'while',
+      'use(v)',
+      ['cursor'],
+      'fn f(cursor: Cursor) void { while (cursor.next()) |v| { use(v); } }',
+    ],
+    [
+      'switch',
+      'use(v)',
+      ['u'],
+      'fn f(u: Union) void { switch (u) { .one => |v| use(v), else => {}, } }',
+    ],
+    [
+      'catch',
+      'handle(err)',
+      ['input'],
+      'fn f(input: i32) void { _ = read(input) catch |err| handle(err); }',
+    ],
+  ])('binds a %s capture to the value it unwraps', (_name, from, expected, source) => {
+    // Data dependence only: the capture's arm is also control-dependent on the operand.
+    expect(backwardSlice(harness().cfgOf(source), from, ['REACHING_DEF']).entryDefs).toEqual(
+      expect.arrayContaining(expected),
+    );
+  });
+
+  it('keeps a prior definition live on the arm that leaves the destination untouched', () => {
+    const cfg = harness().cfgOf(`fn f(flag: bool, input: i32) i32 {
+      var x: i32 = 0;
+      x = if (flag) input else x;
+      return x;
+    }`);
+    const rd = computeReachingDefs(cfg);
+    const defs = rd.facts
+      .filter(
+        (f) => f.bindingIdx === bindingIdx(cfg, 'x') && f.use.blockIndex === block(cfg, 'return x'),
+      )
+      .map((f) => cfg.blocks[f.def.blockIndex].text);
+    expect(new Set(defs)).toEqual(new Set(['input', 'x']));
+    const alternative = cfg.blocks.find((b) => b.text === 'x')!;
+    expect(
+      rd.facts.some(
+        (f) =>
+          f.bindingIdx === bindingIdx(cfg, 'x') &&
+          f.use.blockIndex === alternative.index &&
+          cfg.blocks[f.def.blockIndex].text === 'var x: i32 = 0;',
+      ),
+    ).toBe(true);
+  });
+
+  it('carries a try value by data dependence, not only through its error branch', () => {
+    const cfg = harness().cfgOf(`fn f(input: i32) !i32 {
+      const x = try read(input);
+      return x;
+    }`);
+    expect(backwardSlice(cfg, 'return x', ['REACHING_DEF']).entryDefs).toEqual(['input']);
+  });
+
+  it('puts the controlling condition into the backward slice of a value-position if', () => {
+    const cfg = harness().cfgOf(`fn f(flag: bool, input: i32) i32 {
+      const x = if (flag) input else 0;
+      return x;
+    }`);
+    expect(backwardSlice(cfg, 'return x').controllers).toContain('flag');
+  });
+
+  it('records each arm call once and routes its result to the destination', () => {
+    const cfg = harness().cfgOf(`fn f(flag: bool, n: i32) i32 {
+      const picked = if (flag) left(n) else try right(n);
+      return picked;
+    }`);
+    const calls = allSites(cfg).filter((s) => s.kind === 'call');
+    expect(calls.map((s) => s.callee).sort()).toEqual(['left', 'right']);
+    for (const call of calls) expect(call.resultDefs).toEqual([bindingIdx(cfg, 'picked')]);
+  });
+
+  it('keeps value flow in nested control arms', () => {
+    const cfg = harness().cfgOf(`fn f(a: bool, b: bool, p: i32, q: i32, r: i32) i32 {
+      const x = if (a) (if (b) p else q) else r;
+      return x;
+    }`);
+    expect(backwardSlice(cfg, 'return x').entryDefs).toEqual(['a', 'b', 'p', 'q', 'r']);
   });
 
   it('resolves labeled block values and labeled switch continues', () => {

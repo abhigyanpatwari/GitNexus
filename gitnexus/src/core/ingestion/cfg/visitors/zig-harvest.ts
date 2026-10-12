@@ -3,14 +3,53 @@
  * ScopeTreeHarvester owns resolution; only grammar decisions live here. Payloads
  * belong to their selected arm, `_` is discarded, and containers/functions are
  * opaque. Member/index stores read the receiver, never kill its scalar binding.
+ *
+ * A control-flow-valued expression is evaluated in its own blocks, so its result
+ * must be carried to whatever consumes it. A {@link ZigResultSink} names the
+ * bindings every normal-result leaf defines: the assignment's own identifier
+ * targets when the expression is the whole value, otherwise a provider-owned
+ * temporary (`$resultN`) that the consuming statement reads. Evaluation facts and
+ * call sites are harvested once, at the leaf; a payload reads the uses of the
+ * expression it captures from.
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
 import { ScopeTreeHarvester, type Scope, type FactAccumulator } from './scope-tree-harvest.js';
 import { CallSiteFactAccumulator, finalizeChain } from './call-site-harvest.js';
-import { ZIG_OPAQUE, zigAssignment, zigChildren, zigConditional, zigPayload } from './zig-ast.js';
+import {
+  ZIG_OPAQUE,
+  zigAssignment,
+  zigChildren,
+  zigConditional,
+  zigJumpValue,
+  zigPayload,
+} from './zig-ast.js';
+
+/** Bindings every normal-result leaf of a control-flow-valued expression defines. */
+export interface ZigResultSink {
+  readonly defs: readonly number[];
+  /** Bindings the leaf also reads first (a compound assignment's own target). */
+  readonly uses: readonly number[];
+}
+
+/** Control-flow child expression id -> the binding its result is carried in. */
+export type ZigResultCarriers = ReadonlyMap<number, number>;
+
+const NO_CARRIERS: ZigResultCarriers = new Map();
+
+/** The call a value is exactly, seen through parentheses and `try`. */
+function resultCall(value: SyntaxNode): SyntaxNode | undefined {
+  let call: SyntaxNode | undefined = value;
+  while (call && (call.type === 'parenthesized_expression' || call.type === 'try_expression'))
+    call = call.namedChildren[0];
+  return call && (call.type === 'call_expression' || call.type === 'builtin_function')
+    ? call
+    : undefined;
+}
 
 export class ZigHarvester extends ScopeTreeHarvester {
+  private resultTemps = 0;
+
   constructor(fn: SyntaxNode) {
     super(fn);
     const params = fn.namedChildren.find((c) => c.type === 'parameters');
@@ -102,16 +141,78 @@ export class ZigHarvester extends ScopeTreeHarvester {
     };
   }
 
-  payload(node: SyntaxNode): StatementFacts {
+  /**
+   * A capture's definitions. The captured value comes from `subjects` (the
+   * condition, switch operand or error source it unwraps) and `operand` (a
+   * carrier bound to that operand), so the capture depends on what it unwraps.
+   * Subject calls are not re-recorded: they were harvested where evaluated.
+   */
+  payload(
+    node: SyntaxNode,
+    subjects: readonly SyntaxNode[] = [],
+    operand: readonly number[] = [],
+  ): StatementFacts {
     const acc = new CallSiteFactAccumulator(node.startPosition.row + 1);
+    for (const subject of subjects)
+      for (const use of this.facts(subject).uses) acc.addUseWithoutOccurrence(use);
+    for (const use of operand) acc.addUseWithoutOccurrence(use);
     for (const name of node.namedChildren) if (name.text !== '_') this.def(name, acc);
     return acc.finish();
   }
 
-  facts(node: SyntaxNode, excluded: ReadonlySet<number> = new Set()): StatementFacts {
+  /**
+   * Facts for `node`. `carriers` replaces control-flow children that were
+   * evaluated in their own blocks with a read of the binding carrying their
+   * result. `sink` makes `node` a result leaf: it additionally defines the sink's
+   * bindings, and a call that is exactly its value records them as its result.
+   */
+  facts(
+    node: SyntaxNode,
+    carriers: ZigResultCarriers = NO_CARRIERS,
+    sink?: ZigResultSink,
+  ): StatementFacts {
     const acc = new CallSiteFactAccumulator(node.startPosition.row + 1);
-    this.walk(node, acc, excluded);
+    if (sink) {
+      const value = node.type === 'break_expression' ? zigJumpValue(node) : node;
+      const call = value && resultCall(value);
+      if (call && sink.defs.length) this.resultDefTargets.set(call.id, [...sink.defs]);
+    }
+    this.walk(node, acc, carriers);
+    if (sink) {
+      for (const use of sink.uses) acc.addUse(use);
+      for (const def of sink.defs) acc.addDef(def);
+    }
     return acc.finish();
+  }
+
+  /**
+   * The destination of an assignment/declaration whose targets are all plain
+   * identifiers, or undefined for a member/index/dereference store (whose receiver
+   * reads belong to the consuming statement, not to each result leaf).
+   */
+  assignmentSink(node: SyntaxNode): ZigResultSink | undefined {
+    const { targets, operator } = zigAssignment(node);
+    if (!targets.length || targets.some((t) => t.type !== 'identifier')) return undefined;
+    const acc = new CallSiteFactAccumulator(node.startPosition.row + 1);
+    for (const target of targets) this.target(target, acc, operator !== '=');
+    const { defs, uses } = acc.finish();
+    return { defs, uses };
+  }
+
+  /** A provider-owned binding carrying the result of one control-flow-valued expression. */
+  resultTemp(node: SyntaxNode): ZigResultSink {
+    this.bindings.push({
+      name: `$result${this.resultTemps++}`,
+      declLine: node.startPosition.row + 1,
+      declColumn: node.startPosition.column,
+      kind: 'let',
+    });
+    return { defs: [this.bindings.length - 1], uses: [] };
+  }
+
+  /** Facts-only read of carriers, for a decision that consumes an operand's result. */
+  consume(node: SyntaxNode, carriers: readonly number[]): StatementFacts {
+    return { line: node.startPosition.row + 1, defs: [], uses: [...carriers] };
   }
 
   private target(node: SyntaxNode, acc: FactAccumulator, compound: boolean): void {
@@ -120,11 +221,16 @@ export class ZigHarvester extends ScopeTreeHarvester {
         if (compound) this.use(node, acc);
         this.def(node, acc);
       }
-    } else this.walk(node, acc, new Set());
+    } else this.walk(node, acc, NO_CARRIERS);
   }
 
-  private walk(node: SyntaxNode, acc: FactAccumulator, excluded: ReadonlySet<number>): void {
-    if (excluded.has(node.id) || ZIG_OPAQUE.has(node.type)) return;
+  private walk(node: SyntaxNode, acc: FactAccumulator, carriers: ZigResultCarriers): void {
+    const carrier = carriers.get(node.id);
+    if (carrier !== undefined) {
+      acc.addUse(carrier);
+      return;
+    }
+    if (ZIG_OPAQUE.has(node.type)) return;
     switch (node.type) {
       case 'identifier':
         if (node.text !== '_') this.use(node, acc);
@@ -144,22 +250,18 @@ export class ZigHarvester extends ScopeTreeHarvester {
         const defs = acc.defSnapshot();
         for (const target of targets) this.target(target, acc, operator !== '=');
         if (value) {
-          let call = value;
-          while (call.type === 'parenthesized_expression' || call.type === 'try_expression')
-            call = call.namedChildren[0];
-          if (call.type === 'call_expression' || call.type === 'builtin_function') {
-            this.resultDefTargets.set(call.id, acc.defsSince(defs));
-          }
-          this.walk(value, acc, excluded);
+          const call = resultCall(value);
+          if (call) this.resultDefTargets.set(call.id, acc.defsSince(defs));
+          this.walk(value, acc, carriers);
         }
         return;
       }
       case 'field_expression': {
-        this.chain(node, acc, false, excluded);
+        this.chain(node, acc, false, carriers);
         return;
       }
       case 'field_initializer':
-        for (const child of zigChildren(node).slice(1)) this.walk(child, acc, excluded);
+        for (const child of zigChildren(node).slice(1)) this.walk(child, acc, carriers);
         return;
       case 'call_expression':
       case 'builtin_function': {
@@ -185,16 +287,16 @@ export class ZigHarvester extends ScopeTreeHarvester {
           if (fn.type === 'identifier' && fn.text !== '_')
             acc.addUseWithoutOccurrence(this.resolve(fn));
         } else if (fn) {
-          const chain = this.chain(fn, acc, true, excluded);
+          const chain = this.chain(fn, acc, true, carriers);
           if (chain.path) acc.setSiteCallee(site, chain.path);
           if (chain.rootIdx !== undefined) acc.setSiteReceiver(site, chain.rootIdx);
         }
-        for (const [i, arg] of (args && !excluded.has(args.id)
+        for (const [i, arg] of (args && !carriers.has(args.id)
           ? zigChildren(args)
           : []
         ).entries()) {
           acc.setFrameArg(i);
-          this.walk(arg, acc, excluded);
+          this.walk(arg, acc, carriers);
         }
         acc.popFrame();
         return;
@@ -202,26 +304,26 @@ export class ZigHarvester extends ScopeTreeHarvester {
       case 'binary_expression': {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
-        if (left) this.walk(left, acc, excluded);
+        if (left) this.walk(left, acc, carriers);
         if (right) {
           const op = node.childForFieldName('operator')?.text;
           if (op === 'and' || op === 'or' || op === 'orelse')
-            this.conditional(() => this.walk(right, acc, excluded));
-          else this.walk(right, acc, excluded);
+            this.conditional(() => this.walk(right, acc, carriers));
+          else this.walk(right, acc, carriers);
         }
         return;
       }
     }
     const type = node.childForFieldName('type');
     for (const child of zigChildren(node))
-      if (child.id !== type?.id) this.walk(child, acc, excluded);
+      if (child.id !== type?.id) this.walk(child, acc, carriers);
   }
 
   private chain(
     node: SyntaxNode,
     acc: FactAccumulator,
     skipFinal: boolean,
-    excluded: ReadonlySet<number>,
+    carriers: ZigResultCarriers,
   ) {
     let root = node;
     const accesses: string[] = [];
@@ -232,10 +334,14 @@ export class ZigHarvester extends ScopeTreeHarvester {
       accesses.unshift(member?.text ?? '');
       root = object;
     }
-    if (excluded.has(root.id)) return {};
+    const carrier = carriers.get(root.id);
+    if (carrier !== undefined) {
+      acc.addUse(carrier);
+      return {};
+    }
     return finalizeChain(acc, root, accesses, skipFinal, (t) => t === 'identifier', {
       resolve: (n) => this.resolve(n),
-      walkRoot: (n) => this.walk(n, acc, excluded),
+      walkRoot: (n) => this.walk(n, acc, carriers),
     });
   }
 }

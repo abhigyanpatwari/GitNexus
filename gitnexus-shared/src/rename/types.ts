@@ -70,7 +70,16 @@ export interface RenameResult {
   error?: string;
   code?: string;
   candidates?: string[];
+  /**
+   * Apply failures only: the single file whose validation or write failed. Files
+   * that already landed are reported in `changes`.
+   */
   failed_files?: string[];
+  /**
+   * Apply failures only: later files in the plan that were never touched by this
+   * apply. Empty when the failing file was the last one.
+   */
+  unattempted_files?: string[];
 }
 
 export class RenameFailure extends Error {

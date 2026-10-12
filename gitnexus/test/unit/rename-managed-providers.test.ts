@@ -521,3 +521,168 @@ describe('managed provider rename through the production parsing pipeline', () =
     expect(provider!.validateName!(name)).toMatchObject({ code: 'invalid_name' });
   });
 });
+
+async function expectLabelRefusal(
+  file: string,
+  content: string,
+  name: string,
+  newName: string,
+  code = 'ambiguous_reference',
+) {
+  const { root, nodes, symbol } = await fixture({ [file]: content }, name, 'Property');
+  for (const dry_run of [true, false]) {
+    const result = await renameSymbol(root, symbol, { new_name: newName, dry_run }, nodes);
+    expect(result, `${name} -> ${newName} dry_run=${dry_run}`).toMatchObject({
+      status: 'error',
+      code,
+      total_edits: 0,
+      applied: false,
+    });
+    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(content);
+  }
+}
+
+describe('named argument labels spelled like a renamed property', () => {
+  const dataClass = 'data class Pair2(val first: Int, val second: Int)\n';
+  it.each([
+    ['a primary-constructor property', dataClass + 'fun make() = Pair2(first = 1, second = 2)\n'],
+    [
+      'a data class copy() parameter',
+      dataClass + 'fun move(pair: Pair2): Pair2 = pair.copy(first = 3)\n',
+    ],
+    [
+      'a supertype initializer of the owner',
+      'open class Base(val first: Int)\nclass Child : Base(first = 1)\n',
+    ],
+    ['an enum entry argument', 'enum class Level(val first: Int) { LOW(first = 1) }\n'],
+    [
+      'a typealias of the owner',
+      dataClass + 'typealias Alias = Pair2\nfun make() = Alias(first = 1)\n',
+    ],
+    ['an unresolved callee', dataClass + 'fun make(factory: Any) = factory.build(first = 1)\n'],
+  ])(
+    'refuses a Kotlin label that may bind %s',
+    async (_description, content) => {
+      await expectLabelRefusal('model.kt', content, 'first', 'head');
+    },
+    60_000,
+  );
+
+  it('refuses a Kotlin destination label of a constructor that would gain the property', async () => {
+    await expectLabelRefusal(
+      'model.kt',
+      'class Pair2(val first: Int) {\n    constructor(head: Int, extra: Int) : this(head)\n}\nfun make() = Pair2(head = 1, extra = 2)\n',
+      'first',
+      'head',
+    );
+  }, 60_000);
+
+  it('renames a Kotlin property beside labels of other functions and types', async () => {
+    const calls =
+      'class Unrelated(val first: Int)\nfun configure(first: Int) {}\nopen class Base(val first: Int)\n' +
+      'class Child(first2: Int) : Base(first2)\n' +
+      'fun make() {\n    Unrelated(first = 1)\n    configure(first = 2)\n    Child(first2 = 3)\n}\n';
+    await expectRename(
+      { 'model.kt': dataClass + calls },
+      { 'model.kt': dataClass.replace('first', 'head') + calls },
+      'first',
+      'Property',
+      'head',
+    );
+  }, 60_000);
+
+  const struct = 'struct Point {\n    var x: Int\n    var y: Int\n}\n';
+  it.each([
+    ['the memberwise initializer', struct + 'let origin = Point(x: 0, y: 0)\n'],
+    [
+      'an explicit .init call of the memberwise initializer',
+      struct + 'let origin = Point.init(x: 0, y: 0)\n',
+    ],
+    [
+      'a memberwise initializer beside an extension initializer',
+      struct + 'extension Point {\n    init(other: Int) { self.init(x: other, y: other) }\n}\n',
+    ],
+    [
+      'a typealias of the owner',
+      struct + 'typealias Spot = Point\nlet origin = Spot(x: 0, y: 0)\n',
+    ],
+  ])(
+    'refuses a Swift label that may bind %s',
+    async (_description, content) => {
+      await expectLabelRefusal('model.swift', content, 'x', 'px');
+    },
+    60_000,
+  );
+
+  it('renames a Swift property whose type declares its own initializer', async () => {
+    const custom = (name: string) =>
+      `struct Custom {\n    var ${name}: Int\n    init(x: Int) { self.${name} = x }\n}\n`;
+    const calls = 'func configure(x: Int) {}\nlet custom = Custom(x: 1)\nconfigure(x: 2)\n';
+    await expectRename(
+      { 'model.swift': custom('x') + struct + calls },
+      { 'model.swift': custom('px') + struct + calls },
+      'x',
+      'Property',
+      'px',
+    );
+  }, 60_000);
+
+  it('renames a Swift class property beside its labeled initializer', async () => {
+    const box = (name: string) =>
+      `class Box {\n    var ${name}: Int\n    init(x: Int) { self.${name} = x }\n}\nlet box = Box(x: 1)\n`;
+    await expectRename(
+      { 'model.swift': box('x') },
+      { 'model.swift': box('px') },
+      'x',
+      'Property',
+      'px',
+    );
+  }, 60_000);
+
+  it('binds a C# named argument to the constructor parameter, not the property', async () => {
+    const counter = (name: string) =>
+      `public class Counter {\n    public int ${name} { get; set; }\n    public Counter(int Count) { this.${name} = Count; }\n}\n` +
+      'public class Maker { public Counter Make() { return new Counter(Count: 1); } }\n';
+    await expectRename(
+      { 'model.cs': counter('Count') },
+      { 'model.cs': counter('Total') },
+      'Count',
+      'Property',
+      'Total',
+    );
+  }, 60_000);
+
+  it('refuses a C# positional record whose explicit property shares the parameter name', async () => {
+    await expectLabelRefusal(
+      'model.cs',
+      'public record Pair(int First) { public int First { get; init; } = First; }\n' +
+        'public class Maker { public Pair Make() { return new Pair(First: 1); } }\n',
+      'First',
+      'Head',
+      'incomplete_semantics',
+    );
+  }, 60_000);
+
+  it('refuses a Dart field whose initializing formal parameter a named argument binds', async () => {
+    await expectLabelRefusal(
+      'model.dart',
+      'class Point {\n  int x;\n  Point({required this.x});\n}\nvoid make() { Point(x: 1); }\n',
+      'x',
+      'px',
+      'name_collision',
+    );
+  }, 60_000);
+
+  it('renames a Dart field beside a named argument of another function', async () => {
+    const point = (name: string) => `class Point {\n  int ${name} = 0;\n}\n`;
+    const use = (name: string) =>
+      `void configure({int x = 0}) {}\nvoid make(Point p) { configure(x: 1); p.${name} = 2; }\n`;
+    await expectRename(
+      { 'model.dart': point('x') + use('x') },
+      { 'model.dart': point('px') + use('px') },
+      'x',
+      'Property',
+      'px',
+    );
+  }, 60_000);
+});

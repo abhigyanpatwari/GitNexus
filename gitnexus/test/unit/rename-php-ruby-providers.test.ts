@@ -6,6 +6,7 @@ import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { renameSymbol } from '../../src/mcp/local/rename/rename-plan.js';
 import { SCOPE_RESOLVERS } from '../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { phpRenameProvider } from '../../src/core/ingestion/languages/php/rename.js';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -570,4 +571,76 @@ describe('PHP and Ruby rename through the production parsing pipeline', () => {
     },
     60000,
   );
+});
+
+describe('PHP replacement identifier validation', () => {
+  const validateName = phpRenameProvider.validateName;
+  if (!validateName) throw new Error('Missing PHP identifier validator');
+
+  // PHP labels accept every non-ASCII code point, so the guard targets only names that
+  // render invisibly or reorder neighbouring source. Names are written with escapes so
+  // this file carries no hidden characters itself.
+  it.each([
+    ['a right-to-left override', 'user\u202Eadmin'],
+    ['a left-to-right embedding', 'user\u202Aadmin'],
+    ['a bidirectional isolate', 'user\u2066admin'],
+    ['a left-to-right mark', 'user\u200Eadmin'],
+    ['a zero-width space', 'a\u200Bb'],
+    ['a zero-width non-joiner', 'a\u200Cb'],
+    ['a zero-width joiner', 'a\u200Db'],
+    ['a word joiner', 'a\u2060b'],
+    ['a leading byte order mark', '\uFEFFname'],
+    ['a trailing byte order mark', 'name\uFEFF'],
+    ['a C1 control character', 'a\u0085b'],
+    ['a no-break space', 'a\u00A0b'],
+    ['a line separator', 'a\u2028b'],
+    ['a paragraph separator', 'a\u2029b'],
+    ['a lone surrogate', 'a\uD800'],
+    ['a private-use code point', 'a\uE000b'],
+    ['a noncharacter', 'a\uFFFEb'],
+  ])('rejects %s in a replacement name', (_label, name) => {
+    expect(validateName(name)).toMatchObject({ code: 'invalid_name' });
+  });
+
+  it.each([
+    ['a Latin letter with a diacritic', '\u00E9'],
+    ['CJK letters', '\u65E5\u672C\u8A9E'],
+    ['a leading underscore with a digit', '_x1'],
+    ['a decomposed accent', 'e\u0301'],
+    ['an astral letter', '\u{1D4B3}name'],
+    ['mixed ASCII and non-ASCII letters', 'caf\u00E9_\u540D\u524D2'],
+  ])('accepts %s in a replacement name', (_label, name) => {
+    expect(validateName(name)).toBeUndefined();
+  });
+
+  it.each([
+    ['a reserved word', 'class'],
+    ['a reserved word in another case', 'CLASS'],
+    ['a leading digit', '1name'],
+    ['an empty name', ''],
+    ['a hyphen', 'a-b'],
+    ['a leading dollar sign', '$name'],
+  ])('keeps rejecting %s in a replacement name', (_label, name) => {
+    expect(validateName(name)).toMatchObject({ code: 'invalid_name' });
+  });
+
+  it('refuses a bidirectional override before preview or apply', async () => {
+    const content = '<?php\nfunction target() {}\ntarget();\n';
+    const { root, nodes, symbol } = await fixture({ 'model.php': content }, 'target', 'Function');
+    for (const dry_run of [true, false]) {
+      const result = await renameSymbol(
+        root,
+        symbol,
+        { new_name: 'safe\u202Eevil', dry_run },
+        nodes,
+      );
+      expect(result).toMatchObject({
+        status: 'error',
+        code: 'invalid_name',
+        applied: false,
+        total_edits: 0,
+      });
+      expect(await fs.readFile(path.join(root, 'model.php'), 'utf8')).toBe(content);
+    }
+  }, 60000);
 });

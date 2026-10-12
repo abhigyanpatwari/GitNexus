@@ -605,3 +605,202 @@ describe('native provider rename through the production parsing pipeline', () =>
     60000,
   );
 });
+
+async function expectBoundaryRefusal(
+  files: Record<string, string>,
+  name: string,
+  kind: string,
+  newName: string,
+  targetFile: string,
+) {
+  const { root, nodes, symbol } = await fixture(files, name, kind, targetFile);
+  for (const dry_run of [true, false]) {
+    const result = await renameSymbol(root, symbol, { new_name: newName, dry_run }, nodes);
+    expect(result, `${name} -> ${newName} dry_run=${dry_run}`).toMatchObject({
+      status: 'error',
+      code: 'unsupported_boundary',
+      planning_status: 'unsupported',
+      applied: false,
+      total_edits: 0,
+    });
+    for (const [file, content] of Object.entries(files))
+      expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(content);
+  }
+}
+
+describe('names shared with indexed sources of an interoperating language', () => {
+  const header = { 'api.h': 'int target(int value);\n' };
+  const definition = '#include "api.h"\nint target(int value) { return value; }\n';
+  it.each([
+    [
+      'Rust declares it in an extern block',
+      'ffi.rs',
+      'extern "C" {\n    fn target(value: i32) -> i32;\n}\npub fn call() -> i32 { unsafe { target(1) } }\n',
+    ],
+    [
+      'Go calls it through cgo',
+      'main.go',
+      'package main\n\n/*\n#include "api.h"\n*/\nimport "C"\n\nfunc call() int { return int(C.target(1)) }\n',
+    ],
+    [
+      'Zig calls it through @cImport',
+      'main.zig',
+      'const c = @cImport({\n    @cInclude("api.h");\n});\npub fn call() c_int { return c.target(1); }\n',
+    ],
+    [
+      'Swift calls it through a bridging header',
+      'App.swift',
+      'func call() -> Int32 { return target(1) }\n',
+    ],
+  ])(
+    'refuses a C function that %s',
+    async (_description, consumer, content) => {
+      await expectBoundaryRefusal(
+        { ...header, 'api.c': definition, [consumer]: content },
+        'target',
+        'Function',
+        'renamed',
+        'api.c',
+      );
+    },
+    60_000,
+  );
+
+  it('renames a C function beside consumer sources that only mention it in comments and strings', async () => {
+    const consumers = {
+      'other.rs': '// target renamed\npub fn note() -> &\'static str { "target renamed" }\n',
+      'other.go':
+        'package main\n\n// target renamed\nfunc note() string { return "target renamed" }\n',
+      'other.zig': '// target renamed\npub fn note() []const u8 { return "target renamed"; }\n',
+      'Other.swift': '// target renamed\nfunc note() -> String { return "target renamed" }\n',
+    };
+    await expectRename(
+      { ...header, 'api.c': definition, ...consumers },
+      {
+        'api.h': 'int renamed(int value);\n',
+        'api.c': definition.replaceAll('target', 'renamed'),
+        ...consumers,
+      },
+      'target',
+      'Function',
+      'renamed',
+      'api.c',
+    );
+  }, 60_000);
+
+  it('refuses a C function when a Swift source spells the name as an unrelated local', async () => {
+    // The inventory compares names, as it does for C++ and Objective-C sources.
+    await expectBoundaryRefusal(
+      {
+        ...header,
+        'api.c': definition,
+        'App.swift': 'func call() -> Int { let target = 1; return target }\n',
+      },
+      'target',
+      'Function',
+      'renamed',
+      'api.c',
+    );
+  }, 60_000);
+
+  const lib = 'int use(void) { return target(1); }\n';
+  it.each([
+    ['Rust', 'lib.rs', '#[no_mangle]\npub extern "C" fn target(value: i32) -> i32 { value }\n'],
+    ['Zig', 'lib.zig', 'export fn target(value: c_int) c_int { return value; }\n'],
+    [
+      'Go',
+      'lib.go',
+      'package main\n\nimport "C"\n\n//export target\nfunc target(value C.int) C.int { return value }\n\nfunc main() {}\n',
+    ],
+  ])(
+    'refuses a %s function exported to an indexed C caller',
+    async (_language, file, content) => {
+      await expectBoundaryRefusal(
+        { [file]: content, 'caller.c': `int target(int value);\n${lib}` },
+        'target',
+        'Function',
+        'renamed',
+        file,
+      );
+    },
+    60_000,
+  );
+
+  it('refuses an Objective-C selector that an indexed Swift caller names', async () => {
+    await expectBoundaryRefusal(
+      {
+        'Foo.h': '@interface Foo\n- (int)target;\n@end\n',
+        'Foo.m': '#import "Foo.h"\n@implementation Foo\n- (int)target { return 1; }\n@end\n',
+        'App.swift': 'func run(foo: Foo) -> Int32 { return foo.target() }\n',
+      },
+      'target',
+      'Method',
+      'renamed',
+      'Foo.h',
+    );
+  }, 60_000);
+
+  it.each([
+    [
+      'its first piece as the base name',
+      'fetch:with:',
+      'load:using:',
+      '- (int)fetch:(int)key with:(int)value;',
+      'foo.fetch(1, with: 2)',
+    ],
+    [
+      'the base name before a With clause',
+      'fetchWithKey:',
+      'loadUsingKey:',
+      '- (int)fetchWithKey:(int)key;',
+      'foo.fetch(key: 1)',
+    ],
+  ])(
+    'refuses a multipart Objective-C selector that an indexed Swift caller names by %s',
+    async (_description, selector, newName, declaration, call) => {
+      await expectBoundaryRefusal(
+        {
+          'Foo.h': `@interface Foo\n${declaration}\n@end\n`,
+          'App.swift': `func run(foo: Foo) -> Int32 { return ${call} }\n`,
+        },
+        selector,
+        'Method',
+        newName,
+        'Foo.h',
+      );
+    },
+    60_000,
+  );
+
+  it('renames an Objective-C selector beside Swift sources that only mention it in comments and strings', async () => {
+    const swift = '// target renamed\nlet note = "target renamed"\n';
+    const declaration = (name: string) => `@interface Foo\n- (int)${name};\n@end\n`;
+    const implementation = (name: string) =>
+      `#import "Foo.h"\n@implementation Foo\n- (int)${name} { return 1; }\n@end\n`;
+    await expectRename(
+      { 'Foo.h': declaration('target'), 'Foo.m': implementation('target'), 'Other.swift': swift },
+      {
+        'Foo.h': declaration('renamed'),
+        'Foo.m': implementation('renamed'),
+        'Other.swift': swift,
+      },
+      'target',
+      'Method',
+      'renamed',
+      'Foo.h',
+    );
+  }, 60_000);
+
+  it('refuses a Swift method that an indexed Objective-C caller names', async () => {
+    await expectBoundaryRefusal(
+      {
+        'Greeter.swift': '@objc class Greeter {\n    @objc func target() {}\n}\n',
+        'caller.m': '#import "Greeter-Swift.h"\nvoid use(Greeter *greeter) { [greeter target]; }\n',
+      },
+      'target',
+      'Function',
+      'renamed',
+      'Greeter.swift',
+    );
+  }, 60_000);
+});

@@ -22,6 +22,7 @@ export interface ToolDefinition {
         default?: unknown;
         items?: { type: string };
         enum?: string[];
+        const?: boolean;
         minimum?: number;
         maximum?: number;
         minLength?: number;
@@ -32,7 +33,7 @@ export interface ToolDefinition {
   };
 }
 
-const READ_ONLY_TOOL_ANNOTATIONS: ToolAnnotations = {
+export const READ_ONLY_TOOL_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
   idempotentHint: true,
@@ -97,7 +98,7 @@ export const CONTEXT_CHAIN_MAX_DEPTH = 3;
 const CWD_AWARE_REPO_OMISSION =
   'Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly.';
 const MUTATING_REPO_OMISSION =
-  'Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo.';
+  'Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo. A preview (dry_run omitted or true) may also omit it when the GitNexus process cwd is inside a registered path; dry_run:false always needs one of the first two.';
 
 /** Always-on identity+freshness field on query/context/impact/cypher object results (#3291). */
 const HOT_READ_STALENESS_NOTE =
@@ -476,29 +477,10 @@ A graph too large to analyze at all returns \`{ error, truncated: true }\` with 
     },
   },
   {
-    name: 'rename_preview',
-    description: `Read-only rename preview using the indexed graph and GitNexus's own semantic layer in the current checkout.
-Graph identities and language-provider scope resolution select exact UTF-16 name spans. No compiler, language service, or text-search replacement is used.
-Pass symbol_uid from context() to select the declaration. Unsupported syntax, ambiguous bindings, stale declarations, and incomplete occurrence coverage fail closed.
-Returns result_version:2, semantic_edits, and coverage describing the indexed source scope and limitations. This tool cannot apply edits.`,
-    annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        ...RENAME_PROPERTIES,
-        repo: {
-          type: 'string',
-          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
-        },
-      },
-      required: ['new_name'],
-    },
-  },
-  {
     name: 'rename',
-    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default; dry_run:false applies exact resolved name spans after checking source snapshots.
-Use rename_preview for read-only clients. Pass symbol_uid from context() to select the declaration. Unsupported syntax, ambiguous bindings, and incomplete coverage fail closed; no compiler or text-search fallback is used.
-Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Legacy graph_edits and text_search_edits are zero. Partial writes report only landed edits and failed_files; review failures before retrying. Separate preview/apply calls recompute the plan.
+    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default: dry_run omitted or true never writes; dry_run:false applies exact resolved name spans after checking source snapshots. Preview first, review semantic_edits and coverage, then re-call with dry_run:false.
+Pass symbol_uid from context() to select the declaration. Unsupported syntax, ambiguous bindings, and incomplete coverage fail closed; no compiler or text-search fallback is used.
+Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Legacy graph_edits and text_search_edits are zero. Partial writes are not transactional: changes lists only landed edits, failed_files the file that failed, and unattempted_files later files never touched; review before retrying. Separate preview/apply calls recompute the plan.
 Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates verbatim; re-call with symbol_uid. After application, run tests and detect_changes().`,
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
@@ -507,7 +489,8 @@ Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates 
         ...RENAME_PROPERTIES,
         dry_run: {
           type: 'boolean',
-          description: 'Preview edits without modifying files (default: true)',
+          description:
+            'Preview edits without modifying files (default: true). Pass false to apply.',
           default: true,
         },
         repo: { type: 'string', description: `Repository name or path. ${MUTATING_REPO_OMISSION}` },
@@ -1132,7 +1115,7 @@ Optional caseSensitive and literal match HTTP /api/grep (default: case-insensiti
  * loop below skips `branch` for `CHECKOUT_SOURCE_TOOLS` — a pin would label
  * checkout bytes with another commit.
  */
-export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep', 'rename', 'rename_preview']);
+export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep', 'rename']);
 
 export const REPO_SCOPED_TOOLS = new Set([
   'read_file',
@@ -1146,7 +1129,6 @@ export const REPO_SCOPED_TOOLS = new Set([
   'check',
   'impact',
   'rename',
-  'rename_preview',
   'route_map',
   'tool_map',
   'shape_check',

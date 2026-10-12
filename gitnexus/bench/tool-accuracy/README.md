@@ -48,7 +48,7 @@ claim parser coverage for those synthetic records. Python checks read actual
 Rename's positive fixtures construct each `Writer` receiver directly, including
 the imported class. A separate `DeferredWriter.flush` fixture exercises a typed
 parameter: a TypeScript annotation alone cannot prove which structurally compatible
-runtime object owns the method. The public `rename_preview` must refuse it with
+runtime object owns the method. The public `rename` tool (`dry_run: true`) must refuse it with
 `planning_status: "unsupported"` and `code: "ambiguous_reference"`, zero edits,
 and unchanged source files. This safety check has no known-gap allowance.
 Fixture line anchors are updated together; the three exact semantic answers and

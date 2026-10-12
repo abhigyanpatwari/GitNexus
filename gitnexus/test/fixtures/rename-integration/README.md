@@ -1,8 +1,9 @@
 # Semantic rename integration fixtures
 
-These projects exercise real indexing and the public `rename_preview` and `rename`
-tools. The integration test and its subprocess helper do not mock the parser,
-semantic resolver, registry, database, graph, filesystem, or rename functions.
+These projects exercise real indexing and the public `rename` tool in both modes
+(`dry_run: true` to preview, `dry_run: false` to apply). The integration test and its
+subprocess helper do not mock the parser, semantic resolver, registry, database,
+graph, filesystem, or rename functions.
 
 Run from `gitnexus/`:
 
@@ -29,7 +30,7 @@ For each case, the harness:
    index, registry entry, and database with PDG enabled.
 2. Checks indexing completeness and selects the target uniquely from persisted
    declarations. It asserts the specified call, access, or family edges.
-3. Calls `rename_preview` and verifies that all source bytes are unchanged.
+3. Calls `rename` with `dry_run: true` and verifies that all source bytes are unchanged.
 4. Calls `rename` with `dry_run: false`, checks the exact edit count and agreement
    with the preview, and compares every source file against `after/`.
 5. Reindexes successful edits and checks the renamed declaration and the same

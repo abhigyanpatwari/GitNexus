@@ -16,7 +16,7 @@ const READ_ONLY_TOOLS = [
   'pdg_query',
   'query',
   'read_file',
-  'rename_preview',
+  'rename',
   'route_map',
   'shape_check',
   'tool_map',
@@ -66,29 +66,135 @@ afterEach(() => {
 });
 
 describe('MCP read-only mode', () => {
-  it('offers a read-only rename preview with no mutation or branch arguments', async () => {
+  it('lists rename as a preview-only tool and no longer lists rename_preview', async () => {
     enableReadOnly();
     const session = await connect();
     try {
       const { tools } = await session.client.listTools();
-      const preview = tools.find((tool) => tool.name === 'rename_preview');
-      expect(preview?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
-      expect(preview?.inputSchema.properties).not.toHaveProperty('dry_run');
-      expect(preview?.inputSchema.properties).not.toHaveProperty('branch');
-      await session.client.callTool({
-        name: 'rename_preview',
-        arguments: { symbol_uid: 'Method:src/writer.ts:Writer.close#0', new_name: 'closeWriter' },
+      const names = tools.map((tool) => tool.name);
+      expect(names).toContain('rename');
+      expect(names).not.toContain('rename_preview');
+      const rename = tools.find((tool) => tool.name === 'rename');
+      expect(rename?.annotations).toEqual({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
       });
-      expect(session.backend.callTool).toHaveBeenCalledWith('rename_preview', {
+      // dry_run survives only as a constant `true`; branch stays unadvertised.
+      expect(rename?.inputSchema.properties).toMatchObject({
+        dry_run: { type: 'boolean', const: true, default: true },
+      });
+      expect(rename?.inputSchema.properties).not.toHaveProperty('branch');
+      expect(rename?.inputSchema.required).toEqual(['new_name']);
+      expect(rename?.description).toMatch(/preview-only/i);
+      expect(rename?.description).not.toMatch(/dry_run:false applies/);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.each([
+    ['omitted', {}],
+    ['true', { dry_run: true }],
+  ])('forwards a read-only rename when dry_run is %s', async (_label, extra) => {
+    enableReadOnly();
+    const session = await connect();
+    try {
+      const arguments_ = {
         symbol_uid: 'Method:src/writer.ts:Writer.close#0',
         new_name: 'closeWriter',
-      });
-      const invalid = await session.client.callTool({
-        name: 'rename_preview',
-        arguments: { new_name: 'closeWriter', dry_run: false },
-      });
-      expect(invalid.isError).toBe(true);
+        ...extra,
+      };
+      const response = await session.client.callTool({ name: 'rename', arguments: arguments_ });
+      expect(response.isError).not.toBe(true);
       expect(session.backend.callTool).toHaveBeenCalledTimes(1);
+      expect(session.backend.callTool).toHaveBeenCalledWith('rename', arguments_);
+      const text = (response.content[0] as { text: string }).text;
+      expect(text).toContain('MCP read-only mode cannot apply it');
+      expect(text).not.toContain('dry_run: false');
+      expect(text).not.toContain('detect_changes');
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.each([
+    ['false', false],
+    ['the string "false"', 'false'],
+    ['the string "true"', 'true'],
+    ['zero', 0],
+    ['one', 1],
+    ['null', null],
+    ['an object', {}],
+  ])('rejects a read-only rename when dry_run is %s before dispatch', async (_label, dryRun) => {
+    enableReadOnly();
+    const session = await connect();
+    try {
+      const response = await session.client.callTool({
+        name: 'rename',
+        arguments: { symbol_uid: 'Function:src/a.ts:a', new_name: 'b', dry_run: dryRun },
+      });
+      expect(response.isError).toBe(true);
+      expect((response.content[0] as { text: string }).text).toMatch(
+        /dry_run.*omitted or true.*read-only mode/i,
+      );
+      expect(session.backend.callTool).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('keeps branch pins and group routing out of a read-only rename', async () => {
+    enableReadOnly();
+    const session = await connect();
+    try {
+      for (const extra of [{ branch: 'main' }, { repo: '@portfolio/service-a' }]) {
+        const response = await session.client.callTool({
+          name: 'rename',
+          arguments: { symbol_uid: 'Function:src/a.ts:a', new_name: 'b', ...extra },
+        });
+        expect(response.isError).toBe(true);
+      }
+      expect(session.backend.callTool).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('rejects the removed rename_preview name before backend dispatch', async () => {
+    enableReadOnly();
+    const session = await connect();
+    try {
+      const response = await session.client.callTool({
+        name: 'rename_preview',
+        arguments: { new_name: 'b' },
+      });
+      expect(response.isError).toBe(true);
+      expect((response.content[0] as { text: string }).text).toMatch(/read-only mode/i);
+      expect(session.backend.callTool).not.toHaveBeenCalled();
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('advertises repo as optional when the read-only default can come from cwd', async () => {
+    enableReadOnly();
+    const backend = {
+      ...createMockBackend(),
+      countRepos: vi.fn().mockResolvedValue(2),
+      cachedRepoCount: vi.fn().mockReturnValue(2),
+      selectToolRepository: vi
+        .fn()
+        .mockResolvedValue({ name: 'alpha', repoPath: '/tmp/alpha', lastCommit: 'abc' }),
+    };
+    const session = await connect(backend);
+    try {
+      const { tools } = await session.client.listTools();
+      // Read-only rename can only preview, so it follows the read-tool omission rule.
+      expect(tools.find((tool) => tool.name === 'rename')?.inputSchema.required).not.toContain(
+        'repo',
+      );
     } finally {
       await session.close();
     }
@@ -116,7 +222,7 @@ describe('MCP read-only mode', () => {
     }
   });
 
-  it.each(['rename', 'group_sync', 'group_list', 'unknown_dynamic_tool'])(
+  it.each(['group_sync', 'group_list', 'unknown_dynamic_tool'])(
     'rejects hidden tool %s before backend dispatch',
     async (name) => {
       enableReadOnly();
@@ -231,6 +337,8 @@ describe('MCP read-only mode', () => {
       expect(tools.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining(['cypher', 'rename', 'group_list', 'group_sync']),
       );
+      expect(tools.tools.map((tool) => tool.name)).not.toContain('rename_preview');
+      expect(tools.tools).toHaveLength(19);
 
       const response = await session.client.callTool({
         name: 'cypher',
@@ -240,6 +348,71 @@ describe('MCP read-only mode', () => {
       expect(session.backend.callTool).toHaveBeenCalledWith('cypher', {
         statement: 'MATCH (n) RETURN n LIMIT 1',
       });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('keeps ordinary-mode rename destructive with a boolean dry_run', async () => {
+    const session = await connect();
+    try {
+      const { tools } = await session.client.listTools();
+      const rename = tools.find((tool) => tool.name === 'rename');
+      expect(rename?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+      const dryRun = (rename?.inputSchema.properties as Record<string, object>).dry_run;
+      expect(dryRun).toMatchObject({ type: 'boolean', default: true });
+      expect(dryRun).not.toHaveProperty('const');
+      expect(rename?.description).toMatch(/dry_run:false applies/);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it.each([
+    ['omitted', {}, 'dry_run: false, repo: "test"', 'detect_changes'],
+    ['true', { dry_run: true }, 'dry_run: false, repo: "test"', 'detect_changes'],
+    ['false', { dry_run: false }, 'detect_changes({repo: "test"})', 'dry_run: false'],
+  ])(
+    'forwards ordinary-mode rename as sent and hints the right next step when dry_run is %s',
+    async (_label, extra, expectedHint, forbiddenHint) => {
+      const session = await connect();
+      try {
+        const arguments_ = {
+          symbol_uid: 'Function:src/a.ts:a',
+          new_name: 'b',
+          repo: 'test',
+          ...extra,
+        };
+        const response = await session.client.callTool({ name: 'rename', arguments: arguments_ });
+        expect(response.isError).not.toBe(true);
+        expect(session.backend.callTool).toHaveBeenCalledWith('rename', arguments_);
+        const text = (response.content[0] as { text: string }).text;
+        expect(text).toContain(expectedHint);
+        expect(text).not.toContain(forbiddenHint);
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it.each([
+    ['omitted', {}],
+    ['true', { dry_run: true }],
+    ['false', { dry_run: false }],
+  ])('routes ordinary-mode rename by explicit repo when dry_run is %s', async (_label, extra) => {
+    const session = await connect();
+    try {
+      const arguments_ = {
+        symbol_uid: 'Function:src/a.ts:a',
+        new_name: 'b',
+        repo: 'beta',
+        ...extra,
+      };
+      await session.client.callTool({ name: 'rename', arguments: arguments_ });
+      expect(session.backend.callTool).toHaveBeenCalledWith(
+        'rename',
+        expect.objectContaining({ repo: 'beta' }),
+      );
     } finally {
       await session.close();
     }
@@ -266,8 +439,13 @@ describe('MCP read-only mode', () => {
       for (const uri of ['gitnexus://setup', 'gitnexus://repo/test/context']) {
         const resource = await session.client.readResource({ uri });
         const text = (resource.contents[0] as { text: string }).text;
-        expect(text).not.toMatch(/(?:^\s*-\s+|^\|\s*`)(?:rename|cypher)(?::|`)/mu);
-        expect(text).toContain('rename_preview');
+        expect(text).not.toMatch(/(?:^\s*-\s+|^\|\s*`)cypher(?::|`)/mu);
+        expect(text).not.toContain('rename_preview');
+        // rename stays listed, restated as the preview-only contract.
+        expect(text).toMatch(
+          /(?:^\s*-\s+rename: |^\| `rename` \| )Read-only semantic rename preview/mu,
+        );
+        expect(text).not.toMatch(/rename.*dry_run: false applies/u);
         expect(text).not.toContain('gitnexus://group/');
       }
     } finally {

@@ -49,10 +49,11 @@ const symbol = {
   startLine: 0,
   endLine: 0,
 };
+// One public tool, three call shapes: dry_run omitted (default preview), true, false.
 const routes = [
-  { route: 'preview', tool: 'rename_preview', dry_run: false },
-  { route: 'dry run', tool: 'rename', dry_run: true },
-  { route: 'apply', tool: 'rename', dry_run: false },
+  { route: 'default preview', args: {}, applies: false },
+  { route: 'dry run', args: { dry_run: true }, applies: false },
+  { route: 'apply', args: { dry_run: false }, applies: true },
 ] as const;
 
 describe('rename checkout source policy', () => {
@@ -104,8 +105,8 @@ describe('rename checkout source policy', () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  const rename = ({ tool, dry_run }: (typeof routes)[number]) =>
-    backend.callTool(tool, { repo: NAME, symbol_uid: UID, new_name: 'renamed', dry_run });
+  const rename = ({ args }: (typeof routes)[number]) =>
+    backend.callTool('rename', { repo: NAME, symbol_uid: UID, new_name: 'renamed', ...args });
 
   const expectUnavailable = (result: any, reason: string) => {
     expect(result).toMatchObject({ code: 'source-unavailable', reason });
@@ -132,10 +133,11 @@ describe('rename checkout source policy', () => {
     expect(result.status).toBe('success');
     expect(result.total_edits).toBe(2);
     expect(result.changes[0].edits[0].before).toContain('retention-private-body');
-    const applied = route.tool === 'rename' && !route.dry_run;
-    expect(result.applied).toBe(applied);
+    expect(result.applied).toBe(route.applies);
     expect(await fs.readFile(path.join(checkout, FILE), 'utf8')).toBe(
-      applied ? 'function renamed() { return "retention-private-body"; }\nrenamed();\n' : SOURCE,
+      route.applies
+        ? 'function renamed() { return "retention-private-body"; }\nrenamed();\n'
+        : SOURCE,
     );
   });
 
@@ -146,7 +148,7 @@ describe('rename checkout source policy', () => {
 
   it('preserves missing-symbol argument validation under non-full retention', async () => {
     await writeMeta('none');
-    const result = await backend.callTool('rename_preview', { repo: NAME, new_name: 'renamed' });
+    const result = await backend.callTool('rename', { repo: NAME, new_name: 'renamed' });
     expect(result.error).toContain('Either symbol_name or symbol_uid');
     expect(result.code).toBeUndefined();
   });
@@ -157,7 +159,7 @@ describe('rename checkout source policy', () => {
       symbol,
       { ...symbol, id: 'Function:other.ts:target', filePath: 'other.ts' },
     ]);
-    const result = await backend.callTool('rename_preview', {
+    const result = await backend.callTool('rename', {
       repo: NAME,
       symbol_name: 'target',
       new_name: 'renamed',

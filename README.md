@@ -158,7 +158,7 @@ flowchart TB
 
 ## What Your AI Agent Gets
 
-### 20 MCP tools (18 per-repo + 2 group)
+### 19 MCP tools (17 per-repo + 2 group)
 
 | Tool             | What It Does                                                           |
 | ---------------- | ---------------------------------------------------------------------- |
@@ -169,8 +169,7 @@ flowchart TB
 | `trace`          | Shortest directed path between two symbols (call + class-member edges) |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
 | `check`          | Read-only structural checks against the indexed graph                  |
-| `rename_preview` | Read-only graph and semantic rename preview       |
-| `rename`         | Preview or apply exact semantic rename occurrences                     |
+| `rename`         | Semantic rename — previews by default, `dry_run: false` applies        |
 | `cypher`         | Raw Cypher graph queries                                               |
 | `route_map`      | API route map — which components fetch which endpoints, and handlers   |
 | `tool_map`       | MCP/RPC tool definitions — where they're defined and handled           |
@@ -373,7 +372,7 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 <details>
 <summary><strong>MCP read-only mode</strong></summary>
 
-Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. The read-only `rename_preview` is available. Raw `cypher`, destructive `rename`, and group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
+Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. `rename` stays available as a preview-only tool: its `dry_run` must be omitted or `true`, and any other value is rejected before backend dispatch. Raw `cypher`, group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
 
 The default is unchanged when the variable is unset or `0`. Any other value fails server startup rather than silently weakening the policy.
 
@@ -878,8 +877,8 @@ affected_processes: [LoginFlow, RegistrationFlow, ...]
 ### Rename (Graph and Semantic Layer)
 
 ```js
-rename_preview({symbol_name: "validateUser", new_name: "verifyUser", repo: "my-app"})
-// For an ambiguous name, repeat with the symbol_uid from context().
+rename({symbol_name: "validateUser", new_name: "verifyUser", repo: "my-app", dry_run: true})
+// Omitting dry_run also previews. For an ambiguous name, repeat with the symbol_uid from context().
 ```
 
 ```text
@@ -899,7 +898,7 @@ changes: [{file_path, edits: [{start, length, old_text, new_text, line, confiden
 ```
 
 Review the exact UTF-16 spans and coverage, then call `rename` with the same
-selectors and `dry_run: false` to apply. `rename` still defaults to preview.
+selectors and `dry_run: false` to apply. Omitting `dry_run` also previews.
 Counts describe occurrences, including multiple edits on one line. The graph
 selects indexed declarations and files; GitNexus's language providers rebuild
 semantic scopes from the current source and resolve exact name spans.
@@ -913,7 +912,7 @@ and external consumers. Each registered source-language provider supplies rename
 rules. Constructor, destructor, inheritance, and interface families require
 complete provider evidence. Dynamic or computed references block a rename when
 the provider cannot prove their binding or exclude them from the selected family.
-Both tools operate on the current checkout and reject `branch`.
+`rename` operates on the current checkout and rejects `branch`.
 
 Language-specific limits remain explicit in the result. For example, PHP handles
 case-insensitive function/class names separately from case-sensitive constants
@@ -926,7 +925,8 @@ checked before writes; this is not a cross-call preview token or transactional
 filesystem operation. The final destination check and replacement are separate
 operations, so another process can still change a file between them. Avoid
 concurrent source writes during application. On a write failure, `status: partial` and `failed_files`
-report the failure; `applied`, counts, and `changes` describe only landed edits.
+report the failed file and `unattempted_files` lists the later files that were never touched;
+`applied`, counts, and `changes` describe only landed edits.
 Inspect failures before retrying, and run type checking, tests, and
 `detect_changes` after applying. A valid identifier is not a guarantee against
 new-name collisions.

@@ -10,8 +10,12 @@
  * Loops retain a structural false escape (including `while (true)`) for the
  * shared post-dominator solver. Iteration predicates and operand evaluation order
  * are structural approximations; this is syntax-based analysis, not evaluation.
- * A control expression used as an argument is split into its own blocks; no
- * single-statement argument provenance is claimed for that expression's result.
+ * A control expression is split into its own blocks, and its result is carried
+ * to the consumer: each normal-result leaf (an if/switch arm, a catch or orelse
+ * operand, a `try` value, a labeled block's `break` value) defines the assigned
+ * identifiers, or a provider-owned `$resultN` binding that the consuming
+ * statement (an argument, `return`, a store, a branch decision) reads. Calls are
+ * recorded once, at their leaf; a capture reads the uses of what it unwraps.
  * Invalid syntax, unresolved jumps, asm and suspend/resume are skipped rather
  * than represented as exact straight-line control. Nested containers/functions
  * are opaque; each function declaration is separately collected by the pipeline.
@@ -21,12 +25,13 @@ import { CfgBuilder } from '../cfg-builder.js';
 import { ControlFlowContext } from '../control-flow-context.js';
 import type { CfgEdgeKind, CfgVisitor, FunctionCfg, StatementFacts } from '../types.js';
 import type { TraversalResult } from '../traversal-result.js';
-import { ZigHarvester } from './zig-harvest.js';
+import { ZigHarvester, type ZigResultCarriers, type ZigResultSink } from './zig-harvest.js';
 import {
   ZIG_OPAQUE,
   zigAssignment,
   zigChildren,
   zigConditional,
+  zigJumpValue,
   zigLabel,
   zigPayload,
 } from './zig-ast.js';
@@ -35,6 +40,13 @@ type Result = TraversalResult | null;
 interface Cleanup {
   node: SyntaxNode;
   errorOnly: boolean;
+}
+/** What an arm needs from its construct: what it captures from, and where its value goes. */
+interface Arm {
+  subjects?: readonly SyntaxNode[];
+  /** Binding that already carries the captured operand (labeled-switch dispatch). */
+  operand?: readonly number[];
+  sink?: ZigResultSink;
 }
 class UnsupportedZigCfg extends Error {}
 
@@ -70,7 +82,9 @@ class ZigCfgWalk {
   /** Number of already-active defers outside each jump target. */
   private readonly cleanupDepth = new Map<number, number>();
   private readonly controlCache = new Map<number, boolean>();
-  private readonly switchContinues: { label: string; target: number }[] = [];
+  private readonly switchContinues: { label: string; target: number; sink: ZigResultSink }[] = [];
+  /** Where a `break` to this join block delivers its value (loops, labeled blocks and switches). */
+  private readonly resultSinks = new Map<number, ZigResultSink>();
 
   constructor(
     private readonly builder: CfgBuilder,
@@ -104,6 +118,11 @@ class ZigCfgWalk {
     return { entry, exits: [entry] };
   }
 
+  /** A result leaf: its own evaluation facts, plus the destination its value is delivered to. */
+  private leaf(node: SyntaxNode, sink?: ZigResultSink): TraversalResult {
+    return this.simple(node, this.harvest.facts(node, undefined, sink));
+  }
+
   private hasControl(node: SyntaxNode): boolean {
     const cached = this.controlCache.get(node.id);
     if (cached !== undefined) return cached;
@@ -117,10 +136,57 @@ class ZigCfgWalk {
     return result;
   }
 
-  private body(node: SyntaxNode | undefined, payload?: SyntaxNode): Result {
-    let result: Result = payload ? this.simple(payload, this.harvest.payload(payload)) : null;
-    if (node) result = this.append(result, this.visit(node));
+  private body(node: SyntaxNode | undefined, payload?: SyntaxNode, arm: Arm = {}): Result {
+    let result: Result = payload
+      ? this.simple(payload, this.harvest.payload(payload, arm.subjects, arm.operand))
+      : null;
+    if (node) result = this.append(result, this.visit(node, undefined, arm.sink));
     return result;
+  }
+
+  /**
+   * Lower control-flow-valued children in source order, each into its own result
+   * carrier, for a consumer that reads `carriers` instead of re-walking them.
+   */
+  private evaluate(controls: readonly SyntaxNode[]): {
+    result: Result;
+    carriers: ZigResultCarriers;
+  } {
+    let result: Result = null;
+    const carriers = new Map<number, number>();
+    for (const control of controls) {
+      const carrier = this.harvest.resultTemp(control);
+      carriers.set(control.id, carrier.defs[0]);
+      result = this.append(result, this.visit(control, undefined, carrier));
+    }
+    return { result, carriers };
+  }
+
+  /**
+   * Evaluate the operand a branch, loop or dispatch decides on. A control-flow
+   * operand's result is read at its join, so the decision depends on it.
+   */
+  private operand(node: SyntaxNode): Result {
+    if (!this.hasControl(node)) return this.visit(node);
+    const carrier = this.harvest.resultTemp(node);
+    const evaluated = this.visit(node, undefined, carrier);
+    return evaluated && this.decide(evaluated, node, carrier.defs);
+  }
+
+  /** Attach the read of `carriers` to the single point where the operand's paths join. */
+  private decide(
+    evaluated: TraversalResult,
+    node: SyntaxNode,
+    carriers: readonly number[],
+  ): TraversalResult {
+    if (!evaluated.exits.length) return evaluated;
+    let at = evaluated.exits[0];
+    if (evaluated.exits.length > 1) {
+      at = this.empty(node);
+      this.builder.connect(evaluated.exits, at);
+    }
+    this.builder.attachFacts(at, this.harvest.consume(node, carriers));
+    return { entry: evaluated.entry, exits: [at] };
   }
 
   /** Replay only the cleanup scopes crossed by this completion. */
@@ -179,12 +245,13 @@ class ZigCfgWalk {
     return result;
   }
 
-  visit(node: SyntaxNode, label?: string): Result {
-    return this.builder.withNesting(() => this.visitNode(node, label));
+  visit(node: SyntaxNode, label?: string, sink?: ZigResultSink): Result {
+    return this.builder.withNesting(() => this.visitNode(node, label, sink));
   }
 
-  private visitNode(node: SyntaxNode, label?: string): Result {
-    if (ZIG_OPAQUE.has(node.type)) return this.simple(node);
+  /** `sink`: the bindings this expression's normal-result leaves must define. */
+  private visitNode(node: SyntaxNode, label?: string, sink?: ZigResultSink): Result {
+    if (ZIG_OPAQUE.has(node.type)) return this.leaf(node, sink);
     switch (node.type) {
       case 'asm_expression':
       case 'suspend_statement':
@@ -199,6 +266,7 @@ class ZigCfgWalk {
         if (!label) return this.sequence(node);
         const join = this.empty(node);
         this.cleanupDepth.set(join, this.cleanup.length);
+        if (sink) this.resultSinks.set(join, sink);
         this.context.pushLabeledBlock(join, [label]);
         const body = this.sequence(node);
         this.context.pop();
@@ -211,38 +279,44 @@ class ZigCfgWalk {
         return this.visit(
           zigChildren(node).filter((c) => c.type !== 'block_label')[0],
           zigLabel(node) ?? label,
+          sink,
         );
       case 'expression_statement':
       case 'comptime_statement':
       case 'nosuspend_statement':
         if (zigChildren(node)[0] && this.hasControl(zigChildren(node)[0]))
-          return this.visit(zigChildren(node)[0], label);
-        return this.simple(node);
+          return this.visit(zigChildren(node)[0], label, sink);
+        return this.leaf(node, sink);
       case 'if_statement':
       case 'if_expression':
       case 'if_type_expression':
-        return this.branch(node);
+        return this.branch(node, sink);
       case 'while_statement':
       case 'while_expression':
       case 'for_statement':
       case 'for_expression':
-        return this.loop(node, zigLabel(node) ?? label);
+        return this.loop(node, zigLabel(node) ?? label, sink);
       case 'switch_expression':
-        return this.switch(node);
+        return this.switch(node, sink);
       case 'return_expression':
       case 'break_expression':
       case 'continue_expression':
         return this.jump(node);
       case 'try_expression': {
+        // The value's leaves define the destination before the throw edge leaves
+        // them: a cleanup reading a pre-declared destination on the error path sees
+        // one conservative extra definition (never a missing one).
         const value = zigChildren(node)[0];
-        const result = this.hasControl(value) ? this.visit(value) : this.simple(node);
+        const result = this.hasControl(value)
+          ? this.visit(value, undefined, sink)
+          : this.leaf(node, sink);
         if (result)
           for (const from of result.exits)
             this.complete(from, this.builder.exitIndex, 'throw', true);
         return result;
       }
       case 'catch_expression':
-        return this.catch(node);
+        return this.catch(node, sink);
       case 'defer_statement':
       case 'errdefer_statement':
         // The grammar permits these only as statements in a lexical block.
@@ -250,8 +324,8 @@ class ZigCfgWalk {
       case 'binary_expression': {
         const op = node.childForFieldName('operator')?.text;
         if (op === 'and' || op === 'or' || op === 'orelse') {
-          const left = this.visit(node.childForFieldName('left')!);
-          const right = this.visit(node.childForFieldName('right')!);
+          const left = this.visit(node.childForFieldName('left')!, undefined, sink);
+          const right = this.visit(node.childForFieldName('right')!, undefined, sink);
           const join = this.empty(node);
           const evaluateRight = op === 'and' ? 'cond-true' : 'cond-false';
           if (left) {
@@ -270,34 +344,30 @@ class ZigCfgWalk {
       case 'variable_declaration':
       case 'assignment_expression': {
         const value = zigAssignment(node).value;
-        if (value && this.hasControl(value)) {
-          // Register direct-call result targets before evaluating the value,
-          // but definitions execute only on the successful continuation.
-          const facts = this.harvest.facts(node, new Set([value.id]));
-          const result = this.visit(value);
-          return this.append(result, this.simple(node, facts));
-        }
-        break;
+        if (!value || !this.hasControl(value)) break;
+        // Identifier targets are defined by each normal-result leaf of the value,
+        // and only on its successful continuation.
+        const destination = this.harvest.assignmentSink(node);
+        if (destination) return this.visit(value, undefined, destination) ?? this.simple(node);
+        // A store reads its receiver once, after the value is carried to it.
+        const { result, carriers } = this.evaluate([value]);
+        return this.append(result, this.simple(node, this.harvest.facts(node, carriers)));
       }
     }
     const controls = zigChildren(node)
       .flatMap((c) => (c.type === 'arguments' ? zigChildren(c) : [c]))
       .filter((c) => this.hasControl(c));
-    if (!controls.length) return this.simple(node);
-    let result: Result = null;
-    for (const control of controls) result = this.append(result, this.visit(control));
-    return this.append(
-      result,
-      this.simple(node, this.harvest.facts(node, new Set(controls.map((c) => c.id)))),
-    );
+    if (!controls.length) return this.leaf(node, sink);
+    const { result, carriers } = this.evaluate(controls);
+    return this.append(result, this.simple(node, this.harvest.facts(node, carriers, sink)));
   }
 
-  private branch(node: SyntaxNode): Result {
+  private branch(node: SyntaxNode, sink?: ZigResultSink): Result {
     const { inputs, body, payload, alternative, elsePayload } = zigConditional(node);
     if (!inputs.length || !body) throw new UnsupportedZigCfg();
-    const condition = this.visit(inputs[0])!;
-    const yes = this.body(body, payload);
-    const no = this.body(alternative, elsePayload);
+    const condition = this.operand(inputs[0])!;
+    const yes = this.body(body, payload, { subjects: inputs, sink });
+    const no = this.body(alternative, elsePayload, { subjects: inputs, sink });
     const join = this.empty(node);
     this.builder.connect(condition.exits, yes?.entry ?? join, 'cond-true');
     this.builder.connect(condition.exits, no?.entry ?? join, 'cond-false');
@@ -309,11 +379,11 @@ class ZigCfgWalk {
     };
   }
 
-  private loop(node: SyntaxNode, label?: string): Result {
+  private loop(node: SyntaxNode, label?: string, sink?: ZigResultSink): Result {
     const { inputs, body, payload, alternative, elsePayload, update } = zigConditional(node);
     if (!body) throw new UnsupportedZigCfg();
     let evaluated: Result = null;
-    for (const input of inputs) evaluated = this.append(evaluated, this.visit(input));
+    for (const input of inputs) evaluated = this.append(evaluated, this.operand(input));
     const isFor = node.type === 'for_statement' || node.type === 'for_expression';
     let condition = evaluated;
     if (isFor) {
@@ -325,6 +395,8 @@ class ZigCfgWalk {
       condition = this.simple(node, { line: node.startPosition.row + 1, defs: [], uses: [] });
     const join = this.empty(node);
     this.cleanupDepth.set(join, this.cleanup.length);
+    // A loop expression's value is a `break` operand, or its `else` arm.
+    if (sink) this.resultSinks.set(join, sink);
     let step: Result = null;
     if (update) {
       // The continuation is inside the loop: its breaks must see this exit,
@@ -339,9 +411,9 @@ class ZigCfgWalk {
     const continueTo = step?.entry ?? condition.entry;
     this.cleanupDepth.set(continueTo, this.cleanup.length);
     this.context.pushLoop(continueTo, join, label ? [label] : []);
-    const loopBody = this.body(body, payload);
+    const loopBody = this.body(body, payload, { subjects: inputs });
     this.context.pop();
-    const no = this.body(alternative, elsePayload);
+    const no = this.body(alternative, elsePayload, { subjects: inputs, sink });
     this.builder.connect(condition.exits, loopBody?.entry ?? continueTo, 'cond-true');
     this.builder.connect(condition.exits, no?.entry ?? join, 'cond-false');
     if (loopBody) this.builder.connect(loopBody.exits, continueTo, 'loop-back');
@@ -350,16 +422,19 @@ class ZigCfgWalk {
     return { entry: evaluated?.entry ?? condition.entry, exits: [join] };
   }
 
-  private switch(node: SyntaxNode): Result {
+  private switch(node: SyntaxNode, sink?: ZigResultSink): Result {
     const children = zigChildren(node);
     const value = children.find((c) => c.type !== 'block_label' && c.type !== 'switch_case');
     if (!value) throw new UnsupportedZigCfg();
-    const initial = this.visit(value)!;
-    const join = this.empty(node);
     const label = zigLabel(node);
+    // `continue :label next` re-dispatches on `next`: the operand and every
+    // continue value are delivered to one carrier that the dispatch reads.
+    const carrier = label ? this.harvest.resultTemp(value) : undefined;
+    const initial = (carrier ? this.visit(value, undefined, carrier) : this.operand(value))!;
+    const join = this.empty(node);
     let dispatch = initial;
-    if (label) {
-      const header = this.block(value, { line: value.startPosition.row + 1, defs: [], uses: [] });
+    if (carrier) {
+      const header = this.block(value, this.harvest.consume(value, carrier.defs));
       this.builder.connect(initial.exits, header);
       dispatch = { entry: header, exits: [header] };
     }
@@ -367,13 +442,18 @@ class ZigCfgWalk {
     this.cleanupDepth.set(dispatch.entry, this.cleanup.length);
     // Zig switches accept only labeled exits. Bare break/continue belongs to
     // the enclosing loop, including when this switch happens to have a label.
-    if (label) {
+    if (label && carrier) {
+      if (sink) this.resultSinks.set(join, sink);
       this.context.pushLabeledBlock(join, [label]);
-      this.switchContinues.push({ label, target: dispatch.entry });
+      this.switchContinues.push({ label, target: dispatch.entry, sink: carrier });
     }
     let normal = false;
     for (const arm of children.filter((c) => c.type === 'switch_case')) {
-      const result = this.body(zigChildren(arm).at(-1), zigPayload(arm));
+      const result = this.body(zigChildren(arm).at(-1), zigPayload(arm), {
+        subjects: [value],
+        operand: carrier?.defs,
+        sink,
+      });
       this.builder.connect(dispatch.exits, result?.entry ?? join, 'switch-case');
       if (result) this.builder.connect(result.exits, join);
       if (!result || result.exits.length) normal = true;
@@ -392,9 +472,12 @@ class ZigCfgWalk {
     return { entry: initial.entry, exits: normal || label ? [join] : [] };
   }
 
-  private catch(node: SyntaxNode): Result {
-    const source = this.visit(zigChildren(node)[0])!;
-    const handler = this.body(zigChildren(node).at(-1), zigPayload(node));
+  private catch(node: SyntaxNode, sink?: ZigResultSink): Result {
+    const source = this.visit(zigChildren(node)[0], undefined, sink)!;
+    const handler = this.body(zigChildren(node).at(-1), zigPayload(node), {
+      subjects: [zigChildren(node)[0]],
+      sink,
+    });
     const join = this.empty(node);
     this.builder.connect(source.exits, join, 'cond-true');
     this.builder.connect(source.exits, handler?.entry ?? join, 'cond-false');
@@ -409,19 +492,13 @@ class ZigCfgWalk {
         : node.type === 'break_expression'
           ? 'break'
           : 'continue';
-    const value = zigChildren(node).find((c) => c.type !== 'break_label');
-    const prefix = value && this.hasControl(value) ? this.visit(value) : null;
-    const jump = this.block(
-      node,
-      this.harvest.facts(node, new Set(prefix && value ? [value.id] : [])),
-    );
-    if (prefix) this.builder.connect(prefix.exits, jump);
+    const value = zigJumpValue(node);
     const label = zigLabel(node);
-    let switchTarget: number | undefined;
+    let switchEntry: (typeof this.switchContinues)[number] | undefined;
     if (label)
       for (let i = this.switchContinues.length - 1; i >= 0; i--) {
         if (this.switchContinues[i].label === label) {
-          switchTarget = this.switchContinues[i].target;
+          switchEntry = this.switchContinues[i];
           break;
         }
       }
@@ -430,8 +507,16 @@ class ZigCfgWalk {
         ? this.builder.exitIndex
         : kind === 'break'
           ? this.context.breakTarget(label)
-          : (switchTarget ?? this.context.continueTarget(label));
+          : (switchEntry?.target ?? this.context.continueTarget(label));
     if (target === undefined) throw new UnsupportedZigCfg();
+    // A break delivers its value to the loop or labeled block it leaves; a
+    // labeled-switch continue delivers it to that switch's dispatch.
+    const sink = kind === 'break' ? this.resultSinks.get(target) : switchEntry?.sink;
+    const { result: prefix, carriers } = this.evaluate(
+      value && this.hasControl(value) ? [value] : [],
+    );
+    const jump = this.block(node, this.harvest.facts(node, carriers, sink));
+    if (prefix) this.builder.connect(prefix.exits, jump);
     if (
       kind === 'return' &&
       value &&

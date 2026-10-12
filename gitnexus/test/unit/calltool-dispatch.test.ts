@@ -195,6 +195,14 @@ function mockSymbolRows(rows: Record<string, unknown>[]) {
 
 const duplicateFixtureDirs: string[] = [];
 
+/** LocalBackend.rename is private; the dispatch tests spy on it through this narrow view. */
+interface RenameEntryPoint {
+  rename(repo: { repoPath: string }, params: Record<string, unknown>): Promise<unknown>;
+}
+function spyOnRename(target: LocalBackend) {
+  return vi.spyOn(target as unknown as RenameEntryPoint, 'rename');
+}
+
 function makeDuplicateNameFixture() {
   const mainDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-main-'));
   const wtDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-wt-'));
@@ -2534,19 +2542,37 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either symbol_name or symbol_uid');
   });
 
-  it('dispatches rename_preview as a forced dry run', async () => {
-    const rename = vi.spyOn(backend as any, 'rename').mockResolvedValue({ applied: false });
-    const result = await backend.callTool('rename_preview', { new_name: 'newName' });
-    expect(result.applied).toBe(false);
-    expect(rename).toHaveBeenCalledWith(expect.anything(), { new_name: 'newName', dry_run: true });
+  it.each([
+    ['omitted', {}],
+    ['true', { dry_run: true }],
+    ['false', { dry_run: false }],
+  ])('forwards rename arguments untouched when dry_run is %s', async (_label, extra) => {
+    const rename = spyOnRename(backend).mockResolvedValue({ applied: false });
+    await backend.callTool('rename', { new_name: 'newName', ...extra });
+    expect(rename).toHaveBeenCalledWith(expect.anything(), { new_name: 'newName', ...extra });
   });
 
-  it.each(['rename', 'rename_preview'])('%s rejects branch-pinned checkout edits', async (tool) => {
-    const rename = vi.spyOn(backend as any, 'rename');
-    const result = await backend.callTool(tool, { new_name: 'newName', branch: 'main' });
-    expect(result.error).toMatch(/branch/);
+  it('no longer dispatches a separate rename_preview tool', async () => {
+    const rename = spyOnRename(backend);
+    await expect(backend.callTool('rename_preview', { new_name: 'newName' })).rejects.toThrow(
+      'Unknown tool: rename_preview',
+    );
     expect(rename).not.toHaveBeenCalled();
   });
+
+  it.each([{}, { dry_run: true }, { dry_run: false }])(
+    'rename rejects branch-pinned checkout edits (%j)',
+    async (extra) => {
+      const rename = spyOnRename(backend);
+      const result = await backend.callTool('rename', {
+        new_name: 'newName',
+        branch: 'main',
+        ...extra,
+      });
+      expect(result.error).toMatch(/branch/);
+      expect(rename).not.toHaveBeenCalled();
+    },
+  );
 
   it('rename: a first apply-edit write failure reports status:error + failed_files (#2283)', async () => {
     // Real graph/semantic resolution produces an edit; staging its replacement fails.
@@ -3974,6 +4000,82 @@ describe('LocalBackend.resolveRepo', () => {
     }
   });
 
+  describe('rename repo omission with several indexed repos (cwd inside one)', () => {
+    let outerDir: string;
+    let otherDir: string;
+    let renameSpy: ReturnType<typeof spyOnRename>;
+    let cwdSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(async () => {
+      outerDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-omit-outer-'));
+      otherDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-omit-other-'));
+      const cwdDir = path.join(outerDir, 'src');
+      mkdirSync(cwdDir, { recursive: true });
+      duplicateFixtureDirs.push(outerDir, otherDir);
+      (listRegisteredRepos as any).mockResolvedValue([
+        {
+          ...MOCK_REPO_ENTRY,
+          name: 'outer',
+          path: outerDir,
+          storagePath: path.join(outerDir, '.gitnexus'),
+        },
+        {
+          ...MOCK_REPO_ENTRY,
+          name: 'other',
+          path: otherDir,
+          storagePath: path.join(otherDir, '.gitnexus'),
+        },
+      ]);
+      (getGitRoot as any).mockReturnValue(outerDir);
+      cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(cwdDir);
+      renameSpy = spyOnRename(backend).mockResolvedValue({ applied: false });
+      await backend.init();
+    });
+
+    afterEach(() => {
+      cwdSpy.mockRestore();
+    });
+
+    // A call that provably cannot write follows the read-tool omission rule.
+    it.each([
+      ['omitted', {}],
+      ['true', { dry_run: true }],
+    ])('previews with dry_run %s against the cwd-derived repo', async (_label, extra) => {
+      await backend.callTool('rename', { symbol_name: 'oldName', new_name: 'newName', ...extra });
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      expect(renameSpy.mock.calls[0][0].repoPath).toBe(outerDir);
+    });
+
+    // Anything that could write - and any malformed value - keeps the stricter rule.
+    it.each([
+      ['false', false],
+      ['a string', 'false'],
+      ['a number', 0],
+      ['null', null],
+    ])('requires an explicit repo when dry_run is %s', async (_label, dryRun) => {
+      await expect(
+        backend.callTool('rename', {
+          symbol_name: 'oldName',
+          new_name: 'newName',
+          dry_run: dryRun,
+        }),
+      ).rejects.toThrow('Multiple repositories indexed');
+      expect(renameSpy).not.toHaveBeenCalled();
+    });
+
+    it('routes an explicit repo to that repository for both modes', async () => {
+      for (const dryRun of [true, false]) {
+        await backend.callTool('rename', {
+          repo: 'other',
+          symbol_name: 'oldName',
+          new_name: 'newName',
+          dry_run: dryRun,
+        });
+      }
+      expect(renameSpy.mock.calls.map(([repo]) => repo.repoPath)).toEqual([otherDir, otherDir]);
+    });
+  });
+
   it('keeps explicit duplicate aliases on exact git-root disambiguation (#3073)', async () => {
     const outerDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-cwd-alias-outer-'));
     const nestedDir = path.join(outerDir, 'packages', 'nested');
@@ -4118,7 +4220,7 @@ describe('LocalBackend.resolveRepo', () => {
     }
   });
 
-  it('keeps mutating rename explicit with multiple repos (#3073)', async () => {
+  it('keeps applying rename (dry_run:false) explicit with multiple repos (#3073)', async () => {
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project/src');
 
     try {
@@ -4128,9 +4230,24 @@ describe('LocalBackend.resolveRepo', () => {
         backend.callTool('rename', {
           symbol_name: 'oldName',
           new_name: 'newName',
-          dry_run: true,
+          dry_run: false,
         }),
       ).rejects.toThrow('Multiple repositories indexed');
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('lets a rename preview resolve the cwd repo among multiple repos (#3073)', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project/src');
+    const rename = spyOnRename(backend).mockResolvedValue({ applied: false });
+
+    try {
+      setupMultipleRepos();
+      await backend.init();
+      await backend.callTool('rename', { symbol_name: 'oldName', new_name: 'newName' });
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(rename.mock.calls[0][0].repoPath).toBe('/tmp/test-project');
     } finally {
       cwdSpy.mockRestore();
     }

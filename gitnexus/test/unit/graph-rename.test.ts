@@ -462,6 +462,41 @@ describe('graph and SemanticModel rename', () => {
     );
   });
 
+  it.each([
+    [
+      'prototype function expression',
+      'model.js',
+      'class Writer {\n closeWriter() {}\n}\nWriter.prototype.flush = function () { return this.closeWriter(); };\n',
+    ],
+    [
+      'function with a this parameter',
+      'model.ts',
+      'class Writer {\n closeWriter() {}\n}\nexport function flush(this: Writer) { return this.closeWriter(); }\n',
+    ],
+  ])('refuses a member call on a call-site-bound this: %s', async (_name, file, source) => {
+    const uid = `Method:${file}:Writer.closeWriter#0`;
+    const nodes = await fixture(file, source, [
+      {
+        id: `Class:${file}:Writer`,
+        label: 'Class',
+        properties: { name: 'Writer', filePath: file, startLine: 0, endLine: 2 },
+      },
+      {
+        id: uid,
+        label: 'Method',
+        properties: { name: 'closeWriter', filePath: file, startLine: 1, endLine: 1 },
+      },
+    ]);
+    await expectBlockedPreviewAndApply(
+      file,
+      source,
+      { uid, name: 'closeWriter', kind: 'Method', filePath: file, startLine: 2 },
+      nodes,
+      'ambiguous_reference',
+      'shutdown',
+    );
+  });
+
   it('preserves provider-proven this receiver ownership', async () => {
     const file = 'model.ts';
     const source = 'class Writer {\n close() {}\n use() { this.close(); }\n}\n';
@@ -840,6 +875,10 @@ describe('graph and SemanticModel rename', () => {
         scope: 'indexed-repository',
         source_file_count: 1,
       });
+      // Files added after the last analyze are skipped; the result must say so.
+      expect(plan.coverage.limitations).toContainEqual(
+        expect.stringContaining('added after the last analyze'),
+      );
       expect(await fs.readFile(path.join(root, file!), 'utf8')).toBe(source);
     },
   );

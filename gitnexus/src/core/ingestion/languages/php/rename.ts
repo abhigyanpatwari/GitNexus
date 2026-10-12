@@ -25,6 +25,15 @@ const keywords = new Set(
   ),
 );
 
+// PHP lexes a label as [a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*, so the language itself
+// accepts every non-ASCII code point (there is no ID_Start/ID_Continue restriction). A
+// rewrite must still not mint names that render invisibly or reorder surrounding source
+// (bidi controls, zero-width characters, byte order marks), so non-ASCII control, format,
+// separator, surrogate, private-use and unassigned code points are refused. Letters,
+// marks, digits and symbols stay legal, including astral ones.
+const phpIdentifier = /^[A-Za-z_\u0080-\u{10FFFF}][A-Za-z0-9_\u0080-\u{10FFFF}]*$/u;
+const invisibleOrFormat = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Zs}]/u;
+
 function insensitiveDefinition(definition: SymbolDefinition): boolean {
   return (
     CLASS_KINDS.includes(definition.type) ||
@@ -180,7 +189,8 @@ export const phpRenameProvider: RenameProvider = {
   },
   validateName(name) {
     if (
-      !/^[A-Za-z_\u0080-\uFFFF][A-Za-z0-9_\u0080-\uFFFF]*$/.test(name) ||
+      !phpIdentifier.test(name) ||
+      invisibleOrFormat.test(name) ||
       keywords.has(name.toLowerCase())
     )
       return { code: 'invalid_name', message: 'Choose a valid nonreserved PHP identifier.' };

@@ -427,9 +427,23 @@ async function parseSource(
 
 export const objectiveCRenameProvider: RenameProvider = {
   additionalInteropNames: cMacroNames,
+  // Swift calls an imported Objective-C selector or property by its own name.
   interoperatesWithSourceProvider: (provider) =>
-    provider.id === SupportedLanguages.C || provider.id === SupportedLanguages.CPlusPlus,
+    [SupportedLanguages.C, SupportedLanguages.CPlusPlus, SupportedLanguages.Swift].includes(
+      provider.id,
+    ),
   canonicalName,
+  /**
+   * Swift calls a multipart selector by its first piece as the base name; a trailing
+   * `With...` clause of that piece becomes an argument label (SE-0005). Later pieces only
+   * label arguments, so the full selector never appears as one written name.
+   */
+  interopNames(name) {
+    if (!name.includes(':')) return [];
+    const first = name.slice(0, name.indexOf(':'));
+    const base = first.match(/^(.+?)With[A-Z]/)?.[1];
+    return base ? [first, base] : [first];
+  },
   parseSource,
   validateName(name) {
     if (

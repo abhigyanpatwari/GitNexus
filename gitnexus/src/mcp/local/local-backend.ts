@@ -2992,10 +2992,14 @@ export class LocalBackend {
 
     // Resolve repo from optional param (re-reads registry on miss). An optional
     // `branch` param scopes the resolved handle to that branch's index (#2106).
+    // `rename` follows the read-tool omission rule (cwd-derived default) only for
+    // a call that cannot write: dry_run omitted or literally true. dry_run:false -
+    // and any malformed value, which the planner then rejects - keeps the stricter
+    // mutating rule: an explicit repo, one indexed repo, or an MCP default.
     const repo = await this.selectToolRepository(
       p.repo as string | undefined,
       p.branch as string | undefined,
-      { allowCwdDefault: method !== 'rename' },
+      { allowCwdDefault: method !== 'rename' || p.dry_run === undefined || p.dry_run === true },
     );
 
     switch (method) {
@@ -3019,10 +3023,6 @@ export class LocalBackend {
         return this.check(repo, p);
       case 'rename':
         return this.rename(repo, p as unknown as Parameters<LocalBackend['rename']>[1]);
-      case 'rename_preview':
-        return this.rename(repo, { ...p, dry_run: true } as unknown as Parameters<
-          LocalBackend['rename']
-        >[1]);
       // Legacy aliases for backwards compatibility
       case 'search':
         return this.query(repo, p);
@@ -6773,9 +6773,16 @@ export class LocalBackend {
     // Read the indexed file and declaration inventory, without context()'s
     // ranked/truncated incoming edges. Current sources rebuild semantic scopes;
     // a graph edge alone never authorizes a textual replacement.
+    // BasicBlock (the --pdg statement substrate) also carries filePath but is
+    // never a rename declaration: it would load one row per CFG block into every
+    // fresh scope-resolution graph. Excluded by exact label rather than allow-listing
+    // the consumed labels, so a definition label added later still reaches the
+    // planner. labels(n) is the node's single label as a string on LadybugDB
+    // (labels(n)[0] is unreliable); it also tolerates an index with no BasicBlock table.
     const rows = await executeQuery(
       repo.lbugPath,
       `MATCH (n) WHERE n.filePath IS NOT NULL AND n.filePath <> ''
+         AND labels(n) <> 'BasicBlock'
        RETURN n.id AS id, n.name AS name, n.filePath AS filePath,
               n.startLine AS startLine, n.endLine AS endLine`,
     );

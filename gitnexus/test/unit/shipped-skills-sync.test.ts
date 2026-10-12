@@ -321,10 +321,57 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     },
   );
 
+  // Every `code` a failed rename can carry, as thrown in src/mcp/local/rename/*
+  // and gitnexus-shared/src/rename/*, plus the statuses an agent must recover from.
+  const RENAME_RECOVERY_KEYS = [
+    'stale_graph',
+    'source_changed',
+    'unsupported_*',
+    'ambiguous_reference',
+    'incomplete_semantics',
+    'name_collision',
+    'invalid_name',
+    'invalid_argument',
+    'no_locations',
+    'overlapping_edits',
+    'invalid_edit',
+    'duplicate_file',
+    'missing_snapshot',
+    'outside_repository',
+    'source-unavailable',
+    'rename_failed',
+    'write_failed',
+    'application_status: "partial"',
+  ];
+
+  it('documents a recovery step for every rename failure code in every refactoring copy', () => {
+    for (const file of standardSkillCopies('gitnexus-refactoring')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      const table = content.slice(content.indexOf('| Result | Next step |'));
+      for (const key of RENAME_RECOVERY_KEYS) expect(table, `${file}: ${key}`).toContain(key);
+    }
+  });
+
+  it('teaches one rename tool with dry_run, not a separate rename_preview, in every copy', () => {
+    for (const name of ['gitnexus-refactoring', 'gitnexus-guide'] as const) {
+      for (const file of standardSkillCopies(name)) {
+        const content = fs.readFileSync(file, 'utf-8');
+        expect(content, file).not.toContain('rename_preview');
+        expect(content, file).toContain('dry_run');
+      }
+    }
+    for (const file of standardSkillCopies('gitnexus-refactoring')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain(
+        'rename({symbol_name: "oldName", new_name: "newName", dry_run: true})',
+      );
+      expect(content).toContain('rename({..., dry_run: false})');
+    }
+  });
+
   it('teaches graph-backed semantic preview in every refactoring copy', () => {
     for (const file of standardSkillCopies('gitnexus-refactoring')) {
       const content = fs.readFileSync(file, 'utf-8');
-      expect(content).toContain('rename_preview');
       expect(content).toContain('gitnexus-semantic');
       expect(content).not.toContain('tsconfig_path');
       expect(content).toContain('confidence: "semantic"');
@@ -440,6 +487,18 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the degraded-detect_cha
   it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {
     const block = extractManagedBlock(file);
     for (const fragment of REQUIRED_FRAGMENTS) expect(block).toContain(fragment);
+  });
+});
+
+// The checked-in blocks must agree with what src/cli/ai-context.ts generates for the
+// one public rename tool: preview with dry_run:true first, then apply with dry_run:false.
+describe('root AGENTS.md / CLAUDE.md managed block teaches the single rename tool', () => {
+  it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block previews before applying', (file) => {
+    const block = extractManagedBlock(file);
+    expect(block).toContain(
+      'use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false`',
+    );
+    expect(block).not.toContain('rename_preview');
   });
 });
 

@@ -141,17 +141,22 @@ export function containsRange(container: Range, range: Range): boolean {
   );
 }
 
-export function innermostRenameScope(
-  parsed: ParsedFile,
-  node: Parser.SyntaxNode,
-): string | undefined {
-  const range = nodeRange(node);
+/** The tightest scope enclosing a source range. The semantic planner shares this
+ * with providers so both agree on what a position's lexical scope is. */
+export function innermostRenameScopeAt(parsed: ParsedFile, range: Range): string | undefined {
   let result: ParsedFile['scopes'][number] | undefined;
   for (const scope of parsed.scopes) {
     if (containsRange(scope.range, range) && (!result || containsRange(result.range, scope.range)))
       result = scope;
   }
   return result?.id;
+}
+
+export function innermostRenameScope(
+  parsed: ParsedFile,
+  node: Parser.SyntaxNode,
+): string | undefined {
+  return innermostRenameScopeAt(parsed, nodeRange(node));
 }
 
 export { canonicalizeBindings as canonicalizeRenameBindings } from '../scope-resolution/scope/canonicalize-bindings.js';

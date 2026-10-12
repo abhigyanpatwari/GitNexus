@@ -1,4 +1,4 @@
-import { applyEdits, createOffsetLookup, relocated } from 'gitnexus-shared';
+import { applyEdits, createOffsetLookup } from 'gitnexus-shared';
 import fs from 'node:fs/promises';
 import {
   CLASS_KINDS,
@@ -37,6 +37,11 @@ import {
   resolveDefGraphId,
   simpleQualifiedName,
 } from '../../../core/ingestion/scope-resolution/graph-bridge/ids.js';
+import {
+  containsRange,
+  innermostRenameScopeAt,
+  rangeKey,
+} from '../../../core/ingestion/languages/rename-tree-sitter.js';
 import { lookupNameClaim } from '../../../core/ingestion/scope-resolution/scope/walkers.js';
 import { definitionIdPosition } from '../../../core/ingestion/scope-resolution/utils/definition-id.js';
 import {
@@ -51,6 +56,22 @@ import {
 type SemanticObservation = Parameters<
   NonNullable<Parameters<typeof runScopeResolution>[0]['onResolved']>
 >[0];
+
+/**
+ * `SourceBindingResolution.basis` values, emitted with `status: 'blocked'` and
+ * no target, that PROVE the written name denotes some other declaration:
+ * a lexical claim (shadowing, non-callable binding), a qualified-type root that
+ * is not a type owner, a type parameter, or C++ ordinary lookup stopping at a
+ * non-function. Every other blocked basis (an unbound `this`, member-name
+ * hiding, an absent namespace member) records that resolution stopped without
+ * saying what the name means, so it can never clear a same-spelled site.
+ */
+const DISTINCT_DECLARATION_BASES: ReadonlySet<string> = new Set([
+  'lexical-name-claim',
+  'qualified-type-root',
+  'type-parameter',
+  'adl-ordinary-lookup-blocked',
+]);
 
 /** A fresh provider-owned semantic pass uses graph identities, never text-search edits. */
 export async function planGraphRename(
@@ -386,8 +407,7 @@ export async function planGraphRename(
         'A declaration lies outside the indexed source set.',
       );
     const occurrence =
-      source.occurrences.find((candidate) => candidate.definitionId === def.nodeId) ??
-      occurrenceAt(source, def.nameRange);
+      occurrenceIndex(source).byDefinitionId.get(def.nodeId) ?? occurrenceAt(source, def.nameRange);
     add(source, occurrence, selected, [def.nodeId]);
   }
   for (const [scopeId, imports] of indexes.imports) {
@@ -411,7 +431,7 @@ export async function planGraphRename(
       }
       const candidates = source.occurrences.filter(
         (candidate) =>
-          contains(edge.atRange!, candidate.range) &&
+          containsRange(edge.atRange!, candidate.range) &&
           canonical(candidate.name, { occurrence: candidate }) ===
             canonical(symbol.name, { occurrence: candidate }),
       );
@@ -462,8 +482,7 @@ export async function planGraphRename(
         'A reference lies outside the indexed source set.',
       );
     const occurrence =
-      source.occurrences.find((candidate) => candidate.referenceSite === site) ??
-      occurrenceAt(source, site.nameRange);
+      occurrenceIndex(source).byReferenceSite.get(site) ?? occurrenceAt(source, site.nameRange);
     if (accounted.has(occurrenceKey(source.path, occurrence))) continue;
     const completeFamily =
       binding?.status === 'ambiguous' &&
@@ -492,6 +511,21 @@ export async function planGraphRename(
       binding.targetDefIds,
       site,
     );
+    // `blocked` only says the resolver stopped. It is a negative proof only when
+    // it names another declaration, or its basis shows the written name denotes
+    // one; a site whose receiver or member lookup stayed unknown may still be a
+    // real reference. The provider's own occurrence checks above take precedence.
+    if (
+      binding.status === 'blocked' &&
+      !selected &&
+      binding.targetDefIds.length === 0 &&
+      !DISTINCT_DECLARATION_BASES.has(binding.basis)
+    ) {
+      throw new RenameFailure(
+        'ambiguous_reference',
+        `Cannot prove that ${site.name} at ${source.path}:${site.atRange.startLine} is not a reference to ${symbol.name}: the binding was blocked (${binding.basis}) without identifying another declaration.`,
+      );
+    }
   }
   for (const source of files.values()) {
     for (const occurrence of source.occurrences) {
@@ -505,7 +539,7 @@ export async function planGraphRename(
         continue;
       }
       if (occurrence.role === 'binding') {
-        const scope = innermostScope(source, occurrence.range);
+        const scope = innermostRenameScopeAt(source.parsed, occurrence.range);
         if (
           scope &&
           lookupNameClaim(scope, occurrence.name, indexes, {
@@ -569,12 +603,15 @@ export async function planGraphRename(
     ...file.parsed.localDefs,
   ]);
   const offsetOf = createOffsetLookup();
+  const editIndexes = new Map(
+    [...editsByFile].map(([filePath, fileEdits]) => [filePath, indexEdits(fileEdits)] as const),
+  );
   const definitionMap = matchDefinitions(
     definitions,
     updatedDefinitions,
     files,
     updatedFiles,
-    editsByFile,
+    editIndexes,
     offsetOf,
   );
   const definitionsByGraphId = new Map(
@@ -592,9 +629,8 @@ export async function planGraphRename(
     const replacementName =
       replacement && updatedSource && familyIds.has(original!.nodeId)
         ? (
-            updatedSource.occurrences.find(
-              (occurrence) => occurrence.definitionId === replacement.nodeId,
-            ) ?? occurrenceAt(updatedSource, replacement.nameRange)
+            occurrenceIndex(updatedSource).byDefinitionId.get(replacement.nodeId) ??
+            occurrenceAt(updatedSource, replacement.nameRange)
           ).name
         : node.properties.name;
     return replacement
@@ -647,7 +683,7 @@ export async function planGraphRename(
     after.observation,
     files,
     updatedFiles,
-    editsByFile,
+    editIndexes,
     definitionMap,
     offsetOf,
   );
@@ -663,7 +699,10 @@ export async function planGraphRename(
       languages: [
         ...new Set([...sourceResolvers.values()].map((sourceResolver) => sourceResolver.language)),
       ],
-      limitations: ['Only indexed source files covered by this language provider are included.'],
+      limitations: [
+        'Only indexed source files covered by this language provider are included.',
+        'Source files added after the last analyze are not indexed and are not checked; re-run analyze before renaming if files were added.',
+      ],
     },
   };
 }
@@ -803,23 +842,39 @@ function occurrenceKey(path: string, occurrence: RenameOccurrence): string {
   return `${path}:${occurrence.spans.map((span) => `${span.start}:${span.length}`).join(',')}`;
 }
 
-function rangeKey(range: Range): string {
-  return `${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}`;
+/** Lookup tables over one immutable provider source, built on first use. Each
+ * holds the FIRST occurrence for a key, exactly what `Array.find` returned. */
+interface OccurrenceIndex {
+  readonly byReferenceSite: ReadonlyMap<ReferenceSite, RenameOccurrence>;
+  readonly byDefinitionId: ReadonlyMap<string, RenameOccurrence>;
+  readonly byRange: ReadonlyMap<string, readonly RenameOccurrence[]>;
 }
 
-function contains(outer: Range, inner: Range): boolean {
-  return (
-    (inner.startLine > outer.startLine ||
-      (inner.startLine === outer.startLine && inner.startCol >= outer.startCol)) &&
-    (inner.endLine < outer.endLine ||
-      (inner.endLine === outer.endLine && inner.endCol <= outer.endCol))
-  );
+const occurrenceIndexes = new WeakMap<RenameSource, OccurrenceIndex>();
+
+function occurrenceIndex(source: RenameSource): OccurrenceIndex {
+  const existing = occurrenceIndexes.get(source);
+  if (existing) return existing;
+  const byReferenceSite = new Map<ReferenceSite, RenameOccurrence>();
+  const byDefinitionId = new Map<string, RenameOccurrence>();
+  const byRange = new Map<string, RenameOccurrence[]>();
+  for (const occurrence of source.occurrences) {
+    if (occurrence.referenceSite && !byReferenceSite.has(occurrence.referenceSite))
+      byReferenceSite.set(occurrence.referenceSite, occurrence);
+    if (occurrence.definitionId !== undefined && !byDefinitionId.has(occurrence.definitionId))
+      byDefinitionId.set(occurrence.definitionId, occurrence);
+    const key = rangeKey(occurrence.range);
+    const group = byRange.get(key);
+    if (group) group.push(occurrence);
+    else byRange.set(key, [occurrence]);
+  }
+  const built = { byReferenceSite, byDefinitionId, byRange };
+  occurrenceIndexes.set(source, built);
+  return built;
 }
 
 function occurrenceAt(source: RenameSource, range: Range | undefined): RenameOccurrence {
-  const matches =
-    range &&
-    source.occurrences.filter((occurrence) => rangeKey(occurrence.range) === rangeKey(range));
+  const matches = range && occurrenceIndex(source).byRange.get(rangeKey(range));
   if (!matches || matches.length !== 1) {
     throw new RenameFailure(
       'unsupported_occurrence',
@@ -830,13 +885,49 @@ function occurrenceAt(source: RenameSource, range: Range | undefined): RenameOcc
   return matches[0]!;
 }
 
-function innermostScope(source: RenameSource, range: Range): string | undefined {
-  let result: RenameSource['parsed']['scopes'][number] | undefined;
-  for (const scope of source.parsed.scopes) {
-    if (contains(scope.range, range) && (!result || contains(result.range, scope.range)))
-      result = scope;
+/** Edits of one file with the cumulative length change before each, so a
+ * position can be relocated or located inside a replacement in O(log n). */
+interface EditIndex {
+  readonly edits: readonly OccurrenceEdit[];
+  /** `shifts[i]` is the net length change of `edits[0..i)`. */
+  readonly shifts: readonly number[];
+}
+
+function indexEdits(edits: readonly OccurrenceEdit[]): EditIndex {
+  const shifts = [0];
+  for (const edit of edits)
+    shifts.push(shifts[shifts.length - 1]! + edit.new_text.length - edit.length);
+  return { edits, shifts };
+}
+
+const NO_EDITS = indexEdits([]);
+
+/** Count of leading edits whose start is below (or, with `inclusive`, at) `offset`. */
+function editsBefore(index: EditIndex, offset: number, inclusive: boolean): number {
+  let low = 0;
+  let high = index.edits.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const start = index.edits[middle]!.start;
+    if (start < offset || (inclusive && start === offset)) low = middle + 1;
+    else high = middle;
   }
-  return result?.id;
+  return low;
+}
+
+/** The edit whose replaced span holds `offset`, if any. Edits never overlap. */
+function editContaining(index: EditIndex, offset: number): OccurrenceEdit | undefined {
+  const count = editsBefore(index, offset, true);
+  const edit = count > 0 ? index.edits[count - 1] : undefined;
+  return edit && offset < edit.start + edit.length ? edit : undefined;
+}
+
+/** Where an original-source offset lands after the edits (see `relocated`). */
+function relocate(index: EditIndex, offset: number): number {
+  const count = editsBefore(index, offset, false);
+  const edit = count > 0 ? index.edits[count - 1] : undefined;
+  if (edit && offset < edit.start + edit.length) return edit.start + index.shifts[count - 1]!;
+  return offset + index.shifts[count]!;
 }
 
 function assertDeclarationCollisions(
@@ -885,7 +976,7 @@ function matchDefinitions(
   after: readonly SymbolDefinition[],
   files: ReadonlyMap<string, RenameSource>,
   updated: ReadonlyMap<string, RenameSource>,
-  edits: ReadonlyMap<string, readonly OccurrenceEdit[]>,
+  edits: ReadonlyMap<string, EditIndex>,
   offsetOf: ReturnType<typeof createOffsetLookup>,
 ): ReadonlyMap<string, string> {
   const candidates = new Map<string, SymbolDefinition[]>();
@@ -903,9 +994,9 @@ function matchDefinitions(
     const position = declarationPosition(def);
     const source = files.get(def.filePath);
     if (!position || !source) continue;
-    const offset = relocated(
+    const offset = relocate(
+      edits.get(def.filePath) ?? NO_EDITS,
       offsetOf(source, position.line, position.column),
-      edits.get(def.filePath) ?? [],
     );
     const atPosition = candidates.get(`${def.filePath}:${def.type}:${offset}`);
     // Synthetic accessors share their property's range but remain distinct
@@ -934,12 +1025,30 @@ function bindingIds(binding: SourceBindingResolution, map?: ReadonlyMap<string, 
   return [...new Set(binding.targetDefIds.map((id) => map?.get(id) ?? id))].sort().join('\0');
 }
 
+/** The sites at `[from, to)` in a list sorted by offset. */
+function sitesWithin(
+  sorted: readonly { offset: number; site: ReferenceSite }[],
+  from: number,
+  to: number,
+): ReferenceSite[] {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (sorted[middle]!.offset < from) low = middle + 1;
+    else high = middle;
+  }
+  const within: ReferenceSite[] = [];
+  for (let i = low; i < sorted.length && sorted[i]!.offset < to; i++) within.push(sorted[i]!.site);
+  return within;
+}
+
 function assertBindingsPreserved(
   before: SemanticObservation,
   after: SemanticObservation,
   files: ReadonlyMap<string, RenameSource>,
   updated: ReadonlyMap<string, RenameSource>,
-  edits: ReadonlyMap<string, readonly OccurrenceEdit[]>,
+  edits: ReadonlyMap<string, EditIndex>,
   definitions: ReadonlyMap<string, string>,
   offsetOf: ReturnType<typeof createOffsetLookup>,
 ): void {
@@ -960,6 +1069,8 @@ function assertBindingsPreserved(
     positions.push({ offset, site });
     nextPositions.set(prefix, positions);
   }
+  // Sorted once, so the sites inside one expanded replacement are a contiguous run.
+  for (const positions of nextPositions.values()) positions.sort((a, b) => a.offset - b.offset);
   for (const site of before.indexes.referenceSites) {
     const path = before.indexes.scopeTree.getScope(site.inScope)?.filePath;
     const source = path && files.get(path);
@@ -970,22 +1081,18 @@ function assertBindingsPreserved(
         'A reference lies outside the validated source set.',
       );
     const originalOffset = offsetOf(source, range.startLine, range.startCol);
-    const fileEdits = edits.get(source.path) ?? [];
-    const offset = relocated(originalOffset, fileEdits);
-    const replacement = fileEdits.find(
-      (edit) => originalOffset >= edit.start && originalOffset < edit.start + edit.length,
-    );
+    const fileEdits = edits.get(source.path) ?? NO_EDITS;
+    const offset = relocate(fileEdits, originalOffset);
+    const replacement = editContaining(fileEdits, originalOffset);
     // A provider may expand a shared token into several names. Match the
     // original binding inside that exact replacement, never by global spelling.
-    const replacementStart = replacement && relocated(replacement.start, fileEdits);
+    const replacementStart = replacement && relocate(fileEdits, replacement.start);
     const candidates = replacement
-      ? (nextPositions.get(`${source.path}:${site.kind}:${site.callForm ?? ''}`) ?? [])
-          .filter(
-            (entry) =>
-              entry.offset >= replacementStart! &&
-              entry.offset < replacementStart! + replacement.new_text.length,
-          )
-          .map((entry) => entry.site)
+      ? sitesWithin(
+          nextPositions.get(`${source.path}:${site.kind}:${site.callForm ?? ''}`) ?? [],
+          replacementStart!,
+          replacementStart! + replacement.new_text.length,
+        )
       : nextSites.get(`${source.path}:${site.kind}:${site.callForm ?? ''}:${offset}`);
     const previous = before.referenceBindings.get(site);
     const matches = previous

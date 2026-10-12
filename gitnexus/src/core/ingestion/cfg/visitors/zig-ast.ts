@@ -24,6 +24,10 @@ export const zigLabel = (node: SyntaxNode): string | undefined =>
   node.namedChildren.find((c) => c.type === 'block_label' || c.type === 'break_label')
     ?.namedChildren[0]?.text;
 
+/** The value operand of `return` / `break` (a labeled break's label is not a value). */
+export const zigJumpValue = (node: SyntaxNode): SyntaxNode | undefined =>
+  zigChildren(node).find((c) => c.type !== 'break_label');
+
 export function zigAssignment(node: SyntaxNode): {
   targets: SyntaxNode[];
   value?: SyntaxNode;

@@ -1,5 +1,5 @@
 import type Parser from 'tree-sitter';
-import { CLASS_KINDS } from 'gitnexus-shared';
+import { CLASS_KINDS, type SymbolDefinition } from 'gitnexus-shared';
 import type {
   RenameIssue,
   RenameOccurrence,
@@ -14,6 +14,7 @@ import {
   createTreeSitterRenameSource,
   innermostRenameScope,
   nodeRange,
+  rangeKey,
   walkNamedNodes,
 } from '../rename-tree-sitter.js';
 import { graphRenameFamily } from '../rename-family.js';
@@ -28,11 +29,22 @@ const keywords = new Set(
     ' ',
   ),
 );
+// Definition kinds whose parameters (not fields) a keyword argument label binds.
+const CALLABLE_KINDS: readonly string[] = ['Function', 'Method', 'Constructor'];
 const unsupported = (message: string, code = 'unsupported_occurrence'): RenameIssue => ({
   code,
   message,
   status: 'unsupported',
 });
+
+// https://docs.python.org/3/reference/expressions.html#private-name-mangling
+// A class-body identifier with two leading underscores and fewer than two
+// trailing ones is rewritten to `_Class__name`; written external spellings differ.
+const isPrivateName = (name: string): boolean => name.startsWith('__') && !name.endsWith('__');
+// https://docs.python.org/3/reference/lexical_analysis.html#reserved-classes-of-identifiers
+// `__name__` is reserved for the data model: the interpreter looks these members up
+// implicitly (len(), iteration, construction, ...), so no written token proves a use.
+const isSpecialName = (name: string): boolean => /^__.+__$/s.test(name);
 
 function role(node: Parser.SyntaxNode): RenameOccurrence['role'] {
   const parent = node.parent;
@@ -128,18 +140,18 @@ function hasMangledNames(className: Parser.SyntaxNode): boolean {
   const declaration = className.parent;
   if (declaration?.type !== 'class_definition') return false;
   const pending = [...declaration.namedChildren];
-  const isPrivate = (name: string) => name.startsWith('__') && !name.endsWith('__');
   while (pending.length) {
     const node = pending.pop()!;
     if (node.type === 'class_definition') {
-      if (isPrivate(node.childForFieldName('name')?.text ?? '')) return true;
+      if (isPrivateName(node.childForFieldName('name')?.text ?? '')) return true;
       const body = node.childForFieldName('body');
       pending.push(...node.namedChildren.filter((child) => child.id !== body?.id));
       continue;
     }
     if (
       node.type === 'identifier' &&
-      (isPrivate(node.text) || (node.text === '__slots__' && bindsInClassBody(node, declaration)))
+      (isPrivateName(node.text) ||
+        (node.text === '__slots__' && bindsInClassBody(node, declaration)))
     )
       return true;
     pending.push(...node.namedChildren);
@@ -218,17 +230,93 @@ function checkModuleExports(
   }
 }
 
+function checkMemberNames(context: RenameSemanticContext, targetName: string): RenameIssue | void {
+  const names = [canonicalName(targetName), canonicalName(context.newName)];
+  if (names.some(isPrivateName))
+    return unsupported(
+      'A private Python member requires its mangled external spellings in the symbol family.',
+      'unsupported_symbol_family',
+    );
+  if (names.some(isSpecialName))
+    return unsupported(
+      'A Python special-method or data-model name has implicit uses that written references do not show.',
+      'unsupported_symbol_family',
+    );
+}
+
+/** Two classes can share one instance when either lies on the other's method resolution order. */
+function relatedOwners(context: RenameSemanticContext, left: string, right: string): boolean {
+  const { methodDispatch } = context.indexes;
+  return (
+    left === right ||
+    methodDispatch.mroFor(left).includes(right) ||
+    methodDispatch.mroFor(right).includes(left)
+  );
+}
+
+/**
+ * A keyword label is an ordinary token for the callee's parameter, but a
+ * synthesized constructor (dataclass, NamedTuple, ...) binds it to the field.
+ * Only a callee proven to be another function or an unrelated class keeps it unrelated.
+ */
+function checkKeywordLabels(
+  context: RenameSemanticContext,
+  targetName: string,
+): RenameIssue | void {
+  const ownerId = context.target.ownerId;
+  if (!ownerId) return;
+  const names = new Set([canonicalName(targetName), canonicalName(context.newName)]);
+  for (const source of context.files.values()) {
+    let occurrencesByRange: Map<string, RenameOccurrence> | undefined;
+    for (const occurrence of source.occurrences) {
+      const label = occurrence.node;
+      if (occurrence.role !== 'unrelated' || !names.has(occurrence.name) || !label) continue;
+      const call = label.parent?.parent?.parent;
+      // Class keywords reach the metaclass and __init_subclass__, never instance fields.
+      if (call?.type === 'class_definition') continue;
+      const callee = call?.type === 'call' ? call.childForFieldName('function') : undefined;
+      const calleeName =
+        callee?.type === 'attribute' ? callee.childForFieldName('attribute') : callee;
+      occurrencesByRange ??= new Map(
+        source.occurrences.map((candidate) => [rangeKey(candidate.range), candidate]),
+      );
+      const site =
+        calleeName?.type === 'identifier'
+          ? occurrencesByRange.get(rangeKey(nodeRange(calleeName)))?.referenceSite
+          : undefined;
+      const binding = site && context.referenceBindings.get(site);
+      const callables =
+        binding?.status === 'resolved' && binding.targetDefIds.length
+          ? binding.targetDefIds.map((id) => context.indexes.defs.get(id))
+          : undefined;
+      const bindsOtherCallable = (def: SymbolDefinition | undefined): boolean =>
+        def !== undefined &&
+        (CALLABLE_KINDS.includes(def.type) ||
+          (CLASS_KINDS.includes(def.type) && !relatedOwners(context, def.nodeId, ownerId)));
+      if (callables?.every(bindsOtherCallable)) continue;
+      return unsupported(
+        `A keyword argument label may bind the selected field or its destination name through a synthesized constructor: ${source.path}:${label.startPosition.row + 1}.`,
+        'ambiguous_reference',
+      );
+    }
+  }
+}
+
+function pythonSymbolFamily(
+  context: RenameSemanticContext,
+): readonly SymbolDefinition[] | RenameIssue {
+  return graphRenameFamily(context, {
+    matches: (left, right) =>
+      left.type === 'Method' &&
+      right.type === 'Method' &&
+      canonicalName(simpleQualifiedName(left) ?? '') ===
+        canonicalName(simpleQualifiedName(right) ?? ''),
+  });
+}
+
 export const pythonRenameProvider: RenameProvider = {
   canonicalName,
-  symbolFamily(context) {
-    return graphRenameFamily(context, {
-      matches: (left, right) =>
-        left.type === 'Method' &&
-        right.type === 'Method' &&
-        canonicalName(simpleQualifiedName(left) ?? '') ===
-          canonicalName(simpleQualifiedName(right) ?? ''),
-    });
-  },
+  symbolFamily: pythonSymbolFamily,
   validateName(name) {
     if (
       !/^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(name) ||
@@ -249,11 +337,17 @@ export const pythonRenameProvider: RenameProvider = {
     const targetName = simpleQualifiedName(context.target) ?? '';
     const exportIssue = checkModuleExports(context, targetName);
     if (exportIssue) return exportIssue;
-    if (context.target.ownerId && targetName.startsWith('__') && !targetName.endsWith('__'))
-      return unsupported(
-        'A private Python member requires its mangled external spellings in the symbol family.',
-        'unsupported_symbol_family',
-      );
+    if (context.target.ownerId) {
+      const nameIssue = checkMemberNames(context, targetName);
+      if (nameIssue) return nameIssue;
+      if (
+        !CALLABLE_KINDS.includes(context.target.type) &&
+        !CLASS_KINDS.includes(context.target.type)
+      ) {
+        const labelIssue = checkKeywordLabels(context, targetName);
+        if (labelIssue) return labelIssue;
+      }
+    }
     if (CLASS_KINDS.includes(context.target.type)) {
       const source = context.files.get(context.target.filePath);
       const name = source?.occurrences.find(
@@ -265,7 +359,9 @@ export const pythonRenameProvider: RenameProvider = {
           'unsupported_symbol_family',
         );
     }
-    if (!context.target.ownerId) return;
+    const ownerId = context.target.ownerId;
+    if (!ownerId) return;
+    let familyOwners: ReadonlySet<string> | undefined;
     // A string literal attribute name is meaningful only on the relevant receiver.
     for (const source of context.files.values()) {
       if (!source.tree) continue;
@@ -304,9 +400,29 @@ export const pythonRenameProvider: RenameProvider = {
           position: nodeRange(receiver),
           purpose: 'type',
         }).bindings;
-        if (!owners.length || owners.some((owner) => owner.def.nodeId === context.target.ownerId))
+        // A receiver that inherits the declaring class (or may hold a subclass instance)
+        // reaches the selected member without naming its declaring owner.
+        if (
+          !owners.length ||
+          owners.some((owner) => relatedOwners(context, owner.def.nodeId, ownerId))
+        )
           return unsupported(
             'Dynamic attribute access may denote the selected member or its destination name.',
+          );
+        if (!familyOwners) {
+          // An override family can select a member that the receiver inherits from a sibling.
+          const family = pythonSymbolFamily(context);
+          if ('code' in family) return family;
+          familyOwners = new Set(family.flatMap((member) => member.ownerId ?? []));
+        }
+        const selectedOwners = familyOwners;
+        if (
+          owners.some((owner) =>
+            [...selectedOwners].some((id) => relatedOwners(context, owner.def.nodeId, id)),
+          )
+        )
+          return unsupported(
+            'Dynamic attribute access may denote a member of the selected override family.',
           );
       }
     }

@@ -168,7 +168,7 @@ try {
   backend = new LocalBackend();
   assert.equal(await backend.init(), true);
   const request = { repo, symbol_uid: target.id, new_name: specification.newName };
-  const preview = await backend.callTool('rename_preview', request);
+  const preview = await backend.callTool('rename', { ...request, dry_run: true });
   assert.equal(preview.status, specification.expect.status, JSON.stringify(preview));
   await assertSources(before);
   const applied = await backend.callTool('rename', { ...request, dry_run: false });

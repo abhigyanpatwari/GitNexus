@@ -169,8 +169,11 @@ export async function executeRenamePlan(
         applied: landed.length > 0,
         application_status: landed.length ? 'partial' : 'failed',
         code: error instanceof RenameFailure ? error.code : 'write_failed',
-        error: `${error instanceof Error ? error.message : String(error)} Check failed files before retrying; writes are not transactional.`,
-        failed_files: changes.slice(landed.length).map((c) => c.file_path),
+        error: `${error instanceof Error ? error.message : String(error)} Inspect failed_files and unattempted_files before retrying; writes are not transactional.`,
+        // Landed files are exactly changes[0..landed.length); the current change is the
+        // one whose staging, validation or install threw, and the rest were never touched.
+        failed_files: [change.file_path],
+        unattempted_files: changes.slice(landed.length + 1).map((c) => c.file_path),
       };
     } finally {
       // Cleanup must not turn an installed replacement into a reported failure.

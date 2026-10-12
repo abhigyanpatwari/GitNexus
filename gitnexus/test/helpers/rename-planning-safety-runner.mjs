@@ -78,11 +78,9 @@ try {
   backend = new LocalBackend();
   assert.equal(await backend.init(), true);
   const request = { repo, symbol_uid: target, new_name: 'renamed' };
-  for (const tool of ['rename_preview', 'rename']) {
-    const result = await backend.callTool(tool, {
-      ...request,
-      ...(tool === 'rename' ? { dry_run: false } : {}),
-    });
+  // Both modes of the one public tool: dry_run:true previews, dry_run:false applies.
+  for (const dry_run of [true, false]) {
+    const result = await backend.callTool('rename', { ...request, dry_run });
     assert.equal(result.status, 'error', JSON.stringify(result));
     assert.equal(result.code, expectedCode, JSON.stringify(result));
     assert.equal(result.planning_status, expectedPlanning);

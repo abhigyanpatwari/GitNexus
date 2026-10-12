@@ -1,0 +1,30 @@
+{
+  "language": "go",
+  "description": "A caseless letter (CJK) is unexported, so widening it to a Unicode uppercase initial is allowed and every in-package use follows.",
+  "categories": ["visibility", "unicode", "same-package"],
+  "target": {
+    "name": "日本",
+    "kind": "Function",
+    "file": "api/api.go"
+  },
+  "newName": "Ünicode",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Other",
+        "kind": "Function",
+        "file": "api/api.go"
+      },
+      "to": {
+        "name": "日本",
+        "kind": "Function",
+        "file": "api/api.go"
+      }
+    }
+  ]
+}

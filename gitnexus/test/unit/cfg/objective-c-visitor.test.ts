@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { objectiveCProvider } from '../../../src/core/ingestion/languages/objective-c.js';
 import { requireVendoredGrammar } from '../../../src/core/tree-sitter/vendored-grammars.js';
 import { collectFunctionCfgs } from '../../../src/core/ingestion/cfg/collect.js';
@@ -349,4 +349,53 @@ describe('Objective-C CFG and PDG with the vendored grammar', () => {
     expect(cfg.functionStartColumn).toBe(0);
     expect(allSites(cfg)[0].at).toEqual([4, 7]);
   });
+
+  // The visitor never throws for a construct it cannot model, so a build error is
+  // unreachable here. It has two reporting channels for a region it cannot resolve
+  // precisely: the unresolved-goto diagnostic and the shared nesting-depth skip.
+  it('routes a goto to an unresolved label to EXIT and reports the label', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const cfg = harness().cfgOf(method('[self work];\ngoto missing;'));
+      const jump = block(cfg, 'goto missing;');
+      expect(cfg.edges).toContainEqual({ from: jump, to: cfg.exitIndex, kind: 'seq' });
+      expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        '[cfg] unresolved goto label "missing" routed to EXIT (1 site(s))',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent for a goto whose label is declared later in the method', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const cfg = harness().cfgOf(method('goto done;\n[self skipped];\ndone: [self finish];'));
+      expect(reaches(cfg, block(cfg, 'goto done;'), block(cfg, '[self finish]'))).toBe(true);
+      expect(reaches(cfg, block(cfg, 'goto done;'), block(cfg, '[self skipped]'))).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    [100, 0, 2, true],
+    [300, 1, 1, false],
+  ])(
+    'applies the nesting budget to a method with %i nested @synchronized levels',
+    (depth, tooDeeplyNested, cfgCount, methodKept) => {
+      const body = `${'@synchronized (input) {\n'.repeat(depth)}[self work];\n${'}\n'.repeat(depth)}`;
+      const root = harness().parse(`${method(body)}\nint twice(int value) { return value * 2; }`);
+      expect(root.hasError).toBe(false);
+      const result = collectFunctionCfgs(root, objectiveCProvider.cfgVisitor!, 'fixture.m');
+      expect(result.skipped).toEqual({ tooManyLines: 0, tooDeeplyNested, buildError: 0 });
+      expect(result.cfgs).toHaveLength(cfgCount);
+      const texts = result.cfgs.flatMap((cfg) => cfg.blocks.map((b) => b.text));
+      expect(texts.some((text) => text.includes('return value * 2'))).toBe(true);
+      expect(texts.some((text) => text.includes('[self work]'))).toBe(methodKept);
+    },
+  );
 });

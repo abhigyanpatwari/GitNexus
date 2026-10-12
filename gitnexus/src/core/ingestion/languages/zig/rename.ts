@@ -1,4 +1,5 @@
 import type Parser from 'tree-sitter';
+import { SupportedLanguages, type BindingRef } from 'gitnexus-shared';
 import type { RenameOccurrence, RenameProvider, RenameSource } from '../../rename-provider.js';
 import {
   canonicalizeRenameBindings,
@@ -60,44 +61,89 @@ function reference(node: Parser.SyntaxNode, source: RenameSource) {
   };
 }
 
+/**
+ * Builtins that look a member up by a spelled name, mapped to what their first
+ * argument denotes: `@field(value, name)` takes a value, while `@hasDecl(T, name)`
+ * and `@hasField(T, name)` take a type. Renaming a member changes every such
+ * lookup, so the literal can neither stay nor be rewritten without proof.
+ */
+const reflectionSubjects: ReadonlyMap<string, 'value' | 'type'> = new Map([
+  ['@field', 'value'],
+  ['@hasDecl', 'type'],
+  ['@hasField', 'type'],
+]);
+/** Only a written container declaration proves an owner; an alias or parameter does not. */
+const containerTypes: ReadonlySet<string> = new Set(['Struct', 'Enum', 'Union']);
+
 export const zigRenameProvider: RenameProvider = {
   canonicalName,
+  // An indexed C source may call a function exported with `export fn`.
+  interoperatesWithSourceProvider: (provider) => provider.id === SupportedLanguages.C,
   checkSafety(context) {
-    const name = canonicalName(simpleQualifiedName(context.target) ?? '');
+    // A literal equal to the destination flips `@hasDecl`/`@hasField` from false to true.
+    const names = new Set([
+      canonicalName(simpleQualifiedName(context.target) ?? ''),
+      canonicalName(context.newName),
+    ]);
+    const lookups: Array<{
+      source: RenameSource;
+      node: Parser.SyntaxNode;
+      subject: 'value' | 'type';
+    }> = [];
+    let mixesInMembers = false;
     for (const source of context.files.values()) {
       if (!source.tree) continue;
       for (const node of walkNamedNodes(source.tree.rootNode)) {
-        if (node.type !== 'builtin_function' || node.firstNamedChild?.text !== '@field') continue;
-        const args = node.namedChildren.find((child) => child.type === 'arguments')?.namedChildren;
-        const [receiver, field] = args ?? [];
-        if (field?.type === 'string' && canonicalName(`@${field.text}`) !== name) continue;
-        const scope = receiver && innermostRenameScope(source.parsed, receiver);
-        const claim =
-          scope &&
-          receiver &&
-          lookupNameClaim(scope, canonicalName(receiver.text), context.indexes, {
-            position: nodeRange(receiver),
-            purpose: 'value',
-          });
-        const type = claim && claim.typeBinding;
-        const owners =
+        if (node.type === 'using_namespace_declaration') mixesInMembers = true;
+        const subject =
+          node.type === 'builtin_function'
+            ? reflectionSubjects.get(node.firstNamedChild?.text ?? '')
+            : undefined;
+        if (subject) lookups.push({ source, node, subject });
+      }
+    }
+    for (const { source, node, subject } of lookups) {
+      const args = node.namedChildren.find((child) => child.type === 'arguments')?.namedChildren;
+      const [receiver, field] = args ?? [];
+      if (field?.type === 'string' && !names.has(canonicalName(`@${field.text}`))) continue;
+      const scope = receiver && innermostRenameScope(source.parsed, receiver);
+      let owners: readonly BindingRef[] | undefined;
+      if (scope && receiver && subject === 'type') {
+        owners =
+          receiver.type === 'identifier'
+            ? lookupNameClaim(scope, canonicalName(receiver.text), context.indexes, {
+                position: nodeRange(receiver),
+                purpose: 'type',
+              }).bindings
+            : undefined;
+      } else if (scope && receiver) {
+        const type = lookupNameClaim(scope, canonicalName(receiver.text), context.indexes, {
+          position: nodeRange(receiver),
+          purpose: 'value',
+        }).typeBinding;
+        owners =
           type &&
           lookupNameClaim(type.declaredAtScope, type.rawName, context.indexes, {
             position: nodeRange(node),
             purpose: 'type',
           }).bindings;
-        if (
-          context.target.ownerId &&
-          owners?.length &&
-          owners.every((owner) => owner.def.nodeId !== context.target.ownerId)
-        )
-          continue;
-        return {
-          code: 'unsupported_occurrence',
-          status: 'unsupported',
-          message: 'A reflected field access may denote the selected symbol.',
-        };
       }
+      // `usingnamespace` republishes one container's declarations under another.
+      if (
+        !mixesInMembers &&
+        context.target.ownerId &&
+        owners?.length &&
+        owners.every(
+          (owner) =>
+            containerTypes.has(owner.def.type) && owner.def.nodeId !== context.target.ownerId,
+        )
+      )
+        continue;
+      return {
+        code: 'unsupported_occurrence',
+        status: 'unsupported',
+        message: 'A reflected member lookup may denote the selected or destination name.',
+      };
     }
   },
   validateName(name) {

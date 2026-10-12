@@ -1,12 +1,19 @@
 import type Parser from 'tree-sitter';
-import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
-import type { RenameOccurrence, RenameProvider, RenameSource } from '../../rename-provider.js';
+import { CLASS_KINDS, SupportedLanguages, type SymbolDefinition } from 'gitnexus-shared';
+import type {
+  RenameIssue,
+  RenameOccurrence,
+  RenameProvider,
+  RenameSemanticContext,
+  RenameSource,
+} from '../../rename-provider.js';
 import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
 import {
   canonicalizeRenameBindings,
   createTreeSitterRenameSource,
   innermostRenameScope,
   nodeRange,
+  rangeKey,
 } from '../rename-tree-sitter.js';
 import { graphRenameFamily } from '../rename-family.js';
 import { canonicalName } from './identifiers.js';
@@ -38,6 +45,139 @@ function role(node: Parser.SyntaxNode): RenameOccurrence['role'] {
     if (ancestor.type === 'package_header' || ancestor.type === 'label') return 'unrelated';
   }
   return 'name';
+}
+
+// Callees whose labels bind their own parameters, never a property.
+const CALLABLE_KINDS: readonly string[] = ['Function', 'Method'];
+// An alias or namespace hides the constructor a label would bind.
+const OPAQUE_TYPE_KINDS: readonly string[] = [
+  'TypeAlias',
+  'Typedef',
+  'Namespace',
+  'Template',
+  'Category',
+];
+
+/** Two types can share one instance when either lies on the other's method resolution order. */
+function relatedTypes(context: RenameSemanticContext, left: string, right: string): boolean {
+  const { methodDispatch } = context.indexes;
+  return (
+    left === right ||
+    methodDispatch.mroFor(left).includes(right) ||
+    methodDispatch.mroFor(right).includes(left)
+  );
+}
+
+/** The identifier an argument list calls; undefined when its syntax shape is not understood. */
+function calleeName(label: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
+  const invocation = label.parent?.parent?.parent;
+  if (invocation?.type === 'call_suffix') {
+    const callee = invocation.parent?.firstNamedChild;
+    const name =
+      callee?.type === 'navigation_expression' ? callee.lastNamedChild?.lastNamedChild : callee;
+    return name?.type === 'simple_identifier' ? name : undefined;
+  }
+  // A supertype initializer or annotation names its class as a type.
+  if (invocation?.type === 'constructor_invocation') {
+    const type = invocation.firstNamedChild;
+    const name = type?.type === 'user_type' ? type.lastNamedChild : undefined;
+    return name?.type === 'type_identifier' ? name : undefined;
+  }
+  return undefined;
+}
+
+/** Whether a `val`/`var` parameter of the class's primary constructor has one of these spellings. */
+function declaresPrimaryProperty(
+  declaration: Parser.SyntaxNode | undefined,
+  names: ReadonlySet<string>,
+) {
+  // An unreadable declaration cannot prove that the label binds only a plain parameter.
+  if (!declaration) return true;
+  return declaration.namedChildren.some(
+    (child) =>
+      child.type === 'primary_constructor' &&
+      child.namedChildren.some(
+        (parameter) =>
+          parameter.type === 'class_parameter' &&
+          parameter.namedChildren.some((part) => part.type === 'binding_pattern_kind') &&
+          names.has(
+            canonicalName(
+              parameter.namedChildren.find((part) => part.type === 'simple_identifier')?.text ?? '',
+            ),
+          ),
+      ),
+  );
+}
+
+/**
+ * A named argument label is an ordinary token for the callee's parameter, but a
+ * primary-constructor `val`/`var` is a parameter and a property at once, and a data
+ * class `copy()` repeats it. Only a callee proven to be another function, or a type
+ * whose own primary constructor declares neither the selected nor the destination
+ * name as a property, keeps the label unrelated.
+ */
+function checkNamedArgumentLabels(context: RenameSemanticContext): RenameIssue | void {
+  const { target } = context;
+  const ownerId = target.ownerId;
+  if (!ownerId || target.type !== 'Property') return;
+  const names = new Set([
+    canonicalName(simpleQualifiedName(target) ?? ''),
+    canonicalName(context.newName),
+  ]);
+  const declarations = new Map<string, Parser.SyntaxNode | undefined>();
+  const declarationOf = (type: SymbolDefinition): Parser.SyntaxNode | undefined => {
+    if (!declarations.has(type.nodeId))
+      declarations.set(
+        type.nodeId,
+        context.files
+          .get(type.filePath)
+          ?.occurrences.find((occurrence) => occurrence.definitionId === type.nodeId)?.node
+          ?.parent ?? undefined,
+      );
+    return declarations.get(type.nodeId);
+  };
+  for (const source of context.files.values()) {
+    let occurrencesByRange: Map<string, RenameOccurrence> | undefined;
+    for (const occurrence of source.occurrences) {
+      const label = occurrence.node;
+      if (
+        occurrence.role !== 'unrelated' ||
+        !names.has(occurrence.name) ||
+        label?.parent?.type !== 'value_argument'
+      )
+        continue;
+      occurrencesByRange ??= new Map(
+        source.occurrences.map((candidate) => [rangeKey(candidate.range), candidate]),
+      );
+      const name = calleeName(label);
+      const site = name && occurrencesByRange.get(rangeKey(nodeRange(name)))?.referenceSite;
+      const binding = site && context.referenceBindings.get(site);
+      const callees =
+        binding?.status === 'resolved' && binding.targetDefIds.length
+          ? binding.targetDefIds.map((id) => context.indexes.defs.get(id))
+          : undefined;
+      const bindsProperty = (callee: SymbolDefinition | undefined): boolean => {
+        if (callee && CALLABLE_KINDS.includes(callee.type)) return false;
+        const type =
+          callee?.type === 'Constructor' && callee.ownerId
+            ? context.indexes.defs.get(callee.ownerId)
+            : callee;
+        return (
+          !type ||
+          !CLASS_KINDS.includes(type.type) ||
+          OPAQUE_TYPE_KINDS.includes(type.type) ||
+          (relatedTypes(context, type.nodeId, ownerId) &&
+            declaresPrimaryProperty(declarationOf(type), names))
+        );
+      };
+      if (callees && !callees.some(bindsProperty)) continue;
+      return {
+        code: 'ambiguous_reference',
+        message: `A named argument label may bind the selected property or its destination name through a constructor or copy() parameter: ${source.path}:${label.startPosition.row + 1}.`,
+        status: 'unsupported',
+      };
+    }
+  }
 }
 
 function reference(node: Parser.SyntaxNode, source: RenameSource) {
@@ -82,6 +222,7 @@ export const kotlinRenameProvider: RenameProvider = {
       ...(/^is[A-Z]/.test(name) ? [`set${name.slice(2)}`] : []),
     ];
   },
+  checkSafety: checkNamedArgumentLabels,
   validateName(name) {
     const canonical = canonicalName(name);
     if (
