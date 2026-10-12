@@ -42,6 +42,14 @@ describe('Configurable fetch wrapper consumer extraction', () => {
     expect(thingsEdge).toBeDefined();
   });
 
+  it('traces a configured wrapper called with type arguments', () => {
+    const edges = getRelationships(withConfig, 'FETCHES');
+    const thingsEdge = edges.find(
+      (e) => e.sourceFilePath.includes('TypedThings') && e.target === '/api/things',
+    );
+    expect(thingsEdge).toBeDefined();
+  });
+
   it('does NOT match a configured bare name inside a longer non-ASCII identifier (#1852 review F10)', () => {
     // Accented.tsx calls `cafédoRequest('/api/things')` — `doRequest` preceded by
     // the non-ASCII letter `é`. The Unicode-aware lookbehind must reject it.

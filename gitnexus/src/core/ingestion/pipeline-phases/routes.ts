@@ -545,9 +545,11 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         // Unicode property classes make the boundary cover non-ASCII identifier
         // characters too — ASCII `\w` would let `caféget('/x')` match `get`
         // (#1852 review F10).
+        // An optional TypeScript type argument list may sit between the name and
+        // the call (`client.get<User[]>('/x')`).
         const alternation = [...wrapperNames].map(escapeRegex).join('|');
         const wrapperCallRegex = new RegExp(
-          `(?<![.\\p{L}\\p{N}_$])(?:${alternation})\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
+          `(?<![.\\p{L}\\p{N}_$])(?:${alternation})\\s*(?:<[^()'"\`]*>\\s*)?\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
           'gu',
         );
         const scanContent = (filePath: string, content: string): void => {
