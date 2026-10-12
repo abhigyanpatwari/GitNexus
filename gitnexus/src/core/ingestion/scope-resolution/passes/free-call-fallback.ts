@@ -89,6 +89,9 @@ export function emitFreeCallFallback(
     readonly markConstructionSites?: boolean;
     readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
     readonly isCallableVisibleFromCaller?: ScopeResolver['isCallableVisibleFromCaller'];
+    /** Whether a type named through a written qualifier (`ns.Type{}`) is
+     *  nameable from outside its namespace — `ScopeResolver.isNamespaceMemberVisible`. */
+    readonly isNamespaceMemberVisible?: ScopeResolver['isNamespaceMemberVisible'];
     readonly resolveOrdinaryCallables?: ScopeResolver['resolveOrdinaryCallables'];
     readonly resolveAdlCandidates?: (
       site: {
@@ -147,6 +150,13 @@ export function emitFreeCallFallback(
   // defs.byId.values() at every constructor call. Same simple-name keying
   // and class-like kind filter the previous per-site scan applied.
   const globalClassesBySimpleName = buildGlobalClassIndex(scopes);
+  // `ScopeResolver.isNamespaceMemberVisible` bound once; undefined for every
+  // language that does not implement it, which leaves the class lookups as-is.
+  const memberVisibleToQualifier = options.isNamespaceMemberVisible;
+  const namespaceMemberVisible =
+    memberVisibleToQualifier === undefined
+      ? undefined
+      : (member: SymbolDefinition): boolean => memberVisibleToQualifier({ member });
   // Workspace file-path set for `resolveQualifiedFreeCall` (a module path maps
   // to a file by language convention). Built lazily and once: languages without
   // the hook never pay for it.
@@ -285,6 +295,13 @@ export function emitFreeCallFallback(
       // Constructor child — Go refuses any `qualifiedName` containing `.`.
       let globalFallbackVetoTarget: SymbolDefinition | undefined;
       if (site.callForm === 'constructor') {
+        // `ns.Type{}` names its type through a namespace import: a type the
+        // language will not let that qualifier reach is not found, rather than
+        // rediscovered below by its simple name (`namespaceMemberVisible`).
+        const classLookupOptions = {
+          ...lookupOptions,
+          ...(namespaceMemberVisible !== undefined ? { namespaceMemberVisible } : {}),
+        };
         // Lexical / written-qualifier first. A bare unique type with no
         // import/#include evidence is a guess (JS `new UniqueWidget()`,
         // Go unexported `uniqueWidget{}`). A unique type whose file is
@@ -298,12 +315,15 @@ export function emitFreeCallFallback(
           scopes,
           site.rawQualifiedName,
           undefined,
-          { ...lookupOptions, uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined },
+          {
+            ...classLookupOptions,
+            uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined,
+          },
         );
         if (classDef === undefined) {
           classDef =
             findClassBindingInScope(site.inScope, site.name, scopes, undefined, {
-              ...lookupOptions,
+              ...classLookupOptions,
               uniqueQualifiedNameFallback: true,
             }) ??
             (options.allowGlobalFallback === true && !strictClaim

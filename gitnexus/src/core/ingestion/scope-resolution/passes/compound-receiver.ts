@@ -140,6 +140,9 @@ interface ResolveCompoundReceiverOptions {
   /** A namespace member may be a name the target module imported and
    *  publishes (hub modules). See `ScopeResolver.namespaceExportsIncludeImportedNames`. */
   readonly namespaceExportsIncludeImportedNames?: boolean;
+  /** `ScopeResolver.isNamespaceMemberVisible`, bound to the provider. Absent ⇒
+   *  every namespace member is visible, exactly as before. */
+  readonly namespaceMemberVisible?: (def: SymbolDefinition) => boolean;
   readonly namespaceSkipsEnclosingClasses?: boolean;
   /** Resolve a qualified CLASS name (`opmod.Op`, `hub.sub.Thing`,
    *  `mod.Outer.Inner`) through the language's namespace chain walk
@@ -277,8 +280,14 @@ function resolveConstructionExpressionClass(
       const namespaceMatches = namespaceFiles
         .map((targetFile) =>
           options.namespaceExportsIncludeImportedNames === true
-            ? findExportedDefIncludingImportedNames(targetFile, exportedName, index, scopes)
-            : findExportedDef(targetFile, exportedName, index),
+            ? findExportedDefIncludingImportedNames(
+                targetFile,
+                exportedName,
+                index,
+                scopes,
+                options.namespaceMemberVisible,
+              )
+            : findExportedDef(targetFile, exportedName, index, options.namespaceMemberVisible),
         )
         .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
       return namespaceMatches.length === 1 ? namespaceMatches[0] : undefined;

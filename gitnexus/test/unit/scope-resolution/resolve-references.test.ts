@@ -197,6 +197,71 @@ describe('resolveReferenceSites', () => {
     expect(bindings.get(shadowed)).toMatchObject({ status: 'blocked', targetDefIds: [] });
   });
 
+  it('drops a type reached through a namespace import when the provider refuses that member', () => {
+    const hidden = mkDef({
+      nodeId: 'source.Hidden',
+      type: 'Class',
+      qualifiedName: 'Hidden',
+      filePath: 'source.ts',
+    });
+    const shown = mkDef({
+      nodeId: 'source.Shown',
+      type: 'Class',
+      qualifiedName: 'Shown',
+      filePath: 'source.ts',
+    });
+    const module = mkScope({ id: 'module', parent: null });
+    const hiddenSite: ReferenceSite = {
+      name: 'Hidden',
+      rawQualifiedName: 'ns.Hidden',
+      kind: 'type-reference',
+      inScope: module.id,
+      atRange: range(3, 0, 3, 9),
+    };
+    const shownSite: ReferenceSite = {
+      ...hiddenSite,
+      name: 'Shown',
+      rawQualifiedName: 'ns.Shown',
+      atRange: range(4, 0, 4, 8),
+    };
+    const resolve = (isNamespaceMemberVisible?: (def: SymbolDefinition) => boolean) => {
+      const imports = new Map<ScopeId, readonly ImportEdge[]>();
+      imports.set(module.id, [
+        { kind: 'namespace', localName: 'ns', targetExportedName: '*', targetFile: 'source.ts' },
+      ]);
+      const bindings = new Map<ReferenceSite, SourceBindingResolution>();
+      resolveReferenceSites({
+        scopes: {
+          ...makeIndexes([module], [hidden, shown], [hiddenSite, shownSite]),
+          imports,
+        },
+        ownedMembersByOwner: () => [],
+        isNamespaceMemberVisible,
+        recordSourceBinding: (site, binding) => bindings.set(site, binding),
+      });
+      return bindings;
+    };
+
+    // Default: no hook, every declaration of the namespace's target file is a member.
+    const unrestricted = resolve();
+    expect(unrestricted.get(hiddenSite)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [hidden.nodeId],
+    });
+    expect(unrestricted.get(shownSite)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [shown.nodeId],
+    });
+
+    // With a hook: the refused member resolves to nothing; its sibling is untouched.
+    const restricted = resolve((member) => member.nodeId !== hidden.nodeId);
+    expect(restricted.get(hiddenSite)).toMatchObject({ status: 'unresolved', targetDefIds: [] });
+    expect(restricted.get(shownSite)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [shown.nodeId],
+    });
+  });
+
   it('does not mistake a nearer class qualifier for a globally spelled owner', () => {
     const decoy = mkDef({ nodeId: 'Outer.Target', type: 'Class', qualifiedName: 'Outer.Target' });
     const local = mkDef({ nodeId: 'Local.Outer', type: 'Class', qualifiedName: 'Local.Outer' });

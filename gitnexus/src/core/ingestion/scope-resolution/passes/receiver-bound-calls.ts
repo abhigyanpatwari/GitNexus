@@ -206,6 +206,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'normalizeTypeArgument'
   | 'markConstructionSites'
   | 'namespaceExportsIncludeImportedNames'
+  | 'isNamespaceMemberVisible'
   | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
 >;
@@ -443,10 +444,25 @@ export function emitReceiverBoundCalls(
   // Namespace-member lookup for Case 1 / Case 3: local exports only, unless
   // the provider publishes imported names too (hub modules — see
   // `ScopeResolver.namespaceExportsIncludeImportedNames`).
+  //
+  // A language that states which module members a qualifier can reach
+  // (`ScopeResolver.isNamespaceMemberVisible`) has the rest filtered here, so
+  // Case 1, the chain walk and Case 3 all see one answer.
+  const memberVisibleToQualifier = provider.isNamespaceMemberVisible;
+  const namespaceMemberVisible =
+    memberVisibleToQualifier === undefined
+      ? undefined
+      : (member: SymbolDefinition): boolean => memberVisibleToQualifier({ member });
   const lookupNamespaceMember = (targetFile: string, name: string): SymbolDefinition | undefined =>
     provider.namespaceExportsIncludeImportedNames === true
-      ? findExportedDefIncludingImportedNames(targetFile, name, index, scopes)
-      : findExportedDef(targetFile, name, index);
+      ? findExportedDefIncludingImportedNames(
+          targetFile,
+          name,
+          index,
+          scopes,
+          namespaceMemberVisible,
+        )
+      : findExportedDef(targetFile, name, index, namespaceMemberVisible);
   // A class-like member `name` unique across `files`, or nothing — two
   // same-named classes behind one handle would mint a confident wrong edge.
   const uniqueClassAcross = (
@@ -602,6 +618,7 @@ export function emitReceiverBoundCalls(
     fieldFallback,
     elementTypeOf: provider.elementTypeOf,
     namespaceExportsIncludeImportedNames: provider.namespaceExportsIncludeImportedNames === true,
+    namespaceMemberVisible,
     namespaceSkipsEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
     hoistTypeBindingsToModule,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,

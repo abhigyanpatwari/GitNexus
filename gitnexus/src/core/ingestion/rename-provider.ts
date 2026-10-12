@@ -81,8 +81,19 @@ export interface RenameProvider {
     provider: LanguageProvider,
     filePath: string,
   ) => boolean;
-  /** Additional foreign spellings, such as generated accessor names, for refusal checks. */
-  readonly interopNames?: (name: string) => readonly string[];
+  /**
+   * Additional spellings, such as generated accessor names, under which an interoperating
+   * source in `peer` can write one of this language's names, for refusal checks.
+   */
+  readonly interopNames?: (name: string, peer: LanguageProvider) => readonly string[];
+  /**
+   * The inverse bridge, applied to this language's own written names when `peer` is the
+   * renamed language: a written name (for example a full selector) that denotes an entity
+   * `peer` declares under a different spelling (its base name) returns that spelling, so the
+   * inventory of this interoperating source meets the selected names. Refusal evidence only;
+   * return nothing for a peer without a known bridge.
+   */
+  readonly boundaryNames?: (name: string, peer: LanguageProvider) => readonly string[];
   /** Opaque source names unavailable as semantic occurrences; refusal evidence only. */
   readonly additionalInteropNames?: (source: RenameSource) => readonly string[];
   /** Validate provider qualification after the graph bridge and source range agree. */

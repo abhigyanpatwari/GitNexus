@@ -893,6 +893,14 @@ export type ClassBindingLookup = NameLookupOptions & {
    * `isGlobalNameFallbackPlausible`.
    */
   readonly uniqueQualifiedNameFallback?: boolean;
+  /**
+   * `ScopeResolver.isNamespaceMemberVisible`, bound to the provider. A type
+   * reached through a namespace import (`ns.Type`) is dropped when this refuses
+   * it, as though the namespace's target files did not declare it. Absent (the
+   * default) keeps every declaration of those files, so a caller that does not
+   * pass it is unchanged.
+   */
+  readonly namespaceMemberVisible?: (def: SymbolDefinition) => boolean;
 };
 
 export function findClassBindingInScope(
@@ -957,7 +965,12 @@ export function findClassBindingInScope(
       for (const spelling of [receiverName, memberName]) {
         for (const id of scopes.qualifiedNames.get(spelling)) {
           const def = scopes.defs.get(id);
-          if (def !== undefined && isClassLike(def.type) && targetFiles.has(def.filePath))
+          if (
+            def !== undefined &&
+            isClassLike(def.type) &&
+            targetFiles.has(def.filePath) &&
+            (lookup?.namespaceMemberVisible?.(def) ?? true)
+          )
             candidates.set(def.nodeId, def);
         }
       }
@@ -2258,13 +2271,20 @@ export function findExportedDef(
   targetFile: string,
   memberName: string,
   index: WorkspaceResolutionIndex,
+  /**
+   * `ScopeResolver.isNamespaceMemberVisible`, already bound to the provider.
+   * Absent (the default) accepts every local binding, byte-identical to the
+   * pre-hook behaviour; present, a local def it refuses is skipped as though the
+   * target file did not declare it.
+   */
+  isVisible?: (def: SymbolDefinition) => boolean,
 ): SymbolDefinition | undefined {
   const moduleScope = index.moduleScopeByFile.get(targetFile);
   if (moduleScope === undefined) return undefined;
   const refs = moduleScope.bindings.get(memberName);
   if (refs === undefined) return undefined;
   for (const ref of refs) {
-    if (ref.origin === 'local') return ref.def;
+    if (ref.origin === 'local' && (isVisible === undefined || isVisible(ref.def))) return ref.def;
   }
   return undefined;
 }
@@ -2299,9 +2319,15 @@ export function findExportedDefIncludingImportedNames(
   memberName: string,
   index: WorkspaceResolutionIndex,
   scopes: ScopeResolutionIndexes,
+  /** See `findExportedDef`. A local declaration the predicate refuses still OWNS
+   *  the name: it must not fall through to a re-published name of the same
+   *  spelling, which would answer for a member the module itself declared. */
+  isVisible?: (def: SymbolDefinition) => boolean,
 ): SymbolDefinition | undefined {
-  const local = findExportedDef(targetFile, memberName, index);
+  const local = findExportedDef(targetFile, memberName, index, isVisible);
   if (local !== undefined) return local;
+  if (isVisible !== undefined && findExportedDef(targetFile, memberName, index) !== undefined)
+    return undefined;
   const moduleScope = index.moduleScopeByFile.get(targetFile);
   if (moduleScope === undefined) return undefined;
   let picked: SymbolDefinition | undefined;

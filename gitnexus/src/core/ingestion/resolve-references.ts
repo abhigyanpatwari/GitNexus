@@ -85,6 +85,13 @@ export interface ResolveReferencesInput {
   /** Required owner-keyed member lookup used by Step 2 receiver/MRO walks. */
   readonly ownedMembersByOwner: RegistryContext['ownedMembersByOwner'];
   readonly recordSourceBinding?: SourceBindingRecorder;
+  /**
+   * `ScopeResolver.isNamespaceMemberVisible`, bound to the provider. Consulted
+   * for a type written through a namespace import (`x: ns.Type`): a declaration
+   * the language will not let that qualifier reach yields no resolution. Absent
+   * (the default) accepts whatever the namespace's target files declare.
+   */
+  readonly isNamespaceMemberVisible?: (def: SymbolDefinition) => boolean;
 }
 
 export interface ResolveStats {
@@ -168,6 +175,7 @@ export function createReferenceLookup(
         ? findClassBindingInScope(scope, qualified, scopes, undefined, {
             ...options,
             uniqueQualifiedNameFallback: false,
+            namespaceMemberVisible: input.isNamespaceMemberVisible,
           })
         : resolveQualifiedInheritanceBase(
             scope,

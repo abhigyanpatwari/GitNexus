@@ -1071,9 +1071,14 @@ export function runScopeResolution(
   const registryProviders: RegistryProviders = {
     arityCompatibility: provider.arityCompatibility,
   };
+  const memberVisibleToQualifier = provider.isNamespaceMemberVisible;
   const { referenceIndex, stats: resolveStats } = resolveReferenceSites({
     scopes: indexes,
     providers: registryProviders,
+    isNamespaceMemberVisible:
+      memberVisibleToQualifier === undefined
+        ? undefined
+        : (member) => memberVisibleToQualifier({ member }),
     recordSourceBinding:
       recordSourceBinding === undefined
         ? undefined
@@ -1303,6 +1308,7 @@ export function runScopeResolution(
           freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,
           implicitThisWalksMro: provider.implicitThisWalksMro === true,
           isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
+          isNamespaceMemberVisible: provider.isNamespaceMemberVisible,
           resolveAdlCandidates: provider.resolveAdlCandidates,
           resolveOrdinaryCallables: provider.resolveOrdinaryCallables,
           resolveQualifiedFreeCall: provider.resolveQualifiedFreeCall,

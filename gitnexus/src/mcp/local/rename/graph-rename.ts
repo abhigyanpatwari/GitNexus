@@ -191,14 +191,19 @@ export async function planGraphRename(
         const spellings = new Set(
           [canonical(symbol.name), canonical(options.new_name)].flatMap((name) => [
             name,
-            ...(provider.interopNames?.(name) ?? []),
+            ...(provider.interopNames?.(name, sourceProvider) ?? []),
           ]),
         );
+        // Normalise both sides: the consumer may write the selected entity under a
+        // different spelling (a full selector for a base name) than its declaration.
+        const writtenNames = (occurrence: RenameOccurrence): readonly string[] => {
+          const written =
+            sourceRename.canonicalName?.(occurrence.name, { occurrence }) ?? occurrence.name;
+          return [written, ...(sourceRename.boundaryNames?.(written, targetProvider) ?? [])];
+        };
         if (
           boundary.occurrences.some((occurrence) =>
-            spellings.has(
-              sourceRename.canonicalName?.(occurrence.name, { occurrence }) ?? occurrence.name,
-            ),
+            writtenNames(occurrence).some((name) => spellings.has(name)),
           ) ||
           sourceRename.additionalInteropNames?.(boundary).some((name) => spellings.has(name))
         )

@@ -62,7 +62,7 @@ export function isExportedGoName(name: string): boolean {
  * bare identifier for a function. Either way the LAST segment is the identifier
  * whose case decides export.
  */
-function goSimpleName(candidate: SymbolDefinition): string {
+export function goSimpleName(candidate: SymbolDefinition): string {
   const qualified = candidate.qualifiedName ?? '';
   const dot = qualified.lastIndexOf('.');
   return dot === -1 ? qualified : qualified.slice(dot + 1);

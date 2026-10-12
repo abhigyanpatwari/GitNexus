@@ -64,6 +64,8 @@ interface WrittenName {
 const names = new Set(['identifier', 'type_identifier', 'field_identifier']);
 const containers = new Set(['class_interface', 'class_implementation', 'protocol_declaration']);
 const methods = new Set(['method_definition', 'method_declaration']);
+// Attribute text such as NS_SWIFT_NAME(...) spells Swift-facing names, never Objective-C references.
+const attributeSpecifiers = new Set(['availability_attribute_specifier', 'attribute_specifier']);
 const nonNames = new Set([
   'self',
   'super',
@@ -425,8 +427,55 @@ async function parseSource(
   return result;
 }
 
+/**
+ * Swift calls a multipart selector by its first piece as the base name; a trailing
+ * `With...` clause of that piece becomes an argument label (SE-0005). Later pieces only
+ * label arguments, so the full selector never appears as one written name.
+ */
+function swiftSelectorNames(name: string): readonly string[] {
+  if (!name.includes(':')) return [];
+  const first = name.slice(0, name.indexOf(':'));
+  const base = first.match(/^(.+?)With[A-Z]/)?.[1];
+  return base ? [first, base] : [first];
+}
+
+/** Swift lowers a leading acronym as a unit (`URLString` is `urlString`); keep both readings. */
+function swiftLabels(piece: string): readonly string[] {
+  const simple = piece[0].toLowerCase() + piece.slice(1);
+  const acronym = piece.match(/^[A-Z]+(?=[A-Z][a-z]|$)/)?.[0];
+  return acronym && acronym.length > 1
+    ? [simple, acronym.toLowerCase() + piece.slice(acronym.length)]
+    : [simple];
+}
+
+/**
+ * Swift constructs an `initWith...` selector as `Type(label:)`, so the call never writes
+ * `init`; the labels (the With clause, then the later pieces) are its only spelling.
+ */
+function swiftInitLabels(name: string): readonly string[] {
+  const pieces = name.split(':');
+  const clause = pieces[0].match(/^initWith([A-Z].*)$/)?.[1];
+  return clause ? ['init', ...swiftLabels(clause), ...pieces.slice(1).filter(Boolean)] : [];
+}
+
+/** Names inside `swift_name("...")` strings, which are opaque literals to the parser. */
+function swiftNameAttributeNames(source: RenameSource): readonly string[] {
+  const names: string[] = [];
+  if (!source.tree) return names;
+  for (const node of walkNamedNodes(source.tree.rootNode)) {
+    if (
+      node.type !== 'call_expression' ||
+      node.childForFieldName('function')?.text !== 'swift_name'
+    )
+      continue;
+    for (const literal of node.text.match(/"(?:\\.|[^"\\])*"/g) ?? [])
+      names.push(...(literal.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []));
+  }
+  return names;
+}
+
 export const objectiveCRenameProvider: RenameProvider = {
-  additionalInteropNames: cMacroNames,
+  additionalInteropNames: (source) => [...cMacroNames(source), ...swiftNameAttributeNames(source)],
   // Swift calls an imported Objective-C selector or property by its own name.
   interoperatesWithSourceProvider: (provider) =>
     [SupportedLanguages.C, SupportedLanguages.CPlusPlus, SupportedLanguages.Swift].includes(
@@ -434,15 +483,32 @@ export const objectiveCRenameProvider: RenameProvider = {
     ),
   canonicalName,
   /**
-   * Swift calls a multipart selector by its first piece as the base name; a trailing
-   * `With...` clause of that piece becomes an argument label (SE-0005). Later pieces only
-   * label arguments, so the full selector never appears as one written name.
+   * How an indexed source can spell a selector declared here. Every peer: the first piece
+   * and SE-0005 base name. Swift only: the `__` refinement NS_REFINED_FOR_SWIFT gives it
+   * (written for every selector: the spelling is distinctive and costs a refusal only where
+   * it appears) and the argument labels of an `initWith...` selector. An explicit
+   * NS_SWIFT_NAME keeps the Swift spelling independent of the selector, so it needs no entry.
    */
-  interopNames(name) {
-    if (!name.includes(':')) return [];
-    const first = name.slice(0, name.indexOf(':'));
-    const base = first.match(/^(.+?)With[A-Z]/)?.[1];
-    return base ? [first, base] : [first];
+  interopNames(name, peer) {
+    const swift = swiftSelectorNames(name);
+    if (peer.id !== SupportedLanguages.Swift) return swift;
+    return [
+      ...swift,
+      ...(swift.length ? swift : [name]).map((spelling) => `__${spelling}`),
+      ...swiftInitLabels(name),
+    ];
+  },
+  /**
+   * The inverse bridge for a Swift rename: a selector written here denotes the Swift
+   * declaration named by its base name, and `setFoo:` writes the Swift property `foo`.
+   */
+  boundaryNames(name, peer) {
+    if (peer.id !== SupportedLanguages.Swift) return [];
+    const property = name.match(/^set([A-Z][A-Za-z0-9_]*):$/)?.[1];
+    return [
+      ...swiftSelectorNames(name),
+      ...(property ? [property[0].toLowerCase() + property.slice(1), property] : []),
+    ];
   },
   parseSource,
   validateName(name) {
@@ -583,6 +649,13 @@ export const objectiveCRenameProvider: RenameProvider = {
   },
   checkOccurrence({ occurrence, selected }) {
     if (!selected || !occurrence.node) return;
+    if (enclosing(occurrence.node, attributeSpecifiers))
+      return {
+        code: 'unsupported_boundary',
+        message:
+          'An attribute argument such as NS_SWIFT_NAME spells the selected name; attribute text is a Swift-facing name, not an Objective-C reference, so it cannot be rewritten safely.',
+        status: 'unsupported',
+      };
     const selector = enclosing(occurrence.node, new Set([...methods, 'message_expression']));
     if (!selector) return;
     const parts = objectiveCSelectorParts(selector);

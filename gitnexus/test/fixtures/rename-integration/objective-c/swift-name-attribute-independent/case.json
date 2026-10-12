@@ -1,0 +1,18 @@
+{
+  "language": "objective-c",
+  "description": "An explicit NS_SWIFT_NAME keeps the Swift spelling independent of the selector, so a selector rename leaves the Swift caller and the attribute valid.",
+  "categories": [
+    "cross-language",
+    "interop"
+  ],
+  "target": {
+    "name": "fetchData",
+    "kind": "Method",
+    "file": "Foo.h"
+  },
+  "newName": "loadData",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

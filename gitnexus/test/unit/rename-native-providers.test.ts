@@ -688,6 +688,25 @@ describe('names shared with indexed sources of an interoperating language', () =
     );
   }, 60_000);
 
+  it('renames a C function beside an Objective-C selector that only shares its first piece', async () => {
+    // A selector base name bridges to Swift only; C and C++ never spell a function that way.
+    const selectors =
+      '@interface Other\n- (void)target:(int)value with:(int)other;\n@end\n' +
+      'void use(Other *other) { [other target:1 with:2]; }\n';
+    await expectRename(
+      { ...header, 'api.c': definition, 'Other.m': selectors },
+      {
+        'api.h': 'int renamed(int value);\n',
+        'api.c': definition.replaceAll('target', 'renamed'),
+        'Other.m': selectors,
+      },
+      'target',
+      'Function',
+      'renamed',
+      'api.c',
+    );
+  }, 60_000);
+
   it('refuses a C function when a Swift source spells the name as an unrelated local', async () => {
     // The inventory compares names, as it does for C++ and Objective-C sources.
     await expectBoundaryRefusal(
@@ -801,6 +820,221 @@ describe('names shared with indexed sources of an interoperating language', () =
       'Function',
       'renamed',
       'Greeter.swift',
+    );
+  }, 60_000);
+
+  it.each([
+    [
+      'its two-piece selector',
+      '@objc func target(_ name: String, loudly: Bool) {}',
+      '[greeter target:@"x" loudly:YES]',
+    ],
+    ['its one-piece selector', '@objc func target(_ name: String) {}', '[greeter target:@"x"]'],
+    [
+      'a With clause of the first piece',
+      '@objc func target(name: String) {}',
+      '[greeter targetWithName:@"x"]',
+    ],
+    [
+      'a With clause before a later piece',
+      '@objc func target(name: String, loudly: Bool) {}',
+      '[greeter targetWithName:@"x" loudly:YES]',
+    ],
+  ])(
+    'refuses a Swift method taking arguments that an indexed Objective-C caller names by %s',
+    async (_description, declaration, call) => {
+      await expectBoundaryRefusal(
+        {
+          'Greeter.swift': `@objc class Greeter {\n    ${declaration}\n}\n`,
+          'caller.m': `#import "Greeter-Swift.h"\nvoid use(Greeter *greeter) { ${call}; }\n`,
+        },
+        'target',
+        'Function',
+        'renamed',
+        'Greeter.swift',
+      );
+    },
+    60_000,
+  );
+
+  it('refuses a Swift property that an indexed Objective-C caller writes through its setter selector', async () => {
+    await expectBoundaryRefusal(
+      {
+        'Greeter.swift': '@objc class Greeter {\n    @objc var target: Int = 0\n}\n',
+        'caller.m':
+          '#import "Greeter-Swift.h"\nvoid use(Greeter *greeter) { [greeter setTarget:1]; }\n',
+      },
+      'target',
+      'Property',
+      'renamed',
+      'Greeter.swift',
+    );
+  }, 60_000);
+
+  it('renames a Swift method beside Objective-C selectors that share only a later piece or a prefix', async () => {
+    const caller =
+      '@interface Other\n- (void)notify:(int)count target:(int)flag;\n- (void)targetedWith:(int)flag;\n@end\n' +
+      'void use(Other *other) { [other notify:1 target:2]; [other targetedWith:3]; }\n';
+    const swift = (name: string) =>
+      `class Greeter {\n    func ${name}(_ value: Int, loudly: Bool) {}\n}\n` +
+      `func run(greeter: Greeter) { greeter.${name}(1, loudly: true) }\n`;
+    await expectRename(
+      { 'Greeter.swift': swift('target'), 'Other.m': caller },
+      { 'Greeter.swift': swift('renamed'), 'Other.m': caller },
+      'target',
+      'Function',
+      'renamed',
+      'Greeter.swift',
+    );
+  }, 60_000);
+
+  it.each([
+    ['an NS_SWIFT_NAME argument', '- (int)fetchData NS_SWIFT_NAME(target());'],
+    ['a swift_name attribute string', '- (int)fetchData __attribute__((swift_name("target()")));'],
+  ])(
+    'refuses a Swift method that an indexed Objective-C header names to Swift through %s',
+    async (_description, declaration) => {
+      await expectBoundaryRefusal(
+        {
+          'Foo.h': `@interface Foo\n${declaration}\n@end\n`,
+          'Impl.swift': 'class Impl {\n    func target() -> Int32 { return 1 }\n}\n',
+        },
+        'target',
+        'Function',
+        'renamed',
+        'Impl.swift',
+      );
+    },
+    60_000,
+  );
+
+  it('refuses a Swift initializer that an indexed Objective-C caller constructs with initWith', async () => {
+    await expectBoundaryRefusal(
+      {
+        'Greeter.swift': '@objc class Greeter {\n    @objc init(name: String) {}\n}\n',
+        'caller.m':
+          '#import "Greeter-Swift.h"\nvoid use(void) { Greeter *greeter = [[Greeter alloc] initWithName:@"x"]; }\n',
+      },
+      'init',
+      'Constructor',
+      'make',
+      'Greeter.swift',
+    );
+  }, 60_000);
+
+  it.each([
+    [
+      'one label',
+      '- (instancetype)initWithName:(int)name;',
+      'initWithName:',
+      'initWithTitle:',
+      'Foo(name: 1)',
+    ],
+    [
+      'several labels',
+      '- (instancetype)initWithName:(int)name age:(int)age;',
+      'initWithName:age:',
+      'initWithTitle:age:',
+      'Foo(name: 1, age: 2)',
+    ],
+    [
+      'an acronym label',
+      '- (instancetype)initWithURL:(int)url;',
+      'initWithURL:',
+      'initWithLink:',
+      'Foo(url: 1)',
+    ],
+  ])(
+    'refuses an Objective-C initWith selector that an indexed Swift caller constructs with %s',
+    async (_description, declaration, selector, newName, call) => {
+      await expectBoundaryRefusal(
+        {
+          'Foo.h': `@interface Foo\n${declaration}\n@end\n`,
+          'App.swift': `func make() -> Foo { return ${call} }\n`,
+        },
+        selector,
+        'Method',
+        newName,
+        'Foo.h',
+      );
+    },
+    60_000,
+  );
+
+  it.each([
+    [
+      'a nullary selector',
+      '- (int)target NS_REFINED_FOR_SWIFT;',
+      'target',
+      'renamed',
+      'f.__target()',
+    ],
+    [
+      'a multipart selector',
+      '- (int)target:(int)key with:(int)value NS_REFINED_FOR_SWIFT;',
+      'target:with:',
+      'renamed:using:',
+      'f.__target(1, with: 2)',
+    ],
+  ])(
+    'refuses an Objective-C %s refined for Swift that an indexed Swift caller spells with a double underscore',
+    async (_description, declaration, selector, newName, call) => {
+      await expectBoundaryRefusal(
+        {
+          'Foo.h': `@interface Foo\n${declaration}\n@end\n`,
+          'App.swift': `func run(f: Foo) -> Int32 { return ${call} }\n`,
+        },
+        selector,
+        'Method',
+        newName,
+        'Foo.h',
+      );
+    },
+    60_000,
+  );
+
+  it('refuses an Objective-C selector that another declaration spells in an NS_SWIFT_NAME argument', async () => {
+    await expectBoundaryRefusal(
+      {
+        'Foo.h': '@interface Foo\n- (int)target;\n- (int)other NS_SWIFT_NAME(target());\n@end\n',
+        'Foo.m':
+          '#import "Foo.h"\n@implementation Foo\n- (int)target { return 1; }\n- (int)other { return 2; }\n@end\n',
+      },
+      'target',
+      'Method',
+      'renamed',
+      'Foo.h',
+    );
+  }, 60_000);
+
+  it('renames an Objective-C selector whose Swift spelling an explicit NS_SWIFT_NAME keeps independent', async () => {
+    const header = (name: string) =>
+      `@interface Foo\n- (int)${name} NS_SWIFT_NAME(retrieve());\n@end\n`;
+    const implementation = (name: string) =>
+      `#import "Foo.h"\n@implementation Foo\n- (int)${name} { return 1; }\n@end\n`;
+    const swift = 'func run(f: Foo) -> Int32 { return f.retrieve() }\n';
+    await expectRename(
+      { 'Foo.h': header('target'), 'Foo.m': implementation('target'), 'App.swift': swift },
+      { 'Foo.h': header('renamed'), 'Foo.m': implementation('renamed'), 'App.swift': swift },
+      'target',
+      'Method',
+      'renamed',
+      'Foo.h',
+    );
+  }, 60_000);
+
+  it('renames an Objective-C selector refined for Swift when no indexed Swift source spells it', async () => {
+    const header = (name: string) => `@interface Foo\n- (int)${name} NS_REFINED_FOR_SWIFT;\n@end\n`;
+    const implementation = (name: string) =>
+      `#import "Foo.h"\n@implementation Foo\n- (int)${name} { return 1; }\n@end\n`;
+    const swift = 'func run(f: Foo) -> Int32 { return f.other() }\n';
+    await expectRename(
+      { 'Foo.h': header('target'), 'Foo.m': implementation('target'), 'App.swift': swift },
+      { 'Foo.h': header('renamed'), 'Foo.m': implementation('renamed'), 'App.swift': swift },
+      'target',
+      'Method',
+      'renamed',
+      'Foo.h',
     );
   }, 60_000);
 });
