@@ -1,0 +1,22 @@
+{
+  "language": "kotlin",
+  "description": "Refuse a data class property whose label names the synthesized copy parameter.",
+  "categories": [
+    "named-argument",
+    "synthesized-method",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "first",
+    "kind": "Property",
+    "file": "Model.kt",
+    "startLine": 0
+  },
+  "newName": "head",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  }
+}

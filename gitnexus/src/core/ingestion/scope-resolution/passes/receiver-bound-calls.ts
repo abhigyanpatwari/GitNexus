@@ -122,6 +122,10 @@ import { classifyReceiverShape } from '../resolution-outcome.js';
 import type { ReceiverOrigin } from '../resolution-outcome.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
+import {
+  sourceBindingForDefinition,
+  type SourceBindingRecorder,
+} from '../source-binding-resolution.js';
 
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
@@ -202,6 +206,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'normalizeTypeArgument'
   | 'markConstructionSites'
   | 'namespaceExportsIncludeImportedNames'
+  | 'isNamespaceMemberVisible'
   | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
 >;
@@ -396,6 +401,7 @@ export function emitReceiverBoundCalls(
   model: SemanticModel,
   options: {
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+    readonly recordSourceBinding?: SourceBindingRecorder;
     /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
      *  OR for callable-flow's direct-target index (#2437, position-filtered);
      *  `undefined` ⇒ zero overhead, byte-identity (R4). Per-file capture
@@ -429,16 +435,34 @@ export function emitReceiverBoundCalls(
   // them resolve the same site to the same target. NEVER pre-seed
   // from the reference index — see Contract Invariant I5.
   const seen = new Set<string>();
+  // Active only while a source site is being resolved; nested class/chain
+  // lookups report a name guess at the actual decision that made it.
+  let onNameFallback: (() => void) | undefined;
   const fieldFallback = provider.fieldFallbackOnMethodLookup ?? true;
   const collapse = provider.collapseMemberCallsByCallerTarget === true;
   const hoistTypeBindingsToModule = provider.hoistTypeBindingsToModule === true;
   // Namespace-member lookup for Case 1 / Case 3: local exports only, unless
   // the provider publishes imported names too (hub modules — see
   // `ScopeResolver.namespaceExportsIncludeImportedNames`).
+  //
+  // A language that states which module members a qualifier can reach
+  // (`ScopeResolver.isNamespaceMemberVisible`) has the rest filtered here, so
+  // Case 1, the chain walk and Case 3 all see one answer.
+  const memberVisibleToQualifier = provider.isNamespaceMemberVisible;
+  const namespaceMemberVisible =
+    memberVisibleToQualifier === undefined
+      ? undefined
+      : (member: SymbolDefinition): boolean => memberVisibleToQualifier({ member });
   const lookupNamespaceMember = (targetFile: string, name: string): SymbolDefinition | undefined =>
     provider.namespaceExportsIncludeImportedNames === true
-      ? findExportedDefIncludingImportedNames(targetFile, name, index, scopes)
-      : findExportedDef(targetFile, name, index);
+      ? findExportedDefIncludingImportedNames(
+          targetFile,
+          name,
+          index,
+          scopes,
+          namespaceMemberVisible,
+        )
+      : findExportedDef(targetFile, name, index, namespaceMemberVisible);
   // A class-like member `name` unique across `files`, or nothing — two
   // same-named classes behind one handle would mint a confident wrong edge.
   const uniqueClassAcross = (
@@ -526,7 +550,9 @@ export function emitReceiverBoundCalls(
       break;
     }
     if (cursor === undefined) {
-      const head = findClassBindingInScope(inScope, segments[0]!, scopes);
+      const head = findClassBindingInScope(inScope, segments[0]!, scopes, undefined, {
+        onNameFallback,
+      });
       if (head === undefined || !isClassLike(head.type)) return undefined;
       cursor = { classDef: head };
       rest = segments.slice(1);
@@ -592,6 +618,7 @@ export function emitReceiverBoundCalls(
     fieldFallback,
     elementTypeOf: provider.elementTypeOf,
     namespaceExportsIncludeImportedNames: provider.namespaceExportsIncludeImportedNames === true,
+    namespaceMemberVisible,
     namespaceSkipsEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
     hoistTypeBindingsToModule,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
@@ -1120,11 +1147,41 @@ export function emitReceiverBoundCalls(
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
       if (site.explicitReceiver === undefined) continue;
+      // A receiver-specific decision supersedes the provisional registry
+      // answer even when it deliberately declines to emit an edge.
+      options.recordSourceBinding?.(site, {
+        status: 'unresolved',
+        targetDefIds: [],
+        basis: 'receiver',
+      });
+      let sourceBindingGrounded = true;
+      onNameFallback =
+        options.recordSourceBinding === undefined
+          ? undefined
+          : () => {
+              sourceBindingGrounded = false;
+            };
+      const recordMember = (definition: SymbolDefinition): void => {
+        options.recordSourceBinding?.(
+          site,
+          sourceBindingGrounded
+            ? sourceBindingForDefinition(definition, 'receiver')
+            : {
+                status: 'unresolved',
+                targetDefIds: [definition.nodeId],
+                basis: 'receiver-name-fallback',
+              },
+        );
+      };
 
       const namespaces = namespaceCache.requiresLexicalLookup
         ? namespaceContext(site.inScope, site.atRange)
         : fileNamespaces;
-      const { namespaceTargets, fileCompoundOpts } = namespaces;
+      const { namespaceTargets } = namespaces;
+      const fileCompoundOpts =
+        onNameFallback === undefined
+          ? namespaces.fileCompoundOpts
+          : { ...namespaces.fileCompoundOpts, onNameFallback };
 
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
@@ -1163,6 +1220,11 @@ export function emitReceiverBoundCalls(
       // `lookupCore` match the enclosing class's member by name.
       // No-op for every language that leaves `Scope.ownsReceivers` unset.
       if (isReceiverOwnedButUnbound(site.inScope, receiverName, scopes)) {
+        options.recordSourceBinding?.(site, {
+          status: 'blocked',
+          targetDefIds: [],
+          basis: 'receiver-owned-but-unbound',
+        });
         options.recordResolutionOutcome?.({
           kind: 'suppressed',
           phase: 'receiver-bound-calls',
@@ -1222,6 +1284,7 @@ export function emitReceiverBoundCalls(
               memberName,
               model,
               provider,
+              options.recordSourceBinding,
             );
             handledSites.add(siteKey);
             continue;
@@ -1233,6 +1296,7 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
@@ -1254,6 +1318,7 @@ export function emitReceiverBoundCalls(
             // superclass via its `import`/`from … import …` binding.
             // Closing that gap requires realigning the legacy tier
             // classifier and is tracked separately.
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1350,6 +1415,7 @@ export function emitReceiverBoundCalls(
               memberName,
               model,
               provider,
+              options.recordSourceBinding,
             );
             handledSites.add(siteKey);
             continue;
@@ -1361,11 +1427,13 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
               continue;
             }
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1452,6 +1520,7 @@ export function emitReceiverBoundCalls(
       // AND `isStaticOnly`, the chain-walk below MUST adopt the
       // skip-and-walk-on filter pattern used by Cases 0, 3b, and 4.
       if (provider.resolveThisViaEnclosingClass === true && receiverName === 'this') {
+        sourceBindingGrounded = true;
         const enclosingClass = findEnclosingClassDef(site.inScope, scopes);
         if (enclosingClass !== undefined) {
           const languageResolution = provider.resolveReceiverMember?.(
@@ -1462,6 +1531,11 @@ export function emitReceiverBoundCalls(
             model,
           );
           if (languageResolution?.kind === 'ambiguous') {
+            options.recordSourceBinding?.(site, {
+              status: 'ambiguous',
+              targetDefIds: languageResolution.candidateIds,
+              basis: 'member-lookup-ambiguous',
+            });
             options.recordResolutionOutcome?.({
               kind: 'suppressed',
               phase: 'receiver-bound-calls',
@@ -1482,6 +1556,7 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
@@ -1494,6 +1569,7 @@ export function emitReceiverBoundCalls(
                   ? 'import-resolved'
                   : 'global';
             const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1565,10 +1641,20 @@ export function emitReceiverBoundCalls(
             }
           }
           if (ambiguous) {
+            options.recordSourceBinding?.(site, {
+              status: 'ambiguous',
+              targetDefIds: [],
+              basis: 'member-lookup-ambiguous',
+            });
             handledSites.add(siteKey);
             continue;
           }
           if (hiddenByName) {
+            options.recordSourceBinding?.(site, {
+              status: 'blocked',
+              targetDefIds: [],
+              basis: 'member-name-hiding',
+            });
             handledSites.add(siteKey);
             continue;
           }
@@ -1579,6 +1665,7 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
@@ -1591,6 +1678,7 @@ export function emitReceiverBoundCalls(
                   ? 'import-resolved'
                   : 'global';
             const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1651,9 +1739,34 @@ export function emitReceiverBoundCalls(
         if (cursor !== undefined && 'files' in cursor) targetFiles = cursor.files;
       }
       if (targetFiles !== undefined && provider.resolveQualifiedReceiverMember === undefined) {
+        sourceBindingGrounded = true;
+        // Graph emission historically picks the first package-file hit. An
+        // edit needs the complete candidate set at this same namespace tier.
+        const namespaceMembers =
+          options.recordSourceBinding === undefined
+            ? undefined
+            : new Map(
+                targetFiles.map((targetFile) => [
+                  targetFile,
+                  lookupNamespaceMember(targetFile, memberName),
+                ]),
+              );
+        const namespaceCandidateIds =
+          namespaceMembers === undefined
+            ? []
+            : [
+                ...new Set(
+                  [...namespaceMembers.values()].flatMap((definition) =>
+                    definition === undefined ? [] : [definition.nodeId],
+                  ),
+                ),
+              ];
         let found = false;
         for (const targetFile of targetFiles) {
-          const memberDef = lookupNamespaceMember(targetFile, memberName);
+          const memberDef =
+            namespaceMembers === undefined
+              ? lookupNamespaceMember(targetFile, memberName)
+              : namespaceMembers.get(targetFile);
           if (memberDef !== undefined) {
             if (
               suppressDeletedCallTarget(
@@ -1661,12 +1774,20 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
               found = true;
               break;
             }
+            if (namespaceCandidateIds.length > 1)
+              options.recordSourceBinding?.(site, {
+                status: 'ambiguous',
+                targetDefIds: namespaceCandidateIds,
+                basis: 'namespace-member',
+              });
+            else recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1703,6 +1824,7 @@ export function emitReceiverBoundCalls(
       // Runs before Case 2 so namespace receivers don't accidentally match a
       // class with the same simple name.
       if (provider.resolveQualifiedReceiverMember !== undefined) {
+        sourceBindingGrounded = true;
         const memberDef = provider.resolveQualifiedReceiverMember(
           receiverName,
           memberName,
@@ -1712,6 +1834,11 @@ export function emitReceiverBoundCalls(
           site,
         );
         if (memberDef === 'ambiguous') {
+          options.recordSourceBinding?.(site, {
+            status: 'ambiguous',
+            targetDefIds: [],
+            basis: 'qualified-member-ambiguous',
+          });
           // Same-name ambiguity across inline-namespace children (#1564):
           // suppress edge emission, mark site handled.
           options.recordResolutionOutcome?.({
@@ -1733,11 +1860,13 @@ export function emitReceiverBoundCalls(
               parsed.filePath,
               site,
               memberDef,
+              options.recordSourceBinding,
             )
           ) {
             handledSites.add(siteKey);
             continue;
           }
+          recordMember(memberDef);
           const ok = tryEmitEdge(
             graph,
             scopes,
@@ -1764,17 +1893,45 @@ export function emitReceiverBoundCalls(
       // hub module (a file made only of re-exports) answers when the provider
       // opted in. Only a bare tail is walked here; `ns.Type.field.m()` is the
       // compound resolver's shape.
+      sourceBindingGrounded = true;
       const classDef =
         findClassBindingInScope(site.inScope, receiverName, scopes, undefined, {
+          onNameFallback,
           position: site.atRange,
           purpose: 'value',
         }) ??
         resolveNamespaceQualifiedClass(receiverName, site.inScope, namespaceTargets, site.atRange);
       if (classDef !== undefined) {
+        const languageResolution = provider.resolveReceiverMember?.(
+          classDef,
+          memberName,
+          site,
+          scopes,
+          model,
+        );
+        if (languageResolution?.kind === 'ambiguous') {
+          options.recordSourceBinding?.(site, {
+            status: 'ambiguous',
+            targetDefIds: languageResolution.candidateIds,
+            basis: 'member-lookup-ambiguous',
+          });
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            reason: 'member-lookup-ambiguous',
+            candidateIds: languageResolution.candidateIds,
+          });
+          handledSites.add(siteKey);
+          continue;
+        }
         const chain = [classDef.nodeId, ...scopes.methodDispatch.mroFor(classDef.nodeId)];
-        let memberDef: SymbolDefinition | undefined;
+        let memberDef: SymbolDefinition | undefined =
+          languageResolution?.kind === 'resolved' ? languageResolution.definition : undefined;
         let ambiguousOwnerId: string | undefined;
-        for (const ownerId of chain) {
+        for (const ownerId of memberDef ? [] : chain) {
           const picked =
             site.kind === 'call'
               ? pickOverload(ownerId, memberName, site, model, provider)
@@ -1809,6 +1966,7 @@ export function emitReceiverBoundCalls(
             memberName,
             model,
             provider,
+            options.recordSourceBinding,
           );
           handledSites.add(siteKey);
           continue;
@@ -1826,11 +1984,13 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 nested,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
               continue;
             }
+            recordMember(nested);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -1859,6 +2019,7 @@ export function emitReceiverBoundCalls(
               parsed.filePath,
               site,
               memberDef,
+              options.recordSourceBinding,
             )
           ) {
             handledSites.add(siteKey);
@@ -1871,6 +2032,7 @@ export function emitReceiverBoundCalls(
                 ? 'import-resolved'
                 : 'global';
           const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          recordMember(memberDef);
           const ok = tryEmitEdge(
             graph,
             scopes,
@@ -1894,6 +2056,7 @@ export function emitReceiverBoundCalls(
         position: site.atRange,
       });
       if (typeRef !== undefined && typeRef.rawName.includes('.')) {
+        sourceBindingGrounded = true;
         const [nsName, ...classNameParts] = typeRef.rawName.split('.');
         const className = classNameParts.join('.');
         // With the chain walk the dotted type is resolved as a whole
@@ -1932,6 +2095,7 @@ export function emitReceiverBoundCalls(
                   memberName,
                   model,
                   provider,
+                  options.recordSourceBinding,
                 );
                 handledSites.add(siteKey);
                 found3 = true;
@@ -1945,12 +2109,14 @@ export function emitReceiverBoundCalls(
                     parsed.filePath,
                     site,
                     memberDef,
+                    options.recordSourceBinding,
                   )
                 ) {
                   handledSites.add(siteKey);
                   found3 = true;
                   break;
                 }
+                recordMember(memberDef);
                 const ok = tryEmitEdge(
                   graph,
                   scopes,
@@ -1995,6 +2161,7 @@ export function emitReceiverBoundCalls(
           ? (typeRef.rawName.split('.', 1)[0] ?? '')
           : undefined;
       if (typeRef !== undefined && chainHead !== undefined && !namespaceTargets.has(chainHead)) {
+        sourceBindingGrounded = true;
         // Try the plain dotted-field walk first — covers property /
         // collection-accessor shapes (`.Values`, Kotlin `.size`) and
         // field chains. Fall back to call-form (`x()`) which treats
@@ -2058,6 +2225,7 @@ export function emitReceiverBoundCalls(
               memberName,
               model,
               provider,
+              options.recordSourceBinding,
             );
             handledSites.add(siteKey);
             continue;
@@ -2069,11 +2237,13 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
               continue;
             }
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -2145,6 +2315,7 @@ export function emitReceiverBoundCalls(
 
       // ── Case 4: simple typeBinding (`u: U`) ──────────────────────
       if (typeRef !== undefined && !typeRef.rawName.includes('.')) {
+        sourceBindingGrounded = true;
         // A `rawName` the capture layer reduced from a type application is
         // resolved through the application it was written as, so the erasure
         // takes the GROUNDED route rather than binding whatever the workspace
@@ -2155,7 +2326,11 @@ export function emitReceiverBoundCalls(
           typeApplication ?? typeRef.rawName,
           scopes,
           undefined,
-          { position: typeRef.lookupPosition, purpose: typeRef.lookupPurpose ?? 'type' },
+          {
+            position: typeRef.lookupPosition,
+            purpose: typeRef.lookupPurpose ?? 'type',
+            onNameFallback,
+          },
         );
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
         // rawName is itself a class symbol reachable through scope bindings.
@@ -2183,7 +2358,10 @@ export function emitReceiverBoundCalls(
           const qnameIds = scopes.qualifiedNames.get(typeRef.rawName);
           if (qnameIds.length === 1) {
             const qdef = scopes.defs.get(qnameIds[0]!);
-            if (qdef !== undefined && isClassLike(qdef.type)) ownerDef = qdef;
+            if (qdef !== undefined && isClassLike(qdef.type)) {
+              ownerDef = qdef;
+              sourceBindingGrounded = false;
+            }
           }
         }
         // Map for-of tuple bindings (`__MAP_TUPLE_i__:mapId`), callable
@@ -2250,6 +2428,11 @@ export function emitReceiverBoundCalls(
             model,
           );
           if (languageResolution?.kind === 'ambiguous') {
+            options.recordSourceBinding?.(site, {
+              status: 'ambiguous',
+              targetDefIds: languageResolution.candidateIds,
+              basis: 'member-lookup-ambiguous',
+            });
             options.recordResolutionOutcome?.({
               kind: 'suppressed',
               phase: 'receiver-bound-calls',
@@ -2270,6 +2453,7 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
@@ -2282,6 +2466,7 @@ export function emitReceiverBoundCalls(
                   ? 'import-resolved'
                   : 'global';
             const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -2364,6 +2549,7 @@ export function emitReceiverBoundCalls(
               memberName,
               model,
               provider,
+              options.recordSourceBinding,
             );
             handledSites.add(siteKey);
             continue;
@@ -2384,6 +2570,7 @@ export function emitReceiverBoundCalls(
                 parsed.filePath,
                 site,
                 memberDef,
+                options.recordSourceBinding,
               )
             ) {
               handledSites.add(siteKey);
@@ -2399,6 +2586,7 @@ export function emitReceiverBoundCalls(
                   ? 'import-resolved'
                   : 'global';
             const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+            recordMember(memberDef);
             const ok = tryEmitEdge(
               graph,
               scopes,
@@ -2683,6 +2871,7 @@ export function emitReceiverBoundCalls(
       // `tryEmitEdgeWithExplicitTargetId` instead, passing `picked.nodeId`
       // directly — same dedup-key shape, collapse-flag honoring, and
       // caller resolution as `tryEmitEdge`.
+      sourceBindingGrounded = true;
       const valueDef = findValueBindingInScope(site.inScope, receiverName, scopes);
       if (valueDef !== undefined) {
         const ownerGraphId =
@@ -2697,6 +2886,7 @@ export function emitReceiverBoundCalls(
             memberName,
             model,
             provider,
+            options.recordSourceBinding,
           );
           handledSites.add(siteKey);
           continue;
@@ -2708,6 +2898,7 @@ export function emitReceiverBoundCalls(
               parsed.filePath,
               site,
               picked,
+              options.recordSourceBinding,
             )
           ) {
             handledSites.add(siteKey);
@@ -2733,6 +2924,7 @@ export function emitReceiverBoundCalls(
                 ? 'import-resolved'
                 : 'global';
           const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+          recordMember(picked);
           const ok = tryEmitEdgeWithExplicitTargetId(
             graph,
             scopes,
@@ -2799,6 +2991,7 @@ export function emitReceiverBoundCalls(
       // and never retarget an existing one. Contract Invariant I4 holds —
       // nothing above moved.
       if (compoundReceiverUnresolved) {
+        sourceBindingGrounded = true;
         const staticMemberReceiver = splitClassLevelMemberReceiver(
           receiverName,
           site.receiverChain,
@@ -2811,7 +3004,7 @@ export function emitReceiverBoundCalls(
                 staticMemberReceiver.headName,
                 scopes,
                 undefined,
-                { position: site.atRange, purpose: 'value' },
+                { position: site.atRange, purpose: 'value', onNameFallback },
               );
         // The head must be the CLASS ITSELF, not a value that happens to
         // share its name — the same `currentIsClassConstant` test the text
@@ -2859,6 +3052,7 @@ export function emitReceiverBoundCalls(
                   fieldDeclaredType,
                   scopes,
                   provider.stripTypePreservingDecoration,
+                  { onNameFallback },
                 );
           if (receiverClass !== undefined) {
             const chain = [
@@ -2888,6 +3082,7 @@ export function emitReceiverBoundCalls(
                 memberName,
                 model,
                 provider,
+                options.recordSourceBinding,
               );
               handledSites.add(siteKey);
               continue;
@@ -2899,6 +3094,7 @@ export function emitReceiverBoundCalls(
                   parsed.filePath,
                   site,
                   memberDef,
+                  options.recordSourceBinding,
                 )
               ) {
                 handledSites.add(siteKey);
@@ -2911,6 +3107,7 @@ export function emitReceiverBoundCalls(
                     ? 'import-resolved'
                     : 'global';
               const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+              recordMember(memberDef);
               const ok = tryEmitEdge(
                 graph,
                 scopes,
@@ -3195,8 +3392,14 @@ function suppressDeletedCallTarget(
   filePath: string,
   site: ParsedFile['referenceSites'][number],
   target: SymbolDefinition,
+  recordSourceBinding?: SourceBindingRecorder,
 ): boolean {
   if (site.kind !== 'call' || target.isDeleted !== true) return false;
+  recordSourceBinding?.(site, {
+    status: 'blocked',
+    targetDefIds: [target.nodeId],
+    basis: 'selected-callable-deleted',
+  });
   record?.({
     kind: 'suppressed',
     phase: 'receiver-bound-calls',
@@ -3217,8 +3420,9 @@ function recordReceiverOverloadSuppression(
   memberName: string,
   model: SemanticModel,
   provider: ReceiverBoundProviderSubset,
+  recordSourceBinding?: SourceBindingRecorder,
 ): void {
-  if (record === undefined) return;
+  if (record === undefined && recordSourceBinding === undefined) return;
   const overloads = model.methods.lookupAllByOwner(ownerId, memberName);
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
@@ -3234,7 +3438,12 @@ function recordReceiverOverloadSuppression(
     : hasConversionRankingSignal(site, provider)
       ? 'conversion-rank-tied'
       : 'overload-ambiguous';
-  record({
+  recordSourceBinding?.(site, {
+    status: 'ambiguous',
+    targetDefIds: candidates.map((candidate) => candidate.nodeId),
+    basis: reason,
+  });
+  record?.({
     kind: 'suppressed',
     phase: 'receiver-bound-calls',
     filePath,

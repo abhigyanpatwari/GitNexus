@@ -70,6 +70,8 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/rename-provider-*.test.ts',
+            'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',
@@ -167,6 +169,8 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/rename-provider-*.test.ts',
+            'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',

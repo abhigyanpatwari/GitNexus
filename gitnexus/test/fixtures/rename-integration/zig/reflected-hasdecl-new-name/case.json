@@ -1,0 +1,40 @@
+{
+  "language": "zig",
+  "description": "Refuse a literal @hasDecl check of the destination name on the owner, which would flip from false to true.",
+  "categories": [
+    "reflection",
+    "has-decl",
+    "destination-collision",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.zig",
+    "startLine": 1
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 3
+      },
+      "to": {
+        "name": "target",
+        "kind": "Method",
+        "file": "model.zig",
+        "startLine": 1
+      }
+    }
+  ]
+}

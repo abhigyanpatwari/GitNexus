@@ -131,6 +131,7 @@ import { extractNestRoutes } from '../route-extractors/nest.js';
 import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
 import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
 import { extractToolDefinitions } from './typescript/tool-definitions.js';
+import { typescriptRenameProvider } from './typescript/rename.js';
 
 const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes>) => [
   ...extractDispatchGuardRoutes(...args),
@@ -402,6 +403,7 @@ const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefi
 
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
+  rename: typescriptRenameProvider,
   extensions: ['.ts', '.tsx', '.mts', '.cts'],
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
@@ -500,6 +502,7 @@ export const typescriptProvider = defineLanguage({
 
 export const javascriptProvider = defineLanguage({
   id: SupportedLanguages.JavaScript,
+  rename: typescriptRenameProvider,
   extensions: ['.js', '.jsx', '.mjs', '.cjs'],
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [

@@ -405,7 +405,8 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         // evicts these again before the next language, so only one language's
         // ParsedFiles are resident at a time.
         const loadStoreFor = async (paths: ReadonlySet<string>): Promise<void> => {
-          if (!parsedFileStorePath) return;
+          if (!parsedFileStorePath || provider.languageProvider.parseStrategy === 'standalone')
+            return;
           const fromDisk = await loadParsedFilesForPaths(parsedFileStorePath, paths);
           for (const [fp, pf] of fromDisk) preExtractedByPath.set(fp, pf);
         };
@@ -491,6 +492,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             scopeIndexStorePath: parsedFileStorePath,
             // CFG/PDG emission (#2081 M1) — opt-in; off ⇒ byte-identical graph.
             pdg: ctx.options?.pdg === true,
+            pdgMaxFunctionLines: ctx.options?.pdgMaxFunctionLines,
             pdgMaxEdgesPerFunction: ctx.options?.pdgMaxEdgesPerFunction,
             pdgMaxReachingDefEdgesPerFunction: ctx.options?.pdgMaxReachingDefEdgesPerFunction,
             pdgMaxCdgEdgesPerFunction: ctx.options?.pdgMaxCdgEdgesPerFunction,

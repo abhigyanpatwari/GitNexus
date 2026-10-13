@@ -1,4 +1,5 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { recordRubyMemberDispatch } from './member-dispatch.js';
 import {
   findChild,
   nodeIfType,
@@ -295,6 +296,7 @@ export function emitRubyScopeCaptures(
     throw scopeExtractionError('scope query', _filePath, err);
   }
 
+  recordRubyMemberDispatch(tree.rootNode, _filePath);
   const out: CaptureMatch[] = [];
 
   for (const m of rawMatches) {
@@ -855,6 +857,17 @@ function decomposeRubyImport(callNode: SyntaxNode, anchor: Capture): CaptureMatc
   }
 
   if (sourcePath === '') return null;
+
+  // require_relative always resolves from this file, including a bare sibling
+  // spelling. Preserve that distinction for the provider's import resolver.
+  if (
+    methodName === 'require_relative' &&
+    !sourcePath.startsWith('./') &&
+    !sourcePath.startsWith('../') &&
+    !sourcePath.startsWith('/')
+  ) {
+    sourcePath = `./${sourcePath}`;
+  }
 
   const segments = sourcePath.replace(/\\/g, '/').split('/');
   const lastSegment = segments[segments.length - 1]!;

@@ -1,0 +1,62 @@
+{
+  "language": "cpp",
+  "description": "Rename a virtual method through two override levels and statically typed receiver calls while retaining an unrelated homonym.",
+  "categories": ["polymorphism", "method-family", "inheritance", "homonyms"],
+  "target": {
+    "name": "compute",
+    "kind": "Method",
+    "file": "model.cpp",
+    "startLine": 0
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 6
+  },
+  "edges": [
+    {
+      "type": "METHOD_OVERRIDES",
+      "from": {
+        "name": "Child",
+        "kind": "Struct",
+        "file": "model.cpp",
+        "startLine": 1
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Method",
+        "file": "model.cpp",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "METHOD_OVERRIDES",
+      "from": {
+        "name": "Grandchild",
+        "kind": "Struct",
+        "file": "model.cpp",
+        "startLine": 2
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Method",
+        "file": "model.cpp",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "dispatch",
+        "kind": "Function",
+        "file": "model.cpp"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Method",
+        "file": "model.cpp",
+        "startLine": 0
+      }
+    }
+  ]
+}

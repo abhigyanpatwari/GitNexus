@@ -1,0 +1,87 @@
+{
+  "language": "swift",
+  "description": "Rename escaped Swift overloads, function values and labeled calls while preserving a shadowing argument and another owner.",
+  "categories": [
+    "escaped-identifier",
+    "overloads",
+    "call-graph",
+    "named-arguments",
+    "shadowing",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "`encode`",
+    "kind": "Function",
+    "file": "encoder.swift",
+    "startLine": 0
+  },
+  "newName": "serialize",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "encoder.swift",
+        "startLine": 6
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "encoder.swift",
+        "startLine": 2
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "encoder.swift",
+        "startLine": 2
+      },
+      "to": {
+        "name": "`encode`",
+        "kind": "Function",
+        "file": "encoder.swift",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "encoder.swift",
+        "startLine": 2
+      },
+      "to": {
+        "name": "encode",
+        "kind": "Function",
+        "file": "encoder.swift",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "use",
+        "kind": "Function",
+        "file": "encoder.swift",
+        "startLine": 10
+      },
+      "to": {
+        "name": "encode",
+        "kind": "Function",
+        "file": "encoder.swift",
+        "startLine": 9
+      }
+    }
+  ],
+  "expectedTargetName": "`serialize`",
+  "exactOutgoing": true
+}

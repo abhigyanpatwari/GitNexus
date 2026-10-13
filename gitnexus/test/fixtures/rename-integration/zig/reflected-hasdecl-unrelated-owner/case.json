@@ -1,0 +1,33 @@
+{
+  "language": "zig",
+  "description": "Rename a method while preserving @hasDecl checks of the old and destination spellings on a proven different container.",
+  "categories": ["reflection", "has-decl", "unrelated-owner", "receiver-isolation"],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.zig",
+    "startLine": 1
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 6
+      },
+      "to": {
+        "name": "target",
+        "kind": "Method",
+        "file": "model.zig",
+        "startLine": 1
+      }
+    }
+  ]
+}

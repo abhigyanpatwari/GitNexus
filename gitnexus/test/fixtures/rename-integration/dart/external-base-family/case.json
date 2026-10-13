@@ -1,0 +1,22 @@
+{
+  "language": "dart",
+  "description": "Refuse a potentially polymorphic member whose external base is not indexed.",
+  "categories": [
+    "polymorphism",
+    "external-base",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.dart",
+    "startLine": 4
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_symbol_family",
+    "planningStatus": "unsupported"
+  }
+}

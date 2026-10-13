@@ -276,13 +276,40 @@ export function emitKotlinScopeCaptures(
     // `@reference.callable`. Rewrite into a call reference so it participates
     // in call-graph resolution: a bare `::member` resolves as a free call;
     // a `Receiver::member` resolves as a member call against the receiver
-    // type. The function/constructor is referenced (not invoked), so no
-    // arity/argument metadata is attached.
+    // type. A free reference's explicit function type can constrain arity;
+    // otherwise there are no invocation arguments to infer it from.
     if (grouped['@reference.callable'] !== undefined) {
       const nameCap = grouped['@reference.name'];
       const callableNode = groupedNodes['@reference.callable'];
       if (nameCap !== undefined && callableNode !== undefined) {
         const receiverCap = grouped['@reference.receiver'];
+        const declaration = callableNode.parent;
+        const variable =
+          declaration?.type === 'property_declaration'
+            ? declaration.namedChildren.find((child) => child.type === 'variable_declaration')
+            : undefined;
+        const expectedType = variable?.namedChildren.find(
+          (child) => child.type === 'function_type',
+        );
+        const expectedParameters = expectedType?.namedChildren.find(
+          (child) => child.type === 'function_type_parameters',
+        );
+        // A typed callable reference carries its expected function arity even
+        // though it has no invocation arguments. Let the existing overload
+        // resolver use that semantic constraint, rather than inventing a call.
+        const arity =
+          receiverCap === undefined &&
+          expectedParameters &&
+          expectedType &&
+          namedNonComments(expectedType)[0]?.id === expectedParameters.id
+            ? {
+                '@reference.arity': syntheticCapture(
+                  '@reference.arity',
+                  callableNode,
+                  String(namedNonComments(expectedParameters).length),
+                ),
+              }
+            : {};
         // The anchor Capture must carry the call-form tag as its `name` —
         // the scope-extractor reads `Capture.name` (not the map key) to
         // classify the reference kind, so re-wrap via nodeToCapture rather
@@ -293,15 +320,43 @@ export function emitKotlinScopeCaptures(
             '@reference.call.member': nodeToCapture('@reference.call.member', callableNode),
             '@reference.name': nameCap,
             '@reference.receiver': receiverCap,
+            ...arity,
           });
         } else {
           out.push({
             '@reference.call.free': nodeToCapture('@reference.call.free', callableNode),
             '@reference.name': nameCap,
+            ...arity,
           });
         }
       }
       continue;
+    }
+
+    if (grouped['@reference.write.member'] !== undefined) {
+      const assignment = groupedNodes['@reference.write.member'];
+      const target = assignment?.firstNamedChild;
+      const receiver = groupedNodes['@reference.receiver'];
+      const name = groupedNodes['@reference.name'];
+      if (target?.type === 'directly_assignable_expression' && receiver && name) {
+        // Assignment chains are flat in this grammar. The query can pair any
+        // preceding child with any suffix; only the base starts a receiver.
+        if (receiver.id !== target.firstNamedChild?.id) continue;
+        const suffix = name.parent;
+        if (!suffix) continue;
+        const prefix = target.text.slice(0, suffix.startIndex - target.startIndex);
+        grouped['@reference.receiver'] = syntheticCapture('@reference.receiver', receiver, prefix);
+        // The original capture names only the base, not this reconstructed
+        // prefix. Do not later encode that shorter AST as the full receiver.
+        delete groupedNodes['@reference.receiver'];
+        if (suffix.id !== target.lastNamedChild?.id) {
+          delete grouped['@reference.write.member'];
+          grouped['@reference.read.member'] = nodeToCapture('@reference.read.member', suffix);
+          // Prefixes are reads, but are not nested navigation_expression nodes.
+          out.push(grouped);
+          continue;
+        }
+      }
     }
 
     if (

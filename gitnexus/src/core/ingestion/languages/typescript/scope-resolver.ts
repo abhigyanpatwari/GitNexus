@@ -18,9 +18,12 @@ import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { canonicalizeWorkspaceBindings } from '../../scope-resolution/scope/canonicalize-bindings.js';
+import { canonicalTypeScriptName } from './identifiers.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { typescriptProvider } from '../typescript.js';
+import { typescriptModuleExports } from './module-exports.js';
 import { loadTsconfigIndex, type TsconfigIndex } from './tsconfig.js';
 import {
   loadNodeWorkspacePackages,
@@ -76,6 +79,8 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
 }
 
 const typescriptScopeResolver: ScopeResolver = {
+  populateWorkspaceReferences: (parsedFiles) =>
+    canonicalizeWorkspaceBindings(parsedFiles, canonicalTypeScriptName),
   // One hook, both routes. TypeScript exposes collection views as METHOD calls
   // (`.values()`), which the call-expression branch already handles, so the
   // accessor route yields nothing here — but it is now the same hook rather
@@ -91,6 +96,7 @@ const typescriptScopeResolver: ScopeResolver = {
   ownedMembersBindAtModuleScope: false,
 
   resolveImportTarget: makeTsResolveImportTarget(),
+  moduleExports: typescriptModuleExports,
 
   // Threaded into `resolveImportTarget` so tsconfig path aliases
   // (`@/services/user`, `~/x`, ...) resolve through the same standard

@@ -70,7 +70,15 @@
 import { lookupLexicalName } from '../name-claims.js';
 import type { NodeLabel } from '../../graph/types.js';
 import type { SymbolDefinition } from '../symbol-definition.js';
-import type { BindingRef, Callsite, DefId, LookupParams, Resolution, ScopeId } from '../types.js';
+import type {
+  BindingRef,
+  Callsite,
+  DefId,
+  LookupParams,
+  NameLookupOptions,
+  Resolution,
+  ScopeId,
+} from '../types.js';
 import type { OriginForTieBreak } from '../origin-priority.js';
 import { composeEvidence, confidenceFromEvidence, type RawSignals } from './evidence.js';
 import { compareByConfidenceWithTiebreaks, type TieBreakKey } from './tie-breaks.js';
@@ -248,7 +256,8 @@ function walkLexicalChain(
     return id !== null;
   }
   const options = { position: params.lookupPosition, purpose: params.lookupPurpose };
-  const claim = lookupLexicalName(startScope, name, { scopes: ctx.scopes }, options);
+  const claim = lookupName(ctx, startScope, name, options);
+  ctx.onLexicalClaim?.(name, claim);
   if (claim.status !== 'absent') {
     let depth = 0;
     let owner = ctx.scopes.getScope(startScope);
@@ -265,10 +274,7 @@ function walkLexicalChain(
     return true;
   }
   const rootName = name.split('.', 1)[0]!;
-  return (
-    rootName !== name &&
-    lookupLexicalName(startScope, rootName, { scopes: ctx.scopes }, options).status !== 'absent'
-  );
+  return rootName !== name && lookupName(ctx, startScope, rootName, options).status !== 'absent';
 }
 
 function recordLexicalHit(
@@ -370,32 +376,34 @@ function resolveReceiverOwner(
  */
 const IMPLICIT_RECEIVERS: readonly string[] = Object.freeze(['self', 'this', '$this']);
 
+function lookupName(
+  ctx: RegistryContext,
+  scope: ScopeId,
+  name: string,
+  options: NameLookupOptions,
+) {
+  return (
+    ctx.lexicalLookup?.(scope, name, options) ??
+    lookupLexicalName(scope, name, { scopes: ctx.scopes }, options)
+  );
+}
+
 function lookupReceiverType(
   startScope: ScopeId,
   receiverName: string,
   ctx: RegistryContext,
   params: CoreLookupParams,
 ): DefId | undefined {
-  const claim = lookupLexicalName(
-    startScope,
-    receiverName,
-    { scopes: ctx.scopes },
-    {
-      position: params.lookupPosition,
-      purpose: 'value',
-    },
-  );
+  const claim = lookupName(ctx, startScope, receiverName, {
+    position: params.lookupPosition,
+    purpose: 'value',
+  });
   const typeRef = claim.typeBinding;
   if (typeRef === undefined) return undefined;
-  const typeClaim = lookupLexicalName(
-    typeRef.declaredAtScope,
-    typeRef.rawName,
-    { scopes: ctx.scopes },
-    {
-      position: typeRef.lookupPosition,
-      purpose: typeRef.lookupPurpose ?? 'type',
-    },
-  );
+  const typeClaim = lookupName(ctx, typeRef.declaredAtScope, typeRef.rawName, {
+    position: typeRef.lookupPosition,
+    purpose: typeRef.lookupPurpose ?? 'type',
+  });
   if (typeClaim.status !== 'absent') {
     const candidates = new Map(
       typeClaim.bindings

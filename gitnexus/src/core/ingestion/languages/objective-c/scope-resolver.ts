@@ -3,16 +3,23 @@ import {
   type ParsedFile,
   type SymbolDefinition,
   type Callsite,
+  type ReferenceSite,
 } from 'gitnexus-shared';
 import type { RelationshipType } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { generateId } from '../../../../lib/utils.js';
-import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import {
+  lookupNameClaim,
+  populateClassOwnedMembers,
+} from '../../scope-resolution/scope/walkers.js';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { SourceBindingRecorder } from '../../scope-resolution/source-binding-resolution.js';
 import { objectiveCProvider } from '../objective-c.js';
 import { populateObjectiveCCompilationUnitSiblings } from './compilation-unit-siblings.js';
 import { resolveObjectiveCImportTarget } from './import-target.js';
 import { loadObjectiveCResolutionConfig } from './resolution-config.js';
+import { objectiveCRenameEvidence, setObjectiveCRenameFamilies } from './rename.js';
 import {
   applyObjectiveCCaptureSideChannel,
   isInternalObjectiveCFunctionDef,
@@ -23,6 +30,7 @@ import {
   type ObjCContainerFact,
   type ObjCFileFacts,
   type ObjCMemberFact,
+  type ObjCPropertyImplementationFact,
   type ObjCMessageFact,
   type ObjCMethodFact,
   type ObjCTypeInfo,
@@ -36,6 +44,8 @@ interface ObjCWorkspaceFacts {
   readonly methodsByDispatchOwner: ReadonlyMap<string, readonly ObjCMethodFact[]>;
   readonly methodsByExactOwner: ReadonlyMap<string, readonly ObjCMethodFact[]>;
   readonly memberTypesByOwner: ReadonlyMap<string, ReadonlyMap<string, ObjCTypeInfo>>;
+  readonly membersByOwner: ReadonlyMap<string, readonly ObjCMemberFact[]>;
+  readonly propertyImplementations: ReadonlyMap<string, ObjCPropertyImplementationFact>;
   readonly classProtocols: ReadonlyMap<string, ReadonlySet<string>>;
   readonly protocolParents: ReadonlyMap<string, ReadonlySet<string>>;
   readonly superclassByClass: ReadonlyMap<string, string>;
@@ -74,7 +84,13 @@ export const objectiveCScopeResolver: ScopeResolver = {
   buildMro: () => new Map(),
 
   applyCaptureSideChannel: applyObjectiveCCaptureSideChannel,
-  populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+  populateOwners: (parsed: ParsedFile) => {
+    // Objective-C facts already encode ownership in their stable qualified IDs.
+    // The shared walker supplies ownerId but must not prepend a dotted owner.
+    const qualifiedNames = new Map(parsed.localDefs.map((def) => [def.nodeId, def.qualifiedName]));
+    populateClassOwnedMembers(parsed);
+    for (const def of parsed.localDefs) def.qualifiedName = qualifiedNames.get(def.nodeId);
+  },
   populateNamespaceSiblings: populateObjectiveCCompilationUnitSiblings,
   isFileLocalDef: (def: SymbolDefinition) => isInternalObjectiveCFunctionDef(def),
   isSuperReceiver: (receiverText) => receiverText.trim() === 'super',
@@ -83,20 +99,289 @@ export const objectiveCScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: false,
   collapseMemberCallsByCallerTarget: true,
 
-  emitPostResolutionEdges(graph, parsedFiles) {
+  emitPostResolutionEdges(graph, parsedFiles, _nodeLookup, indexes, context) {
     const facts = objectiveCFactsFromParsedFiles(parsedFiles);
     if (facts.length === 0) return;
+    // Persisted inventories retain stable IDs but may omit qualifiedName.
+    // Restore only missing metadata from the exact provider-owned identity;
+    // contradictory stored metadata remains available to the caller's checks.
+    for (const file of facts)
+      for (const fact of [
+        ...file.containers,
+        ...file.methods,
+        ...file.members,
+        ...file.functions,
+      ]) {
+        const node = graph.getNode(fact.nodeId);
+        if (node && node.properties.qualifiedName === undefined)
+          node.properties.qualifiedName = fact.qualifiedName;
+      }
     const workspace = buildObjectiveCWorkspaceFacts(facts);
+    const renameFiles = parsedFiles.filter(
+      (parsed) => objectiveCRenameEvidence(parsed) !== undefined,
+    );
+    const definitions = renameFiles.flatMap((parsed) => parsed.localDefs);
+    const definitionsByQualifiedName = new Map<string, SymbolDefinition[]>();
+    for (const definition of definitions) {
+      if (!definition.qualifiedName) continue;
+      const group = definitionsByQualifiedName.get(definition.qualifiedName) ?? [];
+      group.push(definition);
+      definitionsByQualifiedName.set(definition.qualifiedName, group);
+    }
+    const messageSites = new Map<string, ReferenceSite>();
+    const families = renameFiles.length
+      ? objectiveCSymbolFamilies(workspace)
+      : new Map<string, ReadonlySet<string>>();
+    if (context?.recordSourceBinding)
+      for (const parsed of renameFiles) {
+        const evidence = objectiveCRenameEvidence(parsed);
+        if (!evidence) continue;
+        setObjectiveCRenameFamilies(parsed, families);
+        for (const [site, position] of evidence.messages)
+          messageSites.set(`${parsed.filePath}:${position.line}:${position.column}`, site);
+        recordObjectiveCLexicalBindings(
+          parsed,
+          indexes,
+          definitionsByQualifiedName,
+          context.recordSourceBinding,
+        );
+        recordObjectiveCMemberBindings(
+          parsed,
+          workspace,
+          definitionsByQualifiedName,
+          context.recordSourceBinding,
+        );
+      }
 
     for (const fact of facts) {
       emitObjectiveCHeritageEdges(graph, fact, workspace);
       emitObjectiveCCategoryEdges(graph, fact, workspace);
       emitObjectiveCImplementationEvidence(graph, fact);
       emitObjectiveCUnresolvedMessageEvidence(graph, fact);
-      emitObjectiveCMessageEdges(graph, fact, workspace);
+      emitObjectiveCMessageEdges(
+        graph,
+        fact,
+        workspace,
+        context?.recordSourceBinding && renameFiles.length
+          ? {
+              sites: messageSites,
+              definitions: definitionsByQualifiedName,
+              families,
+              record: context.recordSourceBinding,
+            }
+          : undefined,
+      );
     }
   },
 };
+
+/** Override, protocol, and category declarations share a source selector contract. */
+function objectiveCSymbolFamilies(
+  workspace: ObjCWorkspaceFacts,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const families = new Map<string, Set<string>>();
+  const join = (methods: readonly { readonly qualifiedName: string }[]) => {
+    const merged = new Set(
+      methods.flatMap((method) => [
+        ...(families.get(method.qualifiedName) ?? [method.qualifiedName]),
+      ]),
+    );
+    for (const name of merged) families.set(name, merged);
+  };
+  const all = [...workspace.methodsByExactOwner.values()].flat();
+  for (const method of all) {
+    join([method]);
+    if (method.ownerKind === 'protocol') {
+      for (const parent of protocolHierarchy(workspace, method.ownerName)) {
+        join([
+          method,
+          ...findExactOwnerMethods(
+            workspace,
+            objcProtocolQualifiedName(parent),
+            method.methodKind,
+            method.selector,
+          ),
+        ]);
+      }
+      for (const className of workspace.classesByProtocol.get(method.ownerName) ?? []) {
+        join([
+          method,
+          ...findDispatchMethods(workspace, className, method.methodKind, method.selector).methods,
+        ]);
+      }
+    } else {
+      const className = method.hostClass ?? method.ownerName;
+      join([
+        method,
+        ...findDispatchMethods(workspace, className, method.methodKind, method.selector).methods,
+      ]);
+      const parent = workspace.superclassByClass.get(className);
+      if (parent)
+        join([
+          method,
+          ...findDispatchMethods(workspace, parent, method.methodKind, method.selector).methods,
+        ]);
+    }
+  }
+  for (const members of workspace.membersByOwner.values())
+    for (const property of members) {
+      if (property.kind !== 'property') continue;
+      const owner = property.hostClass
+        ? objcClassQualifiedName(property.hostClass)
+        : property.ownerQualifiedName;
+      const accessors = property.accessors;
+      const related = (workspace.methodsByDispatchOwner.get(owner) ?? []).filter(
+        (method) =>
+          method.methodKind === (accessors?.methodKind ?? '-') &&
+          (method.selector === (accessors?.getter ?? property.name) ||
+            method.selector === accessors?.setter),
+      );
+      const ivars = (workspace.membersByOwner.get(owner) ?? []).filter(
+        (member) =>
+          member.kind === 'ivar' &&
+          member.name === `_${property.name}` &&
+          propertyIvar(property, workspace) === member.name,
+      );
+      const properties = (workspace.membersByOwner.get(owner) ?? []).filter(
+        (member) => member.kind === 'property' && member.name === property.name,
+      );
+      join([property, ...properties, ...related, ...ivars]);
+      const matches = (member: ObjCMemberFact) =>
+        member.kind === 'property' && member.name === property.name;
+      const methodKind = property.accessors?.methodKind ?? '-';
+      if (property.ownerKind === 'protocol') {
+        for (const parent of workspace.protocolParents.get(property.ownerName) ?? []) {
+          join([
+            property,
+            ...findMembersOnReceiver(
+              { kind: 'protocol', name: parent, methodKind },
+              workspace,
+              matches,
+            ),
+          ]);
+        }
+        for (const name of workspace.classesByProtocol.get(property.ownerName) ?? []) {
+          join([
+            property,
+            ...findMembersOnReceiver({ kind: 'class', name, methodKind }, workspace, matches),
+          ]);
+        }
+      } else {
+        const parent = workspace.superclassByClass.get(property.hostClass ?? property.ownerName);
+        if (parent)
+          join([
+            property,
+            ...findMembersOnReceiver(
+              { kind: 'class', name: parent, methodKind },
+              workspace,
+              matches,
+            ),
+          ]);
+      }
+    }
+  return families;
+}
+
+/** Preserve selected lexical ownership; a merged header/implementation is one written binding. */
+function recordObjectiveCLexicalBindings(
+  parsed: ParsedFile,
+  indexes: ScopeResolutionIndexes,
+  definitions: ReadonlyMap<string, readonly SymbolDefinition[]>,
+  record: SourceBindingRecorder,
+): void {
+  const evidence = objectiveCRenameEvidence(parsed)!;
+  for (const site of parsed.referenceSites) {
+    if (evidence.messages.has(site)) continue;
+    const direct = evidence.directReferences.get(site);
+    if (direct) {
+      const implementation = evidence.facts.propertyImplementations?.find(
+        (item) => `objc:ivar:${item.ownerQualifiedName}:${item.ivar}` === direct,
+      );
+      const targets =
+        definitions.get(direct) ??
+        (implementation
+          ? definitions.get(
+              `objc:property:${implementation.ownerQualifiedName}:${implementation.property}`,
+            )
+          : undefined) ??
+        [];
+      record(site, {
+        status: targets.length ? 'resolved' : 'unresolved',
+        targetDefIds: targets.map((def) => def.nodeId),
+        basis: 'objective-c-property-implementation',
+      });
+      continue;
+    }
+    const claim = lookupNameClaim(site.inScope, site.name, indexes, {
+      position: site.atRange,
+      purpose: site.kind === 'type-reference' ? 'type' : 'value',
+    });
+    if (!claim.bindings.length) continue;
+    const qualified = new Set(claim.bindings.map((binding) => binding.def.qualifiedName));
+    if (qualified.size !== 1) continue;
+    const name = [...qualified][0];
+    const targets = name?.startsWith('objc:')
+      ? definitions.get(name)
+      : claim.bindings.map((binding) => binding.def);
+    if (!targets?.length) continue;
+    record(site, {
+      status: 'resolved',
+      targetDefIds: targets.map((def) => def.nodeId),
+      basis: 'objective-c-lexical-binding',
+    });
+  }
+}
+
+function propertyIvar(property: ObjCMemberFact, workspace: ObjCWorkspaceFacts): string | undefined {
+  const owner = property.hostClass
+    ? objcClassQualifiedName(property.hostClass)
+    : property.ownerQualifiedName;
+  const implementation = workspace.propertyImplementations.get(`${owner}:${property.name}`);
+  if (implementation?.dynamic || property.accessors?.methodKind === '+') return undefined;
+  return implementation?.ivar ?? `_${property.name}`;
+}
+
+function recordObjectiveCMemberBindings(
+  parsed: ParsedFile,
+  workspace: ObjCWorkspaceFacts,
+  definitions: ReadonlyMap<string, readonly SymbolDefinition[]>,
+  record: SourceBindingRecorder,
+): void {
+  const facts = objectiveCRenameEvidence(parsed)!.facts;
+  const sites = new Map(
+    parsed.referenceSites
+      .filter((site) => site.nameRange)
+      .map((site) => [`${site.nameRange!.startLine - 1}:${site.nameRange!.startCol}`, site]),
+  );
+  for (const access of facts.memberAccesses ?? []) {
+    const site = sites.get(`${access.startLine}:${access.startCol}`);
+    if (!site) continue;
+    const members = findReceiverMembers(access, workspace, (member) =>
+      access.accessKind === 'property'
+        ? member.kind === 'property' && member.name === access.selector
+        : member.kind === 'ivar' && member.name === access.selector,
+    );
+    const targets = members.length
+      ? members
+      : access.accessKind === 'ivar'
+        ? findReceiverMembers(
+            access,
+            workspace,
+            (member) =>
+              member.kind === 'property' && propertyIvar(member, workspace) === access.selector,
+          )
+        : [];
+    // Bare names without member evidence remain lexical; a dotted field is
+    // owned by its receiver and can never borrow a global same-name binding.
+    if (!targets.length && access.accessKind === 'ivar') continue;
+    const defs = targets.flatMap((member) => definitions.get(member.qualifiedName) ?? []);
+    record(site, {
+      status: defs.length ? 'resolved' : 'unresolved',
+      targetDefIds: defs.map((def) => def.nodeId),
+      basis: `objective-c-${access.accessKind}`,
+    });
+  }
+}
 
 function graphNodeId(label: string, qualifiedName: string): string {
   return generateId(label, qualifiedName);
@@ -140,6 +425,8 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
   const methodsByExactOwner = new Map<string, ObjCMethodFact[]>();
   const methodsByDispatchOwner = new Map<string, ObjCMethodFact[]>();
   const memberTypesByOwner = new Map<string, Map<string, ObjCTypeInfo>>();
+  const membersByOwner = new Map<string, ObjCMemberFact[]>();
+  const propertyImplementations = new Map<string, ObjCPropertyImplementationFact>();
   const classProtocols = new Map<string, Set<string>>();
   const protocolParents = new Map<string, Set<string>>();
   const superclassByClass = new Map<string, string>();
@@ -194,10 +481,18 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
     }
 
     for (const member of fileFact.members) {
+      appendMap(membersByOwner, member.ownerQualifiedName, member);
       addMemberType(memberTypesByOwner, member.ownerQualifiedName, member);
       if (member.hostClass !== undefined) {
+        appendMap(membersByOwner, objcClassQualifiedName(member.hostClass), member);
         addMemberType(memberTypesByOwner, objcClassQualifiedName(member.hostClass), member);
       }
+    }
+    for (const implementation of fileFact.propertyImplementations ?? []) {
+      propertyImplementations.set(
+        `${implementation.ownerQualifiedName}:${implementation.property}`,
+        implementation,
+      );
     }
   }
 
@@ -240,6 +535,8 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
     methodsByDispatchOwner,
     methodsByExactOwner,
     memberTypesByOwner,
+    membersByOwner,
+    propertyImplementations,
     classProtocols,
     protocolParents,
     superclassByClass,
@@ -454,9 +751,48 @@ function emitObjectiveCMessageEdges(
   graph: KnowledgeGraph,
   facts: ObjCFileFacts,
   workspace: ObjCWorkspaceFacts,
+  observation?: {
+    readonly sites: ReadonlyMap<string, ReferenceSite>;
+    readonly definitions: ReadonlyMap<string, readonly SymbolDefinition[]>;
+    readonly families: ReadonlyMap<string, ReadonlySet<string>>;
+    readonly record: SourceBindingRecorder;
+  },
 ): void {
   for (const message of facts.messages) {
     const targets = resolveMessageTargets(message, workspace);
+    const site = observation?.sites.get(
+      `${message.filePath}:${message.startLine}:${message.startCol}`,
+    );
+    if (site && observation) {
+      const methods = targets.kind === 'category-collision' ? targets.candidates : targets.methods;
+      const properties = methods.length
+        ? []
+        : findReceiverMembers(
+            message,
+            workspace,
+            (member) =>
+              member.kind === 'property' &&
+              (member.accessors?.getter === message.selector ||
+                member.accessors?.setter === message.selector),
+          );
+      const definitions = [...methods, ...properties].flatMap(
+        (method) => observation.definitions.get(method.qualifiedName) ?? [],
+      );
+      const family = methods[0] && observation.families.get(methods[0].qualifiedName);
+      const sameFamily = family && methods.every((method) => family.has(method.qualifiedName));
+      observation.record(site, {
+        // Runtime winner remains unknown. The written selector contract is
+        // nevertheless exact when every candidate belongs to one rename family.
+        status:
+          targets.kind === 'category-collision' && !sameFamily
+            ? 'ambiguous'
+            : definitions.length
+              ? 'resolved'
+              : 'unresolved',
+        targetDefIds: [...new Set(definitions.map((def) => def.nodeId))],
+        basis: `objective-c-message:${targets.kind}`,
+      });
+    }
     if (targets.kind === 'none') continue;
     if (targets.kind === 'category-collision') {
       emitCategoryDispatchEvidence(graph, facts, message, targets.candidates);
@@ -509,76 +845,129 @@ function resolveMessageTargets(
   message: ObjCMessageFact,
   workspace: ObjCWorkspaceFacts,
 ): MessageTargets {
-  if (message.receiverKind === 'dynamic') {
-    return { kind: 'none', methods: [] };
-  }
-
-  if (message.receiverKind === 'class') {
-    const className = message.receiverType?.name ?? message.receiverText;
+  const receiver = resolveMessageReceiver(message, workspace);
+  if (!receiver) return { kind: 'none', methods: [] };
+  if (receiver.kind === 'class')
     return messageTargetsFromDispatchLookup(
-      findDispatchMethods(workspace, className, '+', message.selector),
+      findDispatchMethods(workspace, receiver.name, receiver.methodKind, message.selector),
     );
-  }
-
-  if (message.receiverKind === 'self') {
-    const owner = workspace.containersByQualifiedName.get(message.sourceOwnerQualifiedName);
-    const className = owner?.hostClass ?? owner?.name ?? message.sourceOwnerName;
-    if (owner?.kind === 'protocol') {
-      return {
-        kind: 'direct',
-        methods: findProtocolMethods(
+  const methods = findProtocolMethods(
+    workspace,
+    receiver.name,
+    receiver.methodKind,
+    message.selector,
+  );
+  return message.receiverKind === 'self'
+    ? { kind: 'direct', methods }
+    : {
+        kind: 'protocol',
+        protocolName: receiver.name,
+        methods,
+        candidates: findProtocolImplementationCandidates(
           workspace,
-          owner.name,
-          message.sourceMethodKind,
+          receiver.name,
           message.selector,
         ),
       };
-    }
-    return messageTargetsFromDispatchLookup(
-      findDispatchMethods(workspace, className, message.sourceMethodKind, message.selector),
-    );
-  }
+}
 
-  if (message.receiverKind === 'super') {
+/** The same static receiver classification drives sends and member bindings. */
+interface ObjectiveCReceiver {
+  readonly kind: 'class' | 'protocol';
+  readonly name: string;
+  readonly methodKind: '-' | '+';
+}
+
+function resolveMessageReceiver(
+  message: ObjCMessageFact,
+  workspace: ObjCWorkspaceFacts,
+): ObjectiveCReceiver | undefined {
+  let receiver = resolveBaseMessageReceiver(message, workspace);
+  for (const name of message.receiverMemberPath ?? []) {
+    if (!receiver) return undefined;
+    const members = findMembersOnReceiver(receiver, workspace, (member) => member.name === name);
+    const types = members.map((member) => parseObjCType(member.declaredType));
+    const type = types[0];
+    if (
+      !type?.name ||
+      (type.kind !== 'class' && type.kind !== 'protocol') ||
+      types.some((candidate) => candidate?.kind !== type.kind || candidate.name !== type.name)
+    )
+      return undefined;
+    receiver = { kind: type.kind, name: type.name, methodKind: '-' };
+  }
+  return receiver;
+}
+
+function resolveBaseMessageReceiver(
+  message: ObjCMessageFact,
+  workspace: ObjCWorkspaceFacts,
+): ObjectiveCReceiver | undefined {
+  if (message.receiverKind === 'dynamic') return undefined;
+  if (message.receiverKind === 'class')
+    return {
+      kind: 'class',
+      name: message.receiverType?.name ?? message.receiverText,
+      methodKind: '+',
+    };
+  if (message.receiverKind === 'self' || message.receiverKind === 'super') {
     const owner = workspace.containersByQualifiedName.get(message.sourceOwnerQualifiedName);
     const className = owner?.hostClass ?? owner?.name ?? message.sourceOwnerName;
-    const superclass = workspace.superclassByClass.get(className);
-    return superclass === undefined
-      ? { kind: 'none', methods: [] }
-      : messageTargetsFromDispatchLookup(
-          findDispatchMethods(workspace, superclass, message.sourceMethodKind, message.selector),
-        );
+    const name =
+      message.receiverKind === 'super' ? workspace.superclassByClass.get(className) : className;
+    return name
+      ? {
+          kind: owner?.kind === 'protocol' ? 'protocol' : 'class',
+          name,
+          methodKind: message.sourceMethodKind,
+        }
+      : undefined;
   }
-
   const receiverType = message.receiverType ?? resolveMemberReceiverType(message, workspace);
-  if (receiverType?.kind === 'dynamic' || receiverType?.kind === 'class-object') {
-    return { kind: 'none', methods: [] };
-  }
-  if (message.receiverKind === 'unknown' && receiverType === undefined) {
-    return { kind: 'none', methods: [] };
-  }
-  if (receiverType?.kind === 'class' && receiverType.name !== undefined) {
-    return messageTargetsFromDispatchLookup(
-      findDispatchMethods(workspace, receiverType.name, '-', message.selector),
-    );
-  }
+  return receiverType?.name && (receiverType.kind === 'class' || receiverType.kind === 'protocol')
+    ? { kind: receiverType.kind, name: receiverType.name, methodKind: '-' }
+    : undefined;
+}
 
-  if (receiverType?.kind === 'protocol' && receiverType.name !== undefined) {
-    const methods = findProtocolMethods(workspace, receiverType.name, '-', message.selector);
-    const candidates = findProtocolImplementationCandidates(
-      workspace,
-      receiverType.name,
-      message.selector,
-    );
-    return {
-      kind: 'protocol',
-      protocolName: receiverType.name,
-      methods,
-      candidates,
-    };
-  }
+function findReceiverMembers(
+  message: ObjCMessageFact,
+  workspace: ObjCWorkspaceFacts,
+  predicate: (member: ObjCMemberFact) => boolean,
+): readonly ObjCMemberFact[] {
+  const receiver = resolveMessageReceiver(message, workspace);
+  return receiver ? findMembersOnReceiver(receiver, workspace, predicate) : [];
+}
 
-  return { kind: 'none', methods: [] };
+function findMembersOnReceiver(
+  receiver: ObjectiveCReceiver,
+  workspace: ObjCWorkspaceFacts,
+  predicate: (member: ObjCMemberFact) => boolean,
+): readonly ObjCMemberFact[] {
+  const pending =
+    receiver.kind === 'protocol'
+      ? [...protocolHierarchy(workspace, receiver.name)]
+      : [receiver.name];
+  const seen = new Set<string>();
+  while (pending.length) {
+    const owner = pending.shift()!;
+    if (seen.has(owner)) continue;
+    seen.add(owner);
+    const qualified =
+      receiver.kind === 'protocol'
+        ? objcProtocolQualifiedName(owner)
+        : objcClassQualifiedName(owner);
+    const members = (workspace.membersByOwner.get(qualified) ?? []).filter(
+      (member) =>
+        predicate(member) &&
+        (member.kind === 'property'
+          ? (member.accessors?.methodKind ?? '-') === receiver.methodKind
+          : receiver.methodKind === '-'),
+    );
+    if (members.length) return members;
+    const parent = workspace.superclassByClass.get(owner);
+    if (parent && receiver.kind === 'class') pending.push(parent);
+  }
+  return [];
 }
 
 function resolveMemberReceiverType(

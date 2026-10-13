@@ -1,0 +1,39 @@
+{
+  "language": "python",
+  "description": "Refuse a destination-name dynamic attribute collision on the selected receiver.",
+  "categories": [
+    "dynamic-attribute",
+    "destination-collision",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "model.py",
+        "startLine": 4
+      },
+      "to": {
+        "name": "target",
+        "kind": "Method",
+        "file": "model.py",
+        "startLine": 1
+      }
+    }
+  ]
+}

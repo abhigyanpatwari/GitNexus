@@ -2921,15 +2921,23 @@ const processFileGroup = (
         }
       }
 
-      // Append #<paramCount> to owned callable IDs to disambiguate overloads.
-      // Top-level Function IDs stay stable; functions inside an owner may overload.
+      // Providers opt free functions into the same signature identity scheme
+      // used by owned callables. A signature stays stable when overloads are added.
+      const freeFunctionOverloads =
+        nodeLabel === 'Function' &&
+        enclosingClassId === null &&
+        provider.overloadsFreeFunctions === true;
       // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
       const needsAritySuffix =
         nodeLabel === 'Method' ||
         nodeLabel === 'Constructor' ||
-        (nodeLabel === 'Function' && enclosingClassId !== null);
+        (nodeLabel === 'Function' && enclosingClassId !== null) ||
+        freeFunctionOverloads;
       let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
-      if (arityTag && defMethodMap && defMethodInfo) {
+      if (freeFunctionOverloads) {
+        const parameterTypes = methodProps.parameterTypes as string[] | undefined;
+        if (parameterTypes?.length) arityTag += `~${parameterTypes.join(',')}`;
+      } else if (arityTag && defMethodMap && defMethodInfo) {
         const groups = buildCollisionGroups(defMethodMap);
         arityTag += typeTagForId(
           defMethodMap,

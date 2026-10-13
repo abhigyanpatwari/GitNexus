@@ -1,0 +1,21 @@
+{
+  "language": "objective-c",
+  "description": "Refuse a selector that another declaration's NS_SWIFT_NAME argument spells, because attribute text is a Swift-facing name, not an Objective-C reference.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "fetchData",
+    "kind": "Method",
+    "file": "Foo.h"
+  },
+  "newName": "loadData",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

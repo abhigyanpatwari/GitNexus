@@ -68,6 +68,8 @@ export type ReferenceKind =
 export type CallForm = 'free' | 'member' | 'constructor' | 'index';
 
 export interface ReferenceSite {
+  /** Exact identifier capture; atRange still describes the whole expression. */
+  readonly nameRange?: Range;
   /** Graph caller for a synthesized invocation whose callable is looked up elsewhere.
    *  Never changes lexical resolution from `inScope` (for example FastAPI Depends). */
   readonly callerScope?: ScopeId;

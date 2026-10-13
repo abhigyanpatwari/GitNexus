@@ -42,6 +42,43 @@ function projectCallsToGetName(result: Awaited<ReturnType<typeof runPipelineFrom
 }
 
 describe('Java Lombok accessor synthesis (pipeline)', () => {
+  it.each(['same-file', 'cross-file'] as const)(
+    'resolves all getter and setter calls to their owner in a %s fixture',
+    async (layout) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-pair-'));
+      try {
+        const models = `import lombok.Data;
+@Data class Pair { private int first, second; }
+@Data class Decoy { private int first, second; }
+`;
+        const caller = `class Consumer {
+  void update(Pair pair) {
+    pair.setFirst(pair.getSecond());
+    pair.setSecond(pair.getFirst());
+  }
+}
+`;
+        writeFixtureRepo(
+          root,
+          layout === 'same-file'
+            ? { 'Models.java': models + caller }
+            : { 'Models.java': models, 'Consumer.java': caller },
+        );
+        const linked = await runPipelineFromRepo(root, () => {});
+        const calls = getRelationships(linked, 'CALLS').filter((edge) => edge.source === 'update');
+        expect(calls.map((edge) => edge.rel.targetId).sort()).toEqual([
+          'Method:Models.java:Pair.getFirst#0',
+          'Method:Models.java:Pair.getSecond#0',
+          'Method:Models.java:Pair.setFirst#1',
+          'Method:Models.java:Pair.setSecond#1',
+        ]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
+
   it('resolves Consumer.consume -> User.getName for @Data', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-'));
     try {

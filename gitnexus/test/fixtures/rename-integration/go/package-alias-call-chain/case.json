@@ -1,0 +1,43 @@
+{
+  "language": "go",
+  "description": "Follow a module import with an explicit package alias to an exported function from an outer call chain.",
+  "categories": ["cross-file", "call-graph", "import-alias", "shadowing"],
+  "target": {
+    "name": "Compute",
+    "kind": "Function",
+    "file": "api/api.go"
+  },
+  "newName": "Calculate",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "main.go"
+      },
+      "to": {
+        "name": "Compute",
+        "kind": "Function",
+        "file": "api/api.go"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "outer",
+        "kind": "Function",
+        "file": "main.go"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "main.go"
+      }
+    }
+  ]
+}

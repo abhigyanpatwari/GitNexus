@@ -1,0 +1,22 @@
+{
+  "language": "python",
+  "description": "Refuse a special method whose implicit protocol use (len) has no written reference.",
+  "categories": [
+    "special-method",
+    "implicit-use",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "__len__",
+    "kind": "Method",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_symbol_family",
+    "planningStatus": "unsupported"
+  }
+}
