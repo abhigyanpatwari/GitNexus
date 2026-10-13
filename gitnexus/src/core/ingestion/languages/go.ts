@@ -141,6 +141,8 @@ export const goProvider = defineLanguage({
   callExtractor: createCallExtractor(goCallConfig),
   fieldExtractor: createFieldExtractor(goFieldConfig),
   methodExtractor: createMethodExtractor(goMethodConfig),
+  resolveDetachedOwnerName: (node) =>
+    node.type === 'method_declaration' ? goMethodConfig.extractOwnerName?.(node) : undefined,
   variableExtractor: createVariableExtractor(goVariableConfig),
   classExtractor: createClassExtractor(goClassConfig),
   // ── godoc (`//` leading comments) → description (issue #2270). Build/tool
