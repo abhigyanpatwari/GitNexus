@@ -7,11 +7,13 @@ import {
 } from 'gitnexus-shared';
 import Parser from 'tree-sitter';
 import { defineLanguage } from '../language-provider.js';
+import { createObjectiveCCfgVisitor } from '../cfg/visitors/objective-c.js';
 import type { ImportResolverFn } from '../import-resolvers/types.js';
 import { getLanguageGrammar } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { preprocessObjectiveCMacroMarkers } from './objective-c/macro-marker-preprocess.js';
+import { objectiveCRenameProvider } from './objective-c/rename.js';
 import {
   buildObjectiveCSemanticGraph,
   buildObjectiveCScopeCaptures,
@@ -320,6 +322,8 @@ export const objectiveCProvider = defineLanguage({
   classifyFileContent: classifyObjectiveCFileContent,
   shouldClassifyFileContent: isHeaderPath,
   preprocessSource: preprocessObjectiveCMacroMarkers,
+  cfgVisitor: createObjectiveCCfgVisitor(),
+  rename: objectiveCRenameProvider,
   importsExecuteWhereWritten: false,
 
   emitScopeCaptures: (sourceText, filePath, cachedTree): readonly CaptureMatch[] => {

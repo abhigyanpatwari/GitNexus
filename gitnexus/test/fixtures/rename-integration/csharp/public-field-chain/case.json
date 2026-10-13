@@ -1,0 +1,53 @@
+{
+  "language": "csharp",
+  "description": "Rename a C# public field through three-hop field receivers and distinguish the write from its same-name parameter.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "shadowing",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "Badge",
+    "kind": "Property",
+    "file": "Profile.cs",
+    "startLine": 1
+  },
+  "newName": "DisplayBadge",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "Read",
+        "kind": "Method",
+        "file": "Profile.cs",
+        "startLine": 10
+      },
+      "to": {
+        "name": "Badge",
+        "kind": "Property",
+        "file": "Profile.cs",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "Update",
+        "kind": "Method",
+        "file": "Profile.cs",
+        "startLine": 11
+      },
+      "to": {
+        "name": "Badge",
+        "kind": "Property",
+        "file": "Profile.cs",
+        "startLine": 1
+      }
+    }
+  ]
+}

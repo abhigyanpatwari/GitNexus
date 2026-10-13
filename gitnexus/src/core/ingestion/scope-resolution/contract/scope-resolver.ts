@@ -279,6 +279,7 @@
  */
 
 import type { DecorationStripper } from '../scope/walkers.js';
+import type { SourceBindingRecorder } from '../source-binding-resolution.js';
 import type {
   NameLookupOptions,
   BindingRef,
@@ -1073,6 +1074,40 @@ export interface ScopeResolver {
   readonly namespaceExportsIncludeImportedNames?: boolean;
 
   /**
+   * Whether `member`, a declaration reached through a namespace-qualified
+   * reference (`ns.member`, `ns.Type`, `x: ns.Type`) written OUTSIDE the
+   * namespace that declares it, is nameable from there.
+   *
+   * The namespace lookups (`findExportedDef` and the receiver-bound / qualified
+   * type paths built on it) read the target module's local bindings and treat
+   * every one as a public member; they carry no notion of a module-private
+   * declaration. A language whose visibility is decidable from the declaration
+   * alone states that rule here, so `ns.hidden` yields no binding instead of a
+   * confident `import-resolved` edge to a declaration the language forbids
+   * reaching. Returning `false` makes the namespace lookups behave as if the
+   * name were not declared.
+   *
+   * Consulted by: the namespace-member lookup (`findExportedDef`) behind the
+   * receiver-bound member / chain / typed-receiver paths and the compound
+   * receiver's construction branch, and the namespace-import branch of
+   * `findClassBindingInScope` (qualified type references, qualified constructor
+   * calls). NOT consulted by the name-guess tiers (that is
+   * `isGlobalNameFallbackPlausible`), by member selectors on a value, or by the
+   * `value-ref` registration lookup.
+   *
+   * A bare name bound through an import or a same-namespace sibling is the
+   * finalized-binding channel's business (it already decides what an import
+   * publishes), and this hook is deliberately not applied there: a sibling
+   * file's private declaration IS visible without qualification.
+   *
+   * **Only answer `false` when the reference is impossible, not when it is
+   * merely unproven** — a wrongly-refused member is a lost real edge. Must be
+   * pure. Undefined (the default) keeps every namespace member visible, which
+   * is the behaviour of every language that does not implement it.
+   */
+  readonly isNamespaceMemberVisible?: (ctx: { readonly member: SymbolDefinition }) => boolean;
+
+  /**
    * When true, a qualified receiver is walked SEGMENT BY SEGMENT from its
    * verified namespace root instead of being split once at the last dot:
    * `hub.sub.Thing{}` (a namespace republished by a hub — `pub const sub =
@@ -1479,7 +1514,7 @@ export interface ScopeResolver {
   readonly resolveReceiverMember?: (
     ownerDef: SymbolDefinition,
     memberName: string,
-    callsite: Callsite,
+    callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
@@ -1804,6 +1839,9 @@ export interface ScopeResolver {
     ctx: {
       readonly fileContents: ReadonlyMap<string, string>;
       readonly resolutionConfig?: unknown;
+      /** Observe the source declaration at the provider's actual decision,
+       * before runtime target expansion or graph edge deduplication. */
+      readonly recordSourceBinding?: SourceBindingRecorder;
     },
   ) => void;
 

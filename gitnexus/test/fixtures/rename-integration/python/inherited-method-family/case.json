@@ -1,0 +1,50 @@
+{
+  "language": "python",
+  "description": "Rename a base method, override and super calls while preserving an unrelated receiver.",
+  "categories": [
+    "polymorphism",
+    "call-graph",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "render",
+    "kind": "Method",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "paint",
+  "expect": {
+    "status": "success",
+    "edits": 6
+  },
+  "edges": [
+    {
+      "type": "METHOD_OVERRIDES",
+      "from": {
+        "name": "Child",
+        "kind": "Class",
+        "file": "model.py"
+      },
+      "to": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.py",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "invoke",
+        "kind": "Function",
+        "file": "model.py"
+      },
+      "to": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.py",
+        "startLine": 1
+      }
+    }
+  ]
+}

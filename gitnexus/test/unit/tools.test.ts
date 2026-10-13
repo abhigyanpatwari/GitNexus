@@ -27,6 +27,18 @@ describe('GITNEXUS_TOOLS', () => {
     expect(GITNEXUS_TOOLS).toHaveLength(19);
   });
 
+  it('exposes one rename tool; there is no separate rename_preview (use dry_run)', () => {
+    const names = GITNEXUS_TOOLS.map((t) => t.name);
+    expect(names.filter((name) => name === 'rename')).toHaveLength(1);
+    expect(names).not.toContain('rename_preview');
+    const rename = GITNEXUS_TOOLS.find((t) => t.name === 'rename')!;
+    expect(rename.inputSchema.properties.dry_run).toMatchObject({ type: 'boolean', default: true });
+    expect(rename.inputSchema.required).toEqual(['new_name']);
+    expect(rename.description).toMatch(/dry_run omitted or true never writes/);
+    expect(rename.description).toMatch(/dry_run:false applies/);
+    expect(rename.description).not.toContain('rename_preview');
+  });
+
   it('contains all expected tool names', () => {
     const names = GITNEXUS_TOOLS.map((t) => t.name);
     expect(names).toEqual(
@@ -357,7 +369,7 @@ describe('GITNEXUS_TOOLS', () => {
   });
 
   it('per-repo tools have an optional branch scope param (#2106); group/list and checkout file tools do not', () => {
-    const noBranch = new Set(['list_repos', 'read_file', 'grep', ...GROUP_TOOLS]);
+    const noBranch = new Set(['list_repos', 'read_file', 'grep', 'rename', ...GROUP_TOOLS]);
     for (const tool of GITNEXUS_TOOLS) {
       if (noBranch.has(tool.name)) {
         expect(tool.inputSchema.properties.branch, tool.name).toBeUndefined();

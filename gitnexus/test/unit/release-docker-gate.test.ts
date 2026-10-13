@@ -155,12 +155,13 @@ describe('Docker publication prerequisites', () => {
     const accuracy = gate.steps.find((step) => step.run?.includes('bench/tool-accuracy/run.ts'));
     expect(accuracy?.run).toContain('--check');
     expect(accuracy?.if).toBe("steps.version.outputs.publish == 'true'");
-    const installIndex = gate.steps.findIndex(
-      (step) => step.run?.includes('install') && step.run.includes('ripgrep'),
+    const setupIndex = gate.steps.findIndex(
+      (step) => step.uses === './.github/actions/setup-gitnexus',
     );
-    expect(installIndex).toBeGreaterThanOrEqual(0);
-    expect(gate.steps[installIndex].if).toBe(accuracy?.if);
-    expect(installIndex).toBeLessThan(gate.steps.findIndex((step) => step === accuracy));
+    expect(setupIndex).toBeGreaterThanOrEqual(0);
+    expect(gate.steps[setupIndex].if).toBe(accuracy?.if);
+    expect(gate.steps[setupIndex].with?.build).toBe('true');
+    expect(setupIndex).toBeLessThan(gate.steps.findIndex((step) => step === accuracy));
     const paid = gate.steps.find(
       (step) => step.uses === './.github/actions/require-agent-release-evidence',
     );

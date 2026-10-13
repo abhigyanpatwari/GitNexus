@@ -19,6 +19,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   createMCPServer,
+  getNextStepHint,
   installSignalShutdown,
   startMCPServer,
   SHUTDOWN_EXIT_CODES,
@@ -303,6 +304,53 @@ describe('getNextStepHint (via tool call response)', () => {
     expect(text).toContain('startLine: <hit.line - 1>');
     expect(text).toContain('endLine: <hit.line - 1>');
     expect(text).toContain('Grep line is 1-based; read_file is 0-based');
+  });
+});
+
+describe('getNextStepHint rename', () => {
+  const apply =
+    'rename({symbol_uid: "Method:src/a.ts:A.run#0", new_name: "go", dry_run: false, repo: "demo"})';
+
+  it.each([
+    ['omitted', { symbol_uid: 'Method:src/a.ts:A.run#0', new_name: 'go', repo: 'demo' }],
+    [
+      'true',
+      { symbol_uid: 'Method:src/a.ts:A.run#0', new_name: 'go', repo: 'demo', dry_run: true },
+    ],
+  ])('points a dry run (dry_run %s) at the apply call, not at detect_changes', (_label, args) => {
+    const hint = getNextStepHint('rename', args);
+    expect(hint).toContain(apply);
+    expect(hint).toContain('no files were changed');
+    expect(hint).not.toContain('detect_changes');
+  });
+
+  it('shows the detect_changes hint only after an explicit dry_run:false', () => {
+    const hint = getNextStepHint('rename', { new_name: 'go', repo: 'demo', dry_run: false });
+    expect(hint).toContain('detect_changes({repo: "demo"})');
+    expect(hint).not.toContain('dry_run: false');
+  });
+
+  it.each([
+    ['the string "false"', 'false'],
+    ['null', null],
+    ['zero', 0],
+  ])('does not treat dry_run %s as an applied rename', (_label, dryRun) => {
+    const hint = getNextStepHint('rename', { new_name: 'go', dry_run: dryRun });
+    expect(hint).not.toContain('detect_changes');
+  });
+
+  it('names symbol_name, quoted, when no symbol_uid was sent and omits repo when absent', () => {
+    const hint = getNextStepHint('rename', { symbol_name: 'run "fast"', new_name: 'go' });
+    expect(hint).toContain(
+      'rename({symbol_name: "run \\"fast\\"", new_name: "go", dry_run: false})',
+    );
+  });
+
+  it('never suggests applying from a read-only server', () => {
+    const hint = getNextStepHint('rename', { new_name: 'go', dry_run: true }, true);
+    expect(hint).toContain('MCP read-only mode cannot apply it');
+    expect(hint).not.toContain('dry_run: false');
+    expect(hint).not.toContain('detect_changes');
   });
 });
 

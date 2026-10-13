@@ -35,7 +35,10 @@ import {
   isCppDependentBaseMember,
 } from './two-phase-lookup.js';
 import { populateCppAssociatedNamespaces, clearCppAdlState, pickCppAdlCandidates } from './adl.js';
-import { findCallableBindingsAndAdlBlocker } from './callable-bindings.js';
+import {
+  findCallableBindingsAndAdlBlocker,
+  populateCppIncludedOverloads,
+} from './callable-bindings.js';
 import { applyCppCaptureSideChannel } from './capture-side-channel.js';
 import {
   clearCppInlineNamespaces,
@@ -227,7 +230,10 @@ export const cppScopeResolver: ScopeResolver = {
     );
   },
 
-  populateNamespaceSiblings: populateCppUsingBindings,
+  populateNamespaceSiblings: (parsedFiles, indexes) => {
+    populateCppUsingBindings(parsedFiles, indexes);
+    populateCppIncludedOverloads(indexes);
+  },
 
   // Simple `isSuperReceiver` returns false for C++. Real super
   // classification is caller-context-dependent and lives in

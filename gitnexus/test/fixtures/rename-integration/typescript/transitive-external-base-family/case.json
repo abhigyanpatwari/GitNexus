@@ -1,0 +1,38 @@
+{
+  "language": "typescript",
+  "description": "An indexed interface does not prove a complete family when its own base is external.",
+  "categories": [
+    "polymorphism",
+    "external-base",
+    "transitive-interface",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.ts",
+    "startLine": 4
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_symbol_family",
+    "planningStatus": "unsupported"
+  },
+  "edges": [
+    {
+      "type": "IMPLEMENTS",
+      "from": {
+        "name": "Worker",
+        "kind": "Class",
+        "file": "model.ts"
+      },
+      "to": {
+        "name": "Contract",
+        "kind": "Interface",
+        "file": "model.ts"
+      }
+    }
+  ]
+}

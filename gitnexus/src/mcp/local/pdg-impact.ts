@@ -142,10 +142,9 @@ export interface PdgStatement {
   /** The statement's source text (BasicBlock.text), trimmed. */
   text: string;
   /**
-   * Whether the statement belongs to the criterion's OWN function (`'intra'`)
-   * or was reached across a call boundary (`'inter'`). A block is `'intra'`
-   * iff its owning-fn file AND 1-based owning-fn start line both match the
-   * criterion's — `fnFileOf(id) === criterionFile && fnLineOf(id) === ownerFnLine`.
+   * Whether the statement belongs to a selected seed's execution region
+   * (`'intra'`) or another owner (`'inter'`). Explicit provider ownership wins;
+   * blocks without an owner use the file and function-start-line anchor.
    * Projection-only tag (FU-A): NOT persisted, NOT a schema field. The bench
    * intra axis scopes to `'intra'` statements so U1's cross-function reach
    * stops being counted as intra-axis false positives; existing consumers
@@ -272,6 +271,7 @@ async function pdgStatementsForBlocks(
   exec: typeof executeParameterized,
   criterionFile: string,
   ownerFnLine: number,
+  criterionOwnerIds: ReadonlySet<string>,
   /**
    * Blocks whose interior should be expanded to statement granularity via the
    * self-edge def→use line walk, each mapped to the entry line(s) the walk
@@ -296,7 +296,7 @@ async function pdgStatementsForBlocks(
     exec(
       lbugPath,
       `MATCH (b:BasicBlock) WHERE b.id IN $ids
-       RETURN b.id AS id, b.startLine AS line, b.endLine AS endLine, b.text AS text`,
+       RETURN b.id AS id, b.startLine AS line, b.endLine AS endLine, b.text AS text, b.ownerId AS ownerId`,
       { ids: fetchIds },
     ),
     chainWalkBlocks.size > 0
@@ -314,11 +314,14 @@ async function pdgStatementsForBlocks(
     if (!id || !Number.isFinite(line) || line <= 0) continue;
     const filePath = fnFileOf(id);
     const text = String(r['text'] ?? '').trim();
-    // INTRA iff this block's owning function (file + 1-based start line) is the
-    // criterion's own function; otherwise it was reached across a call boundary
-    // (INTER). Pure key comparison parsed from the block id — no extra DB query.
+    // Explicit execution ownership takes precedence over the legacy source anchor.
     const scope: 'intra' | 'inter' =
-      filePath === criterionFile && fnLineOf(id) === ownerFnLine ? 'intra' : 'inter';
+      filePath === criterionFile &&
+      (typeof r.ownerId === 'string' && r.ownerId.length > 0
+        ? criterionOwnerIds.has(r.ownerId)
+        : fnLineOf(id) === ownerFnLine)
+        ? 'intra'
+        : 'inter';
     const textLines = String(r['text'] ?? '').split('\n');
     // ── FU-B-2 chain-walk block: expand to its interior dependent lines ───────
     // Walk the block's self REACHING_DEF def→use LINE chain forward from the
@@ -433,10 +436,32 @@ async function projectBlocksToSymbols(deps: {
 }): Promise<{ symbols: OwningSymbol[]; unresolvedCount: number; ambiguousCount: number }> {
   const { lbugPath, blockIds, executeParameterized: exec } = deps;
 
+  // Some providers declare a larger executable region (for example a program
+  // containing several labels). Its exact owner takes precedence over the
+  // conventional function-start-line join; unrelated modules remain excluded.
+  const explicitRows = await exec(
+    lbugPath,
+    `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.id AS id, b.ownerId AS ownerId`,
+    { ids: blockIds },
+  );
+  const requestedBlocks = new Set(blockIds);
+  const explicitByBlock = new Map<string, string>();
+  for (const row of explicitRows as Array<Record<string, unknown>>) {
+    if (
+      typeof row.id === 'string' &&
+      requestedBlocks.has(row.id) &&
+      typeof row.ownerId === 'string' &&
+      row.ownerId.length > 0
+    ) {
+      explicitByBlock.set(row.id, row.ownerId);
+    }
+  }
+
   // Group blocks by their (filePath, fnLine) owning-function key so each owning
   // function is resolved with a single query regardless of block count.
   const byFnKey = new Map<string, { filePath: string; symStart: number }>();
   for (const id of blockIds) {
+    if (explicitByBlock.has(id)) continue;
     const filePath = fnFileOf(id);
     const fnLine = fnLineOf(id); // 1-based
     if (!filePath || !Number.isFinite(fnLine)) {
@@ -452,6 +477,41 @@ async function projectBlocksToSymbols(deps: {
   const resolved: OwningSymbol[] = [];
   let unresolvedCount = 0;
   let ambiguousCount = 0;
+
+  if (explicitByBlock.size > 0) {
+    const ownerIds = [...new Set(explicitByBlock.values())];
+    const rows = await exec(
+      lbugPath,
+      `MATCH (s) WHERE s.id IN $ownerIds
+       RETURN s.id AS id, s.name AS name,
+              s.filePath AS filePath, s.startLine AS startLine`,
+      { ownerIds },
+    );
+    const byId = new Map((rows as Array<Record<string, unknown>>).map((row) => [row.id, row]));
+    const seen = new Set<string>();
+    for (const [blockId, ownerId] of explicitByBlock) {
+      const filePath = fnFileOf(blockId);
+      const key = `${filePath}\u0000${ownerId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const row = byId.get(ownerId);
+      if (!row || row.filePath !== filePath) {
+        resolved.push({ id: null, name: '(unresolved)', type: 'unresolved', filePath });
+        unresolvedCount++;
+        continue;
+      }
+      assertQueryIdentity(row, 'id', 0, [['name', 1]]);
+      resolved.push({
+        // Graph IDs carry the node label; indexed labels(n)[0] is not reliable
+        // for a cross-table match in the storage engine.
+        id: ownerId,
+        name: String(row.name),
+        type: ownerId.split(':')[0]!,
+        filePath,
+        ...(typeof row.startLine === 'number' ? { startLine: row.startLine } : {}),
+      });
+    }
+  }
 
   await Promise.all(
     Array.from(byFnKey.values()).map(async ({ filePath, symStart }) => {
@@ -1635,7 +1695,7 @@ function blockAnchorForResolvedSymbol(sym: {
  * {@link blockAnchorForResolvedSymbol} already is.
  */
 const seedBlockQuery = (anchorClause: string, probeLimit: number): string =>
-  `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id ORDER BY a.startLine, id LIMIT ${probeLimit}`;
+  `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id, a.ownerId AS ownerId ORDER BY a.startLine, id LIMIT ${probeLimit}`;
 
 /**
  * Build a STATEMENT seed anchor: the BasicBlock(s) starting at a specific
@@ -1674,6 +1734,61 @@ function blockAnchorForStatement(
   return {
     anchorClause: 'a.id STARTS WITH $idPrefix AND a.startLine = $line',
     queryParams: { idPrefix, line },
+  };
+}
+
+/** Select a provider-owned execution region, falling back to the symbol span. */
+export async function resolvePdgBlockAnchor(
+  lbugPath: string,
+  sym: { id: string; filePath: string; startLine?: number; endLine?: number },
+  exec: typeof executeParameterized,
+  line?: number,
+): Promise<
+  | { anchorClause: string; queryParams: Record<string, unknown>; ownerId?: string }
+  | { error: string; recoverySuggestion: string }
+> {
+  // Probe independently of the requested line: a missing statement in an owned
+  // region must not fall back to a nested, independently executing region.
+  let rows: Awaited<ReturnType<typeof executeParameterized>>;
+  try {
+    // determinism: probe — after identity validation, only row presence is used;
+    // the selected block id does not affect the execution-region anchor.
+    rows = await exec(
+      lbugPath,
+      `MATCH (owner:BasicBlock) WHERE owner.filePath = $ownerFile AND owner.ownerId = $ownerId
+       RETURN owner.id AS id LIMIT 1`,
+      { ownerFile: sym.filePath, ownerId: sym.id },
+    );
+  } catch (error) {
+    // A pre-ownerId index can carry complete PDG stamps. Only this missing
+    // column is a compatibility failure; locks, corruption and other binder
+    // errors retain their normal error paths. Schema changes belong to analyze.
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/\bBinder exception: Cannot find property ownerId for owner\.\s*$/.test(message)) {
+      throw error;
+    }
+    return {
+      error: 'The PDG index schema predates executable ownership.',
+      recoverySuggestion:
+        'Run gitnexus analyze --pdg to rebuild the index before querying PDG symbols.',
+    };
+  }
+  for (const row of rows) assertQueryIdentity(row, 'id', 0);
+  if (rows.length === 0) {
+    return line === undefined
+      ? blockAnchorForResolvedSymbol(sym)
+      : blockAnchorForStatement(sym, line);
+  }
+  return {
+    anchorClause:
+      'a.filePath = $ownerFile AND a.ownerId = $ownerId' +
+      (line === undefined ? '' : ' AND a.startLine = $line'),
+    queryParams: {
+      ownerFile: sym.filePath,
+      ownerId: sym.id,
+      ...(line === undefined ? {} : { line }),
+    },
+    ownerId: sym.id,
   };
 }
 
@@ -2367,9 +2482,22 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // So build the seed anchor DIRECTLY from the resolved symbol's
   // [startLine+1, endLine+1] window — the same window `resolveBlockAnchor`'s
   // symbol branch produces, without re-running `resolveSymbolCandidates`.
-  const { anchorClause, queryParams } = statementMode
-    ? blockAnchorForStatement(sym, line as number)
-    : blockAnchorForResolvedSymbol(sym);
+  const resolvedAnchor = await resolvePdgBlockAnchor(
+    repo.lbugPath,
+    sym,
+    exec,
+    statementMode ? line : undefined,
+  );
+  if ('error' in resolvedAnchor) {
+    return makePdgImpactErrorResult({
+      ...resolvedAnchor,
+      mode: 'pdg',
+      target,
+      direction,
+      undetermined: true,
+    });
+  }
+  const { anchorClause, queryParams, ownerId } = resolvedAnchor;
 
   const probeLimit = stepLimit + 1;
   const rawSeedRows = await exec(
@@ -2390,7 +2518,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // startLine lifted into that 1-based space. Drop foreign-fn seed blocks —
   // defensively: only when it leaves ≥1 seed, so a kind whose fnLine convention
   // differs never loses a real seed (it keeps the prior, slightly-loose set).
-  if (statementMode && typeof sym.startLine === 'number') {
+  if (!ownerId && statementMode && typeof sym.startLine === 'number') {
     const ownerFnLine = toOneBasedLine(sym.startLine);
     const owned = seedBlocks.filter((id) => fnLineOf(id) === ownerFnLine);
     if (owned.length > 0) seedBlocks = owned;
@@ -2401,6 +2529,17 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // it so the result carries the same truncation
   // signal the BFS steps do, never a silent partial seed.
   const seedTruncated = rawSeedRows.length > stepLimit;
+  // A span-selected label may execute inside a larger provider-owned region.
+  // Compare reached statements with the selected blocks' execution owners,
+  // not with the label symbol. Owner-less blocks retain the source-anchor join.
+  const criterionOwnerIds = new Set<string>(ownerId ? [ownerId] : []);
+  const selectedSeeds = new Set(seedBlocks);
+  for (const row of seedRows) {
+    if (selectedSeeds.has(String(row.id)) && typeof row.ownerId === 'string' && row.ownerId) {
+      assertSymbolIdentity(row.ownerId);
+      criterionOwnerIds.add(row.ownerId);
+    }
+  }
 
   // ── KTD6 no-body contract: distinguish "no PDG body" from "no dependence" ──
   // A symbol that resolves but produces ZERO anchored blocks has no CFG body
@@ -2613,6 +2752,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     exec,
     criterionFile,
     ownerFnLine,
+    criterionOwnerIds,
     chainWalkBlocks,
   );
 

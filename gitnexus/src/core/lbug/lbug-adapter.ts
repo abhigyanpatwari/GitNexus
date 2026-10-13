@@ -1740,7 +1740,7 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     // Taint/PDG substrate (issue #2080) — no name column. `callees` is the
     // statement-precise inter-procedural reach substrate (space-joined leaf names);
     // `calleeIds` is its SOUND parallel (space-joined resolved callee ids, #2227).
-    return `COPY ${t}(id, filePath, startLine, endLine, text, callees, calleeIds) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, filePath, startLine, endLine, text, callees, calleeIds, ownerId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Class') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, frameworkAnnotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -1803,7 +1803,7 @@ export const insertNodeToLbug = async (
     } else if (label === 'BasicBlock') {
       // Taint/PDG substrate (issue #2080) — no name column. `calleeIds` (#2227)
       // is the sound resolved-id parallel to the leaf-name `callees` set.
-      query = `CREATE (n:BasicBlock {id: ${formatCypherValue(properties.id)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${formatCypherValue(properties.text || '')}, callees: ${formatCypherValue(properties.callees || '')}, calleeIds: ${formatCypherValue(properties.calleeIds || '')}})`;
+      query = `CREATE (n:BasicBlock {id: ${formatCypherValue(properties.id)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${formatCypherValue(properties.text || '')}, callees: ${formatCypherValue(properties.callees || '')}, calleeIds: ${formatCypherValue(properties.calleeIds || '')}, ownerId: ${formatCypherValue(properties.ownerId || '')}})`;
     } else if (label === 'Class') {
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
@@ -1903,7 +1903,7 @@ export const batchInsertNodesToLbug = async (
         } else if (label === 'BasicBlock') {
           // Taint/PDG substrate (issue #2080) — no name column. `calleeIds`
           // (#2227) is the sound resolved-id parallel to the `callees` set.
-          query = `MERGE (n:BasicBlock {id: ${formatCypherValue(properties.id)}}) SET n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${formatCypherValue(properties.text || '')}, n.callees = ${formatCypherValue(properties.callees || '')}, n.calleeIds = ${formatCypherValue(properties.calleeIds || '')}`;
+          query = `MERGE (n:BasicBlock {id: ${formatCypherValue(properties.id)}}) SET n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${formatCypherValue(properties.text || '')}, n.callees = ${formatCypherValue(properties.callees || '')}, n.calleeIds = ${formatCypherValue(properties.calleeIds || '')}, n.ownerId = ${formatCypherValue(properties.ownerId || '')}`;
         } else if (label === 'Class') {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`

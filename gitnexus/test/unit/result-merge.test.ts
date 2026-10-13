@@ -33,6 +33,33 @@ function emptyResult(): ParseWorkerResult {
 }
 
 describe('mergeResult', () => {
+  it('sums every CFG skip bucket by language across worker sub-batches', () => {
+    const target = emptyResult();
+    const first = {
+      zig: { tooManyLines: 1, tooDeeplyNested: 2, buildError: 1 },
+    };
+    mergeResult(target, { ...emptyResult(), cfgSkipped: first });
+    mergeResult(target, {
+      ...emptyResult(),
+      cfgSkipped: {
+        zig: { tooManyLines: 2, tooDeeplyNested: 1, buildError: 3 },
+        typescript: { tooManyLines: 0, tooDeeplyNested: 1, buildError: 0 },
+      },
+    });
+    expect(target.cfgSkipped).toEqual({
+      zig: { tooManyLines: 3, tooDeeplyNested: 3, buildError: 4 },
+      typescript: { tooManyLines: 0, tooDeeplyNested: 1, buildError: 0 },
+    });
+    expect(first.zig).toEqual({ tooManyLines: 1, tooDeeplyNested: 2, buildError: 1 });
+  });
+
+  it('leaves CFG skip telemetry absent for older or successful results', () => {
+    const target = emptyResult();
+    mergeResult(target, emptyResult());
+    mergeResult(target, { ...emptyResult(), cfgSkipped: {} });
+    expect(target.cfgSkipped).toBeUndefined();
+  });
+
   it('unions skippedPaths across sub-batch results, initializing the target when absent', () => {
     const target = emptyResult(); // no skippedPaths on the target (the `??=` path)
     mergeResult(target, {
