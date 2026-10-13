@@ -361,6 +361,13 @@ interface LanguageProviderConfig {
    *  Default: undefined (no remapping). */
   readonly resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null;
 
+  /** Name an owner declared outside this member's lexical container.
+   *  Consulted for each ancestor during the enclosing-owner walk. The name
+   *  qualifies member identities, but carries no graph id: ownership is
+   *  resolved by `ScopeResolver.populateWorkspaceOwners` after all files load.
+   *  Default: undefined (owners are derived from lexical containers). */
+  readonly resolveDetachedOwnerName?: (node: SyntaxNode) => string | undefined;
+
   /**
    * The type a whole FILE declares, when the language makes the file itself
    * a type (Zig: a `.zig` file with top-level fields is a struct whose name
