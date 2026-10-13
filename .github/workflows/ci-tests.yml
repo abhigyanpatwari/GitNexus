@@ -413,6 +413,34 @@ jobs:
         run: npm pack
         working-directory: gitnexus
 
+      # Global installs do not exercise npm's bundled-dependency lockfile path
+      # (#3563). Keep npm 10 here: newer npm can mask unresolved override refs.
+      - name: Lock and install tarball in a fresh consumer project
+        shell: bash
+        env:
+          SCARF_ANALYTICS: 'false'
+        run: |
+          set -euo pipefail
+          TARBALL=$(find "$PWD" -maxdepth 1 -name 'gitnexus-*.tgz' -print -quit)
+          test -n "$TARBALL"
+          for NPM_VERSION in 10.9.4 11.9.0; do
+            CONSUMER=$(mktemp -d "$RUNNER_TEMP/gitnexus-consumer.XXXXXX")
+            cp "$TARBALL" "$CONSUMER/gitnexus.tgz"
+            (
+              cd "$CONSUMER"
+              echo '{"name":"gitnexus-consumer","version":"1.0.0","private":true,"devDependencies":{"gitnexus":"file:./gitnexus.tgz"}}' > package.json
+              npm exec --yes --package="npm@$NPM_VERSION" -- npm --version
+              npm exec --yes --package="npm@$NPM_VERSION" -- npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+              test ! -e node_modules
+              cp package-lock.json expected-lock.json
+              npm exec --yes --package="npm@$NPM_VERSION" -- npm ci --no-audit --no-fund
+              cmp package-lock.json expected-lock.json
+              node node_modules/gitnexus/dist/cli/index.js --version
+              node node_modules/gitnexus/scripts/assert-native-parsers.mjs node_modules/gitnexus
+            )
+          done
+        working-directory: gitnexus
+
       - name: Install gitnexus tarball into isolated prefix
         shell: bash
         run: |
