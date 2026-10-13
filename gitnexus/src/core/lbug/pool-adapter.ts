@@ -817,6 +817,14 @@ const initLbugInner = async (repoId: string, dbPath: string): Promise<InitLbugAt
     // freshness THROUGH initLbug (rather than calling closeLbug directly) get
     // this guard for free; that is why LocalBackend delegates here (#2614).
     if (existing.checkedOut > 0) return { status: 'done', reopened: false };
+    // Closing only this consumer would leave the shared native handle alive
+    // and doInitLbug would attach eight new connections to that same old
+    // generation. Keep this pool intact until the other consumers release it;
+    // its opened identity stays divergent so the next init can retry then.
+    const shared = dbCache.get(existing.dbPath);
+    if (shared && shared.db === existing.db && shared.refCount > 1) {
+      return { status: 'done', reopened: false };
+    }
     // Awaited: see the rationale on the evictLRU call site in doInitLbug below.
     await closeOne(repoId); // idle & changed → evict, then fall through to reopen the new file
   }

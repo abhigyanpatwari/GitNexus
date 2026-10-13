@@ -2651,6 +2651,19 @@ export class LocalBackend {
         this.initializedRepos.add(poolKey);
       }
       const openedIdentity = getLbugDbIdentity(poolKey);
+      // The path can change after stat and before initLbug opens it. Track
+      // replacement against the reader we actually opened, not that snapshot.
+      // Same-inode auxiliary changes (FTS repair) do not replace the graph;
+      // in-place graph writes advertise incrementalInProgress below.
+      const graphReplaced =
+        !!previous?.dbIdentity &&
+        !!openedIdentity &&
+        previous.dbIdentity.ino !== openedIdentity.ino;
+      const publicationPending =
+        !!previous &&
+        !stampChanged &&
+        (previous.awaitingMetadata === true ||
+          (graphReplaced && previous.ref !== undefined && !previous.generationUnknown));
       const deferred =
         !!openedIdentity && (!diskIdentity || dbIdentityChanged(openedIdentity, diskIdentity));
       if (deferred) {
@@ -2660,11 +2673,20 @@ export class LocalBackend {
           this.setObservedState(poolKey, { diskIndexedAt: meta?.indexedAt });
           return;
         }
+        // A mismatched reader can be older than the disk or have opened a
+        // replacement after our first stat. Only the latter must wait for a
+        // stamp newer than the metadata we just observed, even if that stamp
+        // already differed from the previous reader's. Old pinned readers
+        // can recover against the existing disk metadata after they reopen.
+        const currentIdentity = await statDbIdentity(poolKey);
+        const openedAfterStat =
+          !currentIdentity || !dbIdentityChanged(openedIdentity, currentIdentity);
         this.setObservedState(poolKey, {
+          indexedAt: meta?.indexedAt ?? previous?.indexedAt ?? repo.indexedAt,
           dbIdentity: openedIdentity,
           ref: { lastCommit: '', indexedAt: '' },
           generationUnknown: true,
-          awaitingMetadata: false,
+          awaitingMetadata: publicationPending || openedAfterStat,
           diskIndexedAt: meta?.indexedAt,
           metadata: null,
         });
@@ -2675,16 +2697,6 @@ export class LocalBackend {
         indexedAt: meta?.indexedAt ?? previous?.ref?.indexedAt ?? repo.indexedAt,
         branch: meta?.branch,
       };
-      // The graph swap precedes its final metadata stamp. An inode replacement
-      // needs that stamp; same-inode auxiliary changes (e.g. FTS repair) do not.
-      // Actual in-place graph writes advertise incrementalInProgress below.
-      const graphReplaced =
-        !!previous?.dbIdentity && !!diskIdentity && previous.dbIdentity.ino !== diskIdentity.ino;
-      const publicationPending =
-        !!previous &&
-        !stampChanged &&
-        (previous.awaitingMetadata === true ||
-          (graphReplaced && previous.ref !== undefined && !previous.generationUnknown));
       const generationUnknown = deferred || publicationPending || !!meta?.incrementalInProgress;
       this.setObservedState(poolKey, {
         indexedAt: meta?.indexedAt ?? previous?.indexedAt ?? repo.indexedAt,

@@ -158,6 +158,9 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
       // calls — real FTS build, then the #2767 capability-only meta stamp
       // (indexedAt/lastCommit deliberately unchanged, R4).
       const beforeIdentity = await statDbIdentity(lbugPath);
+      // Windows requires releasing the native file lock before an in-place
+      // writer opens. Keep the same backend and its observed generation.
+      if (process.platform === 'win32') await poolClose(lbugPath);
       await adapter.initLbug(lbugPath);
       await createSearchFTSIndexes();
       await adapter.flushWAL();
