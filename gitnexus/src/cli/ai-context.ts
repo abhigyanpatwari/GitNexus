@@ -122,11 +122,10 @@ function regressionReviewGuidance(defaultBranch: string, runner?: string): strin
   const target = JSON.stringify(safeBranch);
   const shellQuote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
   const fetchTarget = shellQuote(safeBranch);
-  const remoteRef = shellQuote(`origin/${safeBranch}`);
   const cliFallback = runner
     ? ` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\``
     : '';
-  return `For target branch ${target}: \`git fetch origin -- ${fetchTarget}\`; pass \`git merge-base ${remoteRef} HEAD\`'s SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
+  return `For target branch ${target}: \`git fetch origin -- ${fetchTarget}\`; pass \`git merge-base FETCH_HEAD HEAD\`'s SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
 }
 
 /** Options for {@link generateGitNexusContent} (collapsed from positional
@@ -786,7 +785,7 @@ export async function refreshBaseRefLine(
     let newBlock = block;
     if (!block.includes(mergeBaseGuidance) && block.includes('base_ref: "<merge-base SHA>"')) {
       newBlock = block.replace(
-        /(?:For regression review of )?target branch "(?:[^"\\]|\\.)*"[^\n]*/,
+        /(?:For (?:regression review of )?)?target branch "(?:[^"\\]|\\.)*": `git fetch origin -- [^`\n]+`; pass `git merge-base [^`\n]+ HEAD`'s SHA to `detect_changes\(\{scope: "compare", base_ref: "<merge-base SHA>"\}\)`(?: or `[^`\n]+? detect-changes --scope compare --base-ref "<merge-base SHA>" --repo \.\`)?\./,
         mergeBaseGuidance,
       );
     }

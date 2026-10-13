@@ -177,7 +177,7 @@ describe('generateAIContextFiles', () => {
         expect(content).toContain('node .gitnexus/run.cjs detect-changes --scope all --repo .');
         expect(content).toContain('target branch "develop"');
         expect(content).toContain("git fetch origin -- 'develop'");
-        expect(content).toContain("git merge-base 'origin/develop' HEAD");
+        expect(content).toContain('git merge-base FETCH_HEAD HEAD');
         expect(content).toContain(
           'detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})',
         );
@@ -1471,7 +1471,7 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     const develop = generateGitNexusContent('P', stats, { defaultBranch: 'develop' });
     expect(develop).toContain('target branch "develop"');
     expect(develop).toContain("git fetch origin -- 'develop'");
-    expect(develop).toContain("git merge-base 'origin/develop' HEAD");
+    expect(develop).toContain('git merge-base FETCH_HEAD HEAD');
     expect(develop).toContain('base_ref: "<merge-base SHA>"');
     expect(develop).not.toContain('base_ref: "develop"');
   });
@@ -1480,7 +1480,7 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     const content = generateGitNexusContent('P', { nodes: 50, edges: 100, processes: 5 });
     expect(content).toContain('target branch "main"');
     expect(content).toContain("git fetch origin -- 'main'");
-    expect(content).toContain("git merge-base 'origin/main' HEAD");
+    expect(content).toContain('git merge-base FETCH_HEAD HEAD');
     expect(content).toContain('base_ref: "<merge-base SHA>"');
     expect(content).not.toContain('base_ref: "main"');
   });
@@ -1549,7 +1549,7 @@ For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\` 
         const after = await fs.readFile(path.join(dir, f), 'utf-8');
         expect(after).toContain('target branch "develop"');
         expect(after).toContain("git fetch origin -- 'develop'");
-        expect(after).toContain("git merge-base 'origin/develop' HEAD");
+        expect(after).toContain('git merge-base FETCH_HEAD HEAD');
         expect(after).toContain('base_ref: "<merge-base SHA>"');
         expect(after).not.toContain('base_ref: "develop"');
         expect(after).not.toContain('base_ref: "main"');
@@ -1657,6 +1657,26 @@ For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\`.
       expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['AGENTS.md']);
       const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
       expect(after).toContain('target branch "develop"');
+      expect(after).toContain('Always inspect src/security.ts before release.');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves same-line custom text when refreshing current guidance (#3509)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-current-suffix-'));
+    try {
+      const current = generateGitNexusContent('P', { nodes: 1, edges: 1, processes: 0 });
+      const seed = current.replace(
+        /(For target branch[^\n]*\.)/,
+        '$1 Always inspect src/security.ts before release.',
+      );
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
+
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['AGENTS.md']);
+      const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
+      expect(after).toContain('target branch "develop"');
+      expect(after).toContain('git merge-base FETCH_HEAD HEAD');
       expect(after).toContain('Always inspect src/security.ts before release.');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
