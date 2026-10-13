@@ -98,6 +98,7 @@ import {
   LBUG_MAX_DB_SIZE,
   maxDbSizeReachedRemedy,
   pastEofReadRemedy,
+  type StagedBuildMode,
 } from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import { chunk } from '../lib/utils.js';
@@ -3043,13 +3044,13 @@ async function runFullAnalysisInner(
   // caller's request (watch and auto-sync cannot be reconfigured, #3530). It
   // only governs this opt-in staging: a full rebuild and the #2841 escalation
   // below still stage because they set `useAtomicSwap` independently.
-  const atomicIncrementalOffSwitch = process.env.GITNEXUS_ATOMIC_INCREMENTAL === '0';
+  const atomicIncrementalEnv = process.env.GITNEXUS_ATOMIC_INCREMENTAL;
   const wantAtomicIncremental =
     isIncremental &&
     !!hashDiff &&
     process.platform !== 'win32' &&
-    !atomicIncrementalOffSwitch &&
-    (options.atomicIncremental === true || process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1');
+    atomicIncrementalEnv !== '0' &&
+    (options.atomicIncremental === true || atomicIncrementalEnv === '1');
   // #2614 F3: the copy-then-swap stages ONLY the main lbug file, so a live index
   // carrying an orphan .wal/.shadow (a silently-failed prior checkpoint) would
   // be copied incompletely and lose that delta. Only take the atomic path when
@@ -5435,24 +5436,30 @@ async function runFullAnalysisInner(
         : undefined,
     };
   } catch (err) {
-    // Measure the index files BEFORE the driver stops and the database closes:
-    // closing can checkpoint the staging file, so a later stat would record the
-    // post-close size and make genuine growth look like a short file — the
-    // misreading the #3530 evidence exists to settle. The lines are held and
-    // logged below only if the failure is one we classify. Never throws.
-    const stagedBuild = useAtomicSwap && buildPath !== lbugPath;
-    const evidenceLines = [
-      await describeFileEvidence('live index', lbugPath),
-      ...(stagedBuild ? [await describeFileEvidence('staging copy', buildPath)] : []),
-    ];
     // Classify once; the remedy line and the evidence log both read this.
     // `atomicIncremental` is the only staged build `GITNEXUS_ATOMIC_INCREMENTAL=0`
     // changes (a full rebuild and the #2841 escalation stage regardless).
-    const remedyContext = { staged: stagedBuild, offSwitchApplies: atomicIncremental };
+    const stagedBuild = useAtomicSwap && buildPath !== lbugPath;
+    const buildMode: StagedBuildMode = !stagedBuild
+      ? 'in-place'
+      : atomicIncremental
+        ? 'staged-incremental'
+        : 'staged-rebuild';
     const failureMessage = String(err);
     const classifiedRemedy =
-      maxDbSizeReachedRemedy(failureMessage, remedyContext) ??
-      pastEofReadRemedy(failureMessage, remedyContext);
+      maxDbSizeReachedRemedy(failureMessage, buildMode) ??
+      pastEofReadRemedy(failureMessage, buildMode);
+    // Measure the index files BEFORE the driver stops and the database closes:
+    // closing can checkpoint the staging file, so a later stat would record the
+    // post-close size and make genuine growth look like a short file — the
+    // misreading the #3530 evidence exists to settle. Only a classified failure
+    // logs them, so nothing else pays for the stats. Never throws.
+    const evidenceLines = classifiedRemedy
+      ? [
+          await describeFileEvidence('live index', lbugPath),
+          ...(stagedBuild ? [await describeFileEvidence('staging copy', buildPath)] : []),
+        ]
+      : [];
     // Ensure LadybugDB is closed even on error. Stop the driver first
     // so its retry loop cannot extend an already-failing analyze.
     try {
@@ -5482,7 +5489,7 @@ async function runFullAnalysisInner(
     // differs from `lbugPath` exactly when the atomic-swap plan is in effect,
     // and the live index is never that path. Best-effort by construction — the
     // rethrow below is the surface, and the lock's sweep remains the backstop.
-    if (useAtomicSwap && buildPath !== lbugPath) {
+    if (stagedBuild) {
       try {
         const recovery = resolveEmbeddingRecovery(
           metaDir,
@@ -5504,15 +5511,16 @@ async function runFullAnalysisInner(
     }
     if (classifiedRemedy) {
       log(classifiedRemedy);
-      for (const line of evidenceLines) log(`Failure evidence — ${line}`);
-      log(
-        `Failure evidence — configured max DB size ${LBUG_MAX_DB_SIZE} B, ` +
-          `buffer pool ${getEffectiveBufferPoolSize()} B`,
-      );
+      // 0 is the pass-through sentinel for LadybugDB's native default, not a size.
+      const bufferPool = getEffectiveBufferPoolSize();
+      const configuredLine =
+        `configured max DB size ${LBUG_MAX_DB_SIZE} B, ` +
+        `buffer pool ${bufferPool === 0 ? "LadybugDB's native 80%-of-RAM default" : `${bufferPool} B`}`;
+      for (const line of [...evidenceLines, configuredLine]) log(`Failure evidence — ${line}`);
     } else if (
       /max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(failureMessage)
     ) {
-      // R6: a max-size message the engine worded differently keeps the generic hint.
+      // A max-size message the engine worded differently keeps the generic hint.
       log(
         'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
           'byte limit before retrying analyze; retained complete embeddings can be reused.',

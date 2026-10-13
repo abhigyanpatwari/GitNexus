@@ -3898,6 +3898,20 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       },
     );
 
+    it.each([
+      ['0', "buffer pool LadybugDB's native 80%-of-RAM default"],
+      ['1073741824', 'buffer pool 1073741824 B'],
+    ])(
+      'labels GITNEXUS_LBUG_BUFFER_POOL_SIZE=%s in the configuration evidence line',
+      async (poolSize, expectedFragment) => {
+        vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', poolSize);
+        const { logs } = await runStagedFailure(REACHED);
+        const configured = logs.find((line) => line.startsWith('Failure evidence — configured'));
+        expect(configured).toContain(expectedFragment);
+        expect(configured).not.toContain('buffer pool 0 B');
+      },
+    );
+
     it('logs no remedy and no evidence for an unrelated failure', async () => {
       const { failure, result, logs } = await runStagedFailure(
         'Binder exception: Table CodeEmbedding does not exist.',

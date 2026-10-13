@@ -594,32 +594,30 @@ describe('GITNEXUS_LBUG_MAX_DB_SIZE power-of-two normalization (#3529)', () => {
   });
 
   describe('resolveMaxDbSize', () => {
-    it('warns once with the raw and effective values when it rounds', () => {
+    /** Runs the resolver under a captured logger; returns the value and the max-size warnings. */
+    const resolveCapturingWarnings = (raw: string | undefined) => {
       const cap = _captureLogger();
       try {
-        expect(resolveMaxDbSize('300000000000')).toBe(2 ** 39);
+        const value = resolveMaxDbSize(raw);
         const warnings = cap
           .records()
           .filter((r) => typeof r.msg === 'string' && r.msg.includes('GITNEXUS_LBUG_MAX_DB_SIZE'));
-        expect(warnings).toHaveLength(1);
-        expect(warnings[0].msg).toContain('300000000000');
-        expect(warnings[0].msg).toContain(String(2 ** 39));
+        return { value, warnings };
       } finally {
         cap.restore();
       }
+    };
+
+    it('warns once with the raw and effective values when it rounds', () => {
+      const { value, warnings } = resolveCapturingWarnings('300000000000');
+      expect(value).toBe(2 ** 39);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].msg).toContain('300000000000');
+      expect(warnings[0].msg).toContain(String(2 ** 39));
     });
 
     it.each([['17179869184'], ['abc'], [undefined]])('does not warn for %s', (raw) => {
-      const cap = _captureLogger();
-      try {
-        resolveMaxDbSize(raw);
-        const warnings = cap
-          .records()
-          .filter((r) => typeof r.msg === 'string' && r.msg.includes('GITNEXUS_LBUG_MAX_DB_SIZE'));
-        expect(warnings).toHaveLength(0);
-      } finally {
-        cap.restore();
-      }
+      expect(resolveCapturingWarnings(raw).warnings).toHaveLength(0);
     });
   });
 });
@@ -636,10 +634,7 @@ describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
 
   describe('maxDbSizeReachedRemedy', () => {
     it('explains the verbatim #3529 message as an address-space ceiling', () => {
-      const remedy = maxDbSizeReachedRemedy(REACHED_3529, {
-        staged: false,
-        offSwitchApplies: false,
-      });
+      const remedy = maxDbSizeReachedRemedy(REACHED_3529, 'in-place');
       expect(remedy).toContain('274877906944');
       expect(remedy).toContain('engine reported');
       expect(remedy).toContain('GITNEXUS_LBUG_MAX_DB_SIZE');
@@ -648,50 +643,50 @@ describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
     });
 
     it.each([
-      ['atomic-incremental staged write', { staged: true, offSwitchApplies: true }, true],
-      ['staged full rebuild', { staged: true, offSwitchApplies: false }, false],
-      ['in-place build', { staged: false, offSwitchApplies: false }, false],
-    ])('names the off-switch only where it applies: %s', (_label, context, namesOffSwitch) => {
-      expect(maxDbSizeReachedRemedy(REACHED_3529, context)?.includes(OFF_SWITCH)).toBe(
-        namesOffSwitch,
-      );
+      ['staged-incremental', true],
+      ['staged-rebuild', false],
+      ['in-place', false],
+    ] as const)('names the off-switch only where it applies: %s', (mode, namesOffSwitch) => {
+      expect(maxDbSizeReachedRemedy(REACHED_3529, mode)?.includes(OFF_SWITCH)).toBe(namesOffSwitch);
     });
 
     it.each([
-      ['staged', { staged: true, offSwitchApplies: false }, true],
-      ['in place', { staged: false, offSwitchApplies: false }, false],
-    ])('says the live index is untouched only for a %s build', (_label, context, untouched) => {
-      expect(
-        maxDbSizeReachedRemedy(REACHED_3529, context)?.includes('live index is untouched'),
-      ).toBe(untouched);
-    });
+      ['staged-incremental', true],
+      ['staged-rebuild', true],
+      ['in-place', false],
+    ] as const)(
+      'says the live index is untouched only for a staged build: %s',
+      (mode, untouched) => {
+        expect(
+          maxDbSizeReachedRemedy(REACHED_3529, mode)?.includes('live index is untouched'),
+        ).toBe(untouched);
+      },
+    );
 
     it.each([
       ['the generic wording the engine does not emit', 'Maximum database size exceeded'],
       ['an unrelated error', 'Binder exception: Table CodeEmbedding does not exist.'],
       ['the past-EOF message', EOF_3530],
     ])('returns undefined for %s', (_label, message) => {
-      expect(
-        maxDbSizeReachedRemedy(message, { staged: true, offSwitchApplies: true }),
-      ).toBeUndefined();
+      expect(maxDbSizeReachedRemedy(message, 'staged-incremental')).toBeUndefined();
     });
   });
 
   describe('pastEofReadRemedy', () => {
     it.each([
-      ['atomic-incremental staged write', { staged: true, offSwitchApplies: true }, true],
-      ['staged full rebuild', { staged: true, offSwitchApplies: false }, false],
-    ])(
+      ['staged-incremental', true],
+      ['staged-rebuild', false],
+    ] as const)(
       'staged build, %s: live index untouched, off-switch only where it applies',
-      (_label, context, namesOffSwitch) => {
-        const remedy = pastEofReadRemedy(EOF_3530, context);
+      (mode, namesOffSwitch) => {
+        const remedy = pastEofReadRemedy(EOF_3530, mode);
         expect(remedy).toContain('live index is untouched');
         expect(remedy?.includes(OFF_SWITCH)).toBe(namesOffSwitch);
       },
     );
 
     it('treats an in-place failure as possible index damage with a rebuild remedy', () => {
-      const remedy = pastEofReadRemedy(EOF_3530, { staged: false, offSwitchApplies: false });
+      const remedy = pastEofReadRemedy(EOF_3530, 'in-place');
       expect(remedy).toContain('analyze --force');
       expect(remedy).not.toContain('live index is untouched');
       expect(remedy).not.toContain(OFF_SWITCH);
@@ -706,16 +701,13 @@ describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
       ['the size-ceiling message', REACHED_3529],
       ['an unrelated error', 'Binder exception: Table CodeEmbedding does not exist.'],
     ])('returns undefined for %s', (_label, message) => {
-      expect(pastEofReadRemedy(message, { staged: true, offSwitchApplies: true })).toBeUndefined();
+      expect(pastEofReadRemedy(message, 'staged-incremental')).toBeUndefined();
     });
   });
 
   it.each([
-    [
-      'size ceiling',
-      () => maxDbSizeReachedRemedy(REACHED_3529, { staged: true, offSwitchApplies: true }),
-    ],
-    ['past-EOF', () => pastEofReadRemedy(EOF_3530, { staged: true, offSwitchApplies: true })],
+    ['size ceiling', () => maxDbSizeReachedRemedy(REACHED_3529, 'staged-incremental')],
+    ['past-EOF', () => pastEofReadRemedy(EOF_3530, 'staged-incremental')],
   ])('the %s remedy never recommends lowering the WAL checkpoint threshold', (_label, remedy) => {
     expect(remedy()).not.toContain('GITNEXUS_WAL_CHECKPOINT_THRESHOLD');
   });

@@ -587,6 +587,47 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
     }
   }, 180_000);
 
+  it('tells an in-place write that hits EOF to rebuild, with live-index evidence only (#3530)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    // The off-switch makes this run in place even though the caller asks for staging.
+    vi.stubEnv('GITNEXUS_ATOMIC_INCREMENTAL', '0');
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export function changed() { return 1; }\n');
+      execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+
+      const failure = new Error(
+        'IO exception: Cannot read from file: /repo/.gitnexus/lbug fileDescriptor: 19 ' +
+          'numBytesRead: 0 numBytesToRead: 4096 position: 8011825152',
+      );
+      ctx.deleteMock.mockRejectedValueOnce(failure);
+      const logs: string[] = [];
+      const result = await runFullAnalysis(
+        repo,
+        { atomicIncremental: true },
+        { onProgress: () => {}, onLog: (line) => logs.push(line) },
+      ).catch((error: unknown) => error);
+
+      expect(result).toBe(failure);
+      expect(logs).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('analyze --force'),
+          expect.stringMatching(/^Failure evidence — live index: apparent \d+ B, /),
+        ]),
+      );
+      const joined = logs.join('\n');
+      expect(joined).not.toContain('live index is untouched');
+      expect(joined).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL=0');
+      expect(joined).not.toContain('Failure evidence — staging copy');
+    } finally {
+      vi.unstubAllEnvs();
+      await cleanup();
+    }
+  }, 180_000);
+
   it('marks failed in-place incremental writes as potentially live-mutating', async () => {
     const { repo, cleanup } = await makeRepo();
     try {

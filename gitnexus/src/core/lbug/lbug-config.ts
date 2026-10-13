@@ -249,18 +249,6 @@ export function resolveNativeSafeStorageDir(storagePath: string, subdir: string)
  * call site agrees on the same ceilings and behaviour.
  */
 
-/**
- * Upper bound for any single GitNexus LadybugDB file (graph index, group
- * bridge, install scratch, test fixture). 16 GiB is intentionally generous
- * for real-world code graphs (the GitNexus self-index uses < 50 MiB) while
- * remaining far below any 64-bit OS mmap ceiling.
- *
- * Override with the `GITNEXUS_LBUG_MAX_DB_SIZE` environment variable when
- * indexing genuinely huge monorepos. The native buffer manager rejects any
- * value that is not a power of two ("The given max db size should be a power
- * of 2"), so a positive safe integer is rounded UP to the next power of two
- * (#3529); anything invalid falls back to the default.
- */
 const DEFAULT_LBUG_MAX_DB_SIZE = 16 * 1024 * 1024 * 1024;
 
 export interface ParsedMaxDbSize {
@@ -293,6 +281,18 @@ export const resolveMaxDbSize = (raw: string | undefined): number => {
   return value;
 };
 
+/**
+ * Upper bound for any single GitNexus LadybugDB file (graph index, group
+ * bridge, install scratch, test fixture). 16 GiB is intentionally generous
+ * for real-world code graphs (the GitNexus self-index uses < 50 MiB) while
+ * remaining far below any 64-bit OS mmap ceiling.
+ *
+ * Override with the `GITNEXUS_LBUG_MAX_DB_SIZE` environment variable when
+ * indexing genuinely huge monorepos. The native buffer manager rejects any
+ * value that is not a power of two ("The given max db size should be a power
+ * of 2"), so a positive safe integer is rounded UP to the next power of two
+ * (#3529); anything invalid falls back to the default.
+ */
 export const LBUG_MAX_DB_SIZE: number = resolveMaxDbSize(process.env.GITNEXUS_LBUG_MAX_DB_SIZE);
 
 export const parseWalCheckpointThreshold = (raw: string | undefined): number | undefined => {
@@ -578,30 +578,28 @@ export const bufferPoolExhaustionRemedy = (
 };
 
 /**
- * The facts about a failing analyze run that the wording of a staged-build
- * remedy depends on (#3529, #3530). `staged`: the build target was a staging
- * copy, so the live index was never written. `offSwitchApplies`: the run was an
- * atomic-incremental write — the only staged build `GITNEXUS_ATOMIC_INCREMENTAL=0`
- * changes. A full rebuild and the escalation to staging stage regardless, so
- * naming the off-switch there would point at a knob with no effect.
+ * Where a failing analyze run was writing, which decides the wording of its
+ * remedy (#3529, #3530). `in-place`: the live index itself. `staged-rebuild`: a
+ * staging copy for a full rebuild or the escalation to one — both stage
+ * regardless of `GITNEXUS_ATOMIC_INCREMENTAL`, so naming the off-switch there
+ * would point at a knob with no effect. `staged-incremental`: a staging copy
+ * for an atomic-incremental write, the only staged build that off-switch changes.
+ * Either staged mode means the live index was never written.
  */
-export interface FailureRemedyContext {
-  staged: boolean;
-  offSwitchApplies: boolean;
-}
+export type StagedBuildMode = 'in-place' | 'staged-rebuild' | 'staged-incremental';
 
 const MAX_DB_SIZE_REACHED_RE = /Maximum database size of (\d+) bytes has been reached/i;
 // `0(?!\d)` so a count such as `04096` is not read as zero bytes.
 const PAST_EOF_READ_RE = /Cannot read from file[\s\S]*?numBytesRead:\s*0(?!\d)/i;
 const EOF_POSITION_RE = /position:\s*(\d+)/i;
 
-const stagedBuildNote = (context: FailureRemedyContext): string =>
-  context.staged
+const stagedBuildNote = (mode: StagedBuildMode): string =>
+  mode !== 'in-place'
     ? ' The live index is untouched; a retry may reuse complete embeddings that a recovery generation retained.'
     : '';
 
-const offSwitchNote = (context: FailureRemedyContext): string =>
-  context.offSwitchApplies
+const offSwitchNote = (mode: StagedBuildMode): string =>
+  mode === 'staged-incremental'
     ? ' Setting GITNEXUS_ATOMIC_INCREMENTAL=0 writes in place instead of into a staged copy.'
     : '';
 
@@ -615,7 +613,7 @@ const offSwitchNote = (context: FailureRemedyContext): string =>
  */
 export const maxDbSizeReachedRemedy = (
   message: string,
-  context: FailureRemedyContext,
+  mode: StagedBuildMode,
 ): string | undefined => {
   const match = MAX_DB_SIZE_REACHED_RE.exec(message);
   if (!match) return undefined;
@@ -624,8 +622,8 @@ export const maxDbSizeReachedRemedy = (
     `That is an mmap budget, not disk usage, so a small index on disk does not rule it out. ` +
     `GITNEXUS_LBUG_MAX_DB_SIZE sets the ceiling and must be a power of 2 (for example ${2 ** 39}); ` +
     `raise it if the index needs more room, then retry analyze.` +
-    stagedBuildNote(context) +
-    offSwitchNote(context)
+    stagedBuildNote(mode) +
+    offSwitchNote(mode)
   );
 };
 
@@ -636,14 +634,11 @@ export const maxDbSizeReachedRemedy = (
  * in-place build means the index file itself is shorter than the engine
  * expected. Asserts no cause for why the file was short.
  */
-export const pastEofReadRemedy = (
-  message: string,
-  context: FailureRemedyContext,
-): string | undefined => {
+export const pastEofReadRemedy = (message: string, mode: StagedBuildMode): string | undefined => {
   if (!PAST_EOF_READ_RE.test(message)) return undefined;
   const position = EOF_POSITION_RE.exec(message);
   const at = position ? ` at position ${position[1]}` : '';
-  if (!context.staged) {
+  if (mode === 'in-place') {
     return (
       `A read reached end-of-file${at} in the live index file, before the engine expected it to end: ` +
       'the index may be damaged or truncated. Run `gitnexus analyze --force` to rebuild it.'
@@ -651,8 +646,8 @@ export const pastEofReadRemedy = (
   }
   return (
     `A read reached end-of-file${at} in the staged copy of the index.` +
-    stagedBuildNote(context) +
-    offSwitchNote(context)
+    stagedBuildNote(mode) +
+    offSwitchNote(mode)
   );
 };
 

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { describeFileEvidence, formatFileEvidence } from '../../src/core/lbug/sidecar-recovery.js';
+import { createTempDir } from '../helpers/test-db.js';
 
 describe('formatFileEvidence (#3530)', () => {
   it.each([
@@ -36,14 +36,16 @@ describe('formatFileEvidence (#3530)', () => {
 });
 
 describe('describeFileEvidence (#3530)', () => {
+  let temp: Awaited<ReturnType<typeof createTempDir>>;
   let dir: string;
 
   beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'file-evidence-'));
+    temp = await createTempDir('file-evidence-');
+    dir = temp.dbPath;
   });
 
   afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true });
+    await temp.cleanup();
   });
 
   it('returns the unavailable token for a missing path instead of throwing', async () => {
