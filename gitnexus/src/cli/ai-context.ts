@@ -120,12 +120,10 @@ export function markdownSafeBranch(branch: string): string {
 function regressionReviewGuidance(defaultBranch: string, runner?: string): string {
   const safeBranch = markdownSafeBranch(defaultBranch);
   const target = JSON.stringify(safeBranch);
-  const shellQuote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
-  const fetchTarget = shellQuote(safeBranch);
   const cliFallback = runner
     ? ` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\``
     : '';
-  return `For target branch ${target}: \`git fetch origin -- ${fetchTarget}\`; pass \`git merge-base FETCH_HEAD HEAD\`'s SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
+  return `Regression base: PR GitHub \`baseRefOid\`/\`headRefOid\`; target branch ${target} via tracking remote. Fetch both; pass merge-base SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
 }
 
 /** Options for {@link generateGitNexusContent} (collapsed from positional
@@ -243,7 +241,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
       ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
       : ''
   }
-- **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. ${regressionReviewGuidance(defaultBranch, runner)}
+- **MUST analyze changes before commit.** Run \`detect_changes({scope: "all"})\` or \`${runner} detect-changes --scope all --repo .\`. If \`partial\`/\`truncated\`, re-run. ${regressionReviewGuidance(defaultBranch, runner)}
 - MUST warn on HIGH/CRITICAL \`risk\` pre-edit; never use \`riskSharedAxes\` to waive a HIGH/CRITICAL \`risk\` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
 - **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
 - **MUST use \`query({search_query: "concept"})\` for concepts/flows, \`context({name: "symbolName"})\` for a named symbol, or \`impact\` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/\`UNKNOWN\`/literals.${
@@ -785,7 +783,7 @@ export async function refreshBaseRefLine(
     let newBlock = block;
     if (!block.includes(mergeBaseGuidance) && block.includes('base_ref: "<merge-base SHA>"')) {
       newBlock = block.replace(
-        /(?:For (?:regression review of )?)?target branch "(?:[^"\\]|\\.)*": `git fetch origin -- [^`\n]+`; pass `git merge-base [^`\n]+ HEAD`'s SHA to `detect_changes\(\{scope: "compare", base_ref: "<merge-base SHA>"\}\)`(?: or `[^`\n]+? detect-changes --scope compare --base-ref "<merge-base SHA>" --repo \.\`)?\./,
+        /(?:(?:For (?:regression review of )?)?target branch "(?:[^"\\]|\\.)*": `git fetch origin -- [^`\n]+`; pass `git merge-base [^`\n]+ HEAD`'s SHA|Regression base: PR GitHub `baseRefOid`\/`headRefOid`; target branch "(?:[^"\\]|\\.)*" via tracking remote\. Fetch both; pass merge-base SHA) to `detect_changes\(\{scope: "compare", base_ref: "<merge-base SHA>"\}\)`(?: or `[^`\n]+? detect-changes --scope compare --base-ref "<merge-base SHA>" --repo \.\`)?\./,
         mergeBaseGuidance,
       );
     }
