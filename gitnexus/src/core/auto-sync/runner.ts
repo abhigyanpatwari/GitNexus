@@ -273,15 +273,18 @@ export async function runAutoSyncOnce(
             if (options.signal?.aborted) throw err;
             analyzeStatus = 'failed';
             lastAnalyzeError = shortErrorMessage(err);
+            // The persisted summary stays short, but the log is the only place the
+            // failure diagnosis appended to the message (#3530) reaches an operator.
+            const loggedError = shortErrorMessage(err, ANALYZE_FAILURE_LOG_LIMIT);
             if (isAbandonedAnalyzeWorkerError(err)) abandonedAnalysisWorker = true;
             if (isRetryableAnalyzeContention(err)) {
               logger.error(
-                `[auto-sync] Analysis failed for ${targetDir}; retryable leftover-worker or index-lock wait (not counted toward threshold): ${lastAnalyzeError}`,
+                `[auto-sync] Analysis failed for ${targetDir}; retryable leftover-worker or index-lock wait (not counted toward threshold): ${loggedError}`,
               );
             } else {
               analyzeConsecutiveFailures += 1;
               logger.error(
-                `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${lastAnalyzeError}`,
+                `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${loggedError}`,
               );
             }
           }
@@ -466,9 +469,11 @@ export async function runAutoSyncOnce(
   return result;
 }
 
-function shortErrorMessage(err: unknown): string {
+const ANALYZE_FAILURE_LOG_LIMIT = 2000;
+
+function shortErrorMessage(err: unknown, limit = 240): string {
   const message = err instanceof Error ? err.message : String(err);
-  return message.replace(/\s+/g, ' ').slice(0, 240);
+  return message.replace(/\s+/g, ' ').slice(0, limit);
 }
 
 const ABANDONED_WORKER_MARKER = 'it was left running so its native work is not interrupted';

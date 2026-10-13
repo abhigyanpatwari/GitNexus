@@ -148,6 +148,7 @@ import {
   quarantineSidecarsForDirtyRecovery,
   inspectLbugSidecars,
 } from './lbug/sidecar-recovery.js';
+import { collectFailureEvidence } from './lbug/failure-evidence.js';
 import type { EmbeddingIdentity } from './embeddings/embedding-identity.js';
 // Type-only (erased at compile time), so the lazy-embeddings convention
 // (#2370: no embeddings module loads unless a run actually needs one) holds.
@@ -3045,12 +3046,25 @@ async function runFullAnalysisInner(
   // only governs this opt-in staging: a full rebuild and the #2841 escalation
   // below still stage because they set `useAtomicSwap` independently.
   const atomicIncrementalEnv = process.env.GITNEXUS_ATOMIC_INCREMENTAL;
+  const atomicIncrementalEligible = isIncremental && !!hashDiff && process.platform !== 'win32';
   const wantAtomicIncremental =
-    isIncremental &&
-    !!hashDiff &&
-    process.platform !== 'win32' &&
+    atomicIncrementalEligible &&
     atomicIncrementalEnv !== '0' &&
     (options.atomicIncremental === true || atomicIncrementalEnv === '1');
+  if (
+    atomicIncrementalEligible &&
+    atomicIncrementalEnv === '0' &&
+    options.atomicIncremental === true
+  ) {
+    // The off-switch trades failure safety for in-place speed; say so once, since
+    // watch and auto-sync (the callers that request staging) never show the operator
+    // why their runs stopped staging.
+    log(
+      'atomic-incremental: disabled by GITNEXUS_ATOMIC_INCREMENTAL=0 although the caller requested ' +
+        'staging; a failed write will leave the live index partly written and the next run will ' +
+        'rebuild it in full',
+    );
+  }
   // #2614 F3: the copy-then-swap stages ONLY the main lbug file, so a live index
   // carrying an orphan .wal/.shadow (a silently-failed prior checkpoint) would
   // be copied incompletely and lose that delta. Only take the atomic path when
@@ -3117,7 +3131,7 @@ async function runFullAnalysisInner(
       log(
         `atomic-incremental: staged ${lbugPath} in ${Date.now() - copyStartedAt}ms ` +
           '(copy-on-write requested; filesystem fallback is allowed); ' +
-          (await describeFileEvidence('staged copy', buildPath)),
+          (await describeFileEvidence('staging copy', buildPath)),
       );
     }
   } else {
@@ -3204,18 +3218,19 @@ async function runFullAnalysisInner(
   // `let`: the incremental branch's escalation valve (#2409) stops this driver
   // around its close→wipe→reopen strategy switch and starts a fresh one.
   let walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
+  // #2409 escalation valve outcome, hoisted above the incremental branch so
+  // the vector-index recreation seam in Phase 4 below can tell "surgical
+  // incremental" (DB files survived — the HNSW index with them) apart from
+  // "escalated full write" (DB wiped, index destroyed) — tri-review
+  // 4669518496 P1. Hoisted again above the `try` so the failure handler can
+  // classify an escalated run as a rebuild (#3530).
+  let escalatedFullWrite = false;
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
     // must be released to avoid blocking subsequent invocations.
 
     let lbugMsgCount = 0;
-    // #2409 escalation valve outcome, hoisted above the incremental branch so
-    // the vector-index recreation seam in Phase 4 below can tell "surgical
-    // incremental" (DB files survived — the HNSW index with them) apart from
-    // "escalated full write" (DB wiped, index destroyed) — tri-review
-    // 4669518496 P1.
-    let escalatedFullWrite = false;
     let incrementalStats: AnalyzeResult['incrementalStats'];
     // Phase 3.5's restore scope (FIX 3 of this shipping review): on the
     // SURGICAL write plan this is the exact file set whose rows
@@ -5436,13 +5451,15 @@ async function runFullAnalysisInner(
         : undefined,
     };
   } catch (err) {
-    // Classify once; the remedy line and the evidence log both read this.
-    // `atomicIncremental` is the only staged build `GITNEXUS_ATOMIC_INCREMENTAL=0`
-    // changes (a full rebuild and the #2841 escalation stage regardless).
+    // Classify once; the remedy and the evidence both read this. A staged build
+    // is `atomicIncremental` only until the #2409/#2841 escalation: that wipes the
+    // staging file and re-COPYs into it, which is a rebuild, and it stages with
+    // `GITNEXUS_ATOMIC_INCREMENTAL=0` as well — so naming the off-switch there
+    // would point at a knob with no effect (#3530).
     const stagedBuild = useAtomicSwap && buildPath !== lbugPath;
     const buildMode: StagedBuildMode = !stagedBuild
       ? 'in-place'
-      : atomicIncremental
+      : atomicIncremental && !escalatedFullWrite
         ? 'staged-incremental'
         : 'staged-rebuild';
     const failureMessage = String(err);
@@ -5453,12 +5470,12 @@ async function runFullAnalysisInner(
     // closing can checkpoint the staging file, so a later stat would record the
     // post-close size and make genuine growth look like a short file — the
     // misreading the #3530 evidence exists to settle. Only a classified failure
-    // logs them, so nothing else pays for the stats. Never throws.
+    // collects them, so nothing else pays for the stats. Never throws.
     const evidenceLines = classifiedRemedy
-      ? [
-          await describeFileEvidence('live index', lbugPath),
-          ...(stagedBuild ? [await describeFileEvidence('staging copy', buildPath)] : []),
-        ]
+      ? await collectFailureEvidence({
+          liveIndex: lbugPath,
+          ...(stagedBuild ? { stagingCopy: buildPath } : {}),
+        })
       : [];
     // Ensure LadybugDB is closed even on error. Stop the driver first
     // so its retry loop cannot extend an already-failing analyze.
@@ -5509,21 +5526,46 @@ async function runFullAnalysisInner(
       // IndexLockTimeoutError and other domain failures with `instanceof`.
       recordLiveIndexMutationRisk(err);
     }
+    // Diagnostics are best effort: a throwing log sink or an unwritable `message`
+    // must never replace the native failure rethrown below.
+    const bestEffort = (deliver: () => void): void => {
+      try {
+        deliver();
+      } catch {
+        /* swallow — the rethrow below is the surface */
+      }
+    };
     if (classifiedRemedy) {
-      log(classifiedRemedy);
       // 0 is the pass-through sentinel for LadybugDB's native default, not a size.
       const bufferPool = getEffectiveBufferPoolSize();
       const configuredLine =
         `configured max DB size ${LBUG_MAX_DB_SIZE} B, ` +
         `buffer pool ${bufferPool === 0 ? "LadybugDB's native 80%-of-RAM default" : `${bufferPool} B`}`;
-      for (const line of [...evidenceLines, configuredLine]) log(`Failure evidence — ${line}`);
+      const diagnosis = [
+        classifiedRemedy,
+        ...[...evidenceLines, configuredLine].map((line) => `Failure evidence — ${line}`),
+      ].join('\n');
+      // The message is the one channel every caller surfaces: `analyze --watch`
+      // wires no log sink unless GITNEXUS_VERBOSE=1 and the auto-sync worker
+      // launcher drops progress messages, yet both print the rethrown message.
+      // Appended in place, so the error keeps its identity and prototype
+      // (`instanceof` checks and live-mutation tracking key on the object), and
+      // after the native text, so classifiers anchored on it still match. The
+      // single call site means it is appended once per error.
+      bestEffort(() => {
+        if (err instanceof Error)
+          err.message = `${err.message}\n${stripControlCharacters(diagnosis)}`;
+        else log(diagnosis);
+      });
     } else if (
       /max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(failureMessage)
     ) {
       // A max-size message the engine worded differently keeps the generic hint.
-      log(
-        'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
-          'byte limit before retrying analyze; retained complete embeddings can be reused.',
+      bestEffort(() =>
+        log(
+          'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
+            'byte limit before retrying analyze; retained complete embeddings can be reused.',
+        ),
       );
     }
     throw err;

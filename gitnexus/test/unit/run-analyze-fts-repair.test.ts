@@ -19,6 +19,19 @@ import type {
   EmbeddingPipelineOptions,
   EmbeddingPipelineResult,
 } from '../../src/core/embeddings/embedding-pipeline.js';
+import {
+  isLbugCheckpointBusyError,
+  isLbugCheckpointIoError,
+  isLbugPageSizeFrameError,
+  isStorageVersionMismatchError,
+  isWalCorruptionError,
+} from '../../src/core/lbug/lbug-config.js';
+import { isHfDownloadFailure } from '../../src/core/embeddings/hf-env.js';
+import { isHttpEmbeddingDimsError } from '../../src/core/embeddings/http-client.js';
+import {
+  isLocalEmbeddingRuntimeBlockerMessage,
+  isMissingLocalEmbeddingStackMessage,
+} from '../../src/core/embeddings/runtime-support.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 const SIMULATED_MISSING_FTS_INDEX_NAME = 'File.file_fts';
@@ -2726,11 +2739,15 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     repoPath: string,
     options: Record<string, unknown>,
     logs: string[],
+    extraSink?: (message: string) => void,
   ): Promise<unknown> => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
     return await runFullAnalysis(repoPath, options, {
       onProgress: () => {},
-      onLog: (m: string) => logs.push(m),
+      onLog: (m: string) => {
+        logs.push(m);
+        extraSink?.(m);
+      },
     }).then(
       () => null,
       (e: unknown) => e,
@@ -2749,6 +2766,8 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     vi.doUnmock('../../src/core/embeddings/embedding-pipeline.js');
     vi.doUnmock('../../src/core/embeddings/staged-embedding-recovery.js');
     vi.doUnmock('../../src/core/analyzer-identity.js');
+    vi.doUnmock('../../src/core/lbug/failure-evidence.js');
+    vi.doUnmock('../../src/core/lbug/wal-checkpoint-driver.js');
     vi.restoreAllMocks();
     vi.resetModules();
     vi.clearAllMocks();
@@ -3834,30 +3853,40 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       'Failed to delete stale embedding rows: IO exception: Cannot read from file: ' +
       '/repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 numBytesRead: 0 ' +
       'numBytesToRead: 4096 position: 8011825152';
+    // A power of two, so the configured value is reported verbatim (rounding is
+    // covered where the value is resolved).
+    const CONFIGURED_MAX_DB_SIZE = 2 ** 41;
 
     // `mockStagedFiles` writes the 14-byte fixture 'staged fixture' to the staging path.
     const runStagedFailure = async (
-      message: string,
-    ): Promise<{ failure: Error; result: unknown; logs: string[] }> => {
+      thrown: unknown,
+      hooks: { onLog?: (message: string) => void; onClose?: () => void } = {},
+    ): Promise<{ result: unknown; logs: string[] }> => {
+      vi.stubEnv('GITNEXUS_LBUG_MAX_DB_SIZE', String(CONFIGURED_MAX_DB_SIZE));
+      // The limit is read when lbug-config loads, and the file's static imports may
+      // already have loaded it (the first test to run); reload under the stub.
+      vi.resetModules();
       const tmpRepo = await createTempDir('gitnexus-3530-classify-');
       try {
         const { storagePath } = getStoragePaths(tmpRepo.dbPath);
         await seedMeta(storagePath, tmpRepo.dbPath, {});
-        const failure = new Error(message);
         mockResilienceHarness({
           count: [{ cnt: 0 }],
           pipeline: async () => {
-            throw failure;
+            throw thrown;
           },
         });
         await mockStagedFiles();
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        vi.mocked(adapter.closeLbug).mockImplementation(async () => hooks.onClose?.());
         const logs: string[] = [];
         const result = await runAnalyze(
           tmpRepo.dbPath,
           { embeddings: true, force: true, skipAgentsMd: true, skipSkills: true },
           logs,
+          hooks.onLog,
         );
-        return { failure, result, logs };
+        return { result, logs };
       } finally {
         await tmpRepo.cleanup();
       }
@@ -3871,7 +3900,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
           'the engine reported a limit of 274877906944 bytes',
           'The live index is untouched',
           'Failure evidence — staging copy: apparent 14 B',
-          'Failure evidence — configured max DB size',
+          `Failure evidence — configured max DB size ${CONFIGURED_MAX_DB_SIZE} B, buffer pool `,
         ],
       ],
       [
@@ -3881,20 +3910,89 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
           'A read reached end-of-file at position 8011825152 in the staged copy',
           'The live index is untouched',
           'Failure evidence — staging copy: apparent 14 B',
-          'Failure evidence — configured max DB size',
+          `Failure evidence — configured max DB size ${CONFIGURED_MAX_DB_SIZE} B, buffer pool `,
         ],
       ],
     ])(
-      'classifies the %s, logs the staging evidence, rethrows the same error, and does not name the off-switch',
-      async (_label, message, expectedLogFragments) => {
-        const { failure, result, logs } = await runStagedFailure(message);
+      'classifies the %s, appends the remedy and staging evidence to the rethrown error once, and does not name the off-switch',
+      async (_label, message, expectedLineFragments) => {
+        const failure = new Error(message);
+        const { result, logs } = await runStagedFailure(failure);
         expect(result).toBe(failure);
-        expect(logs).toEqual(
-          expect.arrayContaining(expectedLogFragments.map((f) => expect.stringContaining(f))),
+        // The native text stays first, so classifiers anchored on it still match.
+        expect(failure.message.startsWith(`${message}\n`)).toBe(true);
+        expect(failure.message.split('\n')).toEqual(
+          expect.arrayContaining(expectedLineFragments.map((f) => expect.stringContaining(f))),
         );
+        expect(failure.message.match(/Failure evidence — configured/g)).toHaveLength(1);
+        // The message is the single channel; a log copy would print everything twice.
+        expect(logs.join('\n')).not.toContain('Failure evidence');
+        expect(logs.join('\n')).not.toContain(expectedLineFragments[0]);
         // A full rebuild stages regardless of GITNEXUS_ATOMIC_INCREMENTAL, so the
         // off-switch would point at a knob with no effect on this run.
-        expect(logs.join('\n')).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL');
+        expect(failure.message).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL');
+      },
+    );
+
+    it.each([REACHED, PAST_EOF])(
+      'adds nothing the downstream message classifiers or OOM heuristics could react to (%#)',
+      async (message) => {
+        const failure = new Error(message);
+        await runStagedFailure(failure);
+        const appended = failure.message.slice(message.length);
+        expect(appended).not.toBe('');
+
+        // Every consumer of the rethrown message classifies the whole string, so
+        // each verdict must be the one the native text alone gets.
+        const classifiers = [
+          isWalCorruptionError,
+          isLbugCheckpointIoError,
+          isLbugCheckpointBusyError,
+          isLbugPageSizeFrameError,
+          isStorageVersionMismatchError,
+        ];
+        expect(classifiers.map((classify) => classify(failure))).toEqual(
+          classifiers.map((classify) => classify(new Error(message))),
+        );
+        const messageClassifiers = [
+          isHfDownloadFailure,
+          isLocalEmbeddingRuntimeBlockerMessage,
+          isMissingLocalEmbeddingStackMessage,
+          isHttpEmbeddingDimsError,
+        ];
+        expect(messageClassifiers.map((classify) => classify(failure.message))).toEqual(
+          messageClassifiers.map((classify) => classify(message)),
+        );
+
+        // cli/analyze.ts scans printed text and the respawned child's stderr for
+        // these literals (heap-OOM, native-abort, large-repo and install hints).
+        const scannedPhrases = [
+          'maximum call stack size exceeded',
+          'call stack',
+          'map maximum size',
+          'invalid array length',
+          'invalid string length',
+          'allocation failed',
+          'heap out of memory',
+          'javascript heap',
+          'reached heap limit',
+          'fatalprocessoutofmemory',
+          'napi::error',
+          'libc++abi: terminating',
+          'abort trap',
+          'native stack',
+          'native worker',
+          'native binding',
+          'ladybugdb wal corruption',
+          'eresolve',
+          'could not resolve dependency',
+          'module_not_found',
+          'cannot find module',
+          'it was left running so its native work is not interrupted',
+        ];
+        expect(scannedPhrases.filter((phrase) => appended.toLowerCase().includes(phrase))).toEqual(
+          [],
+        );
       },
     );
 
@@ -3905,20 +4003,84 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       'labels GITNEXUS_LBUG_BUFFER_POOL_SIZE=%s in the configuration evidence line',
       async (poolSize, expectedFragment) => {
         vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', poolSize);
-        const { logs } = await runStagedFailure(REACHED);
-        const configured = logs.find((line) => line.startsWith('Failure evidence — configured'));
+        const failure = new Error(REACHED);
+        await runStagedFailure(failure);
+        const configured = failure.message
+          .split('\n')
+          .find((line) => line.startsWith('Failure evidence — configured'));
         expect(configured).toContain(expectedFragment);
         expect(configured).not.toContain('buffer pool 0 B');
       },
     );
 
-    it('logs no remedy and no evidence for an unrelated failure', async () => {
-      const { failure, result, logs } = await runStagedFailure(
-        'Binder exception: Table CodeEmbedding does not exist.',
-      );
+    it('appends no remedy and no evidence for an unrelated failure', async () => {
+      const failure = new Error('Binder exception: Table CodeEmbedding does not exist.');
+      const { result, logs } = await runStagedFailure(failure);
       expect(result).toBe(failure);
+      expect(failure.message).toBe('Binder exception: Table CodeEmbedding does not exist.');
       expect(logs.join('\n')).not.toContain('Failure evidence');
-      expect(logs.join('\n')).not.toContain('address-space ceiling');
+    });
+
+    it('logs the diagnosis instead when the thrown value is not an Error', async () => {
+      const { result, logs } = await runStagedFailure(REACHED);
+      expect(result).toBe(REACHED);
+      expect(logs).toContainEqual(
+        expect.stringMatching(
+          /address-space ceiling[\s\S]*\nFailure evidence — staging copy: apparent 14 B[\s\S]*\nFailure evidence — configured max DB size /,
+        ),
+      );
+    });
+
+    // A classified Error carries its diagnosis in its message and never logs it, so
+    // only a thrown non-Error and the generic hint reach the sink.
+    it.each([
+      ['classified non-Error', REACHED, /address-space ceiling/],
+      [
+        'unclassified max-size message',
+        new Error('Maximum database size exceeded'),
+        /database size limit was reached/,
+      ],
+    ])(
+      'rethrows the native failure when the log sink throws on a %s',
+      async (_label, thrown, loggedPattern) => {
+        const onLog = vi.fn<(message: string) => void>((message) => {
+          if (loggedPattern.test(message)) throw new Error('log sink exploded');
+        });
+        const { result } = await runStagedFailure(thrown, { onLog });
+        expect(result).toBe(thrown);
+        expect(onLog).toHaveBeenCalledWith(expect.stringMatching(loggedPattern));
+      },
+    );
+
+    it('rethrows the native error when its message cannot be written', async () => {
+      const failure = new Error(REACHED);
+      Object.defineProperty(failure, 'message', { value: REACHED, writable: false });
+      const { result } = await runStagedFailure(failure);
+      expect(result).toBe(failure);
+      expect(failure.message).toBe(REACHED);
+    });
+
+    it('collects the failure evidence before the checkpoint driver stops and the database closes', async () => {
+      const order: string[] = [];
+      vi.doMock('../../src/core/lbug/failure-evidence.js', () => ({
+        collectFailureEvidence: vi.fn(async () => {
+          order.push('evidence');
+          return [];
+        }),
+      }));
+      vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
+        ...(await importActual<typeof import('../../src/core/lbug/wal-checkpoint-driver.js')>()),
+        startWalCheckpointDriver: () => ({
+          stop: async () => {
+            order.push('driver-stop');
+          },
+        }),
+      }));
+      const failure = new Error(REACHED);
+      const { result } = await runStagedFailure(failure, { onClose: () => order.push('close') });
+      expect(result).toBe(failure);
+      // Closing can checkpoint the staging file, so a later stat would misread growth as a short file.
+      expect(order.slice(order.indexOf('evidence'))).toEqual(['evidence', 'driver-stop', 'close']);
     });
   });
 

@@ -1454,6 +1454,42 @@ describe('auto-sync runner', () => {
     );
   });
 
+  it('logs the whole analyze failure diagnosis but persists only a short summary (#3530)', async () => {
+    const errorLogger = vi.fn();
+    const nativeFailure = 'Cannot read from file: position: 4096, numBytesRead: 0';
+    const diagnosis = `Failure evidence — ${'staging copy: apparent 4096 B, '.repeat(12)}end-of-diagnosis`;
+    const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
+      cloneOrPull: vi.fn(async () => '/tmp/repos/gitee.com/qts_server/qts_account'),
+      getCurrentBranch: vi.fn(async () => 'master'),
+      getCurrentCommit: vi.fn(async () => 'commit-1'),
+      runAnalysis: vi.fn(async () => {
+        throw new Error(`${nativeFailure}\n${diagnosis}`);
+      }),
+      registerRepo: vi.fn(),
+      loadState: vi.fn<AutoSyncRunDeps['loadState']>(async () => ({})),
+      saveState: vi.fn(async () => {}),
+      writeCommitInfo: vi.fn(async () => {}),
+      addRepoToGroup: vi.fn(async () => false),
+      syncGroupByName: vi.fn(async () => {}),
+      getAvailableMemoryGB: vi.fn(() => 8),
+    });
+
+    await runAutoSyncOnce(config, {
+      deps,
+      logger: { info: vi.fn(), warn: vi.fn(), error: errorLogger },
+      now: () => new Date('2026-06-30T00:00:00.000Z'),
+    });
+
+    expect(errorLogger).toHaveBeenCalledWith(expect.stringContaining('end-of-diagnosis'));
+    expect(deps.saveState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        '/tmp/repos/gitee.com/qts_server/qts_account|master': expect.objectContaining({
+          lastAnalyzeError: expect.stringMatching(/^.{240}$/),
+        }),
+      }),
+    );
+  });
+
   it('does not count leftover-worker timeout toward the analyze failure threshold', async () => {
     const errorLogger = vi.fn();
     const leftover = new AutoSyncAnalysisError(
