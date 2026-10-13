@@ -76,17 +76,33 @@ export function populateGoWorkspaceOwners(
 }
 
 function populateGoOwnersInPackage(parsedFiles: readonly ParsedFile[]): void {
-  // Build struct name → def map from ALL scopes' ownedDefs (struct defs
-  // live in Class scopes now, not Module scope).
-  const structByQualifiedName = new Map<string, { nodeId: string; qualifiedName: string }>();
+  // Receiver base types must be declared at package scope. Struct defs live
+  // in their own Class scopes; local types below a Function or Block cannot
+  // own top-level methods or make a package-level candidate ambiguous.
+  // A null entry is ambiguous, including two declarations in the same file.
+  const structByQualifiedName = new Map<string, { nodeId: string; qualifiedName: string } | null>();
   for (const parsed of parsedFiles) {
+    const moduleIds = new Set(
+      parsed.scopes.filter((scope) => scope.kind === 'Module').map((scope) => scope.id),
+    );
     for (const scope of parsed.scopes) {
+      if (
+        scope.kind !== 'Module' &&
+        !(scope.kind === 'Class' && scope.parent !== null && moduleIds.has(scope.parent))
+      ) {
+        continue;
+      }
       for (const def of scope.ownedDefs) {
         if (isClassLike(def.type) && def.qualifiedName) {
-          structByQualifiedName.set(def.qualifiedName, {
-            nodeId: def.nodeId,
-            qualifiedName: def.qualifiedName,
-          });
+          const existing = structByQualifiedName.get(def.qualifiedName);
+          if (existing === undefined) {
+            structByQualifiedName.set(def.qualifiedName, {
+              nodeId: def.nodeId,
+              qualifiedName: def.qualifiedName,
+            });
+          } else if (existing?.nodeId !== def.nodeId) {
+            structByQualifiedName.set(def.qualifiedName, null);
+          }
         }
       }
     }
@@ -99,9 +115,7 @@ function populateGoOwnersInPackage(parsedFiles: readonly ParsedFile[]): void {
     for (const parsed of parsedFiles) {
       for (const scope of parsed.scopes) {
         if (scope.kind !== 'Function') continue;
-        const methodDefs = scope.ownedDefs.filter(
-          (d) => d.type === 'Method' && d.ownerId === undefined,
-        );
+        const methodDefs = scope.ownedDefs.filter((d) => d.type === 'Method');
         if (methodDefs.length === 0) continue;
 
         // Find the self typeBinding in this Function scope.
@@ -117,16 +131,27 @@ function populateGoOwnersInPackage(parsedFiles: readonly ParsedFile[]): void {
         if (receiverType === undefined) continue;
         receiverType = receiverType.replace(/^\*+/, '').trim();
 
+        // The per-file pass may have found a local declaration before the
+        // workspace revealed a duplicate. Recompute receiver ownership from
+        // the complete package instead of retaining that premature choice.
+        for (const def of methodDefs) {
+          delete (def as { ownerId?: string }).ownerId;
+          delete (def as { goReceiverKind?: 'value' | 'pointer' }).goReceiverKind;
+        }
+
         let owner = structByQualifiedName.get(receiverType);
         if (owner === undefined) {
           for (const [qname, candidate] of structByQualifiedName) {
             if (qname.endsWith('.' + receiverType)) {
+              if (candidate === null || owner !== undefined) {
+                owner = null;
+                break;
+              }
               owner = candidate;
-              break;
             }
           }
         }
-        if (owner !== undefined) {
+        if (owner !== undefined && owner !== null) {
           for (const def of methodDefs) {
             (def as { ownerId?: string }).ownerId = owner.nodeId;
             (def as { goReceiverKind?: 'value' | 'pointer' }).goReceiverKind = receiverKind;
