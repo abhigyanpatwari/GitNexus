@@ -577,6 +577,85 @@ export const bufferPoolExhaustionRemedy = (
   );
 };
 
+/**
+ * The facts about a failing analyze run that the wording of a staged-build
+ * remedy depends on (#3529, #3530). `staged`: the build target was a staging
+ * copy, so the live index was never written. `offSwitchApplies`: the run was an
+ * atomic-incremental write — the only staged build `GITNEXUS_ATOMIC_INCREMENTAL=0`
+ * changes. A full rebuild and the escalation to staging stage regardless, so
+ * naming the off-switch there would point at a knob with no effect.
+ */
+export interface FailureRemedyContext {
+  staged: boolean;
+  offSwitchApplies: boolean;
+}
+
+const MAX_DB_SIZE_REACHED_RE = /Maximum database size of (\d+) bytes has been reached/i;
+// `0(?!\d)` so a count such as `04096` is not read as zero bytes.
+const PAST_EOF_READ_RE = /Cannot read from file[\s\S]*?numBytesRead:\s*0(?!\d)/i;
+const EOF_POSITION_RE = /position:\s*(\d+)/i;
+
+const stagedBuildNote = (context: FailureRemedyContext): string =>
+  context.staged
+    ? ' The live index is untouched; a retry may reuse complete embeddings that a recovery generation retained.'
+    : '';
+
+const offSwitchNote = (context: FailureRemedyContext): string =>
+  context.offSwitchApplies
+    ? ' Setting GITNEXUS_ATOMIC_INCREMENTAL=0 writes in place instead of into a staged copy.'
+    : '';
+
+/**
+ * Remedy for the engine's `Maximum database size of N bytes has been reached`
+ * failure (#3529), or undefined when `message` is not that failure. `N` is
+ * labelled as the limit the ENGINE reported — whether it equals the configured
+ * value is not established, so this text never says so (the configured value
+ * is logged separately as evidence). Likewise it asserts no cause for why the
+ * ceiling was reached.
+ */
+export const maxDbSizeReachedRemedy = (
+  message: string,
+  context: FailureRemedyContext,
+): string | undefined => {
+  const match = MAX_DB_SIZE_REACHED_RE.exec(message);
+  if (!match) return undefined;
+  return (
+    `The LadybugDB address-space ceiling was reached: the engine reported a limit of ${match[1]} bytes. ` +
+    `That is an mmap budget, not disk usage, so a small index on disk does not rule it out. ` +
+    `GITNEXUS_LBUG_MAX_DB_SIZE sets the ceiling and must be a power of 2 (for example ${2 ** 39}); ` +
+    `raise it if the index needs more room, then retry analyze.` +
+    stagedBuildNote(context) +
+    offSwitchNote(context)
+  );
+};
+
+/**
+ * Remedy for a native read that returned zero bytes (`numBytesRead: 0`) during
+ * analyze (#3530), or undefined when `message` is not that failure. A staged
+ * build is a throwaway copy, so the live index is intact; the same read on an
+ * in-place build means the index file itself is shorter than the engine
+ * expected. Asserts no cause for why the file was short.
+ */
+export const pastEofReadRemedy = (
+  message: string,
+  context: FailureRemedyContext,
+): string | undefined => {
+  if (!PAST_EOF_READ_RE.test(message)) return undefined;
+  const position = EOF_POSITION_RE.exec(message);
+  const at = position ? ` at position ${position[1]}` : '';
+  if (!context.staged) {
+    return (
+      `A read reached end-of-file${at} in the live index file, before the engine expected it to end: ` +
+      'the index may be damaged or truncated. Run `gitnexus analyze --force` to rebuild it.'
+    );
+  }
+  return (
+    `A read reached end-of-file${at} in the staged copy of the index.` +
+    stagedBuildNote(context) +
+    offSwitchNote(context)
+  );
+};
+
 /** Matches WAL corruption errors from the LadybugDB engine. */
 const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
 

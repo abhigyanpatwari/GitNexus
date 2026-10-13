@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createLbugDatabase,
   estimateBufferPool,
+  maxDbSizeReachedRemedy,
   parseMaxDbSize,
+  pastEofReadRemedy,
   resolveMaxDbSize,
   isLbugCheckpointIoError,
   isStorageVersionMismatchError,
@@ -619,5 +621,102 @@ describe('GITNEXUS_LBUG_MAX_DB_SIZE power-of-two normalization (#3529)', () => {
         cap.restore();
       }
     });
+  });
+});
+
+describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
+  const REACHED_3529 =
+    'Buffer manager exception: Maximum database size of 274877906944 bytes has been reached.';
+  const EOF_3530 =
+    'Failed to delete stale embedding rows — aborting to prevent vector-index corruption: ' +
+    'Batch execution failed for rows 1-4: IO exception: Cannot read from file: ' +
+    '/repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 numBytesRead: 0 ' +
+    'numBytesToRead: 4096 position: 8011825152 (MATCH (e:CodeEmbedding {nodeId: $nodeId}) DELETE e)';
+  const OFF_SWITCH = 'GITNEXUS_ATOMIC_INCREMENTAL=0';
+
+  describe('maxDbSizeReachedRemedy', () => {
+    it('explains the verbatim #3529 message as an address-space ceiling', () => {
+      const remedy = maxDbSizeReachedRemedy(REACHED_3529, {
+        staged: false,
+        offSwitchApplies: false,
+      });
+      expect(remedy).toContain('274877906944');
+      expect(remedy).toContain('engine reported');
+      expect(remedy).toContain('GITNEXUS_LBUG_MAX_DB_SIZE');
+      expect(remedy).toContain('power of 2');
+      expect(remedy).toContain('not disk usage');
+    });
+
+    it.each([
+      ['atomic-incremental staged write', { staged: true, offSwitchApplies: true }, true],
+      ['staged full rebuild', { staged: true, offSwitchApplies: false }, false],
+      ['in-place build', { staged: false, offSwitchApplies: false }, false],
+    ])('names the off-switch only where it applies: %s', (_label, context, namesOffSwitch) => {
+      expect(maxDbSizeReachedRemedy(REACHED_3529, context)?.includes(OFF_SWITCH)).toBe(
+        namesOffSwitch,
+      );
+    });
+
+    it.each([
+      ['staged', { staged: true, offSwitchApplies: false }, true],
+      ['in place', { staged: false, offSwitchApplies: false }, false],
+    ])('says the live index is untouched only for a %s build', (_label, context, untouched) => {
+      expect(
+        maxDbSizeReachedRemedy(REACHED_3529, context)?.includes('live index is untouched'),
+      ).toBe(untouched);
+    });
+
+    it.each([
+      ['the generic wording the engine does not emit', 'Maximum database size exceeded'],
+      ['an unrelated error', 'Binder exception: Table CodeEmbedding does not exist.'],
+      ['the past-EOF message', EOF_3530],
+    ])('returns undefined for %s', (_label, message) => {
+      expect(
+        maxDbSizeReachedRemedy(message, { staged: true, offSwitchApplies: true }),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('pastEofReadRemedy', () => {
+    it.each([
+      ['atomic-incremental staged write', { staged: true, offSwitchApplies: true }, true],
+      ['staged full rebuild', { staged: true, offSwitchApplies: false }, false],
+    ])(
+      'staged build, %s: live index untouched, off-switch only where it applies',
+      (_label, context, namesOffSwitch) => {
+        const remedy = pastEofReadRemedy(EOF_3530, context);
+        expect(remedy).toContain('live index is untouched');
+        expect(remedy?.includes(OFF_SWITCH)).toBe(namesOffSwitch);
+      },
+    );
+
+    it('treats an in-place failure as possible index damage with a rebuild remedy', () => {
+      const remedy = pastEofReadRemedy(EOF_3530, { staged: false, offSwitchApplies: false });
+      expect(remedy).toContain('analyze --force');
+      expect(remedy).not.toContain('live index is untouched');
+      expect(remedy).not.toContain(OFF_SWITCH);
+    });
+
+    it.each([
+      ['a short read', EOF_3530.replace('numBytesRead: 0 ', 'numBytesRead: 512 ')],
+      [
+        'a nonzero count that starts with 0',
+        EOF_3530.replace('numBytesRead: 0 ', 'numBytesRead: 04096 '),
+      ],
+      ['the size-ceiling message', REACHED_3529],
+      ['an unrelated error', 'Binder exception: Table CodeEmbedding does not exist.'],
+    ])('returns undefined for %s', (_label, message) => {
+      expect(pastEofReadRemedy(message, { staged: true, offSwitchApplies: true })).toBeUndefined();
+    });
+  });
+
+  it.each([
+    [
+      'size ceiling',
+      () => maxDbSizeReachedRemedy(REACHED_3529, { staged: true, offSwitchApplies: true }),
+    ],
+    ['past-EOF', () => pastEofReadRemedy(EOF_3530, { staged: true, offSwitchApplies: true })],
+  ])('the %s remedy never recommends lowering the WAL checkpoint threshold', (_label, remedy) => {
+    expect(remedy()).not.toContain('GITNEXUS_WAL_CHECKPOINT_THRESHOLD');
   });
 });
