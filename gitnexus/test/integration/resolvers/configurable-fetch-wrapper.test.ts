@@ -24,7 +24,7 @@ describe('Configurable fetch wrapper consumer extraction', () => {
   beforeAll(async () => {
     withoutConfig = await runPipelineFromRepo(FIXTURE, () => {});
     withConfig = await runPipelineFromRepo(FIXTURE, () => {}, {
-      fetchWrappers: ['doRequest'],
+      fetchWrappers: ['doRequest', 'client.doRequest'],
     });
   }, 60000);
 
@@ -49,6 +49,24 @@ describe('Configurable fetch wrapper consumer extraction', () => {
     );
     expect(thingsEdge).toBeDefined();
   });
+
+  it.each(['NestedTypes.ts', 'ObjectTypes.ts'])(
+    'traces supported type arguments in %s',
+    (fileName) => {
+      const edges = getRelationships(withConfig, 'FETCHES');
+      expect(
+        edges.some((e) => e.sourceFilePath.endsWith(fileName) && e.target === '/api/things'),
+      ).toBe(true);
+    },
+  );
+
+  it.each(['TypeOnlyReference.ts', 'StoredReference.ts'])(
+    'does not trace an unrelated call after a wrapper reference in %s',
+    (fileName) => {
+      const edges = getRelationships(withConfig, 'FETCHES');
+      expect(edges.filter((e) => e.sourceFilePath.endsWith(fileName))).toEqual([]);
+    },
+  );
 
   it('does NOT match a configured bare name inside a longer non-ASCII identifier (#1852 review F10)', () => {
     // Accented.tsx calls `cafédoRequest('/api/things')` — `doRequest` preceded by
