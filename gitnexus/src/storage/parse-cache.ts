@@ -864,7 +864,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // scopes and declaration metadata. Re-extract both stores with provider fixes.
 // v140: Ruby accessor captures retain reader visibility and singleton ownership.
 // Older worker and durable captures cannot prove property-reader dispatch.
-const SCHEMA_BUMP = 140;
+// v141: detached method owners retain names without fabricated graph ids.
+// Re-extract both worker and durable captures before workspace ownership runs.
+const SCHEMA_BUMP = 141;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
