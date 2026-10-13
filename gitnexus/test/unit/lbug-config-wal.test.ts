@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createLbugDatabase,
   estimateBufferPool,
+  parseMaxDbSize,
+  resolveMaxDbSize,
   isLbugCheckpointIoError,
   isStorageVersionMismatchError,
   isWalCorruptionError,
@@ -550,5 +552,72 @@ describe('bufferPoolExhaustionRemedy (#2631)', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe('GITNEXUS_LBUG_MAX_DB_SIZE power-of-two normalization (#3529)', () => {
+  const DEFAULT_MAX_DB_SIZE = 2 ** 34;
+
+  describe('parseMaxDbSize', () => {
+    it.each([
+      ['unset', undefined, DEFAULT_MAX_DB_SIZE],
+      ['exact power of two (default)', '17179869184', 2 ** 34],
+      ['exact power of two (256 GiB)', '274877906944', 2 ** 38],
+      ['rounds 300 GB up', '300000000000', 2 ** 39],
+      ['rounds 2^34 + 1 up', '17179869185', 2 ** 35],
+      ['rounds 2^40 + 1 up', '1099511627777', 2 ** 41],
+      ['floors a fraction before rounding', '17179869184.5', 2 ** 34],
+      ['non-numeric falls back', 'abc', DEFAULT_MAX_DB_SIZE],
+      ['zero falls back', '0', DEFAULT_MAX_DB_SIZE],
+      ['negative falls back', '-5', DEFAULT_MAX_DB_SIZE],
+      ['beyond the safe-integer range falls back', '1e30', DEFAULT_MAX_DB_SIZE],
+      ['empty falls back', '', DEFAULT_MAX_DB_SIZE],
+    ])('%s', (_label, raw, expected) => {
+      expect(parseMaxDbSize(raw).value).toBe(expected);
+    });
+
+    it.each([
+      ['300000000000', 300000000000],
+      ['17179869185', 17179869185],
+    ])('records the raw value when %s is rounded', (raw, rawNumber) => {
+      expect(parseMaxDbSize(raw).roundedFrom).toBe(rawNumber);
+    });
+
+    it.each([['17179869184'], ['274877906944'], ['abc'], [undefined]])(
+      'records no rounding for %s',
+      (raw) => {
+        expect(parseMaxDbSize(raw).roundedFrom).toBeUndefined();
+      },
+    );
+  });
+
+  describe('resolveMaxDbSize', () => {
+    it('warns once with the raw and effective values when it rounds', () => {
+      const cap = _captureLogger();
+      try {
+        expect(resolveMaxDbSize('300000000000')).toBe(2 ** 39);
+        const warnings = cap
+          .records()
+          .filter((r) => typeof r.msg === 'string' && r.msg.includes('GITNEXUS_LBUG_MAX_DB_SIZE'));
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0].msg).toContain('300000000000');
+        expect(warnings[0].msg).toContain(String(2 ** 39));
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it.each([['17179869184'], ['abc'], [undefined]])('does not warn for %s', (raw) => {
+      const cap = _captureLogger();
+      try {
+        resolveMaxDbSize(raw);
+        const warnings = cap
+          .records()
+          .filter((r) => typeof r.msg === 'string' && r.msg.includes('GITNEXUS_LBUG_MAX_DB_SIZE'));
+        expect(warnings).toHaveLength(0);
+      } finally {
+        cap.restore();
+      }
+    });
   });
 });

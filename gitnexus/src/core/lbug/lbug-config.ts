@@ -256,17 +256,44 @@ export function resolveNativeSafeStorageDir(storagePath: string, subdir: string)
  * remaining far below any 64-bit OS mmap ceiling.
  *
  * Override with the `GITNEXUS_LBUG_MAX_DB_SIZE` environment variable when
- * indexing genuinely huge monorepos. Values are coerced to a positive
- * integer; anything invalid falls back to the default.
+ * indexing genuinely huge monorepos. The native buffer manager rejects any
+ * value that is not a power of two ("The given max db size should be a power
+ * of 2"), so a positive safe integer is rounded UP to the next power of two
+ * (#3529); anything invalid falls back to the default.
  */
-export const LBUG_MAX_DB_SIZE: number = (() => {
-  const raw = process.env.GITNEXUS_LBUG_MAX_DB_SIZE;
-  if (raw) {
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+const DEFAULT_LBUG_MAX_DB_SIZE = 16 * 1024 * 1024 * 1024;
+
+export interface ParsedMaxDbSize {
+  /** The effective value handed to the native open. */
+  value: number;
+  /** The raw operator value, present only when `value` is a round-up of it. */
+  roundedFrom?: number;
+}
+
+export const parseMaxDbSize = (raw: string | undefined): ParsedMaxDbSize => {
+  if (!raw) return { value: DEFAULT_LBUG_MAX_DB_SIZE };
+  const parsed = Math.floor(Number(raw));
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return { value: DEFAULT_LBUG_MAX_DB_SIZE };
+  // Powers of two are exact in a double and `parsed` is a safe integer, so the
+  // doubling loop is exact — unlike `2 ** Math.ceil(Math.log2(parsed))`, which
+  // can under-round a value just above a large power of two.
+  let value = 1;
+  while (value < parsed) value *= 2;
+  return value === parsed ? { value } : { value, roundedFrom: parsed };
+};
+
+export const resolveMaxDbSize = (raw: string | undefined): number => {
+  const { value, roundedFrom } = parseMaxDbSize(raw);
+  if (roundedFrom !== undefined) {
+    logger.warn(
+      { rawValue: roundedFrom, effective: value },
+      `GITNEXUS_LBUG_MAX_DB_SIZE=${roundedFrom} is not a power of two; using ${value}.`,
+    );
   }
-  return 16 * 1024 * 1024 * 1024;
-})();
+  return value;
+};
+
+export const LBUG_MAX_DB_SIZE: number = resolveMaxDbSize(process.env.GITNEXUS_LBUG_MAX_DB_SIZE);
 
 export const parseWalCheckpointThreshold = (raw: string | undefined): number | undefined => {
   if (raw === undefined) return undefined;
