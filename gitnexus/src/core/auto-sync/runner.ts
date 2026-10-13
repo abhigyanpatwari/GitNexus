@@ -275,7 +275,8 @@ export async function runAutoSyncOnce(
             lastAnalyzeError = shortErrorMessage(err);
             // The persisted summary stays short, but the log is the only place the
             // failure diagnosis appended to the message (#3530) reaches an operator.
-            const loggedError = shortErrorMessage(err, ANALYZE_FAILURE_LOG_LIMIT);
+            // That diagnosis is the message tail, so an oversized message keeps its tail.
+            const loggedError = loggedErrorMessage(err);
             if (isAbandonedAnalyzeWorkerError(err)) abandonedAnalysisWorker = true;
             if (isRetryableAnalyzeContention(err)) {
               logger.error(
@@ -471,9 +472,24 @@ export async function runAutoSyncOnce(
 
 const ANALYZE_FAILURE_LOG_LIMIT = 2000;
 
-function shortErrorMessage(err: unknown, limit = 240): string {
+function flattenErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  return message.replace(/\s+/g, ' ').slice(0, limit);
+  return message.replace(/\s+/g, ' ');
+}
+
+function shortErrorMessage(err: unknown): string {
+  return flattenErrorMessage(err).slice(0, 240);
+}
+
+/**
+ * Log variant: the failure diagnosis (#3530) is appended after the native error, so
+ * an oversized message keeps its head AND its tail rather than the head alone.
+ */
+function loggedErrorMessage(err: unknown): string {
+  const message = flattenErrorMessage(err);
+  if (message.length <= ANALYZE_FAILURE_LOG_LIMIT) return message;
+  const half = ANALYZE_FAILURE_LOG_LIMIT / 2;
+  return `${message.slice(0, half)} … ${message.slice(-half)}`;
 }
 
 const ABANDONED_WORKER_MARKER = 'it was left running so its native work is not interrupted';

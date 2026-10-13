@@ -54,7 +54,7 @@ describe('describeFileEvidence (#3530)', () => {
   let dir: string;
 
   beforeEach(async () => {
-    temp = await createTempDir('file-evidence-');
+    temp = await createTempDir();
     dir = temp.dbPath;
   });
 

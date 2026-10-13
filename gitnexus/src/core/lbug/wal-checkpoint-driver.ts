@@ -59,7 +59,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 /** Point-in-time view of the manual checkpoints this process has run. */
 export interface CheckpointActivity {
-  /** Checkpoints that returned without throwing (flushed or not). */
+  /** CHECKPOINTs that actually ran (`tryFlushWAL` resolved true); a no-connection no-op is not counted. */
   readonly completed: number;
   /** `Date.now()` when the latest one completed; `null` if none has. */
   readonly lastCompletedAt: number | null;
@@ -113,8 +113,10 @@ export const runCheckpointWithRetry = async (
     for (let attempt = 1; attempt <= CHECKPOINT_RETRY_ATTEMPTS; attempt++) {
       try {
         const flushed = await checkpointImpl();
-        activity.completed++;
-        activity.lastCompletedAt = Date.now();
+        if (flushed) {
+          activity.completed++;
+          activity.lastCompletedAt = Date.now();
+        }
         return { attempts: attempt, flushed };
       } catch (err) {
         lastError = err;

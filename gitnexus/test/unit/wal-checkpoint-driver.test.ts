@@ -217,12 +217,13 @@ describe('readCheckpointActivity — checkpoint evidence for failure reports (#3
     expect(after.inFlight).toBe(before.inFlight);
   });
 
-  it('counts a checkpoint that returned without flushing as completed', async () => {
+  it('does not count a no-op checkpoint (flushed false, e.g. no open connection) as completed', async () => {
     const before = readCheckpointActivity();
 
-    await runCheckpointWithRetry({ checkpointFn: vi.fn().mockResolvedValue(false) });
+    const result = await runCheckpointWithRetry({ checkpointFn: vi.fn().mockResolvedValue(false) });
 
-    expect(readCheckpointActivity().completed).toBe(before.completed + 1);
+    expect(result.flushed).toBe(false);
+    expect(readCheckpointActivity()).toEqual(before);
   });
 
   it('counts a checkpoint that succeeds after a retry once', async () => {
@@ -281,13 +282,24 @@ describe('readCheckpointActivity — checkpoint evidence for failure reports (#3
     expect(snapshot).toEqual(frozen);
   });
 
-  it('records the staged window-start checkpoint (checkpointOnce) even when it did not flush', async () => {
+  it('records the staged window-start checkpoint (checkpointOnce) when it flushed', async () => {
+    const before = readCheckpointActivity();
+    vi.spyOn(lbugAdapter, 'tryFlushWAL').mockResolvedValue(true);
+
+    await checkpointOnce();
+
+    const after = readCheckpointActivity();
+    expect(after.completed).toBe(before.completed + 1);
+    expect(after.lastCompletedAt).toBe(COMPLETED_AT);
+  });
+
+  it('does not record the staged window-start checkpoint (checkpointOnce) when it was a no-op', async () => {
     const before = readCheckpointActivity();
     vi.spyOn(lbugAdapter, 'tryFlushWAL').mockResolvedValue(false);
 
     await checkpointOnce();
 
-    expect(readCheckpointActivity().completed).toBe(before.completed + 1);
+    expect(readCheckpointActivity()).toEqual(before);
   });
 
   it('records nothing when the manual checkpoint is opted out', async () => {

@@ -35,7 +35,7 @@ describe('collectFailureEvidence (#3530)', () => {
   let staging: string;
 
   beforeEach(async () => {
-    temp = await createTempDir('failure-evidence-');
+    temp = await createTempDir();
     live = path.join(temp.dbPath, 'lbug');
     staging = path.join(temp.dbPath, 'lbug.staging');
     mocks.readActivity.mockReset().mockReturnValue(NO_ACTIVITY);

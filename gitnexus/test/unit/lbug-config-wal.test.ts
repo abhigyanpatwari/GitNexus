@@ -670,8 +670,14 @@ describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
       expect(remedy).toContain('274877906944');
       expect(remedy).toContain('engine reported');
       expect(remedy).toContain('GITNEXUS_LBUG_MAX_DB_SIZE');
-      expect(remedy).toContain('power of 2');
+      expect(remedy).toContain('rounded up');
       expect(remedy).toContain('not disk usage');
+    });
+
+    it('does not claim the configured size must itself be a power of 2', () => {
+      const remedy = maxDbSizeReachedRemedy(REACHED_3529, 'in-place');
+      expect(remedy).not.toContain('must be a power of 2');
+      expect(remedy).toContain('not a power of 2 is rounded up');
     });
 
     it.each([
