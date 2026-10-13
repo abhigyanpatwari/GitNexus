@@ -535,9 +535,8 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
             ? await readFileContents(ctx.repoPath, unreadJsFiles)
             : new Map<string, string>();
         // One alternation regex over every wrapper name per file — O(files), not
-        // O(files × wrappers) (#1852 review F3). Names are escaped and grouped
-        // non-capturing so capture group 1 stays the URL. The left boundary is a
-        // negative lookbehind, not `\b`: a bare configured name like `get` must
+        // O(files × wrappers) (#1852 review F3). Names are escaped and grouped.
+        // The left boundary is a negative lookbehind, not `\b`: a bare name like `get` must
         // match the free call `get('/x')` but NOT a member access `client.get(`
         // (a `.get(` on an unrelated object), and `apiFetch` must not match
         // `myApiFetch`. Member-style wrappers are configured with the dot
@@ -549,9 +548,10 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         // the call (`client.get<User[]>('/x')`).
         const alternation = [...wrapperNames].map(escapeRegex).join('|');
         const wrapperCallRegex = new RegExp(
-          `(?<![.\\p{L}\\p{N}_$])(?:${alternation})\\s*(?:<[^()'"\`]*>\\s*)?\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
+          `(?<![.\\p{L}\\p{N}_$])(?:${alternation})\\s*(?=[<(])`,
           'gu',
         );
+        const callArgumentRegex = /\s*\(\s*['"`](\/[^'"`\s)]+)['"`]/y;
         const scanContent = (filePath: string, content: string): void => {
           wrapperCallRegex.lastIndex = 0;
           // 1-based line number via a running newline counter: matches arrive in
@@ -562,12 +562,29 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
           let scanned = 0;
           let match;
           while ((match = wrapperCallRegex.exec(content)) !== null) {
+            let callStart = wrapperCallRegex.lastIndex;
+            if (content[callStart] === '<') {
+              // Stop at the matching close, even for nested generics. A type
+              // reference must not consume a later, unrelated call's URL.
+              let depth = 1;
+              for (callStart++; callStart < content.length && depth > 0; callStart++) {
+                const ch = content[callStart];
+                if (ch === '<') depth++;
+                else if (ch === '>') depth--;
+                else if (/[()'"`]/.test(ch)) break;
+              }
+              if (depth > 0) continue;
+            }
+            callArgumentRegex.lastIndex = callStart;
+            const argument = callArgumentRegex.exec(content);
+            if (!argument) continue;
+            wrapperCallRegex.lastIndex = callArgumentRegex.lastIndex;
             for (; scanned < match.index; scanned++) {
               if (content.charCodeAt(scanned) === 10 /* '\n' */) line++;
             }
             allFetchCalls.push({
               filePath,
-              fetchURL: match[1],
+              fetchURL: argument[1],
               lineNumber: line,
             });
           }
