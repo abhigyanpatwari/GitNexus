@@ -175,9 +175,21 @@ export function hidesExportFromPackage(input: {
   return home === undefined || goPackageKey(input.user) !== home;
 }
 
+/**
+ * cgo writes a C tag as `C.struct_tag`, `C.enum_tag` or `C.union_tag` and a C size as
+ * `C.sizeof_T`, so a written name is never the spelling of the C declaration it denotes.
+ */
+function cgoCNames(name: string): readonly string[] {
+  const sized = name.replace(/^sizeof_(?=.)/, '');
+  const tagged = sized.replace(/^(?:struct|enum|union)_(?=.)/, '');
+  return [...new Set([sized, tagged])].filter((spelling) => spelling !== name);
+}
+
 export const goRenameProvider: RenameProvider = {
   // An indexed C source may call a function exported with a cgo `//export` directive.
   interoperatesWithSourceProvider: (provider) => provider.id === SupportedLanguages.C,
+  boundaryNames: (name, peer) =>
+    [SupportedLanguages.C, SupportedLanguages.CPlusPlus].includes(peer.id) ? cgoCNames(name) : [],
   matchesGraphIdentity({ definition, node, graph, files }) {
     const ownName = definition.qualifiedName;
     if (!ownName) return false;

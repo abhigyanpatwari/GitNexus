@@ -106,7 +106,9 @@ function classRenameTarget(context: RenameSemanticContext): SymbolDefinition | u
 
 export const cppRenameProvider: RenameProvider = {
   additionalInteropNames: cMacroNames,
-  interoperatesWithSourceProvider: (provider) => provider.id === SupportedLanguages.ObjectiveC,
+  // Objective-C++ shares these names, and cgo calls an `extern "C"` function by its own name.
+  interoperatesWithSourceProvider: (provider) =>
+    [SupportedLanguages.ObjectiveC, SupportedLanguages.Go].includes(provider.id),
   checkSafety(context) {
     const macroIssue = checkCMacroSafety(context);
     if (macroIssue) return macroIssue;

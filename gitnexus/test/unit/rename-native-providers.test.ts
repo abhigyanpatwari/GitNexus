@@ -666,6 +666,79 @@ describe('names shared with indexed sources of an interoperating language', () =
     60_000,
   );
 
+  it.each([
+    ['a struct tag as C.struct_tag', 'struct', 'Struct', 'point', 'C.struct_point{}.x'],
+    ['an enum tag as C.enum_tag', 'enum', 'Enum', 'color', 'C.enum_color(0)'],
+    ['a union tag as C.union_tag', 'union', 'Union', 'value', 'C.union_value{}'],
+    [
+      'the size of a struct as C.sizeof_struct_tag',
+      'struct',
+      'Struct',
+      'point',
+      'C.sizeof_struct_point',
+    ],
+  ])(
+    'refuses a C tag that Go cgo names, spelling %s',
+    async (_description, keyword, kind, tag, expression) => {
+      await expectBoundaryRefusal(
+        {
+          'api.c': `${keyword} ${tag} { int x; };\n`,
+          'main.go': `package main\n\nimport "C"\n\nfunc use() int { return int(${expression}) }\n`,
+        },
+        tag,
+        kind,
+        'renamed',
+        'api.c',
+      );
+    },
+    60_000,
+  );
+
+  it('renames a C struct tag beside Go cgo names that only share a prefix or sit in comments and strings', async () => {
+    const consumer = {
+      'main.go':
+        'package main\n\nimport "C"\n\n// point renamed\nfunc use() int { _ = "point renamed"; return int(C.struct_other{}.x) }\n',
+    };
+    const model = 'struct point { int x; };\nint norm(struct point *value) { return value->x; }\n';
+    await expectRename(
+      { 'api.c': model, ...consumer },
+      { 'api.c': model.replaceAll('point', 'renamed'), ...consumer },
+      'point',
+      'Struct',
+      'renamed',
+      'api.c',
+    );
+  }, 60_000);
+
+  it('refuses a C++ extern "C" function that an indexed Go cgo caller names', async () => {
+    await expectBoundaryRefusal(
+      {
+        'api.cpp': 'extern "C" int target(int value) { return value; }\n',
+        'main.go': 'package main\n\nimport "C"\n\nfunc call() int { return int(C.target(1)) }\n',
+      },
+      'target',
+      'Function',
+      'renamed',
+      'api.cpp',
+    );
+  }, 60_000);
+
+  it('renames a C++ function beside a Go source that only mentions it in comments and strings', async () => {
+    const consumer = {
+      'main.go':
+        'package main\n\n// target renamed\nfunc note() string { return "target renamed" }\n',
+    };
+    const model = 'int target() { return 1; }\nint consume(void) { return target(); }\n';
+    await expectRename(
+      { 'api.cpp': model, ...consumer },
+      { 'api.cpp': model.replaceAll('target', 'renamed'), ...consumer },
+      'target',
+      'Function',
+      'renamed',
+      'api.cpp',
+    );
+  }, 60_000);
+
   it('renames a C function beside consumer sources that only mention it in comments and strings', async () => {
     const consumers = {
       'other.rs': '// target renamed\npub fn note() -> &\'static str { "target renamed" }\n',
