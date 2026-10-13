@@ -1009,6 +1009,7 @@ const callableOwnQualifiedName = (
           undefined,
           provider.resolveFileTypeOwner,
           provider.resolveContainerTypeOwner,
+          provider.resolveDetachedOwnerName,
         )
       : null;
   const objectOwner =
@@ -1070,6 +1071,7 @@ const findEnclosingFunctionId = (
           undefined,
           provider.resolveFileTypeOwner,
           provider.resolveContainerTypeOwner,
+          provider.resolveDetachedOwnerName,
         );
         const encLang = getLanguageFromFilename(filePath);
         const standaloneMethodInfo =
@@ -1178,6 +1180,7 @@ const findEnclosingFunctionId = (
           undefined,
           provider.resolveFileTypeOwner,
           provider.resolveContainerTypeOwner,
+          provider.resolveDetachedOwnerName,
         );
         // Same nesting rule as the generic branch above (#2699). Anchored on
         // `sigNode`-equivalent (`current.previousSibling ?? current`) so Dart,
@@ -1244,6 +1247,7 @@ const cachedFindEnclosingClassInfo = (
   getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
   resolveFileTypeOwner?: LanguageProvider['resolveFileTypeOwner'],
   resolveContainerTypeOwner?: LanguageProvider['resolveContainerTypeOwner'],
+  resolveDetachedOwnerName?: LanguageProvider['resolveDetachedOwnerName'],
 ): EnclosingClassInfo | null => {
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
@@ -1255,6 +1259,7 @@ const cachedFindEnclosingClassInfo = (
     getQualifiedOwnerName,
     resolveFileTypeOwner,
     resolveContainerTypeOwner,
+    resolveDetachedOwnerName,
   );
   classIdCache.set(node, result);
   return result;
@@ -2245,6 +2250,7 @@ const processFileGroup = (
                   propGetQualifiedOwnerName,
                   provider.resolveFileTypeOwner,
                   provider.resolveContainerTypeOwner,
+                  provider.resolveDetachedOwnerName,
                 );
                 const propEnclosingClassId =
                   propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
@@ -2667,6 +2673,7 @@ const processFileGroup = (
               getQualifiedOwnerName,
               provider.resolveFileTypeOwner,
               provider.resolveContainerTypeOwner,
+              provider.resolveDetachedOwnerName,
             )
           : null;
       const enclosingClassId =
@@ -3217,7 +3224,11 @@ const processFileGroup = (
         name: nodeName,
         nodeId,
         type: nodeLabel,
-        ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
+        ...(qualifiedTypeName !== undefined
+          ? { qualifiedName: qualifiedTypeName }
+          : enclosingClassInfo && enclosingClassId === null
+            ? { qualifiedName }
+            : {}),
         parameterCount: methodProps.parameterCount as number | undefined,
         requiredParameterCount: methodProps.requiredParameterCount as number | undefined,
         parameterTypes: methodProps.parameterTypes as string[] | undefined,
