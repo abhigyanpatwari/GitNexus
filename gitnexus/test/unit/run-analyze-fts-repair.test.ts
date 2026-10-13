@@ -3827,6 +3827,87 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     }
   });
 
+  describe('staged full-rebuild failure classification (#3529, #3530)', () => {
+    const REACHED =
+      'Buffer manager exception: Maximum database size of 274877906944 bytes has been reached.';
+    const PAST_EOF =
+      'Failed to delete stale embedding rows: IO exception: Cannot read from file: ' +
+      '/repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 numBytesRead: 0 ' +
+      'numBytesToRead: 4096 position: 8011825152';
+
+    // `mockStagedFiles` writes the 14-byte fixture 'staged fixture' to the staging path.
+    const runStagedFailure = async (
+      message: string,
+    ): Promise<{ failure: Error; result: unknown; logs: string[] }> => {
+      const tmpRepo = await createTempDir('gitnexus-3530-classify-');
+      try {
+        const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+        await seedMeta(storagePath, tmpRepo.dbPath, {});
+        const failure = new Error(message);
+        mockResilienceHarness({
+          count: [{ cnt: 0 }],
+          pipeline: async () => {
+            throw failure;
+          },
+        });
+        await mockStagedFiles();
+        const logs: string[] = [];
+        const result = await runAnalyze(
+          tmpRepo.dbPath,
+          { embeddings: true, force: true, skipAgentsMd: true, skipSkills: true },
+          logs,
+        );
+        return { failure, result, logs };
+      } finally {
+        await tmpRepo.cleanup();
+      }
+    };
+
+    it.each([
+      [
+        'size ceiling',
+        REACHED,
+        [
+          'the engine reported a limit of 274877906944 bytes',
+          'The live index is untouched',
+          'Failure evidence — staging copy: apparent 14 B',
+          'Failure evidence — configured max DB size',
+        ],
+      ],
+      [
+        'past-EOF read',
+        PAST_EOF,
+        [
+          'A read reached end-of-file at position 8011825152 in the staged copy',
+          'The live index is untouched',
+          'Failure evidence — staging copy: apparent 14 B',
+          'Failure evidence — configured max DB size',
+        ],
+      ],
+    ])(
+      'classifies the %s, logs the staging evidence, rethrows the same error, and does not name the off-switch',
+      async (_label, message, expectedLogFragments) => {
+        const { failure, result, logs } = await runStagedFailure(message);
+        expect(result).toBe(failure);
+        expect(logs).toEqual(
+          expect.arrayContaining(expectedLogFragments.map((f) => expect.stringContaining(f))),
+        );
+        // A full rebuild stages regardless of GITNEXUS_ATOMIC_INCREMENTAL, so the
+        // off-switch would point at a knob with no effect on this run.
+        expect(logs.join('\n')).not.toContain('GITNEXUS_ATOMIC_INCREMENTAL');
+      },
+    );
+
+    it('logs no remedy and no evidence for an unrelated failure', async () => {
+      const { failure, result, logs } = await runStagedFailure(
+        'Binder exception: Table CodeEmbedding does not exist.',
+      );
+      expect(result).toBe(failure);
+      expect(logs.join('\n')).not.toContain('Failure evidence');
+      expect(logs.join('\n')).not.toContain('address-space ceiling');
+    });
+  });
+
   it('reclaims a failed current stage before any recovery checkpoint exists', async () => {
     const tmpRepo = await createTempDir('gitnexus-3456-no-checkpoint-');
     try {

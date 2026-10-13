@@ -453,6 +453,56 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
     }
   }, 180_000);
 
+  it.each([
+    ['unset keeps the caller request (staged)', undefined, true],
+    ['=0 overrides the caller request (in place)', '0', false],
+  ])(
+    'GITNEXUS_ATOMIC_INCREMENTAL %s when the caller passes atomicIncremental (#3530)',
+    async (_label, envValue, expectStaged) => {
+      const { repo, cleanup } = await makeRepo();
+      const repoId = 'atomic-incr-switch';
+      vi.stubEnv('GITNEXUS_ATOMIC_INCREMENTAL', envValue);
+      try {
+        await runFullAnalysis(repo, {}, { onProgress: () => {} });
+        const { lbugPath } = getStoragePaths(repo);
+        const inodeBefore = (await fs.stat(lbugPath)).ino;
+
+        await fs.writeFile(
+          path.join(repo, 'a.ts'),
+          'export function greet(n: string) { return `hi ${n}`; }\nexport function addedFn() { return 1; }\n',
+        );
+        execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+          cwd: repo,
+          stdio: 'pipe',
+        });
+
+        const logs: string[] = [];
+        await runFullAnalysis(
+          repo,
+          { atomicIncremental: true },
+          { onProgress: () => {}, onLog: (line) => logs.push(line) },
+        );
+
+        expect(logs.some((line) => line.startsWith('atomic-incremental: staged'))).toBe(
+          expectStaged,
+        );
+        expect((await fs.stat(lbugPath)).ino !== inodeBefore).toBe(expectStaged);
+        expect(await lingeringTemp(lbugPath)).toEqual([]);
+
+        await poolInit(repoId, lbugPath);
+        const names = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
+          (row) => Object.values(row as Record<string, unknown>).map(String),
+        );
+        expect(names).toContain('addedFn');
+      } finally {
+        vi.unstubAllEnvs();
+        await poolClose(repoId);
+        await cleanup();
+      }
+    },
+    180_000,
+  );
+
   it('keeps the live graph unchanged when atomic incremental writeback fails', async () => {
     const { repo, cleanup } = await makeRepo();
     const repoId = 'atomic-incr-failure';
@@ -497,6 +547,42 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
       expect(afterRetry).toContain('addedAfterRetry');
     } finally {
       await poolClose(repoId);
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('names the off-switch and logs staging evidence when an atomic-incremental write hits EOF (#3530)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export function changed() { return 1; }\n');
+      execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+
+      const failure = new Error(
+        'IO exception: Cannot read from file: /repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 ' +
+          'numBytesRead: 0 numBytesToRead: 4096 position: 8011825152',
+      );
+      ctx.deleteMock.mockRejectedValueOnce(failure);
+      const logs: string[] = [];
+      const result = await runFullAnalysis(
+        repo,
+        { atomicIncremental: true },
+        { onProgress: () => {}, onLog: (line) => logs.push(line) },
+      ).catch((error: unknown) => error);
+
+      expect(result).toBe(failure);
+      expect(logs).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('The live index is untouched'),
+          expect.stringContaining('GITNEXUS_ATOMIC_INCREMENTAL=0'),
+          expect.stringMatching(/^Failure evidence — live index: apparent \d+ B, /),
+          expect.stringMatching(/^Failure evidence — staging copy: apparent \d+ B, /),
+        ]),
+      );
+    } finally {
       await cleanup();
     }
   }, 180_000);

@@ -94,6 +94,10 @@ import {
   estimateBufferPool,
   setBufferPoolSizeHint,
   resolveNativeSafeStorageDir,
+  getEffectiveBufferPoolSize,
+  LBUG_MAX_DB_SIZE,
+  maxDbSizeReachedRemedy,
+  pastEofReadRemedy,
 } from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import { chunk } from '../lib/utils.js';
@@ -138,6 +142,7 @@ import {
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import {
+  describeFileEvidence,
   ftsCrashParkFailureMessage,
   quarantineSidecarsForDirtyRecovery,
   inspectLbugSidecars,
@@ -3034,10 +3039,16 @@ async function runFullAnalysisInner(
   // opt-in for ordinary analyze runs; watch mode requests it for failure
   // preservation. The copy requests a filesystem clone and records its actual
   // duration, while Node falls back to a normal copy where reflinks are absent.
+  // `GITNEXUS_ATOMIC_INCREMENTAL=0` is the operator's off-switch and beats a
+  // caller's request (watch and auto-sync cannot be reconfigured, #3530). It
+  // only governs this opt-in staging: a full rebuild and the #2841 escalation
+  // below still stage because they set `useAtomicSwap` independently.
+  const atomicIncrementalOffSwitch = process.env.GITNEXUS_ATOMIC_INCREMENTAL === '0';
   const wantAtomicIncremental =
     isIncremental &&
     !!hashDiff &&
     process.platform !== 'win32' &&
+    !atomicIncrementalOffSwitch &&
     (options.atomicIncremental === true || process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1');
   // #2614 F3: the copy-then-swap stages ONLY the main lbug file, so a live index
   // carrying an orphan .wal/.shadow (a silently-failed prior checkpoint) would
@@ -3104,7 +3115,8 @@ async function runFullAnalysisInner(
       await fs.copyFile(lbugPath, buildPath, fsConstants.COPYFILE_FICLONE);
       log(
         `atomic-incremental: staged ${lbugPath} in ${Date.now() - copyStartedAt}ms ` +
-          '(copy-on-write requested; filesystem fallback is allowed)',
+          '(copy-on-write requested; filesystem fallback is allowed); ' +
+          (await describeFileEvidence('staged copy', buildPath)),
       );
     }
   } else {
@@ -5423,6 +5435,24 @@ async function runFullAnalysisInner(
         : undefined,
     };
   } catch (err) {
+    // Measure the index files BEFORE the driver stops and the database closes:
+    // closing can checkpoint the staging file, so a later stat would record the
+    // post-close size and make genuine growth look like a short file — the
+    // misreading the #3530 evidence exists to settle. The lines are held and
+    // logged below only if the failure is one we classify. Never throws.
+    const stagedBuild = useAtomicSwap && buildPath !== lbugPath;
+    const evidenceLines = [
+      await describeFileEvidence('live index', lbugPath),
+      ...(stagedBuild ? [await describeFileEvidence('staging copy', buildPath)] : []),
+    ];
+    // Classify once; the remedy line and the evidence log both read this.
+    // `atomicIncremental` is the only staged build `GITNEXUS_ATOMIC_INCREMENTAL=0`
+    // changes (a full rebuild and the #2841 escalation stage regardless).
+    const remedyContext = { staged: stagedBuild, offSwitchApplies: atomicIncremental };
+    const failureMessage = String(err);
+    const classifiedRemedy =
+      maxDbSizeReachedRemedy(failureMessage, remedyContext) ??
+      pastEofReadRemedy(failureMessage, remedyContext);
     // Ensure LadybugDB is closed even on error. Stop the driver first
     // so its retry loop cannot extend an already-failing analyze.
     try {
@@ -5472,7 +5502,17 @@ async function runFullAnalysisInner(
       // IndexLockTimeoutError and other domain failures with `instanceof`.
       recordLiveIndexMutationRisk(err);
     }
-    if (/max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(String(err))) {
+    if (classifiedRemedy) {
+      log(classifiedRemedy);
+      for (const line of evidenceLines) log(`Failure evidence — ${line}`);
+      log(
+        `Failure evidence — configured max DB size ${LBUG_MAX_DB_SIZE} B, ` +
+          `buffer pool ${getEffectiveBufferPoolSize()} B`,
+      );
+    } else if (
+      /max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(failureMessage)
+    ) {
+      // R6: a max-size message the engine worded differently keeps the generic hint.
       log(
         'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
           'byte limit before retrying analyze; retained complete embeddings can be reused.',
