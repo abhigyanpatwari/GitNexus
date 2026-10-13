@@ -99,6 +99,12 @@ export function dbIdentityChanged(prev: DbIdentity | null, next: DbIdentity | nu
 
 const pool = new Map<string, PoolEntry>();
 
+/** Identity of the native database currently serving this pool, not the path's latest file. */
+export function getLbugDbIdentity(repoId: string): DbIdentity | null {
+  const identity = pool.get(repoId)?.dbIdentity;
+  return identity ? { ...identity } : null;
+}
+
 /**
  * Listeners notified when a pool entry is torn down (LRU eviction, idle
  * timeout, explicit close). Used by upper layers (e.g. the BM25 search
@@ -946,9 +952,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<InitLbugAttem
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
-  // Record the on-disk identity so a later initLbug can detect an analyze
-  // rebuild/mutation and re-open onto the new file (pool staleness invalidation).
-  const dbIdentity = await statDbIdentity(dbPath);
+  // Keep the opened SharedDB identity: another consumer may still hold an
+  // older native handle after the file at dbPath has been replaced.
+  const dbIdentity = shared.dbIdentity ?? null;
   pool.set(repoId, {
     db,
     available,
