@@ -393,6 +393,55 @@ export async function inspectLbugSidecars(dbPath: string): Promise<LbugSidecarSt
   return { kind: 'clean', dbPath };
 }
 
+export interface FileEvidenceInput {
+  /** Apparent size, `stat().size`. */
+  size: number;
+  /** 512-byte blocks actually allocated; `undefined` where the platform omits it. */
+  blocks?: number;
+  /** The numeric `f_type` magic from `statfs`; `undefined` when it could not be read. */
+  fsType?: number;
+}
+
+/**
+ * One log line of size evidence for an lbug file (#3530): apparent size versus
+ * allocated bytes distinguishes a sparse or reflink-backed file from a plainly
+ * short one, and the filesystem type tells a maintainer what kind of mount the
+ * file sat on. The type is printed as the raw hex `f_type` magic rather than a
+ * name — a lookup table here would be a guess presented as a fact. Pure, so the
+ * sparse/regular cases are testable without a real sparse file (which not every
+ * CI filesystem produces).
+ */
+export const formatFileEvidence = (label: string, input: FileEvidenceInput | undefined): string => {
+  if (!input) return `${label}: unavailable`;
+  const allocated = input.blocks === undefined ? 'unknown' : `${input.blocks * 512} B`;
+  const fsType = input.fsType === undefined ? 'unknown' : `0x${input.fsType.toString(16)}`;
+  return `${label}: apparent ${input.size} B, allocated ${allocated}, filesystem type ${fsType}`;
+};
+
+/**
+ * Stat `filePath` and format it with {@link formatFileEvidence}. Never throws:
+ * this runs inside a failure handler, where a diagnostic must not mask the real
+ * error, and a missing file is itself evidence ("unavailable").
+ */
+export const describeFileEvidence = async (label: string, filePath: string): Promise<string> => {
+  try {
+    const stat = await fs.stat(filePath);
+    let fsType: number | undefined;
+    try {
+      fsType = (await fs.statfs(filePath)).type;
+    } catch {
+      /* filesystem type is optional evidence */
+    }
+    return formatFileEvidence(label, {
+      size: stat.size,
+      blocks: typeof stat.blocks === 'number' ? stat.blocks : undefined,
+      fsType,
+    });
+  } catch {
+    return formatFileEvidence(label, undefined);
+  }
+};
+
 /**
  * Reject the WAL-quarantine path when discarding the WAL would be unsafe or
  * wrong. Shared by every reactive missing-shadow recovery consumer — serve (via
