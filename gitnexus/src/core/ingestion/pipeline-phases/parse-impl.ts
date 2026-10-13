@@ -1529,7 +1529,12 @@ export async function runChunkedParseAndResolve(
   // packages' Struct nodes are in the graph. Owner edges minted by
   // `findEnclosingClassInfo` from the METHOD's file dangle whenever the struct
   // is declared in a sibling file; re-point them before any consumer walks.
-  reconcileGoStructOwnerEdges(graph);
+  // TODO(#3559): this is a graph-level post-merge pass, but every
+  // `LanguageProvider`/`ScopeResolver` hook today runs per-language on
+  // `ParsedFile`s before merge — there is no post-merge provider hook to route
+  // through. Call stays direct until such a hook exists; introducing one is
+  // shared-pipeline surface this fix deliberately does not grow.
+  reconcileGoStructOwnerEdges(graph, repoPath);
 
   // Fetch calls + ORM queries were already extracted inside each worker
   // (returned in ParseWorkerResult, aggregated per chunk in applyChunkResults).
