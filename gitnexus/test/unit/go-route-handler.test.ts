@@ -2,15 +2,13 @@
  * `resolveGoRouteHandler` (#3402): gin/echo handler designators resolved across
  * the files of a Go package, unique-or-decline at every step.
  *
- * The model is built the way the parse phase leaves it: a Method's `ownerId` is
- * the worker's `Struct:<methodFile>:<Receiver>` id, keyed on the method's own
- * file — not the struct's node id when the struct lives in a sibling file.
+ * The model is built the way the parse phase leaves it: detached Methods have
+ * a receiver-qualified name, with ownership deferred to semantic resolution.
  */
 import { describe, expect, it } from 'vitest';
 import { createSemanticModel } from '../../src/core/ingestion/model/index.js';
 import { resolveGoRouteHandler } from '../../src/core/ingestion/languages/go/route-handler.js';
 import type { ExtractedDecoratorRoute } from '../../src/core/ingestion/workers/parse-worker.js';
-import { generateId } from '../../src/lib/utils.js';
 
 const ROUTER = 'app/router/router.go';
 
@@ -19,10 +17,10 @@ type Model = ReturnType<typeof createSemanticModel>;
 const struct = (model: Model, file: string, name: string) =>
   model.symbols.add(file, name, `Struct:${file}:${name}`, 'Struct');
 
-/** A method as the worker registers it: owner keyed on the METHOD's file. */
+/** A method as the worker registers it before workspace ownership resolves. */
 const method = (model: Model, file: string, receiver: string, name: string) =>
   model.symbols.add(file, name, `Method:${file}:${receiver}.${name}`, 'Method', {
-    ownerId: generateId('Struct', `${file}:${receiver}`),
+    qualifiedName: `${receiver}.${name}`,
   });
 
 const fn = (model: Model, file: string, name: string, returnType?: string) =>
@@ -52,7 +50,10 @@ describe('resolveGoRouteHandler', () => {
   it('deduplicates a method indexed by both its canonical owner and receiver name', () => {
     const model = createSemanticModel();
     struct(model, 'app/router/h.go', 'H');
-    method(model, 'app/router/h.go', 'H', 'Do');
+    model.symbols.add('app/router/h.go', 'Do', 'Method:app/router/h.go:H.Do', 'Method', {
+      ownerId: 'Struct:app/router/h.go:H',
+      qualifiedName: 'H.Do',
+    });
     const context = { model, importTargetsFor: () => [] };
     const registration = route({
       handlerName: 'h.Do',
