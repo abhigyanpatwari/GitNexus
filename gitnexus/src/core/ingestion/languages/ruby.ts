@@ -8,6 +8,8 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { rubyRenameProvider } from './ruby/rename.js';
+import { collectRubyMemberDispatch } from './ruby/member-dispatch.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import {
@@ -178,6 +180,7 @@ const rubyResolveContainerTypeOwner = (
 };
 
 export const rubyProvider = defineLanguage({
+  rename: rubyRenameProvider,
   id: SupportedLanguages.Ruby,
   extensions: ['.rb', '.rake', '.gemspec'],
   entryPointPatterns: [/^call$/, /^perform$/, /^execute$/],
@@ -205,7 +208,10 @@ export const rubyProvider = defineLanguage({
       patterns: ['Sinatra::Base', 'Sinatra::Application'],
     },
   ] satisfies AstFrameworkPatternConfig[],
-  treeSitterQueries: RUBY_QUERIES,
+  treeSitterQueries: `${RUBY_QUERIES}
+    (method name: (setter) @name) @definition.method
+    (singleton_method name: (setter) @name) @definition.method
+  `,
   typeConfig: rubyConfig,
   exportChecker: rubyExportChecker,
   importResolver: createImportResolver(rubyImportConfig),
@@ -243,6 +249,7 @@ export const rubyProvider = defineLanguage({
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitRubyScopeCaptures,
+  collectCaptureSideChannel: collectRubyMemberDispatch,
   cfgVisitor: createRubyCfgVisitor(),
   interpretImport: interpretRubyImport,
   interpretTypeBinding: interpretRubyTypeBinding,

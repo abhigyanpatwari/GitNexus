@@ -1,0 +1,77 @@
+{
+  "language": "cobol",
+  "description": "Rename a paragraph at the end of three PERFORM calls case-insensitively, preserving an unrelated program paragraph. These procedural calls are the COBOL analogue of a call graph, not OO polymorphism.",
+  "categories": ["call-graph", "call-chain", "program-scope"],
+  "target": {
+    "name": "WORK-PARA",
+    "kind": "Function",
+    "file": "demo.cbl"
+  },
+  "newName": "FINISH-PARA",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "ENTRY-PARA",
+        "kind": "Function",
+        "file": "demo.cbl",
+        "startLine": 4
+      },
+      "to": {
+        "name": "MIDDLE-PARA",
+        "kind": "Function",
+        "file": "demo.cbl",
+        "startLine": 6
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "MIDDLE-PARA",
+        "kind": "Function",
+        "file": "demo.cbl",
+        "startLine": 6
+      },
+      "to": {
+        "name": "LEAF-PARA",
+        "kind": "Function",
+        "file": "demo.cbl",
+        "startLine": 8
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "LEAF-PARA",
+        "kind": "Function",
+        "file": "demo.cbl",
+        "startLine": 8
+      },
+      "to": {
+        "name": "WORK-PARA",
+        "kind": "Function",
+        "file": "demo.cbl",
+        "startLine": 10
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "MAIN-PARA",
+        "kind": "Function",
+        "file": "other.cbl",
+        "startLine": 4
+      },
+      "to": {
+        "name": "WORK-PARA",
+        "kind": "Function",
+        "file": "other.cbl",
+        "startLine": 6
+      }
+    }
+  ]
+}

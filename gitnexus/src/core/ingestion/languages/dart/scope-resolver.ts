@@ -210,6 +210,8 @@ export const dartScopeResolver: ScopeResolver = {
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveDartImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
 
+  isNamespaceImport: (parsedImport) => parsedImport.kind === 'namespace',
+
   // Dart `import` is whole-library: every public top-level symbol of the
   // target enters scope. Enumerating them lets `propagateImportedReturnTypes`
   // mirror imported functions' return types into the importer.

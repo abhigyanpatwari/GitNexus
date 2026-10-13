@@ -1,0 +1,20 @@
+{
+  "language": "cpp",
+  "description": "A global type identifier beginning with an underscore is reserved even though its own declaration has a class scope node.",
+  "categories": [
+    "identifier-rules",
+    "reserved-words"
+  ],
+  "target": {
+    "name": "Target",
+    "kind": "Struct",
+    "file": "model.cpp",
+    "startLine": 0
+  },
+  "newName": "_value",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

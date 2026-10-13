@@ -1,0 +1,48 @@
+{
+  "language": "c",
+  "description": "Follow a three-hop typed pointer receiver to a public struct field on reads and writes, preserving an unrelated owner and parameter.",
+  "categories": ["public-field", "deep-chain", "pointer-receiver", "homonyms", "writes"],
+  "target": {
+    "name": "value",
+    "kind": "Property",
+    "file": "model.c",
+    "startLine": 0
+  },
+  "newName": "amount",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "model.c",
+        "startLine": 4
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.c",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "write",
+        "kind": "Function",
+        "file": "model.c",
+        "startLine": 7
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.c",
+        "startLine": 0
+      }
+    }
+  ]
+}

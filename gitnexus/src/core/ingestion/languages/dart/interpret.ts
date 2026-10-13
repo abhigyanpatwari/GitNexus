@@ -36,6 +36,16 @@ export function interpretDartImport(captures: CaptureMatch): ParsedImport | null
   const sourceCap = captures['@import.source'];
   if (sourceCap === undefined) return null;
   const raw = stripQuotes(sourceCap.text);
+  const alias = captures['@import.alias'];
+  if (alias !== undefined) {
+    return {
+      kind: 'namespace',
+      targetRaw: raw,
+      localName: alias.text,
+      importedName: raw,
+      explicitAlias: true,
+    };
+  }
   // Dart `import '...'` brings every PUBLIC top-level symbol of the target
   // library directly into scope (no prefix) — wildcard semantics. The
   // `expandsWildcardTo` hook enumerates those names so cross-file return

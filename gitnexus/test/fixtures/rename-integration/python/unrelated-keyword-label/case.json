@@ -1,0 +1,19 @@
+{
+  "language": "python",
+  "description": "Rename a dataclass field beside keyword labels proven to bind other callables.",
+  "categories": [
+    "keyword-argument",
+    "unrelated-name"
+  ],
+  "target": {
+    "name": "x",
+    "kind": "Property",
+    "file": "model.py",
+    "startLine": 4
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "success",
+    "edits": 1
+  }
+}

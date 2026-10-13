@@ -30,7 +30,7 @@ errors always exit nonzero. `--check` additionally enforces the regression gate.
 
 | Fixture / checks                             | Public repro                                                                                                                                                                                         | Fixed-answer contract                                                                                                                                                                        |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rename/`                                    | [#3486](https://github.com/abhigyanpatwari/GitNexus/issues/3486)                                                                                                                                     | All three Writer.close references; zero edits to comments, strings or unrelated homonyms.                                                                                                    |
+| `rename/`                                    | [#3486](https://github.com/abhigyanpatwari/GitNexus/issues/3486)                                                                                                                                     | All three Writer.close references; zero edits to comments, strings or unrelated homonyms; typed DeferredWriter.flush parameters refuse without edits or source changes.                                                                                                    |
 | `src/server/`, `test/stub.test.ts`           | [#3487](https://github.com/abhigyanpatwari/GitNexus/issues/3487)                                                                                                                                     | Server beats a same-path test stub; `app.all` has method `*`; Map.get is absent; helper-registered literal route is present.                                                                 |
 | `src/web/`                                   | [#3488](https://github.com/abhigyanpatwari/GitNexus/issues/3488)                                                                                                                                     | Both the base-URL template passed to a configured wrapper and a direct literal fetch link their consumer files.                                                                              |
 | `src/security.ts`, `src/server/inline.ts`    | [#3489](https://github.com/abhigyanpatwari/GitNexus/issues/3489), [#3490](https://github.com/abhigyanpatwari/GitNexus/issues/3490), [#3491](https://github.com/abhigyanpatwari/GitNexus/issues/3491) | Named and inline unsafe handlers reach the sink; guarded and constant commands have zero taint; statement and function-hop lines are 1-based.                                                |
@@ -44,6 +44,18 @@ writer, persists its actual output as metadata and calls real `impact`. It tests
 the cap/consumer contract without requiring 501 parser fixtures. It does not
 claim parser coverage for those synthetic records. Python checks read actual
 `context.outgoing.calls` symbol UIDs, preserving lexical/class ownership.
+
+Rename's positive fixtures construct each `Writer` receiver directly, including
+the imported class. A separate `DeferredWriter.flush` fixture exercises a typed
+parameter: a TypeScript annotation alone cannot prove which structurally compatible
+runtime object owns the method. The public `rename` tool (`dry_run: true`) must refuse it with
+`planning_status: "unsupported"` and `code: "ambiguous_reference"`, zero edits,
+and unchanged source files. This safety check has no known-gap allowance.
+Fixture line anchors are updated together; the three exact semantic answers and
+the same-named method/function, comment and string controls remain required.
+The runner validates v2 semantic provenance, exact UTF-16 spans and before/after
+source lines, then scores the whole `after` line. Semantic rename does not use
+ripgrep or text-search edits.
 
 ## Known gaps and repairs
 

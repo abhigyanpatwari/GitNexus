@@ -1,0 +1,24 @@
+{
+  "language": "java",
+  "description": "Refuse @Override() on an unindexed implicit base member.",
+  "categories": [
+    "polymorphism",
+    "external-base",
+    "implicit-base",
+    "negative",
+    "unchanged-on-error",
+    "parenthesized-annotation"
+  ],
+  "target": {
+    "name": "toString",
+    "kind": "Method",
+    "file": "Worker.java",
+    "startLine": 1
+  },
+  "newName": "description",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_symbol_family",
+    "planningStatus": "unsupported"
+  }
+}

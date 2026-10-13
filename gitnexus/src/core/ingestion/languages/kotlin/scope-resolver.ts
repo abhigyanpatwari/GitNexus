@@ -2,6 +2,11 @@ import { SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import {
+  canonicalizeWorkspaceBindings,
+  canonicalModuleExports,
+} from '../../scope-resolution/scope/canonicalize-bindings.js';
+import { canonicalName } from './identifiers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
@@ -66,6 +71,9 @@ import { attachKotlinSpringDynamicLookup } from './spring-dynamic-lookup.js';
  * its issue ref and rationale.
  */
 export const kotlinScopeResolver: ScopeResolver = {
+  moduleExports: (parsed) => canonicalModuleExports(parsed, canonicalName),
+  populateWorkspaceReferences: (parsedFiles) =>
+    canonicalizeWorkspaceBindings(parsedFiles, canonicalName),
   language: SupportedLanguages.Kotlin,
   languageProvider: kotlinProvider,
   importEdgeReason: 'kotlin-scope: import',

@@ -1,4 +1,5 @@
 import { Writer } from './writer';
-export function useImported(writer: Writer): void {
+export function useImported(): void {
+  const writer = new Writer();
   writer.close();
 }

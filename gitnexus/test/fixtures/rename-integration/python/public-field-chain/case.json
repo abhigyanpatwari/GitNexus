@@ -1,0 +1,36 @@
+{
+  "language": "python",
+  "description": "Rename an annotated public field through typed nested receivers, preserving other owners and local bindings.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "read-write"
+  ],
+  "target": {
+    "name": "score",
+    "kind": "Property",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "points",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "update",
+        "kind": "Function",
+        "file": "model.py"
+      },
+      "to": {
+        "name": "score",
+        "kind": "Property",
+        "file": "model.py",
+        "startLine": 1
+      }
+    }
+  ]
+}

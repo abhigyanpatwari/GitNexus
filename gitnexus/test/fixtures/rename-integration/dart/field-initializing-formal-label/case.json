@@ -1,0 +1,22 @@
+{
+  "language": "dart",
+  "description": "Refuse a field whose named constructor argument label binds its initializing formal parameter.",
+  "categories": [
+    "named-argument",
+    "initializing-formal",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "x",
+    "kind": "Property",
+    "file": "point.dart",
+    "startLine": 1
+  },
+  "newName": "px",
+  "expect": {
+    "status": "error",
+    "code": "name_collision",
+    "planningStatus": "blocked"
+  }
+}

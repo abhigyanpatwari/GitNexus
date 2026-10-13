@@ -152,6 +152,32 @@ describe('grammar literal validation gate', () => {
     expect(collected.nodeTypes.some((n) => n.literal.startsWith('@'))).toBe(false);
   });
 
+  it('validates Objective-C provider and CFG helper literals against their actual grammar', () => {
+    const model = models.get(SupportedLanguages.ObjectiveC);
+    expect(model).toBeDefined();
+    expect(model).not.toBeNull();
+    expect(
+      validateNodeType(SupportedLanguages.ObjectiveC, model ?? null, 'message_expression'),
+    ).toBe('valid');
+    for (const file of [
+      'cfg/visitors/objective-c.ts',
+      'cfg/visitors/objective-c-ast.ts',
+      'cfg/visitors/objective-c-harvest.ts',
+      'languages/objective-c/rename.ts',
+    ]) {
+      const literals = collected.nodeTypes.filter((literal) => literal.file === file);
+      expect(literals.length, file).toBeGreaterThan(0);
+      expect(
+        literals.every(
+          (literal) =>
+            literal.languages.length === 1 &&
+            literal.languages[0] === SupportedLanguages.ObjectiveC,
+        ),
+        file,
+      ).toBe(true);
+    }
+  });
+
   it('validates a real node-scoped field and rejects a bogus one (Python)', () => {
     const model = loadGrammarModel(SupportedLanguages.Python);
     expect(validateField(model, 'name', 'function_definition')).toBe('valid');

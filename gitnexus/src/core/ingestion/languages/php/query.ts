@@ -79,6 +79,9 @@ const PHP_SCOPE_QUERY = `
 (enum_case
   name: (name) @declaration.name) @declaration.const
 
+(const_declaration
+  (const_element (name) @declaration.name)) @declaration.const
+
 ;; ── Declarations — methods / functions / constructors ─────────────────────
 
 (method_declaration

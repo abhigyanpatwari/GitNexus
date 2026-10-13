@@ -39,7 +39,12 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { SymbolDefinition } from 'gitnexus-shared';
 import { phpProvider } from '../php.js';
 import { phpArityCompatibility, phpMergeBindings } from './index.js';
-import { resolvePhpImportTargetInternal, loadPhpComposerConfig } from './import-target.js';
+import {
+  resolvePhpImportTargetInternal,
+  resolvePhpImportBinding,
+  clearPhpImportSpellings,
+  loadPhpComposerConfig,
+} from './import-target.js';
 import { populatePhpNamespaceSiblings, getPhpNamespaceForFile } from './namespace-siblings.js';
 
 /**
@@ -350,14 +355,36 @@ function phpEmitUnresolvedReceiverEdges(
 }
 
 const phpScopeResolver: ScopeResolver = {
+  // PHP has separate method and property namespaces. A same-spelled
+  // method must never satisfy `$object->property`, or vice versa.
+  resolveReceiverMember(owner, name, site, indexes, model) {
+    if (!['call', 'read', 'write'].includes(site.kind)) return undefined;
+    const members = site.kind === 'call' ? model.methods : model.fields;
+    for (const ownerId of [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)]) {
+      const candidates = members.lookupAllByOwner(ownerId, name);
+      if (!candidates.length) continue;
+      const compatible =
+        site.kind === 'call'
+          ? narrowOverloadCandidates(candidates, site.arity, site.argumentTypes)
+          : candidates;
+      return compatible.length === 1
+        ? { kind: 'resolved', definition: compatible[0]! }
+        : { kind: 'ambiguous', candidateIds: compatible.map((def) => def.nodeId) };
+    }
+    return { kind: 'ambiguous', candidateIds: [] };
+  },
   language: SupportedLanguages.PHP,
   languageProvider: phpProvider,
   importEdgeReason: 'php-scope: use',
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) =>
     resolvePhpImportTargetInternal(targetRaw, fromFile, allFilePaths, resolutionConfig, context),
+  resolveImportBinding: resolvePhpImportBinding,
 
-  loadResolutionConfig: (repoPath) => loadPhpComposerConfig(repoPath),
+  loadResolutionConfig: (repoPath) => {
+    clearPhpImportSpellings();
+    return loadPhpComposerConfig(repoPath);
+  },
 
   // PHP LEGB-like precedence: local > import/namespace/reexport > wildcard.
   // The per-scope id is unused by phpMergeBindings (tier ordering computed

@@ -22,6 +22,7 @@ import type {
   ScopeId,
   TypeRef,
 } from 'gitnexus-shared';
+import { canonicalTypeScriptName } from './identifiers.js';
 
 /** Shared empty result for the non-type-only path — see `typeOnly` below. */
 const NO_TYPE_ONLY: { typeOnly?: true } = Object.freeze({});
@@ -72,13 +73,15 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       };
     }
     case 'named': {
+      // Module keys use their semantic identifier spelling; local bindings keep
+      // their written spelling to match ordinary scope captures and graph IDs.
       // `import { X } from './m'` (plus type-only forms).
       if (sourceCap === undefined || nameCap === undefined) return null;
       return {
         kind: 'named',
         ...lexicalOwner,
         localName: nameCap.text,
-        importedName: nameCap.text,
+        importedName: canonicalTypeScriptName(nameCap.text),
         targetRaw: sourceCap.text,
         ...typeOnly,
       };
@@ -92,7 +95,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         kind: 'alias',
         ...lexicalOwner,
         localName: aliasCap.text,
-        importedName: nameCap.text,
+        importedName: canonicalTypeScriptName(nameCap.text),
         alias: aliasCap.text,
         targetRaw: sourceCap.text,
         ...typeOnly,
@@ -111,12 +114,14 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       };
     }
     case 'reexport': {
+      // Re-export names are public module keys, not local lexical bindings.
+      // Decode them just like the names requested from the source module.
       // `export { X } from './m'`.
       if (sourceCap === undefined || nameCap === undefined) return null;
       return {
         kind: 'reexport',
-        localName: nameCap.text,
-        importedName: nameCap.text,
+        localName: canonicalTypeScriptName(nameCap.text),
+        importedName: canonicalTypeScriptName(nameCap.text),
         targetRaw: sourceCap.text,
         ...typeOnly,
       };
@@ -128,9 +133,9 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       }
       return {
         kind: 'reexport',
-        localName: aliasCap.text,
-        importedName: nameCap.text,
-        alias: aliasCap.text,
+        localName: canonicalTypeScriptName(aliasCap.text),
+        importedName: canonicalTypeScriptName(nameCap.text),
+        alias: canonicalTypeScriptName(aliasCap.text),
         targetRaw: sourceCap.text,
         ...typeOnly,
       };

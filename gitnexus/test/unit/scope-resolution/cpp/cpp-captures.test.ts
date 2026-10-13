@@ -614,3 +614,19 @@ describe('C++ pointer parameter — declared spelling', () => {
     expect(bindings).not.toHaveProperty('grid');
   });
 });
+
+describe('written operator positions', () => {
+  it('keeps distinct synthetic operator references on their actual tokens', () => {
+    const source = 'int combine(A a, A b, A c) { return a + b + c; }';
+    const operators = emitCppScopeCaptures(source, 'operators.cpp')
+      .filter((match) => match['@reference.operator'])
+      .map((match) => match['@reference.name']);
+    const columns = [...new Set(operators.map((capture) => capture.range.startCol))].sort(
+      (a, b) => a - b,
+    );
+    expect(columns).toEqual([source.indexOf('+'), source.lastIndexOf('+')]);
+    for (const operator of operators) {
+      expect(operator.range.endCol - operator.range.startCol).toBe(1);
+    }
+  });
+});
