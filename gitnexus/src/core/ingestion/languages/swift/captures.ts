@@ -180,6 +180,26 @@ export function emitSwiftScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    // The grammar gives an additive RHS call the whole binary-expression
+    // anchor. Start at its own callee so it cannot share the LHS call identity.
+    const additiveCall = grouped['@reference.additive-call'];
+    const additiveName = nodeMap['@reference.name'];
+    if (additiveCall !== undefined && additiveName !== undefined) {
+      const callNode = nodeMap['@reference.additive-call'];
+      grouped['@reference.call.free'] = {
+        ...additiveCall,
+        name: '@reference.call.free',
+        text: sourceText.slice(additiveName.startIndex, callNode.endIndex),
+        range: {
+          ...additiveCall.range,
+          startLine: additiveName.startPosition.row + 1,
+          startCol: additiveName.startPosition.column,
+        },
+      };
+      nodeMap['@reference.call.free'] = callNode;
+      delete grouped['@reference.additive-call'];
+    }
+
     // ── Imports ──────────────────────────────────────────────────────
     if (grouped['@import.statement'] !== undefined) {
       const stmtNode = nodeIfType(nodeMap['@import.statement'], 'import_declaration');

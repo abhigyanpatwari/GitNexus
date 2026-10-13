@@ -1199,7 +1199,9 @@ function collectRuntimePackages(
   edges: RuntimeDependencyEdge[];
 } {
   const rootManifestPath = path.join(packageRoot, 'package.json');
-  recordDirectoryGuard(directoryGuards, packageRoot);
+  // The package root also contains reports and temporary test output. Its
+  // inventory is not runtime input: the manifest, dependency resolution paths,
+  // build tree and vendored payloads each have their own guards.
   const rootRead = readManifest(rootManifestPath, options, budget, limits);
   const rootPackage: RuntimePackage = {
     root: packageRoot,
@@ -1421,6 +1423,7 @@ function collectArtifacts(
 function collectVendoredGrammarInputs(
   packageRoot: string,
   directoryGuards: Map<string, DependencyDirectoryGuard>,
+  pathGuards: Map<string, DependencyPathGuardResult>,
   options: AnalyzerIdentityResolveOptions,
   budget: RuntimeArtifactScanBudget,
   limits: AnalyzerIdentityTraversalLimits,
@@ -1429,8 +1432,8 @@ function collectVendoredGrammarInputs(
   artifacts: RuntimeArtifact[];
 } {
   const vendorRoot = path.join(packageRoot, 'vendor');
+  recordDependencyPathGuard(pathGuards, vendorRoot);
   if (!existsSync(vendorRoot) || !lstatSync(vendorRoot).isDirectory()) {
-    recordDirectoryGuard(directoryGuards, packageRoot);
     return { manifests: [], artifacts: [] };
   }
 
@@ -1505,6 +1508,7 @@ function collectDependencyInputs(
   const vendored = collectVendoredGrammarInputs(
     packageRoot,
     directoryGuards,
+    pathGuards,
     options,
     artifactScanBudget,
     limits,

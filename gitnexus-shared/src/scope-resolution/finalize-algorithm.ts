@@ -1497,7 +1497,7 @@ const EXPORTS_BY_NAME = new WeakMap<
   ReadonlyMap<string, SymbolDefinition>
 >();
 
-function indexExportsByName(
+export function indexExportsByName(
   defs: readonly SymbolDefinition[],
 ): ReadonlyMap<string, SymbolDefinition> {
   const cached = EXPORTS_BY_NAME.get(defs);
@@ -1536,7 +1536,7 @@ const TOP_LEVEL_EXPORTS_BY_NAME = new WeakMap<
   ReadonlyMap<string, SymbolDefinition>
 >();
 
-function indexTopLevelExportsByName(
+export function indexTopLevelExportsByName(
   defs: readonly SymbolDefinition[],
 ): ReadonlyMap<string, SymbolDefinition> {
   const cached = TOP_LEVEL_EXPORTS_BY_NAME.get(defs);

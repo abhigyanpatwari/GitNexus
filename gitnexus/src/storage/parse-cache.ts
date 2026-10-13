@@ -858,7 +858,13 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // and original graph positions. Both stores must re-extract v135 captures.
 // v137: Python module-accessor syntax proofs and exact assigned-call provenance
 // join the existing subtype capture payload. Re-extract v136 in both stores.
-const SCHEMA_BUMP = 137;
+// v138: provider-owned source occurrences and new flow visitors/explicit region
+// ownership must not reuse older capture or CFG side channels.
+// v139: real rename fixtures expose missing field/read/write chains, callable
+// scopes and declaration metadata. Re-extract both stores with provider fixes.
+// v140: Ruby accessor captures retain reader visibility and singleton ownership.
+// Older worker and durable captures cannot prove property-reader dispatch.
+const SCHEMA_BUMP = 140;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

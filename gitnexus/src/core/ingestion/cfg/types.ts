@@ -254,6 +254,9 @@ export interface CfgEdgeData {
 /** One function's control-flow graph. `cfgSideChannel` is `readonly FunctionCfg[]`. */
 export interface FunctionCfg {
   readonly filePath: string;
+  /** Exact graph owner for executable regions that are not ordinary functions.
+   * Supplied by the provider; omission retains the source-anchor function join. */
+  readonly ownerId?: string;
   /** Source span of the owning function — anchors the BasicBlock node ids. */
   readonly functionStartLine: number;
   readonly functionEndLine: number;

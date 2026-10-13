@@ -1,0 +1,21 @@
+{
+  "language": "objective-c",
+  "description": "Refuse an Objective-C selector refined for Swift when an indexed Swift caller names its double-underscore Swift spelling, until the Swift binding is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "fetchData",
+    "kind": "Method",
+    "file": "Foo.h"
+  },
+  "newName": "loadData",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

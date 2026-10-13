@@ -17,6 +17,7 @@ import { populateGoRangeBindings } from './range-binding.js';
 import { expandGoWildcardNames } from './expand-wildcards.js';
 import { goMapValueType } from './interpret.js';
 import { goIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
+import { goIsNamespaceMemberVisible } from './namespace-member-visibility.js';
 import { resolveGoImportBinding } from './import-binding.js';
 
 /** Slice `[]T` and array `[N]T` / `[...]T` → the element spelling. Hoisted —
@@ -90,6 +91,7 @@ export const goScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: true,
   allowGlobalFreeCallFallback: true,
   isGlobalNameFallbackPlausible: goIsGlobalNameFallbackPlausible,
+  isNamespaceMemberVisible: goIsNamespaceMemberVisible,
 
   populateNamespaceSiblings: populateGoPackageSiblings,
   mirrorNamespaceTypeBindings: mirrorGoNamespaceTypeBindings,

@@ -1,0 +1,17 @@
+{
+  "language": "typescript",
+  "description": "Refuse a free function that declares a `this` parameter; its call-site-bound receiver is not provably unrelated, so every file must stay unchanged.",
+  "categories": ["receiver", "this-binding", "structural-type", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "closeWriter",
+    "kind": "Method",
+    "file": "model.ts",
+    "startLine": 1
+  },
+  "newName": "shutdown",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  }
+}

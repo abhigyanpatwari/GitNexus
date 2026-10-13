@@ -227,7 +227,8 @@ const DART_SCOPE_QUERY = `
 (import_or_export
   (library_import
     (import_specification
-      (configurable_uri) @import.source))) @import.statement
+      (configurable_uri) @import.source
+      (identifier)? @import.alias))) @import.statement
 (import_or_export
   (library_export
     (configurable_uri) @import.source)) @import.statement

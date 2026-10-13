@@ -14,7 +14,7 @@
  *    exit 4 for other sentinel-create failures, with stderr diagnostics.
  *    Used by the multi-reclaimer test where ≥2 children reclaim one dead holder.
  */
-import { writeFileSync, writeSync, openSync, closeSync, unlinkSync } from 'node:fs';
+import { writeFileSync, writeSync, openSync, closeSync, unlinkSync, renameSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 // LOCK_MODULE is an absolute path. On Windows `import('C:\\…')` throws
@@ -51,7 +51,10 @@ if (process.env.MODE === 'EXCLUSIVE') {
   process.exit(0);
 } else {
   const lock = await acquireIndexLock(process.env.LOCK_DIR, { timeoutMs: 30_000, pollMs: 25 });
-  writeFileSync(process.env.MARKER, String(process.pid));
+  // The parent treats existence as readiness, so publish only the complete PID.
+  const pendingMarker = `${process.env.MARKER}.${process.pid}.tmp`;
+  writeFileSync(pendingMarker, String(process.pid));
+  renameSync(pendingMarker, process.env.MARKER);
   // Hold the lock until the parent kills us.
   setInterval(() => {}, 1000);
   // Release on a graceful signal (the SIGKILL path in the test never reaches this).

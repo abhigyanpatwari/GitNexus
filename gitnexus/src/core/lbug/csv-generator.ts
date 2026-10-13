@@ -443,7 +443,7 @@ export const buildRelRow = (rel: GraphRelationship): string =>
  * No `name` column; blocks are identified by id + source span. Shared by the
  * whole-graph emit pass and the streaming PDG emit sink (issue #2202) so the
  * two paths produce byte-identical BasicBlock rows by construction. */
-export const BASICBLOCK_CSV_HEADER = 'id,filePath,startLine,endLine,text,callees,calleeIds';
+export const BASICBLOCK_CSV_HEADER = 'id,filePath,startLine,endLine,text,callees,calleeIds,ownerId';
 
 /** Build the escaped CSV row (no trailing newline) for one BasicBlock node.
  * Single source of the BasicBlock row bytes — used by `streamAllCSVsToDisk`
@@ -462,6 +462,7 @@ export const buildBasicBlockRow = (node: GraphNode): string =>
     escapeCSVField(node.properties.text || ''),
     escapeCSVField(String(node.properties.callees ?? '')),
     escapeCSVField(String(node.properties.calleeIds ?? '')),
+    escapeCSVField(String(node.properties.ownerId ?? '')),
   ].join(',');
 
 export interface StreamedCSVResult {

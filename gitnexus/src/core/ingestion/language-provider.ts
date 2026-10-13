@@ -37,6 +37,8 @@ import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
+import type { CollectedCfgs } from './cfg/collect.js';
+import type { RenameProvider } from './rename-provider.js';
 import type { GraphNode, NodeLabel, ParameterTypeClass, RelationshipType } from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
@@ -408,6 +410,9 @@ interface LanguageProviderConfig {
   readonly enclosingFunctionFinder?: (
     ancestorNode: SyntaxNode,
   ) => { funcName: string; label: NodeLabel } | null;
+
+  /** Free functions have distinct graph identities for each callable signature. */
+  readonly overloadsFreeFunctions?: boolean;
 
   // ── Template constraint extraction (SFINAE / `requires`) ────────────
   /**
@@ -915,10 +920,22 @@ interface LanguageProviderConfig {
    * gated on the `--pdg` opt-in; the resulting per-function CFGs are serialized
    * onto `ParsedFile.cfgSideChannel` and emitted as BasicBlock nodes + CFG
    * edges during scope-resolution. `TNode` is `SyntaxNode` for the tree-sitter
-   * languages. Default: undefined (language has no CFG support yet — TS/JS are
-   * the M1 set).
+   * languages. Providers with a standalone source parser use collectSourceCfgs
+   * instead. Default: undefined.
    */
   readonly cfgVisitor?: CfgVisitor<SyntaxNode>;
+
+  /** Source-backed flow extraction for providers that do not use a tree AST.
+   * Runs on fresh scope extraction only when PDG is enabled. The provider owns
+   * executable-region discovery and reports the same caps as AST visitors. */
+  readonly collectSourceCfgs?: (
+    sourceText: string,
+    filePath: string,
+    maxFunctionLines: number,
+  ) => CollectedCfgs;
+
+  /** Provider-owned source names and rewrites over the existing semantic model. */
+  readonly rename?: RenameProvider;
 
   /**
    * Interpret a raw `@import.statement` capture group into a `ParsedImport`.

@@ -1,0 +1,16 @@
+{
+  "language": "objective-c",
+  "description": "Rename an instance ivar through implicit self and explicit typed receivers while preserving same-name C global reads in class methods, free functions, and parameter shadows.",
+  "categories": ["public-fields", "lexical-shadowing", "class-instance-distinction"],
+  "target": {
+    "name": "counter",
+    "kind": "Variable",
+    "file": "Worker.m",
+    "startLine": 3
+  },
+  "newName": "total",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  }
+}

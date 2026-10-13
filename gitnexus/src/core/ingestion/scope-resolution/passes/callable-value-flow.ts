@@ -899,6 +899,49 @@ interface CanonicalCallableTargets {
   readonly aliasesByTargetId: ReadonlyMap<string, readonly string[]>;
 }
 
+/** Reuse the flow pass's proven prototype/definition identities for source edits. */
+export function callableDeclarationFamilies(
+  scopes: ScopeResolutionIndexes,
+  graph: KnowledgeGraph,
+  nodeLookup: GraphNodeLookup,
+  hasFileLocalCallableLinkage: (def: SymbolDefinition) => boolean,
+  sourceQualifiedNames?: ReadonlyMap<string, string>,
+): ReadonlyMap<string, readonly SymbolDefinition[]> {
+  const original = buildGraphTargetIndex(scopes, nodeLookup, undefined, graph);
+  // A provider may retain a written declarator qualifier absent from the
+  // legacy graph identity. Keep that source fact local to this identity join.
+  const raw = sourceQualifiedNames
+    ? new Map(
+        [...original].map(([id, target]) => {
+          const qualifiedName = sourceQualifiedNames.get(id);
+          return [
+            id,
+            qualifiedName ? { ...target, def: { ...target.def, qualifiedName } } : target,
+          ];
+        }),
+      )
+    : original;
+  const canonical = canonicalizeCallableDeclarations(
+    raw,
+    buildCallableTargetIndexes(raw.values(), scopes),
+    scopes,
+    graph,
+    hasFileLocalCallableLinkage,
+  );
+  const groups = new Map<string, SymbolDefinition[]>();
+  for (const [id, target] of canonical.targets) {
+    const definition = original.get(id)?.def;
+    if (!definition) continue;
+    const group = groups.get(target.def.nodeId) ?? [];
+    group.push(definition);
+    groups.set(target.def.nodeId, group);
+  }
+  const families = new Map<string, readonly SymbolDefinition[]>();
+  for (const group of groups.values())
+    for (const definition of group) families.set(definition.nodeId, group);
+  return families;
+}
+
 /**
  * Associate declaration-only callable nodes with their unique out-of-file
  * definition. Function scopes are the body/definition signal; prototypes do

@@ -1,0 +1,20 @@
+{
+  "language": "objective-c",
+  "description": "Refuse an indexed interoperating source name until cross-provider binding coverage is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "api.m"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

@@ -7,6 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { csharpRenameProvider } from './csharp/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { csharpClassConfig } from '../class-extractors/configs/csharp.js';
 import { defineLanguage } from '../language-provider.js';
@@ -134,6 +135,7 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const csharpProvider = defineLanguage({
+  rename: csharpRenameProvider,
   id: SupportedLanguages.CSharp,
   extensions: ['.cs'],
   entryPointPatterns: [
@@ -185,7 +187,12 @@ export const csharpProvider = defineLanguage({
       patterns: ['DbContext', 'DbSet<', 'OnModelCreating'],
     },
   ] satisfies AstFrameworkPatternConfig[],
-  treeSitterQueries: CSHARP_QUERIES,
+  treeSitterQueries: `${CSHARP_QUERIES}
+; Fields are graph-addressable members, alongside C# properties.
+(field_declaration
+  (variable_declaration
+    (variable_declarator name: (identifier) @name))) @definition.property
+`,
   typeConfig: csharpConfig,
   exportChecker: csharpExportChecker,
   importResolver: createImportResolver(csharpImportConfig),

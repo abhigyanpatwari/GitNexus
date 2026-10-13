@@ -51,6 +51,22 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('TestProject');
   });
 
+  it('tells agents to preview with rename dry_run, not a separate rename_preview tool', async () => {
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', {
+      nodes: 50,
+      edges: 100,
+      processes: 5,
+    });
+
+    for (const file of ['CLAUDE.md', 'AGENTS.md']) {
+      const content = await fs.readFile(path.join(tmpDir, file), 'utf-8');
+      expect(content).toContain(
+        'use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false`',
+      );
+      expect(content).not.toContain('rename_preview');
+    }
+  });
+
   it('omits volatile counts when noStats option is set (#1477)', async () => {
     // Distinct subdir per case so we can assert on a clean slate.
     const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-no-stats-test-'));

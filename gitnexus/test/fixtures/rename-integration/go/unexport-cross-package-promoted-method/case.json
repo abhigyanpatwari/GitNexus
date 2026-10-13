@@ -1,0 +1,16 @@
+{
+  "language": "go",
+  "description": "Refuse to unexport a method that another package reaches through an embedded struct (a promoted method selector).",
+  "categories": ["cross-file", "visibility", "embedding", "method-family", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "Run",
+    "kind": "Method",
+    "file": "api/api.go"
+  },
+  "newName": "run",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

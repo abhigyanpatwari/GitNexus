@@ -8,6 +8,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { javaRenameProvider } from './java/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { javaClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
@@ -170,6 +171,7 @@ const sharedPrefixLength = (left: readonly string[], right: readonly string[]): 
 };
 
 export const javaProvider = defineLanguage({
+  rename: javaRenameProvider,
   id: SupportedLanguages.Java,
   extensions: ['.java'],
   entryPointPatterns: [/^do[A-Z]/, /^create[A-Z]/, /^build[A-Z]/, /Service$/],

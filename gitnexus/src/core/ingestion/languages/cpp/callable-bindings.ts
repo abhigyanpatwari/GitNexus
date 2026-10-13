@@ -4,6 +4,59 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { lookupBindingsAt, lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 import { definitionIdPosition } from '../../scope-resolution/utils/definition-id.js';
 
+/** A literal include exposes every overload declared in the header's module scope. */
+export function populateCppIncludedOverloads(indexes: ScopeResolutionIndexes): void {
+  const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
+  for (const [scopeId, names] of indexes.bindings) {
+    for (const [name, bindings] of names) {
+      const additions: BindingRef[] = [];
+      const seen = new Set(bindings.map((binding) => binding.def.nodeId));
+      for (const binding of bindings) {
+        const edge = binding.via;
+        if (
+          edge?.kind !== 'wildcard-expanded' ||
+          edge.targetModuleScope === undefined ||
+          binding.def.type !== 'Function'
+        )
+          continue;
+        const target = indexes.scopeTree.getScope(edge.targetModuleScope);
+        for (const candidate of target?.bindings.get(edge.targetExportedName ?? name) ?? []) {
+          const def = candidate.def;
+          if (
+            def.type !== 'Function' ||
+            def.ownerId !== undefined ||
+            def.qualifiedName !== binding.def.qualifiedName ||
+            seen.has(def.nodeId)
+          )
+            continue;
+          seen.add(def.nodeId);
+          additions.push({
+            ...binding,
+            def,
+            via: { ...edge, targetDefId: def.nodeId },
+            ...(edge.atRange === undefined
+              ? {}
+              : {
+                  declarationRange: edge.atRange,
+                  availableFrom: {
+                    startLine: edge.atRange.endLine,
+                    startCol: edge.atRange.endCol,
+                  },
+                }),
+          });
+        }
+      }
+      if (additions.length === 0) continue;
+      let augmented = augmentations.get(scopeId);
+      if (augmented === undefined) {
+        augmented = new Map();
+        augmentations.set(scopeId, augmented);
+      }
+      augmented.set(name, [...(augmented.get(name) ?? []), ...additions]);
+    }
+  }
+}
+
 /**
  * ISO C++ `[basic.lookup.unqual]` §7: ADL is suppressed when ordinary
  * unqualified lookup finds:

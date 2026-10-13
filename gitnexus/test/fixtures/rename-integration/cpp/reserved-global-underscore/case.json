@@ -1,0 +1,20 @@
+{
+  "language": "cpp",
+  "description": "Refuse contextual or reserved identifier _value without modifying sources.",
+  "categories": [
+    "identifier-rules",
+    "reserved-words"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Function",
+    "file": "model.cpp",
+    "startLine": 0
+  },
+  "newName": "_value",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}
