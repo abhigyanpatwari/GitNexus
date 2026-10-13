@@ -600,7 +600,8 @@ const stagedBuildNote = (mode: StagedBuildMode): string =>
 
 const offSwitchNote = (mode: StagedBuildMode): string =>
   mode === 'staged-incremental'
-    ? ' Setting GITNEXUS_ATOMIC_INCREMENTAL=0 writes in place instead of into a staged copy.'
+    ? ' Setting GITNEXUS_ATOMIC_INCREMENTAL=0 writes in place instead of into a staged copy;' +
+      ' a failed in-place write can leave the live index partly written, and the next run then rebuilds it in full.'
     : '';
 
 /**

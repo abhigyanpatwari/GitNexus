@@ -620,6 +620,36 @@ describe('GITNEXUS_LBUG_MAX_DB_SIZE power-of-two normalization (#3529)', () => {
       expect(resolveCapturingWarnings(raw).warnings).toHaveLength(0);
     });
   });
+
+  // `LBUG_MAX_DB_SIZE` is resolved when lbug-config loads, so the env must be
+  // staged and the module freshly imported (logger included, so its capture is
+  // the one the fresh module logs to). Calling `parseMaxDbSize` directly — as
+  // the cases above do — cannot show that the ROUNDED value is what the native
+  // constructor receives.
+  it('hands the rounded value to the native constructor and warns exactly once', async () => {
+    vi.stubEnv('GITNEXUS_LBUG_MAX_DB_SIZE', '300000000000');
+    vi.resetModules();
+    const { _captureLogger: captureFreshLogger } = await import('../../src/core/logger.js');
+    const cap = captureFreshLogger();
+    try {
+      const fresh = await import('../../src/core/lbug/lbug-config.js');
+      const Database = vi.fn(function (this: unknown, ..._ctorArgs: unknown[]) {});
+      const lbugModule = { Database } as unknown as Parameters<typeof fresh.createLbugDatabase>[0];
+
+      fresh.createLbugDatabase(lbugModule, '/tmp/lbug-max-db-size');
+
+      const MAX_DB_SIZE_ARG = 4;
+      expect(Database.mock.calls[0][MAX_DB_SIZE_ARG]).toBe(2 ** 39);
+      const warnings = cap
+        .records()
+        .filter((r) => typeof r.msg === 'string' && r.msg.includes('GITNEXUS_LBUG_MAX_DB_SIZE'));
+      expect(warnings).toHaveLength(1);
+    } finally {
+      cap.restore();
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
 });
 
 describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
@@ -631,6 +661,8 @@ describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
     '/repo/.gitnexus/lbug.staging.abc fileDescriptor: 19 numBytesRead: 0 ' +
     'numBytesToRead: 4096 position: 8011825152 (MATCH (e:CodeEmbedding {nodeId: $nodeId}) DELETE e)';
   const OFF_SWITCH = 'GITNEXUS_ATOMIC_INCREMENTAL=0';
+  // The cost of taking the off-switch; it must travel with every mention of it.
+  const OFF_SWITCH_COST = 'leave the live index partly written, and the next run then rebuilds it';
 
   describe('maxDbSizeReachedRemedy', () => {
     it('explains the verbatim #3529 message as an address-space ceiling', () => {
@@ -647,7 +679,9 @@ describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
       ['staged-rebuild', false],
       ['in-place', false],
     ] as const)('names the off-switch only where it applies: %s', (mode, namesOffSwitch) => {
-      expect(maxDbSizeReachedRemedy(REACHED_3529, mode)?.includes(OFF_SWITCH)).toBe(namesOffSwitch);
+      const remedy = maxDbSizeReachedRemedy(REACHED_3529, mode);
+      expect(remedy?.includes(OFF_SWITCH)).toBe(namesOffSwitch);
+      expect(remedy?.includes(OFF_SWITCH_COST)).toBe(namesOffSwitch);
     });
 
     it.each([
@@ -682,6 +716,7 @@ describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
         const remedy = pastEofReadRemedy(EOF_3530, mode);
         expect(remedy).toContain('live index is untouched');
         expect(remedy?.includes(OFF_SWITCH)).toBe(namesOffSwitch);
+        expect(remedy?.includes(OFF_SWITCH_COST)).toBe(namesOffSwitch);
       },
     );
 
@@ -690,6 +725,7 @@ describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
       expect(remedy).toContain('analyze --force');
       expect(remedy).not.toContain('live index is untouched');
       expect(remedy).not.toContain(OFF_SWITCH);
+      expect(remedy).not.toContain(OFF_SWITCH_COST);
     });
 
     it.each([
