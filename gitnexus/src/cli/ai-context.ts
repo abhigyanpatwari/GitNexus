@@ -212,8 +212,8 @@ ${tableBody}`
   // bun-only machine has no npm, npx or pnpm at all, and the npx-only note left
   // it with a bootstrap command it could not run.
   const bootstrapNote =
-    `No \`${runnerPath}\` yet? Bootstrap with \`npx\`, \`bunx\`, or \`pnpm dlx\` — ` +
-    'e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).';
+    `No \`${runnerPath}\`? Bootstrap with \`npx\`, \`bunx\`, or \`pnpm dlx\`; ` +
+    'e.g. `bunx gitnexus@latest analyze` (#1939).';
 
   // This block is injected into every user's repo and its total size is capped
   // by test (ai-context.test.ts, #856) — a new bullet or clause has to be paid
@@ -231,17 +231,17 @@ ${tableBody}`
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}.
 
-> Index stale? Run \`${runner} analyze --index-only\` from the project root — it auto-selects an available runner. ${bootstrapNote}
+> Index stale? Run \`${runner} analyze --index-only\`. ${bootstrapNote}
 > On query/context/impact/cypher object results, read staleness.status and branch/lastCommit. Re-analyze only for behind or diverged — current is clone HEAD, not main.
 
 ## Always Do
 
-- **MUST run impact before editing.** Use \`impact({target: "symbolName", direction: "upstream"})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers, processes, and risk. Never substitute grep for graph analysis.${
+- **MUST run impact before editing.** Use \`impact({target: "symbolName", direction: "upstream"})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers/processes/risk. Never substitute grep for graph analysis.${
     hasPdg
       ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
       : ''
   }
-- **MUST analyze changes before commit.** Run \`detect_changes({scope: "all"})\` or \`${runner} detect-changes --scope all --repo .\`. If \`partial\`/\`truncated\`, re-run. ${regressionReviewGuidance(defaultBranch, runner)}
+- **MUST analyze changes before commit.** Run \`detect_changes({scope: "all"})\` or \`${runner} detect-changes --scope all --repo .\`. \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. ${regressionReviewGuidance(defaultBranch, runner)}
 - MUST warn on HIGH/CRITICAL \`risk\` pre-edit; never use \`riskSharedAxes\` to waive a HIGH/CRITICAL \`risk\` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
 - **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
 - **MUST use \`query({search_query: "concept"})\` for concepts/flows, \`context({name: "symbolName"})\` for a named symbol, or \`impact\` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/\`UNKNOWN\`/literals.${
