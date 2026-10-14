@@ -159,7 +159,10 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
       // (indexedAt/lastCommit deliberately unchanged, R4).
       const beforeIdentity = await statDbIdentity(lbugPath);
       // Windows requires releasing the native file lock before an in-place
-      // writer opens. Keep the same backend and its observed generation.
+      // writer opens, so poolClose removes the pool entry there. Keep the same
+      // backend and its observed generation: on Windows this step checks the
+      // backend's cached capability state, not a live pool connection. The
+      // live connection is covered where the pool stays open across the repair.
       if (process.platform === 'win32') await poolClose(lbugPath);
       await adapter.initLbug(lbugPath);
       await createSearchFTSIndexes();
