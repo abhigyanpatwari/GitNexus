@@ -4021,36 +4021,59 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       expect(logs.join('\n')).not.toContain('Failure evidence');
     });
 
-    it('logs the diagnosis instead when the thrown value is not an Error', async () => {
+    it('wraps a thrown non-Error so the rethrown value carries the diagnosis', async () => {
       const { result, logs } = await runStagedFailure(REACHED);
-      expect(result).toBe(REACHED);
-      expect(logs).toContainEqual(
-        expect.stringMatching(
-          /address-space ceiling[\s\S]*\nFailure evidence — staging copy: apparent 14 B[\s\S]*\nFailure evidence — configured max DB size /,
+      expect(result).toBeInstanceOf(Error);
+      expect(result).toMatchObject({
+        cause: REACHED,
+        message: expect.stringMatching(
+          /^Buffer manager exception: Maximum database size[\s\S]*address-space ceiling[\s\S]*\nFailure evidence — staging copy: apparent 14 B[\s\S]*\nFailure evidence — configured max DB size /,
         ),
-      );
+      });
+      // The message is the one channel, so nothing is also logged.
+      expect(logs.join('\n')).not.toContain('Failure evidence');
     });
 
-    // A classified Error carries its diagnosis in its message and never logs it, so
-    // only a thrown non-Error and the generic hint reach the sink.
+    // A classified failure carries its diagnosis in the rethrown message and never
+    // logs it, so the generic hint is the only diagnostic a log sink can break.
+    it('rethrows the native failure when the log sink throws on an unclassified max-size message', async () => {
+      const thrown = new Error('Maximum database size exceeded');
+      const onLog = vi.fn<(message: string) => void>((message) => {
+        if (/database size limit was reached/.test(message)) throw new Error('log sink exploded');
+      });
+      const { result } = await runStagedFailure(thrown, { onLog });
+      expect(result).toBe(thrown);
+      expect(onLog).toHaveBeenCalledWith(expect.stringMatching(/database size limit was reached/));
+    });
+
+    // `String(err)` throws for these; the failure handler must still clean up and
+    // rethrow the very value that was thrown.
     it.each([
-      ['classified non-Error', REACHED, /address-space ceiling/],
       [
-        'unclassified max-size message',
-        new Error('Maximum database size exceeded'),
-        /database size limit was reached/,
+        'a throwing toString',
+        {
+          toString: () => {
+            throw new Error('toString exploded');
+          },
+        },
       ],
-    ])(
-      'rethrows the native failure when the log sink throws on a %s',
-      async (_label, thrown, loggedPattern) => {
-        const onLog = vi.fn<(message: string) => void>((message) => {
-          if (loggedPattern.test(message)) throw new Error('log sink exploded');
+      ['a null-prototype object', Object.create(null)],
+    ])('cleans up and rethrows the thrown value when it is %s', async (_label, thrown) => {
+      const runCountingCloses = async (value: unknown) => {
+        let closes = 0;
+        const { result } = await runStagedFailure(value, {
+          onClose: () => {
+            closes += 1;
+          },
         });
-        const { result } = await runStagedFailure(thrown, { onLog });
-        expect(result).toBe(thrown);
-        expect(onLog).toHaveBeenCalledWith(expect.stringMatching(loggedPattern));
-      },
-    );
+        return { result, closes };
+      };
+      const baseline = await runCountingCloses(new Error('unclassified failure'));
+      const hostile = await runCountingCloses(thrown);
+      expect(hostile.result).toBe(thrown);
+      expect(hostile.closes).toBe(baseline.closes);
+      expect(baseline.closes).toBeGreaterThan(0);
+    });
 
     it('rethrows the native error when its message cannot be written', async () => {
       const failure = new Error(REACHED);

@@ -646,6 +646,19 @@ function recordLiveIndexMutationRisk(error: unknown): void {
   }
 }
 
+/**
+ * `String(value)` for a thrown value that never throws: the failure handler runs it
+ * before any cleanup, and an exotic throw (a null-prototype object, a throwing
+ * `toString`) must not abort that cleanup or mask the original failure.
+ */
+function describeThrown(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return '[unprintable thrown value]';
+  }
+}
+
 function formatMetaWriteFailureReason(err: unknown): string {
   return isReadOnlyFilesystemError(err)
     ? `${(err as Error).message} — storage may be read-only (#1549)`
@@ -5462,7 +5475,7 @@ async function runFullAnalysisInner(
       : atomicIncremental && !escalatedFullWrite
         ? 'staged-incremental'
         : 'staged-rebuild';
-    const failureMessage = String(err);
+    const failureMessage = describeThrown(err);
     const classifiedRemedy =
       maxDbSizeReachedRemedy(failureMessage, buildMode) ??
       pastEofReadRemedy(failureMessage, buildMode);
@@ -5521,11 +5534,10 @@ async function runFullAnalysisInner(
     }
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
     discardCachedEmbeddingSpill();
-    if (liveIndexMutationStarted) {
-      // Preserve the original error identity/prototype: callers distinguish
-      // IndexLockTimeoutError and other domain failures with `instanceof`.
-      recordLiveIndexMutationRisk(err);
-    }
+    // What the caller sees: `err` itself (identity and prototype preserved, callers
+    // tell IndexLockTimeoutError and other domain failures apart with `instanceof`),
+    // or a wrapper when `err` is not an Error.
+    let failure: unknown = err;
     // Diagnostics are best effort: a throwing log sink or an unwritable `message`
     // must never replace the native failure rethrown below.
     const bestEffort = (deliver: () => void): void => {
@@ -5553,9 +5565,10 @@ async function runFullAnalysisInner(
       // after the native text, so classifiers anchored on it still match. The
       // single call site means it is appended once per error.
       bestEffort(() => {
-        if (err instanceof Error)
-          err.message = `${err.message}\n${stripControlCharacters(diagnosis)}`;
-        else log(diagnosis);
+        const text = stripControlCharacters(diagnosis);
+        if (err instanceof Error) err.message = `${err.message}\n${text}`;
+        // A non-Error has no message to extend; wrap it so the diagnosis still travels.
+        else failure = new Error(`${failureMessage}\n${text}`, { cause: err });
       });
     } else if (
       /max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(failureMessage)
@@ -5568,6 +5581,7 @@ async function runFullAnalysisInner(
         ),
       );
     }
-    throw err;
+    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(failure);
+    throw failure;
   }
 }

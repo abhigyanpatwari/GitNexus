@@ -616,6 +616,13 @@ describe('GITNEXUS_LBUG_MAX_DB_SIZE power-of-two normalization (#3529)', () => {
       expect(warnings[0].msg).toContain(String(2 ** 39));
     });
 
+    it('reports the operator value as supplied, not its floored integer', () => {
+      const { value, warnings } = resolveCapturingWarnings('300000000000.9');
+      expect(value).toBe(2 ** 39);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0].msg).toContain('GITNEXUS_LBUG_MAX_DB_SIZE=300000000000.9 ');
+    });
+
     it.each([['17179869184'], ['abc'], [undefined]])('does not warn for %s', (raw) => {
       expect(resolveCapturingWarnings(raw).warnings).toHaveLength(0);
     });

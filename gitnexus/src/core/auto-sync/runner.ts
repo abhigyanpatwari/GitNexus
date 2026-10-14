@@ -471,6 +471,7 @@ export async function runAutoSyncOnce(
 }
 
 const ANALYZE_FAILURE_LOG_LIMIT = 2000;
+const LOG_ELLIPSIS = ' … ';
 
 function flattenErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
@@ -488,8 +489,8 @@ function shortErrorMessage(err: unknown): string {
 function loggedErrorMessage(err: unknown): string {
   const message = flattenErrorMessage(err);
   if (message.length <= ANALYZE_FAILURE_LOG_LIMIT) return message;
-  const half = ANALYZE_FAILURE_LOG_LIMIT / 2;
-  return `${message.slice(0, half)} … ${message.slice(-half)}`;
+  const half = Math.floor((ANALYZE_FAILURE_LOG_LIMIT - LOG_ELLIPSIS.length) / 2);
+  return `${message.slice(0, half)}${LOG_ELLIPSIS}${message.slice(-half)}`;
 }
 
 const ABANDONED_WORKER_MARKER = 'it was left running so its native work is not interrupted';

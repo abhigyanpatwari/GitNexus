@@ -254,7 +254,7 @@ const DEFAULT_LBUG_MAX_DB_SIZE = 16 * 1024 * 1024 * 1024;
 export interface ParsedMaxDbSize {
   /** The effective value handed to the native open. */
   value: number;
-  /** The raw operator value, present only when `value` is a round-up of it. */
+  /** The integer the operator value floors to, present only when `value` is a round-up of it. */
   roundedFrom?: number;
 }
 
@@ -274,8 +274,8 @@ export const resolveMaxDbSize = (raw: string | undefined): number => {
   const { value, roundedFrom } = parseMaxDbSize(raw);
   if (roundedFrom !== undefined) {
     logger.warn(
-      { rawValue: roundedFrom, effective: value },
-      `GITNEXUS_LBUG_MAX_DB_SIZE=${roundedFrom} is not a power of two; using ${value}.`,
+      { rawValue: raw, effective: value },
+      `GITNEXUS_LBUG_MAX_DB_SIZE=${raw} is not a power of two; using ${value}.`,
     );
   }
   return value;

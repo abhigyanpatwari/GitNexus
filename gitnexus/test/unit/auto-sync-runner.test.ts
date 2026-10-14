@@ -1486,6 +1486,12 @@ describe('auto-sync runner', () => {
       });
 
       expect(errorLogger).toHaveBeenCalledWith(expect.stringContaining(diagnosis));
+      // The logged message never exceeds the 2000-character cap, separator included.
+      const logged: string = errorLogger.mock.calls[0][0];
+      const prefix =
+        '[auto-sync] Analysis failed for /tmp/repos/gitee.com/qts_server/qts_account; consecutive failures 1/3: ';
+      expect(logged.startsWith(prefix)).toBe(true);
+      expect(logged.length - prefix.length).toBeLessThanOrEqual(2000);
       expect(errorLogger).toHaveBeenCalledWith(expect.stringContaining(nativeFailure.slice(0, 40)));
       expect(deps.saveState).toHaveBeenCalledWith(
         expect.objectContaining({
