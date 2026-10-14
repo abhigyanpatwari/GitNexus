@@ -1683,29 +1683,29 @@ For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\`.
     }
   });
 
-  it.each([
-    'PR GitHub `baseRefOid`/`headRefOid`',
-    'exact PR base/head commits from host metadata',
-  ])('migrates provider-specific guidance (%s) without losing custom text', async (source) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-host-neutral-'));
-    try {
-      const seed =
-        '<!-- gitnexus:start -->\n' +
-        `Regression base: ${source}; target branch "main" via tracking remote. Fetch both; pass merge-base SHA to ` +
-        '`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})`. Keep this instruction.\n' +
-        '<!-- gitnexus:end -->\n';
-      await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
-      expect((await refreshBaseRefLine(dir, 'main')).files).toEqual(['AGENTS.md']);
-      const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
-      expect(after).toContain('fetch target branch "main" from its remote');
-      expect(after).toContain('compute its merge base with the reviewed HEAD');
-      expect(after).not.toContain(source);
-      expect(after).toContain('Keep this instruction.');
-      expect((await refreshBaseRefLine(dir, 'main')).files).toEqual([]);
-    } finally {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
-  });
+  it.each(['PR GitHub `baseRefOid`/`headRefOid`', 'exact PR base/head commits from host metadata'])(
+    'migrates provider-specific guidance (%s) without losing custom text',
+    async (source) => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-host-neutral-'));
+      try {
+        const seed =
+          '<!-- gitnexus:start -->\n' +
+          `Regression base: ${source}; target branch "main" via tracking remote. Fetch both; pass merge-base SHA to ` +
+          '`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})`. Keep this instruction.\n' +
+          '<!-- gitnexus:end -->\n';
+        await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
+        expect((await refreshBaseRefLine(dir, 'main')).files).toEqual(['AGENTS.md']);
+        const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
+        expect(after).toContain('fetch target branch "main" from its remote');
+        expect(after).toContain('compute its merge base with the reviewed HEAD');
+        expect(after).not.toContain(source);
+        expect(after).toContain('Keep this instruction.');
+        expect((await refreshBaseRefLine(dir, 'main')).files).toEqual([]);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('preserves same-line custom text when refreshing current guidance (#3509)', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-current-suffix-'));
