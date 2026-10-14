@@ -27,6 +27,7 @@ import {
   isLbugReady,
   statDbIdentity,
   dbIdentityChanged,
+  getLbugDbIdentity,
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
@@ -1217,6 +1218,9 @@ interface RepoHandle {
   branch?: string;
   /** Pinned `--branch` sub-indexes available for this repo, distinct from the flat workspace slot (#2106/#2354). */
   branches?: BranchSummary[];
+  /** Per-tool snapshot; never shared with the registry's cached handle. */
+  poolIdentity?: Awaited<ReturnType<typeof statDbIdentity>>;
+  generationUnknown?: boolean;
 }
 
 /** Resolve symlinks for path comparison; falls back to path.resolve on error.
@@ -1677,30 +1681,72 @@ export function attachToolStaleness(
   return { ...result, staleness };
 }
 
+/** Optional metadata must not prevent a healthy native index from answering. */
+async function loadOptionalMeta(storagePath: string) {
+  try {
+    return await loadMeta(storagePath);
+  } catch {
+    return null;
+  }
+}
+
 /** tri-review Residual-2: see `LocalBackend.lastObservedPoolState`'s doc comment. */
 interface PoolObservedState {
   indexedAt?: string;
   dbIdentity: Awaited<ReturnType<typeof statDbIdentity>>;
   ftsStatus?: string;
+  ref?: IndexedRef;
+  generationUnknown?: boolean;
+  awaitingMetadata?: boolean;
+  diskIndexedAt?: string;
+  metadata?: Awaited<ReturnType<typeof loadMeta>>;
 }
 
 export class LocalBackend {
+  // A selected handle belongs to one request. Reuse its metadata across
+  // freshness, retention and completeness checks without retaining it forever.
+  private readonly toolMetadata = new WeakMap<
+    RepoHandle,
+    Promise<Awaited<ReturnType<typeof loadMeta>>>
+  >();
+
+  private readToolMetadata(repo: RepoHandle): Promise<Awaited<ReturnType<typeof loadMeta>>> {
+    let pending = this.toolMetadata.get(repo);
+    if (!pending) {
+      pending = loadOptionalMeta(path.dirname(repo.lbugPath)).then((meta) => {
+        if (!meta) return null;
+        // Readers never use ingestion manifests. Do not keep their per-file
+        // hashes/cache keys or pending embedding IDs in an opened snapshot.
+        return {
+          ...meta,
+          fileHashes: undefined,
+          cacheKeys: undefined,
+          embeddingCheckpoint: undefined,
+        };
+      });
+      this.toolMetadata.set(repo, pending);
+    }
+    return pending;
+  }
+
   private static readonly TOOL_STALENESS_TTL_MS = 5000;
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
-  private lastStalenessCheck: Map<string, number> = new Map();
   // #2655: commit-behind freshness for the hot read tools. Stores the IN-FLIGHT
   // promise (not just a timestamp) so N concurrent tool calls arriving before
   // the first `git rev-list` resolves share one subprocess instead of each
   // spawning their own; the resolved value is reused for TOOL_STALENESS_TTL_MS.
-  // Keyed by lbugPath (like lastStalenessCheck) — NOT repoPath — because flat
+  // Keyed by lbugPath — NOT repoPath — because flat
   // and branch handles for one repo share a repoPath but carry different
   // lastCommit values, so a repoPath key would serve one handle's freshness for
-  // the other; lbugPath is unique per flat/branch index.
-  private toolStalenessCache: Map<string, { at: number; value: Promise<StalenessInfo> }> =
-    new Map();
+  // the other. Shared graphs can serve several checkouts, so the generation
+  // also identifies the repoPath whose HEAD is measured.
+  private toolStalenessCache: Map<
+    string,
+    { at: number; generation: string; value: Promise<StalenessInfo> }
+  > = new Map();
   // tri-review Residual-2: consolidates what were three parallel per-poolKey
   // Maps (lastObservedIndexedAt / lastObservedDbIdentity / lastObservedFtsStatus)
   // touched in lockstep at every call site below — one Map, one delete, one
@@ -1903,7 +1949,9 @@ export class LocalBackend {
     // Meta probe: layer present iff the flows cap is stamped. `false` is a
     // definitive absence (degrade to call-level); `undefined` is unreadable
     // meta (fall through and infer presence from rows found).
-    const pdgStamped = await pdgStampForMode(repo.lbugPath, 'flows');
+    const pdgStamped = await pdgStampForMode(repo.lbugPath, 'flows', () =>
+      this.readToolMetadata(repo),
+    );
     if (pdgStamped === false) return { available: false, hops: [] };
 
     // Resolve the anchor symbol (UID is precise; fall back to name/file).
@@ -2077,7 +2125,6 @@ export class LocalBackend {
     for (const key of knownKeys) {
       if (liveLbugPaths.has(key)) continue;
       this.initializedRepos.delete(key);
-      this.lastStalenessCheck.delete(key);
       this.toolStalenessCache.delete(key);
       this.lastObservedPoolState.delete(key);
       this.reinitPromises.delete(key);
@@ -2226,7 +2273,24 @@ export class LocalBackend {
       this.maybeWarnSiblingDrift(result).catch(() => {
         /* best-effort; never throw from resolveRepo */
       });
-      return this.applyBranchScope(this.followSharedGraph(result), branch);
+      const repo = { ...(await this.applyBranchScope(this.followSharedGraph(result), branch)) };
+      // Checkout-only tools also need current metadata, without opening a native DB.
+      const meta = await this.readToolMetadata(repo);
+      if (meta) {
+        repo.indexedAt = meta.indexedAt ?? repo.indexedAt;
+        repo.lastCommit = meta.lastCommit ?? repo.lastCommit;
+        repo.branch = meta.branch ?? repo.branch;
+        // Shared graph metadata is branch-neutral. The checkout slot retains
+        // its branch while the immutable graph path moves between commits.
+        if (
+          !meta.branch &&
+          path.dirname(repo.lbugPath) !== repo.storagePath &&
+          repo.lbugPath === resolveGraphPath(repo.storagePath)
+        ) {
+          repo.branch = (await loadOptionalMeta(repo.storagePath))?.branch ?? repo.branch;
+        }
+      }
+      return repo;
     }
 
     // Still no match — throw with helpful message
@@ -2539,109 +2603,118 @@ export class LocalBackend {
    */
   private async ensureInitialized(repo: RepoHandle): Promise<void> {
     const poolKey = repo.lbugPath;
-    // If a reinit is already in progress for this repo, wait for it
-    const pending = this.reinitPromises.get(poolKey);
-    if (pending) return pending;
-
-    // Check if the index was rebuilt since we opened the connection (#297).
-    // Throttle staleness checks to at most once per 5 seconds per repo to
-    // avoid an fs.readFile round-trip on every tool invocation.
-    if (this.initializedRepos.has(poolKey) && isLbugReady(poolKey)) {
-      const now = Date.now();
-      const lastCheck = this.lastStalenessCheck.get(poolKey) ?? 0;
-      if (now - lastCheck < 5000) return; // Checked recently — skip
-
-      this.lastStalenessCheck.set(poolKey, now);
-      try {
-        // Read the metadata that sits next to THIS handle's lbug. For the
-        // flat/primary handle this is `<storagePath>/gitnexus.json`; for a
-        // branch handle it is `<storagePath>/branches/<slug>/gitnexus.json`.
-        // loadMeta falls back to legacy meta.json during migration.
-        // Reading the flat meta for a branch handle would compare the branch
-        // index's indexedAt against the primary's and thrash the pool (#2106).
-        const meta = await loadMeta(path.dirname(repo.lbugPath));
-        const observedState = this.lastObservedPoolState.get(poolKey);
-        // Compare against the last indexedAt OBSERVED for this pool (keyed by
-        // lbugPath), not the handle's — branch handles are fresh spreads so a
-        // handle mutation would not persist and would reinit on every check.
-        const observed = observedState?.indexedAt ?? repo.indexedAt;
-        const stampChanged = !!meta?.indexedAt && meta.indexedAt !== observed;
-        // #2614 F1: also reinit on a file-identity change. An atomic swap (or an
-        // in-place incremental) changes the lbug inode; keying only on
-        // meta.indexedAt let a reader that reinited inside the pre-swap window
-        // latch on the old inode forever (its stamp already == meta.indexedAt).
-        const currentIdentity = await statDbIdentity(repo.lbugPath);
-        const identityChanged = dbIdentityChanged(
-          observedState?.dbIdentity ?? null,
-          currentIdentity,
-        );
-        // #2767: `--repair-fts` intentionally never restamps `indexedAt` (it
-        // doesn't regenerate the graph), so `stampChanged` alone can't notice
-        // a repair. `capabilities.fts.status` is the field repair-fts DOES
-        // write, so a change there is a third, independent reinit trigger —
-        // sibling to stampChanged/identityChanged, not a replacement for them
-        // (identityChanged still catches an in-place mutation even if the
-        // caps stamp were somehow missed).
-        const ftsStatus = meta?.capabilities?.fts?.status;
-        const ftsCapsChanged = observedState?.ftsStatus !== ftsStatus;
-        if (stampChanged || identityChanged || ftsCapsChanged) {
-          // Index was rebuilt/swapped — DELEGATE the close/reopen to the pool's
-          // initLbug, which refuses to evict (and close the shared Database)
-          // while a query is in flight (its checkedOut>0 guard). Calling
-          // closeLbug directly here bypassed that guard and could close a
-          // Database mid-query — a native use-after-free (#2614). Wrap in
-          // reinitPromises to serialize concurrent detectors.
-          const reinit = (async () => {
-            try {
-              const reopened = await initLbug(poolKey, repo.lbugPath);
-              // tri-review NEW-7: advance the observed stamp/caps watermarks
-              // only AFTER initLbug completes, not before calling it — still
-              // regardless of `reopened` true/false (a stamp/caps change with
-              // an unchanged file must not re-trigger on every check), but if
-              // initLbug THROWS the watermark must stay at its old value so
-              // the next staleness check retries, instead of a failed reinit
-              // silently latching as "already applied" and never trying again.
-              const patch: Partial<PoolObservedState> = { ftsStatus };
-              if (meta?.indexedAt) patch.indexedAt = meta.indexedAt;
-              // Advance the observed IDENTITY only when the pool actually rolled
-              // over. If a query was in flight, initLbug served the current
-              // handle and returned false; leaving the identity divergent
-              // re-triggers the reopen on a later idle check instead of latching.
-              if (reopened) patch.dbIdentity = await statDbIdentity(repo.lbugPath);
-              this.setObservedState(poolKey, patch);
-            } finally {
-              this.reinitPromises.delete(poolKey);
-            }
-          })();
-          this.reinitPromises.set(poolKey, reinit);
-          return reinit;
-        } else {
-          return; // Pool is current
-        }
-      } catch {
-        return; // Can't read meta — assume pool is fine
+    const bindSnapshot = (): void => {
+      const state = this.lastObservedPoolState.get(poolKey);
+      if (
+        repo.poolIdentity !== undefined &&
+        dbIdentityChanged(repo.poolIdentity, state?.dbIdentity ?? null)
+      ) {
+        repo.generationUnknown = true;
+        return;
       }
+      if (state?.ref) {
+        repo.lastCommit = state.ref.lastCommit;
+        repo.indexedAt = state.ref.indexedAt;
+        // Shared commit graphs have no branch label; preserve this caller's
+        // checkout branch instead of caching another checkout's fallback.
+        repo.branch = state.ref.branch ?? repo.branch;
+      }
+      repo.poolIdentity = state?.dbIdentity;
+      repo.generationUnknown ||= state?.generationUnknown;
+      this.toolMetadata.set(repo, Promise.resolve(state?.metadata ?? null));
+    };
+    const pending = this.reinitPromises.get(poolKey);
+    if (pending) {
+      await pending;
+      bindSnapshot();
+      return;
     }
 
-    try {
-      await initLbug(poolKey, repo.lbugPath);
-      this.initializedRepos.add(poolKey);
-      // #2767: ftsStatus is deliberately left unset (undefined) here rather
-      // than issuing an extra loadMeta read — every tool call already routes
-      // through ensureInitialized, so an extra per-cold-init read adds up,
-      // and the cost of skipping it is negligible: at most one redundant
-      // initLbug call on the first warm check (initLbug itself no-ops
-      // cheaply via a single fs.stat when the file identity is actually
-      // unchanged, per pool-adapter.ts's own "unchanged → reuse" guard), not
-      // a real reopen.
+    // Check metadata and file identity before serving a tool; only git freshness
+    // retains its five-second cache. A publication must not pair new data with an old ref.
+    const refresh = (async () => {
+      const warm = this.initializedRepos.has(poolKey) && isLbugReady(poolKey);
+      const previous = this.lastObservedPoolState.get(poolKey);
+      const meta = await this.readToolMetadata(repo);
+      const diskIdentity = await statDbIdentity(poolKey);
+      if (meta?.indexedAt && meta.indexedAt !== previous?.diskIndexedAt) {
+        // Even a deferred reader needs its old ref compared to the new HEAD.
+        // Invalidate once per publication; concurrent checks still deduplicate.
+        this.toolStalenessCache.delete(poolKey);
+      }
+      const stampChanged =
+        !!meta?.indexedAt && meta.indexedAt !== (previous?.indexedAt ?? repo.indexedAt);
+      const identityChanged = dbIdentityChanged(previous?.dbIdentity ?? null, diskIdentity);
+      const ftsStatus = meta?.capabilities?.fts?.status;
+      if (!warm || stampChanged || identityChanged || previous?.ftsStatus !== ftsStatus) {
+        await initLbug(poolKey, poolKey);
+        this.initializedRepos.add(poolKey);
+      }
+      const openedIdentity = getLbugDbIdentity(poolKey);
+      // The path can change after stat and before initLbug opens it. Track
+      // replacement against the reader we actually opened, not that snapshot.
+      // Same-inode auxiliary changes (FTS repair) do not replace the graph;
+      // in-place graph writes advertise incrementalInProgress below.
+      const graphReplaced =
+        !!previous?.dbIdentity &&
+        !!openedIdentity &&
+        previous.dbIdentity.ino !== openedIdentity.ino;
+      const publicationPending =
+        !!previous &&
+        !stampChanged &&
+        (previous.awaitingMetadata === true ||
+          (graphReplaced && previous.ref !== undefined && !previous.generationUnknown));
+      const deferred =
+        !!openedIdentity && (!diskIdentity || dbIdentityChanged(openedIdentity, diskIdentity));
+      if (deferred) {
+        // initLbug keeps a busy reader on the old inode. Never attach the new
+        // metadata to it, including when another backend opened that reader.
+        if (previous && !dbIdentityChanged(previous.dbIdentity, openedIdentity)) {
+          this.setObservedState(poolKey, { diskIndexedAt: meta?.indexedAt });
+          return;
+        }
+        // A mismatched reader can be older than the disk or have opened a
+        // replacement after our first stat. Only the latter must wait for a
+        // stamp newer than the metadata we just observed, even if that stamp
+        // already differed from the previous reader's. Old pinned readers
+        // can recover against the existing disk metadata after they reopen.
+        const currentIdentity = await statDbIdentity(poolKey);
+        const openedAfterStat =
+          !currentIdentity || !dbIdentityChanged(openedIdentity, currentIdentity);
+        this.setObservedState(poolKey, {
+          indexedAt: meta?.indexedAt ?? previous?.indexedAt ?? repo.indexedAt,
+          dbIdentity: openedIdentity,
+          ref: { lastCommit: '', indexedAt: '' },
+          generationUnknown: true,
+          awaitingMetadata: publicationPending || openedAfterStat,
+          diskIndexedAt: meta?.indexedAt,
+          metadata: null,
+        });
+        return;
+      }
+      const ref: IndexedRef = {
+        lastCommit: meta?.lastCommit ?? previous?.ref?.lastCommit ?? repo.lastCommit,
+        indexedAt: meta?.indexedAt ?? previous?.ref?.indexedAt ?? repo.indexedAt,
+        branch: meta?.branch,
+      };
+      const generationUnknown = deferred || publicationPending || !!meta?.incrementalInProgress;
       this.setObservedState(poolKey, {
-        indexedAt: repo.indexedAt,
-        dbIdentity: await statDbIdentity(repo.lbugPath),
+        indexedAt: meta?.indexedAt ?? previous?.indexedAt ?? repo.indexedAt,
+        dbIdentity: openedIdentity,
+        ftsStatus,
+        ref: generationUnknown ? { lastCommit: '', indexedAt: '' } : ref,
+        generationUnknown,
+        awaitingMetadata: publicationPending,
+        diskIndexedAt: meta?.indexedAt,
+        metadata: generationUnknown ? null : meta,
       });
-    } catch (err: any) {
-      // If lock error, mark as not initialized so next call retries
-      this.initializedRepos.delete(poolKey);
-      throw err;
+    })();
+    this.reinitPromises.set(poolKey, refresh);
+    try {
+      await refresh;
+      bindSnapshot();
+    } finally {
+      this.reinitPromises.delete(poolKey);
     }
   }
 
@@ -2901,6 +2974,21 @@ export class LocalBackend {
     // poison the TTL cache entry (#2655 review F1). A rejection leaves `info`
     // undefined, and the builder returns nothing for that even with a ref, so
     // the degraded path still attaches no field.
+    // Multiple reads may straddle an idle pool rollover. Do not certify mixed
+    // generations as current. A busy reader that stayed on its inode is known.
+    const changedDuringTool =
+      repo.poolIdentity !== undefined &&
+      dbIdentityChanged(repo.poolIdentity, getLbugDbIdentity(repo.lbugPath));
+    if (repo.generationUnknown || changedDuringTool) {
+      return attachToolStaleness(
+        result,
+        { status: 'unknown', isStale: false, commitsBehind: 0 },
+        {
+          lastCommit: '',
+          indexedAt: '',
+        },
+      );
+    }
     const staleness = await this.stalenessForTool(repo).catch(() => undefined);
     return attachToolStaleness(result, staleness, {
       branch: repo.branch,
@@ -2922,8 +3010,15 @@ export class LocalBackend {
    */
   private stalenessForTool(repo: RepoHandle): Promise<StalenessInfo> {
     const now = Date.now();
+    const generation = JSON.stringify([
+      repo.repoPath,
+      repo.lastCommit,
+      repo.indexedAt,
+      repo.branch,
+      repo.poolIdentity,
+    ]);
     const cached = this.toolStalenessCache.get(repo.lbugPath);
-    if (cached && now - cached.at < LocalBackend.TOOL_STALENESS_TTL_MS) {
+    if (cached?.generation === generation && now - cached.at < LocalBackend.TOOL_STALENESS_TTL_MS) {
       return cached.value;
     }
     // Evict the entry if the check rejects so a transient failure isn't served
@@ -2932,8 +3027,9 @@ export class LocalBackend {
     // dedup is untouched (#2655 review F1). `Promise.resolve` wraps the call so a
     // non-thenable return can't throw at this boundary — a no-op for the real
     // async `checkStalenessAsync`, robust defense-in-depth otherwise.
-    const entry: { at: number; value: Promise<StalenessInfo> } = {
+    const entry: { at: number; generation: string; value: Promise<StalenessInfo> } = {
       at: now,
+      generation,
       // Only evict if THIS entry is still current — a later call may have
       // installed a fresh (resolving) entry for the same key before a slow
       // rejection lands, and that newer entry must not be dropped.
@@ -3178,6 +3274,31 @@ export class LocalBackend {
       chain_depth?: number;
     },
   ): Promise<any> {
+    try {
+      const result = await this._queryImpl(repo, params);
+      if (!result.error) assertResponseIdentities(result);
+      return result;
+    } catch (err) {
+      if (err instanceof SymbolIdentityError) {
+        return { error: err.message, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION };
+      }
+      throw err;
+    }
+  }
+
+  private async _queryImpl(
+    repo: RepoHandle,
+    params: {
+      query?: string;
+      search_query?: string;
+      task_context?: string;
+      goal?: string;
+      limit?: number;
+      max_symbols?: number;
+      include_content?: boolean;
+      chain_depth?: number;
+    },
+  ): Promise<any> {
     // #2175: each consumer resolves the search_query/query alias itself (there is no
     // chokepoint mutation in callTool). This also serves the GroupService port, which
     // reaches query() carrying only the legacy `query` key.
@@ -3214,7 +3335,7 @@ export class LocalBackend {
     // disclosing text merely because a caller asked for it. `query` already
     // reads this metadata for CJK and embedding-dimension drift diagnostics,
     // so keep that legacy read unconditional.
-    const meta = await loadMeta(path.dirname(repo.lbugPath));
+    const meta = await this.readToolMetadata(repo);
     const includeContent = requestedContent && contentRetentionFromMeta(meta) !== 'none';
     const contentAvailability = requestedContentAvailability(requestedContent, meta);
     const searchQuery = rawQuery.trim();
@@ -3266,6 +3387,10 @@ export class LocalBackend {
 
     for (let i = 0; i < bm25Results.length; i++) {
       const result = bm25Results[i];
+      if (result.nodeId !== undefined && result.nodeId !== null) {
+        assertSymbolIdentity(result.nodeId);
+      }
+      assertIdentityFields(result.name, result.type, result.filePath);
       const key = result.nodeId || result.filePath;
       const rrfScore = 1 / (60 + i);
       const existing = scoreMap.get(key);
@@ -3279,6 +3404,8 @@ export class LocalBackend {
     const safeSemanticResults = semanticResults ?? [];
     for (let i = 0; i < safeSemanticResults.length; i++) {
       const result = safeSemanticResults[i];
+      assertSymbolIdentity(result.nodeId);
+      assertIdentityFields(result.name, result.type, result.filePath);
       const key = result.nodeId || result.filePath;
       const rrfScore = 1 / (60 + i);
       const existing = scoreMap.get(key);
@@ -3361,12 +3488,20 @@ export class LocalBackend {
           { nodeIds: ids },
         );
         for (const row of rows) {
+          assertQueryIdentity(row, 'nodeId', 0, [
+            ['label', 2],
+            ['heuristicLabel', 3],
+            ['processType', 4],
+            ['entryPointId', 7],
+          ]);
+          assertSymbolIdentity(queryRowValue(row, 'pid', 1));
           const nid = row.nodeId ?? row[0];
           let list = processRowsByNode.get(nid);
           if (!list) processRowsByNode.set(nid, (list = []));
           list.push(row);
         }
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('query:process-lookup', e);
         if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
       }
@@ -3391,6 +3526,7 @@ export class LocalBackend {
           { nodeIds: ids },
         );
         for (const row of rows) {
+          assertQueryIdentity(row, 'nodeId', 0, [['module', 2]]);
           const nid = row.nodeId ?? row[0];
           if (!cohesionByNode.has(nid)) {
             cohesionByNode.set(nid, {
@@ -3400,6 +3536,7 @@ export class LocalBackend {
           }
         }
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('query:cluster-info', e);
         if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
       }
@@ -3417,10 +3554,12 @@ export class LocalBackend {
             { nodeIds: ids },
           );
           for (const row of rows) {
+            assertQueryIdentity(row, 'nodeId', 0);
             const nid = row.nodeId ?? row[0];
             contentByNode.set(nid, row.content ?? row[1]);
           }
         } catch (e) {
+          rethrowSymbolIdentityError(e);
           logQueryError('query:content-fetch', e);
           if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
         }
@@ -3534,6 +3673,13 @@ export class LocalBackend {
             { routeIds: ids },
           );
           for (const row of rows) {
+            assertQueryIdentity(row, 'routeId', 0, [
+              ['handlerName', 2],
+              ['handlerFilePath', 3],
+              ['url', 4],
+              ['method', 5],
+            ]);
+            assertSymbolIdentity(queryRowValue(row, 'handlerId', 1));
             const routeId = String(row.routeId ?? row[0] ?? '');
             const handlerId = String(row.handlerId ?? row[1] ?? '');
             if (!routeId || !handlerId) continue;
@@ -3549,6 +3695,7 @@ export class LocalBackend {
           }
         }
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('query:route-definition-bridge', e);
         if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
       }
@@ -3644,6 +3791,10 @@ export class LocalBackend {
             },
           );
           for (const row of routeRows) {
+            assertQueryIdentity(row, 'pid', 0, [
+              ['url', 1],
+              ['method', 2],
+            ]);
             const targetPid = row.pid ?? row[0];
             const url = row.url ?? row[1];
             const method = row.method ?? row[2];
@@ -3661,6 +3812,7 @@ export class LocalBackend {
           }
         }
       } catch (e) {
+        rethrowSymbolIdentityError(e);
         logQueryError('query:route-lookup', e);
         if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
       }
@@ -3677,11 +3829,12 @@ export class LocalBackend {
     // QUERY_CHAIN_BFS_CONCURRENCY walks in flight. This is the per-query BFS
     // cap; GroupService.groupQuery also caps member-query fan-out so a group
     // of N members cannot run 4×N concurrent BFS walks.
-    // Best-effort — a BFS failure drops that process's chain but never fails
-    // the query.
+    // Ordinary BFS failures may drop a chain; corrupt identities must fail
+    // the query even though mapConcurrent normally swallows worker errors.
     const chainByProcessId = new Map<string, any[]>();
     if (requestedChainDepth > 0 && rankedProcesses.length > 0) {
       timer.start('chain_enrichment');
+      let integrityError: SymbolIdentityError | undefined;
       await mapConcurrent(
         rankedProcesses,
         async (p) => {
@@ -3692,14 +3845,22 @@ export class LocalBackend {
               p.entryPointId,
               requestedChainDepth,
             );
+            assertResponseIdentities(chain);
             chainByProcessId.set(p.id, chain);
           } catch (e) {
+            rethrowSymbolIdentityError(e);
             logQueryError('query:chain-bfs', e);
             if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
           }
         },
-        { concurrency: QUERY_CHAIN_BFS_CONCURRENCY },
+        {
+          concurrency: QUERY_CHAIN_BFS_CONCURRENCY,
+          onError: (error) => {
+            if (error instanceof SymbolIdentityError) integrityError = error;
+          },
+        },
       );
+      if (integrityError) throw integrityError;
       timer.stop(); // chain_enrichment
     }
 
@@ -3790,6 +3951,7 @@ export class LocalBackend {
         );
       }
     } catch (err) {
+      rethrowSymbolIdentityError(err);
       // Best-effort diagnostic only — never fail the query over it.
       logQueryError('query:cjk-warning', err);
     }
@@ -3832,6 +3994,7 @@ export class LocalBackend {
         );
       }
     } catch (err) {
+      rethrowSymbolIdentityError(err);
       // loadMeta() itself never throws (it returns null on any read/parse
       // failure) — the actual throw source here is getSearchFTSCjkSegmentation()
       // on an invalid env value, same root cause as the catch above. This is
@@ -3927,6 +4090,7 @@ export class LocalBackend {
     try {
       ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));
     } catch (err: any) {
+      rethrowSymbolIdentityError(err);
       // Module import can fail in sandboxed MCP contexts (#1489)
       logger.warn(
         { err: err?.message },
@@ -3938,6 +4102,7 @@ export class LocalBackend {
     try {
       ftsResponse = await searchFTSFromLbug(query, limit, repo.lbugPath);
     } catch (err: any) {
+      rethrowSymbolIdentityError(err);
       // Swallowed, gracefully-degraded failure: the search falls back to
       // semantic-only (a valid result), and the most common cause is simply an
       // un-indexed FTS extension — a normal configuration, not an operation
@@ -3961,6 +4126,8 @@ export class LocalBackend {
 
     for (const bm25Result of bm25Results) {
       const fullPath = bm25Result.filePath;
+      assertIdentityFields(fullPath);
+      for (const nodeId of bm25Result.nodeIds ?? []) assertSymbolIdentity(nodeId);
       try {
         // Prefer direct nodeId lookup (exact FTS-matched nodes) over filePath fallback.
         // Without this, LIMIT 3 on filePath returns arbitrary symbols rather than
@@ -3996,6 +4163,7 @@ export class LocalBackend {
 
         if (symbols.length > 0) {
           for (const sym of symbols) {
+            assertSymbolRowIdentity(sym);
             results.push({
               nodeId: sym.id || sym[0],
               name: sym.name || sym[1],
@@ -4018,7 +4186,8 @@ export class LocalBackend {
             bm25Score: bm25Result.score,
           });
         }
-      } catch {
+      } catch (err) {
+        rethrowSymbolIdentityError(err);
         const fileName = fullPath.split('/').pop() || fullPath;
         results.push({
           name: fileName,
@@ -4090,6 +4259,7 @@ export class LocalBackend {
       try {
         vectorReady = await ensureVectorExtension(repo.lbugPath);
       } catch (err) {
+        rethrowSymbolIdentityError(err);
         if (!this.warnedVectorLoadFailed) {
           this.warnedVectorLoadFailed = true;
           logger.warn(
@@ -4122,6 +4292,7 @@ export class LocalBackend {
           `;
 
             const embResults = await executeQuery(repo.lbugPath, vectorQuery);
+            for (const row of embResults) assertQueryIdentity(row, 'nodeId', 0);
             return embResults.map((row) => ({
               nodeId: row.nodeId ?? row[0],
               chunkIndex: row.chunkIndex ?? row[1] ?? 0,
@@ -4131,6 +4302,7 @@ export class LocalBackend {
             }));
           });
         } catch (err) {
+          rethrowSymbolIdentityError(err);
           bestChunks = new Map();
           if (!this.warnedVectorQueryFailed) {
             // Rare diagnostic: surface why semantic search fell back to the
@@ -4158,6 +4330,7 @@ export class LocalBackend {
                  e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding
         `,
         );
+        for (const row of rows) assertQueryIdentity(row, 'nodeId', 0);
         const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
           nodeId: row.nodeId ?? row[0],
           chunkIndex: row.chunkIndex ?? row[1] ?? 0,
@@ -4186,6 +4359,7 @@ export class LocalBackend {
       // scope here, and a shadowing local silently turns any later `chunk.x`
       // into a property read on the function.
       for (const [nodeId, bestChunk] of Array.from(bestChunks.entries()).slice(0, limit)) {
+        assertSymbolIdentity(nodeId);
         const labelEndIdx = nodeId.indexOf(':');
         const label = labelEndIdx > 0 ? nodeId.substring(0, labelEndIdx) : 'Unknown';
 
@@ -4201,6 +4375,10 @@ export class LocalBackend {
           const nodeRows = await executeParameterized(repo.lbugPath, nodeQuery, { nodeId });
           if (nodeRows.length > 0) {
             const nodeRow = nodeRows[0];
+            assertIdentityFields(
+              queryRowValue(nodeRow, 'name', 0),
+              queryRowValue(nodeRow, 'filePath', 1),
+            );
             results.push({
               nodeId,
               name: nodeRow.name ?? nodeRow[0] ?? '',
@@ -4211,11 +4389,14 @@ export class LocalBackend {
               endLine: bestChunk.endLine,
             });
           }
-        } catch {}
+        } catch (err) {
+          rethrowSymbolIdentityError(err);
+        }
       }
 
       return results;
     } catch (err) {
+      rethrowSymbolIdentityError(err);
       // Nothing was embedded on this path unless the throw happened after the
       // vector existed (a failed lookup downstream of a good embedding, where
       // the width IS still the live one). Clearing only in the former case
@@ -4973,7 +5154,7 @@ export class LocalBackend {
     const requestedContent = include_content ?? false;
     // Content retention matters only to the opt-in content response. Avoid a
     // metadata dependency for the long-standing default context operation.
-    const meta = requestedContent ? await loadMeta(path.dirname(repo.lbugPath)) : null;
+    const meta = requestedContent ? await this.readToolMetadata(repo) : null;
     const contentAvailability = requestedContentAvailability(requestedContent, meta);
     const includeContent = requestedContent && contentRetentionFromMeta(meta) !== 'none';
 
@@ -5806,7 +5987,7 @@ export class LocalBackend {
     // a seeded test DB) falls through to the row-existence probe below.
     let pdgStamped: boolean | undefined;
     try {
-      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      const meta = await this.readToolMetadata(repo);
       if (meta) pdgStamped = meta.pdg?.taintModelVersion !== undefined;
     } catch {
       /* meta unreadable — decide from the DB below */
@@ -6124,7 +6305,9 @@ export class LocalBackend {
     // contract byte-for-byte: `false` ⇒ definitive no-layer (short-circuit
     // below), `true` ⇒ proceed, `undefined` ⇒ meta unreadable, defer to the
     // post-anchored-query probe (Feasibility Issue 4).
-    const pdgStamped = await pdgStampForMode(repo.lbugPath, mode);
+    const pdgStamped = await pdgStampForMode(repo.lbugPath, mode, () =>
+      this.readToolMetadata(repo),
+    );
     if (pdgStamped === false) {
       return { mode, results: [], total: 0, note: NO_PDG_NOTE };
     }
@@ -7574,6 +7757,7 @@ export class LocalBackend {
     if (mode === 'pdg') {
       layer = await pdgLayerStatus({
         lbugPath: repo.lbugPath,
+        loadMetaFn: () => this.readToolMetadata(repo),
         executeParameterized,
       });
       if (isPdgDegradedLayerStatus(layer)) {
@@ -7815,10 +7999,8 @@ export class LocalBackend {
    * Fields the analyzer declined to link because every definition of the name
    * lives in another language (R3-1), keyed by name.
    *
-   * Cached per index version. `ensureInitialized` deliberately avoids a
-   * per-call `loadMeta` because every tool call routes through it; this is one
-   * small read per (index, indexedAt), which re-reads exactly when a re-analyze
-   * could have changed the answer and never otherwise.
+   * Cached per index version. The fresh stamp bound by `ensureInitialized`
+   * invalidates this derived map exactly when a re-analyze could have changed it.
    */
   private readonly crossLanguagePropertyCache = new Map<
     string,
@@ -7832,7 +8014,7 @@ export class LocalBackend {
     if (cached !== undefined && cached.indexedAt === repo.indexedAt) return cached.byName;
     const byName = new Map<string, readonly string[]>();
     try {
-      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      const meta = await this.readToolMetadata(repo);
       for (const entry of meta?.crossLanguageProperties ?? []) {
         byName.set(entry.name, entry.languages);
       }
@@ -7863,16 +8045,14 @@ export class LocalBackend {
     // reason #2708 was filed. A dropped site's callee is unknown, so the index
     // records the member NAME invoked at the drop; a match on the queried
     // symbol's name means at least one call to something of that name was lost.
-    // ONE read of the index metadata for both probes below. They are the second
-    // and third consumers of this file on a path whose own comments call out
-    // avoiding a per-call `loadMeta` (see `ensureInitialized`), and the file is
-    // dominated by `fileHashes` — megabytes on a large repo.
+    // Share one metadata read between both probes; fileHashes can make this
+    // file large, so each probe should not read it separately.
     // `try`, not `.catch`: `loadMeta` can throw synchronously (a stubbed module
     // in tests, a mid-read unmount), and a probe failing must never read as
     // certainty — the whole point of this function.
     let meta: Awaited<ReturnType<typeof loadMeta>> | undefined;
     try {
-      meta = await loadMeta(path.dirname(repo.lbugPath));
+      meta = await this.readToolMetadata(repo);
     } catch {
       meta = undefined;
     }
@@ -9632,7 +9812,7 @@ export class LocalBackend {
     code: 'source-unavailable';
     reason: 'content-retention' | 'checkout-missing';
   } | null> {
-    const meta = await loadMeta(path.dirname(repo.lbugPath));
+    const meta = await this.readToolMetadata(repo);
     const retention = contentRetentionFromMeta(meta);
     const checkoutIsDir = retention === 'full' ? await checkoutIsDirectory(repo.repoPath) : false;
     if (isFullSourceAvailable(retention, checkoutIsDir)) return null;

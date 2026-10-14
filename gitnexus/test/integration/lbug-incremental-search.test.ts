@@ -16,8 +16,8 @@ interface Check {
   indexes?: number;
 }
 
-describe('native incremental search (#3421, #3423)', () => {
-  for (const scenario of ['context', 'property'] as const) {
+describe('native incremental search (#3421, #3423, #3564)', () => {
+  for (const scenario of ['context', 'property', 'method'] as const) {
     it(`preserves retained ${scenario} strings and search through COPY, checkpoint and reopen`, () => {
       // Own process: isolate native lifetimes and allow old-engine diagnostic runs.
       const result = spawnSync(process.execPath, [reproducer, scenario], {
@@ -36,10 +36,12 @@ describe('native incremental search (#3421, #3423)', () => {
       if (scenario === 'property') stages.push('repair');
       for (const stage of stages) {
         expect(check(`${stage}:scan`)).toMatchObject({ rows: 8192, wrong: 0, missing: 0 });
-        if (scenario === 'context') {
+        if (scenario !== 'property') {
           for (const lookup of ['primary-key', 'uid', 'name']) {
             expect(check(`${stage}:${lookup}`)?.ids).toEqual([
-              'Function:src/owner2.ts:unchangedSwiftTarget64',
+              scenario === 'method'
+                ? 'Method:checks/test_owner2.py:Checks.test_retained_method_64#0'
+                : 'Function:src/owner2.ts:unchangedSwiftTarget64',
             ]);
           }
         } else {

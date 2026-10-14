@@ -99,6 +99,12 @@ export function dbIdentityChanged(prev: DbIdentity | null, next: DbIdentity | nu
 
 const pool = new Map<string, PoolEntry>();
 
+/** Identity of the native database currently serving this pool, not the path's latest file. */
+export function getLbugDbIdentity(repoId: string): DbIdentity | null {
+  const identity = pool.get(repoId)?.dbIdentity;
+  return identity ? { ...identity } : null;
+}
+
 /**
  * Listeners notified when a pool entry is torn down (LRU eviction, idle
  * timeout, explicit close). Used by upper layers (e.g. the BM25 search
@@ -811,6 +817,14 @@ const initLbugInner = async (repoId: string, dbPath: string): Promise<InitLbugAt
     // freshness THROUGH initLbug (rather than calling closeLbug directly) get
     // this guard for free; that is why LocalBackend delegates here (#2614).
     if (existing.checkedOut > 0) return { status: 'done', reopened: false };
+    // Closing only this consumer would leave the shared native handle alive
+    // and doInitLbug would attach eight new connections to that same old
+    // generation. Keep this pool intact until the other consumers release it;
+    // its opened identity stays divergent so the next init can retry then.
+    const shared = dbCache.get(existing.dbPath);
+    if (shared && shared.db === existing.db && shared.refCount > 1) {
+      return { status: 'done', reopened: false };
+    }
     // Awaited: see the rationale on the evictLRU call site in doInitLbug below.
     await closeOne(repoId); // idle & changed → evict, then fall through to reopen the new file
   }
@@ -946,9 +960,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<InitLbugAttem
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
-  // Record the on-disk identity so a later initLbug can detect an analyze
-  // rebuild/mutation and re-open onto the new file (pool staleness invalidation).
-  const dbIdentity = await statDbIdentity(dbPath);
+  // Keep the opened SharedDB identity: another consumer may still hold an
+  // older native handle after the file at dbPath has been replaced.
+  const dbIdentity = shared.dbIdentity ?? null;
   pool.set(repoId, {
     db,
     available,
