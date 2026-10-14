@@ -621,7 +621,7 @@ export const maxDbSizeReachedRemedy = (
   return (
     `The LadybugDB address-space ceiling was reached: the engine reported a limit of ${match[1]} bytes. ` +
     `That is an mmap budget, not disk usage, so a small index on disk does not rule it out. ` +
-    `GITNEXUS_LBUG_MAX_DB_SIZE sets the ceiling; a value that is not a power of 2 is rounded up (for example ${2 ** 39}); ` +
+    `GITNEXUS_LBUG_MAX_DB_SIZE sets the ceiling; a value that is not a power of 2 is rounded up to the next one (for example 300000000000 becomes ${2 ** 39}); ` +
     `raise it if the index needs more room, then retry analyze.` +
     stagedBuildNote(mode) +
     offSwitchNote(mode)

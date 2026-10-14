@@ -1486,7 +1486,8 @@ describe('auto-sync runner', () => {
       });
 
       expect(errorLogger).toHaveBeenCalledWith(expect.stringContaining(diagnosis));
-      // The logged message never exceeds the 2000-character cap, separator included.
+      // The error payload (the part after the log prefix) stays within the 2000-character cap,
+      // separator included.
       const logged: string = errorLogger.mock.calls[0][0];
       const prefix =
         '[auto-sync] Analysis failed for /tmp/repos/gitee.com/qts_server/qts_account; consecutive failures 1/3: ';

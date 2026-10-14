@@ -685,6 +685,8 @@ describe('size-ceiling and past-EOF remedies (#3529, #3530)', () => {
       const remedy = maxDbSizeReachedRemedy(REACHED_3529, 'in-place');
       expect(remedy).not.toContain('must be a power of 2');
       expect(remedy).toContain('not a power of 2 is rounded up');
+      // The example must show a value actually being rounded, not one already a power of 2.
+      expect(remedy).toContain(`300000000000 becomes ${2 ** 39}`);
     });
 
     it.each([
