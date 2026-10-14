@@ -1,0 +1,19 @@
+{
+  "language": "c",
+  "description": "A Go source that names only a different cgo tag, and mentions the selected tag in comments and strings, does not block a proven C struct rename.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "point",
+    "kind": "Struct",
+    "file": "api.c"
+  },
+  "newName": "vector",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

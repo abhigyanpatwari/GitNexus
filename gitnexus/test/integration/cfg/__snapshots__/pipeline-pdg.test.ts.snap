@@ -6,6 +6,7 @@ exports[`U7 — C-family worker-mode --pdg pipeline > C#: --pdg off is byte-iden
     "CALLS": 6,
     "DEFINES": 3,
     "HAS_METHOD": 16,
+    "HAS_PROPERTY": 2,
     "MEMBER_OF": 9,
     "STEP_IN_PROCESS": 3,
   },
@@ -17,10 +18,11 @@ exports[`U7 — C-family worker-mode --pdg pipeline > C#: --pdg off is byte-iden
     "Method": 15,
     "Namespace": 1,
     "Process": 1,
+    "Property": 2,
   },
-  "edgeDigest": "60d3d5449952563f9364148494c5bce96c306dba921d140dc08176e99d7f2b3d",
-  "relationships": 37,
-  "symbols": 24,
+  "edgeDigest": "54b42d08be57dc994cddc3a452981925bb4f0ebc77a9a0a1f3235e3eeef389cd",
+  "relationships": 39,
+  "symbols": 26,
 }
 `;
 

@@ -1,0 +1,53 @@
+{
+  "language": "java",
+  "description": "Rename a public field across three-hop reads and writes while preserving a shadow parameter and another owner.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "unrelated-owner",
+    "shadowing"
+  ],
+  "target": {
+    "name": "badge",
+    "kind": "Property",
+    "file": "Profile.java",
+    "startLine": 1
+  },
+  "newName": "displayBadge",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Method",
+        "file": "Profile.java",
+        "startLine": 10
+      },
+      "to": {
+        "name": "badge",
+        "kind": "Property",
+        "file": "Profile.java",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "update",
+        "kind": "Method",
+        "file": "Profile.java",
+        "startLine": 11
+      },
+      "to": {
+        "name": "badge",
+        "kind": "Property",
+        "file": "Profile.java",
+        "startLine": 1
+      }
+    }
+  ]
+}

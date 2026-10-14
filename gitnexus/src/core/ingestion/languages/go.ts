@@ -1,3 +1,4 @@
+import { goRenameProvider } from './go/rename.js';
 /**
  * Go Language Provider
  *
@@ -91,6 +92,7 @@ const GO_BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const goProvider = defineLanguage({
+  rename: goRenameProvider,
   id: SupportedLanguages.Go,
   extensions: ['.go'],
   entryPointPatterns: [/Handler$/, /^Serve/, /^New[A-Z]/, /^Make[A-Z]/],

@@ -1287,6 +1287,18 @@ export function emitZigScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    const fieldRead = nodeMap['@reference.read'];
+    if (
+      fieldRead?.parent?.type === 'call_expression' &&
+      fieldRead.parent.childForFieldName('function')?.id === fieldRead.id
+    ) {
+      grouped['@reference.callee-position'] = {
+        name: '@reference.callee-position',
+        range: ZERO_RANGE,
+        text: '',
+      };
+    }
+
     // `_ = @import("x.zig");` and any other keyword-less `<ident> =
     // @import(…)`: a statement (tree-sitter-zig reuses variable_declaration
     // for assignments), not a declaration. It references the file without

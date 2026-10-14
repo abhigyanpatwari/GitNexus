@@ -6,6 +6,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { swiftRenameProvider } from './swift/rename.js';
 import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { swiftClassConfig } from '../class-extractors/configs/swift.js';
@@ -177,6 +178,7 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const swiftProvider = defineLanguage({
+  rename: swiftRenameProvider,
   id: SupportedLanguages.Swift,
   extensions: ['.swift'],
   preprocessSource: preprocessSwiftConditionalDirectives,

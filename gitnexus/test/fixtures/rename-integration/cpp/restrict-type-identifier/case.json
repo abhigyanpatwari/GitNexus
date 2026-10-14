@@ -1,0 +1,30 @@
+{
+  "language": "cpp",
+  "description": "Rename a struct type to restrict, a legal C++ identifier that is a reserved C keyword.",
+  "categories": ["language-keywords", "types", "call-graph"],
+  "target": {
+    "name": "Target",
+    "kind": "Struct",
+    "file": "model.cpp"
+  },
+  "newName": "restrict",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "outer",
+        "kind": "Function",
+        "file": "model.cpp"
+      },
+      "to": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "model.cpp"
+      }
+    }
+  ]
+}

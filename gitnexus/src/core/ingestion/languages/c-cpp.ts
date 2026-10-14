@@ -1,3 +1,5 @@
+import { cppRenameProvider } from './cpp/rename.js';
+import { cRenameProvider } from './c/rename.js';
 /**
  * C and C++ language providers.
  *
@@ -352,6 +354,7 @@ const cppLabelOverride: NonNullable<LanguageProvider['labelOverride']> = (
 };
 
 export const cProvider = defineLanguage({
+  rename: cRenameProvider,
   id: SupportedLanguages.C,
   extensions: ['.c'],
   entryPointPatterns: [
@@ -386,7 +389,12 @@ export const cProvider = defineLanguage({
     /^notify_/,
     /^control_/,
   ],
-  treeSitterQueries: C_QUERIES,
+  // C field definitions must carry graph identities as well as scope captures.
+  treeSitterQueries: `${C_QUERIES}
+    (field_declaration declarator: (field_identifier) @name) @definition.property
+    (field_declaration declarator: (pointer_declarator declarator: (field_identifier) @name)) @definition.property
+    (field_declaration declarator: (array_declarator declarator: (field_identifier) @name)) @definition.property
+  `,
   typeConfig: cCppConfig,
   exportChecker: cCppExportChecker,
   importResolver: createImportResolver(cImportConfig),
@@ -436,6 +444,8 @@ export const cProvider = defineLanguage({
 });
 
 export const cppProvider = defineLanguage({
+  overloadsFreeFunctions: true,
+  rename: cppRenameProvider,
   id: SupportedLanguages.CPlusPlus,
   // CUDA files route through tree-sitter-cpp as a conservative C++-subset parser:
   // definitions still extract, but CUDA launch syntax (`<<< >>>`) is not modeled as calls.

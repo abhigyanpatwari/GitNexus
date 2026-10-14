@@ -1,0 +1,22 @@
+{
+  "language": "swift",
+  "description": "Refuse a stored property whose argument label binds the synthesized memberwise initializer parameter.",
+  "categories": [
+    "argument-label",
+    "synthesized-constructor",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "x",
+    "kind": "Property",
+    "file": "Point.swift",
+    "startLine": 1
+  },
+  "newName": "px",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  }
+}

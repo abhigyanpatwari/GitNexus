@@ -1,0 +1,20 @@
+{
+  "language": "java",
+  "description": "Refuse the single underscore reserved since Java 9 without changing the method or its call.",
+  "categories": [
+    "identifier-rules",
+    "reserved-words"
+  ],
+  "target": {
+    "name": "measure",
+    "kind": "Method",
+    "file": "Metric.java",
+    "startLine": 1
+  },
+  "newName": "_",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

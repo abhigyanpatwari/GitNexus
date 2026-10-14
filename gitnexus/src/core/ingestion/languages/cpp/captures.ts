@@ -426,15 +426,11 @@ export function emitCppScopeCaptures(
     }
 
     if (operatorAnchor !== undefined && grouped['@reference.name'] === undefined) {
-      // The old code did `findNodeAtRange(tree.rootNode, operatorAnchor.range,
-      // operatorAnchor.text)`, searching for a node of type `+` / `<<` at the
-      // operator-token range. That token is an UNNAMED grammar node, and
-      // findNodeAtRange only descends `namedChild`ren, so the search NEVER hit
-      // and ALWAYS fell back to `tree.rootNode`. Use `tree.rootNode` directly to
-      // preserve the exact synthetic-capture range while dropping the root-walk.
+      // Synthetic operator names still refer to the written operator token.
+      // A translation-unit range makes distinct operators share one identity.
       grouped['@reference.name'] = syntheticCapture(
         '@reference.name',
-        tree.rootNode,
+        nodeMap['@reference.operator']!,
         `operator${operatorAnchor.text}`,
       );
     }

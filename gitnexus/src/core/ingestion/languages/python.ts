@@ -48,6 +48,7 @@ import { extractPythonModuleConstants } from '../route-extractors/python-const-r
 import { pythonDecoratorRouteHandlerName } from '../route-extractors/python-decorator-handler.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { collectPythonCaptureSideChannel } from './python/module-accessors.js';
+import { pythonRenameProvider } from './python/rename.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -109,6 +110,7 @@ function normalizePythonStringLiteral(text: string): string | undefined {
 
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
+  rename: pythonRenameProvider,
   extensions: ['.py', '.ipynb'],
   entryPointPatterns: [/^app$/, /^(get|post|put|delete|patch)_/i, /^api_/, /^view_/],
   astFrameworkPatterns: [

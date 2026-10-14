@@ -46,9 +46,17 @@ export function interpretRustImport(captures: CaptureMatch): ParsedImport | null
   // kind === 'named'
   if (name === undefined) return null;
   const originalName = captures['@import.original-name']?.text;
+  if (alias !== undefined)
+    return {
+      kind: 'alias',
+      localName: alias,
+      importedName: originalName ?? name,
+      alias,
+      targetRaw: source,
+    };
   return {
     kind: 'named',
-    localName: alias ?? name,
+    localName: name,
     importedName: originalName ?? name,
     targetRaw: source,
   };

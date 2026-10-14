@@ -1,0 +1,19 @@
+{
+  "language": "dart",
+  "description": "Allow the built-in identifier abstract as a method name through a typed receiver call.",
+  "categories": [
+    "identifier-rules",
+    "contextual-identifiers"
+  ],
+  "target": {
+    "name": "encode",
+    "kind": "Method",
+    "file": "encoder.dart",
+    "startLine": 1
+  },
+  "newName": "abstract",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

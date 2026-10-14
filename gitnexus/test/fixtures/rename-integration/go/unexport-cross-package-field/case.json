@@ -1,0 +1,16 @@
+{
+  "language": "go",
+  "description": "Refuse to unexport a struct field that another package reads through a value it obtained from the declaring package.",
+  "categories": ["cross-file", "visibility", "public-field", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "Name",
+    "kind": "Property",
+    "file": "api/config.go"
+  },
+  "newName": "name",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

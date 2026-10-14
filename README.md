@@ -169,7 +169,7 @@ flowchart TB
 | `trace`          | Shortest directed path between two symbols (call + class-member edges) |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
 | `check`          | Read-only structural checks against the indexed graph                  |
-| `rename`         | Multi-file coordinated rename with graph + text search                 |
+| `rename`         | Semantic rename — previews by default, `dry_run: false` applies        |
 | `cypher`         | Raw Cypher graph queries                                               |
 | `route_map`      | API route map — which components fetch which endpoints, and handlers   |
 | `tool_map`       | MCP/RPC tool definitions — where they're defined and handled           |
@@ -372,7 +372,7 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 <details>
 <summary><strong>MCP read-only mode</strong></summary>
 
-Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. Raw `cypher`, rename and group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
+Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. `rename` stays available as a preview-only tool: its `dry_run` must be omitted or `true`, and any other value is rejected before backend dispatch. Raw `cypher`, group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
 
 The default is unchanged when the variable is unset or `0`. Any other value fails server startup rather than silently weakening the policy.
 
@@ -725,7 +725,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
-**Control flow (CFG, opt-in `--pdg`)** — per-function control-flow graphs (`BasicBlock` nodes + `CFG` edges) feeding the PDG/taint substrate, currently **TypeScript & JavaScript** (#2081 M1); other languages planned. Off by default.
+**Control flow (CFG, opt-in `--pdg`)** — provider-owned control-flow graphs (`BasicBlock` nodes + `CFG` edges) feed control dependence and reaching definitions across the registered source languages. AST providers describe callable regions; COBOL uses source-backed program regions. Unsupported constructs and region limits produce explicit skips. Off by default.
 
 ### Multi-Repo Architecture
 
@@ -874,18 +874,62 @@ changed_symbols: [validateUser, AuthService, ...]
 affected_processes: [LoginFlow, RegistrationFlow, ...]
 ```
 
-### Rename (Multi-File)
+### Rename (Graph and Semantic Layer)
 
+```js
+rename({symbol_name: "validateUser", new_name: "verifyUser", repo: "my-app", dry_run: true})
+// Omitting dry_run also previews. For an ambiguous name, repeat with the symbol_uid from context().
 ```
-rename({symbol_name: "validateUser", new_name: "verifyUser", dry_run: true})
 
+```text
+result_version: 2
 status: success
+planning_status: ready
+application_status: not_requested
+applied: false
 files_affected: 5
 total_edits: 8
-graph_edits: 6     (high confidence)
-text_search_edits: 2  (review carefully)
-changes: [...]
+semantic_edits: 8
+graph_edits: 0
+text_search_edits: 0
+text_search: not_used
+coverage: {name: "gitnexus-semantic", scope: "indexed-repository", languages: [...], limitations: [...], ...}
+changes: [{file_path, edits: [{start, length, old_text, new_text, line, confidence: "semantic"}]}]
 ```
+
+Review the exact UTF-16 spans and coverage, then call `rename` with the same
+selectors and `dry_run: false` to apply. Omitting `dry_run` also previews.
+Counts describe occurrences, including multiple edits on one line. The graph
+selects indexed declarations and files; GitNexus's language providers rebuild
+semantic scopes from the current source and resolve exact name spans.
+
+Rename does not load a compiler or language service. Comments, strings, and
+unrelated same-spelled symbols are preserved. Unsupported syntax, ambiguous
+bindings, stale declarations, and incomplete occurrence coverage block writes.
+Coverage includes indexed files accepted by the selected language provider,
+including its supported embedded-language sources, and excludes unindexed files
+and external consumers. Each registered source-language provider supplies rename
+rules. Constructor, destructor, inheritance, and interface families require
+complete provider evidence. Dynamic or computed references block a rename when
+the provider cannot prove their binding or exclude them from the selected family.
+`rename` operates on the current checkout and rejects `branch`.
+
+Language-specific limits remain explicit in the result. For example, PHP handles
+case-insensitive function/class names separately from case-sensitive constants
+and properties, but refuses class renames that require moving a PSR-4 file.
+Java also refuses public top-level type renames that require a source-file move.
+Rename edits source spans; it does not move files or rewrite dynamic string names.
+
+Preview and apply recompute their plans independently. Source snapshots are
+checked before writes; this is not a cross-call preview token or transactional
+filesystem operation. The final destination check and replacement are separate
+operations, so another process can still change a file between them. Avoid
+concurrent source writes during application. On a write failure, `status: partial` and `failed_files`
+report the failed file and `unattempted_files` lists the later files that were never touched;
+`applied`, counts, and `changes` describe only landed edits.
+Inspect failures before retrying, and run type checking, tests, and
+`detect_changes` after applying. A valid identifier is not a guarantee against
+new-name collisions.
 
 ### Cypher Queries
 

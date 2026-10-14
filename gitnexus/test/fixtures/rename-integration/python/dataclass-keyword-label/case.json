@@ -1,0 +1,22 @@
+{
+  "language": "python",
+  "description": "Refuse a dataclass field whose keyword label binds the synthesized constructor parameter.",
+  "categories": [
+    "keyword-argument",
+    "synthesized-constructor",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "x",
+    "kind": "Property",
+    "file": "model.py",
+    "startLine": 4
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  }
+}

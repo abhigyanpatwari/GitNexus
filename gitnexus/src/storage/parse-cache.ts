@@ -858,10 +858,16 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // and original graph positions. Both stores must re-extract v135 captures.
 // v137: Python module-accessor syntax proofs and exact assigned-call provenance
 // join the existing subtype capture payload. Re-extract v136 in both stores.
-// v138 (#3561): Express middleware registrations no longer emit endpoints,
-// and dispatch guards ignore stored route metadata. Warm v137 shards retain
-// those phantom routes, so both parse stores must re-extract unchanged files.
-const SCHEMA_BUMP = 138;
+// v138: provider-owned source occurrences and new flow visitors/explicit region
+// ownership must not reuse older capture or CFG side channels.
+// v139: real rename fixtures expose missing field/read/write chains, callable
+// scopes and declaration metadata. Re-extract both stores with provider fixes.
+// v140: Ruby accessor captures retain reader visibility and singleton ownership.
+// Older worker and durable captures cannot prove property-reader dispatch.
+// v141 (#3561): combine the rename captures with Express route corrections.
+// The PR independently used v138 to reject middleware and stored route metadata;
+// main's v138-v140 can retain phantom routes. Re-extract both parse stores.
+const SCHEMA_BUMP = 141;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

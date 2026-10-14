@@ -168,6 +168,7 @@ function run(sites: readonly ReferenceSite[]) {
   fnNode(graph, 'fn:main', 'main', CALLER_FILE);
   fnNode(graph, 'fn:helper', 'helper', TARGET_FILE);
   const outcomes: ResolutionOutcome[] = [];
+  const bindings = new Map<ReferenceSite, { status: string; targetDefIds: readonly string[] }>();
   emitFreeCallFallback(
     graph,
     indexes,
@@ -177,13 +178,33 @@ function run(sites: readonly ReferenceSite[]) {
     new Set<string>(),
     createSemanticModel(),
     buildWorkspaceResolutionIndex([callerParsed, targetParsed]),
-    { allowGlobalFallback: true, recordResolutionOutcome: (o) => outcomes.push(o) },
+    {
+      allowGlobalFallback: true,
+      recordResolutionOutcome: (o) => outcomes.push(o),
+      recordSourceBinding: (site, binding) => bindings.set(site, binding),
+    },
   );
   const calls = graph.relationships.filter((r) => r.type === 'CALLS');
-  return { calls, outcomes };
+  return { calls, outcomes, bindings };
 }
 
 describe('free-call dedup: the label is decided from every collapsed site, never by order', () => {
+  it('retains each written binding before edge collapse, excluding the name guess', () => {
+    const guessed = guessedSite(3);
+    const first = preciseSite(4);
+    const second = preciseSite(5);
+    const { calls, bindings } = run([guessed, first, second]);
+    expect(calls).toHaveLength(1);
+    expect(bindings.get(guessed)).toMatchObject({ status: 'unresolved' });
+    expect(bindings.get(first)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [targetDef.nodeId],
+    });
+    expect(bindings.get(second)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [targetDef.nodeId],
+    });
+  });
   it('control — a lone precise site is import-resolved at 0.85', () => {
     const { calls } = run([preciseSite(3)]);
     expect(calls).toHaveLength(1);
