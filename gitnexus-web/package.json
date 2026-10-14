@@ -73,7 +73,7 @@
     "jsdom": "^30.1.1",
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^7.0.2",
-    "vite": "^8.3.3",
+    "vite": "^8.3.4",
     "vitest": "5.0.0",
     "wait-on": "^9.5.1"
   },
