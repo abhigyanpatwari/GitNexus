@@ -192,8 +192,8 @@ describe('generateAIContextFiles', () => {
         expect(content).toContain('detect_changes({scope: "all"})');
         expect(content).toContain('node .gitnexus/run.cjs detect-changes --scope all --repo .');
         expect(content).toContain('target branch "develop"');
-        expect(content).toContain('target branch "develop" via tracking remote');
-        expect(content).toContain('exact PR base/head commits from host metadata');
+        expect(content).toContain('target branch "develop" from its remote');
+        expect(content).toContain('compute its merge base with the reviewed HEAD');
         expect(content).toContain(
           'detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})',
         );
@@ -1485,9 +1485,10 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
   it('uses the configured branch only as a review target, never as base_ref (#243, #3509)', () => {
     const stats = { nodes: 50, edges: 100, processes: 5 };
     const develop = generateGitNexusContent('P', stats, { defaultBranch: 'develop' });
-    expect(develop).toContain('target branch "develop" via tracking remote');
-    expect(develop).toContain('exact PR base/head commits from host metadata');
+    expect(develop).toContain('target branch "develop" from its remote');
+    expect(develop).toContain('compute its merge base with the reviewed HEAD');
     expect(develop).not.toContain('GitHub');
+    expect(develop).not.toContain('PR base/head');
     expect(develop).not.toContain('git fetch origin');
     expect(develop).toContain('base_ref: "<merge-base SHA>"');
     expect(develop).not.toContain('base_ref: "develop"');
@@ -1495,9 +1496,10 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
 
   it('defaults the review target to main without comparing to the main tip (#243, #3509)', () => {
     const content = generateGitNexusContent('P', { nodes: 50, edges: 100, processes: 5 });
-    expect(content).toContain('target branch "main" via tracking remote');
-    expect(content).toContain('exact PR base/head commits from host metadata');
+    expect(content).toContain('target branch "main" from its remote');
+    expect(content).toContain('compute its merge base with the reviewed HEAD');
     expect(content).not.toContain('GitHub');
+    expect(content).not.toContain('PR base/head');
     expect(content).not.toContain('git fetch origin');
     expect(content).toContain('base_ref: "<merge-base SHA>"');
     expect(content).not.toContain('base_ref: "main"');
@@ -1535,7 +1537,7 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     // and closes exactly one).
     expect((line.match(/`/g) || []).length % 2).toBe(0);
     expect(line).not.toContain('main`evil');
-    expect(line).toContain('target branch "mainevil" via tracking remote');
+    expect(line).toContain('target branch "mainevil" from its remote');
     expect(markdownSafeBranch('a`b`c')).toBe('abc');
   });
 
@@ -1566,8 +1568,8 @@ For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\` 
       for (const f of ['AGENTS.md', 'CLAUDE.md']) {
         const after = await fs.readFile(path.join(dir, f), 'utf-8');
         expect(after).toContain('target branch "develop"');
-        expect(after).toContain('exact PR base/head commits from host metadata');
-        expect(after).toContain('target branch "develop" via tracking remote');
+        expect(after).toContain('compute its merge base with the reviewed HEAD');
+        expect(after).toContain('target branch "develop" from its remote');
         expect(after).toContain('base_ref: "<merge-base SHA>"');
         expect(after).not.toContain('base_ref: "develop"');
         expect(after).not.toContain('base_ref: "main"');
@@ -1681,12 +1683,36 @@ For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\`.
     }
   });
 
+  it.each([
+    'PR GitHub `baseRefOid`/`headRefOid`',
+    'exact PR base/head commits from host metadata',
+  ])('migrates provider-specific guidance (%s) without losing custom text', async (source) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-host-neutral-'));
+    try {
+      const seed =
+        '<!-- gitnexus:start -->\n' +
+        `Regression base: ${source}; target branch "main" via tracking remote. Fetch both; pass merge-base SHA to ` +
+        '`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})`. Keep this instruction.\n' +
+        '<!-- gitnexus:end -->\n';
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
+      expect((await refreshBaseRefLine(dir, 'main')).files).toEqual(['AGENTS.md']);
+      const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
+      expect(after).toContain('fetch target branch "main" from its remote');
+      expect(after).toContain('compute its merge base with the reviewed HEAD');
+      expect(after).not.toContain(source);
+      expect(after).toContain('Keep this instruction.');
+      expect((await refreshBaseRefLine(dir, 'main')).files).toEqual([]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves same-line custom text when refreshing current guidance (#3509)', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-current-suffix-'));
     try {
       const current = generateGitNexusContent('P', { nodes: 1, edges: 1, processes: 0 });
       const seed = current.replace(
-        /(Regression base:[^\n]*\.)/,
+        /(For regression review,[^\n]*\.)/,
         '$1 Always inspect src/security.ts before release.',
       );
       await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
@@ -1694,7 +1720,7 @@ For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\`.
       expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['AGENTS.md']);
       const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
       expect(after).toContain('target branch "develop"');
-      expect(after).toContain('exact PR base/head commits from host metadata');
+      expect(after).toContain('compute its merge base with the reviewed HEAD');
       expect(after).toContain('Always inspect src/security.ts before release.');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
