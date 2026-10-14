@@ -15,6 +15,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { mergeWithRRF, hybridSearch } from '../../src/core/search/hybrid-search.js';
 import type { BM25SearchResult } from '../../src/core/search/bm25-index.js';
 import type { SemanticSearchResult } from '../../src/core/embeddings/types.js';
+import { SymbolIdentityError } from '../../src/core/lbug/query-result-integrity.js';
 
 vi.mock('../../src/core/search/bm25-index.js', async (importOriginal) => {
   const actual = (await importOriginal()) as any;
@@ -158,6 +159,73 @@ describe('mergeWithRRF', () => {
 
 // Regression: #1489 — hybridSearch must not crash when FTS is unavailable
 describe('hybridSearch — FTS failure fallback (#1489)', () => {
+  it.each(['keyword', 'semantic'] as const)(
+    'waits for the sibling lane before rejecting %s identity corruption',
+    async (failingLane) => {
+      const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+      const error = new SymbolIdentityError();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const semantic = vi.fn(async () => {
+        await gate;
+        return [];
+      });
+      if (failingLane === 'keyword') {
+        vi.mocked(searchFTSFromLbug).mockRejectedValueOnce(error);
+      } else {
+        vi.mocked(searchFTSFromLbug).mockImplementationOnce(async () => {
+          await gate;
+          return { results: [], ftsAvailable: true };
+        });
+        semantic.mockRejectedValueOnce(error);
+      }
+      let settled = false;
+      const outcome = hybridSearch('test query', 10, vi.fn().mockResolvedValue([]), semantic).then(
+        () => {
+          settled = true;
+          return null;
+        },
+        (failure) => {
+          settled = true;
+          return failure;
+        },
+      );
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+      } finally {
+        release();
+      }
+      expect(await outcome).toBe(error);
+    },
+  );
+  it.each(['keyword', 'semantic'] as const)(
+    'rejects corrupt %s identities even when the other search lane succeeds',
+    async (lane) => {
+      const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+      const error = new SymbolIdentityError();
+      const mockExecuteQuery = vi.fn().mockResolvedValue([]);
+      const mockSemanticSearch = vi.fn();
+
+      if (lane === 'keyword') {
+        vi.mocked(searchFTSFromLbug).mockRejectedValueOnce(error);
+        mockSemanticSearch.mockResolvedValue([makeSemantic('src/semantic-hit.ts', 0.15)]);
+      } else {
+        vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({
+          results: [{ filePath: 'src/fts-hit.ts', score: 5, rank: 1 }],
+          ftsAvailable: true,
+        });
+        mockSemanticSearch.mockRejectedValue(error);
+      }
+
+      await expect(
+        hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch),
+      ).rejects.toBe(error);
+    },
+  );
+
   it('falls back to semantic-only when searchFTSFromLbug throws', async () => {
     const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
     vi.mocked(searchFTSFromLbug).mockRejectedValueOnce(new Error('bm25Results is not iterable'));
