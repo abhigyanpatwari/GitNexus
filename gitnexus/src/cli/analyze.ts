@@ -1663,7 +1663,7 @@ const analyzeCommandImpl = async (
       }
       if (baseRefRefreshed.length > 0) {
         console.log(
-          `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
+          `  Updated regression-review target to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
         );
       }
       // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this
