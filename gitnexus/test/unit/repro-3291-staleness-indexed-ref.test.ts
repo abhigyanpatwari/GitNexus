@@ -208,6 +208,30 @@ describe('#3291 — tool staleness names the indexed ref', () => {
     expect(serialized).toContain(branchHead);
   });
 
+  it('measures each checkout HEAD separately when both handles share one graph and ref', async () => {
+    const { mainClone, branchClone } = makeClones();
+    // Both checkouts call their branch main, but one is one commit behind.
+    git(branchClone, 'checkout', '-B', 'main', 'origin/main~1');
+    const indexedCommit = git(branchClone, 'rev-parse', 'HEAD');
+    expect(git(mainClone, 'rev-list', '--count', `${indexedCommit}..HEAD`)).toBe('1');
+    const sharedHandle = handleFor(branchClone, indexedCommit, 'main');
+    vi.spyOn(backend, 'selectToolRepository')
+      .mockResolvedValueOnce(sharedHandle as never)
+      .mockResolvedValueOnce({ ...sharedHandle, repoPath: mainClone } as never);
+    vi.spyOn(
+      backend as unknown as { impact: () => Promise<typeof IMPACT_RESULT> },
+      'impact',
+    ).mockResolvedValue(IMPACT_RESULT as never);
+    const current = await backend.callTool('impact', { target: 'doWork', repo: 'current' });
+    const behind = await backend.callTool('impact', { target: 'doWork', repo: 'advanced' });
+    expect(current.staleness).toMatchObject({ status: 'current', lastCommit: indexedCommit });
+    expect(behind.staleness).toMatchObject({
+      status: 'behind',
+      commitsBehind: 1,
+      lastCommit: indexedCommit,
+    });
+  });
+
   // Negative control. The same wiring — real git, real `checkStalenessAsync`,
   // real `attachToolStaleness` — must still report a counted gap when the index
   // is behind its own checkout. Without this, the ref-carrying payload above
