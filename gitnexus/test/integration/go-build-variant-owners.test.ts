@@ -60,6 +60,15 @@ it('keeps build-variant owners consistent across real workers, semantic registry
   // Mutually exclusive sole candidates must not produce impossible edges.
   add('incompatible/value_linux.go', 'type Value struct {}');
   add('incompatible/method_windows.go', 'func (v Value) Run() {}');
+  // A bounded header scan can leave a valid method's constraints unknown.
+  // That must not revive an owner whose platform constraints are impossible.
+  const unknownMethod = '// license '.repeat(2000) + '\npackage example\nfunc (v Value) Run() {}\n';
+  add('impossible/value_linux.go', 'type Value struct {}', 'windows');
+  files.set('impossible/method.go', unknownMethod);
+  add('unknown/value_linux.go', 'type Value struct {}', 'windows');
+  add('unknown/value.go', 'type Value struct {}');
+  files.set('unknown/method.go', unknownMethod);
+  own('unknown/value.go', 'unknown/method.go');
   // Invalid modern constraints remain possible: they cannot eliminate a
   // competitor and promote a provisional same-file owner to a unique choice.
   add('malformed/local.go', 'type Value struct {}\nfunc (v Value) Run() {}', '!fast');
