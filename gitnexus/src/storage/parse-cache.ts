@@ -883,7 +883,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // hides the class or import. Definitions and scope captures are parse-time
 // facts replayed verbatim from the warm cache, so stale ones (the pre-fix scope
 // tree, the unqualified call-site shape, the mis-selected arguments) would
-// persist on unchanged files; both stores must re-extract.
+// persist on unchanged files; both stores must re-extract. R also gains a CFG
+// visitor, so cached R parse results carry no CFG side channel and must
+// re-extract before a `--pdg` run can reuse them.
 const SCHEMA_BUMP = 142;
 const GITNEXUS_PKG_VERSION = (() => {
   try {

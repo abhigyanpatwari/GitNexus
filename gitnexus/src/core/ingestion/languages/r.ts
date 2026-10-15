@@ -19,6 +19,7 @@ import { interpretRImport, interpretRTypeBinding } from './r/interpret.js';
 import { rPostParse } from './r/post-parse.js';
 import { rDefinitionProperties, rResolveMemberOwnerNode } from './r/owner-hooks.js';
 import { isRNonNamingArgumentCapture } from './r/naming-argument.js';
+import { createRCfgVisitor } from '../cfg/visitors/r.js';
 
 const R_BUILT_INS: ReadonlySet<string> = new Set([
   // Base R
@@ -192,4 +193,6 @@ export const rProvider = defineLanguage({
   // R_QUERIES captures every string argument of setClass/setGeneric/setMethod;
   // only the one that names the definition is kept.
   shouldSkipDefinitionCapture: isRNonNamingArgumentCapture,
+  // Control flow only (no def/use harvest): CFG + CDG, REACHING_DEF reports no-facts.
+  cfgVisitor: createRCfgVisitor(),
 });
