@@ -1,3 +1,4 @@
+import type { FetchWrapperCall } from './route-extractors/fetch-wrapper.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SymbolTableWriter } from './model/index.js';
@@ -37,6 +38,7 @@ export interface WorkerExtractedData {
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   fetchWrapperDefs: FetchWrapperDef[];
+  fetchWrapperCalls: FetchWrapperCall[];
   decoratorRoutes: ExtractedDecoratorRoute[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
@@ -118,6 +120,7 @@ export const mergeChunkResults = (
   const allRoutes: ExtractedRoute[] = [];
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
+  const allFetchWrapperCalls: FetchWrapperCall[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allRouterIncludes: ExtractedRouterInclude[] = [];
   const allRouterImports: ExtractedRouterImport[] = [];
@@ -168,6 +171,7 @@ export const mergeChunkResults = (
     for (const item of result.routes) allRoutes.push(item);
     for (const item of result.fetchCalls) allFetchCalls.push(item);
     for (const item of result.fetchWrapperDefs ?? []) allFetchWrapperDefs.push(item);
+    for (const item of result.fetchWrapperCalls ?? []) allFetchWrapperCalls.push(item);
     for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
     for (const item of result.routerIncludes ?? []) allRouterIncludes.push(item);
     for (const item of result.routerImports ?? []) allRouterImports.push(item);
@@ -191,6 +195,7 @@ export const mergeChunkResults = (
     routes: allRoutes,
     fetchCalls: allFetchCalls,
     fetchWrapperDefs: allFetchWrapperDefs,
+    fetchWrapperCalls: allFetchWrapperCalls,
     decoratorRoutes: allDecoratorRoutes,
     routerIncludes: allRouterIncludes,
     routerImports: allRouterImports,
