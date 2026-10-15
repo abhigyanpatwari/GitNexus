@@ -15,6 +15,7 @@
  * @module
  */
 
+import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
 import {
   BindingAccumulator,
   enrichExportedTypeMap,
@@ -456,6 +457,7 @@ export async function runChunkedParseAndResolve(
   exportedTypeMap: ExportedTypeMap;
   allFetchCalls: ExtractedFetchCall[];
   allFetchWrapperDefs: FetchWrapperDef[];
+  allFetchWrapperCalls: FetchWrapperCall[];
   allExtractedRoutes: ExtractedRoute[];
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   selectedRoutes: ReadonlySet<ExtractedRoute | ExtractedDecoratorRoute>;
@@ -773,6 +775,7 @@ export async function runChunkedParseAndResolve(
   const bindingAccumulator = new BindingAccumulator();
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
+  const allFetchWrapperCalls: FetchWrapperCall[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allRouterIncludes: ExtractedRouterInclude[] = [];
@@ -994,6 +997,7 @@ export async function runChunkedParseAndResolve(
         if (chunkWorkerData.fetchCalls?.length) {
           for (const item of chunkWorkerData.fetchCalls) allFetchCalls.push(item);
         }
+        for (const item of chunkWorkerData.fetchWrapperCalls ?? []) allFetchWrapperCalls.push(item);
         if (chunkWorkerData.fetchWrapperDefs?.length) {
           for (const item of chunkWorkerData.fetchWrapperDefs) allFetchWrapperDefs.push(item);
         }
@@ -1964,6 +1968,7 @@ export async function runChunkedParseAndResolve(
     exportedTypeMap,
     allFetchCalls,
     allFetchWrapperDefs,
+    allFetchWrapperCalls,
     allExtractedRoutes,
     allDecoratorRoutes,
     selectedRoutes,

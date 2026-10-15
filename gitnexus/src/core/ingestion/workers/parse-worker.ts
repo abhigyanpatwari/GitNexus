@@ -1,3 +1,4 @@
+import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
   boundCallableStartPosition,
@@ -505,6 +506,8 @@ export interface ParseWorkerResult {
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
   fetchWrapperDefs: FetchWrapperDef[];
+  /** URL-bearing candidates, kept separate from confirmed outward-call sinks. */
+  fetchWrapperCalls?: FetchWrapperCall[];
   decoratorRoutes: ExtractedDecoratorRoute[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
@@ -3368,6 +3371,11 @@ const processFileGroup = (
       ) {
         (result.moduleConstants ??= []).push({ filePath: file.path, constants });
       }
+    }
+
+    if (provider.extractFetchWrapperCalls) {
+      const candidates = provider.extractFetchWrapperCalls(tree, file.path, lineOffset);
+      for (const candidate of candidates) (result.fetchWrapperCalls ??= []).push(candidate);
     }
 
     // Language-specific decorator route extraction via provider hook.
