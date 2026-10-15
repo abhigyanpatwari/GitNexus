@@ -21,6 +21,10 @@
  *  - break / next / return(…) -> `break` / `continue` / `return`
  *  - straight-line            -> `seq`
  *
+ * A fall-through arm (no `else`, or an empty `{}` arm) produces no block and is the
+ * header's `seq` edge to the join; control dependence labels it as the complement of
+ * the sibling arm's explicit `cond-true` / `cond-false`, so no branch sense is lost.
+ *
  * Every loop (including `repeat` and `while (TRUE)`) gets the structural
  * `header -> loopExit` `cond-false` edge, so EXIT stays reverse-reachable and
  * the post-dominator / control-dependence pass is never skipped for a function

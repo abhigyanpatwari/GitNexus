@@ -76,6 +76,63 @@ describe('R CfgVisitor — branches', () => {
     ]);
   });
 
+  // An empty `{}` arm produces no block, so that arm is the fall-through edge from the
+  // header (`seq`), exactly like a missing `else`. The sibling arm keeps its explicit
+  // cond-true / cond-false kind and control dependence reads the fall-through arm as
+  // its complement, so no branch sense is lost (the same convention as every visitor).
+  it('empty then with a real else: cond-false arm plus a seq fall-through, CDG label F', () => {
+    const cfg = r.cfgOf(`f <- function(c) {\n  if (c) {} else work()\n  after()\n}\n`);
+    expect(shape(cfg)).toEqual([
+      'ENTRY -seq-> c',
+      'after() -seq-> EXIT',
+      'c -cond-false-> work()',
+      'c -seq-> after()',
+      'work() -seq-> after()',
+    ]);
+    expect(computeControlDependence(cfg).edges).toEqual([
+      { controllerBlock: block(cfg, 'c'), dependentBlock: block(cfg, 'work()'), label: 'F' },
+    ]);
+  });
+
+  it('real then with an empty else: cond-true arm plus a seq fall-through, CDG label T', () => {
+    const cfg = r.cfgOf(`f <- function(c) {\n  if (c) work() else {}\n  after()\n}\n`);
+    expect(shape(cfg)).toEqual([
+      'ENTRY -seq-> c',
+      'after() -seq-> EXIT',
+      'c -cond-true-> work()',
+      'c -seq-> after()',
+      'work() -seq-> after()',
+    ]);
+    expect(computeControlDependence(cfg).edges).toEqual([
+      { controllerBlock: block(cfg, 'c'), dependentBlock: block(cfg, 'work()'), label: 'T' },
+    ]);
+  });
+
+  it('both arms empty: a single seq edge and no control dependence (nothing differs)', () => {
+    for (const body of ['if (c) {} else {}', 'if (c) {}']) {
+      const cfg = r.cfgOf(`f <- function(c) {\n  ${body}\n  after()\n}\n`);
+      expect(shape(cfg)).toEqual(['ENTRY -seq-> c', 'after() -seq-> EXIT', 'c -seq-> after()']);
+      expect(computeControlDependence(cfg).edges).toEqual([]);
+    }
+  });
+
+  it('empty then followed by an else-if: the chain keeps its own explicit arms', () => {
+    const cfg = r.cfgOf(`f <- function(p, q) {\n  if (p) {} else if (q) a()\n  after()\n}\n`);
+    expect(shape(cfg)).toEqual([
+      'ENTRY -seq-> p',
+      'a() -seq-> after()',
+      'after() -seq-> EXIT',
+      'p -cond-false-> q',
+      'p -seq-> after()',
+      'q -cond-true-> a()',
+      'q -seq-> after()',
+    ]);
+    expect(computeControlDependence(cfg).edges).toEqual([
+      { controllerBlock: block(cfg, 'p'), dependentBlock: block(cfg, 'q'), label: 'F' },
+      { controllerBlock: block(cfg, 'q'), dependentBlock: block(cfg, 'a()'), label: 'T' },
+    ]);
+  });
+
   it('else-if chain nests through the alternative', () => {
     const cfg = r.cfgOf(`f <- function(p, q) {\n  if (p) a() else if (q) b() else c()\n}\n`);
     expect(shape(cfg)).toEqual([
