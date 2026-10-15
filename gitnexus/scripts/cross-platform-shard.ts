@@ -62,6 +62,7 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/rename-provider-objective-c.test.ts': 285,
   'test/integration/rename-provider-php.test.ts': 100,
   'test/integration/rename-provider-python.test.ts': 375,
+  'test/integration/rename-provider-r.test.ts': 100,
   'test/integration/rename-provider-ruby.test.ts': 100,
   'test/integration/rename-provider-rust.test.ts': 75,
   'test/integration/rename-provider-swift.test.ts': 300,

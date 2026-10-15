@@ -111,6 +111,20 @@ Not modelled:
 - `stop()`, `on.exit()`, `tryCatch` handlers and other non-local exits are ordinary calls: no throw edges and no finaliser routing. A `break` / `next` with no enclosing loop falls back to EXIT.
 - Function join: a CFG is anchored at the `function_definition` token, while the `Function` node starts at the whole assignment. They share a start line for `f <- function`, `f = function` and `f <- \(x)`, but not for `f <-` followed by `function` on the next line; there the CFG is still emitted and its blocks lie inside the `Function` node's span, but the exact start-line join used by taint summaries does not resolve (inert for R today, since reaching definitions have no facts). Anonymous functions have a CFG but no `Function` node.
 
+## Rename
+
+`languages/r/rename.ts` gives the `rename` tool a deliberately narrow, fail-closed R provider (fixtures under `test/fixtures/rename-integration/r/`). R binds names dynamically, so only what the scope graph proves is renamed.
+
+- **Succeeds:** a plain function (`name <- function(...)`) and the calls the graph resolves to it, in one file or across files. A same-named parameter is claimed as a binding and left alone.
+- **Refused (`unsupported_occurrence`, planning status `unsupported`):**
+  - any target that is not a plain `Function` (S4 classes, R6 classes, members);
+  - a function whose old or new name is spelled as a string literal anywhere in the indexed R sources (`UseMethod("area")`, `do.call("f", ...)`, `match.fun`, `get`, `setGeneric`, ...), because string lookup is not resolved;
+  - a new name `generic.class` whose prefix is an existing function, which would register an S3 method;
+  - a package function under `R/` that `NAMESPACE` does not mark private (`isExported` is not false), because `NAMESPACE` is not an indexed source and its `export()` or `S3method()` entry would go stale.
+- **Refused by the shared engine (fail-closed, not provider code):** S3 methods and any dotted function name (`area.circle` reads as an owner-qualified member, so `stale_graph`); S4 class names (`unsupported_occurrence`, no exact source-name span); R6 methods (`stale_graph`).
+- **Invalid names (`invalid_name`):** anything that is not a nonreserved R identifier.
+- **Not proven:** unqualified calls to a function defined in another file (including the package `R/` layout) fail with `ambiguous_reference`, because R's global-name fallback is not a provable binding. Renaming across files works only where the call is qualified or otherwise resolved.
+
 ## Type annotations
 
 R has no inline type annotations, so the "Type Annotations" column of the language support table is not ticked for R. The roxygen2 `@param` extraction above is a comment-based fallback, in the same class as the JSDoc, PHPDoc and YARD fallbacks listed in type-resolution-system.md (Ruby's YARD support is likewise not ticked).

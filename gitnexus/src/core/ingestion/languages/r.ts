@@ -20,6 +20,7 @@ import { rPostParse } from './r/post-parse.js';
 import { rDefinitionProperties, rResolveMemberOwnerNode } from './r/owner-hooks.js';
 import { isRNonNamingArgumentCapture } from './r/naming-argument.js';
 import { createRCfgVisitor } from '../cfg/visitors/r.js';
+import { rRenameProvider } from './r/rename.js';
 
 const R_BUILT_INS: ReadonlySet<string> = new Set([
   // Base R
@@ -195,4 +196,5 @@ export const rProvider = defineLanguage({
   shouldSkipDefinitionCapture: isRNonNamingArgumentCapture,
   // Control flow only (no def/use harvest): CFG + CDG, REACHING_DEF reports no-facts.
   cfgVisitor: createRCfgVisitor(),
+  rename: rRenameProvider,
 });

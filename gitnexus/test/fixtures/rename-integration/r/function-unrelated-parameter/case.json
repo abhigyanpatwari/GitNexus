@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a plain function called in its own file while a same-named parameter in a second file is left alone.",
+  "categories": ["call-graph", "cross-file", "parameter-shadowing"],
+  "target": { "name": "compute", "kind": "Function", "file": "lib.R", "startLine": 0 },
+  "newName": "calculate",
+  "expect": { "status": "success", "edits": 2 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "run", "kind": "Function", "file": "lib.R", "startLine": 4 },
+      "to": { "name": "compute", "kind": "Function", "file": "lib.R", "startLine": 0 }
+    }
+  ]
+}
