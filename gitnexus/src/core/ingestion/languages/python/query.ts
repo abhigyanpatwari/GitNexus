@@ -103,6 +103,30 @@ const PYTHON_SCOPE_QUERY = `
   left: (identifier) @type-binding.name
   right: (identifier) @type-binding.type) @type-binding.alias
 
+;; A nullable alternative preserves the non-None arm's inferred type. Keep
+;; these patterns limited to a literal None arm: two value-producing arms do
+;; not establish one receiver type.
+(assignment
+  left: (identifier) @type-binding.name @call-result-assignment.lhs
+  right: (conditional_expression
+    (call function: (identifier) @type-binding.type) @call-result-assignment.call
+    (_)
+    (none))) @type-binding.constructor
+
+(assignment
+  left: (identifier) @type-binding.name @call-result-assignment.lhs
+  right: (conditional_expression
+    (none)
+    (_)
+    (call function: (identifier) @type-binding.type) @call-result-assignment.call)) @type-binding.constructor
+
+(assignment
+  left: (identifier) @type-binding.name @call-result-assignment.lhs
+  right: (boolean_operator
+    left: (call function: (identifier) @type-binding.type) @call-result-assignment.call
+    operator: "or"
+    right: (none))) @type-binding.constructor
+
 ;; For-loop iterable of an already-typed variable:
 ;;   def f(users: list[User]):
 ;;       for u in users:     # u: users (chained via post-pass)

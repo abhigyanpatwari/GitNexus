@@ -866,7 +866,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Older worker and durable captures cannot prove property-reader dispatch.
 // v141: detached method owners retain names without fabricated graph ids.
 // Re-extract both worker and durable captures before workspace ownership runs.
-const SCHEMA_BUMP = 141;
+// v142: Python nullable conditional/or assignments emit call-result captures.
+// Re-extract both stores so warm indexes can resolve those receiver types.
+const SCHEMA_BUMP = 142;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
