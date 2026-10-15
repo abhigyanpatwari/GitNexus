@@ -66,8 +66,9 @@ const collectRoxygenBlock = (node: SyntaxNode): string => {
 /**
  * Split a roxygen block into its `@param` tags. A tag's description is the
  * rest of its line plus every following line up to the next `@tag`, joined by
- * single spaces. A tag whose name is not one plain identifier (`x,y`, `...`,
- * `na.rm`) is skipped, and its continuation lines belong to no tag.
+ * single spaces. A tag whose name is not one identifier (`x,y`, `...`) is skipped,
+ * and its continuation lines belong to no tag. Dots are part of an R name
+ * (`na.rm`, `.data`).
  */
 const parseRoxygenParams = (block: string): RoxygenParam[] => {
   const params: RoxygenParam[] = [];
@@ -85,7 +86,7 @@ const parseRoxygenParams = (block: string): RoxygenParam[] => {
     if (tag) {
       flush();
       if (tag[1] !== 'param') continue;
-      const head = /^(\w+)(?:[ \t]+(.*))?$/.exec(tag[2] ?? '');
+      const head = /^([\w.]*\w[\w.]*)(?:[ \t]+(.*))?$/.exec(tag[2] ?? '');
       if (!head) continue;
       name = head[1];
       if (head[2]) parts.push(head[2]);

@@ -509,13 +509,56 @@ save <- function(repo, backup) {
       });
     });
 
+    describe('dotted formal names', () => {
+      it.each([
+        ['na.rm', 'na.rm'],
+        ['a leading dot', '.data'],
+        ['dots and underscores', 'max_n.rows'],
+      ])('binds the documented type of %s', (_label, formal) => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+#' @param ${formal} Data
+#' @param other Data
+run <- function(${formal}, other) {
+  ${formal}
+}
+`);
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
+        expect(flatGet(typeEnv, formal)).toBe('Data');
+        expect(flatGet(typeEnv, 'other')).toBe('Data');
+      });
+
+      it('keeps the braced form and the continuation lines of a dotted name', () => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+#' @param na.rm {Data}
+#'   second line of prose
+run <- function(na.rm) na.rm
+`);
+        expect(flatGet(buildTypeEnv(tree, SupportedLanguages.R), 'na.rm')).toBe('Data');
+      });
+
+      it('binds nothing for a dotted name the function does not have', () => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+#' @param na.rm Data
+run <- function(x) x
+`);
+        const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
+        expect(flatGet(typeEnv, 'na.rm')).toBeUndefined();
+        expect(flatGet(typeEnv, 'x')).toBeUndefined();
+      });
+    });
+
     describe('forms that are not bound (guards)', () => {
       it.each([
         ['\\code{Data} markup', "#' @param df \\code{Data}", ['df']],
         ['\\linkS4class{Data} markup', "#' @param df \\linkS4class{Data}", ['df']],
         ['a comma-separated name list', "#' @param x,y Data", ['x', 'y']],
         ['the dots parameter', "#' @param ... Data", ['...']],
-        ['a dotted parameter name', "#' @param na.rm Data", ['na.rm']],
       ])('does not bind %s', (_label, tag, names) => {
         const tree = parse(`
 Data <- R6::R6Class("Data", public = list(fit = function() 1))
