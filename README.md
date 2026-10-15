@@ -236,12 +236,12 @@ When a repo contains an `.agents/` directory, the standard and generated skills 
 | **Antigravity** (Google) | Yes | Yes    | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))[¹](#fn-antigravity-hooks) | **Full**     |
 | **Codex**                | Yes | Yes    | Yes (PreToolUse + PostToolUse, [Codex hooks](https://developers.openai.com/codex/hooks))                          | **Full**     |
 | **Factory** (Droid)      | Yes | Yes    | Yes (PostToolUse, [plugin](gitnexus-factory-plugin/))                                                             | **Full**     |
-| **OpenCode**             | Yes | Yes    | —                                                                                                                 | MCP + Skills |
+| **OpenCode**             | Yes | Yes    | Yes ([plugin](gitnexus/hooks/opencode/gitnexus-plugin.js), `tool.execute.after`)                                  | **Full**     |
 | **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                                                 | MCP + Skills |
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                                                 | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                                                 | MCP          |
 
-> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query and do not carry the stale-index hint.
+> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, **Factory**, and **OpenCode** augment from a post-tool hook only, so they enrich the result rather than the query. **OpenCode** ships as a global plugin (`~/.config/opencode/plugins/gitnexus.js`, auto-loaded, no config edit) and also carries the stale-index hint (checked via `gitnexus status --json` after git mutations); Cursor/Antigravity/Factory hooks do not.
 
 <a id="fn-antigravity-hooks"></a>
 

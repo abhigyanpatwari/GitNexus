@@ -418,6 +418,32 @@ describe('uninstallCommand', () => {
     expect(raw).toContain('"gitnexus"');
   });
 
+  // ── OpenCode hooks plugin: a single auto-loaded file ──
+  it('removes the OpenCode hooks plugin file, preserving sibling plugins', async () => {
+    const pluginFile = path.join(tempHome, '.config', 'opencode', 'plugins', 'gitnexus.js');
+    const sibling = path.join(tempHome, '.config', 'opencode', 'plugins', 'mine.js');
+    await fs.mkdir(path.dirname(pluginFile), { recursive: true });
+    await fs.writeFile(pluginFile, '// gitnexus', 'utf-8');
+    await fs.writeFile(sibling, '// mine', 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    await expect(fs.access(pluginFile)).rejects.toThrow();
+    expect(await fs.readFile(sibling, 'utf-8')).toBe('// mine');
+  });
+
+  it('dry-run keeps the OpenCode hooks plugin file', async () => {
+    const pluginFile = path.join(tempHome, '.config', 'opencode', 'plugins', 'gitnexus.js');
+    await fs.mkdir(path.dirname(pluginFile), { recursive: true });
+    await fs.writeFile(pluginFile, '// gitnexus', 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand();
+
+    expect(await fs.readFile(pluginFile, 'utf-8')).toBe('// gitnexus');
+  });
+
   // ── Antigravity MCP + hooks (AfterTool / gitnexus-antigravity-hook) ──
   it('removes Antigravity MCP and AfterTool hooks plus the adapter script dir', async () => {
     const mcpPath = path.join(tempHome, '.gemini', 'antigravity', 'mcp_config.json');

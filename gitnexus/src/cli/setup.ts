@@ -29,6 +29,7 @@ import {
   mcpTarget,
   skillTarget,
   hookTarget,
+  pluginFileTarget,
   detectIndentation,
   isEnoent,
   type EditorId,
@@ -90,6 +91,11 @@ export function formatHookCommand(
 // silently shipping a hook with an unresolved relative cliPath.
 const CLI_PATH_SOURCE_LITERAL =
   "let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');";
+
+// Same install-time patch contract as CLI_PATH_SOURCE_LITERAL, for the ESM
+// OpenCode plugin (which has no __dirname and resolves from import.meta).
+const OPENCODE_CLI_PATH_SOURCE_LITERAL =
+  "let cliPath = path.resolve(HERE_DIR, '..', '..', 'dist', 'cli', 'index.js');";
 
 interface SetupResult {
   configured: string[];
@@ -1322,6 +1328,48 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
 }
 
 /**
+ * Install the global OpenCode hooks plugin to ~/.config/opencode/plugins/gitnexus.js.
+ *
+ * Unlike the Claude/Codex/Antigravity adapters (registered as command hooks in
+ * a settings file), OpenCode auto-loads plugin files from its plugins
+ * directory — dropping the file in IS the registration, no config edit
+ * needed (https://opencode.ai/docs/plugins/). The plugin implements
+ * `tool.execute.after`: graph-context augmentation after grep/glob/bash
+ * searches plus a stale-index hint after git mutations.
+ */
+async function installOpenCodePlugin(result: SetupResult): Promise<void> {
+  const opencodeDir = path.join(os.homedir(), '.config', 'opencode');
+  if (!(await dirExists(opencodeDir))) return;
+
+  const dest = pluginFileTarget('opencode').file;
+  const src = path.join(__dirname, '..', '..', 'hooks', 'opencode', 'gitnexus-plugin.js');
+  try {
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    let content = await fs.readFile(src, 'utf-8');
+    const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
+    const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
+    const jsonCli = JSON.stringify(normalizedCli);
+    if (!content.includes(OPENCODE_CLI_PATH_SOURCE_LITERAL)) {
+      result.errors.push(
+        'OpenCode hooks: gitnexus-plugin.js no longer contains the cliPath literal to patch — the installed plugin may fail to resolve the CLI. Update OPENCODE_CLI_PATH_SOURCE_LITERAL in setup.ts.',
+      );
+    }
+    content = content.replace(OPENCODE_CLI_PATH_SOURCE_LITERAL, `let cliPath = ${jsonCli};`);
+    // Sanity: the installed copy must export the plugin initializer OpenCode calls.
+    if (!content.includes('GitNexusPlugin')) {
+      result.errors.push(
+        'OpenCode hooks: gitnexus-plugin.js no longer exports GitNexusPlugin — skipping plugin install',
+      );
+      return;
+    }
+    await fs.writeFile(dest, content, 'utf-8');
+    result.configured.push('OpenCode hooks (plugin → ~/.config/opencode/plugins/gitnexus.js)');
+  } catch (err: any) {
+    result.errors.push(`OpenCode hooks: ${err.message}`);
+  }
+}
+
+/**
  * Install global Codex skills to ~/.agents/skills/gitnexus/
  */
 async function installCodexSkills(result: SetupResult): Promise<void> {
@@ -1381,7 +1429,10 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
     await installAntigravityHooks(result);
   }
   if (selected.has('cursor')) await installCursorSkills(result);
-  if (selected.has('opencode')) await installOpenCodeSkills(result);
+  if (selected.has('opencode')) {
+    await installOpenCodeSkills(result);
+    await installOpenCodePlugin(result);
+  }
   if (selected.has('codebuddy')) await installCodeBuddySkills(result);
   if (selected.has('qoder')) await installQoderSkills(result);
   if (selected.has('codex')) {
