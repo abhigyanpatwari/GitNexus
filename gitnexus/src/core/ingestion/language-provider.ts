@@ -241,6 +241,15 @@ interface LanguageProviderConfig {
   /** File extensions that map to this language (e.g., ['.ts', '.tsx']) */
   readonly extensions: readonly string[];
 
+  /**
+   * Files with the same provider-local key must be rewritten together when
+   * any member changes, is added, or is deleted. Resolution can change edges
+   * between untouched members even without an import or current graph edge.
+   * Derive the key from the path alone: deleted files have no current source.
+   * This only widens incremental invalidation, not semantic resolution scope.
+   */
+  readonly incrementalResolutionGroup?: (filePath: string) => string | undefined;
+
   /** Entry-point function name patterns specific to this language.
    *  Merged with universal patterns at runtime for process detection scoring.
    *  Default: [] (only universal patterns apply). */
