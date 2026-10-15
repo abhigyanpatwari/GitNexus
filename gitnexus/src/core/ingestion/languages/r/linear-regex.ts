@@ -880,7 +880,15 @@ export class LinearRegex {
     const key = context * 0x10000 + c;
     let states = this.startStates.get(key);
     if (states === undefined) {
-      states = closure.chars.filter((s) => inSet(this.arg[s] as CharSet, c));
+      // A miss tests every character state of the closure against `c`, and each test may
+      // scan every range of its class; charge that, or a large class costs nothing.
+      const accepting: number[] = [];
+      for (const s of closure.chars) {
+        const set = this.arg[s] as CharSet;
+        this.charge(1 + set.ranges.length);
+        if (inSet(set, c)) accepting.push(s);
+      }
+      states = accepting;
       if (this.startStates.size < 4096) this.startStates.set(key, states);
     }
     this.charge(1 + states.length);

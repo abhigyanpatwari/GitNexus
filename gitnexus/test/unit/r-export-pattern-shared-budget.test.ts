@@ -556,3 +556,53 @@ describe('loadRPackageConfig shares one work budget across every package it disc
     expect(messages.every((m) => m.includes('R package a:'))).toBe(true);
   }, 60_000);
 });
+
+describe('the start-state filter is charged to the work budget', () => {
+  /**
+   * `alternatives` single-character alternatives, each a class of `ranges` disjoint ranges
+   * above U+0100. A name starting with U+2000 matches none of them, so every class is
+   * scanned to the end and nothing else is visited: before the fix the whole scan was free.
+   */
+  const bigClasses = (alternatives: number, ranges: number): string => {
+    const cls = Array.from({ length: ranges }, (_, i) => {
+      const lo = 0x100 + 3 * i;
+      return `${String.fromCharCode(lo)}-${String.fromCharCode(lo + 1)}`;
+    }).join('');
+    return Array.from({ length: alternatives }, () => `[${cls}]`).join('|');
+  };
+
+  it('charges the range checks of a start-state filter miss', () => {
+    const alternatives = 20;
+    const ranges = 200;
+    const budget = new SharedWorkBudget(1_000_000_000);
+    const matcher = compileLinearRegex(bigClasses(alternatives, ranges), budget) as LinearRegex;
+    expect(matcher).not.toBeNull();
+
+    expect(matcher.test('\u2000')).toBe(false);
+    // 20 classes x 200 ranges are scanned to decide that no start state accepts U+2000.
+    expect(matcher.work).toBeGreaterThanOrEqual(alternatives * ranges);
+    expect(budget.spent).toBe(matcher.work);
+  });
+
+  it('charges the filter once per distinct start character, not again on a memoised hit', () => {
+    const budget = new SharedWorkBudget(1_000_000_000);
+    const matcher = compileLinearRegex(bigClasses(20, 200), budget) as LinearRegex;
+    matcher.test('\u2000\u2000'); // two misses: (start, U+2000) and (middle, U+2000)
+    expect(matcher.work).toBeGreaterThanOrEqual(2 * 20 * 200);
+    const afterFirst = matcher.work;
+    matcher.test('\u2000\u2000\u2000'); // every position's filter is answered from the memo
+    expect(matcher.work - afterFirst).toBeLessThan(20 * 200);
+    const afterMemo = matcher.work;
+    matcher.test('\u2001'); // a different start character is a new miss
+    expect(matcher.work - afterMemo).toBeGreaterThanOrEqual(20 * 200);
+  });
+
+  it('exhausts the budget on a hostile many-class pattern instead of running free', () => {
+    const budget = new SharedWorkBudget(1_000_000);
+    const matcher = compileLinearRegex(bigClasses(20, 200), budget) as LinearRegex;
+    // Every distinct start character is a filter miss of 20 x 200 range checks.
+    for (let c = 0x2000; c < 0x2000 + 600; c++) matcher.test(String.fromCharCode(c));
+    expect(matcher.exhausted).toBe(true);
+    expect(budget.spent).toBeGreaterThanOrEqual(1_000_000);
+  });
+});
