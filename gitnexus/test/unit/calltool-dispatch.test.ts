@@ -3019,6 +3019,7 @@ describe('LocalBackend.callTool', () => {
 
   // Legacy tool aliases
   it('dispatches "search" as alias for query', async () => {
+    (executeQuery as any).mockResolvedValue([]);
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('search', { query: 'auth' });
     expect(result).toHaveProperty('processes');
@@ -5841,34 +5842,47 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
 
   // The evict-on-reject is guarded by object identity (=== entry), so a LATE
   // rejection from a superseded entry must not drop the newer entry that
-  // replaced it after the TTL rolled over.
-  it('a late rejection does not evict the newer cache entry', async () => {
-    stubResolve();
-    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
-    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
-    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
-    let rejectFirst: (e: unknown) => void = () => {};
-    const first = new Promise<StalenessInfo>((_res, rej) => {
-      rejectFirst = rej;
-    });
-    (checkStalenessAsync as any)
-      .mockReturnValueOnce(first) // entry 1 — held open, will reject late
-      .mockResolvedValue({ isStale: true, commitsBehind: 7, hint: '7 behind' }); // entry 2+
+  // replaced it after TTL expiry or an index generation change.
+  it.each(['TTL expiry', 'new commit', 'same-commit rebuild'])(
+    'a late rejection does not evict the newer cache entry after %s',
+    async (change) => {
+      const resolve = stubResolve();
+      vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+      const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
+      const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+      let rejectFirst: (e: unknown) => void = () => {};
+      const first = new Promise<StalenessInfo>((_res, rej) => {
+        rejectFirst = rej;
+      });
+      (checkStalenessAsync as any)
+        .mockReturnValueOnce(first) // entry 1 — held open, will reject late
+        .mockResolvedValue({ isStale: true, commitsBehind: 7, hint: '7 behind' }); // entry 2+
 
-    const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' }); // installs entry1 @1000
-    await new Promise((r) => setTimeout(r, 0)); // entry1 installed, awaiting `first`
+      const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' }); // installs entry1 @1000
+      await new Promise((r) => setTimeout(r, 0)); // entry1 installed, awaiting `first`
 
-    dateSpy.mockReturnValue(1000 + 5000 + 1); // past TTL → next call installs entry2
-    const r2 = await backend.callTool('query', { search_query: 'x', repo: 'r' });
-    expect(r2).toMatchObject({ staleness: { commitsBehind: 7 } });
+      if (change === 'TTL expiry') {
+        dateSpy.mockReturnValue(1000 + 5000 + 1);
+      } else {
+        // Same path, still inside the TTL: the new generation must get its own
+        // promise while the old generation's git computation remains in flight.
+        resolve.mockResolvedValue({
+          ...handle,
+          indexedAt: 'new-generation',
+          lastCommit: change === 'new commit' ? 'NEWSHA' : handle.lastCommit,
+        } as any);
+      }
+      const r2 = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+      expect(r2).toMatchObject({ staleness: { commitsBehind: 7 } });
 
-    rejectFirst(new Error('late git failure')); // entry1's guarded catch must NOT evict entry2
-    await p1.catch(() => {}); // p1 degrades to no-staleness
+      rejectFirst(new Error('late git failure')); // entry1's guarded catch must NOT evict entry2
+      await p1.catch(() => {}); // p1 degrades to no-staleness
 
-    const callsBefore = (checkStalenessAsync as any).mock.calls.length;
-    const r3 = await backend.callTool('query', { search_query: 'x', repo: 'r' }); // still within entry2 TTL
-    expect((checkStalenessAsync as any).mock.calls.length).toBe(callsBefore); // cache hit → entry2 survived
-    expect(r3).toMatchObject({ staleness: { commitsBehind: 7 } });
-    dateSpy.mockRestore();
-  });
+      const callsBefore = (checkStalenessAsync as any).mock.calls.length;
+      const r3 = await backend.callTool('query', { search_query: 'x', repo: 'r' }); // still within entry2 TTL
+      expect((checkStalenessAsync as any).mock.calls.length).toBe(callsBefore); // cache hit → entry2 survived
+      expect(r3).toMatchObject({ staleness: { commitsBehind: 7 } });
+      dateSpy.mockRestore();
+    },
+  );
 });
