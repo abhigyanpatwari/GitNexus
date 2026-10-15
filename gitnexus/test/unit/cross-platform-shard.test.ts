@@ -91,6 +91,32 @@ describe('cross-platform shard partition', () => {
     expect(new Set(seen).size).toBe(ALL_CROSS_PLATFORM.length);
   });
 
+  it('leaves watchdog headroom for the recorded October Windows workload', () => {
+    // Run 38697469283 exhausted the 20-minute watchdog before cli-e2e
+    // finished. Its preceding serialized suites were undercharged or absent
+    // from the weight table. The CLI and Zig timings below come from the
+    // preceding successful run 38693066214; the other timings are from the
+    // failing run. Keep this replay independent of the scheduling table.
+    const observed: Readonly<Record<string, number>> = {
+      'test/integration/cli-e2e.test.ts': 563,
+      'test/integration/mcp-index-generation.test.ts': 201,
+      'test/integration/rename-provider-objective-c.test.ts': 285,
+      'test/integration/rename-provider-zig.test.ts': 183,
+      'test/integration/rename-provider-go.test.ts': 221,
+      'test/integration/worker-pool.test.ts': 254,
+      'test/integration/rename-provider-swift.test.ts': 300,
+      'test/integration/rename-provider-c.test.ts': 202,
+      'test/unit/incremental-dirty-recovery.test.ts': 76,
+    };
+    const floor = weightOf('test/unmeasured.test.ts');
+    const loads = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).map((files) =>
+      files.reduce((sum, file) => sum + Math.max(weightOf(file), (observed[file] ?? 0) + floor), 0),
+    );
+    // Leave at least three minutes for hosted-runner variation. Merely
+    // fitting under 20 minutes left the previous partition prone to timeout.
+    expect(Math.max(...loads)).toBeLessThanOrEqual(17 * 60);
+  });
+
   it('keeps each shard within a shard of the ideal weight', () => {
     const shards = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL);
     const weights = shards.map(shardWeight);
