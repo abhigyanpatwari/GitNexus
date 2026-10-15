@@ -1,4 +1,3 @@
-import type { Stats } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -14,10 +13,10 @@ import type {
 } from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 import { recordedMatchStages, recordedRepoList } from './completeness.js';
+import { closeQueryResults } from '../lbug/query-result-utils.js';
 import {
   closeLbugConnection,
   openLbugConnection,
-  sleep,
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
@@ -228,7 +227,7 @@ async function evictBridgeEntry(key: string, entry: CachedBridgeEntry): Promise<
 async function closeBridgeHandle(handle: BridgeHandle): Promise<void> {
   if (!handle._readOnly) {
     try {
-      await (handle._conn as lbug.Connection).query('CHECKPOINT');
+      await closeQueryResults(await (handle._conn as lbug.Connection).query('CHECKPOINT'));
     } catch {
       /* ignore — older LadybugDB or schemaless DB may not accept it */
     }
@@ -548,7 +547,7 @@ export async function ensureBridgeSchema(handle: BridgeHandle): Promise<void> {
   const conn = handle._conn as lbug.Connection;
   for (const q of BRIDGE_SCHEMA_QUERIES) {
     try {
-      await conn.query(q);
+      await closeQueryResults(await conn.query(q));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes(LBUG_ALREADY_EXISTS_MSG)) throw err;
@@ -563,19 +562,25 @@ export async function queryBridge<T>(
 ): Promise<T[]> {
   const run = async (): Promise<T[]> => {
     const conn = handle._conn as lbug.Connection;
+    let queryResult: lbug.QueryResult | lbug.QueryResult[];
     if (params && Object.keys(params).length > 0) {
       const stmt = await conn.prepare(cypher);
       if (!stmt.isSuccess()) {
         const errMsg = await stmt.getErrorMessage();
         throw new Error(`Bridge query prepare failed: ${errMsg}`);
       }
-      const queryResult = await conn.execute(stmt, params);
+      queryResult = await conn.execute(stmt, params);
+    } else {
+      queryResult = await conn.query(cypher);
+    }
+    try {
       const result = unwrapQueryResult(queryResult);
       return (await result.getAll()) as T[];
+    } finally {
+      // Native results retain the database even after conn/db.close(). Release
+      // them before the bridge is swapped and its file stamp is recorded.
+      await closeQueryResults(queryResult);
     }
-    const queryResult = await conn.query(cypher);
-    const result = unwrapQueryResult(queryResult);
-    return (await result.getAll()) as T[];
   };
   // Cached RO handles are shared across concurrent @group callers, so serialize
   // conn ops per handle (a LadybugDB Connection is not safe for concurrent
@@ -669,11 +674,6 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
   await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(persisted, null, 2));
 }
 
-const sameFileStamp = (
-  left: { size: number; mtimeMs: number },
-  right: { size: number; mtimeMs: number },
-): boolean => left.size === right.size && left.mtimeMs === right.mtimeMs;
-
 const stampMatchesStat = (
   stat: { size: number; mtimeMs: number },
   meta: Pick<BridgeMeta, 'bridgeSize' | 'bridgeMtimeMs'>,
@@ -682,33 +682,6 @@ const stampMatchesStat = (
   // Do not `Math.round`: two same-size databases written in the same
   // millisecond must still fail if their filesystem mtimes differ.
   stat.mtimeMs === meta.bridgeMtimeMs;
-
-/**
- * LadybugDB can still flush WAL/shadow into the main file after `close` and
- * the atomic rename. Stamping the first `stat` then loses the exact-equality
- * check the moment that flush lands.
- *
- * Wait a quiet interval before every sample — including the first — so an
- * initially-stable pair is not stamped on the same tick as close/rename. Two
- * consecutive agreeing stats after that interval are treated as settled. A
- * flush that arrives later than the retry budget can still miss; this is a
- * best-effort wait, not a lock on the file.
- */
-const BRIDGE_SETTLE_MS = 10;
-const BRIDGE_SETTLE_ATTEMPTS = 10;
-
-const statSettledBridgeFile = async (filePath: string): Promise<Stats> => {
-  let current: Stats | undefined;
-  for (let i = 0; i < BRIDGE_SETTLE_ATTEMPTS; i++) {
-    await sleep(BRIDGE_SETTLE_MS);
-    const next = await fsp.stat(filePath);
-    if (current && sameFileStamp(next, current)) {
-      return next;
-    }
-    current = next;
-  }
-  return current ?? (await fsp.stat(filePath));
-};
 
 /**
  * Does `meta` still describe the `bridge.lbug` sitting next to it?
@@ -1416,7 +1389,7 @@ export async function writeBridgeUnlocked(
     // still belongs together (`bridgeMetaMatchesFile`). A stale meta cannot match
     // a freshly renamed database, and a sync that fails before the swap leaves a
     // matching pair untouched.
-    const finalStat = await statSettledBridgeFile(finalPath);
+    const finalStat = await fsp.stat(finalPath);
     await writeBridgeMeta(groupDir, {
       version: BRIDGE_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
