@@ -370,7 +370,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Node 24 ships with npm >= 11.5.x, which is the minimum that
           # supports npm Trusted Publishing OIDC. Node 22 ships with npm
@@ -618,7 +618,7 @@ jobs:
       # Every release carries this run's fixed-answer accuracy. Paid paired
       # agent runs gate only stable releases; RCs are measured on a schedule.
       - name: Download this release's tool accuracy
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-tool-accuracy
           path: ${{ runner.temp }}/release-evidence
