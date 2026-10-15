@@ -48,6 +48,7 @@ import type {
   RepoConstants,
 } from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
+import type { FetchWrapperCall } from './route-extractors/fetch-wrapper.js';
 import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
@@ -603,6 +604,14 @@ interface LanguageProviderConfig {
     filePath: string,
     lineOffset: number,
   ) => ExtractedDecoratorRoute[];
+
+  /** URL-bearing call candidates from the existing AST, before wrapper names
+   * are known across files. Routes selects known wrappers after parsing. */
+  readonly extractFetchWrapperCalls?: (
+    tree: Parser.Tree,
+    filePath: string,
+    lineOffset: number,
+  ) => FetchWrapperCall[];
 
   /**
    * Name of the function a route decorator captured by the worker's generic
