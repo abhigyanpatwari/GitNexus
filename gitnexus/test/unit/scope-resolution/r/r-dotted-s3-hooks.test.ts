@@ -104,6 +104,39 @@ describe('expandRWildcardNames', () => {
     ).toEqual(['Scorer', 'tidy']);
   });
 
+  it('lists only top-level definitions, not functions nested in another function', () => {
+    expect(
+      names('outer <- function() {\n  helper <- function() 1\n  helper()\n}\ntop <- function() 2'),
+    ).toEqual(['outer', 'top']);
+  });
+
+  it('does not list a function nested several levels deep or inside a control block', () => {
+    expect(
+      names(
+        [
+          'a <- function() {',
+          '  b <- function() {',
+          '    c <- function() 1',
+          '  }',
+          '  if (TRUE) d <- function() 2',
+          '}',
+        ].join('\n'),
+      ),
+    ).toEqual(['a']);
+  });
+
+  it('still lists top-level classes alongside top-level functions', () => {
+    expect(
+      names('Scorer <- R6::R6Class("Scorer", public = list(f = function() 1))\nrun = function() 1'),
+    ).toEqual(['Scorer', 'run']);
+  });
+
+  it('still lists an S4 class defined by a bare setClass() call', () => {
+    expect(
+      names('setClass("Shape", representation(n = "numeric"))\nplain <- function() 1'),
+    ).toEqual(['Shape', 'plain']);
+  });
+
   it('never lists dotted names themselves', () => {
     expect(names('print.foo <- function(x) x')).toEqual([]);
   });

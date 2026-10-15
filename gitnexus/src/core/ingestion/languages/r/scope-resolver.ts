@@ -104,7 +104,8 @@ function emitRVirtualHeritageEdges(
 }
 
 /**
- * Enumerate all top-level names exported from a target module scope's file.
+ * Enumerate all top-level names exported from a target module scope's file
+ * (module-scope function and class bindings; functions nested in another function are not).
  * `library()`/`require()` are R's wildcard imports — every top-level name of
  * the named local package becomes visible, UNFILTERED by NAMESPACE (a
  * `library()`/`require()` call brings the whole package's namespace into
@@ -127,12 +128,15 @@ export function expandRWildcardNames(
 ): readonly string[] {
   const target = parsedFiles.find((p) => p.moduleScope === targetModuleScope);
   if (target === undefined) return [];
-  const { dottedTails } = rFileTopLevel(target);
+  const { names: topLevel, dottedTails } = rFileTopLevel(target);
   const seen = new Set<string>();
   const names: string[] = [];
   for (const def of target.localDefs) {
     const qn = def.qualifiedName;
-    if (qn === undefined || qn.length === 0 || qn.includes('.')) continue; // top-level only
+    if (qn === undefined || qn.length === 0 || qn.includes('.')) continue; // no dotted names
+    // `localDefs` is flat: it also lists functions nested in other functions, which a
+    // `library()` does not bring into scope. Only module-scope bindings are top-level.
+    if (!topLevel.has(qn)) continue;
     if (dottedTails.has(qn)) continue; // shares its tail with an S3 method: see above
     if (seen.has(qn)) continue;
     seen.add(qn);
