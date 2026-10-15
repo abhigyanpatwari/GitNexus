@@ -1,5 +1,6 @@
 import type { NameClaim } from 'gitnexus-shared';
 import type { RenameIssue, RenameProvider } from '../../rename-provider.js';
+import { unescapeRString } from './export-pattern.js';
 import {
   createTreeSitterRenameSource,
   innermostRenameScope,
@@ -16,6 +17,33 @@ const RESERVED = new Set(
     ' ',
   ),
 );
+
+/** `r"(...)"`, `R'[...]'`, `r"---{...}---"`: no escapes; the body is taken as written. */
+const RAW_STRING = /^[rR](["'])(-*)(?:\(([\s\S]*)\)|\[([\s\S]*)\]|\{([\s\S]*)\})\2\1$/;
+
+/** One escape, longest form first: octal, hex/unicode, then any other `\c`. */
+const ESCAPE =
+  /\\(?:([0-7]{1,3})|(x[0-9A-Fa-f]{1,2}|u\{[0-9A-Fa-f]{1,4}\}|u[0-9A-Fa-f]{1,4}|U\{[0-9A-Fa-f]{1,8}\}|U[0-9A-Fa-f]{1,8})|([\s\S]))/g;
+
+/**
+ * The value R holds for a string literal's source text, or null when it is not a
+ * recognisable literal. Escapes are decoded (`"f\u006fo"` is `foo`), raw strings are
+ * taken verbatim, so the guard compares what the string means, not how it is spelled.
+ */
+function rStringValue(text: string): string | null {
+  const raw = RAW_STRING.exec(text);
+  if (raw) return raw[3] ?? raw[4] ?? raw[5] ?? '';
+  const quote = text[0];
+  if ((quote !== '"' && quote !== "'") || text.length < 2 || text[text.length - 1] !== quote)
+    return null;
+  return text
+    .slice(1, -1)
+    .replace(ESCAPE, (_m, octal?: string, coded?: string, other?: string) =>
+      octal !== undefined
+        ? String.fromCharCode(parseInt(octal, 8) & 0xff)
+        : unescapeRString(`\\${coded ?? other ?? ''}`),
+    );
+}
 
 const unsupported = (message: string): RenameIssue => ({
   code: 'unsupported_occurrence',
@@ -80,7 +108,9 @@ export const rRenameProvider: RenameProvider = {
     for (const source of files.values()) {
       if (!source.tree) continue;
       for (const node of walkNamedNodes(source.tree.rootNode)) {
-        if (node.type === 'string_content' && (node.text === name || node.text === newName))
+        if (node.type !== 'string') continue;
+        const value = rStringValue(node.text);
+        if (value !== null && (value === name || value === newName))
           return unsupported(
             'A string literal spells this name; S3, S4, R6 and dynamic lookup resolve it by string.',
           );
