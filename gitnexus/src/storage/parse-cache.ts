@@ -864,9 +864,12 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // scopes and declaration metadata. Re-extract both stores with provider fixes.
 // v140: Ruby accessor captures retain reader visibility and singleton ownership.
 // Older worker and durable captures cannot prove property-reader dispatch.
-// v141: fetch-wrapper consumers are AST candidates emitted by providers.
-// Re-extract old shards: they have no candidates and the routes regex is gone.
-const SCHEMA_BUMP = 141;
+// v141: detached method owners retain names without fabricated graph ids.
+// Re-extract both worker and durable captures before workspace ownership runs.
+// v142: fetch-wrapper consumers are AST candidates emitted by providers.
+// Re-extract v141 shards: main used 141 for detached Go ownership, while
+// this branch used it for wrapper candidates. Neither contains both changes.
+const SCHEMA_BUMP = 142;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

@@ -230,6 +230,7 @@ import {
   type PersistedSpringConfigConsumerRow,
 } from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
+import { collectResolutionGroupFiles } from './incremental/resolution-groups.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
 import {
   ftsTablesAmong,
@@ -3416,6 +3417,21 @@ async function runFullAnalysisInner(
       // in incremental/escalation-gate.ts (pure predicate, boundary-tested).
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
+      // Resolution groups can change edges between unchanged files without an
+      // import or a new-graph edge touching the changed/deleted member. Expand
+      // before the importer walk so dependents of these siblings refresh too.
+      for (const filePath of collectResolutionGroupFiles(
+        [...hashDiff.toWrite, ...hashDiff.deleted],
+        allFilePaths,
+      )) {
+        writableFiles.add(filePath);
+      }
+      const resolutionGroupExpansion = writableFiles.size - directlyChangedCount;
+      if (resolutionGroupExpansion > 0) {
+        log(
+          `Incremental: +${resolutionGroupExpansion} resolution sibling(s) added to writable set`,
+        );
+      }
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
       // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
       // importer-BFS chunks whose IMPORTS query failed across ALL depths
@@ -3481,7 +3497,7 @@ async function runFullAnalysisInner(
         // used to cost ~700 sequential lock-taking round-trips (~5.6s). The
         // closure is identical: importers already in writableFiles are not
         // re-frontiered, exactly like the per-file loop's membership check.
-        let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted, ...shadowSeed];
+        let frontier: string[] = [...writableFiles, ...hashDiff.deleted, ...shadowSeed];
         for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
           const importers = await queryImportersBatch(frontier, {
             onChunkFailure: () => {
@@ -3498,11 +3514,12 @@ async function runFullAnalysisInner(
           frontier = nextFrontier;
         }
       }
-      const importerExpansion = writableFiles.size - directlyChangedCount;
+      const importerExpansion =
+        writableFiles.size - directlyChangedCount - resolutionGroupExpansion;
       incrementalStats = {
         changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
         reparsedFiles: pipelineResult.reparsedFileCount,
-        affectedDependents: importerExpansion,
+        affectedDependents: resolutionGroupExpansion + importerExpansion,
         deletedFiles: hashDiff.deleted.length,
         writeMode: 'incremental',
       };
@@ -3521,9 +3538,9 @@ async function runFullAnalysisInner(
 
       // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
       //    composed:
-      //      (a) `writableFiles` — toWrite ∪ transitive importers of
-      //          changed/deleted files (the bounded BFS above, reading
-      //          IMPORTS from the pre-pipeline DB).
+      //      (a) `writableFiles` — toWrite ∪ resolution siblings ∪ transitive
+      //          importers of changed/deleted files and their siblings (the
+      //          bounded BFS above, reading IMPORTS from the pre-pipeline DB).
       //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
       //          edges and pulls in any unchanged-side file that sits
       //          on a writable-boundary-crossing edge (catches refined
