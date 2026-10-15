@@ -21,6 +21,9 @@ describe('Go build constraints for method ownership', () => {
     ['value_madeup.go', 'value_windows.go', true],
     ['dir_linux/value.go', 'value_windows.go', true],
     ['dir\\value_linux.go', 'value_windows.go', false],
+    ['value.v2_linux.go', 'value_windows.go', true],
+    ['value_linux.v2.go', 'value_windows.go', false],
+    ['value_linux_amd64_test.v2.go', 'value_linux_arm64.go', false],
     ['value_linux.go', 'value_android.go', true],
     ['value_darwin.go', 'value_ios.go', true],
     ['value_solaris.go', 'value_illumos.go', true],
@@ -49,6 +52,28 @@ describe('Go build constraints for method ownership', () => {
   it('combines filename and explicit constraints', () => {
     expect(overlap('a_linux.go', 'b.go', '', '!linux')).toBe(false);
     expect(overlap('a_linux.go', 'b.go', 'windows')).toBe(false);
+  });
+
+  it('does not let unknown constraints revive an impossible file', () => {
+    const unknown = goFileBuildConstraint(
+      'method.go',
+      '// license '.repeat(2000) + '\npackage p\n',
+    );
+    expect(unknown).toBeNull();
+    for (const [file, tag] of [
+      ['value.go', 'fast && !fast'],
+      ['value_linux.go', 'windows'],
+      ['value.go', 'amd64 && arm64'],
+      ['value.go', '(linux && windows) || (fast && !fast)'],
+    ]) {
+      const impossible = goFileBuildConstraint(file, source(tag));
+      expect(goBuildConstraintsMayOverlap(unknown, impossible)).toBe(false);
+      expect(goBuildConstraintsMayOverlap(impossible, unknown)).toBe(false);
+    }
+    const possible = goFileBuildConstraint('value.go', source('(linux && windows) || fast'));
+    expect(goBuildConstraintsMayOverlap(unknown, possible)).toBe(true);
+    expect(goBuildConstraintsMayOverlap(possible, unknown)).toBe(true);
+    expect(goBuildConstraintsMayOverlap(unknown, unknown)).toBe(true);
   });
 
   it('reads modern directives around block comments, but not inside them or after code', () => {
