@@ -140,6 +140,8 @@ import {
   startWalCheckpointDriver,
   checkpointOnce,
   isManualCheckpointEnabled,
+  readCheckpointActivity,
+  type CheckpointActivity,
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import {
@@ -148,7 +150,7 @@ import {
   quarantineSidecarsForDirtyRecovery,
   inspectLbugSidecars,
 } from './lbug/sidecar-recovery.js';
-import { collectFailureEvidence } from './lbug/failure-evidence.js';
+import { collectFailureEvidence, type FailureEvidenceTargets } from './lbug/failure-evidence.js';
 import type { EmbeddingIdentity } from './embeddings/embedding-identity.js';
 // Type-only (erased at compile time), so the lazy-embeddings convention
 // (#2370: no embeddings module loads unless a run actually needs one) holds.
@@ -657,6 +659,93 @@ function describeThrown(value: unknown): string {
   } catch {
     return '[unprintable thrown value]';
   }
+}
+
+/**
+ * Where a failing write was going (#3530). A staged build is `staged-incremental`
+ * only while it is an atomic-incremental write: the #2409/#2841 escalation wipes
+ * the staging file and re-COPYs into it, which is a rebuild, and it stages with
+ * `GITNEXUS_ATOMIC_INCREMENTAL=0` as well — so naming the off-switch there would
+ * point at a knob with no effect.
+ */
+const stagedBuildModeOf = (staged: boolean, atomicIncrementalWrite: boolean): StagedBuildMode =>
+  !staged ? 'in-place' : atomicIncrementalWrite ? 'staged-incremental' : 'staged-rebuild';
+
+/**
+ * The diagnosis (#3529, #3530) for a classified analyze failure — its remedy and
+ * `Failure evidence — ` lines — or undefined when `failureMessage` is not one of
+ * those failures, so nothing else pays for the stats. Measures the index files,
+ * so call it BEFORE the database closes: closing can checkpoint the staging file,
+ * and a later stat would record the post-close size and make genuine growth look
+ * like a short file — the misreading the evidence exists to settle. Never throws.
+ */
+async function diagnoseClassifiedFailure(
+  failureMessage: string,
+  buildMode: StagedBuildMode,
+  targets: FailureEvidenceTargets,
+  checkpointsSince: CheckpointActivity,
+): Promise<string | undefined> {
+  const remedy =
+    maxDbSizeReachedRemedy(failureMessage, buildMode) ??
+    pastEofReadRemedy(failureMessage, buildMode);
+  if (!remedy) return undefined;
+  const evidenceLines = await collectFailureEvidence(targets, checkpointsSince);
+  // 0 is the pass-through sentinel for LadybugDB's native default, not a size.
+  const bufferPool = getEffectiveBufferPoolSize();
+  const configuredLine =
+    `configured max DB size ${LBUG_MAX_DB_SIZE} B, ` +
+    `buffer pool ${bufferPool === 0 ? "LadybugDB's native 80%-of-RAM default" : `${bufferPool} B`}`;
+  return [
+    remedy,
+    ...[...evidenceLines, configuredLine].map((line) => `Failure evidence — ${line}`),
+  ].join('\n');
+}
+
+/**
+ * What an analyze failure rethrows: `err` with `diagnosis` appended to its
+ * message, or a wrapper carrying it when `err` is not an Error.
+ *
+ * The message is the one channel every caller surfaces: `analyze --watch` wires
+ * no log sink unless GITNEXUS_VERBOSE=1 and the auto-sync worker launcher drops
+ * progress messages, yet both print the rethrown message. Appended in place, so
+ * the error keeps its identity and prototype (`instanceof` checks and live-mutation
+ * tracking key on the object), and after the native text, so classifiers anchored
+ * on it still match. Call it once per error so the diagnosis is appended once.
+ * Best effort: a throwing log sink or an unwritable `message` never replaces `err`.
+ */
+function attachFailureDiagnosis(
+  err: unknown,
+  failureMessage: string,
+  diagnosis: string | undefined,
+  log: (msg: string) => void,
+): unknown {
+  let failure: unknown = err;
+  const bestEffort = (deliver: () => void): void => {
+    try {
+      deliver();
+    } catch {
+      /* swallow — the caller rethrows `failure` */
+    }
+  };
+  if (diagnosis) {
+    bestEffort(() => {
+      const text = stripControlCharacters(diagnosis);
+      if (err instanceof Error) err.message = `${err.message}\n${text}`;
+      // A non-Error has no message to extend; wrap it so the diagnosis still travels.
+      else failure = new Error(`${failureMessage}\n${text}`, { cause: err });
+    });
+  } else if (
+    /max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(failureMessage)
+  ) {
+    // A max-size message the engine worded differently keeps the generic hint.
+    bestEffort(() =>
+      log(
+        'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
+          'byte limit before retrying analyze; retained complete embeddings can be reused.',
+      ),
+    );
+  }
+  return failure;
 }
 
 function formatMetaWriteFailureReason(err: unknown): string {
@@ -3210,14 +3299,29 @@ async function runFullAnalysisInner(
     ),
   );
 
+  // The checkpoint counters are process-global (`analyze --watch` reruns analyze in
+  // one process), so a failure report counts only this run's from here (#3530).
+  const checkpointsAtRunStart = readCheckpointActivity();
   // Full rebuild (POSIX) builds into the temp `buildPath`; incremental and
   // Windows use `buildPath === lbugPath` in place.
   try {
     await initAnalysisLbug(buildPath);
   } catch (error) {
+    // Opening a truncated staging copy or an oversized index fails with the same
+    // classified messages a write does, so it carries the same diagnosis (#3530).
+    // No checkpoint driver has started yet, so nothing can touch the files mid-stat.
+    const stagedBuild = buildPath !== lbugPath;
+    const failureMessage = describeThrown(error);
+    const diagnosis = await diagnoseClassifiedFailure(
+      failureMessage,
+      stagedBuildModeOf(stagedBuild, atomicIncremental),
+      { liveIndex: lbugPath, ...(stagedBuild ? { stagingCopy: buildPath } : {}) },
+      checkpointsAtRunStart,
+    );
     discardCachedEmbeddingSpill();
-    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
-    throw error;
+    const failure = attachFailureDiagnosis(error, failureMessage, diagnosis, log);
+    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(failure);
+    throw failure;
   }
 
   // Manual WAL checkpoint driver (#1741): periodically drain the WAL
@@ -5464,36 +5568,23 @@ async function runFullAnalysisInner(
         : undefined,
     };
   } catch (err) {
-    // Classify once; the remedy and the evidence both read this. A staged build
-    // is `atomicIncremental` only until the #2409/#2841 escalation: that wipes the
-    // staging file and re-COPYs into it, which is a rebuild, and it stages with
-    // `GITNEXUS_ATOMIC_INCREMENTAL=0` as well — so naming the off-switch there
-    // would point at a knob with no effect (#3530).
     const stagedBuild = useAtomicSwap && buildPath !== lbugPath;
-    const buildMode: StagedBuildMode = !stagedBuild
-      ? 'in-place'
-      : atomicIncremental && !escalatedFullWrite
-        ? 'staged-incremental'
-        : 'staged-rebuild';
     const failureMessage = describeThrown(err);
-    const classifiedRemedy =
-      maxDbSizeReachedRemedy(failureMessage, buildMode) ??
-      pastEofReadRemedy(failureMessage, buildMode);
-    // Measure the index files BEFORE the driver stops and the database closes:
-    // closing can checkpoint the staging file, so a later stat would record the
-    // post-close size and make genuine growth look like a short file — the
-    // misreading the #3530 evidence exists to settle. Only a classified failure
-    // collects them, so nothing else pays for the stats. Never throws.
-    const evidenceLines = classifiedRemedy
-      ? await collectFailureEvidence({
-          liveIndex: lbugPath,
-          ...(stagedBuild ? { stagingCopy: buildPath } : {}),
-        })
-      : [];
-    // Ensure LadybugDB is closed even on error. Stop the driver first
-    // so its retry loop cannot extend an already-failing analyze.
+    // Ensure LadybugDB is closed even on error. Stop the driver first so its retry
+    // loop cannot extend an already-failing analyze. `stop()` clears the tick timer
+    // before its first `await`, so starting it here keeps any new checkpoint from
+    // touching the staging files while the evidence below is measured; a checkpoint
+    // already in flight is recorded in that evidence's snapshot (#3530).
+    const driverStopped = walCheckpointDriver.stop();
+    // Before the database closes — see diagnoseClassifiedFailure.
+    const diagnosis = await diagnoseClassifiedFailure(
+      failureMessage,
+      stagedBuildModeOf(stagedBuild, atomicIncremental && !escalatedFullWrite),
+      { liveIndex: lbugPath, ...(stagedBuild ? { stagingCopy: buildPath } : {}) },
+      checkpointsAtRunStart,
+    );
     try {
-      await walCheckpointDriver.stop();
+      await driverStopped;
     } catch {
       /* swallow — surface path is the rethrow below */
     }
@@ -5537,50 +5628,7 @@ async function runFullAnalysisInner(
     // What the caller sees: `err` itself (identity and prototype preserved, callers
     // tell IndexLockTimeoutError and other domain failures apart with `instanceof`),
     // or a wrapper when `err` is not an Error.
-    let failure: unknown = err;
-    // Diagnostics are best effort: a throwing log sink or an unwritable `message`
-    // must never replace the native failure rethrown below.
-    const bestEffort = (deliver: () => void): void => {
-      try {
-        deliver();
-      } catch {
-        /* swallow — the rethrow below is the surface */
-      }
-    };
-    if (classifiedRemedy) {
-      // 0 is the pass-through sentinel for LadybugDB's native default, not a size.
-      const bufferPool = getEffectiveBufferPoolSize();
-      const configuredLine =
-        `configured max DB size ${LBUG_MAX_DB_SIZE} B, ` +
-        `buffer pool ${bufferPool === 0 ? "LadybugDB's native 80%-of-RAM default" : `${bufferPool} B`}`;
-      const diagnosis = [
-        classifiedRemedy,
-        ...[...evidenceLines, configuredLine].map((line) => `Failure evidence — ${line}`),
-      ].join('\n');
-      // The message is the one channel every caller surfaces: `analyze --watch`
-      // wires no log sink unless GITNEXUS_VERBOSE=1 and the auto-sync worker
-      // launcher drops progress messages, yet both print the rethrown message.
-      // Appended in place, so the error keeps its identity and prototype
-      // (`instanceof` checks and live-mutation tracking key on the object), and
-      // after the native text, so classifiers anchored on it still match. The
-      // single call site means it is appended once per error.
-      bestEffort(() => {
-        const text = stripControlCharacters(diagnosis);
-        if (err instanceof Error) err.message = `${err.message}\n${text}`;
-        // A non-Error has no message to extend; wrap it so the diagnosis still travels.
-        else failure = new Error(`${failureMessage}\n${text}`, { cause: err });
-      });
-    } else if (
-      /max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(failureMessage)
-    ) {
-      // A max-size message the engine worded differently keeps the generic hint.
-      bestEffort(() =>
-        log(
-          'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
-            'byte limit before retrying analyze; retained complete embeddings can be reused.',
-        ),
-      );
-    }
+    const failure = attachFailureDiagnosis(err, failureMessage, diagnosis, log);
     if (liveIndexMutationStarted) recordLiveIndexMutationRisk(failure);
     throw failure;
   }

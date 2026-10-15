@@ -3860,7 +3860,12 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     // `mockStagedFiles` writes the 14-byte fixture 'staged fixture' to the staging path.
     const runStagedFailure = async (
       thrown: unknown,
-      hooks: { onLog?: (message: string) => void; onClose?: () => void } = {},
+      hooks: {
+        onLog?: (message: string) => void;
+        onClose?: () => void;
+        /** Runs after the staged-file mocks, so it can override them. */
+        beforeRun?: (adapter: typeof import('../../src/core/lbug/lbug-adapter.js')) => void;
+      } = {},
     ): Promise<{ result: unknown; logs: string[] }> => {
       vi.stubEnv('GITNEXUS_LBUG_MAX_DB_SIZE', String(CONFIGURED_MAX_DB_SIZE));
       // The limit is read when lbug-config loads, and the file's static imports may
@@ -3879,6 +3884,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         await mockStagedFiles();
         const adapter = await import('../../src/core/lbug/lbug-adapter.js');
         vi.mocked(adapter.closeLbug).mockImplementation(async () => hooks.onClose?.());
+        hooks.beforeRun?.(adapter);
         const logs: string[] = [];
         const result = await runAnalyze(
           tmpRepo.dbPath,
@@ -4083,7 +4089,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       expect(failure.message).toBe(REACHED);
     });
 
-    it('collects the failure evidence before the checkpoint driver stops and the database closes', async () => {
+    it('halts checkpoint ticks before collecting the failure evidence, and closes the database after both', async () => {
       const order: string[] = [];
       vi.doMock('../../src/core/lbug/failure-evidence.js', () => ({
         collectFailureEvidence: vi.fn(async () => {
@@ -4094,17 +4100,49 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
         ...(await importActual<typeof import('../../src/core/lbug/wal-checkpoint-driver.js')>()),
         startWalCheckpointDriver: () => ({
-          stop: async () => {
-            order.push('driver-stop');
+          // The real stop() clears its tick timer before its first await; the
+          // in-flight drain it then awaits settles later.
+          stop: () => {
+            order.push('driver-halt');
+            return new Promise<void>((resolve) =>
+              setImmediate(() => {
+                order.push('driver-drained');
+                resolve();
+              }),
+            );
           },
         }),
       }));
       const failure = new Error(REACHED);
       const { result } = await runStagedFailure(failure, { onClose: () => order.push('close') });
       expect(result).toBe(failure);
-      // Closing can checkpoint the staging file, so a later stat would misread growth as a short file.
-      expect(order.slice(order.indexOf('evidence'))).toEqual(['evidence', 'driver-stop', 'close']);
+      // A tick during the stats would checkpoint the staging files mid-measurement, and
+      // closing can checkpoint them too, so a later stat would misread growth as a short file.
+      const failurePath = order.slice(order.indexOf('driver-halt'));
+      expect(failurePath.slice(0, 2)).toEqual(['driver-halt', 'evidence']);
+      expect(failurePath.at(-1)).toBe('close');
+      expect(failurePath.indexOf('driver-drained')).toBeLessThan(failurePath.indexOf('close'));
     });
+
+    it.each([REACHED, PAST_EOF])(
+      'diagnoses a classified failure thrown while opening the staging copy (%#)',
+      async (message) => {
+        const failure = new Error(message);
+        const { result } = await runStagedFailure(failure, {
+          beforeRun: (adapter) => {
+            vi.mocked(adapter.initLbug).mockImplementation(async (dbPath) => {
+              if (dbPath.includes('.staging.')) throw failure;
+              return { db: null, conn: null };
+            });
+          },
+        });
+        expect(result).toBe(failure);
+        expect(failure.message.startsWith(`${message}\n`)).toBe(true);
+        expect(failure.message).toContain('The live index is untouched');
+        expect(failure.message.match(/Failure evidence — configured/g)).toHaveLength(1);
+        expect(failure.message).toContain('Failure evidence — checkpoints: none completed');
+      },
+    );
   });
 
   it('reclaims a failed current stage before any recovery checkpoint exists', async () => {

@@ -1461,7 +1461,15 @@ describe('auto-sync runner', () => {
     'logs the whole analyze failure diagnosis but persists only a short summary for a %s native error (#3530)',
     async (_label, nativeFailure) => {
       const errorLogger = vi.fn();
-      const diagnosis = `Failure evidence — ${'staging copy: apparent 4096 B, '.repeat(12)}end-of-diagnosis`;
+      // Realistic size: a remedy line plus seven evidence lines, about 1.3 KB — more
+      // than half the log cap, so an even head/tail split would cut the remedy.
+      const diagnosis = [
+        `start-of-remedy ${'A read reached end-of-file in the staged copy of the index. '.repeat(5)}`,
+        ...Array.from(
+          { length: 7 },
+          (_, i) => `Failure evidence — line ${i}: ${'staging copy apparent 4096 B, '.repeat(4)}`,
+        ),
+      ].join('\n');
       const message = `${nativeFailure}\n${diagnosis}`;
       const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
         cloneOrPull: vi.fn(async () => '/tmp/repos/gitee.com/qts_server/qts_account'),
@@ -1485,7 +1493,10 @@ describe('auto-sync runner', () => {
         now: () => new Date('2026-06-30T00:00:00.000Z'),
       });
 
-      expect(errorLogger).toHaveBeenCalledWith(expect.stringContaining(diagnosis));
+      expect(diagnosis.length).toBeGreaterThan(1000);
+      expect(errorLogger).toHaveBeenCalledWith(
+        expect.stringContaining(diagnosis.replace(/\s+/g, ' ')),
+      );
       // The error payload (the part after the log prefix) stays within the 2000-character cap,
       // separator included.
       const logged: string = errorLogger.mock.calls[0][0];

@@ -29,17 +29,27 @@ const formatCheckpointActivity = (activity: CheckpointActivity, now: number): st
  * staging sidecars (`.wal`, `.shadow`, `.wal.checkpoint` — absent reads
  * `absent`), or GitNexus's own CHECKPOINT ran around the failure (`checkpoints`).
  *
- * Everything time-sensitive happens before the first `await`: the checkpoint
- * snapshot and every stat dispatch. A checkpoint tick queued behind the failed
- * sub-batch can only run once this function yields, so the stats observe the
- * files as the failure left them (async stats rather than `statSync`, which would
- * block the event loop on a stalled mount and could not be timed out).
+ * `since` is the {@link readCheckpointActivity} snapshot taken when this run
+ * began: the counters are process-global, and `analyze --watch` runs analyze
+ * repeatedly in one process, so only the difference belongs to the failing run.
+ *
+ * The checkpoint snapshot is taken before the first `await`. The caller halts the
+ * periodic checkpoint driver before calling, so no new tick can checkpoint the
+ * staging files while the stats run (async stats rather than `statSync`, which
+ * would block the event loop on a stalled mount and could not be timed out).
  */
 export const collectFailureEvidence = async (
   targets: FailureEvidenceTargets,
+  since: CheckpointActivity,
 ): Promise<string[]> => {
   const now = Date.now();
-  const activity = readCheckpointActivity();
+  const current = readCheckpointActivity();
+  const completed = current.completed - since.completed;
+  const activity: CheckpointActivity = {
+    completed,
+    lastCompletedAt: completed > 0 ? current.lastCompletedAt : null,
+    inFlight: current.inFlight,
+  };
   const { liveIndex, stagingCopy } = targets;
   const fileLines = await Promise.all([
     describeFileEvidence('live index', liveIndex),

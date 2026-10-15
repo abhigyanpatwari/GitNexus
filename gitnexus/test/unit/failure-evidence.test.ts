@@ -52,7 +52,7 @@ describe('collectFailureEvidence (#3530)', () => {
   it('reports only the live index and checkpoints for an in-place build', async () => {
     await fs.writeFile(live, 'hello');
 
-    const lines = await collectFailureEvidence({ liveIndex: live });
+    const lines = await collectFailureEvidence({ liveIndex: live }, NO_ACTIVITY);
 
     expect(lines.map(labelOf)).toEqual(['live index', 'checkpoints']);
     expect(lines[0]).toMatch(/^live index: apparent 5 B, /);
@@ -63,7 +63,10 @@ describe('collectFailureEvidence (#3530)', () => {
     await fs.writeFile(staging, 'staged!!');
     await fs.writeFile(`${staging}.wal`, 'wal');
 
-    const lines = await collectFailureEvidence({ liveIndex: live, stagingCopy: staging });
+    const lines = await collectFailureEvidence(
+      { liveIndex: live, stagingCopy: staging },
+      NO_ACTIVITY,
+    );
 
     expect(lines.map(labelOf)).toEqual([...STAGED_FILE_LABELS, 'checkpoints']);
     expect(lines[1]).toMatch(/^staging copy: apparent 8 B, /);
@@ -91,7 +94,27 @@ describe('collectFailureEvidence (#3530)', () => {
   ])('formats %s', async (_name, activity, expected) => {
     mocks.readActivity.mockReturnValue(activity);
 
-    const lines = await collectFailureEvidence({ liveIndex: live });
+    const lines = await collectFailureEvidence({ liveIndex: live }, NO_ACTIVITY);
+
+    expect(lines.at(-1)).toBe(expected);
+  });
+
+  it.each([
+    [
+      'only checkpoints completed since the run began',
+      { completed: 12, lastCompletedAt: NOW - 300, inFlight: 0 },
+      'checkpoints: 2 completed, last 300 ms before failure, 0 in flight',
+    ],
+    [
+      'none when every completion predates the run (an earlier watch refresh)',
+      { completed: 10, lastCompletedAt: NOW - 100, inFlight: 0 },
+      'checkpoints: none completed, 0 in flight',
+    ],
+  ])('counts %s', async (_name, activity, expected) => {
+    mocks.readActivity.mockReturnValue(activity);
+    const runStart: CheckpointActivity = { completed: 10, lastCompletedAt: NOW - 100, inFlight: 0 };
+
+    const lines = await collectFailureEvidence({ liveIndex: live }, runStart);
 
     expect(lines.at(-1)).toBe(expected);
   });
@@ -108,7 +131,7 @@ describe('collectFailureEvidence (#3530)', () => {
     ];
 
     // Deliberately not awaited: everything asserted here must already have happened.
-    const evidence = collectFailureEvidence({ liveIndex: live, stagingCopy: staging });
+    const evidence = collectFailureEvidence({ liveIndex: live, stagingCopy: staging }, NO_ACTIVITY);
 
     expect(mocks.readActivity).toHaveBeenCalledTimes(1);
     expect(stat.mock.calls.map(([file]) => file)).toEqual(paths);
