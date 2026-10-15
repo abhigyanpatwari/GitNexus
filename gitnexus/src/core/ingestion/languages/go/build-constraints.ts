@@ -177,6 +177,7 @@ export function goFileBuildConstraint(
   filePath: string,
   source: string | undefined,
 ): GoBuildConstraint {
+  // go/build.goodOSArchFile checks the stem before the first dot.
   const basename = (filePath.replace(/\\/g, '/').split('/').pop() ?? '').split('.')[0];
   const parts = basename.split('_');
   if (parts.at(-1) === 'test') parts.pop();
@@ -213,7 +214,10 @@ function possibleTarget(term: Term): boolean {
 }
 
 export function goBuildConstraintsMayOverlap(a: GoBuildConstraint, b: GoBuildConstraint): boolean {
-  if (a === null || b === null) return true;
+  if (a === null || b === null) {
+    const known = a ?? b;
+    return known === null || known.some(possibleTarget);
+  }
   for (const left of a)
     for (const right of b) {
       const merged = mergeTerms(left, right);
