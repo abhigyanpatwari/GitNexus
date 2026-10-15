@@ -202,12 +202,36 @@ function normaliseArg(raw: string): string {
 }
 
 /**
+ * When `text[i]` starts an `if (cond)`, the index just after its condition group; `-1`
+ * when the condition is malformed; `null` when no `if` starts here.
+ */
+function nestedIfCondition(text: string, i: number): number | null {
+  if (i >= text.length || !isIdentStart(text[i])) return null;
+  let j = i + 1;
+  while (j < text.length && isIdentPart(text[j])) j++;
+  if (text.slice(i, j) !== 'if') return null;
+  while (j < text.length && /\s/.test(text[j])) j++;
+  if (text[j] !== '(') return null;
+  const group = parseArgs(text, j);
+  return group ? group.end : -1;
+}
+
+/**
  * Skip one statement following an `if (…)` / `else`: either a `{ … }` block or a
  * single directive call. Returns the index to resume scanning from.
  */
 function skipConditionalBody(text: string, from: number): number {
   let i = from;
-  while (i < text.length && /\s/.test(text[i])) i++;
+  for (;;) {
+    while (i < text.length && /\s/.test(text[i])) i++;
+    // `else if (cond) body` and `if (a) if (b) body`: the nested `if` owns the body that
+    // follows its condition, so step over `if (cond)` and skip that body instead
+    // (iteratively: an `if` chain can be arbitrarily long).
+    const nested = nestedIfCondition(text, i);
+    if (nested === null) break;
+    if (nested === -1) return resyncAfterMalformed(text, i);
+    i = nested;
+  }
   if (i >= text.length) return i;
   if (text[i] === '{') {
     const blockStart = i;
@@ -237,7 +261,7 @@ function skipConditionalBody(text: string, from: number): number {
     let j = i + 1;
     while (j < text.length && isIdentPart(text[j])) j++;
     const head = text.slice(i, j);
-    if (CONDITIONAL_HEADS.has(head)) return j; // `else if (…)` — let the main loop handle the chain.
+    if (CONDITIONAL_HEADS.has(head)) return j; // a bare `else` here has no body to skip
     while (j < text.length && /\s/.test(text[j])) j++;
     if (text[j] === '(') {
       const group = parseArgs(text, j);

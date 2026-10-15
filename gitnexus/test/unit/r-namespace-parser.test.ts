@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseRNamespaceImportFrom } from '../../src/core/ingestion/languages/r/namespace-imports.js';
+import {
+  parseRNamespaceExports,
+  parseRNamespaceImportFrom,
+} from '../../src/core/ingestion/languages/r/namespace-imports.js';
 import { loadRPackageConfig } from '../../src/core/ingestion/languages/r/package-config.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 
@@ -130,6 +133,54 @@ describe('parseRNamespaceImportFrom', () => {
       'importFrom(dplyr, mutate)',
     ].join('\n');
     expect(parseRNamespaceImportFrom(src)).toEqual([{ pkg: 'dplyr', name: 'mutate' }]);
+  });
+
+  describe('an `else if` chain is conditional all the way down', () => {
+    const kept = 'importFrom(dplyr, mutate)';
+    const chains: Array<[string, string]> = [
+      ['bare else-if body', 'if (a) {\n} else if (b) importFrom(x, y)'],
+      ['braced else-if body', 'if (a) {\n} else if (b) {\n  importFrom(x, y)\n}'],
+      ['unbraced chain', 'if (a) importFrom(p, q) else if (b) importFrom(x, y)'],
+      ['else-if then else', 'if (a) {\n} else if (b) {\n} else importFrom(x, y)'],
+      ['long chain', 'if (a) 1 else if (b) 2 else if (c) importFrom(x, y) else if (d) 3'],
+      [
+        'else-if with a call in the condition',
+        'if (a) {\n} else if (is.na(f(b))) importFrom(x, y)',
+      ],
+      ['if directly under if', 'if (a) if (b) importFrom(x, y)'],
+    ];
+    it.each(chains)('importFrom: %s is ignored and the next directive is kept', (_n, chain) => {
+      expect(parseRNamespaceImportFrom(`${chain}\n${kept}\n`)).toEqual([
+        { pkg: 'dplyr', name: 'mutate' },
+      ]);
+    });
+
+    it.each([
+      ['export', 'export(hidden)', 'namedExports', ['hidden']],
+      ['exportClasses', 'exportClasses(Hidden)', 'namedExports', ['Hidden']],
+      ['exportMethods', 'exportMethods(hidden)', 'namedExports', ['hidden']],
+      ['S3method', 'S3method(print, hidden)', 'namedExports', ['print.hidden']],
+      ['S3method with method', 'S3method(print, hidden, impl)', 'namedExports', ['impl']],
+      ['exportPattern', 'exportPattern("^hidden")', 'exportPatterns', ['^hidden']],
+    ] as const)('%s inside an else-if is not exported', (_n, directive, field, leaked) => {
+      const src = `if (a) {\n} else if (b) ${directive}\nexport(visible)\n`;
+      const parsed = parseRNamespaceExports(src);
+      expect(parsed.namedExports).toEqual(['visible']);
+      expect(parsed.exportPatterns).toEqual([]);
+      // positive control: the same directive outside a conditional is read
+      const plain = parseRNamespaceExports(`${directive}\n`);
+      expect(plain[field]).toEqual(leaked);
+    });
+
+    it('a very long chain of nested ifs is skipped without recursion', () => {
+      const src = `${'if (a) '.repeat(50_000)}importFrom(x, y)\n${kept}\n`;
+      expect(parseRNamespaceImportFrom(src)).toEqual([{ pkg: 'dplyr', name: 'mutate' }]);
+    });
+
+    it('a plain else body and the directives after the chain are unaffected', () => {
+      const src = 'if (a) {\n} else if (b) {\n} else {\n  importFrom(x, y)\n}\nimportFrom(p, q)\n';
+      expect(parseRNamespaceImportFrom(src)).toEqual([{ pkg: 'p', name: 'q' }]);
+    });
   });
 
   it('returns a self-import entry like any other (dropping it is the consumer job)', () => {
