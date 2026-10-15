@@ -14,6 +14,8 @@ import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
 import { R_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
+import { RFieldExtractor } from '../../src/core/ingestion/field-extractors/r.js';
+import { getRTopLevelMethodOwnerName } from '../../src/core/ingestion/method-extractors/r.js';
 import { isRNonNamingArgumentCapture } from '../../src/core/ingestion/languages/r/naming-argument.js';
 import { parseSourceSafe } from '../../src/core/tree-sitter/safe-parse.js';
 import { MAX_RATIO, SHAPES, measureScaling } from '../helpers/r-argument-scaling.js';
@@ -313,6 +315,62 @@ describe('R_QUERIES: documented argument-matching limits', () => {
     expect(definitions('X <- R6Class("X", public = list(m = function() 1))')).toEqual([
       'definition.class:X',
       'definition.method:m',
+    ]);
+  });
+});
+
+/**
+ * Documented limit (docs/languages/r-provider.md, Known limitations): the S4 and
+ * RefClass constructors and `setGeneric` / `setMethod` are recognised only as a bare
+ * identifier callee. A namespace-qualified call (`methods::setClass(...)`) has a
+ * `namespace_operator` callee, so it creates no class, slot, generic or method, in the
+ * query and in the field and method extractors alike. `R6::R6Class` is supported.
+ * Each case is paired with its unqualified positive control.
+ */
+describe('R_QUERIES: namespace-qualified S4 constructors are not recognised (documented)', () => {
+  it.each([
+    [
+      'setClass',
+      'setClass("A", slots = list(x = "numeric"))',
+      ['definition.class:A', 'definition.property:x'],
+    ],
+    [
+      'setRefClass',
+      'setRefClass("A", fields = list(x = "numeric"))',
+      ['definition.class:A', 'definition.property:x'],
+    ],
+    [
+      'setGeneric',
+      'setGeneric("area", function(shape) standardGeneric("area"))',
+      ['definition.function:area'],
+    ],
+    ['setMethod', 'setMethod("area", "Circle", function(shape) 1)', ['definition.method:area']],
+  ])('%s: bare call is recognised, methods::-qualified call is not', (name, bare, expected) => {
+    expect(definitions(bare)).toEqual(expected);
+    const qualified = bare.replace(name, `methods::${name}`);
+    expect(definitions(qualified)).toEqual([]);
+  });
+
+  it('the field and method extractors also require a bare identifier callee', () => {
+    const callOf = (source: string): Parser.SyntaxNode =>
+      parseR(source).rootNode.descendantsOfType('call')[0];
+    const fields = new RFieldExtractor();
+    expect(fields.isTypeDeclaration(callOf('setClass("A", slots = list(x = "numeric"))'))).toBe(
+      true,
+    );
+    expect(
+      fields.isTypeDeclaration(callOf('methods::setClass("A", slots = list(x = "numeric"))')),
+    ).toBe(false);
+    expect(getRTopLevelMethodOwnerName(callOf('setMethod("f", "A", function(x) 1)'))).toBe('A');
+    expect(getRTopLevelMethodOwnerName(callOf('methods::setMethod("f", "A", function(x) 1)'))).toBe(
+      null,
+    );
+  });
+
+  it('R6::R6Class, by contrast, is recognised', () => {
+    expect(definitions('X <- R6::R6Class("X", public = list(f = 1))')).toEqual([
+      'definition.class:X',
+      'definition.property:f',
     ]);
   });
 });
