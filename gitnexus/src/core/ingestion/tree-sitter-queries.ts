@@ -3051,6 +3051,19 @@ export const ZIG_QUERIES = `
   function: (field_expression
     member: (identifier) @call.name)) @call
 `;
+/**
+ * Every named expression kind the R grammar allows as an argument value, except
+ * `function_definition` (an R6 entry holding a function is a method, not a field).
+ * Mirrors RFieldExtractor, which accepts any non-function value, so the query and
+ * the extractor agree on what a field is.
+ */
+const R6_FIELD_VALUE = `[
+  (binary_operator) (braced_expression) (break) (call) (complex) (dot_dot_i) (dots)
+  (extract_operator) (false) (float) (for_statement) (identifier) (if_statement) (inf)
+  (integer) (na) (namespace_operator) (nan) (next) (null) (parenthesized_expression)
+  (repeat_statement) (return) (string) (subset) (subset2) (true) (unary_operator)
+  (while_statement)
+]`;
 export const R_QUERIES = `
 ; ── Functions (name <- function(...) or name = function(...)) ────────────────
 (binary_operator
@@ -3199,7 +3212,7 @@ export const R_QUERIES = `
           arguments: (arguments
             (argument
               name: (identifier) @name
-              value: [(string) (integer) (float) (true) (false) (null) (identifier) (call) (unary_operator) (binary_operator)] @_val) @definition.property))))))
+              value: ${R6_FIELD_VALUE} @_val) @definition.property))))))
 
 ; ── R6 Fields via bare call ──────────────────────────────────────────────────
 (binary_operator
@@ -3217,7 +3230,7 @@ export const R_QUERIES = `
           arguments: (arguments
             (argument
               name: (identifier) @name
-              value: [(string) (integer) (float) (true) (false) (null) (identifier) (call) (unary_operator) (binary_operator)] @_val2) @definition.property))))))
+              value: ${R6_FIELD_VALUE} @_val2) @definition.property))))))
 
 ; ── S4 slots / representation ────────────────────────────────────────────────
 (call
