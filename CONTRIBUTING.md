@@ -162,7 +162,7 @@ The CLI pins and bundles the native `tree-sitter` runtime and its npm grammars.
 Several compatible grammars still declare older runtime peer ranges. Root npm
 `overrides` do not propagate to consumers, and older npm versions validate bundled
 peers against their original ranges even when an override is configured. The
-lockfile therefore pins the same eight audited peers to exactly `0.25.1`.
+lockfile therefore pins the same nine audited peers to exactly `0.25.1`.
 `gitnexus/scripts/prepare-tree-sitter-bundle.cjs` runs during `postinstall`
 and `prepack` to keep installed dependency manifests consistent with that lockfile
 and the published bundle. It leaves grammar sources and native binaries unchanged
