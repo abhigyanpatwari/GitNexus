@@ -37,6 +37,8 @@ import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
+import type { CollectedCfgs } from './cfg/collect.js';
+import type { RenameProvider } from './rename-provider.js';
 import type { GraphNode, NodeLabel, ParameterTypeClass, RelationshipType } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
 import type { MutableSemanticModel } from './model/semantic-model.js';
@@ -251,6 +253,15 @@ interface LanguageProviderConfig {
   /** File extensions that map to this language (e.g., ['.ts', '.tsx']) */
   readonly extensions: readonly string[];
 
+  /**
+   * Files with the same provider-local key must be rewritten together when
+   * any member changes, is added, or is deleted. Resolution can change edges
+   * between untouched members even without an import or current graph edge.
+   * Derive the key from the path alone: deleted files have no current source.
+   * This only widens incremental invalidation, not semantic resolution scope.
+   */
+  readonly incrementalResolutionGroup?: (filePath: string) => string | undefined;
+
   /** Entry-point function name patterns specific to this language.
    *  Merged with universal patterns at runtime for process detection scoring.
    *  Default: [] (only universal patterns apply). */
@@ -371,6 +382,13 @@ interface LanguageProviderConfig {
    *  Default: undefined (no remapping). */
   readonly resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null;
 
+  /** Name an owner declared outside this member's lexical container.
+   *  Consulted for each ancestor during the enclosing-owner walk. The name
+   *  qualifies member identities, but carries no graph id: ownership is
+   *  resolved by `ScopeResolver.populateWorkspaceOwners` after all files load.
+   *  Default: undefined (owners are derived from lexical containers). */
+  readonly resolveDetachedOwnerName?: (node: SyntaxNode) => string | undefined;
+
   /**
    * The type a whole FILE declares, when the language makes the file itself
    * a type (Zig: a `.zig` file with top-level fields is a struct whose name
@@ -430,6 +448,9 @@ interface LanguageProviderConfig {
   readonly enclosingFunctionFinder?: (
     ancestorNode: SyntaxNode,
   ) => { funcName: string; label: NodeLabel } | null;
+
+  /** Free functions have distinct graph identities for each callable signature. */
+  readonly overloadsFreeFunctions?: boolean;
 
   // ── Template constraint extraction (SFINAE / `requires`) ────────────
   /**
@@ -951,10 +972,22 @@ interface LanguageProviderConfig {
    * gated on the `--pdg` opt-in; the resulting per-function CFGs are serialized
    * onto `ParsedFile.cfgSideChannel` and emitted as BasicBlock nodes + CFG
    * edges during scope-resolution. `TNode` is `SyntaxNode` for the tree-sitter
-   * languages. Default: undefined (language has no CFG support yet — TS/JS are
-   * the M1 set).
+   * languages. Providers with a standalone source parser use collectSourceCfgs
+   * instead. Default: undefined.
    */
   readonly cfgVisitor?: CfgVisitor<SyntaxNode>;
+
+  /** Source-backed flow extraction for providers that do not use a tree AST.
+   * Runs on fresh scope extraction only when PDG is enabled. The provider owns
+   * executable-region discovery and reports the same caps as AST visitors. */
+  readonly collectSourceCfgs?: (
+    sourceText: string,
+    filePath: string,
+    maxFunctionLines: number,
+  ) => CollectedCfgs;
+
+  /** Provider-owned source names and rewrites over the existing semantic model. */
+  readonly rename?: RenameProvider;
 
   /**
    * Interpret a raw `@import.statement` capture group into a `ParsedImport`.

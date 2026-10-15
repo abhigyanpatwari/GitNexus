@@ -420,6 +420,12 @@ export const ZIG_SCOPE_QUERY = `
 (call_expression
   function: (identifier) @reference.name) @reference.call.free
 
+;; Field accesses retain the complete receiver so the shared typed-chain
+;; resolver can follow container fields outside call/argument positions too.
+(field_expression
+  object: (_) @reference.receiver
+  member: (identifier) @reference.name) @reference.read
+
 ;; References — member calls: obj.method(...) / mod.fn(...)
 (call_expression
   function: (field_expression

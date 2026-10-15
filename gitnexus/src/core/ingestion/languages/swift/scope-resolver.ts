@@ -56,6 +56,11 @@ import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import {
+  canonicalizeWorkspaceBindings,
+  canonicalModuleExports,
+} from '../../scope-resolution/scope/canonicalize-bindings.js';
+import { canonicalName } from './identifiers.js';
 import { swiftProvider } from '../swift.js';
 import {
   swiftArityCompatibility,
@@ -75,6 +80,9 @@ import { swiftIsCallableVisibleFromCaller } from './callable-visibility.js';
 const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
 
 const swiftScopeResolver: ScopeResolver = {
+  moduleExports: (parsed) => canonicalModuleExports(parsed, canonicalName),
+  populateWorkspaceReferences: (parsedFiles) =>
+    canonicalizeWorkspaceBindings(parsedFiles, canonicalName),
   language: SupportedLanguages.Swift,
   languageProvider: swiftProvider,
   importEdgeReason: 'swift-scope: import',
@@ -148,6 +156,10 @@ const swiftScopeResolver: ScopeResolver = {
   // heuristic over-connects, so keep it off. Return-type propagation on.
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
+
+  // Unqualified methods need a reachable owner; retain the full lexical
+  // candidate set so the shared resolver also narrows free overloads by arity.
+  freeCallsRequireInstanceOwnership: true,
 
   // Swift has no `new` keyword: `UserService()` is a bare call that
   // resolves to the type's Constructor/Class. With whole-module sibling

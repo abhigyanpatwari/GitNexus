@@ -57,6 +57,20 @@ version that writes the completeness receipt. An older index or unreadable compl
 `incompleteReasons: ["scope-extraction-unverified"]`; re-analyze it before treating
 empty impact results as exact.
 
+**Invalid symbol identity:** `query`, `context`, or `impact` can return
+`The index returned an invalid symbol identity` with recovery guidance instead
+of returning malformed results. Rebuild from the affected repository root with
+`npx gitnexus analyze --force`. If the error returns, retain the failing command,
+GitNexus/Node versions and `gitnexus doctor` output for investigation. This check
+detects blank IDs and NUL-containing identity fields; it does not prove that
+every otherwise plausible name, path or source range is correct.
+
+**MCP freshness after rebuilding:** a warm session refreshes its index reference
+when it opens the replacement graph, including a rebuild at the same commit.
+A busy reader keeps its old reference until it can reopen. During an observed
+graph/metadata publication gap, freshness is `unknown`; retry after analysis
+finishes rather than treating that response as current.
+
 ---
 
 ## Embeddings

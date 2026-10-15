@@ -8,6 +8,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { kotlinRenameProvider } from './kotlin/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { kotlinClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
@@ -130,6 +131,7 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const kotlinProvider = defineLanguage({
+  rename: kotlinRenameProvider,
   id: SupportedLanguages.Kotlin,
   extensions: ['.kt', '.kts'],
   entryPointPatterns: [

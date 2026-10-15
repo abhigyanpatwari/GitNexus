@@ -1,0 +1,68 @@
+{
+  "language": "java",
+  "description": "Rename an interface method through an implementation, override, super call and statically typed dispatch; preserve an unrelated owner.",
+  "categories": [
+    "polymorphism",
+    "call-graph",
+    "unrelated-owner",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "dispatch",
+    "kind": "Method",
+    "file": "Delivery.java",
+    "startLine": 1
+  },
+  "newName": "deliver",
+  "expect": {
+    "status": "success",
+    "edits": 7
+  },
+  "edges": [
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": {
+        "name": "dispatch",
+        "kind": "Method",
+        "file": "Delivery.java",
+        "startLine": 4
+      },
+      "to": {
+        "name": "dispatch",
+        "kind": "Method",
+        "file": "Delivery.java",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "METHOD_OVERRIDES",
+      "from": {
+        "name": "ExpressCourier",
+        "kind": "Class",
+        "file": "Delivery.java",
+        "startLine": 6
+      },
+      "to": {
+        "name": "dispatch",
+        "kind": "Method",
+        "file": "Delivery.java",
+        "startLine": 4
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "send",
+        "kind": "Method",
+        "file": "Delivery.java",
+        "startLine": 10
+      },
+      "to": {
+        "name": "dispatch",
+        "kind": "Method",
+        "file": "Delivery.java",
+        "startLine": 1
+      }
+    }
+  ]
+}

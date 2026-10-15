@@ -3,24 +3,6 @@
   "baselineSourceSha": "dd096e690c06e5d54ab3595c63b83f15e04b6191",
   "gaps": [
     {
-      "id": "rename.comments-strings",
-      "issue": 3486,
-      "reason": "Whole-file word replacement rewrites comments and strings (#3486).",
-      "baselineActual": [
-        "rename/writer.ts:10:// closeWriter is a comment, not a reference.",
-        "rename/writer.ts:11:export const title = 'closeWriter';"
-      ]
-    },
-    {
-      "id": "rename.homonyms",
-      "issue": 3486,
-      "reason": "Whole-file word replacement rewrites unrelated same-named symbols (#3486).",
-      "baselineActual": [
-        "rename/homonym.ts:1:export function closeWriter(): string {",
-        "rename/writer.ts:5:closeWriter(): void {}"
-      ]
-    },
-    {
       "id": "routes.helper-registration",
       "issue": 3487,
       "reason": "A literal route forwarded through a local helper is not extracted (#3487).",

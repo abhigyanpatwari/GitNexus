@@ -28,17 +28,18 @@ const tsVisitor = (): CfgVisitor<SyntaxNode> => {
   return v;
 };
 
-describe('CFG provider gate — a cfgVisitor enables the worker CFG path', () => {
-  it('TS and JS providers carry a cfgVisitor', () => {
-    expect(getProvider(SupportedLanguages.TypeScript).cfgVisitor).toBeDefined();
-    expect(getProvider(SupportedLanguages.JavaScript).cfgVisitor).toBeDefined();
-  });
+describe('CFG provider gate', () => {
+  it.each(Object.values(SupportedLanguages))(
+    '%s provides AST or source-backed flow extraction',
+    (language) => {
+      const provider = getProvider(language);
+      expect(provider.cfgVisitor ?? provider.collectSourceCfgs).toBeDefined();
+    },
+  );
 
-  it('a non-CFG language (COBOL) has no cfgVisitor ⇒ worker emits no cfgSideChannel', () => {
-    // `provider.cfgVisitor &&` short-circuits in the worker → no CFG, no field.
-    // COBOL is the deliberate non-goal of the PDG-language rollout (#2195) —
-    // every other supported language now carries a cfgVisitor.
+  it('standalone source extraction does not require a synthetic tree visitor', () => {
     expect(getProvider(SupportedLanguages.Cobol).cfgVisitor).toBeUndefined();
+    expect(getProvider(SupportedLanguages.Cobol).collectSourceCfgs).toBeTypeOf('function');
   });
 });
 

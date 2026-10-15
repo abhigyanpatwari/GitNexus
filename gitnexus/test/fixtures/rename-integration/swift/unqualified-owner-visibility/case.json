@@ -1,0 +1,69 @@
+{
+  "language": "swift",
+  "description": "Keep unqualified calls within their own or inherited owner and leave a free-context unresolved name unbound to instance methods.",
+  "categories": [
+    "receiver",
+    "inheritance",
+    "unrelated-owner",
+    "call-graph"
+  ],
+  "target": {
+    "name": "sentinel",
+    "kind": "Function",
+    "file": "owners.swift",
+    "startLine": 10
+  },
+  "newName": "measured",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "own",
+        "kind": "Function",
+        "file": "owners.swift",
+        "startLine": 2
+      },
+      "to": {
+        "name": "touch",
+        "kind": "Function",
+        "file": "owners.swift",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "inherited",
+        "kind": "Function",
+        "file": "owners.swift",
+        "startLine": 5
+      },
+      "to": {
+        "name": "touch",
+        "kind": "Function",
+        "file": "owners.swift",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "freeCaller",
+        "kind": "Function",
+        "file": "owners.swift",
+        "startLine": 11
+      },
+      "to": {
+        "name": "sentinel",
+        "kind": "Function",
+        "file": "owners.swift",
+        "startLine": 10
+      }
+    }
+  ],
+  "exactOutgoing": true
+}

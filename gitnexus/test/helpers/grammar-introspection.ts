@@ -55,6 +55,7 @@ const GRAMMAR_PACKAGES: Partial<Record<SupportedLanguages, { pkg: string; subpat
   [SupportedLanguages.Java]: { pkg: 'tree-sitter-java', subpaths: ['src/node-types.json'] },
   [SupportedLanguages.C]: { pkg: 'tree-sitter-c', subpaths: ['src/node-types.json'] },
   [SupportedLanguages.CPlusPlus]: { pkg: 'tree-sitter-cpp', subpaths: ['src/node-types.json'] },
+  [SupportedLanguages.ObjectiveC]: { pkg: 'tree-sitter-objc', subpaths: ['src/node-types.json'] },
   [SupportedLanguages.CSharp]: { pkg: 'tree-sitter-c-sharp', subpaths: ['src/node-types.json'] },
   [SupportedLanguages.Go]: { pkg: 'tree-sitter-go', subpaths: ['src/node-types.json'] },
   [SupportedLanguages.Ruby]: { pkg: 'tree-sitter-ruby', subpaths: ['src/node-types.json'] },

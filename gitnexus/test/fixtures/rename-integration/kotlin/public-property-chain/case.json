@@ -1,0 +1,53 @@
+{
+  "language": "kotlin",
+  "description": "Rename a public Kotlin property across typed lateinit receiver chains, including a write with a shadow parameter.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "shadowing",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "badge",
+    "kind": "Property",
+    "file": "profile.kt",
+    "startLine": 1
+  },
+  "newName": "displayBadge",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "profile.kt",
+        "startLine": 9
+      },
+      "to": {
+        "name": "badge",
+        "kind": "Property",
+        "file": "profile.kt",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "update",
+        "kind": "Function",
+        "file": "profile.kt",
+        "startLine": 10
+      },
+      "to": {
+        "name": "badge",
+        "kind": "Property",
+        "file": "profile.kt",
+        "startLine": 1
+      }
+    }
+  ]
+}

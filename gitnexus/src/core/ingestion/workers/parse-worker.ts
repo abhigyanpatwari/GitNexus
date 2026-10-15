@@ -1007,16 +1007,7 @@ const callableOwnQualifiedName = (
 
   const prefix = enclosingCallablePrefix(fnNode, filePath, provider);
   const classInfo =
-    prefix === undefined
-      ? cachedFindEnclosingClassInfo(
-          fnNode,
-          filePath,
-          provider.resolveEnclosingOwner,
-          undefined,
-          provider.resolveFileTypeOwner,
-          provider.resolveContainerTypeOwner,
-        )
-      : null;
+    prefix === undefined ? cachedFindEnclosingClassInfo(fnNode, filePath, provider) : null;
   const objectOwner =
     prefix === undefined && classInfo === null && shouldObjectOwnerQualifyCallable(finalLabel)
       ? findObjectLiteralBindingInfo(fnNode, filePath, { includeOwnerName: true })?.ownerName
@@ -1069,14 +1060,7 @@ const findEnclosingFunctionId = (
           if (override !== null) finalLabel = override;
         }
         // Qualify with enclosing class to match definition-phase node IDs
-        const classInfo = cachedFindEnclosingClassInfo(
-          current,
-          filePath,
-          provider.resolveEnclosingOwner,
-          undefined,
-          provider.resolveFileTypeOwner,
-          provider.resolveContainerTypeOwner,
-        );
+        const classInfo = cachedFindEnclosingClassInfo(current, filePath, provider);
         const encLang = getLanguageFromFilename(filePath);
         const standaloneMethodInfo =
           (finalLabel === 'Method' || finalLabel === 'Constructor') &&
@@ -1180,10 +1164,7 @@ const findEnclosingFunctionId = (
         const classInfo = cachedFindEnclosingClassInfo(
           current.previousSibling ?? current,
           filePath,
-          provider.resolveEnclosingOwner,
-          undefined,
-          provider.resolveFileTypeOwner,
-          provider.resolveContainerTypeOwner,
+          provider,
         );
         // Same nesting rule as the generic branch above (#2699). Anchored on
         // `sigNode`-equivalent (`current.previousSibling ?? current`) so Dart,
@@ -1246,10 +1227,8 @@ const findEnclosingFunctionId = (
 const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
-  resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+  provider: LanguageProvider,
   getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
-  resolveFileTypeOwner?: LanguageProvider['resolveFileTypeOwner'],
-  resolveContainerTypeOwner?: LanguageProvider['resolveContainerTypeOwner'],
 ): EnclosingClassInfo | null => {
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
@@ -1257,10 +1236,11 @@ const cachedFindEnclosingClassInfo = (
   const result = findEnclosingClassInfo(
     node,
     filePath,
-    resolveEnclosingOwner,
+    provider.resolveEnclosingOwner,
     getQualifiedOwnerName,
-    resolveFileTypeOwner,
-    resolveContainerTypeOwner,
+    provider.resolveFileTypeOwner,
+    provider.resolveContainerTypeOwner,
+    provider.resolveDetachedOwnerName,
   );
   classIdCache.set(node, result);
   return result;
@@ -2247,10 +2227,8 @@ const processFileGroup = (
                 const propEnclosingInfo = cachedFindEnclosingClassInfo(
                   captureMap['call'],
                   file.path,
-                  provider.resolveEnclosingOwner,
+                  provider,
                   propGetQualifiedOwnerName,
-                  provider.resolveFileTypeOwner,
-                  provider.resolveContainerTypeOwner,
                 );
                 const propEnclosingClassId =
                   propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
@@ -2669,10 +2647,8 @@ const processFileGroup = (
           ? cachedFindEnclosingClassInfo(
               nameNode || definitionNode,
               file.path,
-              provider.resolveEnclosingOwner,
+              provider,
               getQualifiedOwnerName,
-              provider.resolveFileTypeOwner,
-              provider.resolveContainerTypeOwner,
             )
           : null;
       const enclosingClassId =
@@ -2927,15 +2903,23 @@ const processFileGroup = (
         }
       }
 
-      // Append #<paramCount> to owned callable IDs to disambiguate overloads.
-      // Top-level Function IDs stay stable; functions inside an owner may overload.
+      // Providers opt free functions into the same signature identity scheme
+      // used by owned callables. A signature stays stable when overloads are added.
+      const freeFunctionOverloads =
+        nodeLabel === 'Function' &&
+        enclosingClassId === null &&
+        provider.overloadsFreeFunctions === true;
       // When same-arity collisions exist, append ~type1,type2 for further disambiguation.
       const needsAritySuffix =
         nodeLabel === 'Method' ||
         nodeLabel === 'Constructor' ||
-        (nodeLabel === 'Function' && enclosingClassId !== null);
+        (nodeLabel === 'Function' && enclosingClassId !== null) ||
+        freeFunctionOverloads;
       let arityTag = needsAritySuffix && arityForId !== undefined ? `#${arityForId}` : '';
-      if (arityTag && defMethodMap && defMethodInfo) {
+      if (freeFunctionOverloads) {
+        const parameterTypes = methodProps.parameterTypes as string[] | undefined;
+        if (parameterTypes?.length) arityTag += `~${parameterTypes.join(',')}`;
+      } else if (arityTag && defMethodMap && defMethodInfo) {
         const groups = buildCollisionGroups(defMethodMap);
         arityTag += typeTagForId(
           defMethodMap,
@@ -3215,7 +3199,11 @@ const processFileGroup = (
         name: nodeName,
         nodeId,
         type: nodeLabel,
-        ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
+        ...(qualifiedTypeName !== undefined
+          ? { qualifiedName: qualifiedTypeName }
+          : enclosingClassInfo && enclosingClassId === null
+            ? { qualifiedName }
+            : {}),
         parameterCount: methodProps.parameterCount as number | undefined,
         requiredParameterCount: methodProps.requiredParameterCount as number | undefined,
         parameterTypes: methodProps.parameterTypes as string[] | undefined,

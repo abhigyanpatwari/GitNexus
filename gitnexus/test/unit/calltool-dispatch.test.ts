@@ -195,6 +195,14 @@ function mockSymbolRows(rows: Record<string, unknown>[]) {
 
 const duplicateFixtureDirs: string[] = [];
 
+/** LocalBackend.rename is private; the dispatch tests spy on it through this narrow view. */
+interface RenameEntryPoint {
+  rename(repo: { repoPath: string }, params: Record<string, unknown>): Promise<unknown>;
+}
+function spyOnRename(target: LocalBackend) {
+  return vi.spyOn(target as unknown as RenameEntryPoint, 'rename');
+}
+
 function makeDuplicateNameFixture() {
   const mainDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-main-'));
   const wtDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-shared-wt-'));
@@ -2534,20 +2542,49 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either symbol_name or symbol_uid');
   });
 
-  it('rename: a swallowed apply-edit write failure degrades to status:partial + failed_files (#2283)', async () => {
-    // Resolve the definition, no graph refs. readFile succeeds (so a def edit is
-    // recorded), but writeFile fails on apply — the failure is swallowed via
-    // logQueryError. The result must NOT report a clean success: it degrades to
-    // 'partial' and lists the unwritten file, instead of status:'success'.
+  it.each([
+    ['omitted', {}],
+    ['true', { dry_run: true }],
+    ['false', { dry_run: false }],
+  ])('forwards rename arguments untouched when dry_run is %s', async (_label, extra) => {
+    const rename = spyOnRename(backend).mockResolvedValue({ applied: false });
+    await backend.callTool('rename', { new_name: 'newName', ...extra });
+    expect(rename).toHaveBeenCalledWith(expect.anything(), { new_name: 'newName', ...extra });
+  });
+
+  it('no longer dispatches a separate rename_preview tool', async () => {
+    const rename = spyOnRename(backend);
+    await expect(backend.callTool('rename_preview', { new_name: 'newName' })).rejects.toThrow(
+      'Unknown tool: rename_preview',
+    );
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { dry_run: true }, { dry_run: false }])(
+    'rename rejects branch-pinned checkout edits (%j)',
+    async (extra) => {
+      const rename = spyOnRename(backend);
+      const result = await backend.callTool('rename', {
+        new_name: 'newName',
+        branch: 'main',
+        ...extra,
+      });
+      expect(result.error).toMatch(/branch/);
+      expect(rename).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rename: a first apply-edit write failure reports status:error + failed_files (#2283)', async () => {
+    // Real graph/semantic resolution produces an edit; staging its replacement fails.
     (executeParameterized as any)
       .mockResolvedValueOnce([
         {
-          id: 'func:oldName',
+          id: 'Function:src/target.ts:oldName',
           name: 'oldName',
           type: 'Function',
           filePath: 'src/target.ts',
           startLine: 1,
-          endLine: 5,
+          endLine: 1,
         },
       ])
       .mockResolvedValue([]);
@@ -2558,12 +2595,19 @@ describe('LocalBackend.callTool', () => {
     backend = new LocalBackend();
     await backend.init();
 
-    // The symbol is stored at 0-based startLine 1; context() presents it 1-based
-    // (line 2) and rename subtracts 1 to recover the 0-based file index (1), so
-    // `oldName` must sit on the file's 0-based line 1 for the definition edit to
-    // fire. (#2380: the mock previously put it on line 0, which stopped matching
-    // once context() went 1-based.)
-    const readSpy = vi.spyOn(fsPromises, 'readFile').mockResolvedValue('\nfunction oldName() {}\n');
+    // Graph lines are zero-based; context presents this declaration on line 2.
+    mkdirSync(path.join(repoDir, 'src'));
+    writeFileSync(path.join(repoDir, 'src/target.ts'), '\nfunction oldName() {}\n');
+    lbugMocks.executeQuery.mockResolvedValue([
+      { id: 'File:src/target.ts', name: 'target.ts', filePath: 'src/target.ts' },
+      {
+        id: 'Function:src/target.ts:oldName',
+        name: 'oldName',
+        filePath: 'src/target.ts',
+        startLine: 1,
+        endLine: 1,
+      },
+    ]);
     const writeSpy = vi
       .spyOn(fsPromises, 'writeFile')
       .mockRejectedValue(new Error('EACCES: permission denied'));
@@ -2573,13 +2617,12 @@ describe('LocalBackend.callTool', () => {
         new_name: 'newName',
         dry_run: false,
       });
-      expect(result.status).toBe('partial');
+      expect(result.status).toBe('error');
       expect(result.failed_files).toContain('src/target.ts');
-      // It DID attempt to apply (not a dry run) — `applied` stays true; the
-      // honest signal is the 'partial' status + failed_files, not `applied`.
-      expect(result.applied).toBe(true);
+      expect(result.applied).toBe(false);
+      expect(result.total_edits).toBe(0);
+      expect(result.application_status).toBe('failed');
     } finally {
-      readSpy.mockRestore();
       writeSpy.mockRestore();
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -2976,6 +3019,7 @@ describe('LocalBackend.callTool', () => {
 
   // Legacy tool aliases
   it('dispatches "search" as alias for query', async () => {
+    (executeQuery as any).mockResolvedValue([]);
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('search', { query: 'auth' });
     expect(result).toHaveProperty('processes');
@@ -3957,6 +4001,82 @@ describe('LocalBackend.resolveRepo', () => {
     }
   });
 
+  describe('rename repo omission with several indexed repos (cwd inside one)', () => {
+    let outerDir: string;
+    let otherDir: string;
+    let renameSpy: ReturnType<typeof spyOnRename>;
+    let cwdSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(async () => {
+      outerDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-omit-outer-'));
+      otherDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-omit-other-'));
+      const cwdDir = path.join(outerDir, 'src');
+      mkdirSync(cwdDir, { recursive: true });
+      duplicateFixtureDirs.push(outerDir, otherDir);
+      (listRegisteredRepos as any).mockResolvedValue([
+        {
+          ...MOCK_REPO_ENTRY,
+          name: 'outer',
+          path: outerDir,
+          storagePath: path.join(outerDir, '.gitnexus'),
+        },
+        {
+          ...MOCK_REPO_ENTRY,
+          name: 'other',
+          path: otherDir,
+          storagePath: path.join(otherDir, '.gitnexus'),
+        },
+      ]);
+      (getGitRoot as any).mockReturnValue(outerDir);
+      cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(cwdDir);
+      renameSpy = spyOnRename(backend).mockResolvedValue({ applied: false });
+      await backend.init();
+    });
+
+    afterEach(() => {
+      cwdSpy.mockRestore();
+    });
+
+    // A call that provably cannot write follows the read-tool omission rule.
+    it.each([
+      ['omitted', {}],
+      ['true', { dry_run: true }],
+    ])('previews with dry_run %s against the cwd-derived repo', async (_label, extra) => {
+      await backend.callTool('rename', { symbol_name: 'oldName', new_name: 'newName', ...extra });
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      expect(renameSpy.mock.calls[0][0].repoPath).toBe(outerDir);
+    });
+
+    // Anything that could write - and any malformed value - keeps the stricter rule.
+    it.each([
+      ['false', false],
+      ['a string', 'false'],
+      ['a number', 0],
+      ['null', null],
+    ])('requires an explicit repo when dry_run is %s', async (_label, dryRun) => {
+      await expect(
+        backend.callTool('rename', {
+          symbol_name: 'oldName',
+          new_name: 'newName',
+          dry_run: dryRun,
+        }),
+      ).rejects.toThrow('Multiple repositories indexed');
+      expect(renameSpy).not.toHaveBeenCalled();
+    });
+
+    it('routes an explicit repo to that repository for both modes', async () => {
+      for (const dryRun of [true, false]) {
+        await backend.callTool('rename', {
+          repo: 'other',
+          symbol_name: 'oldName',
+          new_name: 'newName',
+          dry_run: dryRun,
+        });
+      }
+      expect(renameSpy.mock.calls.map(([repo]) => repo.repoPath)).toEqual([otherDir, otherDir]);
+    });
+  });
+
   it('keeps explicit duplicate aliases on exact git-root disambiguation (#3073)', async () => {
     const outerDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-cwd-alias-outer-'));
     const nestedDir = path.join(outerDir, 'packages', 'nested');
@@ -4101,7 +4221,7 @@ describe('LocalBackend.resolveRepo', () => {
     }
   });
 
-  it('keeps mutating rename explicit with multiple repos (#3073)', async () => {
+  it('keeps applying rename (dry_run:false) explicit with multiple repos (#3073)', async () => {
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project/src');
 
     try {
@@ -4111,9 +4231,24 @@ describe('LocalBackend.resolveRepo', () => {
         backend.callTool('rename', {
           symbol_name: 'oldName',
           new_name: 'newName',
-          dry_run: true,
+          dry_run: false,
         }),
       ).rejects.toThrow('Multiple repositories indexed');
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('lets a rename preview resolve the cwd repo among multiple repos (#3073)', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project/src');
+    const rename = spyOnRename(backend).mockResolvedValue({ applied: false });
+
+    try {
+      setupMultipleRepos();
+      await backend.init();
+      await backend.callTool('rename', { symbol_name: 'oldName', new_name: 'newName' });
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(rename.mock.calls[0][0].repoPath).toBe('/tmp/test-project');
     } finally {
       cwdSpy.mockRestore();
     }
@@ -5707,34 +5842,47 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
 
   // The evict-on-reject is guarded by object identity (=== entry), so a LATE
   // rejection from a superseded entry must not drop the newer entry that
-  // replaced it after the TTL rolled over.
-  it('a late rejection does not evict the newer cache entry', async () => {
-    stubResolve();
-    vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
-    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
-    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
-    let rejectFirst: (e: unknown) => void = () => {};
-    const first = new Promise<StalenessInfo>((_res, rej) => {
-      rejectFirst = rej;
-    });
-    (checkStalenessAsync as any)
-      .mockReturnValueOnce(first) // entry 1 — held open, will reject late
-      .mockResolvedValue({ isStale: true, commitsBehind: 7, hint: '7 behind' }); // entry 2+
+  // replaced it after TTL expiry or an index generation change.
+  it.each(['TTL expiry', 'new commit', 'same-commit rebuild'])(
+    'a late rejection does not evict the newer cache entry after %s',
+    async (change) => {
+      const resolve = stubResolve();
+      vi.spyOn(backend as any, 'query').mockResolvedValue({ ok: true });
+      const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(1000);
+      const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+      let rejectFirst: (e: unknown) => void = () => {};
+      const first = new Promise<StalenessInfo>((_res, rej) => {
+        rejectFirst = rej;
+      });
+      (checkStalenessAsync as any)
+        .mockReturnValueOnce(first) // entry 1 — held open, will reject late
+        .mockResolvedValue({ isStale: true, commitsBehind: 7, hint: '7 behind' }); // entry 2+
 
-    const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' }); // installs entry1 @1000
-    await new Promise((r) => setTimeout(r, 0)); // entry1 installed, awaiting `first`
+      const p1 = backend.callTool('query', { search_query: 'x', repo: 'r' }); // installs entry1 @1000
+      await new Promise((r) => setTimeout(r, 0)); // entry1 installed, awaiting `first`
 
-    dateSpy.mockReturnValue(1000 + 5000 + 1); // past TTL → next call installs entry2
-    const r2 = await backend.callTool('query', { search_query: 'x', repo: 'r' });
-    expect(r2).toMatchObject({ staleness: { commitsBehind: 7 } });
+      if (change === 'TTL expiry') {
+        dateSpy.mockReturnValue(1000 + 5000 + 1);
+      } else {
+        // Same path, still inside the TTL: the new generation must get its own
+        // promise while the old generation's git computation remains in flight.
+        resolve.mockResolvedValue({
+          ...handle,
+          indexedAt: 'new-generation',
+          lastCommit: change === 'new commit' ? 'NEWSHA' : handle.lastCommit,
+        } as any);
+      }
+      const r2 = await backend.callTool('query', { search_query: 'x', repo: 'r' });
+      expect(r2).toMatchObject({ staleness: { commitsBehind: 7 } });
 
-    rejectFirst(new Error('late git failure')); // entry1's guarded catch must NOT evict entry2
-    await p1.catch(() => {}); // p1 degrades to no-staleness
+      rejectFirst(new Error('late git failure')); // entry1's guarded catch must NOT evict entry2
+      await p1.catch(() => {}); // p1 degrades to no-staleness
 
-    const callsBefore = (checkStalenessAsync as any).mock.calls.length;
-    const r3 = await backend.callTool('query', { search_query: 'x', repo: 'r' }); // still within entry2 TTL
-    expect((checkStalenessAsync as any).mock.calls.length).toBe(callsBefore); // cache hit → entry2 survived
-    expect(r3).toMatchObject({ staleness: { commitsBehind: 7 } });
-    dateSpy.mockRestore();
-  });
+      const callsBefore = (checkStalenessAsync as any).mock.calls.length;
+      const r3 = await backend.callTool('query', { search_query: 'x', repo: 'r' }); // still within entry2 TTL
+      expect((checkStalenessAsync as any).mock.calls.length).toBe(callsBefore); // cache hit → entry2 survived
+      expect(r3).toMatchObject({ staleness: { commitsBehind: 7 } });
+      dateSpy.mockRestore();
+    },
+  );
 });

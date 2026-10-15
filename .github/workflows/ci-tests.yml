@@ -18,10 +18,6 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
-      - name: Install ripgrep for rename text search
-        run: |
-          sudo apt-get -o DPkg::Lock::Timeout=600 update
-          sudo apt-get -o DPkg::Lock::Timeout=600 install --yes --no-install-recommends ripgrep
       - name: Check fixed answers against real tools
         working-directory: gitnexus
         run: node --import tsx bench/tool-accuracy/run.ts --check --out "$RUNNER_TEMP/tool-accuracy"
@@ -33,7 +29,7 @@ jobs:
           fi
       - name: Upload release accuracy evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-tool-accuracy
           path: |
@@ -112,7 +108,7 @@ jobs:
         working-directory: gitnexus
       - name: Upload coverage blob
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-blob-${{ matrix.shard }}
           path: gitnexus/.vitest/blob/
@@ -142,7 +138,7 @@ jobs:
         with:
           build: 'true'
       - name: Download coverage blobs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: coverage-blob-*
           path: gitnexus/.vitest/blob
@@ -175,7 +171,7 @@ jobs:
         run: node --test docker-server.test.mjs
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-reports
           path: |
@@ -199,8 +195,13 @@ jobs:
     steps:
       - id: gen
         run: |
-          TOTAL=4         # cross-platform (windows/macOS) shards per OS
-          COV_TOTAL=4     # ubuntu coverage shards (merged before thresholds)
+          # Refreshed Windows timings leave eight shards too close to the
+          # 20-minute watchdog. Ten preserve headroom for runner variation.
+          TOTAL=10        # cross-platform (windows/macOS) shards per OS
+          # Four coverage shards exceeded the 25-minute job limit while tests
+          # were still passing. Split the full suite further; keep the timeout
+          # and merged coverage thresholds unchanged.
+          COV_TOTAL=8     # ubuntu coverage shards (merged before thresholds)
           if [ "$TOTAL" -lt 1 ] || [ "$COV_TOTAL" -lt 1 ]; then
             echo "shard totals must be >= 1" >&2; exit 1
           fi
@@ -296,7 +297,7 @@ jobs:
         working-directory: gitnexus
       - name: Upload platform execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-${{ matrix.os }}-${{ matrix.shard }}
           path: gitnexus/${{ matrix.os }}-${{ matrix.shard }}.json
@@ -417,6 +418,34 @@ jobs:
         run: npm pack
         working-directory: gitnexus
 
+      # Global installs do not exercise npm's bundled-dependency lockfile path
+      # (#3563). Keep npm 10 here: newer npm can mask unresolved override refs.
+      - name: Lock and install tarball in a fresh consumer project
+        shell: bash
+        env:
+          SCARF_ANALYTICS: 'false'
+        run: |
+          set -euo pipefail
+          TARBALL=$(find "$PWD" -maxdepth 1 -name 'gitnexus-*.tgz' -print -quit)
+          test -n "$TARBALL"
+          for NPM_VERSION in 10.9.4 11.9.0; do
+            CONSUMER=$(mktemp -d "$RUNNER_TEMP/gitnexus-consumer.XXXXXX")
+            cp "$TARBALL" "$CONSUMER/gitnexus.tgz"
+            (
+              cd "$CONSUMER"
+              echo '{"name":"gitnexus-consumer","version":"1.0.0","private":true,"devDependencies":{"gitnexus":"file:./gitnexus.tgz"}}' > package.json
+              npm exec --yes --package="npm@$NPM_VERSION" -- npm --version
+              npm exec --yes --package="npm@$NPM_VERSION" -- npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+              test ! -e node_modules
+              cp package-lock.json expected-lock.json
+              npm exec --yes --package="npm@$NPM_VERSION" -- npm ci --no-audit --no-fund
+              cmp package-lock.json expected-lock.json
+              node node_modules/gitnexus/dist/cli/index.js --version
+              node node_modules/gitnexus/scripts/assert-native-parsers.mjs node_modules/gitnexus
+            )
+          done
+        working-directory: gitnexus
+
       - name: Install gitnexus tarball into isolated prefix
         shell: bash
         run: |
@@ -514,7 +543,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           cache: npm
@@ -529,7 +558,7 @@ jobs:
       # Switch to the engines-floor Node AFTER building — native deps built on
       # 22.x load across the whole 22.x ABI line, and nothing installs after this
       # (so no package-manager cache is needed).
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.18.0'
           package-manager-cache: false
@@ -623,6 +652,11 @@ jobs:
         # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
         # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
         run: node --import tsx bench/scope-capture/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Rename output construction scaling guard
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/rename/measure.mjs --check
         working-directory: gitnexus
 
       - name: Callable-value-flow target-index guards (#2693)
@@ -960,7 +994,7 @@ jobs:
         working-directory: gitnexus
       - name: Upload benchmark execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-benchmarks
           path: gitnexus/benchmarks.json
@@ -988,7 +1022,7 @@ jobs:
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-pytest-locked
           path: eval/pytest-locked.xml
@@ -1005,7 +1039,7 @@ jobs:
         working-directory: gitnexus
       - name: Upload preflight execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-preflight
           path: gitnexus/preflight.json
@@ -1033,12 +1067,12 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
       - name: Download coverage and web reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-reports
       - name: Download all execution receipts
         if: ${{ !cancelled() }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: execution-*
           path: execution-reports
@@ -1055,7 +1089,7 @@ jobs:
         run: python3 eval/check_test_execution.py execution-reports eval/pytest-results.json
       - name: Upload complete test reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-reports
           path: |
@@ -1087,7 +1121,7 @@ jobs:
           persist-credentials: false
           # Oracle controls replay the immutable historical task sources.
           fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.18.0'
           cache: npm
@@ -1166,7 +1200,7 @@ jobs:
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-pytest-ubuntu
           path: eval/pytest-ubuntu.xml
@@ -1197,7 +1231,7 @@ jobs:
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-pytest-windows
           path: eval/pytest-windows.xml

@@ -1,0 +1,74 @@
+{
+  "language": "javascript",
+  "description": "Preserve calls through identical, different and canonical import spellings, including an escaped re-export alias.",
+  "categories": [
+    "cross-file",
+    "escaped-identifier",
+    "alias",
+    "call-graph"
+  ],
+  "target": {
+    "name": "calc\\u0075late",
+    "kind": "Function",
+    "file": "source.js"
+  },
+  "newName": "compute",
+  "expect": {
+    "status": "success",
+    "edits": 7
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "same",
+        "kind": "Function",
+        "file": "same.js"
+      },
+      "to": {
+        "name": "calc\\u0075late",
+        "kind": "Function",
+        "file": "source.js"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "different",
+        "kind": "Function",
+        "file": "different.js"
+      },
+      "to": {
+        "name": "calc\\u0075late",
+        "kind": "Function",
+        "file": "source.js"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "plain",
+        "kind": "Function",
+        "file": "plain.js"
+      },
+      "to": {
+        "name": "calc\\u0075late",
+        "kind": "Function",
+        "file": "source.js"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "entry.js"
+      },
+      "to": {
+        "name": "calc\\u0075late",
+        "kind": "Function",
+        "file": "source.js"
+      }
+    }
+  ]
+}

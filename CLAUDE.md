@@ -30,7 +30,7 @@ Prefer **PreToolUse** hooks for hard gates (e.g. tests before `git_commit`). Ada
 
 ## Context budget
 
-If always-on instructions grow, load deep conventions via conditional reads (e.g. *“When writing new code, read STANDARDS.md”*) instead of pasting long blocks here. In Cursor, prefer `.cursor/index.mdc` plus optional `.cursor/rules/*.mdc` globs (see [AGENTS.md](AGENTS.md) § Context budget).
+If always-on instructions grow, load deep conventions via conditional reads (e.g. _“When writing new code, read STANDARDS.md”_) instead of pasting long blocks here. In Cursor, prefer `.cursor/index.mdc` plus optional `.cursor/rules/*.mdc` globs (see [AGENTS.md](AGENTS.md) § Context budget).
 
 ## Reference Documentation
 
@@ -41,17 +41,17 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 
 ## Changelog
 
-| Date | Version | Change |
-|------|---------|--------|
-| 2026-07-20 | 1.8.0 | The CI review agent runs `gitnexus-review` as a coordinated swarm — six `ci-personas/` lanes dispatched via the `Agent` tool with a bounded critic gate. |
-| 2026-07-16 | 1.7.0 | `/gitnexus-plan` asks depth up front in interactive runs; `/gitnexus-lfg` gate slimmed to proceed/stop. |
-| 2026-07-16 | 1.6.0 | Renamed `/gitnexus-pr-review` to `/gitnexus-review` and added PR, branch/range, and local-change targets. |
-| 2026-07-11 | 1.5.0 | Added `/gitnexus-work` and `/gitnexus-lfg` to the engineering plans & execution pointer. |
-| 2026-07-11 | 1.4.0 | Added `/gitnexus-plan` pointer to Reference Documentation. |
-| 2026-04-13 | 1.3.0 | Updated GitNexus index stats after DAG refactor. |
-| 2026-03-24 | 1.2.0 | Removed duplicated gitnexus:start block and scope table; replaced with pointers to AGENTS.md. |
-| 2026-03-23 | 1.1.0 | Updated agent instructions to match AGENTS.md. |
-| 2026-03-22 | 1.0.0 | Added structured header and changelog. |
+| Date       | Version | Change                                                                                                                                                   |
+| ---------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-20 | 1.8.0   | The CI review agent runs `gitnexus-review` as a coordinated swarm — six `ci-personas/` lanes dispatched via the `Agent` tool with a bounded critic gate. |
+| 2026-07-16 | 1.7.0   | `/gitnexus-plan` asks depth up front in interactive runs; `/gitnexus-lfg` gate slimmed to proceed/stop.                                                  |
+| 2026-07-16 | 1.6.0   | Renamed `/gitnexus-pr-review` to `/gitnexus-review` and added PR, branch/range, and local-change targets.                                                |
+| 2026-07-11 | 1.5.0   | Added `/gitnexus-work` and `/gitnexus-lfg` to the engineering plans & execution pointer.                                                                 |
+| 2026-07-11 | 1.4.0   | Added `/gitnexus-plan` pointer to Reference Documentation.                                                                                               |
+| 2026-04-13 | 1.3.0   | Updated GitNexus index stats after DAG refactor.                                                                                                         |
+| 2026-03-24 | 1.2.0   | Removed duplicated gitnexus:start block and scope table; replaced with pointers to AGENTS.md.                                                            |
+| 2026-03-23 | 1.1.0   | Updated agent instructions to match AGENTS.md.                                                                                                           |
+| 2026-03-22 | 1.0.0   | Added structured header and changelog.                                                                                                                   |
 
 ---
 
@@ -60,6 +60,7 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 See the `<!-- gitnexus:start --> … <!-- gitnexus:end -->` block in **[AGENTS.md](AGENTS.md)** for the canonical MCP tools, impact analysis rules, and index instructions.
 
 <!-- gitnexus:start -->
+
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **GitNexus** (248612 symbols, 565510 relationships, 918 execution flows).
@@ -70,7 +71,7 @@ This project is indexed by GitNexus as **GitNexus** (248612 symbols, 565510 rela
 ## Always Do
 
 - **MUST run impact analysis before editing.** Use `impact({target: "symbolName", direction: "upstream"})` (MCP) or `node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .` (CLI fallback); report callers, processes, and risk. Never substitute grep for graph analysis. For unified PDG impact, add `mode: "pdg"` with optional `line: <N>` — it returns statement-level `affectedStatements` over CDG + REACHING_DEF and inter-procedural symbols in `interproceduralByDepth`/`byDepth`; no-layer/degraded PDG results are UNKNOWN-risk notes (`--pdg` layer). CLI equivalent: `node .gitnexus/run.cjs impact "symbolName" --direction upstream --mode pdg --line <N> --repo .`.
-- **MUST analyze graph changes before committing.** Use `detect_changes({scope: "all"})` (MCP) or `node .gitnexus/run.cjs detect-changes --scope all --repo .` (CLI fallback). `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: `detect_changes({scope: "compare", base_ref: "main"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "main" --repo .`.
+- **MUST analyze changes before commit.** Run `detect_changes({scope: "all"})` or `node .gitnexus/run.cjs detect-changes --scope all --repo .`. `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review, fetch target branch "main" from its remote; compute its merge base with the reviewed HEAD and pass that SHA to `detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .`.
 - MUST warn on HIGH/CRITICAL `risk` pre-edit; never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
 - **MUST treat `risk: UNKNOWN` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). `impact` pairs `UNKNOWN` with a `riskNote` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
 - **MUST use `query({search_query: "concept"})` for concepts/flows, `context({name: "symbolName"})` for a named symbol, or `impact` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/`UNKNOWN`/literals.
@@ -81,27 +82,27 @@ This project is indexed by GitNexus as **GitNexus** (248612 symbols, 565510 rela
 
 - NEVER edit a function, class, or method before MCP/CLI impact analysis.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read `UNKNOWN` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
+- NEVER rename symbols with find-and-replace — use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false`.
 - NEVER commit before MCP/CLI graph change analysis.
 
 ## Resources
 
-| Resource | Use for |
-| --- | --- |
-| `gitnexus://repo/GitNexus/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/GitNexus/clusters` | All functional areas |
-| `gitnexus://repo/GitNexus/processes` | All execution flows |
-| `gitnexus://repo/GitNexus/process/{name}` | Step-by-step execution trace |
+| Resource                                  | Use for                                  |
+| ----------------------------------------- | ---------------------------------------- |
+| `gitnexus://repo/GitNexus/context`        | Codebase overview, check index freshness |
+| `gitnexus://repo/GitNexus/clusters`       | All functional areas                     |
+| `gitnexus://repo/GitNexus/processes`      | All execution flows                      |
+| `gitnexus://repo/GitNexus/process/{name}` | Step-by-step execution trace             |
 
 ## CLI
 
-| Task | Read this skill file |
-| --- | --- |
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
+| Task                                         | Read this skill file                               |
+| -------------------------------------------- | -------------------------------------------------- |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md`       |
+| Blast radius / "What breaks if I change X?"  | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?"             | `.claude/skills/gitnexus-debugging/SKILL.md`       |
+| Rename / extract / split / refactor          | `.claude/skills/gitnexus-refactoring/SKILL.md`     |
+| Tools, resources, schema reference           | `.claude/skills/gitnexus-guide/SKILL.md`           |
+| Index, status, clean, wiki CLI commands      | `.claude/skills/gitnexus-cli/SKILL.md`             |
 
 <!-- gitnexus:end -->

@@ -1,0 +1,31 @@
+{
+  "language": "cpp",
+  "description": "The C++ validator accepts restrict, but the vendored grammar cannot parse it as an unparenthesized function declarator; refuse without edits.",
+  "categories": ["language-keywords", "grammar-limitation", "safe-refusal"],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "main.cpp"
+  },
+  "newName": "restrict",
+  "expect": {
+    "status": "error",
+    "code": "parse_error",
+    "planningStatus": "blocked"
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "main.cpp"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "main.cpp"
+      }
+    }
+  ]
+}

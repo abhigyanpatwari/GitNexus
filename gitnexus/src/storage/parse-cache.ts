@@ -858,7 +858,15 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // and original graph positions. Both stores must re-extract v135 captures.
 // v137: Python module-accessor syntax proofs and exact assigned-call provenance
 // join the existing subtype capture payload. Re-extract v136 in both stores.
-// v138: R provider fixes, collapsed into one bump because none of them has
+// v138: provider-owned source occurrences and new flow visitors/explicit region
+// ownership must not reuse older capture or CFG side channels.
+// v139: real rename fixtures expose missing field/read/write chains, callable
+// scopes and declaration metadata. Re-extract both stores with provider fixes.
+// v140: Ruby accessor captures retain reader visibility and singleton ownership.
+// Older worker and durable captures cannot prove property-reader dispatch.
+// v141: detached method owners retain names without fabricated graph ids.
+// Re-extract both worker and durable captures before workspace ownership runs.
+// v142: R provider fixes, collapsed into one bump because none of them has
 // shipped. R scope queries anchor a `@scope.function` on every named-function
 // assignment and named function-valued argument (the same nodes the
 // `@declaration.function`/`@declaration.method` anchors use), so each def is
@@ -876,7 +884,7 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // facts replayed verbatim from the warm cache, so stale ones (the pre-fix scope
 // tree, the unqualified call-site shape, the mis-selected arguments) would
 // persist on unchanged files; both stores must re-extract.
-const SCHEMA_BUMP = 138;
+const SCHEMA_BUMP = 142;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

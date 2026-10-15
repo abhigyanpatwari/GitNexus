@@ -135,3 +135,19 @@ describe('emitCsharpScopeCaptures — constructor initializers (F38)', () => {
     expect(ctorRefs('class C { public C() {} }').length).toBe(0);
   });
 });
+
+it('captures primitive parameter bindings so they shadow lexical names', () => {
+  const captures = emitCsharpScopeCaptures(
+    'class Model { void use(int first, string second, bool third) {} }',
+    'model.cs',
+  );
+  expect(
+    captures
+      .filter((capture) => capture['@type-binding.parameter'])
+      .map((capture) => [capture['@type-binding.name']?.text, capture['@type-binding.type']?.text]),
+  ).toEqual([
+    ['first', 'int'],
+    ['second', 'string'],
+    ['third', 'bool'],
+  ]);
+});

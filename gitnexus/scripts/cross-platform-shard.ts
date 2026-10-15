@@ -44,10 +44,36 @@
  * partition depend on the very machine load it is trying to protect against.
  */
 export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
+  // Conservative estimates from Windows run 38144297115: persisted
+  // rename cases include native indexing and take up to ~25s each. Keep
+  // each language together while charging its complete fixture inventory.
+  // Refresh underestimates from run 38697469283; Zig's higher measurement
+  // comes from 38693066214. Stale weights packed too much native work ahead
+  // of cli-e2e and exhausted its shard's 20-minute watchdog.
+  'test/integration/rename-provider-c.test.ts': 202,
+  'test/integration/rename-provider-cobol.test.ts': 75,
+  'test/integration/rename-provider-cpp.test.ts': 250,
+  'test/integration/rename-provider-csharp.test.ts': 200,
+  'test/integration/rename-provider-dart.test.ts': 425,
+  'test/integration/rename-provider-go.test.ts': 221,
+  'test/integration/rename-provider-java.test.ts': 300,
+  'test/integration/rename-provider-javascript.test.ts': 225,
+  'test/integration/rename-provider-kotlin.test.ts': 300,
+  'test/integration/rename-provider-objective-c.test.ts': 285,
+  'test/integration/rename-provider-php.test.ts': 100,
+  'test/integration/rename-provider-python.test.ts': 375,
+  'test/integration/rename-provider-ruby.test.ts': 100,
+  'test/integration/rename-provider-rust.test.ts': 75,
+  'test/integration/rename-provider-swift.test.ts': 300,
+  'test/integration/rename-provider-typescript.test.ts': 625,
+  'test/integration/rename-provider-vue.test.ts': 200,
+  'test/integration/rename-provider-zig.test.ts': 183,
+  'test/integration/mcp-index-generation.test.ts': 201,
+  'test/unit/incremental-dirty-recovery.test.ts': 76,
   // Re-measured after the analyze --watch e2e landed in #3072. The previous
   // 361 s entry undercharged this suite and left shard 1 close to the watchdog.
   'test/integration/cli-e2e.test.ts': 621,
-  'test/integration/worker-pool.test.ts': 222,
+  'test/integration/worker-pool.test.ts': 254,
   'test/unit/incremental-vector-extension-ordering.test.ts': 87,
   // Measured on Windows in run 34014266125 (#3190, 2026-09-06). These DB
   // suites landed together on shard 3: the old 180s estimate and missing

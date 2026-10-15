@@ -1,0 +1,36 @@
+{
+  "language": "kotlin",
+  "description": "Retain raw member declaration keys alongside canonical escaped lexical receivers.",
+  "categories": [
+    "escaped-identifier",
+    "call-graph"
+  ],
+  "target": {
+    "name": "`read`",
+    "kind": "Method",
+    "file": "worker.kt"
+  },
+  "newName": "fetch",
+  "expectedTargetName": "`fetch`",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "worker.kt"
+      },
+      "to": {
+        "name": "`read`",
+        "kind": "Method",
+        "file": "worker.kt"
+      }
+    }
+  ],
+  "exactOutgoing": true,
+  "warmParseCache": true
+}

@@ -82,27 +82,6 @@ async function fixtureDigest(
   return relative ? '' : digest.digest('hex');
 }
 
-// rename's text-search pass shells out to ripgrep and degrades silently when it is missing,
-// which would change what the corpus measures. Fail closed before indexing instead.
-const externalTools = Object.fromEntries(
-  ['rg'].map((tool) => {
-    try {
-      const version = execFileSync(tool, ['--version'], {
-        encoding: 'utf8',
-        timeout: 10_000,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      })
-        .split('\n')[0]
-        .trim();
-      return [tool, version];
-    } catch (error) {
-      throw new Error(
-        `Required external tool "${tool}" is unavailable (${error instanceof Error ? error.message : String(error)}); the tool-accuracy corpus is only valid when it is installed`,
-      );
-    }
-  }),
-);
-
 const source = {
   sha: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: CHECKOUT, encoding: 'utf8' }).trim(),
   dirty: !!execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], {
@@ -110,7 +89,6 @@ const source = {
     encoding: 'utf8',
   }).trim(),
   fixtureSha: await fixtureDigest(path.join(HERE, 'fixtures')),
-  externalTools,
 };
 const manifest: KnownGapManifest = JSON.parse(await fs.readFile(knownGaps, 'utf8'));
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-tool-accuracy-'));
@@ -249,30 +227,84 @@ try {
       dry_run: true,
     });
     need(
-      result.status === 'success' && result.applied === false && Array.isArray(result.changes),
+      result.result_version === 2 &&
+        result.status === 'success' &&
+        result.planning_status === 'ready' &&
+        result.application_status === 'not_requested' &&
+        result.applied === false &&
+        result.old_name === 'close' &&
+        result.new_name === 'closeWriter' &&
+        result.text_search === 'not_used' &&
+        result.coverage?.name === 'gitnexus-semantic' &&
+        result.coverage.scope === 'indexed-repository' &&
+        Array.isArray(result.changes),
       'Malformed rename preview',
     );
     const edits: Array<{ file: string; line: number; text: string }> = [];
+    const files = new Set<string>();
     for (const change of result.changes) {
       need(
-        typeof change.file_path === 'string' && Array.isArray(change.edits),
+        typeof change.file_path === 'string' &&
+          change.file_path.length > 0 &&
+          !files.has(change.file_path) &&
+          Array.isArray(change.edits) &&
+          change.edits.length > 0,
         'Malformed rename file edits',
       );
+      const absolute = path.resolve(repoPath, change.file_path);
+      const relative = path.relative(repoPath, absolute);
+      need(
+        relative &&
+          relative !== '..' &&
+          !relative.startsWith(`..${path.sep}`) &&
+          !path.isAbsolute(relative),
+        'Rename edit outside fixture repository',
+      );
+      files.add(change.file_path);
+      const snapshot = await fs.readFile(absolute, 'utf8');
+      let previousEnd = 0;
       for (const edit of change.edits) {
         need(
-          integer(edit.line, 1) &&
-            typeof edit.old_text === 'string' &&
-            typeof edit.new_text === 'string' &&
-            ['graph', 'text_search'].includes(edit.confidence),
+          Number.isSafeInteger(edit.line) &&
+            edit.line >= 1 &&
+            Number.isSafeInteger(edit.start) &&
+            edit.start >= previousEnd &&
+            Number.isSafeInteger(edit.length) &&
+            edit.length > 0 &&
+            edit.start + edit.length <= snapshot.length &&
+            edit.old_text === result.old_name &&
+            edit.new_text === result.new_name &&
+            edit.confidence === 'semantic' &&
+            typeof edit.before === 'string' &&
+            typeof edit.after === 'string',
           'Malformed rename edit',
         );
-        edits.push({ file: change.file_path, line: edit.line, text: edit.new_text });
+        const lineStart = snapshot.lastIndexOf('\n', edit.start - 1) + 1;
+        const nextLine = snapshot.indexOf('\n', edit.start);
+        const lineEnd = nextLine < 0 ? snapshot.length : nextLine;
+        need(
+          snapshot.slice(edit.start, edit.start + edit.length) === edit.old_text &&
+            edit.start + edit.length <= lineEnd &&
+            edit.line === snapshot.slice(0, edit.start).split('\n').length &&
+            edit.before === snapshot.slice(lineStart, lineEnd) &&
+            edit.after ===
+              snapshot.slice(lineStart, edit.start) +
+                edit.new_text +
+                snapshot.slice(edit.start + edit.length, lineEnd),
+          'Inconsistent rename span or line context',
+        );
+        previousEnd = edit.start + edit.length;
+        // v2 replacement text is an identifier; fixed answers retain whole source lines.
+        edits.push({ file: change.file_path, line: edit.line, text: edit.after.trim() });
       }
     }
     need(
       integer(result.total_edits) &&
+        integer(result.semantic_edits) &&
         result.total_edits === edits.length &&
-        result.graph_edits + result.text_search_edits === edits.length &&
+        result.semantic_edits === edits.length &&
+        result.graph_edits === 0 &&
+        result.text_search_edits === 0 &&
         result.files_affected === result.changes.length,
       'Inconsistent rename totals',
     );
@@ -293,6 +325,43 @@ try {
     observations['rename.homonyms'] = edits
       .filter((edit) => !reference(edit) && !comment(edit))
       .map(key);
+  });
+
+  await capture('rename typed-parameter refusal', async () => {
+    const anchor = FIXTURE_ANCHORS.typedWriterFlushDeclaration;
+    const target = [...pipeline.graph.iterNodes()].find(
+      (node) =>
+        node.label === 'Method' &&
+        node.properties.filePath === anchor.file &&
+        node.properties.startLine === anchor.line - 1,
+    );
+    need(target, 'DeferredWriter.flush symbol missing');
+    const before = await fixtureDigest(repoPath);
+    const params = { symbol_uid: target!.id, new_name: 'flushPending', dry_run: true };
+    // Refusal is the expected public response; call() rejects error results.
+    const result = await backend!.callTool('rename', { ...params, repo });
+    toolOutputs.push({ tool: 'rename', params, result });
+    need(
+      result &&
+        result.result_version === 2 &&
+        typeof result.status === 'string' &&
+        typeof result.planning_status === 'string' &&
+        typeof result.application_status === 'string' &&
+        typeof result.code === 'string' &&
+        typeof result.applied === 'boolean' &&
+        integer(result.total_edits) &&
+        integer(result.semantic_edits) &&
+        integer(result.graph_edits) &&
+        integer(result.text_search_edits) &&
+        integer(result.files_affected) &&
+        Array.isArray(result.changes),
+      'Malformed rename refusal',
+    );
+    observations['rename.typed-parameter-refusal'] = [
+      `status=${result.status} planning=${result.planning_status} application=${result.application_status} code=${result.code}`,
+      `edits=${result.total_edits} semantic=${result.semantic_edits} graph=${result.graph_edits} text_search=${result.text_search_edits} files=${result.files_affected} applied=${result.applied} changes=${result.changes.length}`,
+      `sources=${(await fixtureDigest(repoPath)) === before ? 'unchanged' : 'changed'}`,
+    ];
   });
 
   await capture('routes', async () => {

@@ -1,3 +1,4 @@
+import { goRenameProvider } from './go/rename.js';
 /**
  * Go Language Provider
  *
@@ -28,6 +29,7 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { goVariableConfig } from '../variable-extractors/configs/go.js';
 import { extractGoGinEchoRoutes } from '../route-extractors/go-gin-echo.js';
 import { resolveGoRouteHandler } from './go/route-handler.js';
+import { goPackageDir } from './go/package-clause.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { goCallConfig } from '../call-extractors/configs/go.js';
 import {
@@ -91,8 +93,12 @@ const GO_BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const goProvider = defineLanguage({
+  rename: goRenameProvider,
   id: SupportedLanguages.Go,
   extensions: ['.go'],
+  // Package members resolve without imports. Include internal/external test
+  // packages conservatively for invalidation, including when a file is gone.
+  incrementalResolutionGroup: goPackageDir,
   entryPointPatterns: [/Handler$/, /^Serve/, /^New[A-Z]/, /^Make[A-Z]/],
   astFrameworkPatterns: [
     {
@@ -139,6 +145,8 @@ export const goProvider = defineLanguage({
   callExtractor: createCallExtractor(goCallConfig),
   fieldExtractor: createFieldExtractor(goFieldConfig),
   methodExtractor: createMethodExtractor(goMethodConfig),
+  resolveDetachedOwnerName: (node) =>
+    node.type === 'method_declaration' ? goMethodConfig.extractOwnerName?.(node) : undefined,
   variableExtractor: createVariableExtractor(goVariableConfig),
   classExtractor: createClassExtractor(goClassConfig),
   // ── godoc (`//` leading comments) → description (issue #2270). Build/tool
