@@ -190,6 +190,7 @@ const LBUG_NATIVE = [
   'test/integration/lbug-incremental-search.test.ts',
   // Retained identities and reader metadata must agree on every native platform.
   'test/integration/incremental-method-integrity.test.ts',
+  'test/integration/go-incremental-method-owners.test.ts',
   'test/integration/query-symbol-integrity.test.ts',
   'test/integration/mcp-index-generation.test.ts',
   'test/integration/fts-repair-warm-session.test.ts',

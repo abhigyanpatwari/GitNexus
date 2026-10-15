@@ -9,9 +9,11 @@ import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Go from 'tree-sitter-go';
 import {
   findEnclosingClassId,
+  findEnclosingClassInfo,
   CLASS_CONTAINER_TYPES,
   CONTAINER_TYPE_TO_LABEL,
 } from '../../src/core/ingestion/utils/ast-helpers.js';
+import { goProvider } from '../../src/core/ingestion/languages/go.js';
 
 function parseCode(language: any, code: string): Parser.Tree {
   const parser = new Parser();
@@ -450,9 +452,7 @@ struct Vector2 {
   });
 
   describe('Go', () => {
-    it('returns receiver struct ID for Go methods', () => {
-      // Go methods have receiver parameter: func (s *Server) Start() {}
-      // findEnclosingClassId extracts the receiver type to link method → struct
+    it('retains the receiver name while deferring its owner ID to semantic resolution', () => {
       const tree = parseCode(
         Go,
         `
@@ -472,12 +472,19 @@ func (s *Server) Start() {}
         methodNode!,
         (n) => n.type === 'field_identifier' && n.text === 'Start',
       );
-      if (nameNode) {
-        const result = findEnclosingClassId(nameNode, 'test/server.go');
-        expect(result).not.toBeNull();
-        // Should generate a Struct ID for "Server"
-        expect(result).toContain('Server');
-      }
+      expect(nameNode).not.toBeNull();
+      expect(findEnclosingClassId(nameNode!, 'test/server.go')).toBeNull();
+      expect(
+        findEnclosingClassInfo(
+          nameNode!,
+          'test/server.go',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          goProvider.resolveDetachedOwnerName,
+        ),
+      ).toEqual({ className: 'Server' });
     });
   });
 

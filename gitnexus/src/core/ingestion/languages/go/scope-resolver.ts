@@ -19,6 +19,7 @@ import { goMapValueType } from './interpret.js';
 import { goIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { goIsNamespaceMemberVisible } from './namespace-member-visibility.js';
 import { resolveGoImportBinding } from './import-binding.js';
+import { emitMethodOwnerEdges } from '../../scope-resolution/graph-bridge/ownership.js';
 
 /** Slice `[]T` and array `[N]T` / `[...]T` → the element spelling. Hoisted —
  *  a literal inside the hook would mint a fresh RegExp per folded subscript. */
@@ -83,6 +84,7 @@ export const goScopeResolver: ScopeResolver = {
 
   populateOwners: (parsed: ParsedFile) => populateGoOwners(parsed),
   populateWorkspaceOwners: (parsedFiles, ctx) => populateGoWorkspaceOwners(parsedFiles, ctx),
+  emitPostResolutionEdges: emitMethodOwnerEdges,
 
   isSuperReceiver: () => false,
 
