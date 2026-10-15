@@ -864,7 +864,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // scopes and declaration metadata. Re-extract both stores with provider fixes.
 // v140: Ruby accessor captures retain reader visibility and singleton ownership.
 // Older worker and durable captures cannot prove property-reader dispatch.
-const SCHEMA_BUMP = 140;
+// v141: fetch-wrapper consumers are AST candidates emitted by providers.
+// Re-extract old shards: they have no candidates and the routes regex is gone.
+const SCHEMA_BUMP = 141;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
