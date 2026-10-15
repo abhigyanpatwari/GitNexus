@@ -241,6 +241,15 @@ interface LanguageProviderConfig {
   /** File extensions that map to this language (e.g., ['.ts', '.tsx']) */
   readonly extensions: readonly string[];
 
+  /**
+   * Files with the same provider-local key must be rewritten together when
+   * any member changes, is added, or is deleted. Resolution can change edges
+   * between untouched members even without an import or current graph edge.
+   * Derive the key from the path alone: deleted files have no current source.
+   * This only widens incremental invalidation, not semantic resolution scope.
+   */
+  readonly incrementalResolutionGroup?: (filePath: string) => string | undefined;
+
   /** Entry-point function name patterns specific to this language.
    *  Merged with universal patterns at runtime for process detection scoring.
    *  Default: [] (only universal patterns apply). */
@@ -360,6 +369,13 @@ interface LanguageProviderConfig {
    *  - Omit (undefined) to use the container node as-is (default).
    *  Default: undefined (no remapping). */
   readonly resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null;
+
+  /** Name an owner declared outside this member's lexical container.
+   *  Consulted for each ancestor during the enclosing-owner walk. The name
+   *  qualifies member identities, but carries no graph id: ownership is
+   *  resolved by `ScopeResolver.populateWorkspaceOwners` after all files load.
+   *  Default: undefined (owners are derived from lexical containers). */
+  readonly resolveDetachedOwnerName?: (node: SyntaxNode) => string | undefined;
 
   /**
    * The type a whole FILE declares, when the language makes the file itself

@@ -334,6 +334,21 @@ describe('installDuckDbExtensionOutOfProcess child process', () => {
   it('passes the resolved LadybugDB max DB size to the installer child', () => {
     expect(getExtensionInstallChildProcessArgs('fts', 1234).at(-1)).toBe('1234');
   });
+
+  // The installer prefers this argument over GITNEXUS_LBUG_MAX_DB_SIZE, and its own
+  // parser does not round, so a non-power-of-two override reaches the native open
+  // only because the loader hands it the already-rounded value (#3529).
+  it('hands the installer child the rounded max DB size for a non-power-of-two override', async () => {
+    vi.stubEnv('GITNEXUS_LBUG_MAX_DB_SIZE', '300000000000');
+    vi.resetModules();
+    try {
+      const fresh = await import('../../src/core/lbug/extension-loader.js');
+      expect(fresh.getExtensionInstallChildProcessArgs('fts').at(-1)).toBe(String(2 ** 39));
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
 });
 
 describe('getExtensionInstallPolicy', () => {

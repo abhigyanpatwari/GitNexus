@@ -864,10 +864,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // scopes and declaration metadata. Re-extract both stores with provider fixes.
 // v140: Ruby accessor captures retain reader visibility and singleton ownership.
 // Older worker and durable captures cannot prove property-reader dispatch.
-// v141 (#3561): combine the rename captures with Express route corrections.
-// The PR independently used v138 to reject middleware and stored route metadata;
-// main's v138-v140 can retain phantom routes. Re-extract both parse stores.
-const SCHEMA_BUMP = 141;
+// v141: detached method owners retain names without fabricated graph ids.
+// Re-extract both worker and durable captures before workspace ownership runs.
+// v142 (#3561): combine v141 ownership captures with the route corrections.
+// Older caches may retain phantom middleware and stored route-metadata edges.
+const SCHEMA_BUMP = 142;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

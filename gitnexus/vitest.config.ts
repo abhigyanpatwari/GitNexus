@@ -20,7 +20,11 @@ export default defineConfig({
     // respawn behavior itself delete GITNEXUS_MEMORY in their own setup.
     // Tests assert the English CLI contract unless a case opts into another
     // language explicitly. Do not inherit a developer shell's CLI locale.
-    env: { GITNEXUS_MEMORY: 'off', GITNEXUS_LANG: 'en' },
+    // GITNEXUS_ATOMIC_INCREMENTAL=0 is an operator off-switch that beats a
+    // caller's `atomicIncremental: true`, so an exported `=0` would silently
+    // turn off every staging test. Empty is neither '0' nor '1', i.e. unset;
+    // a test that needs a value stubs it.
+    env: { GITNEXUS_MEMORY: 'off', GITNEXUS_LANG: 'en', GITNEXUS_ATOMIC_INCREMENTAL: '' },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —
     // it's a vitest forks + native addon interaction where destructors run in
@@ -76,6 +80,11 @@ export default defineConfig({
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',
             'test/integration/incremental-worktree-context.test.ts',
+            'test/integration/incremental-method-integrity.test.ts',
+            'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/query-symbol-integrity.test.ts',
+            'test/integration/mcp-index-generation.test.ts',
+            'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -175,6 +184,11 @@ export default defineConfig({
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',
             'test/integration/incremental-worktree-context.test.ts',
+            'test/integration/incremental-method-integrity.test.ts',
+            'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/query-symbol-integrity.test.ts',
+            'test/integration/mcp-index-generation.test.ts',
+            'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',

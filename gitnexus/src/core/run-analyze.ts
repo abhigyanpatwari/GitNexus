@@ -94,6 +94,11 @@ import {
   estimateBufferPool,
   setBufferPoolSizeHint,
   resolveNativeSafeStorageDir,
+  getEffectiveBufferPoolSize,
+  LBUG_MAX_DB_SIZE,
+  maxDbSizeReachedRemedy,
+  pastEofReadRemedy,
+  type StagedBuildMode,
 } from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import { chunk } from '../lib/utils.js';
@@ -135,13 +140,17 @@ import {
   startWalCheckpointDriver,
   checkpointOnce,
   isManualCheckpointEnabled,
+  readCheckpointActivity,
+  type CheckpointActivity,
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import {
+  describeFileEvidence,
   ftsCrashParkFailureMessage,
   quarantineSidecarsForDirtyRecovery,
   inspectLbugSidecars,
 } from './lbug/sidecar-recovery.js';
+import { collectFailureEvidence, type FailureEvidenceTargets } from './lbug/failure-evidence.js';
 import type { EmbeddingIdentity } from './embeddings/embedding-identity.js';
 // Type-only (erased at compile time), so the lazy-embeddings convention
 // (#2370: no embeddings module loads unless a run actually needs one) holds.
@@ -221,6 +230,7 @@ import {
   type PersistedSpringConfigConsumerRow,
 } from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
+import { collectResolutionGroupFiles } from './incremental/resolution-groups.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
 import {
   ftsTablesAmong,
@@ -637,6 +647,106 @@ function recordLiveIndexMutationRisk(error: unknown): void {
   if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
     liveIndexMutationRisks.add(error);
   }
+}
+
+/**
+ * `String(value)` for a thrown value that never throws: the failure handler runs it
+ * before any cleanup, and an exotic throw (a null-prototype object, a throwing
+ * `toString`) must not abort that cleanup or mask the original failure.
+ */
+function describeThrown(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return '[unprintable thrown value]';
+  }
+}
+
+/**
+ * Where a failing write was going (#3530). A staged build is `staged-incremental`
+ * only while it is an atomic-incremental write: the #2409/#2841 escalation wipes
+ * the staging file and re-COPYs into it, which is a rebuild, and it stages with
+ * `GITNEXUS_ATOMIC_INCREMENTAL=0` as well — so naming the off-switch there would
+ * point at a knob with no effect.
+ */
+const stagedBuildModeOf = (staged: boolean, atomicIncrementalWrite: boolean): StagedBuildMode =>
+  !staged ? 'in-place' : atomicIncrementalWrite ? 'staged-incremental' : 'staged-rebuild';
+
+/**
+ * The diagnosis (#3529, #3530) for a classified analyze failure — its remedy and
+ * `Failure evidence — ` lines — or undefined when `failureMessage` is not one of
+ * those failures, so nothing else pays for the stats. Measures the index files,
+ * so call it BEFORE the database closes: closing can checkpoint the staging file,
+ * and a later stat would record the post-close size and make genuine growth look
+ * like a short file — the misreading the evidence exists to settle. Never throws.
+ */
+async function diagnoseClassifiedFailure(
+  failureMessage: string,
+  buildMode: StagedBuildMode,
+  targets: FailureEvidenceTargets,
+  checkpointsSince: CheckpointActivity,
+): Promise<string | undefined> {
+  const remedy =
+    maxDbSizeReachedRemedy(failureMessage, buildMode) ??
+    pastEofReadRemedy(failureMessage, buildMode);
+  if (!remedy) return undefined;
+  const evidenceLines = await collectFailureEvidence(targets, checkpointsSince);
+  // 0 is the pass-through sentinel for LadybugDB's native default, not a size.
+  const bufferPool = getEffectiveBufferPoolSize();
+  const configuredLine =
+    `configured max DB size ${LBUG_MAX_DB_SIZE} B, ` +
+    `buffer pool ${bufferPool === 0 ? "LadybugDB's native 80%-of-RAM default" : `${bufferPool} B`}`;
+  return [
+    remedy,
+    ...[...evidenceLines, configuredLine].map((line) => `Failure evidence — ${line}`),
+  ].join('\n');
+}
+
+/**
+ * What an analyze failure rethrows: `err` with `diagnosis` appended to its
+ * message, or a wrapper carrying it when `err` is not an Error.
+ *
+ * The message is the one channel every caller surfaces: `analyze --watch` wires
+ * no log sink unless GITNEXUS_VERBOSE=1 and the auto-sync worker launcher drops
+ * progress messages, yet both print the rethrown message. Appended in place, so
+ * the error keeps its identity and prototype (`instanceof` checks and live-mutation
+ * tracking key on the object), and after the native text, so classifiers anchored
+ * on it still match. Call it once per error so the diagnosis is appended once.
+ * Best effort: a throwing log sink or an unwritable `message` never replaces `err`.
+ */
+function attachFailureDiagnosis(
+  err: unknown,
+  failureMessage: string,
+  diagnosis: string | undefined,
+  log: (msg: string) => void,
+): unknown {
+  let failure: unknown = err;
+  const bestEffort = (deliver: () => void): void => {
+    try {
+      deliver();
+    } catch {
+      /* swallow — the caller rethrows `failure` */
+    }
+  };
+  if (diagnosis) {
+    bestEffort(() => {
+      const text = stripControlCharacters(diagnosis);
+      if (err instanceof Error) err.message = `${err.message}\n${text}`;
+      // A non-Error has no message to extend; wrap it so the diagnosis still travels.
+      else failure = new Error(`${failureMessage}\n${text}`, { cause: err });
+    });
+  } else if (
+    /max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(failureMessage)
+  ) {
+    // A max-size message the engine worded differently keeps the generic hint.
+    bestEffort(() =>
+      log(
+        'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
+          'byte limit before retrying analyze; retained complete embeddings can be reused.',
+      ),
+    );
+  }
+  return failure;
 }
 
 function formatMetaWriteFailureReason(err: unknown): string {
@@ -3034,11 +3144,30 @@ async function runFullAnalysisInner(
   // opt-in for ordinary analyze runs; watch mode requests it for failure
   // preservation. The copy requests a filesystem clone and records its actual
   // duration, while Node falls back to a normal copy where reflinks are absent.
+  // `GITNEXUS_ATOMIC_INCREMENTAL=0` is the operator's off-switch and beats a
+  // caller's request (watch and auto-sync cannot be reconfigured, #3530). It
+  // only governs this opt-in staging: a full rebuild and the #2841 escalation
+  // below still stage because they set `useAtomicSwap` independently.
+  const atomicIncrementalEnv = process.env.GITNEXUS_ATOMIC_INCREMENTAL;
+  const atomicIncrementalEligible = isIncremental && !!hashDiff && process.platform !== 'win32';
   const wantAtomicIncremental =
-    isIncremental &&
-    !!hashDiff &&
-    process.platform !== 'win32' &&
-    (options.atomicIncremental === true || process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1');
+    atomicIncrementalEligible &&
+    atomicIncrementalEnv !== '0' &&
+    (options.atomicIncremental === true || atomicIncrementalEnv === '1');
+  if (
+    atomicIncrementalEligible &&
+    atomicIncrementalEnv === '0' &&
+    options.atomicIncremental === true
+  ) {
+    // The off-switch trades failure safety for in-place speed; say so once, since
+    // watch and auto-sync (the callers that request staging) never show the operator
+    // why their runs stopped staging.
+    log(
+      'atomic-incremental: disabled by GITNEXUS_ATOMIC_INCREMENTAL=0 although the caller requested ' +
+        'staging; a failed write will leave the live index partly written and the next run will ' +
+        'rebuild it in full',
+    );
+  }
   // #2614 F3: the copy-then-swap stages ONLY the main lbug file, so a live index
   // carrying an orphan .wal/.shadow (a silently-failed prior checkpoint) would
   // be copied incompletely and lose that delta. Only take the atomic path when
@@ -3104,7 +3233,8 @@ async function runFullAnalysisInner(
       await fs.copyFile(lbugPath, buildPath, fsConstants.COPYFILE_FICLONE);
       log(
         `atomic-incremental: staged ${lbugPath} in ${Date.now() - copyStartedAt}ms ` +
-          '(copy-on-write requested; filesystem fallback is allowed)',
+          '(copy-on-write requested; filesystem fallback is allowed); ' +
+          (await describeFileEvidence('staging copy', buildPath)),
       );
     }
   } else {
@@ -3170,14 +3300,29 @@ async function runFullAnalysisInner(
     ),
   );
 
+  // The checkpoint counters are process-global (`analyze --watch` reruns analyze in
+  // one process), so a failure report counts only this run's from here (#3530).
+  const checkpointsAtRunStart = readCheckpointActivity();
   // Full rebuild (POSIX) builds into the temp `buildPath`; incremental and
   // Windows use `buildPath === lbugPath` in place.
   try {
     await initAnalysisLbug(buildPath);
   } catch (error) {
+    // Opening a truncated staging copy or an oversized index fails with the same
+    // classified messages a write does, so it carries the same diagnosis (#3530).
+    // No checkpoint driver has started yet, so nothing can touch the files mid-stat.
+    const stagedBuild = buildPath !== lbugPath;
+    const failureMessage = describeThrown(error);
+    const diagnosis = await diagnoseClassifiedFailure(
+      failureMessage,
+      stagedBuildModeOf(stagedBuild, atomicIncremental),
+      { liveIndex: lbugPath, ...(stagedBuild ? { stagingCopy: buildPath } : {}) },
+      checkpointsAtRunStart,
+    );
     discardCachedEmbeddingSpill();
-    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
-    throw error;
+    const failure = attachFailureDiagnosis(error, failureMessage, diagnosis, log);
+    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(failure);
+    throw failure;
   }
 
   // Manual WAL checkpoint driver (#1741): periodically drain the WAL
@@ -3191,18 +3336,19 @@ async function runFullAnalysisInner(
   // `let`: the incremental branch's escalation valve (#2409) stops this driver
   // around its close→wipe→reopen strategy switch and starts a fresh one.
   let walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
+  // #2409 escalation valve outcome, hoisted above the incremental branch so
+  // the vector-index recreation seam in Phase 4 below can tell "surgical
+  // incremental" (DB files survived — the HNSW index with them) apart from
+  // "escalated full write" (DB wiped, index destroyed) — tri-review
+  // 4669518496 P1. Hoisted again above the `try` so the failure handler can
+  // classify an escalated run as a rebuild (#3530).
+  let escalatedFullWrite = false;
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
     // must be released to avoid blocking subsequent invocations.
 
     let lbugMsgCount = 0;
-    // #2409 escalation valve outcome, hoisted above the incremental branch so
-    // the vector-index recreation seam in Phase 4 below can tell "surgical
-    // incremental" (DB files survived — the HNSW index with them) apart from
-    // "escalated full write" (DB wiped, index destroyed) — tri-review
-    // 4669518496 P1.
-    let escalatedFullWrite = false;
     let incrementalStats: AnalyzeResult['incrementalStats'];
     // Phase 3.5's restore scope (FIX 3 of this shipping review): on the
     // SURGICAL write plan this is the exact file set whose rows
@@ -3271,6 +3417,21 @@ async function runFullAnalysisInner(
       // in incremental/escalation-gate.ts (pure predicate, boundary-tested).
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
+      // Resolution groups can change edges between unchanged files without an
+      // import or a new-graph edge touching the changed/deleted member. Expand
+      // before the importer walk so dependents of these siblings refresh too.
+      for (const filePath of collectResolutionGroupFiles(
+        [...hashDiff.toWrite, ...hashDiff.deleted],
+        allFilePaths,
+      )) {
+        writableFiles.add(filePath);
+      }
+      const resolutionGroupExpansion = writableFiles.size - directlyChangedCount;
+      if (resolutionGroupExpansion > 0) {
+        log(
+          `Incremental: +${resolutionGroupExpansion} resolution sibling(s) added to writable set`,
+        );
+      }
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
       // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
       // importer-BFS chunks whose IMPORTS query failed across ALL depths
@@ -3336,7 +3497,7 @@ async function runFullAnalysisInner(
         // used to cost ~700 sequential lock-taking round-trips (~5.6s). The
         // closure is identical: importers already in writableFiles are not
         // re-frontiered, exactly like the per-file loop's membership check.
-        let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted, ...shadowSeed];
+        let frontier: string[] = [...writableFiles, ...hashDiff.deleted, ...shadowSeed];
         for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
           const importers = await queryImportersBatch(frontier, {
             onChunkFailure: () => {
@@ -3353,11 +3514,12 @@ async function runFullAnalysisInner(
           frontier = nextFrontier;
         }
       }
-      const importerExpansion = writableFiles.size - directlyChangedCount;
+      const importerExpansion =
+        writableFiles.size - directlyChangedCount - resolutionGroupExpansion;
       incrementalStats = {
         changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
         reparsedFiles: pipelineResult.reparsedFileCount,
-        affectedDependents: importerExpansion,
+        affectedDependents: resolutionGroupExpansion + importerExpansion,
         deletedFiles: hashDiff.deleted.length,
         writeMode: 'incremental',
       };
@@ -3376,9 +3538,9 @@ async function runFullAnalysisInner(
 
       // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
       //    composed:
-      //      (a) `writableFiles` — toWrite ∪ transitive importers of
-      //          changed/deleted files (the bounded BFS above, reading
-      //          IMPORTS from the pre-pipeline DB).
+      //      (a) `writableFiles` — toWrite ∪ resolution siblings ∪ transitive
+      //          importers of changed/deleted files and their siblings (the
+      //          bounded BFS above, reading IMPORTS from the pre-pipeline DB).
       //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
       //          edges and pulls in any unchanged-side file that sits
       //          on a writable-boundary-crossing edge (catches refined
@@ -5423,10 +5585,23 @@ async function runFullAnalysisInner(
         : undefined,
     };
   } catch (err) {
-    // Ensure LadybugDB is closed even on error. Stop the driver first
-    // so its retry loop cannot extend an already-failing analyze.
+    const stagedBuild = useAtomicSwap && buildPath !== lbugPath;
+    const failureMessage = describeThrown(err);
+    // Ensure LadybugDB is closed even on error. Stop the driver first so its retry
+    // loop cannot extend an already-failing analyze. `stop()` clears the tick timer
+    // before its first `await`, so starting it here keeps any new checkpoint from
+    // touching the staging files while the evidence below is measured; a checkpoint
+    // already in flight is recorded in that evidence's snapshot (#3530).
+    const driverStopped = walCheckpointDriver.stop();
+    // Before the database closes — see diagnoseClassifiedFailure.
+    const diagnosis = await diagnoseClassifiedFailure(
+      failureMessage,
+      stagedBuildModeOf(stagedBuild, atomicIncremental && !escalatedFullWrite),
+      { liveIndex: lbugPath, ...(stagedBuild ? { stagingCopy: buildPath } : {}) },
+      checkpointsAtRunStart,
+    );
     try {
-      await walCheckpointDriver.stop();
+      await driverStopped;
     } catch {
       /* swallow — surface path is the rethrow below */
     }
@@ -5452,7 +5627,7 @@ async function runFullAnalysisInner(
     // differs from `lbugPath` exactly when the atomic-swap plan is in effect,
     // and the live index is never that path. Best-effort by construction — the
     // rethrow below is the surface, and the lock's sweep remains the backstop.
-    if (useAtomicSwap && buildPath !== lbugPath) {
+    if (stagedBuild) {
       try {
         const recovery = resolveEmbeddingRecovery(
           metaDir,
@@ -5467,17 +5642,11 @@ async function runFullAnalysisInner(
     }
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
     discardCachedEmbeddingSpill();
-    if (liveIndexMutationStarted) {
-      // Preserve the original error identity/prototype: callers distinguish
-      // IndexLockTimeoutError and other domain failures with `instanceof`.
-      recordLiveIndexMutationRisk(err);
-    }
-    if (/max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(String(err))) {
-      log(
-        'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
-          'byte limit before retrying analyze; retained complete embeddings can be reused.',
-      );
-    }
-    throw err;
+    // What the caller sees: `err` itself (identity and prototype preserved, callers
+    // tell IndexLockTimeoutError and other domain failures apart with `instanceof`),
+    // or a wrapper when `err` is not an Error.
+    const failure = attachFailureDiagnosis(err, failureMessage, diagnosis, log);
+    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(failure);
+    throw failure;
   }
 }

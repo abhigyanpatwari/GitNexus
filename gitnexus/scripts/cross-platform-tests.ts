@@ -188,6 +188,14 @@ const LBUG_NATIVE = [
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
   'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
   'test/integration/lbug-incremental-search.test.ts',
+  // Retained identities and reader metadata must agree on every native platform.
+  'test/integration/incremental-method-integrity.test.ts',
+  'test/integration/go-incremental-method-owners.test.ts',
+  'test/integration/query-symbol-integrity.test.ts',
+  'test/integration/mcp-index-generation.test.ts',
+  'test/integration/fts-repair-warm-session.test.ts',
+  'test/unit/lbug-pool-pinning.test.ts',
+  'test/unit/hybrid-search.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
   'test/integration/lbug-non-ascii-path.test.ts',
   // Cross-repo trace e2e: builds two real lbug indexes + a real bridge and
