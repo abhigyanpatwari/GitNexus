@@ -98,6 +98,19 @@ Not supported:
 - One hostile package cannot exhaust the load budget alone (it is limited to its own share), but several can (three, for matching work); packages processed after that degrade, with warnings. Which package degrades follows graph node order.
 - Explicit `export()` names are unaffected by these bounds.
 
+## Control flow
+
+R provides a control-flow-only CFG visitor (`cfg/visitors/r.ts`), used under `analyze --pdg`. It gives R `BasicBlock` nodes, `CFG` edges and control-dependence (`CDG`) edges.
+
+Modelled, in statement position inside a function body: `if` / `else if` / `else`, `for`, `while`, `repeat`, `break`, `next`, `return(...)` and bare `{ }` blocks. Every loop, including `repeat` and `while (TRUE)`, has a structural exit edge so that EXIT stays reachable for control dependence. Each `function_definition` (`function(x)` and `\(x)`, assigned or anonymous) gets its own CFG; a nested function is opaque in its parent.
+
+Not modelled:
+
+- No def/use harvest and no binding table, so reaching definitions report `no-facts` and R emits no `REACHING_DEF` edges; no taint call sites are recorded. This is a coverage gap, not a result of "no flows found".
+- Control flow nested inside an expression stays one straight-line block: `y <- if (c) a else b`, `switch()`, `&&` / `||`, `ifelse()`, and `return()` / `break` inside `tryCatch({ ... })`, `local({ ... })` or similar wrappers.
+- `stop()`, `on.exit()`, `tryCatch` handlers and other non-local exits are ordinary calls: no throw edges and no finaliser routing. A `break` / `next` with no enclosing loop falls back to EXIT.
+- Function join: a CFG is anchored at the `function_definition` token, while the `Function` node starts at the whole assignment. They share a start line for `f <- function`, `f = function` and `f <- \(x)`, but not for `f <-` followed by `function` on the next line; there the CFG is still emitted and its blocks lie inside the `Function` node's span, but the exact start-line join used by taint summaries does not resolve (inert for R today, since reaching definitions have no facts). Anonymous functions have a CFG but no `Function` node.
+
 ## Type annotations
 
 R has no inline type annotations, so the "Type Annotations" column of the language support table is not ticked for R. The roxygen2 `@param` extraction above is a comment-based fallback, in the same class as the JSDoc, PHPDoc and YARD fallbacks listed in type-resolution-system.md (Ruby's YARD support is likewise not ticked).
@@ -118,4 +131,5 @@ Unit tests are under `gitnexus/test/unit/` (`r-*.test.ts`, `type-env-r.test.ts` 
 - NAMESPACE parsing, exports and `exportPattern()` safety and scale (`r-namespace-parser`, `r-namespace-exports`, `r-export-pattern*`, `r-export-status-*`);
 - package discovery and root-package imports (`r-package-discovery-*`, `r-import-root-package`, `r-namespace-imports`);
 - qualified calls, dotted S3 names and native pipes (`r-qualified-*`, `r-dotted-s3-collision`, `r-native-pipes` fixture in `r.test.ts`);
-- roxygen2 `@param` types (`type-env-r`, `r-roxygen-param`).
+- roxygen2 `@param` types (`type-env-r`, `r-roxygen-param`);
+- control flow (`test/unit/cfg/r-visitor.test.ts`, `test/integration/cfg/r-cfg-join.test.ts`).
