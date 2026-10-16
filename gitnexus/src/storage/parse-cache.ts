@@ -869,7 +869,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v142: fetch-wrapper consumers are AST candidates emitted by providers.
 // Re-extract v141 shards: main used 141 for detached Go ownership, while
 // this branch used it for wrapper candidates. Neither contains both changes.
-const SCHEMA_BUMP = 142;
+// v143 (#3561): combine v142 wrapper candidates with the route corrections.
+// Older caches may retain phantom middleware and stored route-metadata edges.
+// The PR also used v142 without wrapper candidates; invalidate both histories.
+const SCHEMA_BUMP = 143;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

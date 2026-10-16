@@ -2060,7 +2060,7 @@ const processFileGroup = (
       ) {
         const method = captureMap['express_route.method'].text;
         const routePath = captureMap['express_route.path'].text;
-        if (EXPRESS_ROUTE_METHODS.has(method) && routePath.startsWith('/')) {
+        if (EXPRESS_ROUTE_METHODS.has(method) && method !== 'use' && routePath.startsWith('/')) {
           // Extract the receiver (the object the method is called on) to filter out
           // HTTP client calls like axios.get('/api/users') that match the same pattern
           // as Express route registrations.
@@ -2136,11 +2136,7 @@ const processFileGroup = (
           }
           for (const registration of registrations) {
             const httpMethod =
-              registration.method === 'all'
-                ? '*'
-                : registration.method === 'use'
-                  ? 'GET'
-                  : registration.method.toUpperCase();
+              registration.method === 'all' ? '*' : registration.method.toUpperCase();
             result.decoratorRoutes.push({
               filePath: file.path,
               routePath,
