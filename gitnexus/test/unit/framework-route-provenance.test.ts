@@ -10,6 +10,7 @@ import {
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
 import { extractFrameworkRouteFacts } from '../../src/core/ingestion/route-extractors/framework-route-facts.js';
 import { resolveFrameworkRouteFacts } from '../../src/core/ingestion/route-extractors/framework-route-resolver.js';
+import { composeFrameworkRoutePaths } from '../../src/core/ingestion/route-extractors/framework-route-paths.js';
 
 function facts(source: string, filePath = 'server.ts') {
   const parser = new Parser();
@@ -307,6 +308,62 @@ function handler() {} function other() {}`);
       'mutation.ts': `import {api as alias} from './router'; alias.get = replacement;`,
     });
     expect(result.registrations).toEqual([]);
+  });
+
+  it.each([
+    [
+      `import {Router} from 'express'; export const api = Router(), other = Router();`,
+      `import * as routes from './router';`,
+      `import {api, other} from './router';`,
+    ],
+    [
+      `const {Router} = require('express'); exports.api = Router(); exports.other = Router();`,
+      `const routes = require('./router');`,
+      `const {api, other} = require('./router');`,
+    ],
+  ])('invalidates every Router mutated through a module object', (publish, namespace, consume) => {
+    const result = resolve({
+      'router.js': publish,
+      'mutation.js': `${namespace} routes.api.get = () => {}; routes.other.post = () => {};`,
+      'server.js': `${consume} api.get('/phantom', () => {}); other.post('/also-phantom', () => {});`,
+    });
+    expect(composeFrameworkRoutePaths(result)).toEqual([]);
+  });
+
+  it.each([`app.locals.title = 'demo';`, `app.use = () => {};`, `delete app.use;`])(
+    'does not revive local paths when a mount parent is mutated: %s',
+    (mutation) => {
+      const result = resolve({
+        'server.ts': `import express from 'express';
+        const app = express(), router = express.Router();
+        ${mutation}
+        app.use('/api', [router]);
+        router.get('/users', () => {});`,
+      });
+      expect(composeFrameworkRoutePaths(result)).toEqual([]);
+    },
+  );
+
+  it('preserves an independent valid mount when another parent is mutated', () => {
+    const result = resolve({
+      'server.ts': `import express from 'express';
+        const app = express(), safe = express(), router = express.Router();
+        app.locals.title = 'demo';
+        app.use('/uncertain', router); safe.use('/safe', router);
+        router.get('/users', () => {});`,
+    });
+    expect(composeFrameworkRoutePaths(result).map((route) => route.routePath)).toEqual([
+      '/safe/users',
+    ]);
+  });
+
+  it('does not suppress standalone routes for an unproven mount receiver', () => {
+    const result = resolve({
+      'server.ts': `import express from 'express';
+        const router = express.Router(); storage.use('/unknown', router);
+        router.get('/users', () => {});`,
+    });
+    expect(composeFrameworkRoutePaths(result).map((route) => route.routePath)).toEqual(['/users']);
   });
 
   it('bounds repeated star-barrel exploration while preserving unrelated routes', () => {

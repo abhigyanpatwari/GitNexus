@@ -355,10 +355,15 @@ export function extractFrameworkRouteFacts(
             target.type === 'member_expression' ||
             target.type === 'subscript_expression'
           ) {
-            let root = target.childForFieldName('object');
-            while (root?.type === 'member_expression' || root?.type === 'subscript_expression')
-              root = root.childForFieldName('object');
-            facts.mutations.push(expression(root));
+            let receiver = target.childForFieldName('object');
+            while (receiver) {
+              // A namespace member can resolve to an exported allocation even
+              // when the namespace itself is only a module value.
+              facts.mutations.push(expression(receiver));
+              if (receiver.type !== 'member_expression' && receiver.type !== 'subscript_expression')
+                break;
+              receiver = receiver.childForFieldName('object');
+            }
           } else for (const child of children(target)) invalidate(child);
         };
         invalidate(left);

@@ -1,7 +1,9 @@
 import type {
   FrameworkAllocation,
+  FrameworkCallFact,
   FrameworkExpression,
   FrameworkImportResolver,
+  FrameworkMount,
   FrameworkRouteFacts,
   ResolvedFrameworkRoutes,
 } from './framework-route-types.js';
@@ -256,16 +258,38 @@ export function resolveFrameworkRouteFacts(
     return value && remainingSteps > 0 && !invalidValues.has(keyOf(value)) ? value : undefined;
   };
 
-  // Resolve property mutation targets before admission, then discard memoized
-  // values so writes through imported/local aliases poison all dependent uses.
-  for (const file of files)
-    for (const mutation of file.mutations) {
-      const value = evaluate(mutation, file.filePath);
-      if (value) {
-        invalidValues.add(keyOf(value));
-        if (value.kind === 'factory' && value.framework === 'express')
-          invalidValues.add('factory:router');
+  const flatten = (value: Value | undefined): (Value | undefined)[] =>
+    value?.kind === 'array' ? value.elements.flatMap(flatten) : [value];
+  // Resolve all targets before poisoning any value: invalidating a namespace
+  // must not hide a later mutation of another Router exported by that module.
+  const mutatedValues = files.flatMap((file) =>
+    file.mutations.map((mutation) => evaluate(mutation, file.filePath)),
+  );
+  // Retain proven incoming mounts before invalidation. An uncertain parent
+  // cannot justify a path, but its child must not become a standalone Router.
+  const uncertainMounts = new Map<FrameworkCallFact, FrameworkMount[]>();
+  if (mutatedValues.some((value) => value !== undefined))
+    for (const file of files)
+      for (const call of file.calls) {
+        if (call.method !== 'use') continue;
+        const parent = evaluate(call.receiver, file.filePath);
+        if (parent?.kind !== 'instance' || parent.allocation.kind === 'hono') continue;
+        const mounts: FrameworkMount[] = [];
+        for (const argument of call.arguments)
+          for (const child of flatten(evaluate(argument, file.filePath)))
+            if (child?.kind === 'instance' && child.allocation.kind !== 'hono')
+              mounts.push({
+                parentId: parent.allocation.id,
+                childId: child.allocation.id,
+                prefixes: null,
+              });
+        if (mounts.length) uncertainMounts.set(call, mounts);
       }
+  for (const value of mutatedValues)
+    if (value) {
+      invalidValues.add(keyOf(value));
+      if (value.kind === 'factory' && value.framework === 'express')
+        invalidValues.add('factory:router');
     }
   cache.clear();
   allocations.clear();
@@ -275,14 +299,15 @@ export function resolveFrameworkRouteFacts(
       evaluate({ kind: 'binding', id: binding.id }, file.filePath);
     for (const call of file.calls) {
       const receiver = evaluate(call.receiver, file.filePath);
-      if (!receiver) continue;
+      if (!receiver) {
+        result.mounts.push(...(uncertainMounts.get(call) ?? []));
+        continue;
+      }
       if (
         call.method === 'use' &&
         receiver.kind === 'instance' &&
         receiver.allocation.kind !== 'hono'
       ) {
-        const flatten = (value: Value | undefined): (Value | undefined)[] =>
-          value?.kind === 'array' ? value.elements.flatMap(flatten) : [value];
         const values = call.arguments.flatMap((argument) =>
           flatten(evaluate(argument, file.filePath)),
         );
