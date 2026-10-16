@@ -165,10 +165,14 @@ peers against their original ranges even when an override is configured. The
 lockfile therefore pins the same eight audited peers to exactly `0.25.1`.
 `gitnexus/scripts/prepare-tree-sitter-bundle.cjs` runs during `postinstall`
 and `prepack` to keep installed dependency manifests consistent with that lockfile
-and the published bundle. It leaves grammar sources and native binaries unchanged
-and rejects unexpected versions, peer ranges, or dependency layouts before writing
-any manifests. The upstream ranges remain in the script only as validation inputs;
-installed and published audited manifests require exactly `0.25.1`.
+and the published bundle. It leaves grammar sources unchanged and replaces the
+incorrect `linux-arm64` prebuilds in five exact npm releases with audited AArch64
+binaries. It validates package versions, peer ranges, dependency layouts, and
+replacement checksums and architecture before writing manifests or binaries.
+The upstream ranges remain in the script only as validation inputs; installed and
+published audited manifests require exactly `0.25.1`. See
+[`gitnexus/prebuilds/bundled/README.md`](gitnexus/prebuilds/bundled/README.md) for
+the affected releases, provenance, and regeneration instructions.
 
 When upgrading these packages, update the exact pins, lockfile, and audited peer
 list together. If regenerating the lockfile restores upstream's older peer ranges,
