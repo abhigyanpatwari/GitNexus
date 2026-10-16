@@ -398,6 +398,11 @@ describe('bundled Linux ARM64 repair architecture', () => {
   it('pins the five repair identities, pristine source provenance, and replacement checksums', () => {
     const dir = path.join(GITNEXUS_ROOT, 'prebuilds/bundled');
     const manifest = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+    // Independent audit pin: review regenerated artifacts and their provenance
+    // before updating this hash. Parse/stringify ignores formatting-only changes.
+    expect(createHash('sha256').update(JSON.stringify(manifest)).digest('hex')).toBe(
+      '2aa9eda6086233ce620564a63f9ed422c424b0d89b10e58b0e906e091db2aa3f',
+    );
     expect(manifest.schemaVersion).toBe(1);
     expect(manifest.tuple).toBe('linux-arm64');
     expect(
