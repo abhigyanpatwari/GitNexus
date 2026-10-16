@@ -1,9 +1,11 @@
 import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { executeQuery } from '../../src/core/lbug/lbug-adapter.js';
 import { type ParseCache } from '../../src/storage/parse-cache.js';
+import { getDurableParsedFileDir } from '../../src/storage/parsedfile-store.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 const parseIdentity = await runtimeParseIdentity();
@@ -16,8 +18,8 @@ const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'spring-destination-ap
  *
  * Two things only show up here:
  *
- *  1. The DISK-BACKED ParsedFile path. A `parseCache` with a `storagePath` — so,
- *     every real run of the CLI — flushes worker ParsedFiles to disk and hands
+ *  1. The DISK-BACKED ParsedFile path. A `parseCache` with a `writeStoragePath` —
+ *     as in a normal CLI run — flushes worker ParsedFiles to disk and hands
  *     the parse phase back an EMPTY `parsedFiles`. A phase that iterated it
  *     found nothing in production while every direct-pipeline test passed. This
  *     suite runs the pipeline the way the CLI does, so that asymmetry cannot
@@ -221,19 +223,24 @@ withTestLbugDB(
   {
     beforeFTS: async (dbPath) => {
       const storageDir = path.dirname(dbPath);
-      // A cold cache WITH a storagePath: this is what makes the parse phase use
+      const cacheDir = path.join(storageDir, 'parse-cache');
+      // A cold cache WITH a writeStoragePath: this makes the parse phase use
       // the disk-backed ParsedFile store, which is the production shape.
       const cache: ParseCache = {
         identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set(),
-        storagePath: path.join(storageDir, 'parse-cache'),
+        storagePath: cacheDir,
+        writeStoragePath: cacheDir,
         onDiskKeys: new Set(),
       };
       const result = await runPipelineFromRepo(FIXTURE, () => {}, {
         parseCache: cache,
         workerPoolSize: 1,
       });
+      expect(result.usedWorkerPool).toBe(true);
+      const shards = await readdir(getDurableParsedFileDir(cacheDir), { recursive: true });
+      expect(shards.some((name) => name.endsWith('.v8'))).toBe(true);
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       await adapter.loadGraphToLbug(result.graph, FIXTURE, storageDir);
     },
