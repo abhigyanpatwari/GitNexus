@@ -130,6 +130,26 @@ describe('parse cache artifact identity', () => {
     );
   });
 
+  it('keeps runtime opt-outs lazy and memoized independently of identity capture', async () => {
+    vi.stubEnv('GITNEXUS_SKIP_OPTIONAL_GRAMMARS', '');
+    vi.resetModules();
+    const { isGrammarRuntimeSkipped } = await import('../../src/core/tree-sitter/parser-loader.js');
+    expect(isGrammarRuntimeSkipped(SupportedLanguages.C)).toBe(false);
+
+    const f = fixture();
+    const dartIdentity = f.identity({ skipOptionalGrammars: 'dart' });
+    vi.stubEnv('GITNEXUS_SKIP_OPTIONAL_GRAMMARS', 'swift');
+    expect(isGrammarRuntimeSkipped(SupportedLanguages.Swift)).toBe(true);
+    expect(isGrammarRuntimeSkipped(SupportedLanguages.Dart)).toBe(false);
+    const swiftIdentity = f.identity();
+
+    vi.stubEnv('GITNEXUS_SKIP_OPTIONAL_GRAMMARS', 'dart');
+    expect(f.identity()).toEqual(dartIdentity);
+    expect(f.identity()).not.toEqual(swiftIdentity);
+    expect(isGrammarRuntimeSkipped(SupportedLanguages.Swift)).toBe(true);
+    expect(isGrammarRuntimeSkipped(SupportedLanguages.Dart)).toBe(false);
+  });
+
   it('normalizes effective parser options and distinguishes module conditions', () => {
     const f = fixture();
     const before = f.identity();
