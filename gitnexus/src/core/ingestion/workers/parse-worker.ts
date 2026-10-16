@@ -1758,7 +1758,7 @@ const processFileGroup = (
       // serializable data. Only on a --pdg run and only for languages with a
       // cfgVisitor (TS/JS in M1). The same disk-store/warm-cache machinery that
       // carries captureSideChannel carries this — its coherence rests on the
-      // SCHEMA_BUMP + the pdg-folded chunk-hash key (see parse-cache.ts).
+      // base/PDG artifact identities in the chunk key (see parse-cache.ts).
       if (PDG_ENABLED && provider.cfgVisitor) {
         // Isolate the CFG build per file: a throw here (an unexpected tree-sitter
         // node shape) must NOT propagate — it would escape processFileGroup to the
