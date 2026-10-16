@@ -52,6 +52,32 @@ export interface GrammarSource {
   userSkippable?: boolean;
 }
 
+export type GrammarSkipDirective = 'all' | ReadonlySet<string> | null;
+
+/** Parse runtime opt-outs without reading the environment or loading a grammar. */
+export function parseGrammarSkipDirective(value: string): GrammarSkipDirective {
+  const raw = value.trim().toLowerCase();
+  if (raw === '') return null;
+  if (raw === '1' || raw === 'true' || raw === 'all' || raw === '*') return 'all';
+  return new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .flatMap((s) => [s, s.replace(/^tree-sitter-/, '')]),
+  );
+}
+
+export function isGrammarSkipped(
+  key: string,
+  source: GrammarSource,
+  directive: GrammarSkipDirective,
+): boolean {
+  if (source.userSkippable !== true || directive === null) return false;
+  if (directive === 'all') return true;
+  return directive.has(key) || directive.has(`tree-sitter-${key}`);
+}
+
 const ISSUES_URL = 'https://github.com/abhigyanpatwari/GitNexus/issues';
 
 export const GRAMMAR_SOURCES: Record<string, GrammarSource> = {

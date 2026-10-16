@@ -2,7 +2,13 @@ import Parser from 'tree-sitter';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 import { logger } from '../logger.js';
-import { GRAMMAR_SOURCES as SOURCES, type GrammarSource } from './grammar-sources.js';
+import {
+  GRAMMAR_SOURCES as SOURCES,
+  isGrammarSkipped,
+  parseGrammarSkipDirective,
+  type GrammarSkipDirective,
+  type GrammarSource,
+} from './grammar-sources.js';
 
 /**
  * Introspection over the grammar registry for the ABI load-smoke test
@@ -49,8 +55,6 @@ const logged = new Set<string>();
  * routed through the optional machinery for ABI safety (C) carry no
  * `userSkippable` and are never skippable here.
  */
-type SkipDirective = 'all' | Set<string> | null;
-
 // Parsed form of GITNEXUS_SKIP_OPTIONAL_GRAMMARS, resolved lazily ONCE per
 // process. The env is set before analyze runs, so re-reading + re-allocating a
 // Set on every call was wasted work (and a latent trap for any future per-file
@@ -58,19 +62,11 @@ type SkipDirective = 'all' | Set<string> | null;
 // fresh memo — per case, so this stays test-friendly.
 //   'all' → every userSkippable grammar; Set → only the named ids
 //   (and `tree-sitter-<id>` spellings); null → env unset/empty (nothing).
-let _skipDirective: SkipDirective | undefined;
-const skipDirective = (): SkipDirective => {
+let _skipDirective: GrammarSkipDirective | undefined;
+const skipDirective = (): GrammarSkipDirective => {
   if (_skipDirective !== undefined) return _skipDirective;
-  const raw = (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS ?? '').trim().toLowerCase();
-  if (raw === '') return (_skipDirective = null);
-  if (raw === '1' || raw === 'true' || raw === 'all' || raw === '*')
-    return (_skipDirective = 'all');
-  return (_skipDirective = new Set(
-    raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .flatMap((s) => [s, s.replace(/^tree-sitter-/, '')]),
+  return (_skipDirective = parseGrammarSkipDirective(
+    process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS ?? '',
   ));
 };
 
@@ -79,12 +75,7 @@ const isRuntimeSkippedGrammar = (key: string, source: GrammarSource): boolean =>
   // required deps that use the optional machinery for ABI safety (C carries no
   // `userSkippable`).
   if (source.userSkippable !== true) return false;
-  const directive = skipDirective();
-  if (directive === null) return false;
-  if (directive === 'all') return true;
-  // `key` is the SupportedLanguages value (e.g. `swift`); the directive Set
-  // already holds both the bare id and the `tree-sitter-<id>` spelling.
-  return directive.has(key) || directive.has(`tree-sitter-${key}`);
+  return isGrammarSkipped(key, source, skipDirective());
 };
 
 const logFailure = (key: string, result: LoadResult): void => {
