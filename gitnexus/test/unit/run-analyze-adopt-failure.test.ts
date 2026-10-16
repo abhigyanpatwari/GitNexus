@@ -51,6 +51,7 @@ import {
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import { resolveParseCacheIdentity } from '../../src/core/parse-cache-identity.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 
@@ -102,9 +103,14 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
       cwd: tmpRepo.dbPath,
       encoding: 'utf-8',
     }).trim();
-    const runnerIdentity = resolveAnalyzerRunnerIdentity(
-      pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
-    );
+    const runAnalyzeUrl = pathToFileURL(
+      path.resolve(__dirname, '../../src/core/run-analyze.ts'),
+    ).href;
+    const runnerIdentity = resolveAnalyzerRunnerIdentity(runAnalyzeUrl);
+    const parseIdentity = resolveParseCacheIdentity(runAnalyzeUrl);
+    if (parseIdentity.ok === false) {
+      throw new Error(`Cannot verify test parser artifacts: ${parseIdentity.reason}`);
+    }
     const metaFor = (branch: string): RepoMeta => ({
       repoPath: tmpRepo.dbPath,
       lastCommit: commit,
@@ -115,6 +121,7 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
       },
       runnerIdentity,
+      parseCacheIdentity: { base: parseIdentity.identity.base },
     });
     const flat = getStoragePaths(tmpRepo.dbPath);
     await rmCtx.realSaveMeta!(flat.storagePath, metaFor('main'));
