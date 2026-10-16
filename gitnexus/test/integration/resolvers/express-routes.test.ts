@@ -1,10 +1,10 @@
+import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'path';
 import {
   loadParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -22,6 +22,8 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 describe('Express/Hono route detection', () => {
   let result: PipelineResult;
@@ -158,10 +160,11 @@ describe('Express route identity and source priority', () => {
     try {
       fs.cpSync(path.join(FIXTURES, 'express-route-priority'), repoDir, { recursive: true });
       const cold: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set<string>(),
         storagePath: storageDir,
+        writeStoragePath: storageDir,
         onDiskKeys: new Set<string>(),
       };
       const coldResult = await runPipelineFromRepo(repoDir, () => {}, {
@@ -176,10 +179,10 @@ describe('Express route identity and source priority', () => {
       const savedKeys = await saveParseCache(storageDir, cold);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storageDir),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
-      const warm = await loadParseCache(storageDir);
+      const warm = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(warm).not.toBeNull();
       const warmResult = await runPipelineFromRepo(repoDir, () => {}, {
         parseCache: warm ?? undefined,
@@ -192,7 +195,7 @@ describe('Express route identity and source priority', () => {
       // Keep the earlier test-file chunk cached while the production route
       // definitions are parsed again. Comments do not change route semantics.
       fs.appendFileSync(path.join(repoDir, 'src/server.ts'), '\n// unchanged endpoints\n');
-      const mixed = await loadParseCache(storageDir);
+      const mixed = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(mixed).not.toBeNull();
       const mixedResult = await runPipelineFromRepo(repoDir, () => {}, {
         parseCache: mixed ?? undefined,
@@ -250,14 +253,15 @@ describe('Express route identity and source priority', () => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-express-route-upgrade-'));
       const repoDir = path.join(tempDir, 'repo');
       const storageDir = path.join(tempDir, 'storage');
-      const previousVersion = `${previousSchema}+${PARSE_CACHE_VERSION.split('+').slice(1).join('+')}`;
+      const previousVersion = `${previousSchema}+0.0.0-legacy`;
       try {
         fs.cpSync(path.join(FIXTURES, 'express-route-priority'), repoDir, { recursive: true });
         const cache: ParseCache = {
-          version: PARSE_CACHE_VERSION,
+          identity: parseIdentity,
           entries: new Map(),
           usedKeys: new Set<string>(),
           storagePath: storageDir,
+          writeStoragePath: storageDir,
           onDiskKeys: new Set<string>(),
         };
         const initial = await runPipelineFromRepo(repoDir, () => {}, {
@@ -266,18 +270,18 @@ describe('Express route identity and source priority', () => {
         });
         expect(initial.reparsedFileCount).toBe(2);
         pruneCache(cache, cache.usedKeys);
-        cache.version = previousVersion;
         const savedKeys = await saveParseCache(storageDir, cache);
         expect(savedKeys).toHaveLength(2);
+        const indexPath = path.join(storageDir, 'parse-cache', 'index.json');
+        const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+        fs.writeFileSync(indexPath, JSON.stringify({ ...index, version: previousVersion }));
         const durableDir = getDurableParsedFileDir(storageDir);
         await pruneAndSaveDurableParsedFileStore(durableDir, previousVersion, new Set(savedKeys));
         expect((await loadDurableParsedFileIndex(durableDir, previousVersion)).size).toBe(2);
 
-        const upgraded = await loadParseCache(storageDir);
+        const upgraded = await loadParseCache(storageDir, parseIdentity, storageDir);
         expect(upgraded.onDiskKeys?.size ?? 0).toBe(0);
-        expect(await loadDurableParsedFileIndex(durableDir, PARSE_CACHE_VERSION)).toEqual(
-          new Map(),
-        );
+        expect(await loadDurableParsedFileIndex(durableDir, parseIdentity.base)).toEqual(new Map());
         const result = await runPipelineFromRepo(repoDir, () => {}, {
           parseCache: upgraded,
           workerPoolSize: 1,
