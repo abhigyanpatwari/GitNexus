@@ -631,8 +631,8 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
 
     it('matches a backticked export() entry against the unquoted name (backticks stripped)', () => {
       const s = setup({ [F]: src }, { exports: ['`%+%`'] });
-      // Export check passes; the def keeps its backticks, so the lookup ends with no file.
-      expect(resolve(s, 'scorelib', '%+%')).toBeNull();
+      // Export check passes, and the def is found by its symbol although it keeps its backticks.
+      expect(resolve(s, 'scorelib', '%+%')).toEqual([F]);
       const t = setup({ [F]: 'g <- function(d) d' }, { exports: ['`g`'] });
       expect(resolve(t, 'scorelib', 'g')).toEqual([F]);
     });

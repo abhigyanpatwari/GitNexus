@@ -35,6 +35,7 @@
 
 import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-shared';
 import type { RPackageConfig } from './package-config.js';
+import { rBareName } from './bare-name.js';
 import {
   parseRQualifier,
   rFileBelongsToDiscoveredPackage,
@@ -115,10 +116,12 @@ function isQualifiedCall(site: ReferenceSite): site is ReferenceSite & {
 }
 
 /**
- * Per name, every top-level function/class definition (one entry per binding
+ * Per symbol, every top-level function/class definition (one entry per binding
  * ref, so a same-file redefinition counts twice) of the given package files.
  * Read from Module-scope `local` bindings at extraction time, like
- * `rFileTopLevel`, but keeping the definitions rather than the names.
+ * `rFileTopLevel`, but keeping the definitions rather than the names. The symbol
+ * is the name without the backticks it may be written in, so `pkg::f()` finds
+ * `` `f` <- `` and the reverse; definitions spelled both ways count together.
  */
 function collectTopLevelDefinitions(files: readonly ParsedFile[]): Map<string, SymbolDefinition[]> {
   const byName = new Map<string, SymbolDefinition[]>();
@@ -128,8 +131,9 @@ function collectTopLevelDefinitions(files: readonly ParsedFile[]): Map<string, S
     for (const [name, refs] of moduleScope.bindings) {
       for (const ref of refs) {
         if (ref.origin !== 'local' || !TOP_LEVEL_BINDABLE_TYPES.has(ref.def.type)) continue;
-        const list = byName.get(name);
-        if (list === undefined) byName.set(name, [ref.def]);
+        const symbol = rBareName(name);
+        const list = byName.get(symbol);
+        if (list === undefined) byName.set(symbol, [ref.def]);
         else list.push(ref.def);
       }
     }
@@ -212,7 +216,7 @@ export function populateRQualifiedCalls(
       const locality = pkg === undefined ? 'unknown' : localityByPackage.get(pkg);
       if (locality === 'external') continue;
       if (locality === 'local' && pkg !== undefined) {
-        const found = definitions.get(pkg)?.get(site.name) ?? [];
+        const found = definitions.get(pkg)?.get(rBareName(site.name)) ?? [];
         if (found.length >= 2) continue;
         if (found.length === 1) preciseBySite.set(siteKey(parsed.filePath, site.atRange), found[0]);
       }

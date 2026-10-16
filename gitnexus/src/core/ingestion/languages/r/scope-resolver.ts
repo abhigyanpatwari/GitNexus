@@ -34,6 +34,7 @@ import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-l
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { loadRPackageConfig } from './package-config.js';
+import { rBareName } from './bare-name.js';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { resolveRImportTarget } from '../../import-resolvers/r.js';
 import {
@@ -154,8 +155,9 @@ export function expandRWildcardNames(
     if (qn === undefined || qn.length === 0 || qn.includes('.')) continue; // no dotted names
     // `localDefs` is flat: it also lists functions nested in other functions, which a
     // `library()` does not bring into scope. Only module-scope bindings are top-level.
-    if (!topLevel.has(qn)) continue;
-    if (dottedTails.has(qn)) continue; // shares its tail with an S3 method: see above
+    // `topLevel` holds symbols and `qn` is the name as written, backticks included.
+    if (!topLevel.has(rBareName(qn))) continue;
+    if (dottedTails.has(qn)) continue; // shares its tail with an S3 method: see above (as written, as finalize keys it)
     if (seen.has(qn)) continue;
     seen.add(qn);
     names.push(qn);

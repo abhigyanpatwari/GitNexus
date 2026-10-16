@@ -1,0 +1,6 @@
+export(run_all)
+importFrom(provlib, `%||%`)
+importFrom(provlib, "odd fn")
+importFrom(provlib, plain_fn)
+# The caller package defines this name itself: its own namespace masks the import.
+importFrom(provlib, shadowed_op)
