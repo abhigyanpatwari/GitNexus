@@ -1,7 +1,9 @@
 import type { NameClaim } from 'gitnexus-shared';
 import type { RenameIssue, RenameProvider } from '../../rename-provider.js';
 import { unescapeRString } from './export-pattern.js';
+import { rBareName } from './bare-name.js';
 import {
+  canonicalizeRenameBindings,
   createTreeSitterRenameSource,
   innermostRenameScope,
   walkNamedNodes,
@@ -51,8 +53,12 @@ const unsupported = (message: string): RenameIssue => ({
   message,
 });
 
+// A backticked symbol is an `identifier` whose text keeps its backticks. Both spellings name the
+// same symbol, so occurrences, claims and bindings are matched on the symbol.
 const parseNames = createTreeSitterRenameSource({
   isName: (node) => node.type === 'identifier',
+  canonicalName: rBareName,
+  transformParsed: (parsed) => canonicalizeRenameBindings(parsed, rBareName),
   skip: (node) => node.type === 'comment',
   role: (node) =>
     node.parent?.type === 'parameter' && node.parent.childForFieldName('name')?.id === node.id
@@ -61,6 +67,7 @@ const parseNames = createTreeSitterRenameSource({
 });
 
 export const rRenameProvider: RenameProvider = {
+  canonicalName: rBareName,
   validateName(name) {
     if (!/^(?:[A-Za-z]|\.(?![0-9]))[A-Za-z0-9._]*$/.test(name) || RESERVED.has(name))
       return { code: 'invalid_name', message: 'Choose a valid nonreserved R identifier.' };
@@ -97,11 +104,15 @@ export const rRenameProvider: RenameProvider = {
     };
   },
   checkSafety({ target, newName, files, graph }) {
-    const name = target.qualifiedName ?? '';
+    const name = rBareName(target.qualifiedName ?? '');
     if (target.type !== 'Function')
       return unsupported('Only plain R functions can be renamed; classes and members are refused.');
     const defined = new Set(
-      [...files.values()].flatMap((source) => source.parsed.localDefs.map((d) => d.qualifiedName)),
+      [...files.values()].flatMap((source) =>
+        source.parsed.localDefs.flatMap((d) =>
+          d.qualifiedName === undefined ? [] : [rBareName(d.qualifiedName)],
+        ),
+      ),
     );
     if (newName.includes('.') && defined.has(newName.slice(0, newName.indexOf('.'))))
       return unsupported('The new name would register an S3 method of an existing function.');
@@ -123,7 +134,8 @@ export const rRenameProvider: RenameProvider = {
     graph.forEachNode((node) => {
       if (
         node.properties.filePath === file &&
-        node.properties.name === name &&
+        typeof node.properties.name === 'string' &&
+        rBareName(node.properties.name) === name &&
         node.properties.isExported !== false
       )
         exported = true;

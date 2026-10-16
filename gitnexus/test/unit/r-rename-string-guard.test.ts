@@ -15,11 +15,11 @@ const parser = new Parser();
 parser.setLanguage(R as Parameters<Parser['setLanguage']>[0]);
 
 /** Run the provider's safety check for renaming `worker` -> `job` over one source text. */
-function verdict(source: string, newName = 'job'): string {
+function verdict(source: string, newName = 'job', targetName = 'worker'): string {
   const tree = parser.parse(source);
   const files = new Map([['a.R', { tree, parsed: { localDefs: [] } }]]);
   const issue = rRenameProvider.checkSafety?.({
-    target: { type: 'Function', qualifiedName: 'worker', filePath: 'a.R' },
+    target: { type: 'Function', qualifiedName: targetName, filePath: 'a.R' },
     newName,
     files,
     graph: { forEachNode: () => undefined },
@@ -62,6 +62,11 @@ describe('R rename: the string-literal guard compares decoded string values', ()
   it('does not decode escapes inside a raw string, and ignores a non-matching one', () => {
     expect(verdict('x <- r"(wor\\u006ber)"')).toBe('ok');
     expect(verdict('x <- r"(workers)"')).toBe('ok');
+  });
+
+  it('compares the symbol of a function defined in backticks', () => {
+    expect(verdict('do.call("worker", list())', 'job', '`worker`')).toBe('unsupported_occurrence');
+    expect(verdict('do.call("workers", list())', 'job', '`worker`')).toBe('ok');
   });
 
   it('applies to the new name as well', () => {

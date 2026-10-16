@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a function while a function in another scope shadows it with a backticked definition; the shadowed call is left alone.",
+  "categories": ["call-graph", "same-file", "backtick-name", "shadowing"],
+  "target": { "name": "helper", "kind": "Function", "file": "shadow.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "success", "edits": 2 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "outer", "kind": "Function", "file": "shadow.R", "startLine": 2 },
+      "to": { "name": "helper", "kind": "Function", "file": "shadow.R", "startLine": 0 }
+    }
+  ]
+}
