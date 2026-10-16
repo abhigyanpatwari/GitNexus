@@ -95,18 +95,22 @@ const CACHE_DIRNAME = 'parse-cache';
  */
 export const COLD_PARSE_REBUILD_DIRNAME = 'parse-rebuild';
 
-/** Deterministic staging path — tests only. Production uses {@link createColdParseRebuildDir}. */
+/** Staging owned by one exclusively locked index slot, separate from shared caches. */
 export const getColdParseRebuildDir = (storagePath: string): string =>
   path.join(storagePath, COLD_PARSE_REBUILD_DIRNAME);
 
 /**
- * Unique per analyze process so concurrent `--no-parse-cache` runs on
- * different branch slots (shared `.gitnexus`, separate index locks) do not
- * delete each other's staging tree.
+ * The caller holds this meta directory's index lock and reclaims the previous
+ * run's stage before starting. Branches and shared-store checkouts have their
+ * own meta directories, so an interrupted run can be reclaimed without
+ * touching a live sibling's stage. Keep a unique child per run: a retired
+ * worker may finish its flush after the bounded shutdown drain, and must not
+ * write into a later run's transient store in a long-lived process.
  */
 export const createColdParseRebuildDir = async (storagePath: string): Promise<string> => {
-  await fs.mkdir(storagePath, { recursive: true });
-  return fs.mkdtemp(path.join(storagePath, `${COLD_PARSE_REBUILD_DIRNAME}.`));
+  const stagingRoot = getColdParseRebuildDir(storagePath);
+  await fs.mkdir(stagingRoot, { recursive: true });
+  return fs.mkdtemp(path.join(stagingRoot, 'run.'));
 };
 const CACHE_INDEX_FILENAME = 'index.json';
 
