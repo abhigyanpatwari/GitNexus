@@ -22,6 +22,12 @@ const samples = {
   ],
 };
 
+function buildEnvironment(env = process.env) {
+  // Keep tool discovery and the user directory, but exclude compiler, make and
+  // gyp overrides so the recorded GCC toolchain and flags match the build.
+  return { PATH: env.PATH, HOME: env.HOME, CC: 'gcc', CXX: 'g++' };
+}
+
 async function download(url, file, expectedSha256, integrity) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Download failed: ${url} (${response.status})`);
@@ -97,7 +103,9 @@ async function main() {
   }
   const manifest = readJson(path.join(output, 'manifest.json'));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-bundled-prebuilds-'));
-  const run = (command, args, cwd = work) => execFileSync(command, args, { cwd, stdio: 'inherit' });
+  const buildEnv = buildEnvironment();
+  const run = (command, args, cwd = work, env = process.env) =>
+    execFileSync(command, args, { cwd, env, stdio: 'inherit' });
   try {
     const dependencies = Object.fromEntries(
       Object.entries(manifest.build.dependencies).map(([name, entry]) => [name, entry.version]),
@@ -145,6 +153,7 @@ async function main() {
           '--jobs=2',
         ],
         dir,
+        buildEnv,
       );
       verifySources(dir, entry.source.files);
       const release = path.join(dir, 'build/Release');
@@ -164,10 +173,10 @@ async function main() {
       built.push({ entry: { ...entry, sha256: sha256(bytes), elf }, bytes });
     }
     const version = (command) =>
-      execFileSync(command, ['--version'], { encoding: 'utf8' }).split('\n')[0];
+      execFileSync(command, ['--version'], { env: buildEnv, encoding: 'utf8' }).split('\n')[0];
     manifest.build = {
       ...manifest.build,
-      compiler: `${version('gcc')}; ${version('g++')}`,
+      compiler: `${version(buildEnv.CC)}; ${version(buildEnv.CXX)}`,
       linker: version('ld'),
       sysroot: version('ldd'),
       hostArchitecture: process.arch,
@@ -193,7 +202,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { buildEnvironment };

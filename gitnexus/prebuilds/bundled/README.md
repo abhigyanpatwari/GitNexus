@@ -31,7 +31,10 @@ npx vitest run test/unit/prepare-tree-sitter-bundle.test.ts test/unit/prebuild-c
 
 The script downloads the recorded tarballs and headers, verifies their hashes,
 installs the pinned build helpers with lifecycle scripts disabled, and builds
-packages serially in a temporary tree. It checks unchanged source bytes, ELF
+packages serially in a temporary tree. Builds use `gcc` and `g++` from `PATH`,
+preserving only `PATH` and `HOME` from the caller's environment. Compiler,
+make, and gyp overrides (including `CC`, `CXX`, and flags) are ignored so the
+recorded toolchain matches the build. It checks unchanged source bytes, ELF
 architecture, N-API, dynamic dependency baselines, and real native parsing
 before replacing any committed output. Compiler changes can change the binary
 hashes; review the updated binaries and provenance together. This is a bounded
