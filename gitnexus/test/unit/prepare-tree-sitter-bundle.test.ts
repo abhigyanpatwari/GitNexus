@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -15,7 +17,35 @@ import { cleanupTempDirSync } from '../helpers/test-db.js';
 
 const require = createRequire(import.meta.url);
 const { prepareTreeSitterBundle } = require('../../scripts/prepare-tree-sitter-bundle.cjs');
+const { TUPLES: tuples } = require('../../scripts/assert-publish-grammar-coverage.cjs');
 const roots: string[] = [];
+const repairs = [
+  ['tree-sitter-cpp', '0.23.4'],
+  ['tree-sitter-java', '0.23.5'],
+  ['tree-sitter-ruby', '0.23.1'],
+  ['tree-sitter-javascript', '0.23.1'],
+  ['tree-sitter-typescript', '0.23.2'],
+];
+const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+const repairRoot = (root: string) => path.join(root, 'prebuilds/bundled');
+const grammarRoot = (root: string, name: string) =>
+  path.join(
+    root,
+    'node_modules',
+    name === 'tree-sitter-javascript'
+      ? 'tree-sitter-typescript/node_modules/tree-sitter-javascript'
+      : name,
+  );
+const replacement = () => {
+  const bytes = Buffer.alloc(96);
+  bytes.write('\x7fELF');
+  bytes[4] = 2;
+  bytes[5] = 1;
+  bytes.writeUInt16LE(3, 16);
+  bytes.writeUInt16LE(183, 18);
+  bytes.write('napi_register_module_v1', 64);
+  return bytes;
+};
 
 const directVersions: Record<string, string> = {
   '@eagleoutice/tree-sitter-r': '1.1.2',
@@ -76,6 +106,23 @@ function fixture() {
       peerDependencies: { 'tree-sitter': '^0.21.1' },
     },
   );
+  const overlays = repairs.map(([name, version]) => {
+    const file = `${name}@${version}/linux-arm64/${name}.node`;
+    const bytes = replacement();
+    mkdirSync(path.dirname(path.join(repairRoot(root), file)), { recursive: true });
+    writeFileSync(path.join(repairRoot(root), file), bytes);
+    for (const tuple of tuples) {
+      const dir = path.join(grammarRoot(root, name), 'prebuilds', tuple);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, `${name}.node`), `original ${name} ${tuple}`);
+    }
+    return { name, version, file, sha256: sha256(bytes) };
+  });
+  write(path.join(repairRoot(root), 'manifest.json'), {
+    schemaVersion: 1,
+    tuple: 'linux-arm64',
+    packages: overlays,
+  });
   return root;
 }
 
@@ -117,7 +164,7 @@ afterEach(() => {
 });
 
 describe('native parser bundle preparation', () => {
-  it('pins direct and transitive peers to the tested runtime without changing binaries', () => {
+  it('pins audited peers without changing unrelated binaries', () => {
     const root = fixture();
     const native = path.join(root, 'node_modules/tree-sitter-cpp/parser.node');
     writeFileSync(native, Buffer.from([0, 1, 128, 255]));
@@ -269,5 +316,87 @@ describe('native parser bundle preparation', () => {
     pkg.version = '0.26.0';
     write(file, pkg);
     expect(() => prepareTreeSitterBundle(root)).toThrow('installed version differs');
+  });
+});
+
+describe('audited Linux ARM64 bundle repairs', () => {
+  it('repairs all five identities and preserves every other tuple and the direct JavaScript dependency', () => {
+    const root = fixture();
+    const direct = path.join(
+      root,
+      'node_modules/tree-sitter-javascript/prebuilds/linux-arm64/tree-sitter-javascript.node',
+    );
+    mkdirSync(path.dirname(direct), { recursive: true });
+    writeFileSync(direct, 'direct JavaScript 0.25.0');
+    prepareTreeSitterBundle(root);
+    for (const [name] of repairs) {
+      for (const tuple of tuples) {
+        const bytes = readFileSync(
+          path.join(grammarRoot(root, name), 'prebuilds', tuple, `${name}.node`),
+        );
+        expect(bytes).toEqual(
+          tuple === 'linux-arm64' ? replacement() : Buffer.from(`original ${name} ${tuple}`),
+        );
+      }
+    }
+    expect(readFileSync(direct, 'utf8')).toBe('direct JavaScript 0.25.0');
+    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
+  });
+
+  it.each(['missing', 'corrupt', 'architecture', 'version'])(
+    'rejects %s repair input before any manifest or binary writes',
+    (failure) => {
+      const root = fixture();
+      const manifestFile = path.join(repairRoot(root), 'manifest.json');
+      const manifest = read(manifestFile);
+      const last = manifest.packages.at(-1);
+      const file = path.join(repairRoot(root), last.file);
+      if (failure === 'missing') rmSync(file);
+      if (failure === 'corrupt') writeFileSync(file, 'corrupt binary');
+      if (failure === 'architecture') {
+        const bytes = replacement();
+        bytes.writeUInt16LE(62, 18);
+        writeFileSync(file, bytes);
+        last.sha256 = sha256(bytes);
+      }
+      if (failure === 'version') last.version = '99.0.0';
+      write(manifestFile, manifest);
+      const peer = path.join(root, 'node_modules/tree-sitter-c/package.json');
+      const before = readFileSync(peer);
+      expect(() => prepareTreeSitterBundle(root)).toThrow();
+      expect(readFileSync(peer)).toEqual(before);
+      for (const [name] of repairs) {
+        expect(
+          readFileSync(
+            path.join(grammarRoot(root, name), 'prebuilds/linux-arm64', `${name}.node`),
+            'utf8',
+          ),
+        ).toBe(`original ${name} linux-arm64`);
+      }
+    },
+  );
+
+  it('repairs nested JavaScript through linked dependency containers', () => {
+    const { root, javascript } = pnpmFixture();
+    prepareTreeSitterBundle(root);
+    expect(
+      readFileSync(path.join(javascript, 'prebuilds/linux-arm64/tree-sitter-javascript.node')),
+    ).toEqual(replacement());
+  });
+
+  it('removes shadowing local builds only for publication, preserving consumer source-build fallbacks', () => {
+    const root = fixture();
+    const shadows = repairs.flatMap(([name]) =>
+      ['Release', 'Debug'].map((mode) => {
+        const file = path.join(grammarRoot(root, name), 'build', mode, 'binding.node');
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, 'source-built fallback');
+        return file;
+      }),
+    );
+    prepareTreeSitterBundle(root);
+    expect(shadows.every(existsSync)).toBe(true);
+    prepareTreeSitterBundle(root, { forPublication: true });
+    expect(shadows.some(existsSync)).toBe(false);
   });
 });
