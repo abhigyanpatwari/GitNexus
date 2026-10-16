@@ -689,9 +689,10 @@ export function populateRNamespaceImports(
  * veto below needs it and `qualified-call.ts` imports this file.
  */
 export function parseRQualifier(raw: string): string | undefined {
-  const match = /^([\s\S]*?)\s*:::?/.exec(raw);
-  if (match === null) return undefined;
-  let pkg = match[1].trim();
+  // Not a lazy `^([\s\S]*?)\s*::`, which is quadratic on a long run of blanks.
+  const colons = raw.indexOf('::');
+  if (colons === -1) return undefined;
+  let pkg = raw.slice(0, colons).trim();
   if (pkg.length >= 2 && /^(["'`])[\s\S]*\1$/.test(pkg)) pkg = pkg.slice(1, -1);
   return pkg.length === 0 ? undefined : pkg;
 }

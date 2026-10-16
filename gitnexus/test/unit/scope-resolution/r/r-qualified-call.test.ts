@@ -59,6 +59,27 @@ describe('parseRQualifier', () => {
       expect(parseRQualifier(raw)).toBe(expected);
     });
   }
+
+  it('keeps a package name with inner blanks, and uses the first separator only', () => {
+    expect(parseRQualifier('"my pkg"::f')).toBe('my pkg');
+    expect(parseRQualifier('a::b::c')).toBe('a');
+    expect(parseRQualifier(' \t pkg \n::f')).toBe('pkg');
+    expect(parseRQualifier('a : :b')).toBeUndefined();
+  });
+
+  it('finishes promptly on a very long run of blanks with no separator', () => {
+    // The lazy `[\s\S]*?` it used to be took ~0.4 s per 32,000 blanks and quadratically more
+    // beyond; 20 of them took 7 s. The linear version takes milliseconds.
+    const raw = '"' + ' '.repeat(32_000) + 'x"';
+    const start = performance.now();
+    for (let i = 0; i < 20; i++) expect(parseRQualifier(raw)).toBeUndefined();
+    expect(performance.now() - start).toBeLessThan(2_000);
+  });
+
+  it('still reads the package after a very long quoted name', () => {
+    const name = ' '.repeat(16_000) + 'x'.repeat(16_000);
+    expect(parseRQualifier(`"${name}"::f`)).toBe(name);
+  });
 });
 
 describe('rQualifierLocality', () => {

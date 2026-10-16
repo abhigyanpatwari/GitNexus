@@ -553,6 +553,61 @@ run <- function(x) x
       });
     });
 
+    describe('adversarial long lines', () => {
+      // A roxygen line is repository-controlled text. The name pattern used to retry
+      // quadratically on a long name followed by punctuation: 20 lines of 32,000
+      // characters took over ten seconds then and take milliseconds now, so the bound
+      // has a wide margin on a slow machine.
+      const LONG = 32_000;
+      const LINES = 20;
+      const BOUND_MS = 2_000;
+
+      const timed = <T>(run: () => T): { value: T; ms: number } => {
+        const start = performance.now();
+        const value = run();
+        return { value, ms: performance.now() - start };
+      };
+
+      it('finishes promptly on a long name followed by punctuation', () => {
+        const line = "#' @param " + 'a'.repeat(LONG) + '!';
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+${Array(LINES).fill(line).join('\n')}
+#' @param ok Data
+run <- function(ok) ok
+`);
+        const { value: typeEnv, ms } = timed(() => buildTypeEnv(tree, SupportedLanguages.R));
+        expect(ms).toBeLessThan(BOUND_MS);
+        // The malformed lines are skipped; the well-formed tag after them still binds.
+        expect(flatGet(typeEnv, 'ok')).toBe('Data');
+      });
+
+      it('binds a dotted name that is followed by a very long description', () => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+#' @param na.rm {Data} ${'word '.repeat(LONG / 5)}
+run <- function(na.rm) na.rm
+`);
+        const { value: typeEnv, ms } = timed(() => buildTypeEnv(tree, SupportedLanguages.R));
+        expect(ms).toBeLessThan(BOUND_MS);
+        expect(flatGet(typeEnv, 'na.rm')).toBe('Data');
+      });
+
+      it('does not bind a name made only of dots, however long', () => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+#' @param ${'.'.repeat(LONG)} Data
+run <- function(x) x
+`);
+        const { value: typeEnv, ms } = timed(() => buildTypeEnv(tree, SupportedLanguages.R));
+        expect(ms).toBeLessThan(BOUND_MS);
+        expect(flatGet(typeEnv, 'x')).toBeUndefined();
+      });
+    });
+
     describe('forms that are not bound (guards)', () => {
       it.each([
         ['\\code{Data} markup', "#' @param df \\code{Data}", ['df']],

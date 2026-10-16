@@ -86,8 +86,10 @@ const parseRoxygenParams = (block: string): RoxygenParam[] => {
     if (tag) {
       flush();
       if (tag[1] !== 'param') continue;
-      const head = /^([\w.]*\w[\w.]*)(?:[ \t]+(.*))?$/.exec(tag[2] ?? '');
-      if (!head) continue;
+      // `[\w.]+` then a word-character check, not `[\w.]*\w[\w.]*`, which backtracks
+      // quadratically on a long name that is followed by something else.
+      const head = /^([\w.]+)(?:[ \t]+(.*))?$/.exec(tag[2] ?? '');
+      if (!head || !/\w/.test(head[1])) continue;
       name = head[1];
       if (head[2]) parts.push(head[2]);
     } else if (name !== undefined && line.length > 0) {
