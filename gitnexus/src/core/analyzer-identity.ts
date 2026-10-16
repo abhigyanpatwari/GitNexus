@@ -439,7 +439,7 @@ function resolveRuntimeVariant(): RuntimeVariant {
 
 function snapshotReadableFile(candidate: string): ReadableFileState {
   const link = lstatSync(candidate, { bigint: true });
-  const target = statSync(candidate, { bigint: true });
+  const target = link.isFile() ? link : statSync(candidate, { bigint: true });
   if (!target.isFile()) throw new Error(`Analyzer identity input is not a file: ${candidate}`);
   return {
     link: statState(link),
