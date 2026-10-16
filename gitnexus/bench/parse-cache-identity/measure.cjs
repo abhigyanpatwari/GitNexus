@@ -43,34 +43,34 @@ async function fingerprint(root, source) {
 
 async function analysis(root) {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-bench-parse-identity-'));
-  const repo = path.join(temp, 'repo');
-  process.env.GITNEXUS_HOME = path.join(temp, 'home');
-  process.env.GITNEXUS_SHARED_STORE = 'off';
-  process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = '134217728';
-  process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'never';
-  process.env.GITNEXUS_MEMORY = 'off';
-  await fs.mkdir(repo);
-  await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexus/\n');
-  for (let i = 0; i < 64; i++)
-    await fs.writeFile(
-      path.join(repo, `module-${i}.ts`),
-      `export function value${i}(input: number) { return input + ${i}; }\n`,
-    );
-  const git = (...argv) => execFileSync('git', argv, { cwd: repo, stdio: 'pipe' });
-  git('init', '-q');
-  git('add', '-A');
-  git(
-    '-c',
-    'user.name=benchmark',
-    '-c',
-    'user.email=benchmark@example.invalid',
-    '-c',
-    'commit.gpgsign=false',
-    'commit',
-    '-qm',
-    'fixture',
-  );
   try {
+    const repo = path.join(temp, 'repo');
+    process.env.GITNEXUS_HOME = path.join(temp, 'home');
+    process.env.GITNEXUS_SHARED_STORE = 'off';
+    process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE = '134217728';
+    process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'never';
+    process.env.GITNEXUS_MEMORY = 'off';
+    await fs.mkdir(repo);
+    await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexus/\n');
+    for (let i = 0; i < 64; i++)
+      await fs.writeFile(
+        path.join(repo, `module-${i}.ts`),
+        `export function value${i}(input: number) { return input + ${i}; }\n`,
+      );
+    const git = (...argv) => execFileSync('git', argv, { cwd: repo, stdio: 'pipe' });
+    git('init', '-q');
+    git('add', '-A');
+    git(
+      '-c',
+      'user.name=benchmark',
+      '-c',
+      'user.email=benchmark@example.invalid',
+      '-c',
+      'commit.gpgsign=false',
+      'commit',
+      '-qm',
+      'fixture',
+    );
     const { runFullAnalysis } = await import(
       pathToFileURL(path.join(root, 'dist/core/run-analyze.js'))
     );
