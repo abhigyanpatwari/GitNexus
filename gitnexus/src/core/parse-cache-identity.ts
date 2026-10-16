@@ -13,7 +13,11 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { analyzerIdentityArtifacts as artifacts } from './analyzer-identity.js';
-import { GRAMMAR_SOURCES } from './tree-sitter/grammar-sources.js';
+import {
+  GRAMMAR_SOURCES,
+  isGrammarSkipped,
+  parseGrammarSkipDirective,
+} from './tree-sitter/grammar-sources.js';
 import { VENDORED_GRAMMAR_PACKAGES } from './tree-sitter/vendored-grammars.js';
 import { resolveParseWorkerUrl } from './ingestion/workers/worker-entry.js';
 
@@ -148,18 +152,9 @@ function moduleResolutionConditions(): string[] {
 }
 
 function effectiveEnvironment(skip: string, alpine: boolean): Frame[] {
-  const normalized = skip.trim().toLowerCase();
-  const all = ['1', 'true', 'all', '*'].includes(normalized);
-  const named = new Set(
-    normalized
-      .split(',')
-      .flatMap((value) => [value.trim(), value.trim().replace(/^tree-sitter-/, '')]),
-  );
+  const directive = parseGrammarSkipDirective(skip);
   const skipped = Object.entries(GRAMMAR_SOURCES)
-    .filter(
-      ([key, source]) =>
-        source.userSkippable && (all || named.has(key) || named.has(`tree-sitter-${key}`)),
-    )
+    .filter(([key, source]) => isGrammarSkipped(key, source, directive))
     .map(([key]) => key)
     .sort(compare);
   const numeric = (name: string, fallback: number, floor: boolean): string => {
@@ -632,9 +627,10 @@ export function resolveParseCacheIdentity(
     const componentHash = (component: Component) =>
       artifacts.hashCanonicalFrames([
         [FORMAT, component, build.kind, workerBuild.kind],
-        ...inventory.frames[component].sort((a, b) =>
-          compare(JSON.stringify(a), JSON.stringify(b)),
-        ),
+        ...inventory.frames[component]
+          .map((frame) => ({ frame, key: Buffer.from(JSON.stringify(frame)) }))
+          .sort((a, b) => Buffer.compare(a.key, b.key))
+          .map(({ frame }) => frame),
       ]);
     const identity = { base: componentHash('base'), pdg: componentHash('pdg') };
     inventory.verify();
