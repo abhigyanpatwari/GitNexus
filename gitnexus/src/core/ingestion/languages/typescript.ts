@@ -129,6 +129,8 @@ import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.j
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
 import { extractNestRoutes } from '../route-extractors/nest.js';
 import { extractFetchWrapperCalls } from '../route-extractors/fetch-wrapper.js';
+import { extractFrameworkRouteFacts } from '../route-extractors/framework-route-facts.js';
+import { resolveProjectFrameworkRouteFacts } from '../route-extractors/framework-route-paths.js';
 import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
 import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
 import { extractToolDefinitions } from './typescript/tool-definitions.js';
@@ -495,6 +497,8 @@ export const typescriptProvider = defineLanguage({
   // to a literal; nothing else in this pipeline can see that shape. TS and JS
   // share the grammar, so they share the extractor.
   extractDecoratorRoutes: extractJsTsRoutes,
+  extractRouteFacts: extractFrameworkRouteFacts,
+  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
   extractFetchWrapperCalls,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   // Path-gate lives here (language provider), not in the shared parse worker.
@@ -582,6 +586,8 @@ export const javascriptProvider = defineLanguage({
   arityCompatibility: jsArityCompatibility,
   // See the TypeScript provider above.
   extractDecoratorRoutes: extractJsTsRoutes,
+  extractRouteFacts: extractFrameworkRouteFacts,
+  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
   extractFetchWrapperCalls,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   extractTextRoutes: extractJsTsTextRoutes,

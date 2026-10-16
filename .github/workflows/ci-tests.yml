@@ -380,12 +380,13 @@ jobs:
   # (#836) plus native grammar loading from the bundled runtime. Runs on windows-latest because that is the platform the fix
   # targets; the in-repo `npm ci` job above only exercises the dev-tree path
   # and skips the tarball reify step where the historical EPERM occurred.
+  # Native Linux ARM64 also verifies the corrected bundled prebuilds (#3599).
   packaged-install-smoke:
     name: packaged install smoke (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     # Windows pack + web install regularly exceeds 15 minutes when setup also
     # runs prepare/postinstall/build before prepack compiles the same tree again.
@@ -404,6 +405,18 @@ jobs:
         with:
           lifecycle-scripts: 'false'
 
+      # Reproduce #3599's runtime after the shared action selects Node 22.x.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: matrix.os == 'ubuntu-24.04-arm'
+        with:
+          node-version: '22.23.1'
+          package-manager-cache: false
+      - name: Assert native ARM64 runtime
+        if: matrix.os == 'ubuntu-24.04-arm'
+        shell: bash
+        run: |
+          node -e "const assert = require('node:assert/strict'); assert.equal(process.platform, 'linux'); assert.equal(process.arch, 'arm64'); assert.equal(process.version, 'v22.23.1'); console.log(process.platform, process.arch, process.version)"
+
       # `npm pack` runs prepack, which builds the web UI into gitnexus/web/
       # so the tarball matches what `npm publish` ships. Install those deps
       # here, in their own visible step, rather than letting build.js do it
@@ -417,6 +430,43 @@ jobs:
         shell: bash
         run: npm pack
         working-directory: gitnexus
+
+      # Block native compilation only in the consumer phase. A correct bundle
+      # must install using prebuilds even when the runner has a toolchain.
+      - name: Reject ARM64 consumer compilation
+        if: matrix.os == 'ubuntu-24.04-arm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLS="$RUNNER_TEMP/gitnexus-no-compile"
+          mkdir -p "$TOOLS"
+          export GITNEXUS_COMPILER_SENTINEL_LOG="$RUNNER_TEMP/gitnexus-compile-attempts.log"
+          cat > "$TOOLS/cc" <<'EOF'
+          #!/usr/bin/env bash
+          echo "Unexpected native compilation: $0 $*" >&2
+          printf '%s\n' "$0 $*" >> "${GITNEXUS_COMPILER_SENTINEL_LOG:?}"
+          exit 97
+          EOF
+          chmod +x "$TOOLS/cc"
+          for tool in c++ gcc g++ clang clang++ make gmake; do
+            cp "$TOOLS/cc" "$TOOLS/$tool"
+          done
+          # Prove the guard fails before relying on it, then clear its probe.
+          if "$TOOLS/cc" --version; then
+            echo 'Compiler sentinel unexpectedly succeeded' >&2
+            exit 1
+          else
+            test "$?" -eq 97
+          fi
+          test -s "$GITNEXUS_COMPILER_SENTINEL_LOG"
+          : > "$GITNEXUS_COMPILER_SENTINEL_LOG"
+          echo "$TOOLS" >> "$GITHUB_PATH"
+          {
+            echo "GITNEXUS_COMPILER_SENTINEL_LOG=$GITNEXUS_COMPILER_SENTINEL_LOG"
+            echo "CC=$TOOLS/cc"
+            echo "CXX=$TOOLS/c++"
+            echo "MAKE=$TOOLS/make"
+          } >> "$GITHUB_ENV"
 
       # Global installs do not exercise npm's bundled-dependency lockfile path
       # (#3563). Keep npm 10 here: newer npm can mask unresolved override refs.
@@ -461,6 +511,23 @@ jobs:
           npm install -g --prefix "$PREFIX" "./$TARBALL" --no-audit --no-fund
           echo "PREFIX=$PREFIX" >> "$GITHUB_ENV"
         working-directory: gitnexus
+
+      # npm can ignore failed optional-dependency scripts, so also inspect the
+      # sentinel log after both installs rather than trusting exit status alone.
+      - name: Assert no consumer compilation attempts
+        if: always() && matrix.os == 'ubuntu-24.04-arm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GITNEXUS_COMPILER_SENTINEL_LOG:-}" ] || [ ! -f "$GITNEXUS_COMPILER_SENTINEL_LOG" ]; then
+            echo 'Compiler sentinel was not initialized' >&2
+            exit 1
+          fi
+          if [ -s "$GITNEXUS_COMPILER_SENTINEL_LOG" ]; then
+            echo 'Unexpected native compilation during consumer installation:' >&2
+            cat "$GITNEXUS_COMPILER_SENTINEL_LOG" >&2
+            exit 1
+          fi
 
       - name: Assert no junctions or vendor build artifacts
         shell: bash

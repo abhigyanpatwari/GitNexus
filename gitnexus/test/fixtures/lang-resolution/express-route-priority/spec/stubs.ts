@@ -1,3 +1,6 @@
+import express from 'express';
+const app = express();
+
 function fakeInfo() {
   return 'fake info';
 }

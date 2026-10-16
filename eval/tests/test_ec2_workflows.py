@@ -95,6 +95,22 @@ def test_release_comparison_is_scheduled_or_manual_and_gates_outcomes():
     assert "--stable-sha" in scripts and "--candidate-sha" in scripts
 
 
+def test_release_session_headroom_keeps_the_global_stop_reserve():
+    steps = workflow("release-evaluation.yml")["jobs"]["evaluate"]["steps"]
+    paid = next(step for step in steps if "workflow_bench.runner" in step.get("run", ""))
+    script = paid["run"]
+    assert "--timeout 3600" in script
+    assert "for runtime in stable candidate; do" in script
+    assert "stop_deadline_epoch }} - $(date +%s) - 5400" in script
+    assert 'timeout --signal=TERM --kill-after=60 "${remaining}s"' in script
+    assert paid["timeout-minutes"] == 1140
+    canary = next(step for step in steps if "tests/test_proposer_sandbox.py" in step.get("run", ""))
+    assert "test_real_cli_background_completion_is_one_complete_measurement" in canary["run"]
+    assert canary["env"]["GITNEXUS_REQUIRE_CLAUDE_CANARY"] == "1"
+    assert steps.index(canary) < steps.index(paid)
+    assert not canary.get("continue-on-error", False)
+
+
 def test_both_runtimes_grade_tasks_against_one_pinned_task_dependency_checkout():
     steps = workflow("release-evaluation.yml")["jobs"]["evaluate"]["steps"]
     names = [step.get("name", step.get("uses", "")) for step in steps]

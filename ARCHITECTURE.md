@@ -166,7 +166,7 @@ export const myPhase: PipelinePhase<MyPhaseOutput> = {
 
 ### Where routes come from
 
-`route-extractors/` holds four independent ways a route can be discovered, all
+`route-extractors/` holds five independent ways a route can be discovered, all
 converging on the routes phase's `(method, url)` registry:
 
 | Source | Shape | Examples |
@@ -175,8 +175,9 @@ converging on the routes phase's `(method, url)` registry:
 | Single-file framework route | `isRouteFile` + worker extraction | Laravel `routes/*.php` |
 | Cross-file framework route | `discoverRootRouteFiles` + `extractRoutes` | Django `urlpatterns` |
 | AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS (`@Controller` + `@Get`/`@Post`/…; URLs are controller-relative — `setGlobalPrefix` and URI versioning live in the bootstrap file and are not applied), **JS/TS dispatch guards and static data route tables** |
+| Cross-file AST route facts | `extractRouteFacts` + `resolveRouteFacts` | Express apps/routers and their mount paths; directly proven Hono registrations |
 
-The last row is the one whose name undersells it. A route is DECLARED by a
+The AST-level route hook is the one whose name undersells it. A route is DECLARED by a
 decorator, but it can also be **inferred** from a raw `node:http` server's own
 dispatch — `if (req.method === 'GET' && pathname === '/api/x')` is a route with
 a path, a verb and a handler, and nothing else in the pipeline could see it.
@@ -200,10 +201,28 @@ without a verb, and any regex it cannot translate exactly are all dropped rather
 than guessed at. A missing route is a coverage limit; an invented one is a lie.
 Express `app.get(RegExp, handler)` registrations are likewise omitted: a regex
 matcher does not have one finite URL to use as a Route node key.
-Express `app.use(path, middleware)` is middleware attachment, not an endpoint;
-it does not create a Route node. Dispatch-guard inference also ignores stored
-`route.routePath` metadata: comparing a recorded route name with a literal
-does not prove that the request path is being dispatched.
+Express `app.use(path, middleware)` does not itself create a Route node. When
+both receivers are proven Express instances, mounting a router joins the literal
+prefix to its registered paths before handler selection. Nested and repeated
+mounts, literal path arrays, and middleware arrays share this composition.
+
+Express receiver facts reuse the existing AST and `ParsedFile` lexical identities.
+They follow explicit ESM/CommonJS imports and exports through the configured
+`ScopeResolver`, including stable aliases and barrels. An object named `app` or
+`router` is not evidence; type-only imports, shadowed bindings, conflicting writes,
+and unproven factories do not establish a receiver. Directly proven Hono verb
+registrations remain supported, without applying Express mounting semantics.
+
+A standalone router retains its local paths. A known dynamic mount suppresses
+that fallback, while independently proven static mounts remain available. Cycles
+terminate, and exceeding the expansion budget omits the affected mount component
+rather than publishing a partial set of paths. Per-file facts are cached, but
+cross-file paths are recomputed each run. Group HTTP contracts use the same
+resolver and composition, including in source-only mode.
+
+Dispatch-guard inference also ignores stored `route.routePath` metadata:
+comparing a recorded route name with a literal does not prove that the request
+path is being dispatched.
 
 Two rules there need more than one comparison to decide, and are worth knowing
 about before changing either:

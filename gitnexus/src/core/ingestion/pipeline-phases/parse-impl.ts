@@ -15,6 +15,7 @@
  * @module
  */
 
+import type { LanguageProvider } from '../language-provider.js';
 import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
 import {
   BindingAccumulator,
@@ -756,6 +757,7 @@ export async function runChunkedParseAndResolve(
   const allFetchWrapperCalls: FetchWrapperCall[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allRouteFacts: { filePath: string; facts: unknown; routePosition: number }[] = [];
   const allRouterIncludes: ExtractedRouterInclude[] = [];
   const allRouterImports: ExtractedRouterImport[] = [];
   const allRouterConstructorPrefixes: ExtractedRouterConstructorPrefix[] = [];
@@ -988,6 +990,11 @@ export async function runChunkedParseAndResolve(
         if (chunkWorkerData.routes?.length) {
           for (const item of chunkWorkerData.routes) allExtractedRoutes.push(item);
         }
+        for (const item of chunkWorkerData.routeFacts ?? [])
+          allRouteFacts.push({
+            ...item,
+            routePosition: item.routePosition + allDecoratorRoutes.length,
+          });
         if (chunkWorkerData.decoratorRoutes?.length) {
           for (const item of chunkWorkerData.decoratorRoutes) allDecoratorRoutes.push(item);
         }
@@ -1553,6 +1560,85 @@ export async function runChunkedParseAndResolve(
     for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
   }
 
+  const routeFilePaths = new Set(allPaths);
+  const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
+  for (const filePath of new Set(allRouteFacts.map((file) => file.filePath))) {
+    const language = getLanguageFromFilename(filePath);
+    if (language === null || routeResolutionConfigs.has(language)) continue;
+    const resolver = SCOPE_RESOLVERS.get(language);
+    routeResolutionConfigs.set(
+      language,
+      capturedResolutionConfigs?.has(language)
+        ? capturedResolutionConfigs.get(language)
+        : resolver?.loadResolutionConfig === undefined
+          ? undefined
+          : await resolver.loadResolutionConfig(repoPath),
+    );
+  }
+  let routeResolutionFiles = allParsedFiles;
+  const resolveRouteModuleTargets = (
+    fromFile: string,
+    moduleSpecifier: string,
+    parsedImport?: ParsedImport,
+  ): readonly string[] => {
+    const language = getLanguageFromFilename(fromFile);
+    if (language === null) return [];
+    const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
+      moduleSpecifier,
+      fromFile,
+      routeFilePaths,
+      routeResolutionConfigs.get(language),
+      { parsedFiles: routeResolutionFiles, ...(parsedImport ? { parsedImport } : {}) },
+    );
+    if (typeof target === 'string') return [target];
+    return target ?? [];
+  };
+  const resolveRouteImportTargets = (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ): readonly string[] =>
+    resolveRouteModuleTargets(fromFile, parsedImport.targetRaw ?? '', parsedImport);
+
+  // A resolver's identity defines a fact family, including providers sharing
+  // one language implementation. Shared ingestion never inspects the payload.
+  const routeFactGroups = new Map<
+    NonNullable<LanguageProvider['resolveRouteFacts']>,
+    typeof allRouteFacts
+  >();
+  for (const file of allRouteFacts) {
+    const resolve = getProviderForFile(file.filePath)?.resolveRouteFacts;
+    if (!resolve) continue;
+    const group = routeFactGroups.get(resolve) ?? [];
+    group.push(file);
+    routeFactGroups.set(resolve, group);
+  }
+  const resolvedRoutesByFile = new Map<string, ExtractedDecoratorRoute[]>();
+  for (const [resolve, files] of routeFactGroups) {
+    for (const route of resolve(files, { resolveImportTargets: resolveRouteModuleTargets })) {
+      const routes = resolvedRoutesByFile.get(route.filePath) ?? [];
+      routes.push(route);
+      resolvedRoutesByFile.set(route.filePath, routes);
+    }
+  }
+  // Preserve the capture slot across sub-batch, chunk and cache boundaries.
+  // Insert before path expansion can change the decorator array's positions.
+  const routesAtPosition = new Map<number, ExtractedDecoratorRoute[]>();
+  for (const file of allRouteFacts) {
+    const routes = resolvedRoutesByFile.get(file.filePath);
+    if (!routes) continue;
+    const slot = routesAtPosition.get(file.routePosition) ?? [];
+    for (const route of routes) slot.push(route);
+    routesAtPosition.set(file.routePosition, slot);
+    resolvedRoutesByFile.delete(file.filePath);
+  }
+  const withResolvedRoutes: ExtractedDecoratorRoute[] = [];
+  for (let index = 0; index <= allDecoratorRoutes.length; index++) {
+    for (const route of routesAtPosition.get(index) ?? []) withResolvedRoutes.push(route);
+    if (index < allDecoratorRoutes.length) withResolvedRoutes.push(allDecoratorRoutes[index]);
+  }
+  allDecoratorRoutes.length = 0;
+  for (const route of withResolvedRoutes) allDecoratorRoutes.push(route);
+
   // FastAPI router-prefix resolution (cross-file).
   //
   // #2391: resolve non-literal FastAPI decorator route paths (imported/composed
@@ -1829,7 +1915,6 @@ export async function runChunkedParseAndResolve(
     'parse-impl-return',
     `exportedTypeMap=${exportedTypeMap.size} parsedFiles=${allParsedFiles.length} nodes=${graph.nodeCount}`,
   );
-  const routeFilePaths = new Set(allPaths);
   // Route files whose handlers resolve through imports: data route tables, and
   // routes of a language that resolves its own handlers (`resolveRouteHandler`).
   // Both need the file's parsed imports and its language's resolution config.
@@ -1842,7 +1927,6 @@ export async function runChunkedParseAndResolve(
       )
       .map((route) => route.filePath),
   );
-  const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
   for (const filePath of dataRouteFilePaths) {
     const language = getLanguageFromFilename(filePath);
     if (language === null || routeResolutionConfigs.has(language)) continue;
@@ -1851,28 +1935,9 @@ export async function runChunkedParseAndResolve(
       language,
       capturedResolutionConfigs?.has(language)
         ? capturedResolutionConfigs.get(language)
-        : resolver?.loadResolutionConfig === undefined
-          ? undefined
-          : await resolver.loadResolutionConfig(repoPath),
+        : await resolver?.loadResolutionConfig?.(repoPath),
     );
   }
-  let routeResolutionFiles = allParsedFiles;
-  const resolveRouteImportTargets = (
-    parsedImport: ParsedImport,
-    fromFile: string,
-  ): readonly string[] => {
-    const language = getLanguageFromFilename(fromFile);
-    if (language === null) return [];
-    const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
-      parsedImport.targetRaw ?? '',
-      fromFile,
-      routeFilePaths,
-      routeResolutionConfigs.get(language),
-      { parsedFiles: routeResolutionFiles, parsedImport },
-    );
-    if (typeof target === 'string') return [target];
-    return target ?? [];
-  };
   const resolveRouteImportTarget = (
     parsedImport: ParsedImport,
     fromFile: string,
