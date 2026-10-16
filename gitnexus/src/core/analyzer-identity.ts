@@ -2292,7 +2292,7 @@ const probe = async (request) => {
       if (JSON.stringify(state(link)) !== JSON.stringify(state(after))) return null;
       return { type: 'directory-inventory', state: state(after), entriesDigest };
     }
-    const target = await fs.stat(request.absolutePath, { bigint: true });
+    const target = link.isFile() ? link : await fs.stat(request.absolutePath, { bigint: true });
     if (!target.isFile()) return null;
     const result = { type: 'readable-file', state: { link: state(link), target: state(target) } };
     if (link.isSymbolicLink()) result.state.symlinkTarget = await fs.readlink(request.absolutePath);
