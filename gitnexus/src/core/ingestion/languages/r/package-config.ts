@@ -238,6 +238,16 @@ function preferredPackageDir(pkgDir: string): string {
 const HIDDEN_SCAN_BUDGET = 5000;
 
 /**
+ * The `Package:` field of a `DESCRIPTION` file's text, or `undefined` when it has none. A leading
+ * UTF-8 byte-order mark is not part of the first field name, and a field with an empty value
+ * names nothing: `[ \t]*`, not `\s*`, so the value never begins on the next line.
+ */
+function descriptionPackageName(content: string): string | undefined {
+  const text = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+  return /^Package:[ \t]*(\S+)/m.exec(text)?.[1];
+}
+
+/**
  * Scan the subtrees the main walk skipped for a package it never discovered.
  *
  * Iterative DFS over `roots` under one global `budget` of directories (skipping
@@ -271,8 +281,8 @@ export async function hidesUndiscoveredPackage(
       } else if (entry.isFile() && entry.name === 'DESCRIPTION') {
         try {
           const content = await fs.readFile(path.join(dir, entry.name), 'utf-8');
-          const pkgMatch = content.match(/^Package:\s*(\S+)/m);
-          if (pkgMatch && !knownPackageNames.has(pkgMatch[1])) return true;
+          const pkgName = descriptionPackageName(content);
+          if (pkgName !== undefined && !knownPackageNames.has(pkgName)) return true;
         } catch {
           return true;
         }
@@ -325,9 +335,8 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
           try {
             const descPath = path.join(dir, entry.name);
             const content = await fs.readFile(descPath, 'utf-8');
-            const pkgMatch = content.match(/^Package:\s*(\S+)/m);
-            if (pkgMatch) {
-              const pkgName = pkgMatch[1];
+            const pkgName = descriptionPackageName(content);
+            if (pkgName !== undefined) {
               const pkgDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
               packageDirs.add(pkgDir);
               // Same name in several directories: keep the preferred one, whatever the
