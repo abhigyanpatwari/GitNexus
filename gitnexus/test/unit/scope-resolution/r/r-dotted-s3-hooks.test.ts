@@ -13,6 +13,7 @@ import {
   rIsCallableVisibleFromCaller,
   rScopeResolver,
 } from '../../../../src/core/ingestion/languages/r/scope-resolver.js';
+import { countedParsedFiles } from '../../../helpers/counting-file-set.js';
 
 function parse(src: string, filePath: string): ParsedFile {
   const parsed = extractParsedFile(rProvider, src, filePath);
@@ -144,5 +145,23 @@ describe('expandRWildcardNames', () => {
   it('returns nothing for an unknown module scope', () => {
     const a = parse('foo <- function(v) v', 'pkg/R/a.R');
     expect(expandRWildcardNames('scope:missing' as never, [a])).toEqual([]);
+  });
+});
+
+describe('expandRWildcardNames: the module-scope lookup is built once per pass', () => {
+  it('reads each parsed file once however many wildcard edges ask', () => {
+    // `parsedFiles.find` per edge read the files up to the match every time. Counted element
+    // reads, not wall time: the figure depends on the file count and the number of passes only.
+    const paths = Array.from({ length: 200 }, (_, i) => `pkg/R/f${i}.R`);
+    const { parsedFiles, reads } = countedParsedFiles(paths);
+    for (let edge = 0; edge < 1_000; edge++) {
+      expandRWildcardNames(`module:${paths[(edge * 7) % paths.length]}`, parsedFiles);
+    }
+    expect(reads()).toBe(paths.length);
+  });
+
+  it('answers a scope no file owns with nothing', () => {
+    const { parsedFiles } = countedParsedFiles(['pkg/R/a.R']);
+    expect(expandRWildcardNames('module:absent' as never, parsedFiles)).toEqual([]);
   });
 });

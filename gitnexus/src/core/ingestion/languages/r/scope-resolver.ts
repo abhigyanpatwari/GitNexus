@@ -34,6 +34,7 @@ import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-l
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { loadRPackageConfig } from './package-config.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { resolveRImportTarget } from '../../import-resolvers/r.js';
 import {
   isRGlobalNameFallbackPlausible,
@@ -104,6 +105,23 @@ function emitRVirtualHeritageEdges(
 }
 
 /**
+ * `moduleScope` → its `ParsedFile`, built once per pass and keyed on the identity of the pass's
+ * `parsedFiles` array, which finalize passes unchanged to every `expandsWildcardTo` call. The
+ * lookup used to be `parsedFiles.find`, one scan of all files per `library()` edge: 450,000 edges
+ * over 3,000 files took 5.9 s. As in the C, C++ and Python providers, the first file wins on a
+ * repeated scope, as `find` did.
+ */
+const parsedFileByModuleScope = perFileSet(
+  (parsedFiles: readonly ParsedFile[]): Map<ScopeId, ParsedFile> => {
+    const index = new Map<ScopeId, ParsedFile>();
+    for (const parsed of parsedFiles) {
+      if (!index.has(parsed.moduleScope)) index.set(parsed.moduleScope, parsed);
+    }
+    return index;
+  },
+);
+
+/**
  * Enumerate all top-level names exported from a target module scope's file
  * (module-scope function and class bindings; functions nested in another function are not).
  * `library()`/`require()` are R's wildcard imports — every top-level name of
@@ -126,7 +144,7 @@ export function expandRWildcardNames(
   targetModuleScope: ScopeId,
   parsedFiles: readonly ParsedFile[],
 ): readonly string[] {
-  const target = parsedFiles.find((p) => p.moduleScope === targetModuleScope);
+  const target = parsedFileByModuleScope(parsedFiles).get(targetModuleScope);
   if (target === undefined) return [];
   const { names: topLevel, dottedTails } = rFileTopLevel(target);
   const seen = new Set<string>();
