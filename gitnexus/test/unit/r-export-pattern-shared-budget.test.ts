@@ -606,3 +606,87 @@ describe('the start-state filter is charged to the work budget', () => {
     expect(budget.spent).toBeGreaterThanOrEqual(1_000_000);
   });
 });
+
+describe('a class membership test does not scan the class', () => {
+  /** The body of a class of `ranges` ranges, each two units wide with a gap of two between. */
+  const classBody = (ranges: number): string => {
+    let body = '';
+    for (let i = 0; i < ranges; i++) {
+      const lo = 0x100 + i * 4;
+      body += `${String.fromCharCode(lo)}-${String.fromCharCode(lo + 1)}`;
+    }
+    return body;
+  };
+
+  /** `([<class>]?){states}Z`: `states` states each holding a `ranges`-range class. */
+  const wideClassInLoop = (ranges: number, states: number): string =>
+    `([${classBody(ranges)}]?){${states}}Z`;
+
+  /** A name made of the last range's first unit, the worst case for a scan from the front. */
+  const lastRangeName = (ranges: number, length: number): string =>
+    String.fromCharCode(0x100 + (ranges - 1) * 4).repeat(length);
+
+  /**
+   * Replace every class's ranges with a view that counts element reads. This reaches into
+   * the compiled matcher on purpose: it makes the cost of a membership test a count of
+   * reads, which no machine speed can change.
+   */
+  const countRangeReads = (matcher: LinearRegex): { reads: number } => {
+    const counter = { reads: 0 };
+    const sets = new Set<{ ranges: unknown }>();
+    for (const entry of (matcher as unknown as { arg: unknown[] }).arg) {
+      if (entry !== null && typeof entry === 'object') sets.add(entry as { ranges: unknown });
+    }
+    for (const set of sets) {
+      set.ranges = new Proxy(set.ranges as object, {
+        get(target, key, receiver) {
+          if (typeof key === 'string' && /^\d+$/.test(key)) counter.reads++;
+          return Reflect.get(target, key, receiver);
+        },
+      });
+    }
+    return counter;
+  };
+
+  it('reads a logarithmic number of ranges per state visit', () => {
+    const ranges = 1000;
+    const matcher = compileLinearRegex(wideClassInLoop(ranges, 150)) as LinearRegex;
+    expect(matcher).not.toBeNull();
+    const counter = countRangeReads(matcher);
+
+    expect(matcher.test(lastRangeName(ranges, 80))).toBe(false);
+
+    // Every visit tests the class once, and the start-state filter adds the same again.
+    // A scan from the front would read some 500 ranges a visit; a binary search reads
+    // at most ceil(log2(1001)) = 10.
+    expect(matcher.work).toBeGreaterThan(10_000);
+    expect(counter.reads).toBeLessThanOrEqual(matcher.work * 10);
+  });
+
+  it('still decides membership exactly at the edges of a large class', () => {
+    const ranges = 1000;
+    const matcher = compileLinearRegex(`^[${classBody(ranges)}]$`) as LinearRegex;
+    expect(matcher).not.toBeNull();
+    const at = (i: number, offset: number): string => String.fromCharCode(0x100 + i * 4 + offset);
+    for (const i of [0, 1, 499, 500, ranges - 2, ranges - 1]) {
+      expect(matcher.test(at(i, 0))).toBe(true);
+      expect(matcher.test(at(i, 1))).toBe(true);
+      expect(matcher.test(at(i, 2))).toBe(false); // the gap between two ranges
+      expect(matcher.test(at(i, 3))).toBe(false);
+    }
+    expect(matcher.test('ÿ')).toBe(false); // below every range
+    expect(matcher.test(at(ranges, 0))).toBe(false); // above every range
+  });
+
+  it('keeps the work counters of the class scan it charges for', () => {
+    // Charged work is part of the budget contract and must not follow the lookup's speed.
+    const wide = compileLinearRegex(wideClassInLoop(1000, 200)) as LinearRegex;
+    const narrow = compileLinearRegex(wideClassInLoop(1, 200)) as LinearRegex;
+    for (const suffix of ['0', '1', '2', '3', '4']) {
+      expect(wide.test(lastRangeName(1000, 100) + suffix)).toBe(false);
+      expect(narrow.test(lastRangeName(1, 100) + suffix)).toBe(false);
+    }
+    expect(wide.work).toBe(1_802_914);
+    expect(narrow.work).toBe(404_314);
+  });
+});

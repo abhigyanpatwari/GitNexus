@@ -988,13 +988,24 @@ function holdsIn(assertion: number, context: number): boolean {
   }
 }
 
+/**
+ * Whether `c` is in `set`. Every CharSet's ranges are sorted, merged and disjoint (a
+ * class goes through {@link normalise}; the escape classes are constants or their
+ * {@link complement}), so a binary search finds the one range that could hold `c`. A
+ * linear scan here would make each state visit cost a whole class, work the budget
+ * does not count.
+ */
 function inSet(set: CharSet, c: number): boolean {
-  let hit = false;
   const ranges = set.ranges;
-  for (let i = 0; i < ranges.length; i++) {
-    const r = ranges[i];
-    if (c < r[0]) break; // ranges are sorted
-    if (c <= r[1]) {
+  let lo = 0;
+  let hi = ranges.length - 1;
+  let hit = false;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const r = ranges[mid];
+    if (c < r[0]) hi = mid - 1;
+    else if (c > r[1]) lo = mid + 1;
+    else {
       hit = true;
       break;
     }
