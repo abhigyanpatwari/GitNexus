@@ -35,9 +35,9 @@ if (!hasDistWorker && process.env.CI) {
 }
 
 // fixture -> number of R Method/Property nodes carrying an ownerNameHint (== the post-parse ownerId
-// count before the attach moved behind the provider hook, because every hint in these fixtures resolves). 37 in total.
+// count before the attach moved behind the provider hook, because every hint in these fixtures resolves). 38 in total.
 const EXPECTED_HINTS: Record<string, number> = {
-  'r-packages': 22,
+  'r-packages': 23,
   'r-root-package': 0,
   'r-namespace-imports': 2,
   'r-call-attribution': 10,
