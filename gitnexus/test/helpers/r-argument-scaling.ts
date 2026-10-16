@@ -6,17 +6,31 @@
  *
  * Absolute wall-clock limits are machine-dependent, so the guard compares the same
  * work at two input sizes: linear work grows ~4x when the argument count is
- * quadrupled, a quadratic query ~16x. Timings use the fastest of several runs and a
- * floor on the small run, so scheduler noise on a loaded runner cannot inflate the
- * ratio. Correctness of the output is asserted by the callers at both sizes, so an
- * early return or an empty parse cannot pass as "fast".
+ * quadrupled, a quadratic query ~16x. Timings use the fastest of several runs, so
+ * scheduler noise on a loaded runner cannot inflate the ratio. Correctness of the
+ * output is asserted by the callers at both sizes, so an early return or an empty
+ * parse cannot pass as "fast".
+ *
+ * A ratio is only meaningful when the small run is long enough to measure. A shape
+ * whose cost per argument is tiny (comments before the naming argument took about
+ * 1 ms at 2,000) would hide a quadratic regression behind the floor, so the small
+ * size doubles from SMALL_N until the small run lasts TARGET_MS. The sizes thus follow
+ * the machine: a slow or loaded one reaches the target at a smaller size, a fast one
+ * at a larger size, and the large run is always four times the small one.
  */
 
 export const SMALL_N = 2000;
 export const LARGE_N = 8000;
 /** Linear is ~4; quadratic is ~16 or worse. */
 export const MAX_RATIO = 10;
-/** The small run is never treated as faster than this (below it, noise dominates). */
+/** The small size doubles until its fastest run lasts this long (below it, noise dominates). */
+const TARGET_MS = 20;
+/** Largest small size tried; the large run is four times it. */
+const MAX_SMALL_N = 256_000;
+/**
+ * Divisor floor for a small run that stays short at MAX_SMALL_N, where the work per
+ * argument is too small to measure and noise would inflate the ratio.
+ */
 const FLOOR_MS = 15;
 const REPEATS = 3;
 
@@ -67,14 +81,15 @@ export const SHAPES = {
 } as const satisfies Record<string, ArgumentShape>;
 
 /**
- * Runs the work produced by `prepare(source)` at SMALL_N and LARGE_N and returns the
- * results and the time ratio. `prepare` does the untimed set-up (e.g. parsing) and
- * returns the thunk that is timed.
+ * Runs the work produced by `prepare(source)` at a small size (SMALL_N, doubled until the
+ * run lasts TARGET_MS) and at four times that size, and returns the results, the time
+ * ratio and the sizes used. `prepare` does the untimed set-up (e.g. parsing) and returns
+ * the thunk that is timed.
  */
 export function measureScaling<T>(
   prepare: (source: string) => () => T,
   build: (n: number) => string,
-): { small: T; large: T; ratio: number } {
+): { small: T; large: T; ratio: number; smallN: number; largeN: number } {
   const run = (n: number) => {
     const thunk = prepare(build(n));
     let best = Infinity;
@@ -86,11 +101,19 @@ export function measureScaling<T>(
     }
     return { result, ms: best };
   };
-  const small = run(SMALL_N);
-  const large = run(LARGE_N);
+  let smallN = SMALL_N;
+  let small = run(smallN);
+  while (small.ms < TARGET_MS && smallN < MAX_SMALL_N) {
+    smallN *= 2;
+    small = run(smallN);
+  }
+  const largeN = smallN * (LARGE_N / SMALL_N);
+  const large = run(largeN);
   return {
     small: small.result,
     large: large.result,
     ratio: large.ms / Math.max(small.ms, FLOOR_MS),
+    smallN,
+    largeN,
   };
 }
