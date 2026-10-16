@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   inferCallForm,
   extractReceiverName,
+  extractReceiverNode,
 } from '../../src/core/ingestion/utils/call-analysis.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.js';
@@ -20,6 +21,7 @@ import { getProvider } from '../../src/core/ingestion/languages/index.js';
 
 // Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
 const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
+const Lua = requireVendoredGrammar('tree-sitter-lua');
 
 /**
  * Helper: parse code, run the language query, and return all @call captures
@@ -94,6 +96,53 @@ describe('inferCallForm', () => {
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
       expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
+    });
+  });
+
+  describe('Lua', () => {
+    it('detects colon member calls', () => {
+      parser.setLanguage(Lua);
+      const captures = extractCallCaptures(parser, 'util:answer()', SupportedLanguages.Lua);
+      const match = captures.find((c) => c.calledName === 'answer');
+      expect(match).toBeDefined();
+      expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
+      expect(extractReceiverName(match!.nameNode)).toBe('util');
+    });
+
+    it('detects dot member calls', () => {
+      parser.setLanguage(Lua);
+      const captures = extractCallCaptures(parser, 'util.answer()', SupportedLanguages.Lua);
+      const match = captures.find((c) => c.calledName === 'answer');
+      expect(match).toBeDefined();
+      expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
+      expect(extractReceiverName(match!.nameNode)).toBe('util');
+    });
+
+    it('captures a complex receiver node for deferred chain resolution', () => {
+      parser.setLanguage(Lua);
+      const captures = extractCallCaptures(parser, 'getService().run()', SupportedLanguages.Lua);
+      const match = captures.find((c) => c.calledName === 'run');
+      expect(match).toBeDefined();
+      expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
+      expect(extractReceiverName(match!.nameNode)).toBeUndefined();
+      expect(extractReceiverNode(match!.nameNode)?.text).toBe('getService()');
+    });
+
+    it('captures a bare middleclass class binding', () => {
+      parser.setLanguage(Lua);
+      const provider = getProvider(SupportedLanguages.Lua);
+      const tree = parser.parse('local Foo = class("Foo")');
+      const query = new Parser.Query(parser.getLanguage(), provider.treeSitterQueries);
+      const matches = query.matches(tree.rootNode);
+      expect(
+        matches.some(
+          (match) =>
+            match.captures.some((capture) => capture.name === 'definition.class') &&
+            match.captures.some(
+              (capture) => capture.name === 'name' && capture.node.text === 'Foo',
+            ),
+        ),
+      ).toBe(true);
     });
   });
 

@@ -11,11 +11,15 @@
  *                 ruby, rust, php, kotlin, swift, dart
  *   - experimental: objective-c (fork provider MVP),
  *                   vue (embedded-language / SFC complexity),
- *                   cobol (regex-provider path)
+ *                   cobol (regex-provider path),
+ *                   lua (scope-resolution provider is active; broader
+ *                   language-contract coverage is still experimental)
  *   - quarantined: (none)
  *
  * Added after Ring 1: zig enters as `experimental` (new language
- * integration; promotion to `production` is a separate governance PR).
+ * integration; promotion to `production` is a separate governance PR);
+ * lua enters as `experimental` (new language integration, Phase B
+ * scope-resolution hooks pending).
  */
 
 import { SupportedLanguages } from '../languages.js';
@@ -44,6 +48,7 @@ export const LanguageClassifications: Readonly<Record<SupportedLanguages, Langua
     [SupportedLanguages.Kotlin]: 'production',
     [SupportedLanguages.Swift]: 'production',
     [SupportedLanguages.Dart]: 'production',
+    [SupportedLanguages.Lua]: 'experimental',
     [SupportedLanguages.Vue]: 'experimental',
     [SupportedLanguages.Cobol]: 'experimental',
     [SupportedLanguages.Zig]: 'experimental',

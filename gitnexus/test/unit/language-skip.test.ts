@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { isLanguageAvailable, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
+import {
+  isGrammarRuntimeSkipped,
+  isLanguageAvailable,
+  loadLanguage,
+} from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 describe('isLanguageAvailable', () => {
@@ -21,6 +25,23 @@ describe('isLanguageAvailable', () => {
 
   it('returns true for Swift in the default install', () => {
     expect(isLanguageAvailable(SupportedLanguages.Swift)).toBe(true);
+  });
+
+  it('reports Lua availability according to the optional grammar state', async () => {
+    const available = isLanguageAvailable(SupportedLanguages.Lua);
+    if (isGrammarRuntimeSkipped(SupportedLanguages.Lua)) {
+      expect(available).toBe(false);
+    } else {
+      // Without an explicit skip, availability is install-dependent. Check
+      // that the boolean probe agrees with the actual optional load result.
+      try {
+        await loadLanguage(SupportedLanguages.Lua);
+        expect(available).toBe(true);
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect(available).toBe(false);
+      }
+    }
   });
 
   it('handles Kotlin based on optional dependency availability', () => {

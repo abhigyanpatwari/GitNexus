@@ -155,6 +155,23 @@ export const inferCallForm = (callNode: SyntaxNode, nameNode: SyntaxNode): CallF
     return 'member';
   }
 
+  // Lua tree-sitter represents `obj:method()` / `obj.field()` as a `call`
+  // whose `function` child is a `variable` carrying `table` plus `method` or
+  // `field`; unlike the other grammars, the captured name is not wrapped in a
+  // member-access node.
+  if (callNode.type === 'call') {
+    const callee = callNode.childForFieldName('function');
+    const table = callNode.childForFieldName('table') ?? callee?.childForFieldName('table');
+    const member =
+      callNode.childForFieldName('method') ??
+      callNode.childForFieldName('field') ??
+      callee?.childForFieldName('method') ??
+      callee?.childForFieldName('field');
+    if (callee?.type === 'variable' && table && member) {
+      return 'member';
+    }
+  }
+
   // 5. Scoped calls (Rust Foo::new(), C++ ns::func()): treat as free
   //    The receiver is a type, not an instance — handled differently in Phase 3
   if (nameParent && SCOPED_CALL_NODE_TYPES.has(nameParent.type)) {
@@ -226,6 +243,14 @@ export const extractReceiverName = (nameNode: SyntaxNode): string | undefined =>
     receiver = parent.childForFieldName('receiver');
   }
 
+  // Lua: the receiver is the `table` field of the call's `function` variable.
+  if (!receiver && callNode.type === 'call') {
+    const callee = callNode.childForFieldName('function');
+    if (callee?.type === 'variable') {
+      receiver = callNode.childForFieldName('table') ?? callee.childForFieldName('table');
+    }
+  }
+
   // PHP scoped_call_expression (parent::method(), self::method()):
   // nameNode's direct parent IS the scoped_call_expression (name is a direct child)
   if (
@@ -273,6 +298,12 @@ export const extractReceiverName = (nameNode: SyntaxNode): string | undefined =>
   }
 
   if (!receiver) return undefined;
+
+  // Lua colon calls wrap a simple receiver in a `variable` node.
+  if (receiver.type === 'variable') {
+    const name = receiver.childForFieldName('name');
+    if (name?.type === 'identifier') return name.text;
+  }
 
   // Only capture simple identifiers — refuse complex expressions
   if (SIMPLE_RECEIVER_TYPES.has(receiver.type)) {
@@ -326,6 +357,14 @@ export const extractReceiverNode = (nameNode: SyntaxNode): SyntaxNode | undefine
 
   if (!receiver && parent.type === 'call') {
     receiver = parent.childForFieldName('receiver');
+  }
+
+  // Lua: the receiver is the `table` field of the call's `function` variable.
+  if (!receiver && callNode.type === 'call') {
+    const callee = callNode.childForFieldName('function');
+    if (callee?.type === 'variable') {
+      receiver = callNode.childForFieldName('table') ?? callee.childForFieldName('table');
+    }
   }
 
   if (

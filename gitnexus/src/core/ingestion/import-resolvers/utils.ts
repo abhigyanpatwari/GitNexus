@@ -54,6 +54,9 @@ export const EXTENSIONS = [
   '.rb',
 ];
 
+/** Lua module extensions used only by Lua import resolvers. */
+export const LUA_EXTENSIONS = ['.lua', '/init.lua'] as const;
+
 /**
  * Try to match a path (with extensions) against the known file set.
  * Returns the matched file path or null.
@@ -61,8 +64,9 @@ export const EXTENSIONS = [
 export function tryResolveWithExtensions(
   basePath: string,
   allFiles: ReadonlySet<string>,
+  extensions: readonly string[] = EXTENSIONS,
 ): string | null {
-  for (const ext of EXTENSIONS) {
+  for (const ext of extensions) {
     const candidate = basePath + ext;
     if (allFiles.has(candidate)) return candidate;
   }
@@ -389,11 +393,12 @@ export function suffixResolve(
   normalizedFileList: readonly string[],
   allFileList: readonly string[],
   index?: SuffixIndex,
+  extensions: readonly string[] = EXTENSIONS,
 ): string | null {
   if (index) {
     for (let i = 0; i < pathParts.length; i++) {
       const suffix = pathParts.slice(i).join('/');
-      for (const ext of EXTENSIONS) {
+      for (const ext of extensions) {
         const suffixWithExt = suffix + ext;
         const result = index.get(suffixWithExt) || index.getInsensitive(suffixWithExt);
         if (result) return result;
@@ -405,7 +410,7 @@ export function suffixResolve(
   // Fallback: linear scan (for backward compatibility)
   for (let i = 0; i < pathParts.length; i++) {
     const suffix = pathParts.slice(i).join('/');
-    for (const ext of EXTENSIONS) {
+    for (const ext of extensions) {
       const suffixWithExt = suffix + ext;
       const suffixPattern = '/' + suffixWithExt;
       const matchIdx = normalizedFileList.findIndex(

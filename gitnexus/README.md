@@ -461,7 +461,7 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, Zig
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, Lua, Zig
 
 ### Language Feature Matrix
 
@@ -481,6 +481,12 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 | C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Lua        | ✓       | ✓              | ✓       | ✓*      | —                | —                     | —      | —          | —            |
+
+Lua heritage currently covers middleclass-style `EXTENDS` and `HAS_METHOD`
+edges, generic MRO dispatch, conservative callable-value flow, and non-narrowing
+arity handling. It does not yet claim `__base` super-call, constructor/type,
+framework, or entry-point inference.
 | Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
@@ -671,7 +677,7 @@ re-run `gitnexus analyze --repair-fts`
 
 ### Installation fails with native module errors
 
-Some optional language grammars (Dart, Proto, Swift, Kotlin, Zig) ship vendored native prebuilds. If a prebuild is missing and a source build is not possible, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
+Some optional language grammars (Dart, Proto, Swift, Kotlin, Zig, Lua) ship vendored native prebuilds. If a prebuild is missing and a source build is not possible, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
 
 If `npm install -g gitnexus` fails on native modules:
 
