@@ -130,11 +130,7 @@ import {
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
-import {
-  countCallArguments,
-  extractCallArgTypes,
-  type MixedChainStep,
-} from '../utils/call-analysis.js';
+import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
@@ -509,6 +505,8 @@ export interface ParseWorkerResult {
   /** URL-bearing candidates, kept separate from confirmed outward-call sinks. */
   fetchWrapperCalls?: FetchWrapperCall[];
   decoratorRoutes: ExtractedDecoratorRoute[];
+  /** JSON-safe per-file provider facts; relationships are resolved on every run. */
+  routeFacts?: { filePath: string; facts: unknown; routePosition: number }[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
   routerConstructorPrefixes?: ExtractedRouterConstructorPrefix[];
@@ -1409,18 +1407,6 @@ const processBatch = (
   return result;
 };
 
-// Express/Hono method names that register routes
-const EXPRESS_ROUTE_METHODS = new Set([
-  'get',
-  'post',
-  'put',
-  'delete',
-  'patch',
-  'all',
-  'use',
-  'route',
-]);
-
 /**
  * Walk a tree-sitter AST subtree looking for a call to the global `fetch()` function.
  * Returns `true` if found within `maxDepth` levels of nesting — keeps the check
@@ -1440,31 +1426,9 @@ const checkForFetchCall = (node: SyntaxNode, depth = 0, maxDepth = 5): boolean =
 
 // HTTP client methods that are ONLY used by clients, not Express route registration.
 // Methods like get/post/put/delete/patch overlap with Express — those are captured by
-// the express_route handler as route definitions, not consumers. The fetch() global
+// provider route facts as registrations, not consumers. The fetch() global
 // function is captured separately by the route.fetch query.
 const HTTP_CLIENT_ONLY_METHODS = new Set(['head', 'options', 'request', 'ajax']);
-
-// Known HTTP client receivers u2014 skip these, they're API consumers not routes
-const HTTP_CLIENT_RECEIVERS = new Set([
-  'axios',
-  'request',
-  'fetch',
-  'http',
-  'https',
-  'got',
-  'ky',
-  'superagent',
-  'needle',
-  'undici',
-  'apiclient',
-  'client',
-  'httpclient',
-  'api',
-  '$http',
-  'session',
-  'httpservice',
-  'conn',
-]);
 
 // Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
 const ROUTE_DECORATOR_NAMES = new Set([
@@ -1898,6 +1862,7 @@ const processFileGroup = (
     }
 
     // Per-file map: decorator end-line → decorator info, for associating with definitions
+    const routePosition = result.decoratorRoutes.length;
     const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean }>();
 
     // Track start indices of definition nodes already processed by higher-priority captures
@@ -2037,8 +2002,7 @@ const processFileGroup = (
       }
 
       // HTTP client calls: axios.get('/path'), $.post('/path'), requests.get('/path')
-      // Skip methods also in EXPRESS_ROUTE_METHODS to avoid double-registering Express
-      // routes as both route definitions AND consumers (both queries match same AST node)
+      // Verbs shared with provider registrations are handled by dedicated consumer captures.
       if (captureMap['http_client'] && captureMap['http_client.url']) {
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
@@ -2048,103 +2012,6 @@ const processFileGroup = (
             fetchURL: url,
             lineNumber: captureMap['http_client'].startPosition.row + lineOffset,
           });
-        }
-        continue;
-      }
-
-      // Express/Hono route registration: app.get('/path', handler)
-      if (
-        captureMap['express_route'] &&
-        captureMap['express_route.method'] &&
-        captureMap['express_route.path']
-      ) {
-        const method = captureMap['express_route.method'].text;
-        const routePath = captureMap['express_route.path'].text;
-        if (EXPRESS_ROUTE_METHODS.has(method) && method !== 'use' && routePath.startsWith('/')) {
-          // Extract the receiver (the object the method is called on) to filter out
-          // HTTP client calls like axios.get('/api/users') that match the same pattern
-          // as Express route registrations.
-          const callNode = captureMap['express_route'];
-          // route(path) returns a builder; verb registrations need a handler.
-          // Count arguments without comments, which are also named AST children.
-          const minimumArguments = method === 'route' ? 1 : 2;
-          if ((countCallArguments(callNode) ?? 0) < minimumArguments) continue;
-          const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
-          // Walk through nested member_expressions and call_expressions to
-          // reach the innermost receiver identifier.  Handles chains like:
-          //   this.httpService.get('/path')   -> member chain    -> 'httpservice'
-          //   getClient().get('/path')         -> call_expression -> 'getclient'
-          //   axios.get('/path')               -> bare identifier -> 'axios'
-          let receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
-          while (
-            receiverNode?.type === 'member_expression' ||
-            receiverNode?.type === 'call_expression'
-          ) {
-            if (receiverNode.type === 'member_expression') {
-              // Drill into the property (rightmost part) of the member expression
-              const propNode = receiverNode.childForFieldName?.('property');
-              if (propNode) {
-                receiverNode = propNode;
-              } else {
-                break;
-              }
-            } else {
-              // call_expression: unwrap to the function being called
-              const innerFunc =
-                receiverNode.childForFieldName?.('function') ?? receiverNode.children?.[0];
-              if (innerFunc && innerFunc !== receiverNode) {
-                receiverNode = innerFunc;
-              } else {
-                break;
-              }
-            }
-          }
-          const receiverText = receiverNode?.text?.toLowerCase() ?? '';
-
-          if (HTTP_CLIENT_RECEIVERS.has(receiverText)) {
-            // This is an HTTP client call, not a route definition u2014 skip it
-            continue;
-          }
-
-          const registrations: { method: string; node: SyntaxNode }[] = [];
-          if (method === 'route') {
-            // A builder alone registers nothing. Follow only direct chained
-            // verb calls, each of which must supply a non-comment handler arg.
-            let builderNode = callNode;
-            while (builderNode.parent?.type === 'member_expression') {
-              const member = builderNode.parent;
-              const registration = member.parent;
-              const verb = member.childForFieldName('property')?.text;
-              if (
-                member.childForFieldName('object')?.id !== builderNode.id ||
-                registration?.type !== 'call_expression' ||
-                registration.childForFieldName('function')?.id !== member.id ||
-                !verb ||
-                !EXPRESS_ROUTE_METHODS.has(verb) ||
-                verb === 'route' ||
-                verb === 'use'
-              ) {
-                break;
-              }
-              if ((countCallArguments(registration) ?? 0) >= 1) {
-                registrations.push({ method: verb, node: registration });
-              }
-              builderNode = registration;
-            }
-          } else {
-            registrations.push({ method, node: callNode });
-          }
-          for (const registration of registrations) {
-            const httpMethod =
-              registration.method === 'all' ? '*' : registration.method.toUpperCase();
-            result.decoratorRoutes.push({
-              filePath: file.path,
-              routePath,
-              httpMethod,
-              decoratorName: `express.${registration.method}`,
-              lineNumber: registration.node.startPosition.row + lineOffset,
-            });
-          }
         }
         continue;
       }
@@ -3372,6 +3239,14 @@ const processFileGroup = (
     if (provider.extractFetchWrapperCalls) {
       const candidates = provider.extractFetchWrapperCalls(tree, file.path, lineOffset);
       for (const candidate of candidates) (result.fetchWrapperCalls ??= []).push(candidate);
+    }
+
+    if (parsedFile && provider.extractRouteFacts) {
+      (result.routeFacts ??= []).push({
+        filePath: file.path,
+        facts: provider.extractRouteFacts(tree, parsedFile, lineOffset),
+        routePosition,
+      });
     }
 
     // Language-specific decorator route extraction via provider hook.
