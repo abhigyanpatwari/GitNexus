@@ -28,7 +28,10 @@ export function rMergeBindings(
     if ((TIER[b.origin] ?? 99) !== bestTier) continue;
     if (!byNode.has(b.def.nodeId)) byNode.set(b.def.nodeId, b);
   }
-  return [...byNode.values()].sort((a, b) => a.def.nodeId.localeCompare(b.def.nodeId));
+  // By code unit, not `localeCompare`: the order must not depend on the machine's locale.
+  return [...byNode.values()].sort((a, b) =>
+    a.def.nodeId < b.def.nodeId ? -1 : a.def.nodeId > b.def.nodeId ? 1 : 0,
+  );
 }
 
 /** R declarations carry no synthesized arity metadata (no `...`/default-arg
