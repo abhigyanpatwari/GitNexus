@@ -581,4 +581,5 @@ Node IDs use arity suffix (`#<paramCount>`): `Method:file:Class.method#1` vs `#2
 - [GUARDRAILS.md](GUARDRAILS.md) — safety boundaries for humans and agents
 - [TESTING.md](TESTING.md) — how to run tests
 - [docs/languages/objective-c-provider.md](docs/languages/objective-c-provider.md) — Objective-C provider behavior and limits
+- [docs/languages/r-provider.md](docs/languages/r-provider.md) — R provider behavior and limits
 - `AGENTS.md` / `CLAUDE.md` — agent workflows and tool usage
