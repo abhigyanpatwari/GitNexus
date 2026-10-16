@@ -197,23 +197,23 @@ export const R_SCOPE_QUERY = `
               name: (identifier) @declaration.name
               value: (function_definition)) @declaration.method))))))
 
-;; R5 methods (inside setRefClass(... methods = list(...)))
-(binary_operator
-  lhs: (identifier) @_class3
-  rhs: (call
-    function: (identifier) @_refFn_m
-    (#match? @_refFn_m "^setRefClass$")
-    arguments: (arguments
-      (argument
-        name: (identifier) @_methods3
-        (#match? @_methods3 "^methods$")
-        value: (call
-          function: (identifier) @_listfn3
-          (#match? @_listfn3 "^list$")
-          arguments: (arguments
-            (argument
-              name: (identifier) @declaration.name
-              value: (function_definition)) @declaration.method))))))
+;; R5 methods (inside setRefClass(... methods = list(...))) — the call itself, assigned
+;; or not, so \`setRefClass("A", methods = list(...))\` defines them like
+;; \`A <- setRefClass(...)\`.
+(call
+  function: (identifier) @_refFn_m
+  (#match? @_refFn_m "^setRefClass$")
+  arguments: (arguments
+    (argument
+      name: (identifier) @_methods3
+      (#match? @_methods3 "^methods$")
+      value: (call
+        function: (identifier) @_listfn3
+        (#match? @_listfn3 "^list$")
+        arguments: (arguments
+          (argument
+            name: (identifier) @declaration.name
+            value: (function_definition)) @declaration.method)))))
 
 ;; Function scope on the SAME \`name = function(...)\` argument node that the
 ;; three \`@declaration.method\` patterns above anchor on, so each R6/R5 method

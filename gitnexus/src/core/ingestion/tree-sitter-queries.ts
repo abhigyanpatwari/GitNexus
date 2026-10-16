@@ -3137,22 +3137,22 @@ export const R_QUERIES = `
               value: (function_definition)) @definition.method))))))
 
 ; ── R5 Methods (inside setRefClass(... methods = list(...))) ─────────────────
-(binary_operator
-  lhs: (identifier) @_class3
-  rhs: (call
-    function: (identifier) @_refFn
-    (#match? @_refFn "^setRefClass$")
-    arguments: (arguments
-      (argument
-        name: (identifier) @_methods
-        (#match? @_methods "^methods$")
-        value: (call
-          function: (identifier) @_listfn3
-          (#match? @_listfn3 "^list$")
-          arguments: (arguments
-            (argument
-              name: (identifier) @name
-              value: (function_definition)) @definition.method))))))
+; The call itself, assigned or not: \`Person <- setRefClass(...)\` and a bare
+; \`setRefClass(...)\` define the same methods.
+(call
+  function: (identifier) @_refFn
+  (#match? @_refFn "^setRefClass$")
+  arguments: (arguments
+    (argument
+      name: (identifier) @_methods
+      (#match? @_methods "^methods$")
+      value: (call
+        function: (identifier) @_listfn3
+        (#match? @_listfn3 "^list$")
+        arguments: (arguments
+          (argument
+            name: (identifier) @name
+            value: (function_definition)) @definition.method)))))
 
 ; ── S4 setGeneric() (generic function declaration) ───────────────────────────
 (call
