@@ -872,7 +872,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v143 (#3561): combine v142 wrapper candidates with the route corrections.
 // Older caches may retain phantom middleware and stored route-metadata edges.
 // The PR also used v142 without wrapper candidates; invalidate both histories.
-const SCHEMA_BUMP = 143;
+// v144: provider provenance facts replace receiver-name guesses; mount paths
+// are recomputed from facts after cache replay, before route winner selection.
+const SCHEMA_BUMP = 144;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

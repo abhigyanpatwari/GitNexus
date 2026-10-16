@@ -20,6 +20,7 @@ import type {
   ScopeKind,
   ScopeTree,
   ParsedImport,
+  ParsedFile,
   ParsedTypeBinding,
   SymbolDefinition,
   Callsite,
@@ -603,6 +604,23 @@ interface LanguageProviderConfig {
     tree: Parser.Tree,
     filePath: string,
     lineOffset: number,
+  ) => ExtractedDecoratorRoute[];
+
+  /** JSON-safe provider-owned facts captured from the existing AST and lexical
+   * identities. Shared parsing transports these without interpreting them. */
+  readonly extractRouteFacts?: (
+    tree: Parser.Tree,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => unknown;
+
+  /** Resolve project-wide provider facts before route winner selection. The
+   * callback uses the language's configured ScopeResolver module resolution. */
+  readonly resolveRouteFacts?: (
+    files: readonly { filePath: string; facts: unknown }[],
+    context: {
+      resolveImportTargets: (fromFile: string, moduleSpecifier: string) => readonly string[];
+    },
   ) => ExtractedDecoratorRoute[];
 
   /** URL-bearing call candidates from the existing AST, before wrapper names

@@ -403,7 +403,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       { plugin: HttpLanguagePlugin; input: HttpScanInput; repoContext: unknown } | null
     >();
     const projectDetections = new Map<string, HttpDetection[]>();
-    let projectScanComplete = false;
+    const completedProjectScans = new Set<NonNullable<HttpLanguagePlugin['scanProject']>>();
 
     // Per-plugin cross-file context (e.g. Python's FastAPI router →
     // include_router(prefix=...) map). Built lazily on first
@@ -418,7 +418,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       if (!plugin || typeof plugin.prepareRepo !== 'function') return undefined;
       if (repoContextByPlugin.has(plugin.name)) return repoContextByPlugin.get(plugin.name);
       try {
-        const ctx = plugin.prepareRepo({
+        const ctx = await plugin.prepareRepo({
           repoPath,
           files: await getScannedFiles(),
           parser,
@@ -466,6 +466,12 @@ export class HttpRouteExtractor implements ContractExtractor {
     };
 
     const getDetections = async (rel: string): Promise<HttpDetection[]> => {
+      // Graph enrichment needs composed providers too. Resolve only this
+      // project's plugin family; unrelated complete-coverage languages can
+      // still skip parsing when their graph handlers already resolved.
+      const projectScan = getPluginForFile(rel)?.scanProject;
+      if (projectScan && !completedProjectScans.has(projectScan))
+        await collectProjectDetections(await getScannedFiles(), projectScan);
       const cached = cachedDetections.get(rel);
       if (cached) return cached;
       const scanInput = await getScanInput(rel);
@@ -486,27 +492,40 @@ export class HttpRouteExtractor implements ContractExtractor {
       return scannedFiles;
     };
 
-    const collectProjectDetections = async (files: string[]): Promise<void> => {
-      if (projectScanComplete) return;
-      projectScanComplete = true;
-      const byPlugin = new Map<HttpLanguagePlugin, HttpScanInput[]>();
+    const collectProjectDetections = async (
+      files: string[],
+      onlyScan?: NonNullable<HttpLanguagePlugin['scanProject']>,
+    ): Promise<void> => {
+      const byScan = new Map<
+        NonNullable<HttpLanguagePlugin['scanProject']>,
+        { inputs: HttpScanInput[]; repoContext: unknown }
+      >();
       for (const rel of files) {
+        const scanProject = getPluginForFile(rel)?.scanProject;
+        if (
+          !scanProject ||
+          completedProjectScans.has(scanProject) ||
+          (onlyScan && onlyScan !== scanProject)
+        )
+          continue;
         const scanInput = await getScanInput(rel);
-        if (!scanInput?.plugin.scanProject) continue;
-        const items = byPlugin.get(scanInput.plugin) ?? [];
-        items.push(scanInput.input);
-        byPlugin.set(scanInput.plugin, items);
+        if (!scanInput) continue;
+        const group = byScan.get(scanProject) ?? { inputs: [], repoContext: scanInput.repoContext };
+        group.inputs.push(scanInput.input);
+        byScan.set(scanProject, group);
       }
 
-      for (const [plugin, inputs] of byPlugin) {
-        const results = plugin.scanProject?.(inputs) ?? [];
+      // Shared function identity pools grammar variants without teaching the
+      // orchestrator which languages belong to the same project family.
+      for (const [scanProject, { inputs, repoContext }] of byScan) {
+        completedProjectScans.add(scanProject);
+        const results = scanProject(inputs, repoContext);
         for (const result of results) {
           const existing = projectDetections.get(result.filePath) ?? [];
           projectDetections.set(result.filePath, [...existing, ...result.detections]);
+          cachedDetections.delete(result.filePath);
         }
       }
-
-      cachedDetections.clear();
     };
 
     const files = await getScannedFiles();

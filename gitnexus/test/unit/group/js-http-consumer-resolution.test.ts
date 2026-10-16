@@ -21,27 +21,37 @@ jsParser.setLanguage(JavaScript);
  * Drive the plugin the way the orchestrator does: a `prepareRepo` pre-pass over
  * a virtual repo, then a per-file `scan` with the resulting context.
  */
-function scanRepo(files: Record<string, string>, target: string): HttpDetection[] {
+async function scanRepo(files: Record<string, string>, target: string): Promise<HttpDetection[]> {
   const paths = Object.keys(files);
-  const repoContext = TYPESCRIPT_HTTP_PLUGIN.prepareRepo?.({
+  const repoContext = await TYPESCRIPT_HTTP_PLUGIN.prepareRepo?.({
     repoPath: '/repo',
     files: paths,
     parser: tsParser,
     readFile: (rel) => files[rel] ?? null,
     parseSource: (parser, src) => parser.parse(src),
   });
-  return TYPESCRIPT_HTTP_PLUGIN.scan(tsParser.parse(files[target]), repoContext, target);
+  const inputs = paths.map((filePath) => ({ filePath, tree: tsParser.parse(files[filePath]) }));
+  return [
+    ...TYPESCRIPT_HTTP_PLUGIN.scan(
+      inputs.find((input) => input.filePath === target)!.tree,
+      repoContext,
+      target,
+    ),
+    ...(TYPESCRIPT_HTTP_PLUGIN.scanProject?.(inputs, repoContext).find(
+      (file) => file.filePath === target,
+    )?.detections ?? []),
+  ];
 }
 
 const consumers = (detections: HttpDetection[]) => detections.filter((d) => d.role === 'consumer');
 
 /** `scanRepo`, but the pre-pass may fail on chosen files. */
-function scanRepoWithParse(
+async function scanRepoWithParse(
   files: Record<string, string>,
   target: string,
   parseSource: (parser: Parser, src: string) => Parser.Tree | null,
-): HttpDetection[] {
-  const repoContext = TYPESCRIPT_HTTP_PLUGIN.prepareRepo?.({
+): Promise<HttpDetection[]> {
+  const repoContext = await TYPESCRIPT_HTTP_PLUGIN.prepareRepo?.({
     repoPath: '/repo',
     files: Object.keys(files),
     parser: tsParser,
@@ -69,8 +79,8 @@ const API_ROUTES = `
 `;
 
 describe('JS/TS HTTP consumer resolution', () => {
-  it('resolves a configured client and a table path imported from other files', () => {
-    const detections = scanRepo(
+  it('resolves a configured client and a table path imported from other files', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api-modules/shared/api-routes.ts': API_ROUTES,
@@ -90,8 +100,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('resolves relative imports for the client and the route table', () => {
-    const detections = scanRepo(
+  it('resolves relative imports for the client and the route table', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/routes.ts': API_ROUTES,
@@ -109,8 +119,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('folds a template partially, keeping the resolved prefix', () => {
-    const detections = scanRepo(
+  it('folds a template partially, keeping the resolved prefix', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/routes.ts': API_ROUTES,
@@ -131,8 +141,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('resolves a `+` concatenation against an imported base constant', () => {
-    const detections = scanRepo(
+  it('resolves a `+` concatenation against an imported base constant', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/base.ts': `export const BASE = "/api/v1";`,
@@ -150,8 +160,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('follows a barrel re-export to the defining module', () => {
-    const detections = scanRepo(
+  it('follows a barrel re-export to the defining module', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/routes.ts': API_ROUTES,
@@ -172,8 +182,8 @@ describe('JS/TS HTTP consumer resolution', () => {
 
   // ─── Shapes real applications actually ship ────────────────────────
 
-  it('proves a client built by a factory wrapper, not just a bare axios.create', () => {
-    const detections = scanRepo(
+  it('proves a client built by a factory wrapper, not just a bare axios.create', async () => {
+    const detections = await scanRepo(
       {
         // The shape Sourcerer-fe ships: the instance is an argument to a
         // decorator that returns the configured client.
@@ -200,8 +210,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('follows `export *` through a directory barrel', () => {
-    const detections = scanRepo(
+  it('follows `export *` through a directory barrel', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api-modules/shared/api-routes.ts': API_ROUTES,
@@ -224,8 +234,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('recognizes an aliased axios import', () => {
-    const detections = scanRepo(
+  it('recognizes an aliased axios import', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/client.ts': `
           import ax from 'axios';
@@ -246,8 +256,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('keeps literal segments of a template nested inside a substitution', () => {
-    const detections = scanRepo(
+  it('keeps literal segments of a template nested inside a substitution', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/routes.ts': API_ROUTES,
@@ -266,8 +276,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('does not let a client built inside a callback vouch for the outer name', () => {
-    const detections = scanRepo(
+  it('does not let a client built inside a callback vouch for the outer name', async () => {
+    const detections = await scanRepo(
       {
         'src/thing.ts': `
           const thing = configure(() => axios.create({ baseURL: '/' }));
@@ -282,12 +292,13 @@ describe('JS/TS HTTP consumer resolution', () => {
 
   // ─── Precision guards ──────────────────────────────────────────────
 
-  it('does NOT emit an Express provider route as a consumer of itself', () => {
-    const detections = scanRepo(
+  it('does NOT emit an Express provider route as a consumer of itself', async () => {
+    const detections = await scanRepo(
       {
         'src/server.ts': `
           import express from 'express';
           const router = express.Router();
+          const app = express();
           router.get('/users', listUsers);
           app.post('/orders', createOrder);
         `,
@@ -302,8 +313,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('does NOT claim an unproven receiver that merely has a .get method', () => {
-    const detections = scanRepo(
+  it('does NOT claim an unproven receiver that merely has a .get method', async () => {
+    const detections = await scanRepo(
       {
         'src/cache.ts': `
           const cache = new Map<string, string>();
@@ -317,8 +328,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
   });
 
-  it('refuses to resolve an import whose specifier matches two files', () => {
-    const detections = scanRepo(
+  it('refuses to resolve an import whose specifier matches two files', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'a/shared/routes.ts': API_ROUTES,
@@ -366,7 +377,7 @@ describe('JS/TS HTTP consumer resolution', () => {
 
   // ─── Review findings: precision, termination and keying ────────────
 
-  it('keys the fact map the same way on a platform that hands it backslashes', () => {
+  it('keys the fact map the same way on a platform that hands it backslashes', async () => {
     // glob v13 is called without `posix: true` and its walker joins with the
     // platform separator, so on Windows every path here arrives backslashed.
     const files = {
@@ -379,13 +390,13 @@ describe('JS/TS HTTP consumer resolution', () => {
       `,
     };
 
-    expect(consumers(scanRepo(files, 'src\\api\\links.api.ts'))).toContainEqual(
+    expect(consumers(await scanRepo(files, 'src\\api\\links.api.ts'))).toContainEqual(
       expect.objectContaining({ method: 'GET', path: '/links' }),
     );
   });
 
-  it('does NOT treat a container that merely HOLDS an axios instance as a client', () => {
-    const detections = scanRepo(
+  it('does NOT treat a container that merely HOLDS an axios instance as a client', async () => {
+    const detections = await scanRepo(
       {
         'src/stores.ts': `
           import axios from 'axios';
@@ -405,8 +416,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
   });
 
-  it('still proves the factory shape the containment rule existed for', () => {
-    const detections = scanRepo(
+  it('still proves the factory shape the containment rule existed for', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/client.ts': `
           import axios from 'axios';
@@ -427,8 +438,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('refuses a resolved constant that is not path-shaped', () => {
-    const detections = scanRepo(
+  it('refuses a resolved constant that is not path-shaped', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/strings.ts': `
@@ -450,8 +461,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
   });
 
-  it('keeps an all-numeric path that is written as a path', () => {
-    const detections = scanRepo(
+  it('keeps an all-numeric path that is written as a path', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/legacy.api.ts': `
@@ -469,8 +480,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('refuses a path whose leading term never resolved', () => {
-    const detections = scanRepo(
+  it('refuses a path whose leading term never resolved', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/unanchored.api.ts': `
@@ -488,9 +499,9 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
   });
 
-  it('caps the folded output instead of building a path of unbounded length', () => {
+  it('caps the folded output instead of building a path of unbounded length', async () => {
     const pad = 'a'.repeat(4000);
-    const detections = scanRepo(
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/big.api.ts': `
@@ -507,7 +518,7 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
   });
 
-  it('terminates on expressions deep enough to overflow the stack', () => {
+  it('terminates on expressions deep enough to overflow the stack', async () => {
     // `scan` is contractually non-throwing: `sync.ts` turns a throw here into an
     // unexplained "missing repo" that silently drops every contract of every
     // kind for that repo. Both shapes recursed once per term before this.
@@ -518,12 +529,16 @@ describe('JS/TS HTTP consumer resolution', () => {
     let nested = '`/x`';
     for (let i = 0; i < 4000; i++) nested = '`${' + nested + '}`';
 
-    expect(() => scanRepo({ 'src/a.ts': `axios.get(${chain});` }, 'src/a.ts')).not.toThrow();
-    expect(() => scanRepo({ 'src/b.ts': `axios.get(${nested});` }, 'src/b.ts')).not.toThrow();
+    await expect(
+      scanRepo({ 'src/a.ts': `axios.get(${chain});` }, 'src/a.ts'),
+    ).resolves.toBeDefined();
+    await expect(
+      scanRepo({ 'src/b.ts': `axios.get(${nested});` }, 'src/b.ts'),
+    ).resolves.toBeDefined();
   });
 
-  it('survives a file whose parse throws, and still resolves the rest of the repo', () => {
-    const detections = scanRepoWithParse(
+  it('survives a file whose parse throws, and still resolves the rest of the repo', async () => {
+    const detections = await scanRepoWithParse(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/routes.ts': API_ROUTES,
@@ -546,8 +561,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('sees an axios import declared below the binding that uses it', () => {
-    const detections = scanRepo(
+  it('sees an axios import declared below the binding that uses it', async () => {
+    const detections = await scanRepo(
       {
         // ES module bindings are hoisted, so this is legal and binds the same `ax`.
         'src/lib/late.ts': `
@@ -570,8 +585,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('keeps a partially folded path whose unresolved term contains spaces', () => {
-    const detections = scanRepo(
+  it('keeps a partially folded path whose unresolved term contains spaces', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/routes.ts': API_ROUTES,
@@ -605,9 +620,9 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections).map((d) => d.path)).toEqual(['${API_BASE}/users', '${a}${b}']);
   });
 
-  it('caps the literal fallback of an oversized template too', () => {
+  it('caps the literal fallback of an oversized template too', async () => {
     const pad = 'a'.repeat(9000);
-    const detections = scanRepo(
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/big.api.ts': `
@@ -621,8 +636,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
   });
 
-  it('proves a client handed to a factory inside a nested options object', () => {
-    const detections = scanRepo(
+  it('proves a client handed to a factory inside a nested options object', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/client.ts': `
           import axios from 'axios';
@@ -649,8 +664,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('does NOT trust the spelling `axios` when the file binds that name itself', () => {
-    const detections = scanRepo(
+  it('does NOT trust the spelling `axios` when the file binds that name itself', async () => {
+    const detections = await scanRepo(
       {
         'src/shadow.ts': `
           const axios = fakeFactory;
@@ -671,7 +686,7 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
     expect(
       consumers(
-        scanRepo(
+        await scanRepo(
           {
             'src/mock.ts': `
               const axios = { create: () => ({ get: (u: string) => u }) };
@@ -685,7 +700,7 @@ describe('JS/TS HTTP consumer resolution', () => {
     ).toEqual([]);
   });
 
-  it('resolves a CommonJS require of axios, aliased or not', () => {
+  it('resolves a CommonJS require of axios, aliased or not', async () => {
     const cjs = (local: string) => `
       const ${local} = require('axios');
       const api = ${local}.create({ baseURL: '/' });
@@ -694,15 +709,15 @@ describe('JS/TS HTTP consumer resolution', () => {
     `;
 
     for (const local of ['axios', 'ax']) {
-      const detections = scanRepo({ 'src/cjs.ts': cjs(local) }, 'src/cjs.ts');
+      const detections = await scanRepo({ 'src/cjs.ts': cjs(local) }, 'src/cjs.ts');
       expect(consumers(detections).map((d) => d.path)).toEqual(
         expect.arrayContaining(['/instance', '/module']),
       );
     }
   });
 
-  it('resolves the axios module used directly under an import alias', () => {
-    const detections = scanRepo(
+  it('resolves the axios module used directly under an import alias', async () => {
+    const detections = await scanRepo(
       {
         'src/aliased.ts': `
           import ax from 'axios';
@@ -717,8 +732,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
-  it('refuses a name two `export *` barrels both provide', () => {
-    const detections = scanRepo(
+  it('refuses a name two `export *` barrels both provide', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/axios.config.ts': AXIOS_CONFIG,
         'src/api/a.ts': `export const API_ROUTE_PATH = { LINKS: "/links-a" } as const;`,
@@ -739,8 +754,8 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
   });
 
-  it('does NOT bind a Node builtin specifier to a same-named repo file', () => {
-    const detections = scanRepo(
+  it('does NOT bind a Node builtin specifier to a same-named repo file', async () => {
+    const detections = await scanRepo(
       {
         'src/lib/http.ts': `
           import axios from 'axios';
@@ -757,10 +772,10 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
   });
 
-  it('measures the pre-pass ceiling in bytes, not UTF-16 code units', () => {
+  it('measures the pre-pass ceiling in bytes, not UTF-16 code units', async () => {
     // Under 512 Ki code units, over 512 KiB of UTF-8 — the ceiling mirrors the
     // analyzer's byte-size limit, so this file must be skipped.
-    const detections = scanRepo(
+    const detections = await scanRepo(
       {
         'src/lib/huge.ts': `
           import axios from 'axios';
@@ -971,9 +986,9 @@ api.request({ url: '/api/users', method: 'POST' });
     expect(detections[0]?.path).toBe('https://host/api/x');
   });
 
-  it('admits axios.create instances calling .request', () => {
+  it('admits axios.create instances calling .request', async () => {
     const detections = consumers(
-      scanRepo(
+      await scanRepo(
         {
           'src/lib/client.ts': `
             import axios from 'axios';
@@ -992,9 +1007,9 @@ api.request({ url: '/api/users', method: 'POST' });
     );
   });
 
-  it('admits member-verb calls with a gateway-prefixed template', () => {
+  it('admits member-verb calls with a gateway-prefixed template', async () => {
     const detections = consumers(
-      scanRepo(
+      await scanRepo(
         {
           'src/lib/client.ts': `
             import axios from 'axios';
