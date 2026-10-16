@@ -8,6 +8,7 @@ import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-fea
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
 import { RebuildReasonCollector } from '../../src/core/rebuild-reasons.js';
 import type { EmbeddingCheckpoint } from '../../src/core/embedding-checkpoint.js';
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   ensurePrivateSharedGraph,
@@ -317,6 +318,7 @@ describe('publishSharedGraph race (#3352)', () => {
         storagePath: slot,
         lastCommit: head,
         indexedAt: new Date().toISOString(),
+        parseCacheIdentity: { base: (await runtimeParseIdentity()).base },
       });
     }
     return { checkouts: [main, wt], head };
@@ -618,6 +620,7 @@ describe('up-to-date fast path over a missing shared graph (#3374)', () => {
       lastCommit: git(wt, 'rev-parse', 'HEAD'),
       indexedAt: new Date().toISOString(),
       schemaFingerprint: SCHEMA_FINGERPRINT,
+      parseCacheIdentity: { base: (await runtimeParseIdentity()).base },
       analysisFeatures: {
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
       },

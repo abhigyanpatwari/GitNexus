@@ -1,9 +1,12 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { executeQuery } from '../../src/core/lbug/lbug-adapter.js';
-import { PARSE_CACHE_VERSION, type ParseCache } from '../../src/storage/parse-cache.js';
+import { type ParseCache } from '../../src/storage/parse-cache.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'spring-destination-app');
 
@@ -221,7 +224,7 @@ withTestLbugDB(
       // A cold cache WITH a storagePath: this is what makes the parse phase use
       // the disk-backed ParsedFile store, which is the production shape.
       const cache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set(),
         storagePath: path.join(storageDir, 'parse-cache'),
