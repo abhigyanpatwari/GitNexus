@@ -12,8 +12,10 @@
  * the local backstop if the premise ever fails; this test keeps the premise honest.
  *
  * Runs the compiled worker over every `.R` file of the six r-* fixtures, before any post-parse.
- * Requires `dist/`; skipped locally when it is missing, hard-fails on CI (as the other worker-backed
- * suites do).
+ * Requires `dist/`. Locally the suite skips when it is missing. On CI a missing `dist/` throws when
+ * the file is loaded, so a skipped run cannot pass for a verified one; the same tripwire is in
+ * `object-literal-owner-resolution.test.ts`, while the other worker-backed suites skip silently.
+ * The integration tier builds `dist/` first (`pretest:integration`), as do the CI jobs.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
@@ -22,6 +24,8 @@ import { FIXTURES } from './resolvers/helpers.js';
 import { distWorkerExists, parseFilesWithWorkers } from '../helpers/worker-parse.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
+// CI tripwire, stricter than the usual `describe.skip` guard: without this throw a missing build
+// would skip the whole suite and leave the premise above unchecked.
 const hasDistWorker = distWorkerExists();
 if (!hasDistWorker && process.env.CI) {
   throw new Error(
