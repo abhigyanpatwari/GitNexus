@@ -78,6 +78,7 @@ Not supported:
 - `.Rmd` and `.qmd` files are not indexed (the provider handles `.r` and `.R` only; `.Rprofile` and `.Renviron` are not indexed either), and `box::use()`, `import::from()`, `loadNamespace()`, `attachNamespace()` and `sys.source()` imports are not read.
 - S3 dispatch is not resolved: S3 methods are indexed as functions only. S4 and RefClass dispatch is not resolved either; there are definitions and heritage, not dispatch edges.
 - NAMESPACE `import()`, `importClassesFrom()` and `importMethodsFrom()` are not read. Imports of external (CRAN) packages produce no edges.
+- NAMESPACE `exportClassPattern()` is not read. An S4 class exported only through such a pattern reads as not exported (`isExported` false), and an `importFrom()` of it does not bind; classes listed in `export()` or `exportClasses()` are read.
 - S4 `contains=` links only to classes defined in the repository or the `VIRTUAL` marker; basic-type bases such as `"numeric"` add no edge.
 - Package discovery is bounded (depth 3, 200 directories), so a package beyond the bound is treated like an unknown one. A package found only under `renv`, `packrat`, `revdep` or `<name>.Rcheck` is not a repository package.
 - A `pkg::name` whose package does not itself define `name` (for example a re-export) can still bind to a same-file or `importFrom` candidate, a `::` to a name the package does not export still binds to its definition, and `pkg::name` used as a value is not qualifier-resolved. Call sites dropped for certainly-external packages or duplicate definitions leave no recorded outcome.
