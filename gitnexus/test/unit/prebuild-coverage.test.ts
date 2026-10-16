@@ -14,6 +14,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load } from 'js-yaml';
+import { createHash } from 'node:crypto';
+import { classifyBinaryHeader } from '../../src/core/lbug/extension-load-error.js';
 
 /**
  * Regression guard: every tree-sitter grammar GitNexus ships must provide a
@@ -370,4 +372,47 @@ describe('prebuild workflow rebuild loop guard', () => {
       expect(result.output).not.toContain('any=true');
     },
   );
+});
+
+describe('bundled Linux ARM64 repair architecture', () => {
+  const repairs = [
+    ['tree-sitter-cpp', '0.23.4'],
+    ['tree-sitter-java', '0.23.5'],
+    ['tree-sitter-ruby', '0.23.1'],
+    ['tree-sitter-javascript', '0.23.1'],
+    ['tree-sitter-typescript', '0.23.2'],
+  ];
+  for (const [name, version] of repairs) {
+    it(`${name}@${version}: installed ARM64 prebuild is an AArch64 N-API binary`, () => {
+      const dir =
+        name === 'tree-sitter-javascript'
+          ? path.join(NODE_MODULES, 'tree-sitter-typescript/node_modules', name)
+          : path.join(NODE_MODULES, name);
+      const bytes = readFileSync(path.join(dir, 'prebuilds/linux-arm64', `${name}.node`));
+      expect(classifyBinaryHeader(bytes, bytes.length, 'linux', 'arm64')).toBe('valid');
+      expect(classifyBinaryHeader(bytes, bytes.length, 'linux', 'x64')).toBe('corrupt');
+      expect(bytes.includes(NAPI_SYMBOL)).toBe(true);
+    });
+  }
+
+  it('pins the five repair identities, pristine source provenance, and replacement checksums', () => {
+    const dir = path.join(GITNEXUS_ROOT, 'prebuilds/bundled');
+    const manifest = JSON.parse(readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.tuple).toBe('linux-arm64');
+    expect(
+      manifest.packages.map((entry: { name: string; version: string }) => [
+        entry.name,
+        entry.version,
+      ]),
+    ).toEqual(repairs);
+    for (const entry of manifest.packages) {
+      const bytes = readFileSync(path.join(dir, entry.file));
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(entry.sha256);
+      expect(classifyBinaryHeader(bytes, bytes.length, 'linux', 'arm64')).toBe('valid');
+      expect(entry.source.integrity).toMatch(/^sha512-/);
+      expect(entry.source.sha256).toMatch(/^[0-9a-f]{64}$/);
+      expect(entry.source.generatedSourcesUnchanged).toBe(true);
+    }
+  });
 });

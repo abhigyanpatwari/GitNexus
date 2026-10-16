@@ -35,7 +35,8 @@ const SAMPLES = {
 
 async function check(installedDir) {
   const load = (rel) => import(pathToFileURL(path.join(installedDir, rel)).href);
-  const Parser = createRequire(path.join(installedDir, 'package.json'))('tree-sitter');
+  const require = createRequire(path.join(installedDir, 'package.json'));
+  const Parser = require('tree-sitter');
   const { listGrammarSources, getLanguageGrammar } = await load(
     'dist/core/tree-sitter/parser-loader.js',
   );
@@ -59,6 +60,26 @@ async function check(installedDir) {
       failures.push(`${key}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  // TypeScript's nested JavaScript 0.23.1 has its own install lifecycle and
+  // prebuild (#3599). The registry's direct JavaScript grammar is 0.25.0, so
+  // loading it above does not exercise this bundled dependency.
+  try {
+    const typescriptRequire = createRequire(require.resolve('tree-sitter-typescript'));
+    const { version } = typescriptRequire('tree-sitter-javascript/package.json');
+    if (version !== '0.23.1') throw new Error(`expected nested JavaScript 0.23.1, got ${version}`);
+    const parser = new Parser();
+    parser.setLanguage(typescriptRequire('tree-sitter-javascript'));
+    const root = parser.parse(SAMPLES.javascript).rootNode;
+    if (root.hasError || root.namedChildCount === 0) {
+      failures.push(
+        `typescript:nested-javascript: parsed with errors: ${root.toString().slice(0, 200)}`,
+      );
+    }
+  } catch (err) {
+    failures.push(
+      `typescript:nested-javascript: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   const { PROTO_GRPC_PLUGIN } = await load('dist/core/group/extractors/grpc-patterns/proto.js');
   if (PROTO_GRPC_PLUGIN === null) {
     failures.push('proto: native Protobuf grammar failed to initialize');
@@ -70,7 +91,7 @@ async function check(installedDir) {
     ).map((d) => d.symbolName);
     if (found.join() !== 'S.M') failures.push(`proto: expected [S.M], got [${found}]`);
   }
-  return { checked: keys.length + 1, failures };
+  return { checked: keys.length + 2, failures };
 }
 
 if (!isMainThread) {
