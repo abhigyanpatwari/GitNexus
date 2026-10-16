@@ -217,10 +217,64 @@ function nestedIfCondition(text: string, i: number): number | null {
 }
 
 /**
+ * Where each `{ … }` block of NAMESPACE text ends, answered in constant time after one linear
+ * pass over the text. Scanning a block from its own `{` instead costs a pass over the rest of
+ * the file whenever the block never closes, and a file of `if (a) {` lines with no `}` made
+ * that quadratic (a 300 KB input took 8.8 s).
+ *
+ * The pass tokenises like the block scan it replaces: `#` comments run to the end of the line,
+ * a quote that does not close on its line aborts every block still open at that point, and a
+ * `}` closes the innermost open one. A comment or a quote never spans lines, so every line
+ * start is a clean token boundary and the tokens from any `{` the directive scanner reaches
+ * are the same as the tokens of the pass from the start of the text.
+ */
+class BraceBlocks {
+  private ends: Map<number, number> | undefined;
+
+  constructor(private readonly text: string) {}
+
+  /** The index just after the `}` closing the block opened at `open`; `-1` when it never closes. */
+  endOf(open: number): number {
+    this.ends ??= this.index();
+    return this.ends.get(open) ?? -1;
+  }
+
+  private index(): Map<number, number> {
+    const { text } = this;
+    const ends = new Map<number, number>();
+    const open: number[] = [];
+    for (let i = 0; i < text.length; ) {
+      const ch = text[i];
+      if (ch === '#') {
+        i = skipLineComment(text, i);
+      } else if (isQuote(ch)) {
+        const end = skipQuoted(text, i);
+        if (end !== -1) {
+          i = end;
+          continue;
+        }
+        // An unterminated quote aborts every block open here; resume on the next line.
+        open.length = 0;
+        const newline = text.indexOf('\n', i);
+        i = newline === -1 ? text.length : newline + 1;
+      } else {
+        if (ch === '{') open.push(i);
+        else if (ch === '}') {
+          const start = open.pop();
+          if (start !== undefined) ends.set(start, i + 1);
+        }
+        i++;
+      }
+    }
+    return ends;
+  }
+}
+
+/**
  * Skip one statement following an `if (…)` / `else`: either a `{ … }` block or a
  * single directive call. Returns the index to resume scanning from.
  */
-function skipConditionalBody(text: string, from: number): number {
+function skipConditionalBody(text: string, from: number, blocks: BraceBlocks): number {
   let i = from;
   for (;;) {
     while (i < text.length && /\s/.test(text[i])) i++;
@@ -234,28 +288,8 @@ function skipConditionalBody(text: string, from: number): number {
   }
   if (i >= text.length) return i;
   if (text[i] === '{') {
-    const blockStart = i;
-    let depth = 0;
-    for (; i < text.length; ) {
-      const ch = text[i];
-      if (ch === '#') {
-        i = skipLineComment(text, i);
-        continue;
-      }
-      if (isQuote(ch)) {
-        const end = skipQuoted(text, i);
-        if (end === -1) return resyncAfterMalformed(text, blockStart);
-        i = end;
-        continue;
-      }
-      if (ch === '{') depth++;
-      else if (ch === '}') {
-        depth--;
-        if (depth === 0) return i + 1;
-      }
-      i++;
-    }
-    return resyncAfterMalformed(text, blockStart); // unterminated `{ … }`
+    const end = blocks.endOf(i);
+    return end === -1 ? resyncAfterMalformed(text, i) : end; // -1: unterminated `{ … }`
   }
   if (isIdentStart(text[i])) {
     let j = i + 1;
@@ -290,6 +324,7 @@ interface RawDirective {
  */
 function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): RawDirective[] {
   const directives: RawDirective[] = [];
+  const blocks = new BraceBlocks(text);
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
@@ -320,7 +355,7 @@ function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): Raw
     if (text[k] !== '(') {
       // `else` may be followed directly by a directive with no parens of its own.
       if (head === 'else') {
-        i = skipConditionalBody(text, k);
+        i = skipConditionalBody(text, k, blocks);
         continue;
       }
       i = j;
@@ -335,7 +370,7 @@ function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): Raw
     i = group.end;
 
     if (CONDITIONAL_HEADS.has(head)) {
-      i = skipConditionalBody(text, i);
+      i = skipConditionalBody(text, i, blocks);
       continue;
     }
     if (heads.has(head)) directives.push({ head, args: group.args });

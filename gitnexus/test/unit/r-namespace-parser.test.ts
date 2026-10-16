@@ -261,6 +261,27 @@ describe('parseRNamespaceImportFrom', () => {
       ]);
     });
 
+    it('reads a file of unterminated `{` blocks in linear time and keeps the directive after each', () => {
+      // Every `if (a) {` has no `}`: each one used to rescan the rest of the file (8.8 s here).
+      const src = 'if (a) {\nexport(x)\n'.repeat(16_000); // ~300 KB
+      const start = performance.now();
+      const { namedExports } = parseRNamespaceExports(src);
+      const imports = parseRNamespaceImportFrom(src + 'importFrom(p, f)\n');
+      expect(performance.now() - start).toBeLessThan(2_000);
+      expect(namedExports).toHaveLength(16_000);
+      expect(imports).toEqual([{ pkg: 'p', name: 'f' }]);
+    });
+
+    it('still skips a closed block, and a block that a later quote aborts, as before', () => {
+      const closed = 'if (a) {\n  export(hidden)\n}\nexport(shown)\n';
+      expect(parseRNamespaceExports(closed).namedExports).toEqual(['shown']);
+      const nested = 'if (a) { if (b) { export(h) } }\nexport(s)\n';
+      expect(parseRNamespaceExports(nested).namedExports).toEqual(['s']);
+      // The quote aborts the outer block; the inner one closed before it.
+      const aborted = 'if (a) {\n  if (b) { export(h) }\n  "stray\n}\nexport(s)\n';
+      expect(parseRNamespaceExports(aborted).namedExports).toEqual(['s']);
+    });
+
     it('drops a garbled directive at the end of the file and keeps the rest', () => {
       expect(parseRNamespaceImportFrom('importFrom(a, x)\nimportFrom(b, "y\n')).toEqual([
         { pkg: 'a', name: 'x' },
