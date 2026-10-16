@@ -11,6 +11,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
+const { isArm64NapiSharedObject } = require('./arm64-prebuild.cjs');
 
 const RUNTIME = '0.25.1';
 // Upstream metadata is an input to validate, never the peer range we ship.
@@ -57,17 +58,7 @@ function readArm64Repairs(packageRoot) {
     if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
       throw new Error(`Bundled ARM64 prebuild checksum mismatch: ${identity}`);
     }
-    // ELF64, little-endian, shared object, AArch64. A tuple directory and an
-    // N-API symbol alone also accepted the broken upstream x86-64 binaries.
-    if (
-      bytes.length < 64 ||
-      !bytes.subarray(0, 4).equals(Buffer.from([127, 69, 76, 70])) ||
-      bytes[4] !== 2 ||
-      bytes[5] !== 1 ||
-      bytes.readUInt16LE(16) !== 3 ||
-      bytes.readUInt16LE(18) !== 183 ||
-      !bytes.includes('napi_register_module_v1')
-    ) {
+    if (!isArm64NapiSharedObject(bytes)) {
       throw new Error(`Bundled prebuild is not an AArch64 N-API shared object: ${identity}`);
     }
     repairs.set(identity, bytes);

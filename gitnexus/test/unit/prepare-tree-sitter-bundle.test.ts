@@ -16,6 +16,7 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { prepareTreeSitterBundle } = require('../../scripts/prepare-tree-sitter-bundle.cjs');
+const { TUPLES: tuples } = require('../../scripts/assert-publish-grammar-coverage.cjs');
 const roots: string[] = [];
 const repairs = [
   ['tree-sitter-cpp', '0.23.4'],
@@ -23,14 +24,6 @@ const repairs = [
   ['tree-sitter-ruby', '0.23.1'],
   ['tree-sitter-javascript', '0.23.1'],
   ['tree-sitter-typescript', '0.23.2'],
-];
-const tuples = [
-  'linux-x64',
-  'linux-arm64',
-  'darwin-x64',
-  'darwin-arm64',
-  'win32-x64',
-  'win32-arm64',
 ];
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const repairRoot = (root: string) => path.join(root, 'prebuilds/bundled');

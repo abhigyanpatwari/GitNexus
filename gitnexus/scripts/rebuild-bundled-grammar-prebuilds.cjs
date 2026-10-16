@@ -6,6 +6,7 @@ const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { createRequire } = require('node:module');
 const { execFileSync } = require('node:child_process');
+const { isArm64NapiSharedObject } = require('./arm64-prebuild.cjs');
 
 const output = path.resolve(__dirname, '../prebuilds/bundled');
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -44,15 +45,7 @@ function verifySources(dir, files) {
 
 function inspectBinary(file) {
   const bytes = fs.readFileSync(file);
-  if (
-    bytes.length < 64 ||
-    !bytes.subarray(0, 4).equals(Buffer.from([127, 69, 76, 70])) ||
-    bytes[4] !== 2 ||
-    bytes[5] !== 1 ||
-    bytes.readUInt16LE(16) !== 3 ||
-    bytes.readUInt16LE(18) !== 183 ||
-    !bytes.includes('napi_register_module_v1')
-  ) {
+  if (!isArm64NapiSharedObject(bytes)) {
     throw new Error(`Not an AArch64 N-API shared object: ${file}`);
   }
   const readelf = (...args) => execFileSync('readelf', args.concat(file), { encoding: 'utf8' });
