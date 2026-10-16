@@ -2537,12 +2537,14 @@ export default router;
       fs.writeFileSync(
         path.join(dir, 'src/routes/health-a.ts'),
         `
+import { Router } from 'express'; const router = Router();
 router.get('/api/health', healthA);
 `,
       );
       fs.writeFileSync(
         path.join(dir, 'src/routes/health-b.ts'),
         `
+import { Router } from 'express'; const router = Router();
 router.get('/api/health', healthB);
 `,
       );
@@ -7566,7 +7568,11 @@ export async function fetchHealth() {
     it('handles graph queries that throw gracefully', async () => {
       const dir = path.join(tmpDir, 'graph-error');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/routes.ts'), `router.get('/api/health', handler);`);
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express'; const router = Router();
+router.get('/api/health', handler);`,
+      );
 
       const throwingExecutor = async () => {
         throw new Error('DB unavailable');
@@ -7586,6 +7592,7 @@ export async function fetchHealth() {
       fs.writeFileSync(
         path.join(dir, 'src/router.ts'),
         `
+import { Router } from 'express'; const router = Router();
 router.get('/api/users/', handler);
 `,
       );
@@ -7601,6 +7608,7 @@ router.get('/api/users/', handler);
       fs.writeFileSync(
         path.join(dir, 'src/router.ts'),
         `
+import { Router } from 'express'; const router = Router();
 router.get('/api/users/:id', handler1);
 router.get('/api/posts/{postId}', handler2);
 `,

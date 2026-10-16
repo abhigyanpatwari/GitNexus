@@ -1,3 +1,6 @@
+import express from 'express';
+const app = express();
+
 function realInfo() { return 'info'; }
 function realQuery() { return 'query'; }
 function mcp() { return 'mcp'; }

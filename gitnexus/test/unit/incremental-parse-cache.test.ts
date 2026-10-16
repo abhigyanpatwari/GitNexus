@@ -325,8 +325,9 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 140 -> 141 for detached Go ownership captures used by rename (#3559).
   // Moved 141 -> 142 to combine Go ownership with fetch-wrapper candidates (#3567).
   // Moved 142 -> 143 to combine fetch-wrapper candidates with #3561 route corrections.
-  it('pins SCHEMA_BUMP to 143 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399, #3414, #3408, #3402, #3446, #3450, #3499, #3502, #3487, #3505, #3504, #3497, #3486, #3559, #3567, #3561)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(143);
+  // Moved 143 -> 144 for provider provenance facts and recomputed mounted paths.
+  it('pins SCHEMA_BUMP to 144 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399, #3414, #3408, #3402, #3446, #3450, #3499, #3502, #3487, #3505, #3504, #3497, #3486, #3559, #3567, #3561)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(144);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly

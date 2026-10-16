@@ -181,5 +181,5 @@ export interface HttpLanguagePlugin {
    * multiple files, such as Java controllers inheriting Spring mappings
    * from annotated interfaces.
    */
-  scanProject?(files: readonly HttpScanInput[]): HttpFileDetections[];
+  scanProject?(files: readonly HttpScanInput[], repoContext?: RepoContext): HttpFileDetections[];
 }

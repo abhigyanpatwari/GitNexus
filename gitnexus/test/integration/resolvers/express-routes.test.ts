@@ -21,6 +21,7 @@ import {
   getNodesByLabelFull,
   runPipelineFromRepo,
   type PipelineResult,
+  writeFixtureRepo,
 } from './helpers.js';
 
 describe('Express/Hono route detection', () => {
@@ -129,7 +130,7 @@ describe('Express route identity and source priority', () => {
     );
     expect(chainedRoutes.map((node) => node.properties.method).sort()).toEqual(methods);
     const handled = getRelationships(result, 'HANDLES_ROUTE').filter(
-      (edge) => edge.target === route,
+      (edge) => edge.target === route && edge.sourceLabel === 'File',
     );
     expect(handled).toHaveLength(methods.length);
     expect(handled.every((edge) => edge.sourceFilePath === 'src/server.ts')).toBe(true);
@@ -214,6 +215,7 @@ describe('Express route identity and source priority', () => {
               a.path.localeCompare(b.path) || String(a.method).localeCompare(String(b.method)),
           ),
         handled: getRelationships(pipeline, 'HANDLES_ROUTE')
+          .filter((edge) => edge.sourceLabel === 'File')
           .map((edge) => ({
             method: pipeline.graph.getNode(edge.rel.targetId)?.properties.method,
             path: edge.target,
@@ -244,7 +246,140 @@ describe('Express route identity and source priority', () => {
     }
   }, 120_000);
 
-  it.each([137, 138, 139, 140])(
+  it('recomputes mixed-language mounts after mount-only, barrel-only and resolution-config edits', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-express-mount-cache-'));
+    const repoDir = path.join(tempDir, 'repo');
+    const storageDir = path.join(tempDir, 'storage');
+    const mountSource = (prefix: string) => `
+      import express from 'express';
+      import chosen from '@routes';
+      const app = express();
+      function before() {} function after() {}
+      app.use('${prefix}', [before, [chosen], after]);
+      app.use(['/v1', '/v2'], chosen);
+    `;
+    const config = (target: string) =>
+      JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@routes': [target] } } });
+    const project = (pipeline: PipelineResult) =>
+      getNodesByLabelFull(pipeline, 'Route')
+        .map((route) => ({
+          path: route.name,
+          file: route.properties.filePath,
+          handler: route.properties.handlerSymbolId,
+        }))
+        .sort((a, b) => a.path.localeCompare(b.path));
+    const expectedPaths = (prefix: string) =>
+      [
+        `${prefix}/users`,
+        `${prefix}/nested/details`,
+        '/v1/users',
+        '/v1/nested/details',
+        '/v2/users',
+        '/v2/nested/details',
+        '/other',
+      ].sort();
+    const paths = (pipeline: PipelineResult) => getNodesByLabel(pipeline, 'Route').sort();
+    const persist = async (cache: ParseCache) => {
+      pruneCache(cache, cache.usedKeys);
+      const keys = await saveParseCache(storageDir, cache);
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(storageDir),
+        PARSE_CACHE_VERSION,
+        new Set(keys),
+      );
+    };
+    try {
+      writeFixtureRepo(repoDir, {
+        'mount.ts': mountSource('/api'),
+        'barrel.ts': `export { default } from './via.js';`,
+        'via.js': `export { default } from './router';`,
+        'router.ts': `
+          import { Router } from 'express'; import { child } from './nested';
+          const router = Router();
+          function users() {} router.get('/users', users);
+          router.use('/nested', child); export default router;
+        `,
+        'nested.tsx': `
+          import express from 'express'; export const child = express.Router();
+          function details() {} child.get('/details', details);
+        `,
+        'other.ts': `
+          const express = require('express'); const other = express.Router();
+          function alternate() {} other.get('/other', alternate); module.exports = other;
+        `,
+        'tsconfig.json': config('barrel.ts'),
+      });
+      const inMemory = await runPipelineFromRepo(repoDir, () => {}, { workerPoolSize: 1 });
+      expect(paths(inMemory)).toEqual(expectedPaths('/api'));
+      const cold: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set(),
+        storagePath: storageDir,
+        onDiskKeys: new Set(),
+      };
+      const durable = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: cold,
+        workerPoolSize: 2,
+      });
+      expect(durable.reparsedFileCount).toBe(6);
+      expect(project(durable)).toEqual(project(inMemory));
+      expect(project(durable).every((route) => route.handler !== undefined)).toBe(true);
+      await persist(cold);
+      expect(
+        (await loadDurableParsedFileIndex(getDurableParsedFileDir(storageDir), PARSE_CACHE_VERSION))
+          .size,
+      ).toBeGreaterThan(0);
+      const warm = await loadParseCache(storageDir);
+      const replay = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: warm,
+        workerPoolSize: 2,
+      });
+      expect(replay.reparsedFileCount).toBe(0);
+      expect(replay.parseCacheHitFileCount).toBe(6);
+      expect(project(replay)).toEqual(project(inMemory));
+
+      fs.writeFileSync(path.join(repoDir, 'mount.ts'), mountSource('/changed'));
+      const mountCache = await loadParseCache(storageDir);
+      const mountEdit = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: mountCache,
+        workerPoolSize: 1,
+      });
+      expect(mountEdit.reparsedFileCount).toBe(1);
+      expect(mountEdit.parseCacheHitFileCount).toBe(5);
+      expect(paths(mountEdit)).toEqual(expectedPaths('/changed'));
+      await persist(mountCache);
+
+      fs.writeFileSync(path.join(repoDir, 'barrel.ts'), `export { default } from './other';`);
+      const barrelCache = await loadParseCache(storageDir);
+      const barrelEdit = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: barrelCache,
+        workerPoolSize: 1,
+      });
+      expect(barrelEdit.reparsedFileCount).toBe(1);
+      expect(barrelEdit.parseCacheHitFileCount).toBe(5);
+      expect(paths(barrelEdit)).toEqual(
+        ['/changed/other', '/v1/other', '/v2/other', '/users', '/nested/details'].sort(),
+      );
+      await persist(barrelCache);
+
+      // Only resolver configuration changes: every source fact comes from the
+      // warm cache, but the current alias target must win over cached guesses.
+      fs.writeFileSync(path.join(repoDir, 'tsconfig.json'), config('via.js'));
+      const configCache = await loadParseCache(storageDir);
+      const configEdit = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: configCache,
+        workerPoolSize: 2,
+      });
+      expect(configEdit.reparsedFileCount).toBe(0);
+      expect(configEdit.parseCacheHitFileCount).toBe(6);
+      expect(project(configEdit)).toEqual(project(mountEdit));
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it.each([137, 138, 139, 140, 143])(
     'reparses route captures from a same-package v%i cache on upgrade',
     async (previousSchema) => {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-express-route-upgrade-'));
