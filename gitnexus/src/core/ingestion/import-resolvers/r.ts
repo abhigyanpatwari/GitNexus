@@ -152,7 +152,17 @@ function packageDefIndex(
   return byPackage.get(pkg);
 }
 
-const stripBackticks = (s: string): string => s.replace(/^`+|`+$/g, '');
+/**
+ * `s` without its leading and trailing backticks. Two scans, not `/^`+|`+$/g`: the pattern is
+ * quadratic on `x` + n backticks + `y`, and a NAMESPACE entry is repository-controlled text.
+ */
+const stripBackticks = (s: string): string => {
+  let start = 0;
+  let end = s.length;
+  while (start < end && s.charCodeAt(start) === 96) start++;
+  while (end > start && s.charCodeAt(end - 1) === 96) end--;
+  return s.slice(start, end);
+};
 
 /**
  * Resolve a NAMESPACE `importFrom(pkg, importedName)` to the `R/` file(s) of the

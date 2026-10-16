@@ -637,6 +637,16 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
       expect(resolve(t, 'scorelib', 'g')).toEqual([F]);
     });
 
+    it('looks a name up among export entries that hold a long run of backticks in linear time', () => {
+      // `/^`+|`+$/g` took ~12 s per entry on this shape; the bound leaves a ten-fold margin.
+      const hostile = `x${'`'.repeat(200_000)}y`;
+      const s = setup({ [F]: src }, { exports: [hostile, 'f'] });
+      const start = performance.now();
+      const answers = [resolve(s, 'scorelib', 'hidden'), resolve(s, 'scorelib', 'f')];
+      expect(performance.now() - start).toBeLessThan(2_000);
+      expect(answers).toEqual([null, [F]]);
+    });
+
     it('treats a package without a NAMESPACE file as exporting everything', () => {
       const s = setup({ [F]: src }, undefined);
       expect(resolve(s, 'scorelib', 'hidden')).toEqual([F]);
