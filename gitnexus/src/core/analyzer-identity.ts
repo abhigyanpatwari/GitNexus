@@ -2878,3 +2878,15 @@ export function finalizeAnalyzerRunnerIdentity(
   }
   return finalIdentity;
 }
+
+/** Narrow, non-loading artifact primitives shared by parser identity.
+ * The analyzer receipt and its existing cache retain their separate contract. */
+export const analyzerIdentityArtifacts = {
+  hashCanonicalFrames,
+  hashStableFile,
+  snapshotReadableFile,
+  snapshotDirectoryInventory,
+  resolveBuildRoot,
+  resolveRuntimeVariant,
+  isInside,
+};

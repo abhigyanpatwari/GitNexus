@@ -35,6 +35,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { constants as fsConstants, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { retryRename } from '../storage/fs-atomic.js';
 import {
   acquireIndexLock,
@@ -247,10 +248,15 @@ import {
 } from './ingestion/process-detection-budget.js';
 import { NODE_TABLES } from './lbug/schema.js';
 import {
+  resolveParseCacheIdentity,
+  finalizeParseCacheIdentity,
+  type ParseCacheIdentity,
+  type ParseCacheIdentityResolution,
+} from './parse-cache-identity.js';
+import {
   loadParseCache,
   saveParseCache,
   pruneCache,
-  PARSE_CACHE_VERSION,
   createColdParseRebuildDir,
   emptyParseCache,
   forgetCreatedParseCacheDir,
@@ -1363,6 +1369,28 @@ async function removeColdParseRebuildDir(
   }
 }
 
+interface ParseIdentityRun {
+  resolve(): ParseCacheIdentityResolution;
+  storagePath?: string;
+}
+
+function effectiveParseCacheIdentity(
+  identity: ParseCacheIdentity,
+  options: Pick<AnalyzeOptions, 'pdg' | 'pdgMaxFunctionLines'>,
+): NonNullable<RepoMeta['parseCacheIdentity']> {
+  return {
+    base: identity.base,
+    ...(options.pdg === true
+      ? {
+          pdg: {
+            identity: identity.pdg,
+            maxFunctionLines: options.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
+          },
+        }
+      : {}),
+  };
+}
+
 /**
  * Run the full analysis under an exclusive, index-directory-scoped write lock
  * (#2658). A second concurrent `analyze` on the same slot waits here for the
@@ -1400,6 +1428,11 @@ export async function runFullAnalysis(
   invalidateNodeWorkspacePackages(repoPath);
 
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
+  let parseIdentityResolution: ParseCacheIdentityResolution | undefined;
+  const parseRun: ParseIdentityRun = {
+    // Lazy so FTS-only repair neither inspects nor restamps parser provenance.
+    resolve: () => (parseIdentityResolution ??= resolveParseCacheIdentity(import.meta.url)),
+  };
   const acquireOpts = {
     log,
     // Resolve and validate the canonical slot under the lock before cleanup.
@@ -1461,7 +1494,23 @@ export async function runFullAnalysis(
         );
       }
       const flatShared = writeTarget.placement.branch ? undefined : writeTarget.sharedStore;
-      if (flatShared) await seedSharedSlot(flatShared, repoPath, log);
+      if (flatShared) {
+        await seedSharedSlot(flatShared, repoPath, log, (meta) => {
+          if (options.repairFts) return true;
+          const resolved = parseRun.resolve();
+          const pdg =
+            options.preserveExistingPdg && options.pdg === undefined
+              ? meta.pdg !== undefined
+              : options.pdg;
+          return (
+            resolved.ok &&
+            isDeepStrictEqual(
+              meta.parseCacheIdentity,
+              effectiveParseCacheIdentity(resolved.identity, { ...options, pdg }),
+            )
+          );
+        });
+      }
       sweepStagingArtifacts(writeTarget.metaDir, log);
       const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
       const result = await runFullAnalysisInner(
@@ -1470,6 +1519,7 @@ export async function runFullAnalysis(
         callbacks,
         writeTarget,
         contentRetention,
+        parseRun,
         runnerIdentityAtBootstrap,
       );
       if (flatShared) {
@@ -1494,6 +1544,7 @@ export async function runFullAnalysis(
       else if (options.shareWith) await setShareOptOut(repoPath, false);
       return result;
     } finally {
+      await removeColdParseRebuildDir(parseRun.storagePath, true);
       discardScopedEmbeddingSpills();
       lock.release();
     }
@@ -1506,6 +1557,7 @@ async function runFullAnalysisInner(
   callbacks: AnalyzeCallbacks,
   writeTarget: WriteTarget,
   contentRetention: ContentRetention,
+  parseRun: ParseIdentityRun,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
@@ -1585,7 +1637,6 @@ async function runFullAnalysisInner(
   };
   const ftsProfile = ftsProfileForContentRetention(contentRetention);
   const ftsIndexes = getFtsIndexes(ftsProfile);
-  let coldParseRebuildDir: string | undefined;
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
   // (e.g. the embeddings-cache open) falls back to the default until the hint is
@@ -1945,6 +1996,15 @@ async function runFullAnalysisInner(
   if (!analyzerRunnerIdentitiesEqual(runnerIdentity, runnerIdentity)) {
     throw new Error('Analyzer bootstrap supplied a malformed runner identity receipt');
   }
+  const parseIdentityResolution = parseRun.resolve();
+  const effectiveParseIdentity = parseIdentityResolution.ok
+    ? effectiveParseCacheIdentity(parseIdentityResolution.identity, options)
+    : undefined;
+  if (parseIdentityResolution.ok === false) {
+    log(
+      `Parse cache disabled: parser identity could not be verified (${parseIdentityResolution.reason}).`,
+    );
+  }
 
   let resumeEmbeddingCheckpoint = false;
   let pendingEmbeddingNodeIds = new Set<string>();
@@ -2138,6 +2198,19 @@ async function runFullAnalysisInner(
   const addGateReason = (reason: RebuildReason): void => {
     if (!priorIsFirstBuildClaim) collector.add(reason);
   };
+  if (
+    existingMeta &&
+    (effectiveParseIdentity === undefined ||
+      !isDeepStrictEqual(existingMeta.parseCacheIdentity, effectiveParseIdentity))
+  ) {
+    addGateReason({
+      key: 'parser-identity',
+      text:
+        effectiveParseIdentity === undefined
+          ? 'parser provenance is unverifiable — rebuilding without persistent parser caches.'
+          : 'parser artifacts or extraction options changed, or prior provenance is missing — rebuilding the graph.',
+    });
+  }
 
   // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
   // The incremental writeback persists only changed-file nodes, so a pdg
@@ -2880,18 +2953,20 @@ async function runFullAnalysisInner(
   }
 
   // ── Load incremental parse cache ──────────────────────────────────
-  // Content-addressed: `--force` reuses parser shards; `useParseCache: false`
-  // stages a new generation under a run-unique parse-rebuild.* dir and publishes
-  // after success. Unique because index locks are per branch slot while this
-  // cache root is shared across branches.
-  if (options.useParseCache === false) {
-    coldParseRebuildDir = await createColdParseRebuildDir(cacheRoot);
-    forgetCreatedParseCacheDir(coldParseRebuildDir);
-  }
+  // Every fresh or repaired shard stays run-owned until final verification.
+  // The same directory provides bounded transient ParsedFile streaming when
+  // identity is unverifiable, without creating a reusable cache generation.
+  const coldParseRebuildDir = await createColdParseRebuildDir(cacheRoot);
+  parseRun.storagePath = coldParseRebuildDir;
+  forgetCreatedParseCacheDir(coldParseRebuildDir);
   const parseCache =
-    options.useParseCache === false
-      ? emptyParseCache(coldParseRebuildDir)
-      : await loadParseCache(cacheRoot);
+    parseIdentityResolution.ok === false
+      ? undefined
+      : options.useParseCache === false
+        ? emptyParseCache(parseIdentityResolution.identity, {
+            writeStoragePath: coldParseRebuildDir,
+          })
+        : await loadParseCache(cacheRoot, parseIdentityResolution.identity, coldParseRebuildDir);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
   // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
@@ -2949,6 +3024,8 @@ async function runFullAnalysisInner(
       },
       {
         parseCache,
+        parsedFileStorePath: coldParseRebuildDir,
+        parseWorkerUrl: parseIdentityResolution.ok ? parseIdentityResolution.workerUrl : undefined,
         workerPoolSize: options.workerPoolSize,
         maxProcesses: processDetectionBudget.maxProcesses,
         maxProcessBranching: processDetectionBudget.overridden.maxProcessBranching
@@ -3004,13 +3081,12 @@ async function runFullAnalysisInner(
     throw err;
   }
 
-  if (options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
+  if (parseCache && options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
     log(
       `Rebuilt the graph and FTS while reusing cached parser output for ` +
         `${pipelineResult.parseCacheHitFileCount} file(s) ` +
-        `(parse cache ${PARSE_CACHE_VERSION}). ` +
-        `For same-version capture/query development changes, increment SCHEMA_BUMP in ` +
-        `src/storage/parse-cache.ts to invalidate parser output.`,
+        `(parser ${parseCache.identity.base.slice(0, 19)}). ` +
+        `Parser compatibility is derived automatically from the installed artifacts.`,
     );
   }
 
@@ -5297,7 +5373,7 @@ async function runFullAnalysisInner(
       // chunk hash touched in this scan — cache HITS included (see parse-impl
       // usedKeys.add) — so it's complete even on an incremental run. Persisted
       // so a sibling branch's prune can union it and not evict our shards.
-      cacheKeys: [...parseCache.usedKeys],
+      cacheKeys: parseCache ? [...parseCache.usedKeys] : [],
       incrementalInProgress: undefined as RepoMeta['incrementalInProgress'],
       // Cleared on a clean run; otherwise the marker Phase 4/5 minted above
       // (see the `kind` doc in repo-manager.ts).
@@ -5316,6 +5392,10 @@ async function runFullAnalysisInner(
     // graph produced by two analyzer identities. Stable-read validation lives
     // inside the resolver, and a mismatch leaves the dirty flag intact so the
     // next run takes the established full-recovery path.
+    if (parseIdentityResolution.ok) {
+      finalizeParseCacheIdentity(import.meta.url, parseIdentityResolution.identity);
+      meta.parseCacheIdentity = effectiveParseIdentity;
+    }
     meta.runnerIdentity = finalizeAnalyzerRunnerIdentity(import.meta.url, runnerIdentity);
     // #2614 F1: the freshness stamp (saveMeta) is written AFTER the atomic swap
     // below — never here — so a concurrent MCP reader can't observe
@@ -5505,6 +5585,7 @@ async function runFullAnalysisInner(
     // composition no longer matches anything in the current scan are dead
     // weight; the parse phase populates `usedKeys` as it processes chunks).
     const saveCaches = async (): Promise<void> => {
+      if (!parseCache) return;
       // #2106 R6: the parse cache + durable store are shared across branches.
       // Before pruning to this run's keys, fold in the OTHER branches' recorded
       // chunk keys so a branch switch doesn't evict their still-live shards.
@@ -5525,6 +5606,24 @@ async function runFullAnalysisInner(
         for (const k of folded.keys) siblingKeys.add(k);
         if (!folded.complete) complete = false;
       }
+      if (options.useParseCache === false) {
+        // A bypass must not read persistent facts during parsing. Only after
+        // successful graph publication, admit compatible sibling keys for
+        // retention; their metadata alone cannot authorize foreign shards.
+        const retained = await loadParseCache(cacheRoot, parseCache.identity, coldParseRebuildDir);
+        parseCache.storagePath = cacheRoot;
+        parseCache.onDiskKeys ??= new Set();
+        for (const key of retained.onDiskKeys ?? []) {
+          if (!parseCache.usedKeys.has(key) && (!complete || siblingKeys.has(key))) {
+            parseCache.onDiskKeys.add(key);
+          }
+        }
+        for (const [key, value] of retained.entries) {
+          if (!parseCache.usedKeys.has(key) && (!complete || siblingKeys.has(key))) {
+            parseCache.entries.set(key, value);
+          }
+        }
+      }
       if (complete) {
         for (const k of siblingKeys) parseCache.usedKeys.add(k);
       } else {
@@ -5532,6 +5631,7 @@ async function runFullAnalysisInner(
         // everything currently loaded rather than evict on incomplete info.
         log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
         for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
+        for (const k of parseCache.onDiskKeys ?? []) parseCache.usedKeys.add(k);
       }
       const pruned = pruneCache(parseCache, parseCache.usedKeys);
       if (pruned > 0) {
@@ -5549,8 +5649,8 @@ async function runFullAnalysisInner(
       // break an otherwise successful run (next run treats it as a miss).
       await mergeStagedDurableParsedFileStore(
         cacheRoot,
-        parseCache.storagePath ?? cacheRoot,
-        PARSE_CACHE_VERSION,
+        parseCache.writeStoragePath ?? cacheRoot,
+        parseCache.identity.base,
         new Set(savedKeys),
       );
     };

@@ -257,6 +257,7 @@ export const seedSharedSlot = async (
   layout: SharedStoreLayout,
   repoPath: string,
   log: Log,
+  canReuseGraph: (meta: RepoMeta) => boolean = () => true,
 ): Promise<void> => {
   if (await loadMeta(layout.checkoutSlot)) return;
   const picked = pickSeed(repoPath, await listCommitGraphs(layout));
@@ -264,7 +265,13 @@ export const seedSharedSlot = async (
   // A commit graph matches its commit exactly, so a checkout showing exactly
   // that commit is up to date. Any other checkout gets an empty lastCommit,
   // like seedFromLocalIndex, so its next run hash-diffs.
-  const upToDate = picked?.distance === 0 && isWorkingTreePristine(repoPath);
+  // Keep incompatible graphs as rebuild/embedding seeds, retaining their old
+  // provenance, but never authorize current adoption from another parser.
+  const upToDate =
+    seed !== undefined &&
+    picked?.distance === 0 &&
+    isWorkingTreePristine(repoPath) &&
+    canReuseGraph(seed.meta);
   // Record the pointer under the publish lock, where reclaim counts
   // references, so the graph cannot be deleted between the pick and the save.
   const pointed =
