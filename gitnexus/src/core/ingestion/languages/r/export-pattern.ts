@@ -67,9 +67,11 @@ function translateBracket(src: string, start: number): { text: string; end: numb
     if (ch === '[' && src[i + 1] === ':') {
       const close = src.indexOf(':]', i + 2);
       if (close === -1) return null;
-      const expansion = POSIX_CLASSES[src.slice(i + 2, close)];
-      if (expansion === undefined) return null;
-      out += expansion;
+      // An own-property lookup: `constructor`, `toString` or `__proto__` would otherwise
+      // resolve on the prototype chain and splice that function's source text into the pattern.
+      const name = src.slice(i + 2, close);
+      if (!Object.hasOwn(POSIX_CLASSES, name)) return null;
+      out += POSIX_CLASSES[name];
       i = close + 2;
     } else if (ch === '\\' && i + 1 < src.length) {
       out += ch + src[i + 1];

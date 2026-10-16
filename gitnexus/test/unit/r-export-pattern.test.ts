@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   compileRExportPattern,
+  compileRExportPatternDetailed,
   unescapeRString,
 } from '../../src/core/ingestion/languages/r/export-pattern.js';
 import { loadRPackageConfig } from '../../src/core/ingestion/languages/r/package-config.js';
@@ -87,6 +88,24 @@ describe('compileRExportPattern', () => {
       expect(() => compileRExportPattern(bad)).not.toThrow();
       expect(compileRExportPattern(bad)).toBeNull();
     }
+  });
+});
+
+describe('a POSIX class name that Object.prototype also has is unknown', () => {
+  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__'])(
+    'rejects [[:%s:]] like any other unknown class, with the reason a dropped pattern reports',
+    (name) => {
+      const pattern = `[[:${name}:]]`;
+      expect(compileRExportPattern(pattern)).toBeNull();
+      expect(compileRExportPatternDetailed(pattern)).toEqual({
+        matcher: null,
+        reason: 'unterminated bracket expression or unknown POSIX class',
+      });
+    },
+  );
+
+  it('still accepts every real class', () => {
+    expect(compileRExportPattern('^[[:alpha:][:digit:]]+$')?.test('a1')).toBe(true);
   });
 });
 
