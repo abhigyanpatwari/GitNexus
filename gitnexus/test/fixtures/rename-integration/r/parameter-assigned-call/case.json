@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse when the same-named parameter is also assigned in the function body and the name is called: the parameter may be bound to a function at the call.",
+  "categories": ["parameter-shadowing", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "use.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "ambiguous_reference", "planningStatus": "blocked" },
+  "edges": []
+}

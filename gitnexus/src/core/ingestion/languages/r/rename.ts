@@ -82,6 +82,139 @@ export function registersS3Method(newName: string, defined: ReadonlySet<string>)
   return false;
 }
 
+/** Default values that can never be a function. */
+const CONSTANT_DEFAULTS: ReadonlySet<string> = new Set([
+  'float',
+  'integer',
+  'complex',
+  'string',
+  'true',
+  'false',
+  'null',
+  'na',
+  'inf',
+  'nan',
+]);
+
+function isConstantDefault(node: Parser.SyntaxNode): boolean {
+  if (CONSTANT_DEFAULTS.has(node.type)) return true;
+  // `-1`, `+2`
+  return (
+    node.type === 'unary_operator' &&
+    ['-', '+'].includes(node.childForFieldName('operator')?.text ?? '') &&
+    ['float', 'integer', 'complex', 'inf', 'nan'].includes(
+      node.childForFieldName('rhs')?.type ?? '',
+    )
+  );
+}
+
+/** The name a plain assignment (`<-`, `=`, `<<-`, `->`, `->>`) or a `for` loop binds, or null. */
+function boundName(node: Parser.SyntaxNode): string | null {
+  if (node.type === 'for_statement') {
+    const variable = node.childForFieldName('variable');
+    return variable?.type === 'identifier' ? rBareName(variable.text) : null;
+  }
+  if (node.type !== 'binary_operator') return null;
+  const operator = node.childForFieldName('operator')?.text;
+  if (operator === undefined) return null;
+  let target: Parser.SyntaxNode | null = null;
+  if (operator === '<-' || operator === '=' || operator === '<<-') {
+    target = node.childForFieldName('lhs');
+  } else if (operator === '->' || operator === '->>') {
+    target = node.childForFieldName('rhs');
+  }
+  return target?.type === 'identifier' ? rBareName(target.text) : null;
+}
+
+/**
+ * Names bound by an assignment or `for` loop in a function's own body, one entry per function.
+ * A nested function's assignments bind its own variables and are not included.
+ */
+const ownAssignments = new WeakMap<Parser.Tree, Map<number, ReadonlySet<string>>>();
+
+function ownAssignedNames(fn: Parser.SyntaxNode): ReadonlySet<string> {
+  let byFunction = ownAssignments.get(fn.tree);
+  if (byFunction === undefined) ownAssignments.set(fn.tree, (byFunction = new Map()));
+  const known = byFunction.get(fn.id);
+  if (known !== undefined) return known;
+  const names = new Set<string>();
+  const body = fn.childForFieldName('body');
+  const pending = body === null ? [] : [body];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    if (node.type === 'function_definition') continue;
+    const bound = boundName(node);
+    if (bound !== null) names.add(bound);
+    for (const child of node.namedChildren) pending.push(child);
+  }
+  byFunction.set(fn.id, names);
+  return names;
+}
+
+/**
+ * How a parameter named like a function behaves when that name is CALLED. R skips a binding
+ * that is not a function when it looks up a callee, so the parameter shadows the call only if
+ * it holds a function.
+ *
+ *  - `constant`: the default is a constant and the body never assigns the name, so the call
+ *    reaches the function of that name outside;
+ *  - `function`: no default and no assignment; the parameter is called, so the caller supplies
+ *    a function and the call is the parameter's;
+ *  - `maybe`: a function or computed default, or an assignment to the name in the body; the
+ *    call may reach the parameter or the function outside, which cannot be decided statically.
+ */
+export type RParameterKind = 'constant' | 'function' | 'maybe';
+
+function kindOfParameter(
+  fn: Parser.SyntaxNode,
+  parameter: Parser.SyntaxNode,
+  name: string,
+): RParameterKind {
+  if (ownAssignedNames(fn).has(name)) return 'maybe';
+  const dflt = parameter.childForFieldName('default');
+  if (dflt === null) return 'function';
+  return isConstantDefault(dflt) ? 'constant' : 'maybe';
+}
+
+function parameterNamed(fn: Parser.SyntaxNode, name: string): RParameterKind | null {
+  const parameters = fn.childForFieldName('parameters');
+  if (parameters === null) return null;
+  for (const parameter of parameters.namedChildren) {
+    if (parameter.type !== 'parameter') continue;
+    const written = parameter.childForFieldName('name');
+    if (written !== null && rBareName(written.text) === name) {
+      return kindOfParameter(fn, parameter, name);
+    }
+  }
+  return null;
+}
+
+/** The kind of the parameter whose name `node` is, or null when `node` is not a parameter name. */
+export function rParameterKind(node: Parser.SyntaxNode): RParameterKind | null {
+  const parameter = node.parent;
+  if (parameter?.type !== 'parameter' || parameter.childForFieldName('name')?.id !== node.id) {
+    return null;
+  }
+  const fn = parameter.parent?.parent;
+  if (fn?.type !== 'function_definition') return null;
+  return kindOfParameter(fn, parameter, rBareName(node.text));
+}
+
+/** The innermost function around `node` that has a parameter called `name`. */
+function innermostParameterKind(node: Parser.SyntaxNode, name: string): RParameterKind | null {
+  for (let ancestor = node.parent; ancestor !== null; ancestor = ancestor.parent) {
+    if (ancestor.type !== 'function_definition') continue;
+    const found = parameterNamed(ancestor, name);
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/** Whether `node` is the callee of a call: `f(x)`, `x |> f()`. */
+function isCallee(node: Parser.SyntaxNode): boolean {
+  const call = node.parent;
+  return call?.type === 'call' && call.childForFieldName('function')?.id === node.id;
+}
+
 /** The name a `<<-` or `->>` assignment writes to (backticks removed), or null for any other node. */
 function superassignedName(node: Parser.SyntaxNode): string | null {
   if (node.type !== 'binary_operator') return null;
@@ -104,10 +237,13 @@ const parseNames = createTreeSitterRenameSource({
   canonicalName: rBareName,
   transformParsed: (parsed) => canonicalizeRenameBindings(parsed, rBareName),
   skip: (node) => node.type === 'comment',
-  role: (node) =>
-    node.parent?.type === 'parameter' && node.parent.childForFieldName('name')?.id === node.id
-      ? 'binding'
-      : 'name',
+  role: (node) => {
+    const kind = rParameterKind(node);
+    if (kind === null) return 'name';
+    // A parameter that cannot hold a function does not shadow a call of the same name: it is not
+    // claimed, so the call is renamed with the function it reaches.
+    return kind === 'constant' ? 'unrelated' : 'binding';
+  },
 });
 
 export const rRenameProvider: RenameProvider = {
@@ -167,6 +303,14 @@ export const rRenameProvider: RenameProvider = {
       for (const node of walkNamedNodes(source.tree.rootNode)) {
         // `name <<- value` (inside a function or not) is a global re-definition that the
         // scope graph keeps as a separate declaration, so a rename would leave it behind.
+        if (node.type === 'identifier' && isCallee(node) && rBareName(node.text) === name) {
+          if (innermostParameterKind(node, name) === 'maybe')
+            return {
+              code: 'ambiguous_reference',
+              message:
+                'A parameter of this name may hold a function, so this call may reach the parameter or the function being renamed.',
+            };
+        }
         if (superassignedName(node) === name)
           return {
             code: 'ambiguous_reference',
