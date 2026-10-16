@@ -198,6 +198,12 @@ That extractor is deliberately **precision-weighted**: `route_map` presents its
 output as fact, so a `startsWith` namespace test, a bare `pathname === '/'`
 without a verb, and any regex it cannot translate exactly are all dropped rather
 than guessed at. A missing route is a coverage limit; an invented one is a lie.
+Express `app.get(RegExp, handler)` registrations are likewise omitted: a regex
+matcher does not have one finite URL to use as a Route node key.
+Express `app.use(path, middleware)` is middleware attachment, not an endpoint;
+it does not create a Route node. Dispatch-guard inference also ignores stored
+`route.routePath` metadata: comparing a recorded route name with a literal
+does not prove that the request path is being dispatched.
 
 Two rules there need more than one comparison to decide, and are worth knowing
 about before changing either:
