@@ -10,7 +10,7 @@
  * `languages/r/`). A depth-3 `DESCRIPTION` decoy makes the walk observable: reading it is impossible
  * without the breadth-first search reaching it.
  */
-import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -49,6 +49,12 @@ afterEach(() => {
 afterAll(() => {
   for (const root of roots) cleanupTempDirSync(root);
 });
+
+// Cold worker-pool startups otherwise flake against the 5s default ready budget
+// on a loaded runner, failing for reasons unrelated to R parsing or resolution.
+// Safe under `pool: 'forks'`: the env stub is process-global, but each file gets its own process.
+beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
+afterAll(() => vi.unstubAllEnvs());
 
 describe('R post-parse gating', () => {
   // R's package-config walk runs inside `LanguageProvider.postParse`, which the parse phase calls only

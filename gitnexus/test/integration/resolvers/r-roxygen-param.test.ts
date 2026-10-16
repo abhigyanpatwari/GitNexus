@@ -4,9 +4,15 @@
  * consumes it, so this pins the end-to-end outcome: a function documented
  * `@param df Data frame ...` is not linked to the unrelated R6 class `Data`.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
 import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
+
+// Cold worker-pool startups otherwise flake against the 5s default ready budget
+// on a loaded runner, failing for reasons unrelated to R parsing or resolution.
+// Safe under `pool: 'forks'`: the env stub is process-global, but each file gets its own process.
+beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
+afterAll(() => vi.unstubAllEnvs());
 
 describe('R roxygen @param prose does not type a receiver', () => {
   let result: PipelineResult;

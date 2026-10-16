@@ -25,7 +25,7 @@
  * ("resolves cross-package pkgB::CleanData call" and "binds the pkgB::CleanData call by
  * import instead of the name guess") stay green: one definition, bound by import already.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
 import { FIXTURES, getRelationships, type PipelineResult, runPipelineFromRepo } from './helpers.js';
 
@@ -45,6 +45,12 @@ interface Case {
 
 const L = 'caller/R/local_calls.R';
 const LOCAL = 'locallib/R/functions.R';
+
+// Cold worker-pool startups otherwise flake against the 5s default ready budget
+// on a loaded runner, failing for reasons unrelated to R parsing or resolution.
+// Safe under `pool: 'forks'`: the env stub is process-global, but each file gets its own process.
+beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
+afterAll(() => vi.unstubAllEnvs());
 
 describe('R qualified calls: discovery completes (r-qualified-calls)', () => {
   let result: PipelineResult;

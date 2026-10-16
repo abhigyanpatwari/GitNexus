@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
@@ -38,6 +38,12 @@ const SRC = [
   '})', //                                 16
   '',
 ].join('\n');
+
+// Cold worker-pool startups otherwise flake against the 5s default ready budget
+// on a loaded runner, failing for reasons unrelated to R parsing or resolution.
+// Safe under `pool: 'forks'`: the env stub is process-global, but each file gets its own process.
+beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
+afterAll(() => vi.unstubAllEnvs());
 
 describe('R CFG under --pdg (worker pipeline)', () => {
   it('emits BasicBlock/CFG/CDG, no REACHING_DEF, and joins to Function nodes', async () => {

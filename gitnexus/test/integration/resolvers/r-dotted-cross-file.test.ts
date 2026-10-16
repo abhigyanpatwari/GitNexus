@@ -14,9 +14,15 @@
  * are in the same package (`prov/R/use.R`), another package (`other/R/use.R`) that does
  * not import `prov`, a script that `library(prov)`s, and a script with no import at all.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
 import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
+
+// Cold worker-pool startups otherwise flake against the 5s default ready budget
+// on a loaded runner, failing for reasons unrelated to R parsing or resolution.
+// Safe under `pool: 'forks'`: the env stub is process-global, but each file gets its own process.
+beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
+afterAll(() => vi.unstubAllEnvs());
 
 describe('R dotted function names called across files', () => {
   let result: PipelineResult;

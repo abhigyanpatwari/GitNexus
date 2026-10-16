@@ -5,10 +5,16 @@
  * name theirs. Runs through the real pipeline (worker pool and scope resolution),
  * each negative paired with a positive control for the same call.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
 import { FIXTURES, getRelationships, runPipelineFromRepo } from './helpers.js';
 import type { PipelineResult } from './helpers.js';
+
+// Cold worker-pool startups otherwise flake against the 5s default ready budget
+// on a loaded runner, failing for reasons unrelated to R parsing or resolution.
+// Safe under `pool: 'forks'`: the env stub is process-global, but each file gets its own process.
+beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
+afterAll(() => vi.unstubAllEnvs());
 
 describe('R scope query: naming argument of imports and S4 classes', () => {
   let result: PipelineResult;

@@ -15,7 +15,7 @@
  * Requires `dist/`; skipped locally when it is missing, hard-fails on CI (as the other worker-backed
  * suites do).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FIXTURES } from './resolvers/helpers.js';
@@ -58,6 +58,12 @@ const collectRFiles = (
   }
   return out;
 };
+
+// Cold worker-pool startups otherwise flake against the 5s default ready budget
+// on a loaded runner, failing for reasons unrelated to R parsing or resolution.
+// Safe under `pool: 'forks'`: the env stub is process-global, but each file gets its own process.
+beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
+afterAll(() => vi.unstubAllEnvs());
 
 describe.skipIf(!hasDistWorker)('R worker never emits an owner id (before post-parse)', () => {
   it.each(Object.entries(EXPECTED_HINTS))(
