@@ -1,5 +1,14 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { builtinModules } from 'node:module';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from '@babel/parser';
@@ -75,7 +84,13 @@ const covered = (relative: string) =>
   PARSE_CACHE_BASE_ROOTS.some((root) => relative.startsWith(`${root}/`)) ||
   (PARSE_CACHE_BASE_FILES as readonly string[]).includes(relative);
 
+const sourcePath = (file: string) =>
+  file
+    .replace(/\.d\.(ts|mts|cts)$/, '.$1')
+    .replace(/\.(js|jsx|mjs|cjs)$/, (extension) => extension.replace('js', 'ts'));
+
 function audit(relative: string, source: string): string[] {
+  relative = sourcePath(relative);
   const ast = parse(source, { sourceType: 'module', plugins: ['typescript'] });
   const text = (node: Node) => source.slice(node.start ?? 0, node.end ?? 0);
   const violations: string[] = [];
@@ -94,9 +109,9 @@ function audit(relative: string, source: string): string[] {
   const check = (specifier: string) => {
     if (builtins.has(specifier)) return;
     if (specifier.startsWith('.')) {
-      const target = path.posix
-        .normalize(path.posix.join(path.posix.dirname(relative), specifier))
-        .replace(/\.js$/, '.ts');
+      const target = sourcePath(
+        path.posix.normalize(path.posix.join(path.posix.dirname(relative), specifier)),
+      );
       if (
         !covered(target) &&
         target !== 'core/logger.ts' &&
@@ -162,7 +177,7 @@ function sourceFiles(directory: string): string[] {
     const candidate = path.join(directory, entry.name);
     return entry.isDirectory()
       ? sourceFiles(candidate)
-      : /\.(?:tsx?|jsx?)$/.test(entry.name)
+      : /\.(?:[cm]?[jt]s|[jt]sx)$/.test(entry.name)
         ? [candidate]
         : [];
   });
@@ -178,21 +193,49 @@ describe('parse artifact input ownership', () => {
       const files = new Set([
         ...PARSE_CACHE_BASE_ROOTS.flatMap((owned) => sourceFiles(path.join(root, owned))),
         ...PARSE_CACHE_BASE_FILES.map((file) =>
-          path.join(root, compiled ? file.replace(/\.ts$/, '.js') : file),
+          path.join(
+            root,
+            compiled
+              ? file.replace(/\.(ts|tsx|mts|cts)$/, (extension) => extension.replace('ts', 'js'))
+              : file,
+          ),
         ),
       ]);
-      return [...files].filter(existsSync).flatMap((file) =>
-        audit(
-          path
-            .relative(root, file)
-            .split(path.sep)
-            .join('/')
-            .replace(/(?:\.d\.ts|\.js)$/, '.ts'),
-          readFileSync(file, 'utf8'),
-        ),
-      );
+      return [...files]
+        .filter(existsSync)
+        .flatMap((file) =>
+          audit(path.relative(root, file).split(path.sep).join('/'), readFileSync(file, 'utf8')),
+        );
     });
     expect([...new Set(violations)].sort()).toEqual([]);
+  });
+
+  it.each([
+    ['ts', 'ts'],
+    ['tsx', 'tsx'],
+    ['js', 'ts'],
+    ['jsx', 'tsx'],
+    ['mts', 'mts'],
+    ['cts', 'cts'],
+    ['mjs', 'mts'],
+    ['cjs', 'cts'],
+  ])('discovers and audits outside imports in .%s files', (extension, sourceExtension) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'parse-input-coverage-'));
+    try {
+      const directory = path.join(root, 'core/ingestion');
+      mkdirSync(directory, { recursive: true });
+      const file = path.join(directory, `new-provider.${extension}`);
+      writeFileSync(file, `import '../../outside.${extension}';`);
+      const files = sourceFiles(root);
+      expect(files).toEqual([file]);
+      expect(
+        files.flatMap((entry) =>
+          audit(path.relative(root, entry).split(path.sep).join('/'), readFileSync(entry, 'utf8')),
+        ),
+      ).toEqual([`core/ingestion/new-provider.${sourceExtension} -> outside.${sourceExtension}`]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it.each([
