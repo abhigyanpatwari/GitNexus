@@ -331,7 +331,7 @@ export function extractFrameworkRouteFacts(
         node.type === 'assignment_expression' &&
         left?.type === 'member_expression' &&
         property?.type === 'property_identifier' &&
-        (moduleExports(object) || (object?.text === 'exports' && isGlobal(object, 'exports')))
+        writesExportProperty
       ) {
         const record = { name: property.text, value: expression(right) };
         if (object?.text === 'exports') {

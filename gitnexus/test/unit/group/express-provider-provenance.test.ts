@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
-import { getRelationships, runPipelineFromRepo } from '../../integration/resolvers/helpers.js';
+import {
+  getRelationships,
+  runPipelineFromRepo,
+  writeFixtureRepo,
+} from '../../integration/resolvers/helpers.js';
 
 describe('Express group provider provenance', () => {
   let root: string;
@@ -15,12 +19,7 @@ describe('Express group provider provenance', () => {
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
   });
-  const write = (files: Record<string, string>) => {
-    for (const [file, source] of Object.entries(files)) {
-      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-      fs.writeFileSync(path.join(root, file), source);
-    }
-  };
+  const write = (files: Record<string, string>) => writeFixtureRepo(root, files);
   const repo = (): RepoHandle => ({
     id: 'test',
     path: root,
