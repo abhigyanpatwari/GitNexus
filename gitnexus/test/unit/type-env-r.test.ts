@@ -75,6 +75,19 @@ AddOutlierStatuses <- function(data, outliers) {
       expect(flatGet(typeEnv, 'outliers')).toBe('DataFrame');
     });
 
+    it('binds a formal written in backticks to the type its @param tag gives the symbol', () => {
+      const tree = parse(`
+DataFrame <- R6::R6Class("DataFrame", public = list(rows = function() 1))
+
+#' @param data DataFrame
+Summarise <- function(\`data\`) {
+  \`data\`$rows()
+}
+`);
+      const typeEnv = buildTypeEnv(tree, SupportedLanguages.R);
+      expect(flatGet(typeEnv, '`data`')).toBe('DataFrame');
+    });
+
     it('binds nothing for a type the file does not define (primitive or capitalised)', () => {
       const tree = parse(`
 #' @param x numeric

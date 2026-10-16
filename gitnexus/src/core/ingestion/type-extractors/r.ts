@@ -7,6 +7,7 @@ import type {
 } from './types.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { getRClassNameArgument } from '../field-extractors/r.js';
+import { rBareName } from '../languages/r/bare-name.js';
 
 /**
  * R type extractor — roxygen2 annotation parsing.
@@ -205,7 +206,8 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
   const rhs = assignment.childForFieldName('rhs');
   if (rhs?.startIndex !== fn.startIndex || rhs.endIndex !== fn.endIndex) return;
 
-  const typeName = collectRoxygenParams(assignment).get(name.text);
+  // The tag names the symbol (`@param x`); a formal written `x` in backticks is the same one.
+  const typeName = collectRoxygenParams(assignment).get(rBareName(name.text));
   if (typeName !== undefined) env.set(name.text, typeName);
 };
 
