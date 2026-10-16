@@ -293,7 +293,7 @@ export const TS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
  * express today — `foldReceiverChain` in
  * `scope-resolution/passes/compound-receiver.ts` explicitly discards whether a
  * chain's base was a class reference or a value — so it is a separate change
- * with a `SCHEMA_BUMP`, not a tweak here. Both shapes are pinned by rows in
+ * with automatic parser-cache invalidation. Both shapes are pinned by rows in
  * `test/integration/resolvers/inferred-field-receiver-matrix.test.ts`
  * (`static-read-of-a-same-name-twin-picks-up-the-instance-type`,
  * `static-read-without-a-twin-loses-its-type`), so the cost moves visibly.
