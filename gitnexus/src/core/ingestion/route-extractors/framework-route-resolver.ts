@@ -210,7 +210,16 @@ export function resolveFrameworkRouteFacts(
         );
         break;
       case 'call': {
-        const callee = evaluate(expression.callee, filePath, visiting, depth + 1);
+        // A fluent call's receiver can itself be a call chain. Evaluate it once
+        // for both member lookup and fluent propagation to avoid exponential work.
+        const memberCallee = expression.callee.kind === 'member' ? expression.callee : undefined;
+        const receiver = memberCallee
+          ? evaluate(memberCallee.object, filePath, visiting, depth + 2)
+          : undefined;
+        const callee = memberCallee
+          ? member(receiver, memberCallee.name, visiting, depth + 2)
+          : evaluate(expression.callee, filePath, visiting, depth + 1);
+        if (remainingSteps <= 0 || (callee && invalidValues.has(keyOf(callee)))) return undefined;
         if (callee?.kind === 'factory' && (callee.framework !== 'hono' || expression.construct)) {
           const allocation: FrameworkAllocation = {
             id: expression.id,
@@ -218,9 +227,8 @@ export function resolveFrameworkRouteFacts(
           };
           value = { kind: 'instance', allocation };
           if (!invalidValues.has(keyOf(value))) allocations.set(allocation.id, allocation);
-        } else if (expression.callee.kind === 'member' && !expression.construct) {
-          const receiver = evaluate(expression.callee.object, filePath, visiting, depth + 1);
-          const method = expression.callee.name;
+        } else if (memberCallee && !expression.construct) {
+          const method = memberCallee.name;
           if (
             receiver?.kind === 'instance' &&
             receiver.allocation.kind !== 'hono' &&

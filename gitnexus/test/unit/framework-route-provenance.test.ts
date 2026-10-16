@@ -104,6 +104,20 @@ function handler() {} function other() {}`);
     });
   });
 
+  it.each([13, 24])(
+    'resolves all %i fluent registrations without exhausting the work budget',
+    (count) => {
+      const paths = Array.from({ length: count }, (_, index) => `/route-${index}`);
+      const chain = paths.map((route) => `.get('${route}', () => {})`).join('');
+      const extracted = facts(`import express from 'express'; const app = express(); app${chain};`);
+      expect(extracted.calls).toHaveLength(count);
+      const resolved = resolveFrameworkRouteFacts([extracted], () => []);
+      expect(resolved.registrations.map(({ route }) => route.routePath).sort()).toEqual(
+        [...paths].sort(),
+      );
+    },
+  );
+
   it('withholds handler evidence for mutated callable bindings', () => {
     const result = routes(`import express from 'express'; const app = express();
       let handler = () => {}; handler = replacement; app.get('/real', handler);`);
@@ -134,6 +148,7 @@ function handler() {} function other() {}`);
     `import express from 'express'; let r = express.Router(); ({ r } = storage);`,
     `import express from 'express'; const r = express.Router(); const alias = r; alias.get = other;`,
     `import express from 'express'; express.Router = custom; const r = express.Router();`,
+    `import express, { Router } from 'express'; Router.custom = other; const r = express.Router();`,
     `import express from 'express'; const r = express.Router(); delete r.get;`,
     `import express from 'express'; let r = express.Router(); for (r of replacements) {}`,
   ])('declines erased or conflicting provenance: %s', (setup) => {
