@@ -215,7 +215,11 @@ function extractQuotedString(node: SyntaxNode | null): string | null {
   return content?.text ?? node.text.replace(/^["']|["']$/g, '');
 }
 
-/** Extract parameter names from an R function_definition node. */
+/**
+ * Extract the formals of an R function_definition node. The grammar emits one
+ * `parameter` node per formal (`name` is an `identifier`, or `dots` for `...`);
+ * a formal with a `default` is optional, and `...` is variadic.
+ */
 function extractRParameters(fnNode: SyntaxNode): ParameterInfo[] {
   const params: ParameterInfo[] = [];
   const paramList = fnNode.childForFieldName('parameters');
@@ -223,27 +227,17 @@ function extractRParameters(fnNode: SyntaxNode): ParameterInfo[] {
 
   for (let i = 0; i < paramList.namedChildCount; i++) {
     const param = paramList.namedChild(i);
-    if (!param) continue;
+    if (!param || param.type !== 'parameter') continue;
 
-    if (param.type === 'identifier') {
-      params.push({
-        name: param.text,
-        type: null,
-        isOptional: false,
-        isVariadic: param.text === '...',
-      });
-    } else if (param.type === 'argument') {
-      // Named argument with default value -> optional parameter
-      const nameNode = param.childForFieldName('name');
-      if (nameNode) {
-        params.push({
-          name: nameNode.text,
-          type: null,
-          isOptional: true,
-          isVariadic: false,
-        });
-      }
-    }
+    const nameNode = param.childForFieldName('name');
+    if (!nameNode) continue;
+
+    params.push({
+      name: nameNode.text,
+      type: null,
+      isOptional: param.childForFieldName('default') !== null,
+      isVariadic: nameNode.type === 'dots',
+    });
   }
 
   return params;
