@@ -17,7 +17,11 @@ import { rMethodExtractor } from '../method-extractors/r.js';
 import { emitRScopeCaptures } from './r/captures.js';
 import { interpretRImport, interpretRTypeBinding } from './r/interpret.js';
 import { rPostParse } from './r/post-parse.js';
-import { rDefinitionProperties, rResolveMemberOwnerNode } from './r/owner-hooks.js';
+import {
+  rDefinitionProperties,
+  rResolveDetachedOwnerName,
+  rResolveMemberOwnerNode,
+} from './r/owner-hooks.js';
 import { isRNonNamingArgumentCapture } from './r/naming-argument.js';
 import { createRCfgVisitor } from '../cfg/visitors/r.js';
 import { rRenameProvider } from './r/rename.js';
@@ -190,6 +194,7 @@ export const rProvider = defineLanguage({
   interpretTypeBinding: interpretRTypeBinding,
   postParse: rPostParse,
   resolveMemberOwnerNode: rResolveMemberOwnerNode,
+  resolveDetachedOwnerName: rResolveDetachedOwnerName,
   definitionPropertiesExtractor: rDefinitionProperties,
   // R_QUERIES captures every string argument of setClass/setGeneric/setMethod;
   // only the one that names the definition is kept.

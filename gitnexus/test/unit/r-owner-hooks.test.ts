@@ -4,6 +4,7 @@ import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loade
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import {
   rDefinitionProperties,
+  rResolveDetachedOwnerName,
   rResolveMemberOwnerNode,
 } from '../../src/core/ingestion/languages/r/owner-hooks.js';
 import type { DefinitionPropertiesContext } from '../../src/core/ingestion/language-provider.js';
@@ -95,6 +96,47 @@ describe('resolveMemberOwnerNode provider wiring', () => {
       SupportedLanguages.Zig,
     ]) {
       expect(getProvider(lang).resolveMemberOwnerNode).toBeUndefined();
+    }
+  });
+});
+
+describe('rResolveDetachedOwnerName (class-qualified member ids)', () => {
+  const callTo = (fn: string): SyntaxNode =>
+    find((n) => n.type === 'call' && n.childForFieldName('function')?.text === fn);
+
+  it('names the binding of an `R6Class(...)` assignment', () => {
+    const r6 = find(
+      (n) => n.type === 'binary_operator' && n.childForFieldName('lhs')?.text === 'Foo',
+    );
+    expect(rResolveDetachedOwnerName(r6)).toBe('Foo');
+  });
+
+  it('names the Class argument of a `setRefClass(...)` call', () => {
+    expect(rResolveDetachedOwnerName(callTo('setRefClass'))).toBe('Acc');
+  });
+
+  it('names the signature class of a `setMethod(...)` call', () => {
+    expect(rResolveDetachedOwnerName(callTo('setMethod'))).toBe('Circle');
+  });
+
+  it('is undefined for ancestors that declare no class', () => {
+    const plain = find(
+      (n) => n.type === 'binary_operator' && n.childForFieldName('lhs')?.text === 'plain',
+    );
+    expect(rResolveDetachedOwnerName(plain)).toBeUndefined();
+    expect(rResolveDetachedOwnerName(fnDefinitionOn(3))).toBeUndefined();
+    expect(rResolveDetachedOwnerName(callTo('list'))).toBeUndefined();
+    expect(rResolveDetachedOwnerName(root)).toBeUndefined();
+  });
+
+  it('is registered on the R provider only', () => {
+    expect(rProvider.resolveDetachedOwnerName).toBe(rResolveDetachedOwnerName);
+    for (const lang of [
+      SupportedLanguages.Python,
+      SupportedLanguages.TypeScript,
+      SupportedLanguages.Java,
+    ]) {
+      expect(getProvider(lang).resolveDetachedOwnerName).not.toBe(rResolveDetachedOwnerName);
     }
   });
 });

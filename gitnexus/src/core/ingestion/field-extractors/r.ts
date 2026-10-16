@@ -190,6 +190,17 @@ export function findRFieldOwnerNode(node: SyntaxNode): SyntaxNode | null {
 export function getRTopLevelPropertyOwnerName(node: SyntaxNode): string | null {
   const ownerNode = findRFieldOwnerNode(node);
   if (!ownerNode) return null;
+  return getRClassNameOfOwnerNode(ownerNode);
+}
+
+/**
+ * The class name an R6 / S4 / RefClass owner node declares: the binding name of
+ * `Foo <- R6Class(...)`, or the `Class` argument of `setClass(...)` /
+ * `setRefClass(...)`. Null when `ownerNode` is not such a node. Looks at this node
+ * only (no ancestor walk), so a caller visiting every ancestor stays linear.
+ */
+export function getRClassNameOfOwnerNode(ownerNode: SyntaxNode): string | null {
+  if (!isR6Class(ownerNode) && !isS4Class(ownerNode)) return null;
 
   if (ownerNode.type === 'binary_operator') {
     return ownerNode.childForFieldName('lhs')?.text ?? null;

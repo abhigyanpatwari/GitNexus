@@ -1402,6 +1402,9 @@ describe('R deferred-owner attach (r-packages)', () => {
     'BareR6|value|HAS_PROPERTY',
     'BaseA|a_field|HAS_PROPERTY',
     'BaseB|b_field|HAS_PROPERTY',
+    // Child and Parent share a file and both define `greet`; member ids carry the owner, so
+    // Child keeps its own node and edge (the id used to collide and drop it).
+    'Child|greet|HAS_METHOD',
     'DataModel|name|HAS_PROPERTY',
     'DataModel|validate|HAS_METHOD',
     'DataModel|value|HAS_PROPERTY',
@@ -1414,8 +1417,8 @@ describe('R deferred-owner attach (r-packages)', () => {
     'ResultSet|items|HAS_PROPERTY',
   ];
 
-  it('emits exactly 10 HAS_METHOD and 12 HAS_PROPERTY edges', () => {
-    expect(getRelationships(result, 'HAS_METHOD')).toHaveLength(10);
+  it('emits exactly 11 HAS_METHOD and 12 HAS_PROPERTY edges', () => {
+    expect(getRelationships(result, 'HAS_METHOD')).toHaveLength(11);
     expect(getRelationships(result, 'HAS_PROPERTY')).toHaveLength(12);
   });
 
@@ -1429,7 +1432,7 @@ describe('R deferred-owner attach (r-packages)', () => {
     expect(triples).toEqual(ownedTriples);
   });
 
-  it('gives exactly the 22 attached R Method/Property nodes a string ownerId', () => {
+  it('gives exactly the 23 attached R Method/Property nodes a string ownerId', () => {
     const owned: string[] = [];
     result.graph.forEachNode((n) => {
       if (
@@ -1440,7 +1443,7 @@ describe('R deferred-owner attach (r-packages)', () => {
         owned.push(n.id);
       }
     });
-    expect(owned).toHaveLength(22);
+    expect(owned).toHaveLength(23);
   });
 
   it('leaves no R node with an unresolved ownerNameHint', () => {

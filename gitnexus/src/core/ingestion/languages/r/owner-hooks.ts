@@ -12,12 +12,28 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { DefinitionPropertiesContext } from '../../language-provider.js';
-import { findRFieldOwnerNode, getRTopLevelPropertyOwnerName } from '../../field-extractors/r.js';
+import {
+  findRFieldOwnerNode,
+  getRClassNameOfOwnerNode,
+  getRTopLevelPropertyOwnerName,
+} from '../../field-extractors/r.js';
 import { getRTopLevelMethodOwnerName } from '../../method-extractors/r.js';
 
 /** `LanguageProvider.resolveMemberOwnerNode` for R. */
 export const rResolveMemberOwnerNode = (definitionNode: SyntaxNode): SyntaxNode | null =>
   findRFieldOwnerNode(definitionNode);
+
+/**
+ * `LanguageProvider.resolveDetachedOwnerName` for R: the class name an ancestor
+ * call or assignment declares (`Foo <- R6Class(...)`, `setClass("Foo", ...)`,
+ * `setRefClass("Foo", ...)`) or the class a `setMethod("m", "Foo", ...)` call
+ * names in its signature. It qualifies the member's id (`Method:<file>:Foo.m`,
+ * `Property:<file>:Foo.x`), so two classes in one file that share a member name
+ * stay distinct nodes. It carries no graph id: the owner edge is still attached
+ * by `postParse` through `ownerNameHint`.
+ */
+export const rResolveDetachedOwnerName = (ancestor: SyntaxNode): string | undefined =>
+  getRClassNameOfOwnerNode(ancestor) ?? getRTopLevelMethodOwnerName(ancestor) ?? undefined;
 
 /**
  * `LanguageProvider.definitionPropertiesExtractor` for R: the deferred owner
