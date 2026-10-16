@@ -182,8 +182,10 @@ const SIMPLE_R_ESCAPES: Readonly<Record<string, string>> = {
 /**
  * Turn the body of an R string literal (the text between the quotes) into the
  * string value R would hold: `\\` -> `\`, `\"` -> `"`, `\n` -> newline, and
- * likewise `\t \r \a \b \f \v \' \``, backslash-space, `\xHH`,
- * `\uXXXX` / `\u{X..}` and `\UXXXXXXXX` / `\U{X..}` (code points). R
+ * likewise `\t \r \a \b \f \v \' \``, backslash-space, `\x` (1-2 hex digits), `\u`
+ * (1-4 hex digits, bare or in braces) and `\U` (1-8 hex digits, bare or in braces),
+ * the last two as code points. The digit limits are R's own: a longer run is not
+ * part of the escape (tree-sitter-r's `escape_sequence` has the same limits). R
  * rejects any other backslash sequence; this leniently keeps it verbatim, so a
  * mistaken `"\."` still reaches the regex compiler as `\.`. Never throws.
  */

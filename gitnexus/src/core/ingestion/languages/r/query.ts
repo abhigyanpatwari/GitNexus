@@ -60,7 +60,7 @@
  *
  *   - `library()`/`require()` are wildcard imports (`@import.wildcard`) —
  *     every top-level name of the named local package becomes visible,
- *     unfiltered by NAMESPACE (see `rProvider.expandsWildcardTo`).
+ *     unfiltered by NAMESPACE (see `rScopeResolver.expandsWildcardTo`).
  *     `source()` is a side-effect import (`@import.side-effect`) — it
  *     establishes a file dependency but binds no name; cross-file free
  *     calls into a `source()`d file resolve via `allowGlobalFreeCallFallback`
@@ -238,7 +238,7 @@ export const R_SCOPE_QUERY = `
       value: [(identifier) (string)] @import.source))) @import.side-effect
 
 ;; library("pkg") / require("pkg") — wildcard: every top-level name of the
-;; named local package becomes visible (rProvider.expandsWildcardTo).
+;; named local package becomes visible (rScopeResolver.expandsWildcardTo).
 (call
   function: (identifier) @_libfn
   (#match? @_libfn "^(library|require)$")

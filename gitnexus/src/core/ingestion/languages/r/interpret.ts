@@ -6,7 +6,7 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding } from 'gitnexus-sha
  * `rScopeResolver.allowGlobalFreeCallFallback` instead).
  *
  * `library()`/`require()` are wildcard imports — every top-level name of the
- * named local package becomes visible (`rProvider.expandsWildcardTo`).
+ * named local package becomes visible (`rScopeResolver.expandsWildcardTo`).
  *
  * `resolveRImportTarget` (`import-resolvers/r.ts`) guards on
  * `context.parsedImport.kind === 'wildcard'` specifically to refuse a
