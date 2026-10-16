@@ -6,7 +6,7 @@ The provider is covered by unit and integration tests, listed under [Tests](#tes
 
 ## Scope
 
-GitNexus indexes `.r` and `.R` files with the `@eagleoutice/tree-sitter-r` grammar and resolves them through the scope-resolution pipeline (see ARCHITECTURE.md, Scope-Resolution Pipeline). R-specific logic lives in `gitnexus/src/core/ingestion/languages/r/`, with the per-language extractor and import-resolver files beside those of the other languages. Shared ingestion code does not name R; the provider plugs in through `LanguageProvider` and `ScopeResolver` hooks.
+GitNexus indexes `.r` and `.R` files with the `@eagleoutice/tree-sitter-r` grammar and resolves them through the scope-resolution pipeline (see ARCHITECTURE.md, Scope-Resolution Pipeline). R-specific logic lives in `gitnexus/src/core/ingestion/languages/r/`, with the per-language extractor and import-resolver files beside those of the other languages. Apart from the registrations every language has (the language enum, the file-extension and classification tables, the export-checker table, the grammar loader and parse-worker grammar map, and the query, provider and scope-resolver registries), shared ingestion code does not name R; the provider plugs in through `LanguageProvider` and `ScopeResolver` hooks.
 
 R has no class syntax: classes are function calls (`R6Class(...)`, `setClass(...)`, `setRefClass(...)`) and package exports live in a NAMESPACE file rather than in the source. That is why the provider uses two optional hooks, `postParse` (attach each member to its owner and refine export status once every file is parsed) and `resolveMemberOwnerNode` (name the owner of a member from a call rather than an enclosing node).
 
@@ -48,7 +48,7 @@ Exports:
 
 The scope query (`languages/r/query.ts`) captures three call shapes only: `f(x)`, `pkg::f(x)` and `obj$f(x)`.
 
-- A bare call binds lexically first. `library()` and `require()` of a local package make every top-level name of that package visible, unfiltered by NAMESPACE. `source()` binds no name; a call into a sourced file, or into another file of the same package, binds through a workspace-wide unique-name fallback at confidence 0.5 (`global-name-fallback`). An ambiguous name yields no edge.
+- A bare call binds lexically first. `library()` and `require()` of a local package make every top-level name of that package visible, unfiltered by NAMESPACE. This is wider than R's `library()` of an installed package, which attaches only its exports; it follows `devtools::load_all()`, which attaches every top-level name, exported or not. `source()` binds no name; a call into a sourced file, or into another file of the same package, binds through a workspace-wide unique-name fallback at confidence 0.5 (`global-name-fallback`). An ambiguous name yields no edge.
 - A bare call never binds to a dotted definition, so `foo(x)` cannot reach `print.foo`. Dotted (S3-style) names are never import-resolved; a call that spells the full dotted name binds by qualified-name lookup. Dotted names are not bound through `importFrom()`.
 - `pkg::name()` is decided by its qualifier:
   - `pkg` is a package of the repository and defines `name` exactly once: the call binds to that definition at confidence 0.85 (`import-resolved`).
@@ -58,7 +58,7 @@ The scope query (`languages/r/query.ts`) captures three call shapes only: `f(x)`
 - `::` and `:::` are not distinguished, so `pkg::name` binds to a definition whether or not the package exports it.
 - Package discovery is bounded to depth 3 and 200 directories (when the bound may have hidden a package this is flagged internally and nothing is logged), reads directories in code-unit order, ranks duplicate package names by shallowest then by whole path, and never searches directories named exactly `renv`, `packrat`, `revdep` or `<name>.Rcheck`. The shared file scanner has no such ignore entries, so `.R` files inside those trees are still parsed even though discovery skips them.
 - Export status: the language-level export check treats every symbol as public. The NAMESPACE pass then marks the remaining `R/` symbols of a NAMESPACE-bearing package non-exported. Symbols outside `R/` (`tests/`, `vignettes/`, `inst/`) are not package members and stay public; files in `R/` subdirectories are treated as `R/` files although R itself does not load them. A package without a NAMESPACE stays fully public, and a nested package without one does not inherit its enclosing package's. roxygen2 `@export` tags are not consulted.
-- `exportPattern()` text comes from the analysed repository, so patterns are compiled to a linear-time automaton (`linear-regex.ts`) with a work budget. Constructs with no linear-time algorithm (back-references, look-around) and oversized patterns are dropped with one logged warning per pattern per package. Character classes use ASCII semantics.
+- `exportPattern()` text comes from the analysed repository, so patterns are compiled to a linear-time automaton (`linear-regex.ts`) with a work budget. Constructs with no linear-time algorithm (back-references, look-around) and oversized patterns are dropped with one logged warning per pattern per package. Character classes use ASCII semantics. A directive argument the NAMESPACE reader cannot read at all is dropped without a warning: an R 4.0 raw string (`exportPattern(r"(^[^.])")`, `export(r"(foo)")`) and any string that spans lines. It exports nothing, so the names it was meant to cover read as non-exported.
 
 ## Limits and known gaps
 
@@ -86,7 +86,7 @@ Not supported:
 - Roxygen `@param` types live in the per-file type environment; no graph edge consumes them.
 - Argument matching follows R for named and reordered arguments but does not model partial argument names: `setClass(Cla = "D")`, `new(Cla = "E")`, `setRefClass(Cla = "A")` and `setMethod("show", sig = "Foo")` are not recognised, so no definition or owner is attached.
 - Members are read only from the named forms. The positional second argument of `setClass("A", representation(x = "numeric"))`, `R6Class("X", list(...))` and `setRefClass("A", list(...))` creates no field or slot nodes; use `slots=` / `representation=`, `public =` / `private =` / `active =` and `fields =`.
-- S4 and RefClass constructors are recognised only as a bare callee: `setClass(...)`, `setRefClass(...)`, `setGeneric(...)` and `setMethod(...)`. A namespace-qualified call such as `methods::setClass("A", slots = list(x = "numeric"))` creates no class, slot, generic or method. `R6::R6Class(...)` is recognised.
+- S4 and RefClass constructors, and the import calls, are recognised only as a bare callee: `setClass(...)`, `setRefClass(...)`, `setGeneric(...)`, `setMethod(...)`, `library(...)`, `require(...)` and `source(...)`. A namespace-qualified call such as `methods::setClass("A", slots = list(x = "numeric"))` creates no class, slot, generic or method, and `base::library("pkg")` creates no import. `R6::R6Class(...)` is recognised.
 - For `S3method(generic, class, method)` the positional third argument names the exported method. A named third argument such as `S3method(print, foo, method = impl)` is not read: R registers `impl`, but the export is recorded for `print.foo`.
 - A leading `]` in a bracket expression of a NAMESPACE `exportPattern()` (for example `[]a]` or `[^]a]`) is read with JavaScript RegExp semantics, not POSIX/TRE, unless the pattern also contains a POSIX class such as `[:digit:]`; R would treat that `]` as a literal member.
 
@@ -103,7 +103,7 @@ Not supported:
 
 R provides a control-flow-only CFG visitor (`cfg/visitors/r.ts`), used under `analyze --pdg`. It gives R `BasicBlock` nodes, `CFG` edges and control-dependence (`CDG`) edges.
 
-Modelled, in statement position inside a function body: `if` / `else if` / `else`, `for`, `while`, `repeat`, `break`, `next`, `return(...)` and bare `{ }` blocks. Every loop, including `repeat` and `while (TRUE)`, has a structural exit edge so that EXIT stays reachable for control dependence. Each `function_definition` (`function(x)` and `\(x)`, assigned or anonymous) gets its own CFG; a nested function is opaque in its parent.
+Modelled, in statement position inside a function body: `if` / `else if` / `else`, `for`, `while`, `repeat`, `break`, `next`, `return(...)` and bare `{ }` blocks. Every loop, including `repeat` and `while (TRUE)`, has a structural exit edge so that EXIT stays reachable for control dependence. Each `function_definition` (`function(x)` and `\(x)`, assigned or anonymous) gets its own CFG; a nested function is opaque in its parent. An `if` arm that is missing (no `else`) or empty (`{}`) produces no block: it is the header's `seq` edge to the join, and control dependence labels it as the complement of the other arm's explicit `cond-true` / `cond-false` edge (`if (c) {} else work()` makes `work()` control-dependent on `c` with label `F`).
 
 Not modelled:
 

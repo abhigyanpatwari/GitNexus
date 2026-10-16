@@ -379,7 +379,7 @@ So return-type-aware receiver inference already exists in a constrained downstre
 
 | Feature | TS | JS | Java | Kotlin | C# | Go | Rust | Python | PHP | Ruby | Swift | C++ | C | Dart | R |
 |---------|:--:|:--:|:----:|:------:|:--:|:--:|:----:|:------:|:---:|:----:|:-----:|:---:|:-:|:----:|:-:|
-| Declarations | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Declarations | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No‖‖‖ |
 | Parameters | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No‖‖‖ |
 | Initializer / constructor inference | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Constructor binding scan | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
@@ -389,15 +389,15 @@ So return-type-aware receiver inference already exists in a constrained downstre
 | Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | Yes* | Yes | YARD | No | Yes | No‡ | No | Partial‖‖‖ |
 | Comment-based types | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No | No | Roxygen2 |
 | Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No | No | No |
-| Call-result variable binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes | Yes |
+| Call-result variable binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes | No‖‖‖ |
 | Field access binding | Yes | No† | Yes | Yes | Yes | Yes | Yes | No‖ | Yes | N/A | Yes††† | Yes | No | Yes | No |
-| Method-call-result binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes | Yes |
+| Method-call-result binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes | No‖‖‖ |
 | Write access (ACCESSES write) | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes§ | Yes | Yes | Yes | No | Yes | No |
 | Parameter types extracted | Yes** | No | Yes | Yes | Yes | Yes | Yes | Partial†† | No | No | No | Yes | No | No | Roxygen2 |
 | Method overload disambiguation | Yes** | No | Yes | Yes | Yes | No | No | No | No | No | No | Yes | No | No | No |
 | Constructor-visible virtual dispatch | Yes | No | Yes | Yes‡‡ | Yes | No | No | No | No | No | No | Yes§§ | No | Yes | No |
 | Optional parameter arity resolution | Yes | No | No | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes | No | No | No |
-| Cross-file binding propagation | Yes | Yes | Yes‖‖ | Yes | Yes¶¶ | Yes*** | Yes | Yes | Partial | Yes*** | Yes*** | Yes*** | Yes*** | Yes*** | Yes*** |
+| Cross-file binding propagation | Yes | Yes | Yes‖‖ | Yes | Yes¶¶ | Yes*** | Yes | Yes | Partial | Yes*** | Yes*** | Yes*** | Yes*** | Yes*** | Partial‖‖‖ |
 
 \* Python class-level annotated attributes (`address: Address`) now resolve `declaredType` correctly. The `self.x` instance attribute pattern is not yet supported.
 
@@ -429,9 +429,9 @@ So return-type-aware receiver inference already exists in a constrained downstre
 
 ‡‡‡ Swift: `if let` / `guard let` optional bindings supported. `while let`, `switch` / `case` pattern matching, and tuple destructuring not yet implemented.
 
-\*\*\* Whole-module-import languages (Go, Ruby, C/C++, Swift, R): namedImportMap entries synthesized from graph-exported symbols via `synthesizeWildcardImportBindings()`. Not from import AST node extraction.
+\*\*\* Whole-module-import languages (Go, Ruby, C/C++, Swift): namedImportMap entries synthesized from graph-exported symbols via `synthesizeWildcardImportBindings()`. Not from import AST node extraction.
 
-‖‖‖ R has no inline type annotations. Parameter types are extracted from roxygen2 `@param` tags only when the description is the type alone (`#' @param name Type`) or starts with it in braces (`#' @param name {Type} prose`), `Type` is an R6, S4 or RefClass class defined in the same file, and the name is a formal of the function the block documents (the type is bound inside that function only); prose that merely begins with a capitalised word binds nothing. Roxygen `@return` is not read. Field/property types for S4 slots come from `representation(name = "character")` string literals; R6 fields infer types from default values (`NULL`, `TRUE`, `0L`, `"str"`).
+‖‖‖ R has no inline type annotations. Parameter types are extracted from roxygen2 `@param` tags only when the description is the type alone (`#' @param name Type`) or starts with it in braces (`#' @param name {Type} prose`), `Type` is an R6, S4 or RefClass class defined in the same file, and the name is a formal of the function the block documents (the type is bound inside that function only); prose that merely begins with a capitalised word binds nothing. Roxygen `@return` is not read. Field/property types for S4 slots come from `representation(name = "character")` string literals; R6 fields infer types from default values (`NULL`, `TRUE`, `0L`, `"str"`). R binds no declaration, call-result or method-call-result types: its type configuration has an empty `extractDeclaration` and no `extractPendingAssignment`, so only constructor-derived receivers (`x <- Type$new()`) and the roxygen2 formals above are typed. Cross-file propagation is therefore partial: such a receiver resolves to a class defined in another file that a `require()` makes visible (`test/integration/resolvers/r.test.ts`, "resolves rs$count() call to ResultSet.count method"), and no return type crosses files.
 
 ---
 
