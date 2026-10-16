@@ -61,6 +61,7 @@ import { readFileContents } from '../filesystem-walker.js';
 import {
   isLanguageAvailable,
   isGrammarRuntimeSkipped,
+  grammarRebuildPackage,
   createParserForLanguage,
 } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
@@ -540,7 +541,7 @@ export async function runChunkedParseAndResolve(
       );
     } else {
       logger.warn(
-        `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild tree-sitter-${lang}`,
+        `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild ${grammarRebuildPackage(lang)}`,
       );
     }
   }
