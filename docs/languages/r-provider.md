@@ -127,7 +127,7 @@ Not modelled:
   - a call of the name under a same-named parameter that may hold a function (`ambiguous_reference`): a function or computed default, or an assignment to the parameter in the body, because the call may reach the parameter or the function being renamed;
   - a function that is also assigned with `<<-` or `->>` anywhere in the indexed R sources (`ambiguous_reference`, as the top-level form already was): the global re-assignment is a second definition that a rename would leave behind;
   - a package function under `R/` that `NAMESPACE` does not mark private (`isExported` is not false), because `NAMESPACE` is not an indexed source and its `export()` or `S3method()` entry would go stale.
-- **Refused by the shared engine (fail-closed, not provider code):** S3 methods and any dotted function name (`area.circle` reads as an owner-qualified member, so `stale_graph`); S4 class names (`unsupported_occurrence`, no exact source-name span); R6 methods (`stale_graph`).
+- **Refused by the shared engine (fail-closed, not provider code):** S3 methods and any dotted function name (`area.circle` reads as an owner-qualified member, so `stale_graph`); S4 class names (`unsupported_occurrence`, no exact source-name span).
 - **Invalid names (`invalid_name`):** anything that is not a nonreserved R identifier.
 - **Not proven:** unqualified calls to a function defined in another file (including the package `R/` layout) fail with `ambiguous_reference`, because R's global-name fallback is not a provable binding. Renaming across files works only where the call is qualified or otherwise resolved.
 
