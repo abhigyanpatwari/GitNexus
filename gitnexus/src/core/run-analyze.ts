@@ -258,6 +258,7 @@ import {
   saveParseCache,
   pruneCache,
   createColdParseRebuildDir,
+  getColdParseRebuildDir,
   emptyParseCache,
   forgetCreatedParseCacheDir,
 } from '../storage/parse-cache.js';
@@ -1371,6 +1372,7 @@ async function removeColdParseRebuildDir(
 
 interface ParseIdentityRun {
   resolve(): ParseCacheIdentityResolution;
+  /** Slot-owned staging parent; includes any late writes to a retired run's child. */
   storagePath?: string;
 }
 
@@ -1493,6 +1495,11 @@ export async function runFullAnalysis(
           `Warning: checkout "${formatRejectedBranchForLog(writeTarget.rejectedDetectedBranch)}" is not a usable index label; continuing.`,
         );
       }
+      // Only this canonical slot is locked. Its deterministic parser stage
+      // can only belong to an interrupted predecessor; sibling stages live
+      // under their own meta directories and must remain untouched. Reclaim
+      // before freshness/FTS-only early returns as well as parsing runs.
+      await removeColdParseRebuildDir(getColdParseRebuildDir(writeTarget.metaDir), false);
       const flatShared = writeTarget.placement.branch ? undefined : writeTarget.sharedStore;
       if (flatShared) {
         await seedSharedSlot(flatShared, repoPath, log, (meta) => {
@@ -2956,8 +2963,8 @@ async function runFullAnalysisInner(
   // Every fresh or repaired shard stays run-owned until final verification.
   // The same directory provides bounded transient ParsedFile streaming when
   // identity is unverifiable, without creating a reusable cache generation.
-  const coldParseRebuildDir = await createColdParseRebuildDir(cacheRoot);
-  parseRun.storagePath = coldParseRebuildDir;
+  parseRun.storagePath = getColdParseRebuildDir(metaDir);
+  const coldParseRebuildDir = await createColdParseRebuildDir(metaDir);
   forgetCreatedParseCacheDir(coldParseRebuildDir);
   const parseCache =
     parseIdentityResolution.ok === false
@@ -5606,22 +5613,31 @@ async function runFullAnalysisInner(
         for (const k of folded.keys) siblingKeys.add(k);
         if (!folded.complete) complete = false;
       }
-      if (options.useParseCache === false) {
-        // A bypass must not read persistent facts during parsing. Only after
-        // successful graph publication, admit compatible sibling keys for
-        // retention; their metadata alone cannot authorize foreign shards.
-        const retained = await loadParseCache(cacheRoot, parseCache.identity, coldParseRebuildDir);
-        parseCache.storagePath = cacheRoot;
-        parseCache.onDiskKeys ??= new Set();
-        for (const key of retained.onDiskKeys ?? []) {
-          if (!parseCache.usedKeys.has(key) && (!complete || siblingKeys.has(key))) {
-            parseCache.onDiskKeys.add(key);
-          }
+      // Another slot may have published since this run loaded its cache.
+      // Refresh eligibility inside the publication lock for EVERY run. This
+      // is also the first persistent read for a bypass run, after parsing.
+      // Metadata alone cannot admit foreign shards, and live entries cannot
+      // replace this run's staged repairs or revive its retired chunks.
+      const retained = await loadParseCache(cacheRoot, parseCache.identity, coldParseRebuildDir);
+      parseCache.storagePath = cacheRoot;
+      parseCache.onDiskKeys = new Set();
+      for (const key of retained.onDiskKeys ?? []) {
+        if (
+          !parseCache.stagedKeys?.has(key) &&
+          !parseCache.staleKeys?.has(key) &&
+          (parseCache.usedKeys.has(key) || !complete || siblingKeys.has(key))
+        ) {
+          parseCache.onDiskKeys.add(key);
         }
-        for (const [key, value] of retained.entries) {
-          if (!parseCache.usedKeys.has(key) && (!complete || siblingKeys.has(key))) {
-            parseCache.entries.set(key, value);
-          }
+      }
+      for (const [key, value] of retained.entries) {
+        if (
+          !parseCache.usedKeys.has(key) &&
+          !parseCache.stagedKeys?.has(key) &&
+          !parseCache.staleKeys?.has(key) &&
+          (!complete || siblingKeys.has(key))
+        ) {
+          parseCache.entries.set(key, value);
         }
       }
       if (complete) {

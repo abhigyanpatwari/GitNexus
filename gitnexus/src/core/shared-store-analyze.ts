@@ -392,6 +392,10 @@ export const publishSharedGraph = async (
   const shareable =
     currentCommit !== '' &&
     meta.lastCommit === currentCommit &&
+    // Unverifiable workers can still build a useful private graph, but its
+    // facts must never be replaced by (or published as) a shared generation.
+    // FTS-only repair preserves the graph's existing parser provenance.
+    meta.parseCacheIdentity !== undefined &&
     !meta.incrementalInProgress &&
     builtClean &&
     // Embeddings still owed stay with this checkout, which finishes them; a

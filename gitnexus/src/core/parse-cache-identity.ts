@@ -156,7 +156,10 @@ function effectiveEnvironment(skip: string, alpine: boolean): Frame[] {
       .flatMap((value) => [value.trim(), value.trim().replace(/^tree-sitter-/, '')]),
   );
   const skipped = Object.entries(GRAMMAR_SOURCES)
-    .filter(([key, source]) => source.userSkippable && (all || named.has(key)))
+    .filter(
+      ([key, source]) =>
+        source.userSkippable && (all || named.has(key) || named.has(`tree-sitter-${key}`)),
+    )
     .map(([key]) => key)
     .sort(compare);
   const numeric = (name: string, fallback: number, floor: boolean): string => {
