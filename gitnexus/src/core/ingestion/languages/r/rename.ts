@@ -1,3 +1,4 @@
+import type Parser from 'tree-sitter';
 import type { NameClaim } from 'gitnexus-shared';
 import type { RenameIssue, RenameProvider } from '../../rename-provider.js';
 import { unescapeRString } from './export-pattern.js';
@@ -81,6 +82,15 @@ export function registersS3Method(newName: string, defined: ReadonlySet<string>)
   return false;
 }
 
+/** The name a `<<-` or `->>` assignment writes to (backticks removed), or null for any other node. */
+function superassignedName(node: Parser.SyntaxNode): string | null {
+  if (node.type !== 'binary_operator') return null;
+  const operator = node.childForFieldName('operator')?.text;
+  if (operator !== '<<-' && operator !== '->>') return null;
+  const target = node.childForFieldName(operator === '<<-' ? 'lhs' : 'rhs');
+  return target?.type === 'identifier' ? rBareName(target.text) : null;
+}
+
 const unsupported = (message: string): RenameIssue => ({
   code: 'unsupported_occurrence',
   status: 'unsupported',
@@ -155,6 +165,14 @@ export const rRenameProvider: RenameProvider = {
     for (const source of files.values()) {
       if (!source.tree) continue;
       for (const node of walkNamedNodes(source.tree.rootNode)) {
+        // `name <<- value` (inside a function or not) is a global re-definition that the
+        // scope graph keeps as a separate declaration, so a rename would leave it behind.
+        if (superassignedName(node) === name)
+          return {
+            code: 'ambiguous_reference',
+            message:
+              'This name is also assigned with <<- or ->>; the global re-assignment is not renamed with it.',
+          };
         if (node.type !== 'string') continue;
         const value = rStringValue(node.text);
         if (value !== null && (value === name || value === newName))
