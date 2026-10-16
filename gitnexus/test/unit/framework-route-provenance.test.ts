@@ -336,7 +336,7 @@ function handler() {} function other() {}`);
       `const routes = require('./router');`,
       `const {api, other} = require('./router');`,
     ],
-  ])('invalidates every Router mutated through a module object', (publish, namespace, consume) => {
+  ])('invalidates Routers mutated through a module object: %#', (publish, namespace, consume) => {
     const result = resolve({
       'router.js': publish,
       'mutation.js': `${namespace} routes.api.get = () => {}; routes.other.post = () => {};`,
