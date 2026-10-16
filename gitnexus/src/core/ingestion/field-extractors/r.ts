@@ -269,18 +269,23 @@ function inferR6FieldType(valueNode: SyntaxNode | null): string | null {
       return 'integer';
     case 'string':
       return 'character';
+    case 'na':
+      // The grammar parses NA, NA_integer_, NA_real_, NA_character_ and NA_complex_ as `na`
+      // nodes, not identifiers. Plain NA is logical.
+      return NA_FIELD_TYPES[valueNode.text] ?? null;
     default:
-      // NA variants
-      if (valueNode.type === 'identifier') {
-        const text = valueNode.text;
-        if (text === 'NA_character_') return 'character';
-        if (text === 'NA_integer_') return 'integer';
-        if (text === 'NA_real_') return 'numeric';
-        if (text === 'NA_complex_') return 'complex';
-      }
       return null;
   }
 }
+
+/** The type of each NA constant, by its spelling. */
+const NA_FIELD_TYPES: Readonly<Record<string, string>> = Object.assign(Object.create(null), {
+  NA: 'logical',
+  NA_integer_: 'integer',
+  NA_real_: 'numeric',
+  NA_character_: 'character',
+  NA_complex_: 'complex',
+});
 
 function extractQuotedTypeName(node: SyntaxNode | null): string | null {
   if (!node || node.type !== 'string') return null;
