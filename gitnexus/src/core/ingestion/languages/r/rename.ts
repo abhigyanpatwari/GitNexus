@@ -47,6 +47,40 @@ function rStringValue(text: string): string | null {
     );
 }
 
+/**
+ * Generics of base R and its default packages that an S3 method name `generic.class` can register
+ * against, whether or not the indexed sources define them. Not exhaustive: it covers the generics
+ * a project is most likely to meet by accident, and the repository's own functions are checked
+ * separately.
+ */
+const BASE_GENERICS: ReadonlySet<string> = new Set(
+  (
+    'print format summary plot lines points text image hist barplot boxplot pairs persp ' +
+    'as.character as.data.frame as.list as.vector as.numeric as.integer as.logical as.matrix ' +
+    'as.Date as.POSIXct as.POSIXlt as.factor as.table as.function as.environment as.double ' +
+    'length names dim dimnames levels rev sort unique duplicated anyDuplicated rep seq ' +
+    'mean median quantile range max min round diff scale cut split merge subset transform ' +
+    'with within head tail t c cbind rbind toString all.equal is.na labels str ' +
+    'update predict residuals coef fitted anova simulate terms formula family weights ' +
+    'vcov logLik AIC BIC nobs deviance confint profile model.frame row.names open close ' +
+    'by aggregate droplevels relevel reorder xtfrm solve determinant julian months weekdays'
+  ).split(' '),
+);
+
+/**
+ * Whether `newName` reads as an S3 method `generic.class`: some dot-separated prefix of it is a
+ * function the indexed sources define or a known base generic. Every dot is a possible split
+ * (`to.json.foo` is a method of `to.json`; `as.data.frame.foo` of `as.data.frame`).
+ */
+export function registersS3Method(newName: string, defined: ReadonlySet<string>): boolean {
+  for (let dot = newName.indexOf('.'); dot >= 0; dot = newName.indexOf('.', dot + 1)) {
+    if (dot === 0) continue;
+    const prefix = newName.slice(0, dot);
+    if (defined.has(prefix) || BASE_GENERICS.has(prefix)) return true;
+  }
+  return false;
+}
+
 const unsupported = (message: string): RenameIssue => ({
   code: 'unsupported_occurrence',
   status: 'unsupported',
@@ -114,8 +148,10 @@ export const rRenameProvider: RenameProvider = {
         ),
       ),
     );
-    if (newName.includes('.') && defined.has(newName.slice(0, newName.indexOf('.'))))
-      return unsupported('The new name would register an S3 method of an existing function.');
+    if (registersS3Method(newName, defined))
+      return unsupported(
+        'The new name would register an S3 method of an existing function or base generic.',
+      );
     for (const source of files.values()) {
       if (!source.tree) continue;
       for (const node of walkNamedNodes(source.tree.rootNode)) {

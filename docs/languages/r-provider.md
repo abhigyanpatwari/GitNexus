@@ -123,7 +123,7 @@ Not modelled:
 - **Refused (`unsupported_occurrence`, planning status `unsupported`):**
   - any target that is not a plain `Function` (S4 classes, R6 classes, members);
   - a function whose old or new name is the whole value of a string literal anywhere in the indexed R sources (`UseMethod("area")`, `do.call("f", ...)`, `match.fun`, `get`, `setGeneric`, ...), because string lookup is not resolved. The literal is decoded first, so escapes (`"f\x6fo"`, `"\u{66}oo"`, octal) and raw strings (`r"(foo)"`) count. A string that only contains the name (`"foo(1)"`), a name built at run time (`paste0("fo", "o")`), and strings in files that are not indexed R sources (R Markdown, `NAMESPACE`) are not detected;
-  - a new name `generic.class` whose prefix is an existing function, which would register an S3 method;
+  - a new name `generic.class` where any dot-separated prefix is a function defined in the indexed R sources or a common base generic (`print`, `format`, `summary`, `plot`, `as.character`, ...), which would register an S3 method (`to.json.foo` for a defined `to.json`, `print.foo`);
   - a package function under `R/` that `NAMESPACE` does not mark private (`isExported` is not false), because `NAMESPACE` is not an indexed source and its `export()` or `S3method()` entry would go stale.
 - **Refused by the shared engine (fail-closed, not provider code):** S3 methods and any dotted function name (`area.circle` reads as an owner-qualified member, so `stale_graph`); S4 class names (`unsupported_occurrence`, no exact source-name span); R6 methods (`stale_graph`).
 - **Invalid names (`invalid_name`):** anything that is not a nonreserved R identifier.
