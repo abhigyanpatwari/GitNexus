@@ -1,4 +1,4 @@
-import { chmodSync, renameSync, rmSync, symlinkSync, utimesSync } from 'node:fs';
+import { chmodSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -222,21 +222,34 @@ describe('parse cache artifact identity', () => {
   });
 
   // Windows does not implement POSIX mode bits or guarantee unprivileged symlinks.
-  it.skipIf(process.platform === 'win32')(
-    'fails closed for symbolic links and unreadable inputs',
-    () => {
-      const f = fixture();
-      const file = f.write('src/core/tree-sitter/protected.ts');
-      chmodSync(file, 0);
+  it.skipIf(process.platform === 'win32')('fails closed for symbolic links', () => {
+    const f = fixture();
+    const file = f.write('src/core/tree-sitter/protected.ts');
+    symlinkSync(file, path.join(f.root, 'src/core/tree-sitter/alias.ts'));
+    expect(f.resolve()).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('symbolic link'),
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')('fails closed for unreadable inputs', ({ skip }) => {
+    const f = fixture();
+    const file = f.write('src/core/tree-sitter/protected.ts');
+    chmodSync(file, 0);
+    try {
+      let readable = false;
+      try {
+        readFileSync(file);
+        readable = true;
+      } catch (error) {
+        expect(['EACCES', 'EPERM']).toContain((error as NodeJS.ErrnoException).code);
+      }
+      if (readable) skip('The current process can read files despite chmod(0).');
       expect(f.resolve()).toMatchObject({ ok: false });
+    } finally {
       chmodSync(file, 0o644);
-      symlinkSync(file, path.join(f.root, 'src/core/tree-sitter/alias.ts'));
-      expect(f.resolve()).toMatchObject({
-        ok: false,
-        reason: expect.stringContaining('symbolic link'),
-      });
-    },
-  );
+    }
+  });
 
   it('rejects inputs changed while their identity is being captured', () => {
     const f = fixture();
