@@ -166,6 +166,43 @@ describe('attachDeferredROwners', () => {
     expect(edges('HAS_METHOD')).toHaveLength(0);
   });
 
+  it('(f) ignores a same-named class of another language when picking the owner', () => {
+    const { graph, model, addClass, addMember, edges } = setup();
+    const ownerId = addClass('Foo');
+    const pyId = 'Class:src/a.py:Foo';
+    graph.addNode({
+      id: pyId,
+      label: 'Class',
+      properties: { name: 'Foo', filePath: 'src/a.py', language: SupportedLanguages.Python },
+    });
+    model.symbols.add('src/a.py', 'Foo', pyId, 'Class');
+    const nodeId = addMember('Method', 'run', { ownerNameHint: 'Foo' });
+
+    attachDeferredROwners(graph, model, 'Method', 'HAS_METHOD');
+
+    expect(graph.getNode(nodeId)!.properties.ownerId).toBe(ownerId);
+    expect(edges('HAS_METHOD').map((r) => r.sourceId)).toEqual([ownerId]);
+  });
+
+  it('(g) leaves the hint when the only class of that name is in another language', () => {
+    const { graph, model, addMember, edges } = setup();
+    const pyId = 'Class:src/a.py:Foo';
+    graph.addNode({
+      id: pyId,
+      label: 'Class',
+      properties: { name: 'Foo', filePath: 'src/a.py', language: SupportedLanguages.Python },
+    });
+    model.symbols.add('src/a.py', 'Foo', pyId, 'Class');
+    const nodeId = addMember('Method', 'run', { ownerNameHint: 'Foo' });
+
+    attachDeferredROwners(graph, model, 'Method', 'HAS_METHOD');
+
+    const node = graph.getNode(nodeId)!;
+    expect(node.properties.ownerNameHint).toBe('Foo');
+    expect(node.properties).not.toHaveProperty('ownerId');
+    expect(edges('HAS_METHOD')).toHaveLength(0);
+  });
+
   it('(e) an already-owned node drops its hint and is never re-attached or double-registered', () => {
     const { graph, model, addClass, addMember, edges } = setup();
     const ownerId = addClass('Foo');

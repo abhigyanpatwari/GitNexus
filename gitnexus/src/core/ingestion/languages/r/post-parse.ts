@@ -63,7 +63,11 @@ export const attachDeferredROwners = (
       typeof node.properties.ownerNameHint === 'string' ? node.properties.ownerNameHint : null;
     if (!ownerNameHint) return;
 
-    const classDefs = model.types.lookupClassByName(ownerNameHint);
+    // The class registry is shared by every language, so a Python `Circle` next to an R
+    // `Circle` must not make the name ambiguous, nor stand in for an R class that is absent.
+    const classDefs = model.types
+      .lookupClassByName(ownerNameHint)
+      .filter((def) => graph.getNode(def.nodeId)?.properties.language === SupportedLanguages.R);
     if (classDefs.length !== 1) return; // ambiguous or not found — leave hint for debugging
     const ownerId = classDefs[0].nodeId;
 
