@@ -129,13 +129,32 @@ export class RFieldExtractor extends BaseFieldExtractor {
       const slotArgs = slotCall.childForFieldName('arguments');
       if (!slotArgs) continue;
 
+      // Only an unnamed character vector (`slots = c("a", "b")`) names its slots by
+      // their strings; elsewhere an unnamed string is not a slot (`representation("Base")`).
+      const unnamedNamesSlots =
+        paramName !== 'representation' && slotCall.childForFieldName('function')?.text === 'c';
+
       for (let j = 0; j < slotArgs.namedChildCount; j++) {
         const slot = slotArgs.namedChild(j);
         if (!slot || slot.type !== 'argument') continue;
 
         const slotName = slot.childForFieldName('name');
         const slotType = slot.childForFieldName('value');
-        if (!slotName) continue;
+        if (!slotName) {
+          const unnamed = unnamedNamesSlots ? extractQuotedTypeName(slotType) : null;
+          if (unnamed) {
+            fields.push({
+              name: unnamed,
+              type: null,
+              visibility: 'public',
+              isStatic: false,
+              isReadonly: false,
+              sourceFile: context.filePath,
+              line: slot.startPosition.row + 1,
+            });
+          }
+          continue;
+        }
 
         const typeName = extractQuotedTypeName(slotType);
 

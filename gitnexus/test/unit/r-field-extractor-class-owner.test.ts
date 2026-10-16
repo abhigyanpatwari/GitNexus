@@ -120,3 +120,40 @@ describe('R field extractor: slots attach to the Class argument', () => {
     expect(propertyOwner(source)).toBeNull();
   });
 });
+
+describe('RFieldExtractor: slots = c(...) / fields = c(...)', () => {
+  const details = (source: string) =>
+    extractor
+      .extract(classCall(source), context)
+      ?.fields.map((f) => [f.name, f.type] as [string, string | null]);
+
+  it('reads the names and types of a named vector', () => {
+    expect(details('setClass("A", slots = c(a = "numeric", b = "character"))')).toEqual([
+      ['a', 'numeric'],
+      ['b', 'character'],
+    ]);
+    expect(details('setRefClass("R", fields = c(n = "numeric"))')).toEqual([['n', 'numeric']]);
+  });
+
+  it('reads the strings of an unnamed vector as untyped names', () => {
+    expect(details('setClass("A", slots = c("a", "b"))')).toEqual([
+      ['a', null],
+      ['b', null],
+    ]);
+    expect(details('setRefClass("R", fields = c("n"))')).toEqual([['n', null]]);
+  });
+
+  it('keeps named and unnamed entries of one vector together', () => {
+    expect(details('setClass("A", slots = c("a", b = "numeric"))')).toEqual([
+      ['a', null],
+      ['b', 'numeric'],
+    ]);
+  });
+
+  it('does not read an unnamed string of representation() or list()', () => {
+    expect(
+      details('setClass("A", representation = representation("VIRTUAL", x = "numeric"))'),
+    ).toEqual([['x', 'numeric']]);
+    expect(details('setClass("A", slots = list("a"))')).toBeUndefined();
+  });
+});

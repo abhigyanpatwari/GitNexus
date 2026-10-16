@@ -117,6 +117,57 @@ describe('R_QUERIES: setClass / setRefClass name only their first argument', () 
   });
 });
 
+describe('R_QUERIES: slots = c(...) and fields = c(...) define properties', () => {
+  it('reads a named vector: c(a = "numeric")', () => {
+    expect(definitions('setClass("A", slots = c(a = "numeric", b = "character"))')).toEqual([
+      'definition.class:A',
+      'definition.property:a',
+      'definition.property:b',
+    ]);
+    expect(definitions('setRefClass("R", fields = c(n = "numeric"))')).toEqual([
+      'definition.class:R',
+      'definition.property:n',
+    ]);
+  });
+
+  it('reads an unnamed character vector as names: c("a", "b")', () => {
+    expect(definitions('setClass("A", slots = c("a", "b"))')).toEqual([
+      'definition.class:A',
+      'definition.property:a',
+      'definition.property:b',
+    ]);
+    expect(definitions('setRefClass("R", fields = c("n", "m"))')).toEqual([
+      'definition.class:R',
+      'definition.property:n',
+      'definition.property:m',
+    ]);
+  });
+
+  it('reads a vector that mixes named and unnamed entries', () => {
+    expect(definitions('setClass("A", slots = c("a", b = "numeric"))')).toEqual([
+      'definition.class:A',
+      'definition.property:a',
+      'definition.property:b',
+    ]);
+  });
+
+  it('does not read a string inside a vector under another argument name', () => {
+    expect(definitions('setClass("A", contains = c("B", "C"))')).toEqual(['definition.class:A']);
+    expect(definitions('setClass("A", prototype = c(x = "1"))')).toEqual(['definition.class:A']);
+  });
+
+  it('does not read unnamed strings of representation() or list() as slots', () => {
+    expect(definitions('setClass("A", representation("VIRTUAL"))')).toEqual(['definition.class:A']);
+    expect(definitions('setClass("A", slots = list("a"))')).toEqual(['definition.class:A']);
+  });
+
+  it('does not read other vector builders', () => {
+    expect(definitions('setClass("A", slots = character(a = "numeric"))')).toEqual([
+      'definition.class:A',
+    ]);
+  });
+});
+
 describe('R_QUERIES: setGeneric names only its first argument', () => {
   it('names the generic from the first positional string (positive control)', () => {
     expect(definitions('setGeneric("f", function(x) standardGeneric("f"))')).toEqual([

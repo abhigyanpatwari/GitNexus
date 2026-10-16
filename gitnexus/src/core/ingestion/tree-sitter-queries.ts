@@ -3242,10 +3242,31 @@ export const R_QUERIES = `
       (#match? @_slotArg "^(representation|slots|fields)$")
       value: (call
         function: (identifier) @_listfn
-        (#match? @_listfn "^(list|representation)$")
+        (#match? @_listfn "^(list|representation|c)$")
         arguments: (arguments
           (argument
             name: (identifier) @name) @definition.property)))))
+
+; ── S4 / RefClass unnamed names: slots = c("a", "b"), fields = c("a", "b") ──
+; An unnamed character vector names the slots or fields (their class is ANY). Only
+; c(...) reads this way: an unnamed string in representation(...) is a superclass.
+; The callee is captured as @_vecOwner, not @_fn, so these string captures are not
+; mistaken for the class-naming argument by isRNonNamingArgumentCapture.
+(call
+  function: (identifier) @_vecOwner
+  (#match? @_vecOwner "^(setClass|setRefClass)$")
+  arguments: (arguments
+    (argument
+      name: (identifier) @_vecArg
+      (#match? @_vecArg "^(slots|fields)$")
+      value: (call
+        function: (identifier) @_vecfn
+        (#match? @_vecfn "^c$")
+        arguments: (arguments
+          (argument
+            !name
+            value: (string
+              content: (string_content) @name)) @definition.property)))))
 `;
 
 import { SupportedLanguages } from 'gitnexus-shared';

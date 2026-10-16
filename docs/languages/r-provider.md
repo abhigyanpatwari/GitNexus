@@ -18,6 +18,7 @@ Definitions:
 - S4 classes (`setClass`), generics (`setGeneric`), methods (`setMethod`) and slots (`representation`, `slots`).
 - R6 classes with their methods, fields and active bindings.
 - RefClass (`setRefClass`) classes with their methods and fields.
+- Slots and fields given as `list(...)`, `representation(...)` or `c(...)`. A named entry (`c(a = "numeric")`) records its type; an unnamed string in `slots = c("a", "b")` or `fields = c("a", "b")` names an untyped member, as in R. An unnamed string in `representation(...)` or `list(...)` is not a member.
 - The argument that names an S4 or RefClass class, a generic or a method is the argument spelled with the first formal (`Class=`, `name=`, `f=`) wherever it sits, else the first unnamed argument (so a later `Class=` takes the formal from an earlier unnamed argument, as in R). Other strings (`contains=`, `valueClass=`, a `setMethod` signature) create no node.
 
 Types:
