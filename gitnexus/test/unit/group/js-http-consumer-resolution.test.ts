@@ -7,6 +7,7 @@ import {
   JAVASCRIPT_HTTP_PLUGIN,
 } from '../../../src/core/group/extractors/http-patterns/node.js';
 import { resolveJsImport } from '../../../src/core/ingestion/route-extractors/js-const-resolver.js';
+import { normalizeRepoRelPath } from '../../../src/core/group/extractors/http-route-extractor.js';
 import type { HttpDetection } from '../../../src/core/group/extractors/http-patterns/types.js';
 
 const tsParser = new Parser();
@@ -38,7 +39,7 @@ async function scanRepo(files: Record<string, string>, target: string): Promise<
       target,
     ),
     ...(TYPESCRIPT_HTTP_PLUGIN.scanProject?.(inputs, repoContext).find(
-      (file) => file.filePath === target,
+      (file) => normalizeRepoRelPath(file.filePath) === normalizeRepoRelPath(target),
     )?.detections ?? []),
   ];
 }

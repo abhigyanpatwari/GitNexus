@@ -1,5 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import * as globModule from 'glob';
+import * as fsUtils from '../../../src/core/group/extractors/fs-utils.js';
 import os from 'node:os';
 import path from 'node:path';
 import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
@@ -10,6 +12,8 @@ import {
   writeFixtureRepo,
 } from '../../integration/resolvers/helpers.js';
 
+vi.mock('glob', { spy: true });
+
 describe('Express group provider provenance', () => {
   let root: string;
   const extractor = new HttpRouteExtractor();
@@ -17,6 +21,8 @@ describe('Express group provider provenance', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-group-express-'));
   });
   afterEach(() => {
+    vi.resetAllMocks();
+    vi.restoreAllMocks();
     fs.rmSync(root, { recursive: true, force: true });
   });
   const write = (files: Record<string, string>) => writeFixtureRepo(root, files);
@@ -37,6 +43,21 @@ describe('Express group provider provenance', () => {
       'server.ts': `import express from 'express'; import router from './router'; const app = express(); app.use('/api', router);`,
       'router.ts': `import { Router } from 'express'; const router = Router(); router.get('/users', () => {}); export default router;`,
     });
+    expect(providers(await extractor.extract(null, root, repo()))).toEqual([
+      'http::GET::/api/users',
+    ]);
+  });
+
+  it('retains project providers when the filesystem supplies Windows separators', async () => {
+    write({
+      'src/server.ts': `import express from 'express'; import router from './router'; const app = express(); app.use('/api', router);`,
+      'src/router.ts': `import { Router } from 'express'; const router = Router(); router.get('/users', () => {}); export default router;`,
+    });
+    vi.spyOn(globModule, 'glob').mockResolvedValue(['src\\server.ts', 'src\\router.ts']);
+    const readSafe = fsUtils.readSafe;
+    vi.spyOn(fsUtils, 'readSafe').mockImplementation((repoPath, rel) =>
+      readSafe(repoPath, rel.replace(/\\/g, '/')),
+    );
     expect(providers(await extractor.extract(null, root, repo()))).toEqual([
       'http::GET::/api/users',
     ]);

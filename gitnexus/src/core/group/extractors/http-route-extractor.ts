@@ -472,14 +472,15 @@ export class HttpRouteExtractor implements ContractExtractor {
       const projectScan = getPluginForFile(rel)?.scanProject;
       if (projectScan && !completedProjectScans.has(projectScan))
         await collectProjectDetections(await getScannedFiles(), projectScan);
-      const cached = cachedDetections.get(rel);
+      const key = normalizeRepoRelPath(rel);
+      const cached = cachedDetections.get(key);
       if (cached) return cached;
       const scanInput = await getScanInput(rel);
       const ownDetections = scanInput
         ? scanInput.plugin.scan(scanInput.input.tree, scanInput.repoContext, rel)
         : [];
-      const detections = [...ownDetections, ...(projectDetections.get(rel) ?? [])];
-      cachedDetections.set(rel, detections);
+      const detections = [...ownDetections, ...(projectDetections.get(key) ?? [])];
+      cachedDetections.set(key, detections);
       return detections;
     };
 
@@ -521,9 +522,10 @@ export class HttpRouteExtractor implements ContractExtractor {
         completedProjectScans.add(scanProject);
         const results = scanProject(inputs, repoContext);
         for (const result of results) {
-          const existing = projectDetections.get(result.filePath) ?? [];
-          projectDetections.set(result.filePath, [...existing, ...result.detections]);
-          cachedDetections.delete(result.filePath);
+          const key = normalizeRepoRelPath(result.filePath);
+          const existing = projectDetections.get(key) ?? [];
+          projectDetections.set(key, [...existing, ...result.detections]);
+          cachedDetections.delete(key);
         }
       }
     };

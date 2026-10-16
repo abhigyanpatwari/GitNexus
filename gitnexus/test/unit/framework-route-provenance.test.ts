@@ -372,6 +372,20 @@ function handler() {} function other() {}`);
     ]);
   });
 
+  it.each([false, true])('retains uncertain array mounts alongside safe mount=%s', (safeMount) => {
+    const result = resolve({
+      'server.ts': `import express from 'express';
+        const app = express(), safe = express(), router = express.Router();
+        const list = [router]; list.push = other;
+        app.use('/api', list);
+        ${safeMount ? "safe.use('/safe', router);" : ''}
+        router.get('/users', () => {});`,
+    });
+    expect(composeFrameworkRoutePaths(result).map((route) => route.routePath)).toEqual(
+      safeMount ? ['/safe/users'] : [],
+    );
+  });
+
   it('does not suppress standalone routes for an unproven mount receiver', () => {
     const result = resolve({
       'server.ts': `import express from 'express';

@@ -319,6 +319,10 @@ export function resolveFrameworkRouteFacts(
         const values = call.arguments.flatMap((argument) =>
           flatten(evaluate(argument, file.filePath)),
         );
+        // An invalidated argument can hide a known child even when its parent
+        // still resolves. Keep that incoming edge without asserting a path.
+        if (values.some((value) => value === undefined))
+          result.mounts.push(...(uncertainMounts.get(call) ?? []));
         const first = values[0];
         const prefixes =
           call.paths ??
