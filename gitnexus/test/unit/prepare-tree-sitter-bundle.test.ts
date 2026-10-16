@@ -340,7 +340,7 @@ describe('audited Linux ARM64 bundle repairs', () => {
       }
     }
     expect(readFileSync(direct, 'utf8')).toBe('direct JavaScript 0.25.0');
-    expect(prepareTreeSitterBundle(root)).toHaveLength(8);
+    expect(prepareTreeSitterBundle(root)).toHaveLength(9);
   });
 
   it.each(['missing', 'corrupt', 'architecture', 'version'])(
