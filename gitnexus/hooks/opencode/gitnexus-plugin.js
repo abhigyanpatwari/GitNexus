@@ -79,9 +79,16 @@ export function extractAugmentContext(stderr) {
   return output.slice(marker).trim();
 }
 
+/**
+ * rg/grep flags whose following argv token IS the search pattern
+ * (`rg -e foo file.ts`, `grep --regexp foo .`). They must not be lumped in
+ * with value-consuming flags — skipping the value would augment on the
+ * filename instead of the search.
+ */
+const PATTERN_FLAGS = new Set(['-e', '--regexp', '--expression']);
+
 /** Flags of rg/grep that consume the following argv token as a value. */
 const FLAGS_WITH_VALUES = new Set([
-  '-e',
   '-f',
   '-m',
   '-A',
@@ -103,18 +110,25 @@ export function extractBashSearchPattern(command) {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
   const tokens = command.split(/\s+/);
   let foundCmd = false;
-  let skipNext = false;
+  // 'skip' = drop the next token (flag value); 'pattern' = take it as the search.
+  let pending = null;
   for (const token of tokens) {
-    if (skipNext) {
-      skipNext = false;
+    if (pending === 'skip') {
+      pending = null;
       continue;
+    }
+    if (pending === 'pattern') {
+      pending = null;
+      const cleaned = token.replace(/['"]/g, '');
+      return cleaned.length >= 3 ? cleaned : null;
     }
     if (!foundCmd) {
       if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
       continue;
     }
     if (token.startsWith('-')) {
-      if (FLAGS_WITH_VALUES.has(token)) skipNext = true;
+      if (PATTERN_FLAGS.has(token)) pending = 'pattern';
+      else if (FLAGS_WITH_VALUES.has(token)) pending = 'skip';
       continue;
     }
     const cleaned = token.replace(/['"]/g, '');

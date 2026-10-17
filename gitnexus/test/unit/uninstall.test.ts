@@ -444,6 +444,36 @@ describe('uninstallCommand', () => {
     expect(await fs.readFile(pluginFile, 'utf-8')).toBe('// gitnexus');
   });
 
+  it('reports a non-ENOENT stat error on the plugin file instead of silently skipping', async () => {
+    const pluginFile = path.join(tempHome, '.config', 'opencode', 'plugins', 'gitnexus.js');
+    await fs.mkdir(path.dirname(pluginFile), { recursive: true });
+    await fs.writeFile(pluginFile, '// gitnexus', 'utf-8');
+
+    // Simulate EACCES on the plugin stat only; every other stat passes through.
+    const realStat = fs.stat.bind(fs);
+    const statSpy = vi.spyOn(fs, 'stat').mockImplementation((async (p: any, ...rest: any[]) => {
+      if (String(p).endsWith(path.join('plugins', 'gitnexus.js'))) {
+        const err: any = new Error(`EACCES: permission denied, stat '${p}'`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return (realStat as any)(p, ...rest);
+    }) as any);
+
+    const logSpy = vi.spyOn(console, 'log');
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    // Before the fix, removeFile swallowed every stat error → plugin left in
+    // place with no error reported. Now EACCES surfaces in the Errors block.
+    const output = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(output).toContain('hooks plugin');
+    expect(statSpy).toHaveBeenCalled();
+    // The plugin file was never reached (rm), so it still exists.
+    expect(await fs.readFile(pluginFile, 'utf-8')).toBe('// gitnexus');
+    expect(process.exitCode).toBe(1);
+  });
+
   // ── Antigravity MCP + hooks (AfterTool / gitnexus-antigravity-hook) ──
   it('removes Antigravity MCP and AfterTool hooks plus the adapter script dir', async () => {
     const mcpPath = path.join(tempHome, '.gemini', 'antigravity', 'mcp_config.json');

@@ -205,8 +205,11 @@ async function removeFile(filePath: string, dryRun: boolean): Promise<boolean> {
   try {
     const stat = await fs.stat(filePath);
     if (!stat.isFile()) return false;
-  } catch {
-    return false;
+  } catch (err) {
+    // Only "not there" is a clean no-op; anything else (EACCES, EIO, ...)
+    // must surface — the caller records it in result.errors.
+    if (isEnoent(err)) return false;
+    throw err;
   }
   if (!dryRun) await fs.rm(filePath, { force: true });
   return true;

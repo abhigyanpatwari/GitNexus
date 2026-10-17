@@ -72,6 +72,14 @@ describe('extractBashSearchPattern', () => {
     expect(extractBashSearchPattern('grep -r UserService .')).toBe('UserService');
   });
 
+  it('treats -e/--regexp/--expression as the pattern itself, not a value to skip', () => {
+    expect(extractBashSearchPattern('rg -e UserService .')).toBe('UserService');
+    expect(extractBashSearchPattern('grep -e UserService file.ts')).toBe('UserService');
+    expect(extractBashSearchPattern('rg --regexp UserService .')).toBe('UserService');
+    // The pattern flag must still win over a following positional filename.
+    expect(extractBashSearchPattern('rg -n -e UserService setup.ts')).toBe('UserService');
+  });
+
   it('rejects short tokens and non-search commands', () => {
     expect(extractBashSearchPattern('rg -n "ab" .')).toBeNull();
     expect(extractBashSearchPattern('npm test')).toBeNull();
