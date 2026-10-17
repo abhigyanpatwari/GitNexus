@@ -224,6 +224,10 @@ export interface PipelineOptions {
    * call sites.
    */
   workerUrlForTest?: URL;
+  /** Worker entry selected while capturing parser identity, reused by the pool. */
+  parseWorkerUrl?: URL;
+  /** Run-owned transient ParsedFiles, also used when persistent caches are disabled. */
+  parsedFileStorePath?: string;
   /**
    * Incremental-indexing parse cache. When provided:
    *   - The parse phase looks up each chunk's content hash in

@@ -213,8 +213,8 @@ if (process.argv.includes('--check')) {
         `  expected ${baselines.layout_fingerprint}\n` +
         `  Pack membership moved. Every parse-cache key is derived from a pack's\n` +
         `  file set, so this invalidates every cached chunk for every user. If the\n` +
-        `  change is intended, it needs a SCHEMA_BUMP in src/storage/parse-cache.ts\n` +
-        `  alongside a new fingerprint here — never re-baseline it alone.`,
+        `  change is intended, verify automatic parser-identity input coverage\n` +
+        `  and cold/warm behavior before reviewing a new fingerprint here.`,
     );
   }
 

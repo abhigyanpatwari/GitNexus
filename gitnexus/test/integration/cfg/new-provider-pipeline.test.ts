@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -5,11 +6,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { isOptionalGrammarRequired } from '../../helpers/optional-grammar.js';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
-import {
-  loadParseCache,
-  saveParseCache,
-  PARSE_CACHE_VERSION,
-} from '../../../src/storage/parse-cache.js';
+import { loadParseCache, saveParseCache } from '../../../src/storage/parse-cache.js';
 import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
@@ -17,6 +14,8 @@ import {
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { createTempDirPool } from '../../helpers/temp-dir-pool.js';
 import { _captureLogger } from '../../../src/core/logger.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const directories = createTempDirPool('new-provider-pdg-');
 const fixtures = {
@@ -85,7 +84,7 @@ describe('new flow providers through production ingestion', () => {
       const repo = directories.dir();
       const storage = directories.dir();
       await fs.writeFile(path.join(repo, file), content);
-      const cache = await loadParseCache(storage);
+      const cache = await loadParseCache(storage, parseIdentity, storage);
       const cold = await runPipelineFromRepo(repo, () => {}, {
         ...workerOptions,
         pdg: true,
@@ -116,13 +115,13 @@ describe('new flow providers through production ingestion', () => {
       const savedKeys = await saveParseCache(storage, cache);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storage),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
       const warm = await runPipelineFromRepo(repo, () => {}, {
         ...workerOptions,
         pdg: true,
-        parseCache: await loadParseCache(storage),
+        parseCache: await loadParseCache(storage, parseIdentity, storage),
       });
       expect(layer(warm)).toEqual(expected);
       if (file !== 'model.cbl') {
@@ -134,7 +133,7 @@ describe('new flow providers through production ingestion', () => {
         ...workerOptions,
         pdg: true,
         streamPdgEmit: true,
-        parseCache: await loadParseCache(storage),
+        parseCache: await loadParseCache(storage, parseIdentity, storage),
       });
       expect(layer(streamed)).toEqual({ nodes: [], edges: [] });
       const manifest = streamed.pdgEmitManifest!;
@@ -151,7 +150,7 @@ describe('new flow providers through production ingestion', () => {
       const off = await runPipelineFromRepo(repo, () => {}, {
         ...workerOptions,
         pdg: false,
-        parseCache: await loadParseCache(storage),
+        parseCache: await loadParseCache(storage, parseIdentity, storage),
       });
       expect(layer(off)).toEqual({ nodes: [], edges: [] });
     }, 120_000);

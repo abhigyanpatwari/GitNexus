@@ -1,5 +1,41 @@
 # Migration Guide
 
+## Automatic parser cache identities
+
+Parser caches now use artifact-derived base and PDG identities instead of
+manually assigned semantic version numbers. The worker-result cache and
+durable `ParsedFile` store both validate the base identity, and their physical
+chunk keys include it. PDG-enabled chunks also include the PDG identity and
+resolved function-line cap. CFG-only changes therefore leave ordinary parse
+chunks eligible for reuse.
+
+### Do I need to migrate?
+
+**No.** Run `npx gitnexus analyze` as usual. Legacy numeric caches and indexes
+without the parser receipt miss once; successful analysis writes the new
+identities. Plan for a cold parse on the first run after upgrading. Missing,
+malformed, or foreign identities are also misses, including in shared stores.
+Plain analysis continues to preserve existing embeddings.
+
+`--force` rebuilds the graph and may reuse compatible parser output.
+`--no-parse-cache` forces a cold parse and publishes a fresh cache generation
+after successful analysis. If parser identity cannot be verified, analysis
+uses a bounded transient store without persistent cache reads or writes.
+Failed staging or build verification leaves the previously published cache
+pair intact. Cache-write failures after graph publication are reported as
+warnings and do not roll back the successful graph.
+
+### What changes for contributors?
+
+There is no semantic counter or generated digest file to update. Check input
+coverage and cold/warm behavior instead; see
+[Contributing](CONTRIBUTING.md#parser-changes-and-cache-compatibility).
+When running from source, edits invalidate identity immediately but do not
+rebuild compiled workers: run `npm run build` in `gitnexus/` before expecting
+new parser facts.
+Graph DDL fingerprints, analyzer freshness receipts, and intentional
+wire-format versions remain separate safeguards.
+
 ## `impact` tool may now return `{ status: 'ambiguous' }` (PR #888, issue #470)
 
 Before this change the `impact` MCP tool silently picked the first match
