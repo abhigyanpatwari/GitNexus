@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -653,16 +654,21 @@ def _check_c_provenance_mutants(candidate: Path, base: Path, task: dict[str, obj
     resolver = Path("gitnexus/src/core/ingestion/languages/c/scope-resolver.ts")
     valid_interpret = (candidate / interpret).read_text()
     valid_resolver = (candidate / resolver).read_text()
-    system_guard = (
-        "    const parsedImport = context?.parsedImport;\n"
-        "    if (parsedImport?.kind === 'wildcard' && 'isSystem' in parsedImport && parsedImport.isSystem === true) {\n"
-        "      return null;\n"
-        "    }\n"
+    system_guards = re.findall(
+        r"\bconst\s+parsedImport\s*=\s*context\s*\?\.\s*parsedImport\s*;\s*"
+        r"if\s*\(\s*parsedImport\s*\?\.\s*kind\s*===\s*'wildcard'\s*&&\s*"
+        r"'isSystem'\s+in\s+parsedImport\s*&&\s*parsedImport\s*\.\s*isSystem\s*===\s*true\s*\)\s*"
+        r"\{\s*return\s+null\s*;\s*\}",
+        valid_resolver,
     )
-    fallback = "    return resolveCImportTarget(targetRaw, fromFile, allFilePaths);"
-    assert valid_resolver.count(system_guard) == 1
-    assert valid_resolver.count(fallback) == 1
-    late_guard_resolver = valid_resolver.replace(system_guard, "").replace(fallback, system_guard + fallback)
+    fallbacks = re.findall(
+        r"\breturn\s+resolveCImportTarget\s*\(\s*targetRaw\s*,\s*fromFile\s*,\s*allFilePaths\s*,?\s*\)\s*;",
+        valid_resolver,
+    )
+    assert len(system_guards) == 1, "expected exactly one C system-include guard"
+    assert len(fallbacks) == 1, "expected exactly one C resolver fallback"
+    system_guard, fallback = system_guards[0], fallbacks[0]
+    late_guard_resolver = valid_resolver.replace(system_guard, "").replace(fallback, system_guard + "\n    " + fallback)
     assert valid_interpret.count("return parsedImport;") == 1
     assert valid_interpret.count("targetRaw: source,") == 1
     mutants = [
@@ -745,6 +751,12 @@ def test_shipped_oracles_reject_task_base_and_accept_reference_fixes(
         if reference == "inv-feature-c-include-provenance-flag":
             # This entry point is already selected by native CI; keep every C
             # validity control reachable without changing workflow selection.
+            # Indent every existing code line differently without matching the
+            # reference's formatting; the behavioral controls must still work.
+            resolver = candidate / "gitnexus/src/core/ingestion/languages/c/scope-resolver.ts"
+            resolver.write_text(re.sub(r"(?m)^([ \t]+)", r"\t\1", resolver.read_text()))
+            positive = _verify_shipped_oracle(candidate, tasks[task_id])
+            assert positive.returncode == 0, positive.stdout + positive.stderr
             _check_c_provenance_mutants(candidate, base, tasks[task_id])
 
 
