@@ -165,6 +165,31 @@ const stripBackticks = (s: string): string => {
   return s.slice(start, end);
 };
 
+/** The backticked entries of one export set, stripped, and the set size they were read at. */
+const backtickedExportSymbols = new WeakMap<
+  ReadonlySet<string>,
+  { readonly size: number; readonly symbols: ReadonlySet<string> }
+>();
+
+/**
+ * The symbols of the entries of `exports` that start or end with a backtick (a quoted
+ * `` "`%+%`" `` entry keeps its backticks), stripped. Built in one pass per export set, so a
+ * lookup is a set membership test instead of a walk over every export; a set that has grown or
+ * shrunk since is read again.
+ */
+function backtickedExports(exports: ReadonlySet<string>): ReadonlySet<string> {
+  const cached = backtickedExportSymbols.get(exports);
+  if (cached !== undefined && cached.size === exports.size) return cached.symbols;
+  const symbols = new Set<string>();
+  for (const entry of exports) {
+    if (entry.charCodeAt(0) === 96 || entry.charCodeAt(entry.length - 1) === 96) {
+      symbols.add(stripBackticks(entry));
+    }
+  }
+  backtickedExportSymbols.set(exports, { size: exports.size, symbols });
+  return symbols;
+}
+
 /**
  * Resolve a NAMESPACE `importFrom(pkg, importedName)` to the `R/` file(s) of the
  * local package `pkg` that define `importedName` at top level, or `null`.
@@ -199,7 +224,7 @@ export function resolveRNamedImport(
   if (info !== undefined && info.hasNamespaceFile) {
     const exported =
       info.namedExports.has(symbol) ||
-      [...info.namedExports].some((entry) => stripBackticks(entry) === symbol) ||
+      backtickedExports(info.namedExports).has(symbol) ||
       rExportPatternMatches(info, symbol);
     if (!exported) return null;
   }
