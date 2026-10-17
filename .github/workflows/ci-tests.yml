@@ -726,6 +726,11 @@ jobs:
         run: node --import tsx bench/rename/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Generated embedding input budget / scaling guards (#3607)
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/embedding-inputs/measure.cjs --check
+        working-directory: gitnexus
+
       - name: Callable-value-flow target-index guards (#2693)
         if: ${{ !cancelled() }}
         # Build-free: asserts buildGraphTargetIndex resolves an unchanged target
