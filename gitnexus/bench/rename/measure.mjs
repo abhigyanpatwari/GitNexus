@@ -13,17 +13,21 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { executeRenamePlan } from '../../src/mcp/local/rename/rename-plan.ts';
 import { planGraphRename } from '../../src/mcp/local/rename/graph-rename.ts';
+import {
+  RenamePreviewPlans,
+  renameSourceInventory,
+} from '../../src/mcp/local/rename/preview-plans.ts';
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-rename-bench-'));
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
-async function fixture(count, sourceCount = 1, editedCount = 1) {
+async function fixture(count, sourceCount = 1, editedCount = 1, directory = root) {
   const text = '// 🐈\r\n' + `writer.close(); // ${'x'.repeat(160)}\r\n`.repeat(count);
   const snapshots = new Map();
   const edits = [];
   for (let file = 0; file < sourceCount; file++) {
     const name = `${file}.ts`;
-    snapshots.set(path.join(root, name), text);
-    await fs.writeFile(path.join(root, name), text);
+    snapshots.set(path.join(directory, name), text);
+    await fs.writeFile(path.join(directory, name), text);
     if (file >= editedCount) continue;
     let start = text.indexOf('close');
     while (start >= 0) {
@@ -43,6 +47,34 @@ async function fixture(count, sourceCount = 1, editedCount = 1) {
     },
     snapshots,
     edits,
+  };
+}
+async function retainedPreview(sourceCount) {
+  const repository = await fs.mkdtemp(path.join(root, 'retained-'));
+  const plan = await fixture(1, sourceCount, 1, repository);
+  const store = new RenamePreviewPlans();
+  const sources = await renameSourceInventory(repository);
+  const saveTimes = [];
+  const validationTimes = [];
+  for (let repeat = 0; repeat < 5; repeat++) {
+    const started = performance.now();
+    const token = await store.remember(repository, plan, [], [], sources);
+    const saved = performance.now();
+    const retained = await store.take(token, repository, plan.symbol, plan.new_name, [], []);
+    validationTimes.push(performance.now() - saved);
+    saveTimes.push(saved - started);
+    assert.deepEqual(retained.edits, plan.edits);
+    assert.equal(retained.snapshots.size, 1);
+    assert.equal(retained.evidence.size, sourceCount - 1);
+  }
+  return {
+    save_ms: median(saveTimes.slice(1)),
+    validation_ms: median(validationTimes.slice(1)),
+    original_source_text_bytes: [...plan.snapshots.values()].reduce(
+      (sum, source) => sum + source.length * 2,
+      0,
+    ),
+    retained_source_text_bytes: plan.snapshots.get(path.join(repository, '0.ts')).length * 2,
   };
 }
 async function preview(count) {
@@ -154,6 +186,44 @@ try {
     }
   }
   const planning = await planningScaling();
+  const reviewedTimes = [];
+  let reviewedOriginalTextBytes = 0;
+  let reviewedRetainedTextBytes = 0;
+  for (let repeat = 0; repeat < 3; repeat++) {
+    const repository = await fs.mkdtemp(path.join(root, 'reviewed-apply-'));
+    const plan = await fixture(300, 100, 8, repository);
+    const store = new RenamePreviewPlans();
+    const token = await store.remember(
+      repository,
+      plan,
+      [],
+      [],
+      await renameSourceInventory(repository),
+    );
+    const retained = await store.take(token, repository, plan.symbol, plan.new_name, [], []);
+    reviewedOriginalTextBytes = [...plan.snapshots.values()].reduce(
+      (sum, source) => sum + source.length * 2,
+      0,
+    );
+    reviewedRetainedTextBytes = [...retained.snapshots.values()].reduce(
+      (sum, source) => sum + source.length * 2,
+      0,
+    );
+    const started = performance.now();
+    const result = await executeRenamePlan(repository, retained, false, retained.evidence);
+    reviewedTimes.push(performance.now() - started);
+    assert.equal(result.application_status, 'applied');
+    assert.equal(result.total_edits, 2400);
+    for (const [file, original] of plan.snapshots)
+      assert.equal(
+        await fs.readFile(file, 'utf8'),
+        Number(path.basename(file, '.ts')) < 8
+          ? original.replaceAll('close', 'complete')
+          : original,
+      );
+  }
+  const retainedSmall = await retainedPreview(100);
+  const retainedLarge = await retainedPreview(400);
   const measurement = {
     small_ms,
     large_ms,
@@ -164,11 +234,34 @@ try {
     planning_small_ms: planning.small_ms,
     planning_large_ms: planning.large_ms,
     planning_scaling_ratio: planning.scaling_ratio,
+    retain_100_sources_ms: retainedSmall.save_ms,
+    validate_100_sources_ms: retainedSmall.validation_ms,
+    retain_400_sources_ms: retainedLarge.save_ms,
+    validate_400_sources_ms: retainedLarge.validation_ms,
+    retained_validation_scaling_ratio:
+      retainedLarge.validation_ms / retainedSmall.validation_ms / 4,
+    original_400_source_text_bytes: retainedLarge.original_source_text_bytes,
+    retained_400_source_text_bytes: retainedLarge.retained_source_text_bytes,
+    reviewed_apply_100_sources_8_edits_ms: median(reviewedTimes),
+    reviewed_original_source_text_bytes: reviewedOriginalTextBytes,
+    reviewed_retained_source_text_bytes: reviewedRetainedTextBytes,
   };
   console.log(JSON.stringify(measurement));
   if (process.argv.includes('--check')) {
     assert.ok(scaling_ratio < 2, `Rename construction became superlinear: ${scaling_ratio}`);
     assert.ok(large_ms < 1000, `4000-edit preview exceeded the 1s budget: ${large_ms}ms`);
+    assert.ok(
+      median(reviewedTimes) < 1000,
+      `Reviewed 100-source application exceeded 1s: ${median(reviewedTimes)}ms`,
+    );
+    assert.ok(
+      retainedLarge.validation_ms < 1000,
+      `400-source reviewed-plan validation exceeded 1s: ${retainedLarge.validation_ms}ms`,
+    );
+    assert.ok(
+      measurement.retained_validation_scaling_ratio < 2.5,
+      `Reviewed-plan validation became superlinear: ${measurement.retained_validation_scaling_ratio}`,
+    );
     assert.ok(
       planning.scaling_ratio < planning_bound,
       `Semantic rename planning became superlinear: ${planning.scaling_ratio}`,

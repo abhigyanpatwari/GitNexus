@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { executeRenamePlan, type RenamePlan } from '../../src/mcp/local/rename/rename-plan.js';
 
 describe('exact rename plan application', () => {
@@ -121,6 +122,42 @@ describe('exact rename plan application', () => {
     });
     expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe('close()');
   });
+  it.each([0, 1])(
+    'rechecks hash-only semantic evidence while staging file %i',
+    async (changeAt) => {
+      const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()', 'c.ts': '// evidence only' });
+      p.edits.pop();
+      const file = path.join(root, 'c.ts');
+      const evidence = new Map([
+        [
+          file,
+          {
+            real: await fs.realpath(file),
+            hash: createHash('sha256').update(p.snapshots.get(file)!).digest('hex'),
+          },
+        ],
+      ]);
+      p.snapshots.delete(file);
+      const original = fs.writeFile.bind(fs);
+      let writes = 0;
+      vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+        await original(...args);
+        if (writes++ === changeAt) await original(file, '// changed evidence');
+      });
+      const result = await executeRenamePlan(root, p, false, evidence);
+      expect(result).toMatchObject({
+        status: changeAt ? 'partial' : 'error',
+        code: 'source_changed',
+        total_edits: changeAt,
+        failed_files: changeAt ? ['b.ts'] : ['a.ts'],
+        unattempted_files: changeAt ? [] : ['b.ts'],
+      });
+      expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe(
+        changeAt ? 'finish()' : 'close()',
+      );
+      expect(await fs.readFile(path.join(root, 'b.ts'), 'utf8')).toBe('close()');
+    },
+  );
 
   it.each([{ start: -1 }, { start: 0.5 }, { length: 0 }, { length: 9 }, { old_text: 'wrong' }])(
     'refuses invalid edit spans before any write: %j',

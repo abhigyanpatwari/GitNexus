@@ -169,7 +169,7 @@ flowchart TB
 | `trace`          | Shortest directed path between two symbols (call + class-member edges) |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
 | `check`          | Read-only structural checks against the indexed graph                  |
-| `rename`         | Semantic rename — previews by default, `dry_run: false` applies        |
+| `rename`         | Semantic rename — previews by default, `dry_run: false` with the preview's `plan_token` applies its exact reviewed edits |
 | `cypher`         | Raw Cypher graph queries                                               |
 | `route_map`      | API route map — which components fetch which endpoints, and handlers   |
 | `tool_map`       | MCP/RPC tool definitions — where they're defined and handled           |
@@ -899,7 +899,11 @@ changes: [{file_path, edits: [{start, length, old_text, new_text, line, confiden
 ```
 
 Review the exact UTF-16 spans and coverage, then call `rename` with the same
-selectors and `dry_run: false` to apply. Omitting `dry_run` also previews.
+selectors, `dry_run: false`, and its returned `plan_token` to apply exactly those edits.
+Tokens are single-use, expire after 15 minutes or a server restart, and may be
+evicted by the bounded retained-plan cache. Changed source contents, physical
+targets, indexed declarations or source-file sets (including untracked additions)
+require a fresh reviewed preview. Omitting `dry_run` also previews.
 Counts describe occurrences, including multiple edits on one line. The graph
 selects indexed declarations and files; GitNexus's language providers rebuild
 semantic scopes from the current source and resolve exact name spans.

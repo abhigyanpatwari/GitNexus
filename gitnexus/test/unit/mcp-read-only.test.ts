@@ -362,21 +362,39 @@ describe('MCP read-only mode', () => {
       const dryRun = (rename?.inputSchema.properties as Record<string, object>).dry_run;
       expect(dryRun).toMatchObject({ type: 'boolean', default: true });
       expect(dryRun).not.toHaveProperty('const');
-      expect(rename?.description).toMatch(/dry_run:false applies/);
+      expect(rename?.description).toMatch(/dry_run:false requires the plan_token/);
+      expect((rename?.inputSchema.properties as Record<string, object>).plan_token).toMatchObject({
+        type: 'string',
+      });
     } finally {
       await session.close();
     }
   });
 
   it.each([
-    ['omitted', {}, 'dry_run: false, repo: "test"', 'detect_changes'],
-    ['true', { dry_run: true }, 'dry_run: false, repo: "test"', 'detect_changes'],
+    [
+      'omitted',
+      {},
+      'dry_run: false, plan_token: "<plan_token from this preview>", repo: "test"',
+      'detect_changes',
+    ],
+    [
+      'true',
+      { dry_run: true },
+      'dry_run: false, plan_token: "<plan_token from this preview>", repo: "test"',
+      'detect_changes',
+    ],
     ['false', { dry_run: false }, 'detect_changes({repo: "test"})', 'dry_run: false'],
   ])(
     'forwards ordinary-mode rename as sent and hints the right next step when dry_run is %s',
     async (_label, extra, expectedHint, forbiddenHint) => {
       const session = await connect();
       try {
+        session.backend.callTool.mockResolvedValueOnce({
+          status: 'success',
+          applied: true,
+          application_status: 'applied',
+        });
         const arguments_ = {
           symbol_uid: 'Function:src/a.ts:a',
           new_name: 'b',

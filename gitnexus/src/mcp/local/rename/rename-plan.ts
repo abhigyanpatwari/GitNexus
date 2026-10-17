@@ -7,25 +7,30 @@ import {
 } from 'gitnexus-shared';
 import type {
   RenameSymbol,
-  RenameOptions,
-  RenameResult,
+  RenameOptions as SharedRenameOptions,
+  RenameResult as SharedRenameResult,
   RenamePlan,
   FileChange,
   OccurrenceEdit,
 } from 'gitnexus-shared';
 export { RenameFailure } from 'gitnexus-shared';
-export type {
-  RenameSymbol,
-  RenameOptions,
-  RenameResult,
-  RenamePlan,
-  RenameCoverage,
-  OccurrenceEdit,
-} from 'gitnexus-shared';
+export type { RenameSymbol, RenamePlan, RenameCoverage, OccurrenceEdit } from 'gitnexus-shared';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { GraphNode } from 'gitnexus-shared';
 import { logger } from '../../../core/logger.js';
+import { RenamePreviewPlans, renameSourceInventory } from './preview-plans.js';
+import type { RenameSourceVersion } from './preview-plans.js';
+
+export interface RenameOptions extends SharedRenameOptions {
+  plan_token?: string;
+}
+export interface RenameResult extends SharedRenameResult {
+  /** Single-use preview capability; expires after 15 minutes or a server restart. */
+  plan_token?: string;
+}
+const previewPlans = new RenamePreviewPlans();
 
 /** Lexical containment must be checked before resolving symlinks. */
 export function repositoryPath(repoPath: string, filePath: string): string {
@@ -53,7 +58,10 @@ async function checkedRealPath(repoPath: string, filePath: string): Promise<stri
   return real;
 }
 
-async function validateSnapshots(snapshots: ReadonlyMap<string, Buffer>): Promise<void> {
+async function validateSnapshots(
+  snapshots: ReadonlyMap<string, Buffer>,
+  evidence: ReadonlyMap<string, RenameSourceVersion>,
+): Promise<void> {
   const entries = [...snapshots];
   // Bound concurrent reads so large repositories cannot exhaust descriptors.
   // Every source is still checked before each replacement, including unedited files.
@@ -69,6 +77,29 @@ async function validateSnapshots(snapshots: ReadonlyMap<string, Buffer>): Promis
       );
     }
   }
+  const evidenceFiles = [...evidence];
+  for (let start = 0; start < evidenceFiles.length; start += 8) {
+    const batch = evidenceFiles.slice(start, start + 8);
+    const versions = await Promise.all(
+      batch.map(async ([file]) => ({
+        real: await fs.realpath(file),
+        bytes: await fs.readFile(file),
+      })),
+    );
+    for (let index = 0; index < batch.length; index++) {
+      const [file, expected] = batch[index]!;
+      const current = versions[index]!;
+      if (
+        current.real === expected.real &&
+        createHash('sha256').update(current.bytes).digest('hex') === expected.hash
+      )
+        continue;
+      throw new RenameFailure(
+        'source_changed',
+        `Semantic evidence changed while applying rename: ${file}. Review a fresh preview.`,
+      );
+    }
+  }
 }
 
 /** Validates the complete edit set and source versions before any write. */
@@ -76,6 +107,7 @@ export async function executeRenamePlan(
   repoPath: string,
   plan: RenamePlan,
   dryRun = true,
+  evidence: ReadonlyMap<string, RenameSourceVersion> = new Map(),
 ): Promise<RenameResult> {
   const changes: FileChange[] = [];
   // Reuse encoded snapshots across the full-scope checks instead of encoding
@@ -113,7 +145,7 @@ export async function executeRenamePlan(
       files.set(file, { absolute, real, output });
       changes.push({ file_path: file, edits: reports });
     }
-    await validateSnapshots(expectedSnapshots);
+    await validateSnapshots(expectedSnapshots, evidence);
   } catch (error) {
     return { ...blocked(plan.symbol, plan.new_name, error), coverage: plan.coverage };
   }
@@ -146,7 +178,7 @@ export async function executeRenamePlan(
       await fs.chmod(replacement, mode);
       // Unedited sources also contribute semantic evidence. Already installed
       // files must match their landed outputs rather than their old snapshots.
-      await validateSnapshots(expectedSnapshots);
+      await validateSnapshots(expectedSnapshots, evidence);
       // A later evidence read can race with an edit to this destination. Recheck
       // last; validation and replacement remain separate filesystem operations.
       if (
@@ -200,9 +232,41 @@ export async function renameSymbol(
   try {
     if (options.dry_run !== undefined && typeof options.dry_run !== 'boolean')
       throw new RenameFailure('invalid_argument', 'dry_run must be a boolean.');
+    if (options.plan_token !== undefined) {
+      if (options.dry_run !== false || typeof options.plan_token !== 'string')
+        throw new RenameFailure(
+          'invalid_argument',
+          'plan_token is a string accepted only with dry_run:false.',
+        );
+      const plan = await previewPlans.take(
+        options.plan_token,
+        repoPath,
+        symbol,
+        options.new_name,
+        graphNodes,
+        referenceFiles,
+      );
+      return await executeRenamePlan(repoPath, plan, false, plan.evidence);
+    }
     const { planGraphRename } = await import('./graph-rename.js');
+    const sources = await renameSourceInventory(repoPath);
     const plan = await planGraphRename(repoPath, symbol, options, graphNodes, referenceFiles);
-    return await executeRenamePlan(repoPath, plan, options.dry_run ?? true);
+    const result = await executeRenamePlan(repoPath, plan, options.dry_run ?? true);
+    if (result.status === 'success' && options.dry_run !== false) {
+      if (JSON.stringify(sources) !== JSON.stringify(await renameSourceInventory(repoPath)))
+        throw new RenameFailure(
+          'source_set_changed',
+          'The source-file set changed while planning. Re-analyze and preview again.',
+        );
+      result.plan_token = await previewPlans.remember(
+        repoPath,
+        plan,
+        graphNodes,
+        referenceFiles,
+        sources,
+      );
+    }
+    return result;
   } catch (error) {
     if (!(error instanceof RenameFailure))
       logger.error(

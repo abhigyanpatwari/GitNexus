@@ -35,7 +35,8 @@ describe('GITNEXUS_TOOLS', () => {
     expect(rename.inputSchema.properties.dry_run).toMatchObject({ type: 'boolean', default: true });
     expect(rename.inputSchema.required).toEqual(['new_name']);
     expect(rename.description).toMatch(/dry_run omitted or true never writes/);
-    expect(rename.description).toMatch(/dry_run:false applies/);
+    expect(rename.description).toMatch(/dry_run:false requires the plan_token/);
+    expect(rename.inputSchema.properties.plan_token).toMatchObject({ type: 'string' });
     expect(rename.description).not.toContain('rename_preview');
   });
 
