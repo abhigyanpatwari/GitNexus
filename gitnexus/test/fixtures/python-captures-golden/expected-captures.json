@@ -191,6 +191,14 @@
     "captureGroups": 4,
     "digest": "d6ead25daf8f609f1ea2ce79ccf1a88ad3c0ee2d0c9ced0ab13e8f1e729eecb5"
   },
+  "python-conditional-return-type/app.py": {
+    "captureGroups": 56,
+    "digest": "1321c0f213a50c1d21b13d99c5604310343e465ab4c87cd26225ea40f8642ac5"
+  },
+  "python-conditional-return-type/models.py": {
+    "captureGroups": 21,
+    "digest": "f25ac8772dc1a4154e8d4bf8e599bd999e26458267c593e9d46c456ab2222c9e"
+  },
   "python-constructor-calls/app.py": {
     "captureGroups": 8,
     "digest": "877f75415654e57abd197eff88086011d6ac4d1af5b70b0113d0ae1ae2daf077"

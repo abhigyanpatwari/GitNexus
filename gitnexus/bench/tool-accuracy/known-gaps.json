@@ -33,21 +33,9 @@
       ]
     },
     {
-      "id": "python.factory-conditional",
-      "issue": 3498,
-      "reason": "Conditional RHS loses annotated factory return type (#3498).",
-      "baselineActual": []
-    },
-    {
       "id": "python.factory-qualified",
       "issue": 3498,
       "reason": "Module-qualified factory return type is not followed (#3498).",
-      "baselineActual": []
-    },
-    {
-      "id": "python.factory-boolean",
-      "issue": 3498,
-      "reason": "Boolean RHS loses annotated factory return type (#3498).",
       "baselineActual": []
     }
   ]
