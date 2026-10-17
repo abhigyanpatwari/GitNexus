@@ -17,6 +17,7 @@ import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
+import { assertValidGraphNodeId } from '../graph/node-identity.js';
 import { NodeTableName, RELATION_SCHEMA } from './schema.js';
 import type { ContentRetention } from '../../storage/repo-meta.js';
 import { VALID_NODE_TABLES, parseRelationSchemaPairs, RelPairRouter } from './rel-pair-routing.js';
@@ -643,6 +644,9 @@ export const streamAllCSVsToDisk = async (
 
     // --- SINGLE PASS over all nodes ---
     for (const node of orderedNodes(graph, sortOutput)) {
+      // Reject before COPY rather than allowing CSV sanitization to collapse
+      // malformed identities into an empty or already-used primary key.
+      assertValidGraphNodeId(node.id, 'Graph COPY');
       if (seenNodeIds.has(node.id)) continue;
       seenNodeIds.add(node.id);
 
