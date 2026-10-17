@@ -358,6 +358,9 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
         await expect(
           runFullAnalysis(repo, { force: true, skipNativeCloseOnExit }, { onProgress: () => {} }),
         ).rejects.toThrow(/publish|consolidat|sidecar/i);
+        // This harness stays alive to inspect/retry. Reclaim the stage handle
+        // that the CLI's process exit would release before opening any reader.
+        if (skipNativeCloseOnExit) await ctx.realClose!();
         expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(true);
         expect(await loadMeta(storagePath)).toMatchObject({
           lastCommit: oldMeta!.lastCommit,
@@ -400,6 +403,7 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
           'replacement',
         ]);
       } finally {
+        if (skipNativeCloseOnExit) await ctx.realClose!();
         await poolClose(readerId);
         await cleanup();
       }

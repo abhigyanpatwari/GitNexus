@@ -20,6 +20,7 @@ const { createHash } = require('node:crypto');
     platform: process.platform,
     arch: process.arch,
     cpu: os.cpus()[0].model,
+    filesystem: `0x${(await fs.statfs(tmpdir())).type.toString(16)}`,
   };
   const sameEnvironment = Object.entries(environment).every(
     ([key, value]) => baseline.environment?.[key] === value,
@@ -59,7 +60,7 @@ const { createHash } = require('node:crypto');
       assert.equal(expected.length, size.functions);
       assert.equal(fingerprint, size.fingerprint);
       const samples = [];
-      for (let trial = 0; trial < 4; trial++) {
+      for (let trial = 0; trial <= baseline.timed_samples; trial++) {
         const started = performance.now();
         await runFullAnalysis(repo, options, { onProgress() {}, onLog() {} });
         const elapsed = performance.now() - started;
@@ -94,13 +95,16 @@ const { createHash } = require('node:crypto');
         );
       }
       samples.sort((a, b) => a - b);
+      const median =
+        (samples[Math.floor((samples.length - 1) / 2)] + samples[Math.floor(samples.length / 2)]) /
+        2;
       results.push({
         files,
         functions: expected.length,
-        median_ms: samples[1],
+        median_ms: median,
         samples_ms: samples,
         fingerprint,
-        baseline_ratio: samples[1] / size.median_ms,
+        baseline_ratio: median / size.median_ms,
       });
     }
     const scaling =

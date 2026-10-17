@@ -4,6 +4,7 @@
   "runtime": "Node 24.19.0, Linux x64, overlay, Intel Core i9-12900K",
   "linear_scaling_budget": 2,
   "functions_per_file": 32,
+  "timed_samples": 6,
   "sizes": [
     {
       "files": 16,
@@ -31,7 +32,8 @@
     "node": "v24.19.0",
     "platform": "linux",
     "arch": "x64",
-    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K"
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "filesystem": "0x794c7630"
   },
   "measuredAt": "2026-10-17",
   "measurement_order": "base/candidate/candidate/base; six samples per size and arm"
