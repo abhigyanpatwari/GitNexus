@@ -66,6 +66,7 @@ export async function consolidateLbugForPublication(dbPath: string): Promise<voi
     };
     try {
       // A lazy writable open can defer WAL replay until its first graph read.
+      // determinism: probe — rows are drained and discarded; only successful WAL replay matters.
       await query('MATCH (n) RETURN n LIMIT 1');
       const receipt = await runCheckpointWithRetry({
         checkpointFn: async () => {
