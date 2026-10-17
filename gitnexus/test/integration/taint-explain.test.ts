@@ -429,6 +429,66 @@ withTestLbugDB(
 
 const INTERPROC_FIXTURE = path.join(__dirname, 'cfg', 'fixtures', 'interproc-repo');
 
+// Real pipeline → COPY persistence → a cold reader → public explain dispatch.
+withTestLbugDB(
+  'taint-inline-handlers',
+  (handle) => {
+    it('reports inline and factory handlers, without attributing callbacks to their factories (#3489)', async () => {
+      const backend = (handle as typeof handle & { _backend: LocalBackend })._backend;
+      const first = await backend.callTool('explain', { target: 'routes.ts', limit: 100 });
+      const second = await backend.callTool('explain', { target: 'routes.ts', limit: 100 });
+      expect(second).toEqual(first);
+      const findings = first.findings.filter((f: any) => f.interprocedural);
+      expect(findings).toHaveLength(11);
+      expect(
+        findings.every(
+          (f: any) =>
+            (f.sinkKind === 'command-injection' && f.sink.function === 'runGit') ||
+            (f.sinkKind === 'path-traversal' && f.sink.function === 'readSnippet') ||
+            (f.sinkKind === 'code-injection' && f.sink.function === 'compileFilter'),
+        ),
+      ).toBe(true);
+      expect(findings.map((f: any) => f.source.function)).toContain('returnedHandler');
+      expect(
+        findings.some((f: any) =>
+          ['mount', 'makeNamed', 'makeAnonymous', 'makeExpression'].includes(f.source.function),
+        ),
+      ).toBe(false);
+      expect(new Set(findings.map((f: any) => f.source.function)).size).toBe(11);
+    });
+  },
+  {
+    poolAdapter: true,
+    beforeFTS: async (dbPath) => {
+      const fixture = path.join(__dirname, 'cfg', 'fixtures', 'inline-taint-repo');
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-inline-taint-'));
+      try {
+        fs.cpSync(fixture, repoDir, { recursive: true });
+        const result = await runPipelineFromRepo(repoDir, () => {}, { pdg: true });
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        await adapter.loadGraphToLbug(result.graph, repoDir, path.dirname(dbPath));
+      } finally {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+    },
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'inline-taint-repo',
+          path: '/inline-taint/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'inline001',
+          stats: { files: 1, nodes: 1, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
+    },
+  },
+);
+
 withTestLbugDB(
   'taint-explain-interproc',
   (handle) => {

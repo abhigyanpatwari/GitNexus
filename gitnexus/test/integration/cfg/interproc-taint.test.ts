@@ -14,6 +14,7 @@
 
 import { describe, it, expect } from 'vitest';
 import path from 'path';
+import fs from 'fs';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { decodeTaintPath } from '../../../src/core/ingestion/taint/path-codec.js';
@@ -29,6 +30,84 @@ function taintPaths(result: PipelineResult) {
 }
 
 describe('U9 — end-to-end interprocedural taint (--pdg)', () => {
+  it.each(['ts', 'js'])(
+    'keeps %s inline and returned handlers as distinct callers and taint summary owners (#3489)',
+    async (extension) => {
+      const fixture = path.join(__dirname, 'fixtures', 'inline-taint-repo');
+      const repoDir = repos.fromFixture(fixture);
+      if (extension === 'js') {
+        const tsFile = path.join(repoDir, 'routes.ts');
+        // The fixture uses only these two annotations; JS exercises its own grammar.
+        fs.writeFileSync(
+          path.join(repoDir, 'routes.js'),
+          fs.readFileSync(tsFile, 'utf8').replaceAll(': any', '').replaceAll(': string', ''),
+        );
+        fs.unlinkSync(tsFile);
+      }
+      const result = await runPipelineFromRepo(repoDir, () => {}, { pdg: true });
+      const nodes = [...result.graph.iterNodes()];
+      const findings = taintPaths(result).filter(
+        (p) => result.graph.getNode(p.targetId)?.properties.name === 'runGit',
+      );
+      const sourceLines = findings
+        .map((p) => result.graph.getNode(p.sourceId)!.properties.startLine)
+        .sort((a, b) => Number(a) - Number(b));
+      expect(sourceLines).toEqual([5, 10, 13, 16, 19, 25, 31, 37]);
+      expect(new Set(findings.map((p) => p.sourceId)).size).toBe(8);
+      for (const finding of findings) {
+        const source = result.graph.getNode(finding.sourceId)!;
+        expect(
+          [...result.graph.iterRelationships()].some(
+            (r) =>
+              r.type === 'CALLS' &&
+              r.sourceId === source.id &&
+              result.graph.getNode(r.targetId)?.properties.name === 'forward',
+          ),
+        ).toBe(true);
+      }
+      const mount = nodes.find((n) => n.label === 'Function' && n.properties.name === 'mount')!;
+      expect(
+        [...result.graph.iterRelationships()].filter(
+          (r) =>
+            r.type === 'CALLS' &&
+            r.sourceId === mount.id &&
+            result.graph.getNode(r.targetId)?.properties.name === 'forward',
+        ),
+      ).toEqual([]);
+      const sameLine = nodes.filter((n) => n.label === 'Function' && n.properties.startLine === 19);
+      expect(sameLine).toHaveLength(2);
+      expect(new Set(sameLine.map((n) => n.id)).size).toBe(2);
+      expect(nodes.find((n) => n.properties.name === 'returnedHandler')).toBeDefined();
+      expect(nodes.find((n) => n.properties.name === 'nestedIdentity')?.id).toBe(
+        `Function:routes.${extension}:mountIdentity.fn@50:23.nestedIdentity@51:4`,
+      );
+      const outside = nodes.find((n) => n.properties.name === 'outsideReturned')!;
+      expect(
+        [...result.graph.iterRelationships()].some(
+          (r) =>
+            r.type === 'CALLS' &&
+            r.sourceId === outside.id &&
+            result.graph.getNode(r.targetId)?.properties.name === 'returnedHandler',
+        ),
+      ).toBe(false);
+      const snippets = taintPaths(result).filter(
+        (p) => result.graph.getNode(p.targetId)?.properties.name === 'readSnippet',
+      );
+      expect(snippets).toHaveLength(2);
+      for (const p of snippets) {
+        const decoded = decodeTaintPath(p.reason);
+        expect(decoded.ok && decoded.kind).toBe('path-traversal');
+        expect(result.graph.getNode(p.sourceId)?.properties.name).not.toBe('mountSnippet');
+      }
+      const filters = taintPaths(result).filter(
+        (p) => result.graph.getNode(p.targetId)?.properties.name === 'compileFilter',
+      );
+      expect(filters).toHaveLength(1);
+      expect(result.graph.getNode(filters[0].sourceId)?.properties.name).toBe('handleFilter');
+      const decodedFilter = decodeTaintPath(filters[0].reason);
+      expect(decodedFilter.ok && decodedFilter.kind).toBe('code-injection');
+    },
+  );
   it('with --pdg: composes a cross-file source→sink into a TAINT_PATH edge', async () => {
     const result = await runPipelineFromRepo(freshRepo(), () => {}, { pdg: true });
     const paths = taintPaths(result);
