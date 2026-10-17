@@ -48,6 +48,8 @@ import { escapeCypherString } from '../lbug/cypher-escape.js';
 import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import { logger } from '../logger.js';
+import { assertValidGraphNodeId } from '../graph/node-identity.js';
+import { assertUniqueEmbeddingKeys } from './embedding-keys.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -199,8 +201,10 @@ const queryEmbeddableNodes = async (
       const rows = await executeQuery(query);
       for (const row of rows) {
         const hasExportedColumn = label === LABEL_METHOD || LABELS_WITH_EXPORTED.has(label);
+        const nodeId = row.id ?? row[0];
+        assertValidGraphNodeId(nodeId, `Embedding ${label}`);
         allNodes.push({
-          id: row.id ?? row[0],
+          id: nodeId,
           name: row.name ?? row[1],
           label: row.label ?? row[2],
           filePath: row.filePath ?? row[3],
@@ -218,11 +222,11 @@ const queryEmbeddableNodes = async (
         });
       }
     } catch (error) {
-      if (isDev) {
-        // `err` is pino's standard serializer key — an arbitrary key serializes an
-        // Error to `{}`, losing the message and stack (#2114).
-        logger.warn({ err: error }, `Query for ${label} nodes failed:`);
-      }
+      // A failed label read is unresolved embedding work, never an empty table.
+      throw new Error(
+        `Cannot read ${label} nodes for embedding: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
     }
   }
 
@@ -247,8 +251,10 @@ const queryFallbackFileNodes = async (
     return rows
       .map((row) => {
         const content = row.content ?? row[4] ?? '';
+        const nodeId = row.id ?? row[0];
+        assertValidGraphNodeId(nodeId, 'Embedding File');
         return {
-          id: row.id ?? row[0],
+          id: nodeId,
           name: row.name ?? row[1],
           label: row.label ?? row[2] ?? 'File',
           filePath: row.filePath ?? row[3],
@@ -259,17 +265,15 @@ const queryFallbackFileNodes = async (
       })
       .filter(
         (node) =>
-          node.id &&
           node.filePath &&
           node.content.trim() &&
           node.content !== '[Binary file - content not stored]',
       );
   } catch (error) {
-    if (isDev) {
-      // `err`, not `error` — see the serializer note above (#2114).
-      logger.warn({ err: error }, 'Fallback File-node embedding query failed:');
-    }
-    return [];
+    throw new Error(
+      `Cannot read File nodes for embedding: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
 };
 
@@ -290,15 +294,21 @@ export const batchInsertEmbeddings = async (
     contentHash?: string;
   }>,
 ): Promise<void> => {
-  const paramsList = updates.map((u) => ({
-    id: `${u.nodeId}:${u.chunkIndex}`,
-    nodeId: u.nodeId,
-    chunkIndex: u.chunkIndex,
-    startLine: u.startLine,
-    endLine: u.endLine,
-    embedding: u.embedding,
-    contentHash: u.contentHash ?? STALE_HASH_SENTINEL,
-  }));
+  // Validate the whole pending batch before DELETE can replace any valid row.
+  // Existing-row retries and duplicate keys within one batch are distinct.
+  assertUniqueEmbeddingKeys(updates, 'Embedding write');
+  const paramsList = updates.map((u) => {
+    const id = `${u.nodeId}:${u.chunkIndex}`;
+    return {
+      id,
+      nodeId: u.nodeId,
+      chunkIndex: u.chunkIndex,
+      startLine: u.startLine,
+      endLine: u.endLine,
+      embedding: u.embedding,
+      contentHash: u.contentHash ?? STALE_HASH_SENTINEL,
+    };
+  });
   if (paramsList.length === 0) return;
 
   await executeWithReusedStatement(
@@ -590,6 +600,20 @@ export const runEmbeddingPipeline = async (
 
   try {
     throwIfCancelled();
+    // Check the graph before model initialization, endpoint work, or stale-row
+    // deletion. Reuse this set for pending-node cleanup instead of allocating
+    // a second identity index later.
+    let nodes = await queryEmbeddableNodes(executeQuery);
+    const embeddableNodeIds = new Set<string>();
+    for (const node of nodes) {
+      if (embeddableNodeIds.has(node.id)) {
+        throw new Error(
+          `Embedding read: duplicate graph node identity ${JSON.stringify(node.id.slice(0, 160))}. Rebuild with analyze --force.`,
+        );
+      }
+      embeddableNodeIds.add(node.id);
+    }
+    throwIfCancelled();
     const vectorAvailable = await ensureVectorExtensionAvailable();
     throwIfCancelled();
     if (!vectorAvailable) {
@@ -620,15 +644,6 @@ export const runEmbeddingPipeline = async (
       percent: 20,
       modelDownloadPercent: 100,
     });
-
-    if (isDev) {
-      logger.info('🔍 Querying embeddable nodes...');
-    }
-
-    // Phase 2: Query embeddable nodes
-    let nodes = await queryEmbeddableNodes(executeQuery);
-    throwIfCancelled();
-    const embeddableNodeIds = new Set(nodes.map((node) => node.id));
 
     // Incremental mode: compare content hashes, delete stale rows, skip fresh ones.
     // Computed hashes for stale nodes are cached so batchInsertEmbeddings can reuse them

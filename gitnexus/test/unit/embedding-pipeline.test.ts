@@ -375,6 +375,22 @@ describe('runEmbeddingPipeline incremental filter', () => {
     progressUpdates.push({ ...p });
   };
 
+  it('fails a graph read without reporting a complete embedding index', async () => {
+    mockEmbedderSetup();
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+    const executeQuery = mockExecuteQuery([makeNode()]);
+    executeQuery.mockRejectedValueOnce(new Error('injected graph read failure'));
+    const executeStatement = mockExecuteWithReusedStatement();
+    await expect(runEmbeddingPipeline(executeQuery, executeStatement, onProgress)).rejects.toThrow(
+      /read.*Function.*injected graph read failure/,
+    );
+    expect(stmtCalls).toEqual([]);
+    expect(vectorIndexMock).not.toHaveBeenCalled();
+    expect(progressUpdates.at(-1)?.phase).toBe('error');
+    expect(progressUpdates.some((update) => update.phase === 'ready')).toBe(false);
+  });
+
   it.each([400, 413, 422])(
     'isolates HTTP %i inputs without starving healthy nodes after many rejected chunks',
     async (status) => {
