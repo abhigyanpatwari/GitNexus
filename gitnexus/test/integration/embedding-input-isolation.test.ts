@@ -125,6 +125,7 @@ it('isolates a permanently rejected input, retains healthy peers and retries onl
     expect(f.requests.length).toBeLessThanOrEqual(11); // Binary isolation: at most 2n-1 calls.
     f.requests.length = 0;
     await f.analyze(false).catch((error: unknown) => error);
+    expect(f.requests.flat()).toHaveLength(1);
     expect(f.requests.flat().every((text) => text.includes('REJECT_ALWAYS'))).toBe(true);
     expect(await f.rows()).toEqual(rows);
     rejectInput = false;
