@@ -154,6 +154,8 @@ describe('incremental graph identity before publication', () => {
   ])(
     'refuses freshness after $phase failure (atomic=$atomicIncremental)',
     async ({ phase, atomicIncremental }) => {
+      // Windows uses in-place writes even when a caller requests staging.
+      const expectsStaging = atomicIncremental && process.platform !== 'win32';
       const repo = await setupMiniRepo('gitnexus-test-write-integrity-');
       const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
       try {
@@ -223,14 +225,14 @@ describe('incremental graph identity before publication', () => {
         expect(after?.lastCommit).toBe(before?.lastCommit);
         expect(after?.indexedAt).toBe(before?.indexedAt);
         expect(logs.filter((line) => line.includes('atomic-incremental'))).toEqual(
-          atomicIncremental ? [expect.stringContaining('staged')] : [],
+          expectsStaging ? [expect.stringContaining('staged')] : [],
         );
-        expect(Boolean(after?.incrementalInProgress)).toBe(!atomicIncremental);
+        expect(Boolean(after?.incrementalInProgress)).toBe(!expectsStaging);
         const registeredAfter = (await readRegistry()).find((entry) => entry.path === repo.dbPath);
         expect(registeredAfter?.indexedAt).toBe(registeredBefore?.indexedAt);
         expect(registeredAfter?.lastCommit).toBe(registeredBefore?.lastCommit);
         vi.restoreAllMocks();
-        if (atomicIncremental) {
+        if (expectsStaging) {
           await adapter.initLbug(lbugPath);
           const retained = await adapter.executePrepared(
             'MATCH (n:Function {id: $id}) RETURN n.id AS id',
