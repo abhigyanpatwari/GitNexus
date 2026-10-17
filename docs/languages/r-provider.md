@@ -73,6 +73,25 @@ Not edges or nodes:
 - Constants and other top-level non-function assignments, and environments (`new.env()`, `local()`, `assign()` / `get()`), are not nodes; the only value-like nodes are R6, RefClass and S4 fields and slots. `setValidity()`, `setClassUnion()`, `setReplaceMethod()` and `Class$methods(...)` create no definition or edge.
 - No framework or entry-point detection (Shiny, plumber, targets, testthat). Plumber `#*` annotations are not read and no route nodes are created, and no route or fetch edges link R to other languages.
 
+Known gaps in call resolution and class handling (each was reproduced and is left as is):
+
+- `self$m()` in an R6 method resolves by the lexical walk, because `self` has no type binding. It finds a method of the same class, but not one inherited from a parent class: there it binds a top-level function of that name when one exists (confidence 0.49) and otherwise gives no edge.
+- RefClass methods that call a sibling or an inherited method by bare name (`log_it(x)`) or through `.self$log_it(x)` get no edge.
+- A call to an S4 generic (`area(x)` after `setGeneric("area", ...)`), to a `setClass` generator (`Person(name = "x")`), `new("Class")` or `Class$new()` gets no edge, neither to the class nor to its `initialize`.
+- `source()` paths are matched by suffix: leading directories that do not exist are dropped until a file matches, so `source("secrets/config.R")` binds `R/config.R`, and the first of several matches wins. Backslash paths and absolute paths resolve to nothing.
+- `library(localpkg)` creates one `IMPORTS` edge per file of the package from every importing file, so 100 scripts and a package of 200 files give 20,000 edges.
+- When two repository packages each define a helper of the same name, a bare call to it from another file of either package gets no edge: the name is ambiguous in the repository, although the caller's package decides it in R.
+- `METHOD_OVERRIDES` compares parameter counts, so an R6 or RefClass method that overrides one with a different formals list (`speak = function(loud = TRUE)` over `speak = function()`) gets no edge, although R has no overloading.
+- Calls inside the function of a `setMethod()`, `setGeneric()` or `setValidity()` call are credited to the File, not to the `Method` node the same call creates. Calls inside `validity =` of `setClass()` are credited to the Class.
+- R6 `inherit = pkg::Base` and legacy S4 `representation("Base")` create no `EXTENDS` edge.
+- R6 members named by a string (`"c d" = function() ...`, `'e' = 3`) are dropped; backticked names are kept with their backticks. A class or owner name read from a string keeps its escapes undecoded, so `setClass("Hello\x41")` is a different class from `setClass("HelloA")`, which R treats as one.
+- A function nested in an R6, RefClass or `setMethod()` body has an id such as `Counter.function.bump@7:21`: the enclosing function's name is a placeholder and the line and column keep ids apart, so ids change when lines shift.
+- A base class named by `inherit =` or `contains =` that is defined more than once in the repository (in two files, or twice in one) gets no `EXTENDS` edge from a class in another file; a base defined in the deriving class's own file is found.
+- Export patterns use JavaScript regular-expression syntax where R uses TRE, with three silent differences: `\<` and `\>` are the literal characters `<` and `>` (TRE word boundaries), `a{,2}` is the literal text `a{,2}` (TRE `{0,2}`), and a backslash inside `[...]` is an escape (TRE: a literal member).
+- NAMESPACE `if (...)` and `else` bodies are skipped, so a function exported only conditionally (`if (getRversion() >= "4.1.0") export(new)`) reads as not exported.
+
+A class name that is not unique: a member attaches to the class of its own file when several classes share the name (the same helper class in `R/` and `tests/`, a class defined twice in one file counts once). When the member's file defines none of them, or several, the member stays unowned with its `ownerNameHint`, and one warning for methods and one for fields name the class names concerned (at most five each).
+
 Not supported:
 
 - The magrittr pipe `%>%` has no specific support and none is claimed; the native pipe `|>` is supported. tidyverse non-standard evaluation (bare column names, `.data$x`) is not modelled.
