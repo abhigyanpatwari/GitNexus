@@ -5,7 +5,8 @@
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const { tmpdir } = require('node:os');
+const os = require('node:os');
+const { tmpdir } = os;
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
@@ -14,13 +15,19 @@ const { createHash } = require('node:crypto');
 (async () => {
   const root = path.resolve(__dirname, '../..');
   const baseline = JSON.parse(await fs.readFile(path.join(__dirname, 'baseline.json'), 'utf8'));
+  const environment = {
+    node: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    cpu: os.cpus()[0].model,
+  };
+  const sameEnvironment = Object.entries(environment).every(
+    ([key, value]) => baseline.environment?.[key] === value,
+  );
   const scratch = await fs.mkdtemp(path.join(tmpdir(), 'gn-publication-bench-'));
   process.env.GITNEXUS_HOME = path.join(scratch, 'home');
   process.env.GITNEXUS_SHARED_STORE = 'off';
   process.env.GITNEXUS_WORKER_READY_TIMEOUT_MS = '60000';
-  const { runFullAnalysis } = await import(
-    pathToFileURL(path.join(root, 'src/core/run-analyze.ts'))
-  );
   const options = {
     force: true,
     skipGit: true,
@@ -30,6 +37,9 @@ const { createHash } = require('node:crypto');
   };
   const results = [];
   try {
+    const { runFullAnalysis } = await import(
+      pathToFileURL(path.join(root, 'src/core/run-analyze.ts'))
+    );
     for (const size of baseline.sizes) {
       const { files } = size;
       const repo = path.join(scratch, `repo-${files}`);
@@ -63,7 +73,7 @@ const { createHash } = require('node:crypto');
               `
           const { Database, Connection } = require('@ladybugdb/core');
           (async () => {
-            const db = new Database(process.argv[1], 64 * 1024 * 1024, false, true);
+            const db = new Database(process.argv[1], 64 * 1024 * 1024, false, true, 1024 ** 3);
             const conn = new Connection(db);
             const rows = await (await conn.query('MATCH (f:Function) RETURN f.name AS name')).getAll();
             console.log(JSON.stringify(rows.map(row => row.name).sort()));
@@ -95,16 +105,19 @@ const { createHash } = require('node:crypto');
     }
     const scaling =
       results[1].median_ms / results[0].median_ms / (results[1].files / results[0].files);
-    console.log(
-      JSON.stringify({ node: process.version, results, normalized_scaling: scaling }, null, 2),
-    );
+    console.log(JSON.stringify({ environment, results, normalized_scaling: scaling }, null, 2));
     if (process.argv.includes('--check')) {
       assert.ok(scaling <= baseline.linear_scaling_budget);
-      for (const result of results)
-        assert.ok(
-          result.baseline_ratio <= baseline.regression_budget,
-          `publication regression: ${result.baseline_ratio}`,
+      if (!sameEnvironment)
+        console.warn(
+          'Absolute timing gate skipped: baseline environment differs; correctness and scaling gates still apply.',
         );
+      for (const result of results)
+        if (sameEnvironment)
+          assert.ok(
+            result.baseline_ratio <= baseline.regression_budget,
+            `publication regression: ${result.baseline_ratio}`,
+          );
     }
   } finally {
     await fs.rm(scratch, { recursive: true, force: true });

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import lbug from '@ladybugdb/core';
 
 const [dbPath, mode] = process.argv.slice(2);
-const db = new lbug.Database(dbPath, 256 * 1024 * 1024);
+const db = new lbug.Database(dbPath, 256 * 1024 * 1024, false, false, 1024 ** 3);
 const conn = new lbug.Connection(db);
 async function query(cypher) {
   const result = await conn.query(cypher);

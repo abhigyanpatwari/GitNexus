@@ -277,7 +277,7 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
             `
           const { Database, Connection } = require('@ladybugdb/core');
           (async () => {
-            const db = new Database(process.argv[1], 256 * 1024 * 1024, false, true);
+            const db = new Database(process.argv[1], 256 * 1024 * 1024, false, true, 1024 ** 3);
             const conn = new Connection(db);
             const result = await conn.query('MATCH (f:Function) RETURN f.name AS name');
             console.log(JSON.stringify((await result.getAll()).map(row => row.name).sort()));
@@ -378,7 +378,7 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
             `
           const { Database, Connection } = require('@ladybugdb/core');
           (async () => {
-            const db = new Database(process.argv[1], 256 * 1024 * 1024, false, true);
+            const db = new Database(process.argv[1], 256 * 1024 * 1024, false, true, 1024 ** 3);
             const conn = new Connection(db);
             const result = await conn.query('MATCH (f:Function) RETURN f.name AS name');
             console.log(JSON.stringify((await result.getAll()).map(row => row.name).sort()));
@@ -407,7 +407,7 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
     180_000,
   );
 
-  it.each(['rejected', 'unverified', 'manual-disabled'])(
+  it.each(['rejected', 'unverified', 'manual-disabled-unverified'])(
     'keeps the published graph when the final full-rebuild checkpoint is %s (#3591)',
     async (outcome) => {
       const { repo, cleanup } = await makeRepo();
@@ -416,7 +416,8 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
         const { lbugPath, storagePath } = getStoragePaths(repo);
         const oldGraph = await fs.readFile(lbugPath);
         const oldMeta = await loadMeta(storagePath);
-        if (outcome === 'manual-disabled') vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
+        if (outcome === 'manual-disabled-unverified')
+          vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
         if (outcome === 'rejected') {
           ctx.finalCheckpointMock.mockRejectedValueOnce(
             new Error('injected final checkpoint failure'),
@@ -439,6 +440,28 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
     },
     180_000,
   );
+
+  it('requires a real final checkpoint even when periodic manual checkpoints are disabled (#3591)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
+      await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
+      const finalCall = ctx.finalCheckpointMock.mock.calls.findIndex((args) => args.length === 0);
+      expect(finalCall).toBeGreaterThanOrEqual(0);
+      await expect(ctx.finalCheckpointMock.mock.results[finalCall].value).resolves.toMatchObject({
+        flushed: true,
+      });
+      const { lbugPath } = getStoragePaths(repo);
+      expect(
+        (await fs.readdir(path.dirname(lbugPath))).some((name) =>
+          /^lbug\.(wal|shadow|checkpoint)(\.|$)/.test(name),
+        ),
+      ).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await cleanup();
+    }
+  }, 180_000);
 
   it('recovers after a CLI process exits immediately before publication (#3591)', async () => {
     const { repo, cleanup } = await makeRepo();

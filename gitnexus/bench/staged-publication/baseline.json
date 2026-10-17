@@ -9,16 +9,30 @@
       "files": 16,
       "functions": 512,
       "fingerprint": "19518326db7f2d095a77e3a19642edf38249e653d626387ebcc57df8aaba9c7d",
-      "median_ms": 2850.1473540000006,
-      "samples_ms": [2839.400887, 2850.1473540000006, 3202.0789289999993]
+      "median_ms": 2960.9297275,
+      "samples_ms": [
+        2875.6184279999998, 2884.447086000002, 2945.486928999999, 2976.372526000001,
+        3072.810632999999, 3118.3443149999985
+      ]
     },
     {
       "files": 64,
       "functions": 2048,
       "fingerprint": "89f9dd905722438427100c61cac5113046abc9368c9e6f91e2dde95b0daf0c1f",
-      "median_ms": 3170.829733000006,
-      "samples_ms": [3023.8665120000005, 3170.829733000006, 3256.097853000003]
+      "median_ms": 3259.2709509999986,
+      "samples_ms": [
+        2963.401339, 3237.9479589999974, 3252.9258029999983, 3265.616098999999, 3284.1276569999973,
+        3310.6556599999967
+      ]
     }
   ],
-  "regression_budget": 1.25
+  "regression_budget": 1.25,
+  "environment": {
+    "node": "v24.19.0",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K"
+  },
+  "measuredAt": "2026-10-17",
+  "measurement_order": "base/candidate/candidate/base; six samples per size and arm"
 }
