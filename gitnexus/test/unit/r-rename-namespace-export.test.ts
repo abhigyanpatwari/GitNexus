@@ -135,6 +135,6 @@ describe('R rename: NAMESPACE export guard on a refined graph', () => {
       ]),
       graph,
     } as never);
-    expect(issue?.code).toBe('unsupported_occurrence');
+    expect(issue ? issue.code : 'ok').toBe('unsupported_occurrence');
   });
 });

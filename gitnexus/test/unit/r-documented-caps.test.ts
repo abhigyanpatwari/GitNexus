@@ -101,7 +101,7 @@ describe('the per-pattern state cap sits exactly at MAX_STATES', () => {
   it('refuses a pattern one state over the cap, and says why', () => {
     const result = compileLinearRegexDetailed('^a{16382}$');
     expect(result.regex).toBeNull();
-    expect(result.regex === null ? result.reason : '').toMatch(/state cap/);
+    expect('reason' in result ? result.reason : '').toMatch(/state cap/);
   });
 });
 
@@ -112,13 +112,13 @@ describe('the pattern length cap sits exactly at MAX_PATTERN_LENGTH', () => {
     // Longer than the state cap would allow if it were expanded, so look at the reason only
     // when it is refused: the length rule must not be the one that refuses it.
     const result = compileLinearRegexDetailed(pattern);
-    expect(result.regex === null ? result.reason : '').not.toMatch(/longer than/);
+    expect('reason' in result ? result.reason : '').not.toMatch(/longer than/);
   });
 
   it('refuses a pattern one character longer', () => {
     const result = compileLinearRegexDetailed(`^${'a'.repeat(MAX_PATTERN_LENGTH - 1)}$`);
     expect(result.regex).toBeNull();
-    expect(result.regex === null ? result.reason : '').toMatch(/longer than 16384 characters/);
+    expect('reason' in result ? result.reason : '').toMatch(/longer than 16384 characters/);
   });
 });
 

@@ -134,16 +134,15 @@ describe('R rename: the S3 registration guard', () => {
         label,
         properties: { filePath: 'R/a.R', name: 'helper', isExported: true },
       });
-      return (
-        rRenameProvider.checkSafety?.({
-          target: { type: 'Function', qualifiedName: 'helper', filePath: 'R/a.R' },
-          newName: 'helper2',
-          files: new Map([
-            ['R/a.R', { tree: parser.parse('helper <- function(x) x'), parsed: { localDefs: [] } }],
-          ]),
-          graph,
-        } as never)?.code ?? 'ok'
-      );
+      const issue = rRenameProvider.checkSafety?.({
+        target: { type: 'Function', qualifiedName: 'helper', filePath: 'R/a.R' },
+        newName: 'helper2',
+        files: new Map([
+          ['R/a.R', { tree: parser.parse('helper <- function(x) x'), parsed: { localDefs: [] } }],
+        ]),
+        graph,
+      } as never);
+      return issue ? issue.code : 'ok';
     };
     expect(inPackage('Function')).toBe('unsupported_occurrence');
     expect(inPackage('Method')).toBe('ok');
