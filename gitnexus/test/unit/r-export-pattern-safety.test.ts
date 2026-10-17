@@ -727,6 +727,21 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
   });
 });
 
+// A `\\u` without four hex digits is the letter `u`, as in JavaScript (`/\\u12/` matches "u12").
+// The translator keeps that reading instead of refusing the pattern.
+describe('compileRExportPattern: \\u without four hex digits', () => {
+  it.each([
+    ['\\u12', 'u12', true],
+    ['\\u12', '\u0012', false],
+    ['^\\u$', 'u', true],
+    ['^\\u00zz$', 'u00zz', true],
+    ['^\\u0062$', 'b', true],
+  ])('%s against %s is %s, as RegExp says', (source, name, expected) => {
+    expect(new RegExp(source).test(name)).toBe(expected);
+    expect(compileRExportPattern(source)?.test(name)).toBe(expected);
+  });
+});
+
 // docs/languages/r-provider.md: "Character classes use ASCII semantics." R's TRE engine would
 // match a locale's letters; the translator deliberately does not, so this is pinned.
 describe('compileRExportPattern: POSIX classes are ASCII-only', () => {
