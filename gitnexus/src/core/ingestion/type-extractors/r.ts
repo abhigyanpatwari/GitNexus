@@ -152,13 +152,33 @@ const localClassNames = (node: SyntaxNode): ReadonlySet<string> => {
  * comment block directly above `name <- function(...)`, keyed by parameter
  * name. Returns a map of paramName → typeName.
  */
-const collectRoxygenParams = (assignment: SyntaxNode): Map<string, string> => {
+const collectRoxygenParams = (assignment: SyntaxNode): ReadonlyMap<string, string> => {
   const params = new Map<string, string>();
   for (const { name, description } of parseRoxygenParams(collectRoxygenBlock(assignment))) {
     const typeName = anchoredType(description);
     if (typeName !== undefined && localClassNames(assignment).has(typeName)) {
       params.set(name, typeName);
     }
+  }
+  return params;
+};
+
+/**
+ * {@link collectRoxygenParams} per assignment, kept per tree. `extractParameter` asks once per
+ * formal, and each answer reads the whole comment block above the function: without this, a
+ * function of N formals under a block of M lines costs N x M (2,000 x 2,000 took 11.9 s).
+ */
+const roxygenParamsByTree = new WeakMap<object, Map<number, ReadonlyMap<string, string>>>();
+const roxygenParamsOf = (assignment: SyntaxNode): ReadonlyMap<string, string> => {
+  let byAssignment = roxygenParamsByTree.get(assignment.tree);
+  if (byAssignment === undefined) {
+    byAssignment = new Map();
+    roxygenParamsByTree.set(assignment.tree, byAssignment);
+  }
+  let params = byAssignment.get(assignment.id);
+  if (params === undefined) {
+    params = collectRoxygenParams(assignment);
+    byAssignment.set(assignment.id, params);
   }
   return params;
 };
@@ -209,7 +229,7 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
   if (rhs?.startIndex !== fn.startIndex || rhs.endIndex !== fn.endIndex) return;
 
   // The tag names the symbol (`@param x`); a formal written `x` in backticks is the same one.
-  const typeName = collectRoxygenParams(assignment).get(rBareName(name.text));
+  const typeName = roxygenParamsOf(assignment).get(rBareName(name.text));
   if (typeName !== undefined) env.set(name.text, typeName);
 };
 
