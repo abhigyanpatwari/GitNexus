@@ -240,6 +240,14 @@ function callsInAssignmentTarget(node: Parser.SyntaxNode, name: string): boolean
   return false;
 }
 
+/** Whether `node` sits inside a function body or its parameter defaults. */
+function insideFunction(node: Parser.SyntaxNode): boolean {
+  for (let ancestor = node.parent; ancestor !== null; ancestor = ancestor.parent) {
+    if (ancestor.type === 'function_definition') return true;
+  }
+  return false;
+}
+
 /**
  * A name R also writes between its operands: an infix function (`%+%`, `%in%`) or an operator
  * (`+`, `[[`). Its uses are operator tokens, not `identifier` nodes, so a rename would edit the
@@ -248,6 +256,8 @@ function callsInAssignmentTarget(node: Parser.SyntaxNode, name: string): boolean
 function isOperatorName(name: string): boolean {
   return /^%.*%$/.test(name) || /^[^A-Za-z0-9._]+$/.test(name);
 }
+
+const collision = (message: string): RenameIssue => ({ code: 'name_collision', message });
 
 const unsupported = (message: string): RenameIssue => ({
   code: 'unsupported_occurrence',
@@ -337,9 +347,30 @@ export const rRenameProvider: RenameProvider = {
       return unsupported(
         'The new name would register an S3 method of an existing function or base generic.',
       );
+    // R keeps one global per name. A function of the new name in another file is a second
+    // definition (load order decides which survives); one in this file is the engine's check.
+    for (const [path, source] of files) {
+      if (path === target.filePath) continue;
+      if (
+        source.parsed.localDefs.some(
+          (d) =>
+            d.type === 'Function' &&
+            d.qualifiedName !== undefined &&
+            rBareName(d.qualifiedName) === newName,
+        )
+      )
+        return collision('Another file already defines a function of the new name.');
+    }
     for (const source of files.values()) {
       if (!source.tree) continue;
       for (const node of walkNamedNodes(source.tree.rootNode)) {
+        // A top-level variable of the new name (or a `<<-` to it) would be replaced by the
+        // renamed function, or would replace it, depending on which assignment runs last.
+        if (
+          (boundName(node) === newName && !insideFunction(node)) ||
+          superassignedName(node) === newName
+        )
+          return collision('The new name is already assigned as a variable at top level.');
         // `name <<- value` (inside a function or not) is a global re-definition that the
         // scope graph keeps as a separate declaration, so a rename would leave it behind.
         if (node.type === 'identifier' && isCallee(node) && rBareName(node.text) === name) {
