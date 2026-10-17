@@ -1,4 +1,4 @@
-import type { BindingRef, Callsite, SymbolDefinition } from 'gitnexus-shared';
+import type { BindingRef, Callsite, Range, SymbolDefinition } from 'gitnexus-shared';
 
 const TIER: Record<BindingRef['origin'], number> = {
   local: 0,
@@ -8,9 +8,25 @@ const TIER: Record<BindingRef['origin'], number> = {
   wildcard: 4,
 };
 
-/** Local declarations shadow imports; deterministic order within a tier.
- *  Same shape as Zig's `zigMergeBindings` — R has no per-scope binding
- *  precedence rule beyond "the tightest-origin binding wins". */
+/** `a` before `b` by the line, then the column, at which each starts. */
+const startsBefore = (a: Range, b: Range): boolean =>
+  a.startLine !== b.startLine ? a.startLine < b.startLine : a.startCol < b.startCol;
+
+/**
+ * Local declarations shadow imports; deterministic order within a tier.
+ * Same shape as Zig's `zigMergeBindings`.
+ *
+ * Within the wildcard tier (`library()` / `require()` of a local package) a name that several
+ * attached packages define is masked as R masks it: the package attached last wins, so only the
+ * bindings of the `library()` call that comes last in the file are kept. A call that attaches a
+ * package of several files keeps all of that package's bindings for the name, because a name
+ * defined in two of its files is a real ambiguity the order cannot settle. The order is the
+ * position of the call in the file, which is the order the file attaches them in when it runs
+ * top to bottom; a `library()` inside a function, run later or never, is not told apart, and a
+ * package named by several calls counts at its last one (R would keep it where it was first
+ * attached). When any of the bindings has no call position the whole tier is kept, as it was
+ * before.
+ */
 export function rMergeBindings(
   existing: readonly BindingRef[],
   incoming: readonly BindingRef[],
@@ -28,9 +44,25 @@ export function rMergeBindings(
     if ((TIER[b.origin] ?? 99) !== bestTier) continue;
     if (!byNode.has(b.def.nodeId)) byNode.set(b.def.nodeId, b);
   }
+  let tier = [...byNode.values()];
+  if (bestTier === TIER.wildcard && tier.length > 1) tier = lastAttached(tier);
   // By code unit, not `localeCompare`: the order must not depend on the machine's locale.
-  return [...byNode.values()].sort((a, b) =>
+  return tier.sort((a, b) =>
     a.def.nodeId < b.def.nodeId ? -1 : a.def.nodeId > b.def.nodeId ? 1 : 0,
+  );
+}
+
+/** The bindings that the last of the `library()` calls behind `bindings` brought in. */
+function lastAttached(bindings: BindingRef[]): BindingRef[] {
+  const at: Range[] = [];
+  for (const b of bindings) {
+    if (b.via?.atRange === undefined) return bindings;
+    at.push(b.via.atRange);
+  }
+  let last = at[0];
+  for (const range of at) if (startsBefore(last, range)) last = range;
+  return bindings.filter(
+    (_, i) => at[i].startLine === last.startLine && at[i].startCol === last.startCol,
   );
 }
 

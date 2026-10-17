@@ -4,7 +4,7 @@
  * English collation `a` sorts before `B` and `é` before `f`; by code unit `B` and `f` come first.
  */
 import { describe, expect, it } from 'vitest';
-import type { BindingRef, SymbolDefinition } from 'gitnexus-shared';
+import type { BindingRef, ImportEdge, Range, SymbolDefinition } from 'gitnexus-shared';
 import { rMergeBindings } from '../../../../src/core/ingestion/languages/r/simple-hooks.js';
 
 const local = (nodeId: string): BindingRef => ({
@@ -32,5 +32,73 @@ describe('rMergeBindings', () => {
       'scope:test',
     );
     expect(merged.map((b) => b.def.nodeId)).toEqual(['Function:a.R:x']);
+  });
+});
+
+describe('rMergeBindings: library() masking in the wildcard tier', () => {
+  const at = (startLine: number, startCol = 0): Range => ({
+    startLine,
+    startCol,
+    endLine: startLine,
+    endCol: startCol + 12,
+  });
+  /** A name brought in by the `library()` call that starts at `range` (none: no position known). */
+  const attached = (nodeId: string, range?: Range): BindingRef => ({
+    origin: 'wildcard',
+    def: { nodeId } as SymbolDefinition,
+    via: { atRange: range } as ImportEdge,
+  });
+  const ids = (merged: BindingRef[]): string[] => merged.map((b) => b.def.nodeId);
+
+  it('keeps only the package attached last, whichever way round the bindings arrive', () => {
+    const lp = attached('Function:lp/R/f.R:dup', at(1));
+    const lp2 = attached('Function:lp2/R/f.R:dup', at(2));
+    expect(ids(rMergeBindings([lp], [lp2], 's'))).toEqual(['Function:lp2/R/f.R:dup']);
+    expect(ids(rMergeBindings([lp2], [lp], 's'))).toEqual(['Function:lp2/R/f.R:dup']);
+    expect(ids(rMergeBindings([lp, lp2], [], 's'))).toEqual(['Function:lp2/R/f.R:dup']);
+  });
+
+  it('is decided by the position of the call, not by the id order of the files', () => {
+    const early = attached('Function:z/R/f.R:dup', at(1));
+    const late = attached('Function:a/R/f.R:dup', at(2));
+    expect(ids(rMergeBindings([early, late], [], 's'))).toEqual(['Function:a/R/f.R:dup']);
+  });
+
+  it('compares the column when two calls share a line', () => {
+    const first = attached('Function:b/R/f.R:dup', at(3, 0));
+    const second = attached('Function:a/R/f.R:dup', at(3, 14));
+    expect(ids(rMergeBindings([first, second], [], 's'))).toEqual(['Function:a/R/f.R:dup']);
+  });
+
+  it('keeps every file of the one package the last call attaches: that ambiguity stays', () => {
+    const old = attached('Function:lp/R/f.R:dup', at(1));
+    const x = attached('Function:lp2/R/x.R:dup', at(2));
+    const y = attached('Function:lp2/R/y.R:dup', at(2));
+    expect(ids(rMergeBindings([old, y, x], [], 's'))).toEqual([
+      'Function:lp2/R/x.R:dup',
+      'Function:lp2/R/y.R:dup',
+    ]);
+  });
+
+  it('keeps the whole tier when a binding has no call position', () => {
+    const a = attached('Function:a/R/f.R:dup', at(1));
+    const b = attached('Function:b/R/f.R:dup');
+    expect(ids(rMergeBindings([a, b], [], 's'))).toEqual([
+      'Function:a/R/f.R:dup',
+      'Function:b/R/f.R:dup',
+    ]);
+  });
+
+  it('leaves a name that one package defines, and the other tiers, as they were', () => {
+    const only = attached('Function:lp/R/f.R:only', at(1));
+    expect(ids(rMergeBindings([only], [], 's'))).toEqual(['Function:lp/R/f.R:only']);
+    const named: BindingRef = {
+      origin: 'import',
+      def: { nodeId: 'Function:p/R/f.R:dup' } as SymbolDefinition,
+      via: { atRange: at(9) } as ImportEdge,
+    };
+    const lp = attached('Function:lp/R/f.R:dup', at(1));
+    const lp2 = attached('Function:lp2/R/f.R:dup', at(2));
+    expect(ids(rMergeBindings([lp, lp2], [named], 's'))).toEqual(['Function:p/R/f.R:dup']);
   });
 });
