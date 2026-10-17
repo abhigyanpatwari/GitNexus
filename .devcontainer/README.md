@@ -344,7 +344,9 @@ VS Code's Ports panel shows forwarded ports once their listener starts.
 
 ## Bumping CLI versions
 
-Bump the version pins in `.devcontainer/devcontainer.json` `build.args` and rebuild — all three are real, fail-loud pins. Claude Code installs via `npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}` and Codex via `npm install -g @openai/codex@${CODEX_VERSION}`. **Cursor is pinned too:** bump `CURSOR_VERSION` **and** both `CURSOR_SHA256_X64` / `CURSOR_SHA256_ARM64` together — the Dockerfile downloads the pinned `downloads.cursor.com/lab/<version>/linux/<arch>/agent-cli-package.tar.gz` artifact directly (no remote install script) and fails the build on a sha256 mismatch. Re-hash each arch with `curl -fSL <url> | sha256sum`. To stop Cursor from auto-updating in the running container, don't call `cursor-agent update`.
+Claude Code, Codex, and Cursor install the latest available release at image build time using their official shell installers. Rebuild without the Docker cache to refresh those image layers. Bun's version is pinned by `BUN_VERSION` in `.devcontainer/devcontainer.json` `build.args`; the Node base image is pinned by digest in the Dockerfile.
+
+Codex uses the [official standalone installer](https://developers.openai.com/codex/cli/) (`curl -fsSL https://chatgpt.com/codex/install.sh | sh`) rather than npm. The build runs it non-interactively and checks `codex --version`. Its native packages normally live under `~/.codex/packages/standalone`, inside the persistent config volume. The image keeps a package seed outside that mount; `post-create.sh` restores it when Codex cannot run, including when rebuilding with a config volume created by the previous npm-based image. A working standalone release already in the volume is kept. This avoids another download during setup and leaves credentials, configuration, and sessions intact.
 
 ## What's not included (yet)
 
