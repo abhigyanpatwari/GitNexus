@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -589,6 +590,9 @@ def scenario_control_base(tmp_path_factory: pytest.TempPathFactory) -> tuple[Pat
                 ref,
                 "gitnexus/src",
                 "gitnexus/vendor",
+                "gitnexus/test",
+                "gitnexus/tsconfig.json",
+                "gitnexus/vitest.config.ts",
                 "gitnexus/package.json",
                 "gitnexus-shared/package.json",
             ],
@@ -607,7 +611,7 @@ def scenario_control_base(tmp_path_factory: pytest.TempPathFactory) -> tuple[Pat
         pytest.skip("oracle controls need tarfile extraction filters (Python 3.11.4+)")
     with tarfile.open(archive) as source:
         source.extractall(base, filter="data")
-    for relative in ("node_modules", "gitnexus/node_modules", "gitnexus-shared/dist"):
+    for relative in ("node_modules", "gitnexus/node_modules", "gitnexus-shared/node_modules", "gitnexus-shared/dist"):
         (base / relative).symlink_to(dependencies / relative, target_is_directory=True)
     subprocess.run(["git", "init", "--quiet", str(base)], check=True, capture_output=True)
     return base, {task["id"]: task for task in tasks}
@@ -633,12 +637,82 @@ def _verify_shipped_oracle(candidate: Path, task: dict[str, object]) -> subproce
         )
 
 
+def _assert_behavioral_rejection(completed: subprocess.CompletedProcess[str], assertion: str = "") -> None:
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 1, output
+    assert "AssertionError" in output, output
+    assert assertion in output, output
+    # An import/setup crash is not evidence that a behavioral control worked.
+    assert "Failed Suites" not in output, output
+    assert "Unhandled Errors" not in output, output
+
+
+def _check_c_provenance_mutants(candidate: Path, base: Path, task: dict[str, object]) -> None:
+    """Reject broken behavior, and distinguish module-load errors from evidence."""
+
+    interpret = Path("gitnexus/src/core/ingestion/languages/c/interpret.ts")
+    resolver = Path("gitnexus/src/core/ingestion/languages/c/scope-resolver.ts")
+    valid_interpret = (candidate / interpret).read_text()
+    valid_resolver = (candidate / resolver).read_text()
+    system_guards = re.findall(
+        r"\bconst\s+parsedImport\s*=\s*context\s*\?\.\s*parsedImport\s*;\s*"
+        r"if\s*\(\s*parsedImport\s*\?\.\s*kind\s*===\s*'wildcard'\s*&&\s*"
+        r"'isSystem'\s+in\s+parsedImport\s*&&\s*parsedImport\s*\.\s*isSystem\s*===\s*true\s*\)\s*"
+        r"\{\s*return\s+null\s*;\s*\}",
+        valid_resolver,
+    )
+    fallbacks = re.findall(
+        r"\breturn\s+resolveCImportTarget\s*\(\s*targetRaw\s*,\s*fromFile\s*,\s*allFilePaths\s*,?\s*\)\s*;",
+        valid_resolver,
+    )
+    assert len(system_guards) == 1, "expected exactly one C system-include guard"
+    assert len(fallbacks) == 1, "expected exactly one C resolver fallback"
+    system_guard, fallback = system_guards[0], fallbacks[0]
+    late_guard_resolver = valid_resolver.replace(system_guard, "").replace(fallback, system_guard + "\n    " + fallback)
+    assert valid_interpret.count("return parsedImport;") == 1
+    assert valid_interpret.count("targetRaw: source,") == 1
+    mutants = [
+        (interpret, (base / interpret).read_text(), "literal include <stdio.h> must be retained"),
+        (
+            interpret,
+            valid_interpret.replace("return parsedImport;", "return null;"),
+            'literal include "stdio.h" must be retained',
+        ),
+        (interpret, valid_interpret.replace("targetRaw: source,", "targetRaw: '',"), "retained header identity"),
+        (resolver, (base / resolver).read_text(), "include <stdio.h> resolution"),
+        (resolver, late_guard_resolver, "include <stdio.h> resolution"),
+    ]
+    for relative, broken, assertion in mutants:
+        path = candidate / relative
+        original = path.read_text()
+        assert broken != original
+        path.write_text(broken)
+        try:
+            _assert_behavioral_rejection(_verify_shipped_oracle(candidate, task), assertion)
+        finally:
+            path.write_text(original)
+
+    # A missing native-parser module must fail setup, never satisfy a negative
+    # behavioral control just because Vitest exits nonzero.
+    parser = candidate / "gitnexus/src/core/ingestion/languages/c/query.ts"
+    original_parser = parser.read_bytes()
+    parser.unlink()
+    try:
+        broken_setup = _verify_shipped_oracle(candidate, task)
+        assert "Failed Suites" in broken_setup.stdout + broken_setup.stderr
+        with pytest.raises(AssertionError):
+            _assert_behavioral_rejection(broken_setup, "literal include <stdio.h> must be retained")
+    finally:
+        parser.write_bytes(original_parser)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="oracle controls use POSIX dependency symlinks and shell commands")
 @pytest.mark.parametrize(
     ("task_id", "reference"),
     [
         ("trivial-status-json-alias", "trivial-status-json-alias"),
-        ("inv-bug-c-system-include", "inv-bug-c-system-include"),
+        ("inv-feature-c-include-provenance", "inv-feature-c-include-provenance-flag"),
+        ("inv-feature-c-include-provenance", "inv-feature-c-include-provenance-delimiter"),
         ("inv-feature-list-repos-filter", "inv-feature-list-repos-filter"),
         ("cross-module-parse-retry", "cross-module-parse-retry"),
         ("cross-module-parse-retry", "cross-module-parse-retry-pool"),
@@ -653,13 +727,37 @@ def test_shipped_oracles_reject_task_base_and_accept_reference_fixes(
     base, tasks = scenario_control_base
     candidate = _oracle_control_candidate(base, tmp_path / "candidate")
     negative = _verify_shipped_oracle(candidate, tasks[task_id])
-    assert negative.returncode == 1, negative.stdout + negative.stderr
-    assert "AssertionError" in negative.stdout + negative.stderr
+    _assert_behavioral_rejection(
+        negative,
+        "literal include <stdio.h> must be retained" if task_id == "inv-feature-c-include-provenance" else "",
+    )
 
     patches = Path(__file__).resolve().parents[1] / "workflow_bench/oracles/reference"
     subprocess.run(["git", "apply", str(patches / f"{reference}.patch")], cwd=candidate, check=True)
     positive = _verify_shipped_oracle(candidate, tasks[task_id])
     assert positive.returncode == 0, positive.stdout + positive.stderr
+    if task_id == "inv-feature-c-include-provenance":
+        # A reference passing transpile-only Vitest is not enough: use the same
+        # typed, authored verification that an evaluated repair must satisfy.
+        authored = subprocess.run(
+            ["/bin/sh", "-c", str(tasks[task_id]["verify"])],
+            cwd=candidate,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=180,
+        )
+        assert authored.returncode == 0, authored.stdout + authored.stderr
+        if reference == "inv-feature-c-include-provenance-flag":
+            # This entry point is already selected by native CI; keep every C
+            # validity control reachable without changing workflow selection.
+            # Indent every existing code line differently without matching the
+            # reference's formatting; the behavioral controls must still work.
+            resolver = candidate / "gitnexus/src/core/ingestion/languages/c/scope-resolver.ts"
+            resolver.write_text(re.sub(r"(?m)^([ \t]+)", r"\t\1", resolver.read_text()))
+            positive = _verify_shipped_oracle(candidate, tasks[task_id])
+            assert positive.returncode == 0, positive.stdout + positive.stderr
+            _check_c_provenance_mutants(candidate, base, tasks[task_id])
 
 
 @pytest.mark.skipif(os.name == "nt", reason="oracle controls use POSIX dependency symlinks and shell commands")
