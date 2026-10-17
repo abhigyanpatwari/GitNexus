@@ -43,6 +43,13 @@ describe('loadRPackageConfig -> RNamespaceInfo exports', () => {
       expect(names).toEqual(['bare', 'q1', 'q2']);
     });
 
+    it('decodes R escapes in a quoted name, but not in a backticked one', async () => {
+      const { names } = await load(
+        'export("f\\x6fo", \'ba\\162\', "q\\u{7a}")\nexport(`t\\x6fo`)\n',
+      );
+      expect(names).toEqual(['bar', 'foo', 'qz', 't\\x6fo']);
+    });
+
     it('does not export from a conditional directive', async () => {
       const { names } = await load('if (cond) export(hidden)\nexport(shown)\n');
       expect(names).toEqual(['shown']);

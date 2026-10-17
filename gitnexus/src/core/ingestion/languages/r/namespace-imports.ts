@@ -195,7 +195,9 @@ function normaliseArg(raw: string): string {
     if (trimmed.length < 2 || trimmed[trimmed.length - 1] !== first) return '';
     const end = skipQuoted(trimmed, 0);
     if (end !== trimmed.length) return '';
-    return trimmed.slice(1, -1).trim();
+    const inner = trimmed.slice(1, -1);
+    // A string is R-unescaped; a backticked name keeps an escaped backtick as written (see `rBareName`).
+    return (first === '`' ? inner : unescapeRString(inner)).trim();
   }
   // Bare token: reject anything containing whitespace, quotes, or parens (e.g. `x = y`, nested calls).
   if (/[\s"'`()=]/.test(trimmed)) return '';

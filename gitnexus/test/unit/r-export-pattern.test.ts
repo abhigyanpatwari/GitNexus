@@ -132,6 +132,14 @@ describe('loadRPackageConfig -> RNamespaceInfo.exportPatterns (POSIX classes)', 
     expect(patterns[0].test('1a')).toBe(true);
   });
 
+  it('decodes an R octal escape before compiling the pattern', async () => {
+    // The NAMESPACE text holds a single backslash: R reads "^\101" as the string "^A".
+    const patterns = await load('exportPattern("^\\101")\n');
+    expect(patterns).toHaveLength(1);
+    expect(patterns[0].test('Abc')).toBe(true);
+    expect(patterns[0].test('abc')).toBe(false);
+  });
+
   it('keeps a plain pattern working', async () => {
     const patterns = await load('exportPattern("^Pattern")\n');
     expect(patterns.some((p) => p.test('PatternX'))).toBe(true);
@@ -153,6 +161,26 @@ describe('unescapeRString', () => {
   it('handles hex and unicode escapes, with and without braces', () => {
     expect(unescapeRString('\\x41\\u0042\\u{43}\\U00000044\\U{45}')).toBe('ABCDE');
     expect(unescapeRString('\\U{1F600}')).toBe('\u{1F600}');
+  });
+
+  it('decodes one to three octal digits, as R does', () => {
+    expect(unescapeRString('\\101')).toBe('A');
+    expect(unescapeRString('\\60\\1')).toBe('0\x01');
+    expect(unescapeRString('^\\101b')).toBe('^Ab');
+    // A fourth digit is not part of the escape.
+    expect(unescapeRString('\\1011')).toBe('A1');
+    // Only the low byte is kept, as R pushes the value as a char.
+    expect(unescapeRString('\\377')).toBe('\u00ff');
+  });
+
+  it('does not read an escaped backslash before digits as octal', () => {
+    expect(unescapeRString('\\\\101')).toBe('\\101');
+  });
+
+  it('keeps a NUL octal escape verbatim (R rejects it) and 8 or 9 as no escape', () => {
+    expect(unescapeRString('\\0')).toBe('\\0');
+    expect(unescapeRString('\\000')).toBe('\\000');
+    expect(unescapeRString('\\8')).toBe('\\8');
   });
 
   it('keeps an unknown or malformed escape verbatim and never throws', () => {

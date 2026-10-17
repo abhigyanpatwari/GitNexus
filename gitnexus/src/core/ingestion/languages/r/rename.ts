@@ -24,10 +24,6 @@ const RESERVED = new Set(
 /** `r"(...)"`, `R'[...]'`, `r"---{...}---"`: no escapes; the body is taken as written. */
 const RAW_STRING = /^[rR](["'])(-*)(?:\(([\s\S]*)\)|\[([\s\S]*)\]|\{([\s\S]*)\})\2\1$/;
 
-/** One escape, longest form first: octal, hex/unicode, then any other `\c`. */
-const ESCAPE =
-  /\\(?:([0-7]{1,3})|(x[0-9A-Fa-f]{1,2}|u\{[0-9A-Fa-f]{1,4}\}|u[0-9A-Fa-f]{1,4}|U\{[0-9A-Fa-f]{1,8}\}|U[0-9A-Fa-f]{1,8})|([\s\S]))/g;
-
 /**
  * The value R holds for a string literal's source text, or null when it is not a
  * recognisable literal. Escapes are decoded (`"f\u006fo"` is `foo`), raw strings are
@@ -39,13 +35,7 @@ function rStringValue(text: string): string | null {
   const quote = text[0];
   if ((quote !== '"' && quote !== "'") || text.length < 2 || text[text.length - 1] !== quote)
     return null;
-  return text
-    .slice(1, -1)
-    .replace(ESCAPE, (_m, octal?: string, coded?: string, other?: string) =>
-      octal !== undefined
-        ? String.fromCharCode(parseInt(octal, 8) & 0xff)
-        : unescapeRString(`\\${coded ?? other ?? ''}`),
-    );
+  return unescapeRString(text.slice(1, -1));
 }
 
 /**

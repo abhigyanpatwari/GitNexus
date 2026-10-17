@@ -184,10 +184,11 @@ const SIMPLE_R_ESCAPES: Readonly<Record<string, string>> = {
 /**
  * Turn the body of an R string literal (the text between the quotes) into the
  * string value R would hold: `\\` -> `\`, `\"` -> `"`, `\n` -> newline, and
- * likewise `\t \r \a \b \f \v \' \``, backslash-space, `\x` (1-2 hex digits), `\u`
- * (1-4 hex digits, bare or in braces) and `\U` (1-8 hex digits, bare or in braces),
- * the last two as code points. The digit limits are R's own: a longer run is not
- * part of the escape (tree-sitter-r's `escape_sequence` has the same limits). R
+ * likewise `\t \r \a \b \f \v \' \``, backslash-space, `\nnn` (1-3 octal digits, the low
+ * byte of the value; `\0` is a NUL, which R rejects, so it is kept verbatim), `\x`
+ * (1-2 hex digits), `\u` (1-4 hex digits, bare or in braces) and `\U` (1-8 hex digits,
+ * bare or in braces), the last two as code points. The digit limits are R's own: a
+ * longer run is not part of the escape (tree-sitter-r's `escape_sequence` has the same limits). R
  * rejects any other backslash sequence; this leniently keeps it verbatim, so a
  * mistaken `"\."` still reaches the regex compiler as `\.`. Never throws.
  */
@@ -207,6 +208,12 @@ export function unescapeRString(body: string): string {
       i++;
       continue;
     }
+    const octal = readOctalEscape(body, i + 1);
+    if (octal !== null) {
+      out += octal.text;
+      i = octal.end - 1;
+      continue;
+    }
     const hex = readHexEscape(body, i + 1);
     if (hex !== null) {
       out += hex.text;
@@ -216,6 +223,15 @@ export function unescapeRString(body: string): string {
     out += ch; // Unknown escape: keep the backslash; the next char is emitted normally.
   }
   return out;
+}
+
+/** `\nnn` escape whose first digit is at `body[at]`; null when it is not an octal digit or the value is NUL. */
+function readOctalEscape(body: string, at: number): { text: string; end: number } | null {
+  let i = at;
+  while (i < body.length && i - at < 3 && body[i] >= '0' && body[i] <= '7') i++;
+  if (i === at) return null;
+  const code = parseInt(body.slice(at, i), 8) & 0xff;
+  return code === 0 ? null : { text: String.fromCharCode(code), end: i };
 }
 
 /** `x`/`u`/`U` escape whose introducer is at `body[at]`; null when malformed. */
