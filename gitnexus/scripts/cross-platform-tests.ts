@@ -182,6 +182,8 @@ const LBUG_NATIVE = [
   // Native COPY, cached vectors and cold shared-store readers vary by platform.
   'test/integration/embedding-identity-integrity.test.ts',
   'test/integration/shared-store-embedding-reuse.test.ts',
+  // Real endpoint retries include native index writes and cold database reads.
+  'test/integration/embedding-input-isolation.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
   'test/integration/lbug-pool-stability.test.ts',
