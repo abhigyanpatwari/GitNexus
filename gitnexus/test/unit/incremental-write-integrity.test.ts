@@ -119,7 +119,9 @@ describe('incremental graph identity before publication', () => {
       properties: { name: 'topic', filePath: '' },
     });
     graph.addNode({
-      id: 'Function:src/Å.ts:王\u0000\uD800',
+      // IDs must be valid before CSV encoding; malformed-ID rejection has its
+      // own real persistence coverage in embedding-identity-integrity.test.ts.
+      id: 'Function:src/Å.ts:王',
       label: 'Function',
       properties: { name: '王\r\n\uD800', filePath: 'src/Å.ts' },
     });

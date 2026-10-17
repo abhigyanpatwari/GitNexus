@@ -648,6 +648,24 @@ jobs:
           done
         working-directory: gitnexus
 
+  # Native embedding replacement measures real COPY, writes and cold reopens.
+  # Keep it outside the 25-minute language benchmark job: four trials at each
+  # size take several minutes even on the development baseline machine.
+  embedding-identity-benchmark:
+    name: embedding identity persistence benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Embedding identity persistence / scaling guards (#3569)
+        run: node --import tsx bench/embedding-identities/measure.cjs --check
+        working-directory: gitnexus
+
   # ── Dedicated benchmark gate ─────────────────────────────────────
   # The cross-language `*-pipeline-benchmark.test.ts` suites are gated behind
   # GITNEXUS_BENCH (they generate synthetic codebases at scale), so the main

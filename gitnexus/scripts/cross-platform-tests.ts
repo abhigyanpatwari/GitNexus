@@ -179,6 +179,9 @@ const LBUG_NATIVE = [
   'test/integration/pdg-explicit-owner.test.ts',
   'test/integration/skip-fts.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
+  // Native COPY, cached vectors and cold shared-store readers vary by platform.
+  'test/integration/embedding-identity-integrity.test.ts',
+  'test/integration/shared-store-embedding-reuse.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
   'test/integration/lbug-pool-stability.test.ts',
