@@ -471,7 +471,7 @@ describe('text-generator', () => {
       `@Component({ description: "${'x'.repeat(500)}" })\n`,
       `/* ${'comment '.repeat(80)} */\n`,
       '\n'.repeat(250),
-    ])('uses graph identity when a long prefix hides the later chunk declaration', (prefix) => {
+    ])('uses graph identity after a long prefix (case %#)', (prefix) => {
       const node = {
         ...baseNode,
         label: 'Class',
