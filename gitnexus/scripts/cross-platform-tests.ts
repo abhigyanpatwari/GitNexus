@@ -179,6 +179,8 @@ const LBUG_NATIVE = [
   'test/integration/pdg-explicit-owner.test.ts',
   'test/integration/skip-fts.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
+  // Real endpoint retries include native index writes and cold database reads.
+  'test/integration/embedding-input-isolation.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
   'test/integration/lbug-pool-stability.test.ts',

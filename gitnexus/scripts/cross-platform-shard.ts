@@ -88,6 +88,8 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/skills-e2e.test.ts': 550,
   'test/integration/fts-extension-e2e.test.ts': 380,
   'test/integration/skip-fts.test.ts': 110,
+  // Provisional: twice the 88.42s local native run, pending Windows CI timing.
+  'test/integration/embedding-input-isolation.test.ts': 180,
   'test/integration/analyze-wal-checkpoint-failure.test.ts': 86,
   'test/integration/cli-limit-e2e.test.ts': 75,
   'test/unit/hooks.test.ts': 26,
