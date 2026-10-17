@@ -37,6 +37,7 @@ import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
+import { unboundCallableName } from './unbound-callables.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
 import {
@@ -520,13 +521,28 @@ export function emitTsScopeCaptures(
     // untouched, so inner-call attribution falls through to the enclosing
     // scope instead of a phantom Function.
     const fnDeclAnchor = grouped['@declaration.function'];
+    const unbound = groupedNodes['@callable.unbound'];
+    if (unbound !== undefined) {
+      grouped['@declaration.name'] = syntheticCapture(
+        '@declaration.name',
+        unbound,
+        unboundCallableName(unbound)!,
+      );
+      if (unbound.childForFieldName('name') === null) {
+        grouped['@declaration.binding-name'] = syntheticCapture(
+          '@declaration.binding-name',
+          unbound,
+          '',
+        );
+      }
+    }
     if (fnDeclAnchor !== undefined) {
       const arrowNode = findFunctionNode(
         tree.rootNode,
         fnDeclAnchor.range,
         groupedNodes['@declaration.function'],
       );
-      if (arrowNode !== null && isArrayMethodCallbackArrow(arrowNode)) {
+      if (unbound === undefined && arrowNode !== null && isArrayMethodCallbackArrow(arrowNode)) {
         continue;
       }
       if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {

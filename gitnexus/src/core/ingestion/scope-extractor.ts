@@ -897,8 +897,11 @@ function parseJsonStringArrayCapture(
 }
 
 function deriveDeclarationName(match: CaptureMatch, def: SymbolDefinition): string | undefined {
+  // An explicit empty binding override retains the declaration's graph identity
+  // without inventing a source-level name (for example, an anonymous callable).
+  const bindingName = match['@declaration.binding-name'];
+  if (bindingName !== undefined) return bindingName.text || undefined;
   const nameCap =
-    match['@declaration.binding-name'] ??
     match['@declaration.name'] ??
     match[
       Object.keys(match).find((k) => k.startsWith('@declaration.') && k.endsWith('.name')) ?? ''

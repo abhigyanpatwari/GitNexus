@@ -213,7 +213,8 @@
   },
   "typescript": {
     "_lexical_ownership_3532": "#3532: lexical ownership captures and fixture updates; fixture identities are relative to lang-resolution so serialized scope IDs are independent of checkout location. Full capture content remains hashed; scaling_budget is unchanged.",
-    "fingerprint": "28cbf71b54870d9b5e4102031d758ca288d7ccc546adc892dae4c237d273b8ae",
+    "fingerprint": "112cb06df38cb8144aaf4cdb5e1209f5d74ff5fa38005299fb39c853df311a68",
+    "_rebaselined_3489_inline_handlers": "#3489: Compared main 22a7608 and candidate 7456546 emitters on the same 174-entry TypeScript corpus. Exactly four callback declaration groups were added: two in typescript-hoc-wrapped/src/negative-bare-call.ts, one in typescript-hof-callbacks/src/store.ts, and one in typescript-mcp-tools/src/server.ts. Every added group has @callable.unbound; none was removed or changed. Capture groups 2935 -> 2939. JavaScript is byte-identical. Synthetic counts remain 4503/14403 and scaling budgets are unchanged; CI measured TypeScript 1.048 < 1.5 and JavaScript 0.911 < 1.5.",
     "_rebaselined_3446_mcp_tools_fixture": "#3446 adds typescript-mcp-tools/src/{handlers,server,tools}.ts: corpus growth only, with fixture_count 171 -> 174 and capture_groups_fp 2753 -> 2894. Excluding only that fixture directory restores the prior fingerprint 77c9b4ea654123a64972db8348190ec250b669472b150db65ea8c7f20b355467 exactly. The scope emitter, synthetic capture counts (4503/14403), scaling budget, and other language baselines are unchanged.",
     "_rebaselined_3190": "Capture matches now retain explicit ESM export/private evidence, including synthesized default HOCs; CommonJS surfaces remain undecided. Capture group counts unchanged. Scaling budget unchanged.",
     "scaling_budget": 1.5,

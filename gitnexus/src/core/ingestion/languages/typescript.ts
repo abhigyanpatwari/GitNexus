@@ -7,6 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { unboundCallableName } from './typescript/unbound-callables.js';
 import type { CaptureMatch, NodeLabel } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
@@ -176,17 +177,25 @@ const pairKeyName = (keyNode: SyntaxNode | null | undefined): string | null => {
  *     applied to all `useCallback` / `useMemo` callbacks bound to a
  *     const — the sole way to give them a named caller anchor.
  *
- * Returns `null` for funcName when the arrow lives in a context that has
- * no static name — bare call arguments (not bound to a const), computed
- * keys, return-from-arrow positions. The parent walk in
+ * Bare expression-statement callbacks and returned function expressions get
+ * their own name or a position name. Other contexts without a static name
+ * (computed keys, return-from-arrow positions) return null. The parent walk in
  * findEnclosingFunctionId then continues up to the next named ancestor
  * (or to the file).
  */
 const tsExtractFunctionName = (
   node: SyntaxNode,
   filePath?: string,
-): { funcName: string | null; label: NodeLabel } | null => {
+): { funcName: string | null; label: NodeLabel; identityName?: string | null } | null => {
   if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
+
+  const unboundName = unboundCallableName(node);
+  if (unboundName !== undefined)
+    return {
+      funcName: unboundName,
+      label: 'Function',
+      ...(node.childForFieldName('name') === null ? { identityName: null } : {}),
+    };
 
   const parent = node.parent;
   if (!parent) return null;

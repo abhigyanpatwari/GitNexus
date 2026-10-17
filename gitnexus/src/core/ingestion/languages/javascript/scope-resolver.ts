@@ -47,6 +47,7 @@ import { makeJsResolveImportTarget } from './import-target.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
 import { typescriptModuleExports } from '../typescript/module-exports.js';
 import { loadNodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
+import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
 
 async function loadResolutionConfig(repoPath: string, fresh = false) {
   return {
@@ -111,6 +112,7 @@ const javascriptScopeResolver: ScopeResolver = {
   // explicit imports at the call site. Workspace-wide unique-name fallback
   // recovers these edges.
   allowGlobalFreeCallFallback: true,
+  isGlobalNameFallbackPlausible: isJsSelfBoundCallableFallbackPlausible,
 
   // Same ECMAScript `export *` exclusivity as TypeScript: a name declared by
   // two wildcard sources is refused, not guessed.
