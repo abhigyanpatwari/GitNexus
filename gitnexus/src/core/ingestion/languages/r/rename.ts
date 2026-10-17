@@ -319,8 +319,11 @@ export const rRenameProvider: RenameProvider = {
           );
       }
     }
-    // NAMESPACE is not an indexed source. A package function that the NAMESPACE
-    // exports (the graph keeps isExported unless it is proven private) is refused.
+    // NAMESPACE is not an indexed source, so a package function it exports (`export()`,
+    // `exportPattern()`, `S3method()`) would keep a stale entry. The rename planner's graph
+    // carries the indexed verdict: `isExported` is false only for a function that a NAMESPACE
+    // beside the package proves private, so a package without NAMESPACE, or a node with no
+    // verdict at all, is treated as exported and refused.
     const file = target.filePath;
     let exported = false;
     graph.forEachNode((node) => {
@@ -335,7 +338,7 @@ export const rRenameProvider: RenameProvider = {
     });
     if (exported && /(^|\/)R\//.test(file))
       return unsupported(
-        'A package function may have a NAMESPACE export entry that is not renamed.',
+        'A package function that NAMESPACE exports, or that the index cannot prove private, may have an export entry that is not renamed.',
       );
   },
 };
