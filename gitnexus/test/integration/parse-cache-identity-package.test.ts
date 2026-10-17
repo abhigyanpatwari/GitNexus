@@ -1,6 +1,6 @@
 import { execFileSync, execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { access, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { setupMiniRepo } from '../helpers/mini-repo.js';
@@ -14,10 +14,18 @@ describe('automatic parser identity in the installed distribution', () => {
     try {
       // The integration gate builds first. Pack that output with npm's actual
       // files/bundled-dependencies rules; do not rerun a build in a parallel suite.
+      const packSource = path.join(artifacts.dbPath, 'pack-source');
+      await cp(PACKAGE_ROOT, packSource, { recursive: true, dereference: true });
+      const originalManifest = await readFile(path.join(PACKAGE_ROOT, 'package.json'), 'utf8');
+      const packManifest = JSON.parse(originalManifest);
+      // npm 10 runs prepare even with --ignore-scripts. Remove it only from
+      // this private copy, then restore the original manifest after unpacking.
+      delete packManifest.scripts.prepare;
+      await writeFile(path.join(packSource, 'package.json'), JSON.stringify(packManifest));
       const packed = JSON.parse(
         // npm.cmd requires a shell on Windows. Keep paths out of the command.
         execSync('npm pack --ignore-scripts --json', {
-          cwd: PACKAGE_ROOT,
+          cwd: packSource,
           env: { ...process.env, npm_config_pack_destination: artifacts.dbPath },
           encoding: 'utf8',
           timeout: 120_000,
@@ -31,6 +39,7 @@ describe('automatic parser identity in the installed distribution', () => {
         artifacts.dbPath,
       ]);
       const runtime = path.join(artifacts.dbPath, 'package');
+      await writeFile(path.join(runtime, 'package.json'), originalManifest);
       const manifest = JSON.parse(await readFile(path.join(runtime, 'package.json'), 'utf8'));
       // Supply already-installed production dependencies offline. Bundled
       // grammars stay the independent physical files produced by npm pack.
