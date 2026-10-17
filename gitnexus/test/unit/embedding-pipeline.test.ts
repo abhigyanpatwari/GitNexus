@@ -162,7 +162,7 @@ describe('contentHashForNode', () => {
   });
 
   it('exports a text template version marker', () => {
-    expect(EMBEDDING_TEXT_VERSION).toBe('v6');
+    expect(EMBEDDING_TEXT_VERSION).toBe('v7');
   });
 });
 

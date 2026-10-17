@@ -167,7 +167,12 @@ const generateStructuralTypeText = (
   const declarationOnly = extractDeclarationOnly(
     cleanedContent ?? cleanContent(node.content.slice(0, 200)),
   );
-  const compactContainerContext = getCompactContainerContext(node.content, declarationOnly);
+  // A long decorator or comment may hide the declaration beyond the bounded
+  // prefix. The graph identity still names the container without rescanning it.
+  const compactContainerContext = getCompactContainerContext(
+    isFirstChunk ? node.content : `${node.label} ${node.name}`,
+    declarationOnly,
+  );
 
   if (compactContainerContext) {
     parts.push(compactContainerContext);

@@ -467,6 +467,25 @@ describe('text-generator', () => {
       }
     });
 
+    it.each([
+      `@Component({ description: "${'x'.repeat(500)}" })\n`,
+      `/* ${'comment '.repeat(80)} */\n`,
+      '\n'.repeat(250),
+    ])('uses graph identity when a long prefix hides the later chunk declaration', (prefix) => {
+      const node = {
+        ...baseNode,
+        label: 'Class',
+        name: 'Parser',
+        content: `${prefix}export class Parser {\n parse() { return 1; }\n}`,
+      };
+      expect(generateEmbeddingText(node, 'parse() { return 1; }', {}, 0)).toContain(
+        'Container: export class Parser {',
+      );
+      expect(generateEmbeddingText(node, 'parse() { return 1; }', {}, 1)).toContain(
+        'Container: Class Parser',
+      );
+    });
+
     it('adds preceding context to non-structural chunk text', () => {
       const text = generateEmbeddingText(
         baseNode,
