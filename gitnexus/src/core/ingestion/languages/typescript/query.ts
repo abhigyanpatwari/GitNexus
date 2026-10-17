@@ -51,6 +51,7 @@
  */
 
 import Parser from 'tree-sitter';
+import { unboundCallableQuery } from './unbound-callables.js';
 import TS from 'tree-sitter-typescript';
 import {
   ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
@@ -79,6 +80,7 @@ function isTsxFile(filePath: string): boolean {
 }
 
 export const TYPESCRIPT_SCOPE_QUERY = `
+${unboundCallableQuery('declaration.function')}
 ;; Scopes — module / namespace / class-likes / function-likes
 (program) @scope.module
 

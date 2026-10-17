@@ -168,7 +168,7 @@ describeIfWorkerBuilt('a function-local callable does not collide with a file-le
     // gives it an environment record, so its `save` is a genuinely different
     // binding from the file-level one. The anonymous link becomes `fn@1:9` —
     // unique by construction, since two functions cannot start at one offset.
-    const { calls } = await analyze(
+    const { calls, nodes } = await analyze(
       'anon.ts',
       [
         'export function outer() {',
@@ -181,7 +181,12 @@ describeIfWorkerBuilt('a function-local callable does not collide with a file-le
       ].join('\n'),
     );
 
-    expect(calls).toEqual(['Function:anon.ts:outer -> Function:anon.ts:outer.fn@1:9.save@2:4']);
+    expect(nodes).toEqual(['Function:anon.ts:outer.fn@1:9.save@2:4', 'Function:anon.ts:save']);
+    // The returned callable owns its call; it must not borrow `outer`'s ID.
+    // The existing nested and file-level `save` IDs remain unchanged.
+    expect(calls).toEqual([
+      'Function:anon.ts:outer.fn@1:9 -> Function:anon.ts:outer.fn@1:9.save@2:4',
+    ]);
   });
 
   it('sibling BLOCKS hold different bindings, and each call reaches its own', async () => {

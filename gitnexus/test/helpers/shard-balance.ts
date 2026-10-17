@@ -1,4 +1,44 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const PACKAGE_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+
+// Ubuntu coverage run 39060755951: sequential suites taking >=30 seconds,
+// rounded up. These committed hints keep every runner's partition identical.
+// File size alone misses generated suites: a 100-byte rename wrapper can run
+// for 98 seconds, while a 17KB database suite finishes in one second. Refresh
+// from CI measurements when suites grow; these are not timing assertions.
+const SEQUENTIAL_COVERAGE_SECONDS: Readonly<Record<string, number>> = {
+  'test/integration/fts-extension-e2e.test.ts': 62,
+  'test/integration/mcp-index-generation.test.ts': 46,
+  'test/integration/parse-cache-identity-lifecycle.test.ts': 147,
+  'test/integration/parse-cache-identity-package.test.ts': 67,
+  'test/integration/rename-provider-c.test.ts': 52,
+  'test/integration/rename-provider-cpp.test.ts': 88,
+  'test/integration/rename-provider-csharp.test.ts': 71,
+  'test/integration/rename-provider-dart.test.ts': 98,
+  'test/integration/rename-provider-go.test.ts': 79,
+  'test/integration/rename-provider-java.test.ts': 36,
+  'test/integration/rename-provider-javascript.test.ts': 39,
+  'test/integration/rename-provider-kotlin.test.ts': 93,
+  'test/integration/rename-provider-objective-c.test.ts': 82,
+  'test/integration/rename-provider-python.test.ts': 91,
+  'test/integration/rename-provider-swift.test.ts': 72,
+  'test/integration/rename-provider-typescript.test.ts': 173,
+  'test/integration/rename-provider-vue.test.ts': 48,
+  'test/integration/rename-provider-zig.test.ts': 36,
+  'test/integration/shared-store-adoption.test.ts': 147,
+  'test/integration/shared-store-analyze.test.ts': 70,
+  'test/integration/shared-store-clean.test.ts': 41,
+  'test/integration/shared-store-clone-optin.test.ts': 103,
+  'test/integration/shared-store-seed.test.ts': 74,
+  'test/integration/skills-e2e.test.ts': 71,
+  'test/integration/skip-fts.test.ts': 44,
+  'test/unit/incremental-index-extension-dml-gate.test.ts': 67,
+  'test/unit/incremental-orchestration.test.ts': 488,
+  'test/unit/incremental-write-integrity.test.ts': 114,
+};
 
 /**
  * Minimal shape of a vitest `TestSpecification` that {@link specWeight} needs.
@@ -15,20 +55,22 @@ export interface WeightableSpec {
  *
  * The spawn-heavy suites are already isolated into `fileParallelism: false`
  * projects (`cli-e2e`, `lbug-db`) — they run one file at a time and dominate
- * wall-clock, so they carry the heavy base weight. File size is a cheap
- * (stat-only, no parse) secondary signal for finer balance and a stable
- * tiebreak. Deterministic: the same repo checkout yields identical weights on
- * every shard runner, which is what keeps sharding a complete partition.
+ * wall-clock. Charge measured slow suites proportionally, with the existing
+ * 1000-point fallback representing 20 seconds for unmeasured sequential work.
+ * File size remains a cheap secondary signal. Deterministic: the same checkout
+ * yields identical weights on every runner, keeping a complete partition.
  */
 export function specWeight(spec: WeightableSpec): number {
   const sequential = spec.project.config.fileParallelism === false;
+  const relativePath = path.relative(PACKAGE_ROOT, spec.moduleId).replaceAll('\\', '/');
+  const seconds = SEQUENTIAL_COVERAGE_SECONDS[relativePath];
   let sizeKb = 0;
   try {
     sizeKb = fs.statSync(spec.moduleId).size / 1024;
   } catch {
     /* virtual / unresolved module id → treat as size 0 */
   }
-  return (sequential ? 1000 : 1) + sizeKb;
+  return (sequential ? (seconds ?? 20) * 50 : 1) + sizeKb;
 }
 
 /**

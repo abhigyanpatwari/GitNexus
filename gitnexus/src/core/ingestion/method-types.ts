@@ -79,7 +79,12 @@ export interface MethodExtractor {
   extractFunctionName?(
     node: SyntaxNode,
     filePath?: string,
-  ): { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
+  ): {
+    funcName: string | null;
+    label: import('gitnexus-shared').NodeLabel;
+    /** Source identity name; null preserves anonymous positional identity when funcName is synthetic. */
+    identityName?: string | null;
+  } | null;
 }
 
 export interface MethodExtractionConfig {
@@ -124,5 +129,9 @@ export interface MethodExtractionConfig {
   extractFunctionName?: (
     node: SyntaxNode,
     filePath?: string,
-  ) => { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
+  ) => {
+    funcName: string | null;
+    label: import('gitnexus-shared').NodeLabel;
+    identityName?: string | null;
+  } | null;
 }
