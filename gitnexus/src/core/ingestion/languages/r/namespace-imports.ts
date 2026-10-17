@@ -650,6 +650,39 @@ export function rFileTopLevel(parsed: ParsedFile): RFileTopLevel {
   return result;
 }
 
+interface RDefIds {
+  /** Ids of the function and class definitions the file binds at top level. */
+  readonly topLevel: ReadonlySet<string>;
+  /** Ids of every definition the file's scope model holds, nested or not. */
+  readonly all: ReadonlySet<string>;
+}
+
+const defIdsCache = new WeakMap<ParsedFile, RDefIds>();
+
+/**
+ * The function and class definitions of `parsed` that are bound at top level: the `local`
+ * bindings of its Module scope. A function written inside another function is owned by that
+ * function's scope (and `localDefs` lists it all the same), so its id is in `all` only.
+ */
+function rDefIds(parsed: ParsedFile): RDefIds {
+  const cached = defIdsCache.get(parsed);
+  if (cached !== undefined) return cached;
+  const topLevel = new Set<string>();
+  const moduleScope = parsed.scopes.find((s) => s.id === parsed.moduleScope);
+  if (moduleScope !== undefined) {
+    for (const refs of moduleScope.bindings.values()) {
+      for (const ref of refs) {
+        if (ref.origin === 'local' && TOP_LEVEL_BINDABLE_TYPES.has(ref.def.type)) {
+          topLevel.add(ref.def.nodeId);
+        }
+      }
+    }
+  }
+  const result = { topLevel, all: new Set(parsed.localDefs.map((d) => d.nodeId)) };
+  defIdsCache.set(parsed, result);
+  return result;
+}
+
 // ─── Import synthesis (populateWorkspaceReferences) ─────────────────────────
 
 /**
@@ -880,15 +913,38 @@ export function rQualifiedDefinitionCount(
  */
 export interface RGlobalNameFallbackContext {
   readonly callerParsed: { readonly filePath: string };
-  readonly candidate: { readonly filePath: string };
+  readonly candidate: {
+    readonly filePath: string;
+    readonly nodeId?: string;
+    readonly type?: string;
+  };
+  /** Reaches the candidate's parse; absent in hand-built contexts, which read as "cannot decide". */
+  readonly parsedFileOf?: (filePath: string) => ParsedFile | undefined;
   /** Opaque `loadResolutionConfig` result; an {@link RPackageConfig} for R. */
   readonly resolutionConfig?: unknown;
   readonly site: { readonly name: string; readonly rawQualifiedName?: string };
 }
 
 /**
- * Refuse a `global-name-fallback` guess that the caller package's NAMESPACE
- * contradicts. Returns `false` (veto) only when ALL of these hold:
+ * True when the candidate is a function or class that its file's scope model holds and binds
+ * below the top level. A candidate the scope model does not hold (the semantic model's own
+ * entry for a dotted name carries a graph id, not a scope definition id) is not judged.
+ */
+function isClosureLocalCandidate(ctx: RGlobalNameFallbackContext): boolean {
+  const { candidate } = ctx;
+  if (candidate.nodeId === undefined || candidate.type === undefined) return false;
+  if (!TOP_LEVEL_BINDABLE_TYPES.has(candidate.type)) return false;
+  const parsed = ctx.parsedFileOf?.(candidate.filePath);
+  if (parsed === undefined) return false;
+  const ids = rDefIds(parsed);
+  return ids.all.has(candidate.nodeId) && !ids.topLevel.has(candidate.nodeId);
+}
+
+/**
+ * Refuse a `global-name-fallback` guess that R cannot make. Returns `false` (veto) when the
+ * candidate is a function or class bound inside another function (not at top level), or when
+ * the caller package's NAMESPACE contradicts the guess. The NAMESPACE veto applies only when
+ * ALL of these hold:
  *
  *  - the caller file lives under `<pkgDir>/R/**` of a package with a NAMESPACE
  *    that has an `importFrom(P, <site.name>)` entry (the LAST such entry over
@@ -901,7 +957,7 @@ export interface RGlobalNameFallbackContext {
  *    re-exports the name from a third package and the candidate may be the
  *    real origin (unknown per-package names = cannot decide = allow).
  *
- * Everything else — no config, caller outside a package `R/` (`tests/`,
+ * Everything else — no config, no parse of the candidate's file, caller outside a package `R/` (`tests/`,
  * `scripts/`, root `plumber.R`), no entry, candidate outside any package
  * `R/` — answers `true`, so `source()`/`library()` script flows are untouched.
  *
@@ -916,6 +972,11 @@ export interface RGlobalNameFallbackContext {
  * tokenised, so a later `import(pkg)` that R would prefer is invisible.
  */
 export function isRGlobalNameFallbackPlausible(ctx: RGlobalNameFallbackContext): boolean {
+  // A function or class bound inside another function lives in that call's frame: no other
+  // function, in this file or another, can reach it by its bare name. Only top-level
+  // definitions are candidates for a unique-name guess.
+  if (isClosureLocalCandidate(ctx)) return false;
+
   const cfg = ctx.resolutionConfig as RPackageConfig | null | undefined;
   if (
     typeof cfg !== 'object' ||
