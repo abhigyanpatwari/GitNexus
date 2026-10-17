@@ -457,7 +457,15 @@ withTestLbugDB(
       expect(findings.map((f: any) => f.source.function)).toContain('returnedHandler');
       expect(
         findings.some((f: any) =>
-          ['mount', 'makeNamed', 'makeAnonymous', 'makeExpression'].includes(f.source.function),
+          [
+            'mount',
+            'makeNamed',
+            'makeAnonymous',
+            'makeExpression',
+            'makeFilterHandler',
+            'mountSnippet',
+            'mountIdentity',
+          ].includes(f.source.function),
         ),
       ).toBe(false);
       expect(new Set(findings.map((f: any) => f.source.function)).size).toBe(11);
