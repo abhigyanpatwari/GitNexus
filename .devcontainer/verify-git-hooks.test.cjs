@@ -94,6 +94,32 @@ test('Husky verification rejects an explicitly disabled hook', (t) => {
   assert.match(result.stderr, /HUSKY=0 disables/);
 });
 
+for (const init of ['export HUSKY=0\n', 'exit 0\n']) {
+  test(`Husky verification rejects startup configuration ${init.trim()}`, (t) => {
+    const repo = fixture(t);
+    const marker = repo.tool('node_modules/.bin/lint-staged', 1);
+    fs.mkdirSync(path.join(repo.root, 'xdg/husky'), { recursive: true });
+    fs.writeFileSync(path.join(repo.root, 'xdg/husky/init.sh'), init);
+    const result = repo.verify();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /startup configuration disables or skips/);
+    // Demonstrate why the verifier must fail: real Git would skip the formatter.
+    assert.equal(repo.commit().status, 0);
+    assert.equal(fs.existsSync(marker), false);
+  });
+}
+
+test('Husky probe accepts enabled startup configuration without running the tracked hook', (t) => {
+  const repo = fixture(t);
+  const marker = repo.tool('node_modules/.bin/lint-staged', 1);
+  fs.mkdirSync(path.join(repo.root, 'xdg/husky'), { recursive: true });
+  fs.writeFileSync(path.join(repo.root, 'xdg/husky/init.sh'), 'export HUSKY=1\nprintf startup\n');
+  assert.equal(repo.verify().status, 0);
+  assert.equal(fs.existsSync(marker), false);
+  assert.equal(repo.commit().status, 1);
+  assert.equal(fs.existsSync(marker), true);
+});
+
 test('Git rejects a commit when the actual pre-commit formatter fails', (t) => {
   const repo = fixture(t);
   const marker = repo.tool('node_modules/.bin/lint-staged', 1);

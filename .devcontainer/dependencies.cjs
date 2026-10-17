@@ -16,7 +16,7 @@ function fingerprint(directory, runtime = process) {
   const hash = crypto.createHash('sha256');
   hash.update(
     JSON.stringify([
-      2,
+      3,
       runtime.version,
       runtime.versions.modules,
       runtime.platform,
@@ -38,6 +38,9 @@ function fingerprint(directory, runtime = process) {
     hash.update(fs.readFileSync(sibling));
   }
   if (fs.existsSync(path.join(directory, 'scripts/build-tree-sitter-grammars.cjs'))) {
+    hash.update(
+      JSON.stringify({ skipOptionalGrammars: process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1' }),
+    );
     // Blob IDs cover committed native inputs; the diff covers local tracked
     // edits. Do not read npm credential files or hash large unchanged prebuilds.
     for (const args of [

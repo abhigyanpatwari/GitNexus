@@ -51,9 +51,74 @@ test('profile generator rejects unsafe values and changed canonical layout', () 
   assert.throws(() => profile(source, { ref: '--upload-pack=bad' }), /Invalid/);
   assert.throws(() => profile(source, { image: 'image;bad' }), /Invalid/);
   assert.throws(
+    () => profile(source, { imageOnly: true, image: 'ghcr.io/example/image' }),
+    /--image cannot/,
+  );
+  for (const url of ['--upload-pack=bad', 'ext::command', 'https://token@github.com/user/repo.git'])
+    assert.throws(() => profile(source, { native: true, url }), /Invalid clone URL/);
+  assert.throws(
     () => profile(source.replace('"context": "."', '"context": "elsewhere"')),
     /layout changed/,
   );
+});
+
+test('native profiles accept fork remotes over HTTPS and Git SSH', () => {
+  for (const url of [
+    'https://github.com/contributor/GitNexus.git',
+    'git@github.com:contributor/GitNexus.git',
+    'ssh://git@example.com:2222/contributor/GitNexus.git',
+  ]) {
+    const c = parse(profile(source, { native: true, url, ref: 'feature/fork-only' }));
+    assert.equal(c.containerEnv.GITNEXUS_CLONE_URL, url);
+    assert.equal(c.containerEnv.GITNEXUS_CLONE_REF, 'feature/fork-only');
+  }
+});
+
+test('profile CLI validates combinations before writing and generates fork configuration', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-profile-cli-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const config = path.join(root, '.devcontainer');
+  fs.mkdirSync(config);
+  for (const file of ['profile.cjs', 'devcontainer.json', 'devcontainer-lock.json'])
+    fs.copyFileSync(path.join(__dirname, file), path.join(config, file));
+  fs.mkdirSync(path.join(root, 'gitnexus-web'));
+  fs.writeFileSync(
+    path.join(root, 'gitnexus-web/package-lock.json'),
+    JSON.stringify({
+      packages: { 'node_modules/@playwright/test': { version: '1.63.0' } },
+    }),
+  );
+  const run = (...args) =>
+    spawnSync(process.execPath, [path.join(config, 'profile.cjs'), ...args], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+  for (const [args, error] of [
+    [
+      ['image-build', '--image', 'ghcr.io/example/image'],
+      /--image cannot be used with image-build/,
+    ],
+    [['native', '--url'], /--url requires a value/],
+    [['native', '--ref', '--ui'], /--ref requires a value/],
+    [['prebuilt', '--url', 'https://github.com/user/repo.git'], /require the native profile/],
+    [['native', '--ref', 'main', '--ref', 'other'], /Duplicate profile argument/],
+  ]) {
+    const result = run(...args);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, error);
+    assert.equal(fs.existsSync(path.join(config, 'generated')), false);
+  }
+  const result = run(
+    'native',
+    '--url',
+    'https://github.com/contributor/GitNexus.git',
+    '--ref',
+    'feature/fork-only',
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const c = parse(fs.readFileSync(path.join(config, 'generated/devcontainer.json'), 'utf8'));
+  assert.equal(c.containerEnv.GITNEXUS_CLONE_URL, 'https://github.com/contributor/GitNexus.git');
+  assert.equal(c.containerEnv.GITNEXUS_CLONE_REF, 'feature/fork-only');
 });
 
 test('native workspace preserves edits, rejects a different origin and resumes interrupted fetches', (t) => {
@@ -97,6 +162,10 @@ test('native workspace preserves edits, rejects a different origin and resumes i
   const ownership = JSON.parse(fs.readFileSync(ownershipLog, 'utf8'));
   assert.deepEqual(ownership.slice(0, 4), ['-n', 'find', checkout, '-xdev']);
   assert.ok(ownership.includes('-h'));
+  const checkoutGit = (...args) =>
+    execFileSync('git', args, { cwd: checkout, encoding: 'utf8' }).trim();
+  assert.equal(checkoutGit('rev-parse', '--abbrev-ref', '@{upstream}'), 'origin/main');
+  assert.match(checkoutGit('pull'), /Already up to date/);
   fs.writeFileSync(path.join(checkout, 'file'), 'local edits');
   bootstrap(checkout, origin, 'main');
   assert.equal(fs.readFileSync(path.join(checkout, 'file'), 'utf8'), 'local edits');
@@ -106,6 +175,13 @@ test('native workspace preserves edits, rejects a different origin and resumes i
   git('branch', 'new-branch');
   bootstrap(retry, origin, 'new-branch');
   assert.equal(fs.readFileSync(path.join(retry, 'file'), 'utf8'), 'source');
+  assert.equal(
+    execFileSync('git', ['rev-parse', '--abbrev-ref', '@{upstream}'], {
+      cwd: retry,
+      encoding: 'utf8',
+    }).trim(),
+    'origin/new-branch',
+  );
   const conflict = path.join(root, 'conflict');
   fs.mkdirSync(conflict);
   fs.writeFileSync(path.join(conflict, 'file'), 'pre-existing user file');

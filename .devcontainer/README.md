@@ -100,6 +100,9 @@ node .devcontainer/profile.cjs ui
 # Combine the native workspace and UI support.
 node .devcontainer/profile.cjs native --ui --ref main
 
+# Work on a branch pushed to your own fork (HTTPS or Git SSH).
+node .devcontainer/profile.cjs native --url https://github.com/YOUR-NAME/GitNexus.git --ref your-branch
+
 # Pull a published toolchain image instead of building locally.
 node .devcontainer/profile.cjs prebuilt
 node .devcontainer/profile.cjs prebuilt --ui
@@ -107,13 +110,15 @@ node .devcontainer/profile.cjs prebuilt --ui
 
 These commands overwrite the ignored `.devcontainer/generated/devcontainer.json`. Select that configuration when reopening the folder in Dev Containers, or pass `--config .devcontainer/generated/devcontainer.json` to the Dev Container CLI. Regenerate after changing the main configuration. Existing containers need recreation when switching workspace mounts.
 
-The native profile clones the selected **remote branch** of GitNexus into its volume before dependency setup. It does not copy uncommitted host edits. Push your branch first and use `--ref your-branch` to work on it. Reused volumes keep their current branch and local changes; the bootstrap neither resets nor automatically pulls an existing checkout. The volume is the authoritative checkout: use Git to export changes before removing it. Host credentials/configuration still use the existing read-only staging mounts.
+The native profile clones the selected **remote branch** of GitNexus into its volume before dependency setup. It does not copy uncommitted host edits. Push your branch first and use `--ref your-branch` to work on it; contributors using a fork must also pass `--url` for that fork. HTTPS, `git@host:owner/repo.git`, and `ssh://git@host/owner/repo.git` URLs are supported without embedded HTTPS credentials. Fresh checkouts track their remote branch, so ordinary `git pull` and `git push` work. Reused volumes keep their current branch and local changes; the bootstrap neither resets nor automatically pulls an existing checkout. The volume is the authoritative checkout: use Git to export changes before removing it. Host credentials/configuration still use the existing read-only staging mounts.
+
+`--ref` and `--url` apply only to `native`. `--image` selects an existing image for consumer profiles; `image-build` accepts only `--ui`, since its build output is named by the publishing command.
 
 UI profiles install OS dependencies during the image build using the Playwright version in `gitnexus-web/package-lock.json`. Setup installs matching Chromium binaries into a persistent browser-cache volume. They also allocate 1 GiB of private shared memory. Prebuilt UI profiles require the `main-ui` image variant; explicit images passed with `--image` must include those OS dependencies.
 
 ## Dependency reuse, storage and diagnostics
 
-Setup records completed installations inside each dependency volume. Fingerprints cover package manifests, lockfiles, local file-dependency manifests, Node version/ABI, npm version, architecture, and tracked native grammar/build inputs. A matching receipt with all direct dependencies present skips `npm ci`. Missing dependencies or changed inputs cause a clean reinstall, with lifecycle scripts enabled. Failed installs leave no valid receipt.
+Setup records completed installations inside each dependency volume. Fingerprints cover package manifests, lockfiles, local file-dependency manifests, Node version/ABI, npm version, architecture, and tracked native grammar/build inputs. The CLI receipt also includes the effective `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` setting. A matching receipt with all direct dependencies present skips `npm ci`. Missing dependencies or changed inputs cause a clean reinstall, with lifecycle scripts enabled. Failed installs leave no valid receipt.
 
 Husky preparation and verification **always run**, including cached setup. Shared and CLI source builds run independently of dependency reuse, so pulling source changes still refreshes compiled output. After pulling changes in a running container, run:
 
@@ -393,10 +398,10 @@ VS Code's Ports panel shows forwarded ports once their listener starts.
 - **Memory follows the running workload.** The image leaves `NODE_OPTIONS` unset, so Node uses its defaults and `gitnexus analyze` uses its RAM-aware sizing. For a specific indexing run, use `gitnexus analyze --memory-budget 4096` to set a 4 GiB heap budget. Docker Desktop's VM memory allocation still bounds the container.
 - **LadybugDB integration tests may fail in containers** (file-locking, `AGENTS.md` § Testing). Default to `npm run test:unit` inside the container; run integration tests on the host. Tracking issue: documented as a known limitation.
 - **Single-writer LadybugDB constraint** (`GUARDRAILS.md` § LadybugDB lock). Don't run `gitnexus analyze` on the host and inside the container against the same `.gitnexus/` directory simultaneously — the second writer will get `database busy`.
-- **Native grammar builds add ~30s to first install.** Tree-sitter Dart/Proto/Swift/Kotlin are all vendored uniformly: `node-gyp-build` picks a committed GitNexus-built prebuilt `.node` at install time (no compile), and only falls back to compiling from the vendored source during `postinstall` if no prebuild matches the host (then a toolchain is needed). Set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` (in your shell or `remoteEnv`, then rebuild) to skip all four; each loses parsing for the affected language(s), and the install still succeeds.
+- **Native grammar builds add ~30s to first install.** Tree-sitter Dart/Proto/Swift/Kotlin/Zig are all vendored uniformly: `node-gyp-build` picks a committed GitNexus-built prebuilt `.node` at install time (no compile), and only falls back to compiling from the vendored source during `postinstall` if no prebuild matches the host (then a toolchain is needed). Set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` (in your shell or `remoteEnv`, then rebuild) to skip these optional grammars; each loses parsing for the affected language(s), and the install still succeeds. Changing this setting invalidates the CLI dependency receipt, including when it is removed to restore parsing.
 - **`tree-sitter-kotlin`/`tree-sitter-swift` warnings on install** only appear when no prebuild matches the platform-arch (per `AGENTS.md`); they are non-fatal — parsing for that language is simply unavailable.
 - **`.mcp.json` works inside the container**: `npx -y gitnexus@latest mcp` resolves cleanly because npm registry is reachable and the workspace bind mount exposes the same `.mcp.json` the host sees.
-- **Husky pre-commit is verified during setup.** The root `npm install` in `updateContentCommand` installs the hook via `package.json` `prepare`. Only its generated `.husky/_` cache is cleared for stale Windows permissions; the tracked `.husky/pre-commit` stays intact. Setup fails if the hook is missing, Git points elsewhere, or `HUSKY=0` disables it. Run `npm run prepare` at the repository root to restore the hook.
+- **Husky pre-commit is verified during setup.** Root preparation always installs the hook, including cached dependency runs. Only its generated `.husky/_` cache is cleared for stale Windows permissions; the tracked `.husky/pre-commit` stays intact. Setup fails if the hook is missing, Git points elsewhere, or the environment or Husky's `init.sh` disables or skips it. Verification runs the installed Husky helper against a temporary sentinel hook without running the real formatter or changing staged files. Run `npm run prepare` at the repository root to restore the hook, and keep Husky enabled in its startup configuration.
 
 ## Rebuild / reset
 

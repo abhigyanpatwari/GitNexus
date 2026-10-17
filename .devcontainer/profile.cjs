@@ -10,10 +10,26 @@ function replaceOnce(text, pattern, replacement) {
 
 function profile(
   source,
-  { native = false, ui = false, image, imageOnly = false, ref = 'main', playwright } = {},
+  {
+    native = false,
+    ui = false,
+    image,
+    imageOnly = false,
+    ref = 'main',
+    playwright,
+    url = 'https://github.com/abhigyanpatwari/GitNexus.git',
+  } = {},
 ) {
+  if (imageOnly && image) throw new Error('--image cannot be used with image-build');
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(ref)) throw new Error('Invalid clone branch');
   if (image && !/^[a-z0-9][a-z0-9./:_@-]+$/.test(image)) throw new Error('Invalid image reference');
+  if (
+    native &&
+    !/^(?:https:\/\/[a-zA-Z0-9.-]+(?::[0-9]+)?\/|ssh:\/\/git@[a-zA-Z0-9.-]+(?::[0-9]+)?\/|git@[a-zA-Z0-9.-]+:)[a-zA-Z0-9._/-]+$/.test(
+      url,
+    )
+  )
+    throw new Error('Invalid clone URL; use HTTPS or Git SSH without embedded credentials');
   let result = source;
   if (image) {
     const start = result.indexOf('  "build": {');
@@ -44,7 +60,7 @@ function profile(
     result = replaceOnce(
       result,
       /"CODEX_HOME":/,
-      '"GITNEXUS_CLONE_URL": "https://github.com/abhigyanpatwari/GitNexus.git",\n    ' +
+      `"GITNEXUS_CLONE_URL": ${JSON.stringify(url)},\n    ` +
         `"GITNEXUS_CLONE_REF": ${JSON.stringify(ref)},\n    "CODEX_HOME":`,
     );
     result = replaceOnce(
@@ -85,33 +101,46 @@ function profile(
 
 module.exports = { profile };
 if (require.main === module) {
-  const args = process.argv.slice(2);
-  const known = new Set(['native', 'ui', 'prebuilt', 'image-build', '--ui', '--image', '--ref']);
-  for (let i = 0; i < args.length; i++) {
-    if (!known.has(args[i])) throw new Error(`Unknown profile argument: ${args[i]}`);
-    if (['--image', '--ref'].includes(args[i])) i++;
-  }
-  if (!['native', 'ui', 'prebuilt', 'image-build'].includes(args[0]))
+  const [mode, ...args] = process.argv.slice(2);
+  if (!['native', 'ui', 'prebuilt', 'image-build'].includes(mode))
     throw new Error(
-      'Usage: node .devcontainer/profile.cjs native|ui|prebuilt|image-build [--ui] [--image IMAGE] [--ref BRANCH]',
+      'Usage: node .devcontainer/profile.cjs native [--ui] [--image IMAGE] [--ref BRANCH] [--url URL]\n' +
+        '       node .devcontainer/profile.cjs ui [--image IMAGE]\n' +
+        '       node .devcontainer/profile.cjs prebuilt [--ui] [--image IMAGE]\n' +
+        '       node .devcontainer/profile.cjs image-build [--ui]',
     );
-  const value = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
-  if (args.includes('--image') && !value('--image')) throw new Error('--image requires a value');
-  if (args.includes('--ref') && !value('--ref')) throw new Error('--ref requires a value');
+  const options = new Map();
+  for (let i = 0; i < args.length; i++) {
+    const flag = args[i];
+    if (!['--ui', '--image', '--ref', '--url'].includes(flag))
+      throw new Error(`Unknown profile argument: ${flag}`);
+    if (options.has(flag)) throw new Error(`Duplicate profile argument: ${flag}`);
+    if (flag === '--ui') options.set(flag, true);
+    else {
+      const value = args[++i];
+      if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value`);
+      options.set(flag, value);
+    }
+  }
+  if (mode === 'image-build' && options.has('--image'))
+    throw new Error('--image cannot be used with image-build');
+  if (mode !== 'native' && (options.has('--ref') || options.has('--url')))
+    throw new Error('--ref and --url require the native profile');
   const lock = JSON.parse(
     fs.readFileSync(path.join(__dirname, '../gitnexus-web/package-lock.json')),
   );
   const output = path.join(__dirname, 'generated');
   const contents = profile(fs.readFileSync(path.join(__dirname, 'devcontainer.json'), 'utf8'), {
-    native: args[0] === 'native',
-    ui: args[0] === 'ui' || args.includes('--ui'),
+    native: mode === 'native',
+    ui: mode === 'ui' || options.has('--ui'),
     image:
-      value('--image') ||
-      (args[0] === 'prebuilt'
-        ? `ghcr.io/abhigyanpatwari/gitnexus-devcontainer:main${args.includes('--ui') ? '-ui' : ''}`
+      options.get('--image') ||
+      (mode === 'prebuilt'
+        ? `ghcr.io/abhigyanpatwari/gitnexus-devcontainer:main${options.has('--ui') ? '-ui' : ''}`
         : undefined),
-    imageOnly: args[0] === 'image-build',
-    ref: value('--ref'),
+    imageOnly: mode === 'image-build',
+    ref: options.get('--ref'),
+    url: options.get('--url'),
     playwright: lock.packages['node_modules/@playwright/test'].version,
   });
   fs.mkdirSync(output, { recursive: true });

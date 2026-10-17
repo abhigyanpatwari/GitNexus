@@ -30,8 +30,9 @@ function bootstrap(root, url, ref) {
   } catch {
     /* Resume an interrupted initial fetch. */
   }
-  git('fetch', 'origin', ref);
-  git('checkout', '-b', ref, 'FETCH_HEAD');
+  const upstream = `refs/remotes/origin/${ref}`;
+  git('fetch', 'origin', `refs/heads/${ref}:${upstream}`);
+  git('checkout', '--track', '-b', ref, upstream);
 }
 
 module.exports = { bootstrap };

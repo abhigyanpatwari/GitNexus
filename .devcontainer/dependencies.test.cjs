@@ -135,6 +135,46 @@ test('failed reinstall removes its receipt and is retried', (t) => {
   assert.equal(ensureDependencies(f.root, { run: f.run }), true);
 });
 
+test('changing optional-grammar policy invalidates the core install receipt', (t) => {
+  const f = fixture(t);
+  const previous = process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS;
+    else process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS = previous;
+  });
+  fs.mkdirSync(path.join(f.root, 'scripts'));
+  fs.writeFileSync(path.join(f.root, 'scripts/build-tree-sitter-grammars.cjs'), '// fixture');
+  execFileSync('git', ['init', '-q'], { cwd: f.root });
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'core.hooksPath=/dev/null',
+      '-c',
+      'commit.gpgsign=false',
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'fixture',
+    ],
+    { cwd: f.root, stdio: 'pipe' },
+  );
+  process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS = '1';
+  assert.equal(ensureDependencies(f.root, { run: f.run }), true);
+  assert.equal(ensureDependencies(f.root, { run: f.run }), false);
+  delete process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS;
+  assert.equal(ensureDependencies(f.root, { run: f.run }), true);
+  process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS = '0';
+  assert.equal(ensureDependencies(f.root, { run: f.run }), false);
+  process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS = '1';
+  assert.equal(ensureDependencies(f.root, { run: f.run }), true);
+  assert.equal(f.count(), 3);
+});
+
 test('cached lifecycle restores real Husky and rebuilds changed sources', (t) => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.root, 'package.json'), '{}');
