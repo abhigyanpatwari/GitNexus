@@ -214,6 +214,15 @@ function superassignedName(node: Parser.SyntaxNode): string | null {
   return target?.type === 'identifier' ? rBareName(target.text) : null;
 }
 
+/**
+ * A name R also writes between its operands: an infix function (`%+%`, `%in%`) or an operator
+ * (`+`, `[[`). Its uses are operator tokens, not `identifier` nodes, so a rename would edit the
+ * definition and leave every `a %+% b` calling a function that no longer exists.
+ */
+function isOperatorName(name: string): boolean {
+  return /^%.*%$/.test(name) || /^[^A-Za-z0-9._]+$/.test(name);
+}
+
 const unsupported = (message: string): RenameIssue => ({
   code: 'unsupported_occurrence',
   status: 'unsupported',
@@ -277,6 +286,10 @@ export const rRenameProvider: RenameProvider = {
     const name = rBareName(target.qualifiedName ?? '');
     if (target.type !== 'Function')
       return unsupported('Only plain R functions can be renamed; classes and members are refused.');
+    if (isOperatorName(name) || isOperatorName(newName))
+      return unsupported(
+        'An infix function or operator (`%op%`, `+`) is also written between its operands; those uses are not renamed.',
+      );
     // Only a function can be an S3 generic: an R6 or S4 class, a member or a field of the same
     // spelling is not one, so a name like `Widget.foo` beside `Widget <- R6Class(...)` is free.
     const defined = new Set(
