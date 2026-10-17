@@ -45,8 +45,9 @@
   "updateRemoteUserUID": true,
   // Reap orphaned subprocesses from CLI workers and test runs.
   "init": true,
-  // Optional 9p experiment: add "capAdd": ["SYS_ADMIN"] and enable
-  // WORKSPACE_9P_TUNE below, then rebuild. See README before granting it.
+  // Allow the startup helper to attempt a 9p remount. See README for the
+  // effect on read-only mount protections and how to disable it.
+  "capAdd": ["SYS_ADMIN"],
 
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
@@ -58,13 +59,11 @@
   //    single config files (always), plus the shareable subfolders (Claude
   //    plugins/skills/agents/memory/commands; Codex plugins/prompts/memories/
   //    skills; Cursor plugins/rules/commands/agents/skills) ONCE on first create.
-  //    Everything copied lands in the per-container named volume (role 2). It is
-  //    read-only so a container process can NEVER write back to the host — there
-  //    is no read-write bind into the host's CLI config at all. This protects the
-  //    host's on-disk setup: a compromised in-container dependency cannot drop a
-  //    skill, agent, command, or plugin onto the host for the next host session
-  //    to load. The cost is that host and container DIVERGE after the first
-  //    create — host edits don't reach the container until you wipe the config
+  //    Everything copied lands in the per-container named volume (role 2).
+  //    The host stage is read-only; lifecycle scripts write to container copies.
+  //    SYS_ADMIN is enabled for 9p tuning, so read-only flags are not a security
+  //    boundary against privileged container code. Host and container DIVERGE
+  //    after first create — host edits don't reach it until you wipe the config
   //    volume and rebuild. See README § "Trust boundary, concretely".
   //
   // 2. AI CLI container config — one named volume per devcontainer. CODEX_HOME
@@ -206,19 +205,19 @@
     //   "source=${localEnv:HOME}/.cursor/projects,target=/home/node/.cursor/projects,type=bind",
 
     // Read-only host stage that post-create.sh copies FROM on container-create.
-    // It is read-only so a container process can never write back to host CLI
-    // state — that write-back is the attack vector we block. post-create.sh
+    // Lifecycle scripts do not write back to host CLI state. The default
+    // SYS_ADMIN capability can weaken read-only mount protections. post-create.sh
     // reads two kinds of thing from here: (a) the credential + identity files
     // (copied into the volume always), and (b) the shareable dirs — skills,
     // agents, plugins, memory, commands, prompts, rules — which it copies into
     // the volume ONCE on first create (see step 3/4). Nothing here is bound
-    // read-write into the container, so the host's on-disk setup is protected.
+    // read-write into the container by this configuration.
     "source=${localEnv:HOME}/.claude,target=/host/.claude,type=bind,readonly",
     "source=${localEnv:HOME}/.codex,target=/host/.codex,type=bind,readonly",
     "source=${localEnv:HOME}/.cursor,target=/host/.cursor,type=bind,readonly",
     // Read-only host stage for the claude-mem store. post-create.sh COPIES it
     // into the claude-mem named volume on first create (seed-once). Read-only so
-    // the container can never write back to the host's live DB — the seed is a
+    // the seed script does not write back to the host's live DB — the seed is a
     // one-way snapshot. ensure-host-config-dirs.cjs creates ~/.claude-mem on the
     // host so this bind resolves even when claude-mem was never installed there.
     "source=${localEnv:HOME}/.claude-mem,target=/host/.claude-mem,type=bind,readonly",
@@ -233,8 +232,8 @@
     // now COPIED once from the read-only /host/.<cli> stage into the per-container
     // named volume by post-create.sh (step 3/4), exactly like claude-mem and the
     // session volumes. Trade-offs of the copy model:
-    //   - The container gets its OWN writable copy and can never write back to
-    //     the host. Host setup is protected.
+    //   - CLI edits use the container's OWN writable copy. SYS_ADMIN can bypass
+    //     read-only protections; see README for the trust boundary.
     //   - It is seed-ONCE: host edits made after first create don't reach the
     //     container until you remove the config volume and rebuild. Container
     //     edits persist across rebuilds. (See README § Rebuild/reset to re-seed.)
@@ -319,7 +318,7 @@
   "containerEnv": {
     "CODEX_HOME": "/home/node/.codex",
     "HISTFILE": "/commandhistory/.zsh_history",
-    "WORKSPACE_9P_TUNE": "${localEnv:WORKSPACE_9P_TUNE:0}",
+    "WORKSPACE_9P_TUNE": "${localEnv:WORKSPACE_9P_TUNE:1}",
     "WORKSPACE_9P_MSIZE": "${localEnv:WORKSPACE_9P_MSIZE:1048576}"
   },
 
@@ -394,7 +393,7 @@
   // - `postCreateCommand` runs once on container-create. It owns syncing the
   //   AI CLI credentials and identity from the host. That work should happen
   //   exactly once per container instance, not on every content update.
-  // - `postStartCommand` optionally attempts 9p tuning on every start; failure
+  // - `postStartCommand` attempts 9p tuning on every start unless disabled; failure
   //   never blocks startup.
   // Run lifecycle scripts with an explicit `bash` so they don't depend on the script's
   // executable bit surviving the workspace bind mount.

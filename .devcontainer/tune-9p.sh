@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Optional best-effort 9p remount. Requires SYS_ADMIN; never blocks startup on
-# failure. A successful mount command does not prove the kernel changed msize.
+# Best-effort 9p remount, enabled by default. Requires SYS_ADMIN; failures never
+# block startup. A successful mount command does not prove msize changed.
 set -u
 
-if [ "${WORKSPACE_9P_TUNE:-0}" != "1" ]; then
+if [ "${WORKSPACE_9P_TUNE:-1}" != "1" ]; then
     exit 0
 fi
 
@@ -46,7 +46,7 @@ if ! command -v sudo >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; th
 fi
 if ! timeout --kill-after=1s 5s sudo -n mount -o "remount,msize=${TARGET_MSIZE}" "$MOUNTPOINT"; then
     echo "[tune-9p] remount failed or timed out; SYS_ADMIN may be missing, or the kernel/server rejected it"
-    echo "[tune-9p] after adding capAdd: [SYS_ADMIN], rebuild the devcontainer for it to apply"
+    echo "[tune-9p] rebuild the devcontainer to apply its capAdd: [SYS_ADMIN] setting"
     exit 0
 fi
 

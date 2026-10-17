@@ -69,6 +69,12 @@ touch "$TUNE_TEST_ROOT/remounted"
   return { root, log, run };
 }
 
+test('tuning is enabled when WORKSPACE_9P_TUNE is unset', (t) => {
+  const f = fixture(t, { WORKSPACE_9P_TUNE: undefined });
+  assert.match(f.run(), /verified at or above target/);
+  assert.ok(fs.existsSync(f.log));
+});
+
 test('disabled tuning does not inspect or remount anything', (t) => {
   const f = fixture(t, { WORKSPACE_9P_TUNE: '0' });
   assert.equal(f.run(), '');
