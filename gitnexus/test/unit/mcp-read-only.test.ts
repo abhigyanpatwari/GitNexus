@@ -384,23 +384,30 @@ describe('MCP read-only mode', () => {
       'dry_run: false, plan_token: "<plan_token from this preview>", repo: "test"',
       'detect_changes',
     ],
-    ['false', { dry_run: false }, 'detect_changes({repo: "test"})', 'dry_run: false'],
+    [
+      'false',
+      { dry_run: false, plan_token: 'reviewed-preview-token' },
+      'detect_changes({repo: "test"})',
+      'dry_run: false',
+    ],
   ])(
     'forwards ordinary-mode rename as sent and hints the right next step when dry_run is %s',
     async (_label, extra, expectedHint, forbiddenHint) => {
       const session = await connect();
       try {
-        session.backend.callTool.mockResolvedValueOnce({
-          status: 'success',
-          applied: true,
-          application_status: 'applied',
-        });
+        const isApply = 'dry_run' in extra && extra.dry_run === false;
+        session.backend.callTool.mockResolvedValueOnce(
+          isApply
+            ? { status: 'success', applied: true, application_status: 'applied' }
+            : { status: 'success', plan_token: 'reviewed-preview-token' },
+        );
         const arguments_ = {
           symbol_uid: 'Function:src/a.ts:a',
           new_name: 'b',
           repo: 'test',
           ...extra,
         };
+        if (isApply) expect(arguments_).toHaveProperty('plan_token', expect.any(String));
         const response = await session.client.callTool({ name: 'rename', arguments: arguments_ });
         expect(response.isError).not.toBe(true);
         expect(session.backend.callTool).toHaveBeenCalledWith('rename', arguments_);
@@ -412,6 +419,32 @@ describe('MCP read-only mode', () => {
       }
     },
   );
+
+  it('requests a fresh preview when ordinary-mode apply has no plan token', async () => {
+    const session = await connect();
+    try {
+      session.backend.callTool.mockResolvedValueOnce({
+        status: 'error',
+        code: 'plan_required',
+        error: 'Applying a rename requires the plan_token from a reviewed preview.',
+      });
+      const arguments_ = {
+        symbol_uid: 'Function:src/a.ts:a',
+        new_name: 'b',
+        repo: 'test',
+        dry_run: false,
+      };
+      const response = await session.client.callTool({ name: 'rename', arguments: arguments_ });
+      expect(session.backend.callTool).toHaveBeenCalledWith('rename', arguments_);
+      const text = (response.content[0] as { text: string }).text;
+      expect(text).toContain('plan_required');
+      expect(text).toContain('No successful apply was confirmed');
+      expect(text).toContain('request and review a fresh rename preview');
+      expect(text).not.toContain('detect_changes');
+    } finally {
+      await session.close();
+    }
+  });
 
   it.each([
     ['omitted', {}],

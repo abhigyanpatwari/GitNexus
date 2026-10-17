@@ -217,17 +217,28 @@ describe('immutable rename preview capabilities', () => {
     await expect(take(token)).rejects.toMatchObject({ code: 'source_set_changed' });
   });
   it('rejects a changed physical target with identical source bytes', async () => {
-    for (const directory of ['first', 'second']) {
+    for (const directory of ['.first', '.second']) {
       await fs.mkdir(path.join(root, directory));
       await fs.writeFile(path.join(root, directory, 'a.ts'), 'old();');
     }
     const link = path.join(root, 'linked');
     const kind = process.platform === 'win32' ? 'junction' : 'dir';
-    await fs.symlink(path.join(root, 'first'), link, kind);
+    await fs.symlink(path.join(root, '.first'), link, kind);
     plan.snapshots = new Map([[path.join(link, 'a.ts'), 'old();']]);
+    plan.edits[0]!.file_path = 'linked/a.ts';
+    const unchanged = await store.remember(
+      root,
+      plan,
+      nodes,
+      [],
+      await renameSourceInventory(root),
+    );
+    expect((await take(unchanged)).targets.get(path.join(link, 'a.ts'))).toBe(
+      await fs.realpath(path.join(link, 'a.ts')),
+    );
     const token = await store.remember(root, plan, nodes, [], await renameSourceInventory(root));
     await fs.unlink(link);
-    await fs.symlink(path.join(root, 'second'), link, kind);
+    await fs.symlink(path.join(root, '.second'), link, kind);
     await expect(take(token)).rejects.toMatchObject({ code: 'source_changed' });
   });
 });

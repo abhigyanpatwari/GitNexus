@@ -25,12 +25,12 @@
  *   - `allowGlobalFreeCallFallback: true` — CJS `require` patterns and
  *     global helpers (e.g. `process`, `console`) benefit from workspace-
  *     wide unique-name fallback. TypeScript uses explicit imports.
- *   - `loadResolutionConfig` is omitted — JavaScript projects don't use
- *     `tsconfig.json` path aliases in general. `tsconfigPaths: null` is
- *     threaded through the resolver adapter.
  *   - `hoistTypeBindingsToModule: true` — JSDoc `@returns {T}` bindings are
  *     synthesized on the function scope and hoisted, matching TypeScript's
  *     method return-type hoisting strategy for cross-file chain resolution.
+ *
+ * JavaScript loads declared tsconfig/jsconfig aliases and workspace-package
+ * data through the same configuration readers as TypeScript.
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
