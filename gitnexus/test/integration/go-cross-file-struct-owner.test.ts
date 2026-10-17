@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,7 +9,6 @@ import {
   emptyParseCache,
   loadParseCache,
   loadParseCacheChunk,
-  PARSE_CACHE_VERSION,
   saveParseCache,
 } from '../../src/storage/parse-cache.js';
 import { mergeStagedDurableParsedFileStore } from '../../src/storage/parsedfile-store.js';
@@ -19,6 +19,8 @@ import { createSemanticModel } from '../../src/core/ingestion/model/index.js';
 import { reconcileOwnership } from '../../src/core/ingestion/scope-resolution/pipeline/reconcile-ownership.js';
 import { buildGraphNodeLookup } from '../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
 import { resolveDefGraphId } from '../../src/core/ingestion/scope-resolution/graph-bridge/ids.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const FIXTURE = path.resolve(__dirname, '../fixtures/go-cross-file-struct-owner');
 const EXPECTED_OWNERS = [
@@ -55,7 +57,7 @@ describe('Go semantic member ownership (#3558, #3559)', () => {
     storage = path.join(temp, 'cache');
     fs.cpSync(FIXTURE, repo, { recursive: true });
     fs.mkdirSync(storage);
-    cache = emptyParseCache(storage);
+    cache = emptyParseCache(parseIdentity, { storagePath: storage, writeStoragePath: storage });
     cold = await runPipelineFromRepo(repo, () => {}, {
       skipGraphPhases: true,
       workerPoolSize: 1,
@@ -66,7 +68,7 @@ describe('Go semantic member ownership (#3558, #3559)', () => {
     await mergeStagedDurableParsedFileStore(
       storage,
       storage,
-      PARSE_CACHE_VERSION,
+      parseIdentity.base,
       new Set(savedKeys),
     );
   });
@@ -135,7 +137,7 @@ describe('Go semantic member ownership (#3558, #3559)', () => {
   });
 
   it('does not cache fabricated owner IDs or ownership edges from parser workers', async () => {
-    const stored = await loadParseCache(storage);
+    const stored = await loadParseCache(storage, parseIdentity, storage);
     const chunks = await Promise.all(
       [...cache.usedKeys].map((key) => loadParseCacheChunk(stored, key)),
     );
@@ -158,7 +160,7 @@ describe('Go semantic member ownership (#3558, #3559)', () => {
       skipGraphPhases: true,
       workerPoolSize: 1,
       chunkByteBudget: 1,
-      parseCache: await loadParseCache(storage),
+      parseCache: await loadParseCache(storage, parseIdentity, storage),
     });
     expect(warm.usedWorkerPool).toBe(false);
     expect(warm.reparsedFileCount).toBe(0);
@@ -174,7 +176,7 @@ describe('Go semantic member ownership (#3558, #3559)', () => {
         skipGraphPhases: true,
         workerPoolSize: 1,
         chunkByteBudget: 1,
-        parseCache: await loadParseCache(storage),
+        parseCache: await loadParseCache(storage, parseIdentity, storage),
       });
       expect(moved.parseCacheHitFileCount).toBeGreaterThan(0);
       expect(goMethodOwners(moved)).toEqual(

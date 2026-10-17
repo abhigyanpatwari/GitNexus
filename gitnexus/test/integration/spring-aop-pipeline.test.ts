@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +8,6 @@ import { decodeSpringAopReason } from '../../src/core/ingestion/frameworks/sprin
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
   loadParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -17,6 +17,8 @@ import {
   pruneAndSaveDurableParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 function writeFixture(root: string, relativePath: string, content: string): void {
   const target = path.join(root, relativePath);
@@ -922,10 +924,11 @@ object KotlinAspect {
       );
 
       const coldCache: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set(),
         storagePath: storage,
+        writeStoragePath: storage,
         onDiskKeys: new Set(),
       };
       const cold = await runPipelineFromRepo(repo, () => {}, {
@@ -940,11 +943,11 @@ object KotlinAspect {
       expect(savedKeys.length).toBeGreaterThan(0);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storage),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
 
-      const warmCache = await loadParseCache(storage);
+      const warmCache = await loadParseCache(storage, parseIdentity, storage);
       expect(warmCache.onDiskKeys).toEqual(new Set(savedKeys));
       const warm = await runPipelineFromRepo(repo, () => {}, {
         skipGraphPhases: true,

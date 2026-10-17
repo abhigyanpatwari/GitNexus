@@ -735,7 +735,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(forceLogs.join('\n')).toContain(
         'Rebuilt the graph and FTS while reusing cached parser output',
       );
-      expect(forceLogs.join('\n')).toContain('increment SCHEMA_BUMP');
+      expect(forceLogs.join('\n')).toContain('Parser compatibility is derived automatically');
       expect(
         await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
       ).toEqual([]);

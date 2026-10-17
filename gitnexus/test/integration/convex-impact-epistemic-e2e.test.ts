@@ -1,10 +1,10 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import fs from 'fs';
 import path from 'path';
 import { beforeAll, expect, it, vi } from 'vitest';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
   loadParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -16,6 +16,8 @@ import {
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
@@ -164,10 +166,11 @@ export const javascriptQuery = query({ handler: async () => null });
       );
 
       const cold: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set(),
         storagePath: cacheDir,
+        writeStoragePath: cacheDir,
         onDiskKeys: new Set(),
       };
       await runPipelineFromRepo(repoDir, () => {}, { parseCache: cold, workerPoolSize: 1 });
@@ -175,11 +178,11 @@ export const javascriptQuery = query({ handler: async () => null });
       const savedKeys = await saveParseCache(cacheDir, cold);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(cacheDir),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
 
-      const warm = await loadParseCache(cacheDir);
+      const warm = await loadParseCache(cacheDir, parseIdentity, cacheDir);
       const replay = await runPipelineFromRepo(repoDir, () => {}, {
         parseCache: warm ?? undefined,
         workerPoolSize: 1,

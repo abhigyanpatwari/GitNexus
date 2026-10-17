@@ -20,6 +20,7 @@ import type {
   ScopeKind,
   ScopeTree,
   ParsedImport,
+  ParsedFile,
   ParsedTypeBinding,
   SymbolDefinition,
   Callsite,
@@ -48,6 +49,7 @@ import type {
   RepoConstants,
 } from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
+import type { FetchWrapperCall } from './route-extractors/fetch-wrapper.js';
 import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
@@ -603,6 +605,31 @@ interface LanguageProviderConfig {
     filePath: string,
     lineOffset: number,
   ) => ExtractedDecoratorRoute[];
+
+  /** JSON-safe provider-owned facts captured from the existing AST and lexical
+   * identities. Shared parsing transports these without interpreting them. */
+  readonly extractRouteFacts?: (
+    tree: Parser.Tree,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => unknown;
+
+  /** Resolve project-wide provider facts before route winner selection. The
+   * callback uses the language's configured ScopeResolver module resolution. */
+  readonly resolveRouteFacts?: (
+    files: readonly { filePath: string; facts: unknown }[],
+    context: {
+      resolveImportTargets: (fromFile: string, moduleSpecifier: string) => readonly string[];
+    },
+  ) => ExtractedDecoratorRoute[];
+
+  /** URL-bearing call candidates from the existing AST, before wrapper names
+   * are known across files. Routes selects known wrappers after parsing. */
+  readonly extractFetchWrapperCalls?: (
+    tree: Parser.Tree,
+    filePath: string,
+    lineOffset: number,
+  ) => FetchWrapperCall[];
 
   /**
    * Name of the function a route decorator captured by the worker's generic

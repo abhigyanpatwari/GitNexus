@@ -27,6 +27,7 @@ interface WorkflowStep {
 
 interface WorkflowJob {
   'timeout-minutes'?: number;
+  strategy?: { matrix?: { os?: string[] } };
   steps?: WorkflowStep[];
 }
 
@@ -279,6 +280,101 @@ describe('workflows that need the web UI install it themselves', () => {
     expect(job?.['timeout-minutes']).toBe(20);
     expect(setup?.with?.['lifecycle-scripts']).toBe('false');
     expect(setup?.with?.build).toBeUndefined();
+  });
+
+  it('exercises the reported native ARM64 runtime alongside Windows and Linux x64', () => {
+    const job = ciJobs['packaged-install-smoke'];
+    expect(job?.strategy?.matrix?.os).toEqual([
+      'windows-latest',
+      'ubuntu-latest',
+      'ubuntu-24.04-arm',
+    ]);
+    const steps = job?.steps ?? [];
+    const setupIdx = stepIndex(steps, (step) => step.uses === './.github/actions/setup-gitnexus');
+    const armNodeIdx = stepIndex(steps, (step) => step.with?.['node-version'] === '22.23.1');
+    expect(armNodeIdx).toBeGreaterThan(setupIdx);
+    expect(steps[armNodeIdx]?.if).toContain("matrix.os == 'ubuntu-24.04-arm'");
+    const assertArch = steps.find((step) => step.name === 'Assert native ARM64 runtime');
+    expect(assertArch?.if).toContain("matrix.os == 'ubuntu-24.04-arm'");
+    expect(String(assertArch?.run)).toContain("process.arch, 'arm64'");
+    expect(String(assertArch?.run)).toContain("process.version, 'v22.23.1'");
+  });
+
+  it('keeps consumer compilation guards after packing and checks both npm lockfile paths', () => {
+    const steps = ciJobs['packaged-install-smoke']?.steps ?? [];
+    const packIdx = stepIndex(steps, (step) => step.name === 'Pack gitnexus tarball');
+    const guardIdx = stepIndex(steps, (step) => step.name === 'Reject ARM64 consumer compilation');
+    const localIdx = stepIndex(
+      steps,
+      (step) => step.name === 'Lock and install tarball in a fresh consumer project',
+    );
+    const globalIdx = stepIndex(
+      steps,
+      (step) => step.name === 'Install gitnexus tarball into isolated prefix',
+    );
+    const checkIdx = stepIndex(
+      steps,
+      (step) => step.name === 'Assert no consumer compilation attempts',
+    );
+    expect(guardIdx).toBeGreaterThan(packIdx);
+    expect(localIdx).toBeGreaterThan(guardIdx);
+    expect(globalIdx).toBeGreaterThan(guardIdx);
+    expect(checkIdx).toBeGreaterThan(globalIdx);
+    expect(steps[guardIdx]?.if).toContain("matrix.os == 'ubuntu-24.04-arm'");
+    expect(steps[checkIdx]?.if).toContain('always()');
+    expect(String(steps[localIdx]?.run)).toContain('for NPM_VERSION in 10.9.4 11.9.0');
+    expect(String(steps[localIdx]?.run)).toContain('cmp package-lock.json expected-lock.json');
+  });
+
+  it.skipIf(process.platform === 'win32')('records a rejected compiler invocation', () => {
+    const steps = ciJobs['packaged-install-smoke']?.steps ?? [];
+    const guard = steps.find((step) => step.name === 'Reject ARM64 consumer compilation');
+    const check = steps.find((step) => step.name === 'Assert no consumer compilation attempts');
+    expect(guard?.run).toBeTypeOf('string');
+    expect(check?.run).toBeTypeOf('string');
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-compile-guard-'));
+    tempDirs.push(dir);
+    const githubPath = path.join(dir, 'github-path');
+    const githubEnv = path.join(dir, 'github-env');
+    const setup = spawnSync('bash', ['-eu', '-o', 'pipefail', '-c', String(guard?.run)], {
+      env: { ...process.env, RUNNER_TEMP: dir, GITHUB_PATH: githubPath, GITHUB_ENV: githubEnv },
+      encoding: 'utf8',
+    });
+    expect(setup.status, setup.stderr).toBe(0);
+    const guardEnv = Object.fromEntries(
+      readFileSync(githubEnv, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => {
+          const separator = line.indexOf('=');
+          return [line.slice(0, separator), line.slice(separator + 1)];
+        }),
+    );
+    const env = {
+      ...process.env,
+      ...guardEnv,
+      PATH: `${readFileSync(githubPath, 'utf8').trim()}${path.delimiter}${process.env.PATH}`,
+    };
+    const clean = spawnSync('bash', ['-eu', '-o', 'pipefail', '-c', String(check?.run)], {
+      env,
+      encoding: 'utf8',
+    });
+    expect(clean.status, clean.stderr).toBe(0);
+    writeFileSync(path.join(dir, 'probe.c'), 'int main(void) { return 0; }\n');
+    const compile = spawnSync('cc', ['-c', 'probe.c', '-o', 'probe.o'], {
+      cwd: dir,
+      env,
+      encoding: 'utf8',
+    });
+    expect(compile.status).toBe(97);
+    expect(compile.stderr).toContain('Unexpected native compilation');
+    expect(existsSync(path.join(dir, 'probe.o'))).toBe(false);
+    const attempted = spawnSync('bash', ['-eu', '-o', 'pipefail', '-c', String(check?.run)], {
+      env,
+      encoding: 'utf8',
+    });
+    expect(attempted.status).toBe(1);
+    expect(attempted.stderr).toContain('Unexpected native compilation');
   });
 });
 

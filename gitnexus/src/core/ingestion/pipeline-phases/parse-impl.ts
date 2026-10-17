@@ -15,6 +15,8 @@
  * @module
  */
 
+import type { LanguageProvider } from '../language-provider.js';
+import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
 import {
   BindingAccumulator,
   enrichExportedTypeMap,
@@ -27,7 +29,6 @@ import {
   loadParseCacheChunk,
   persistParseCacheChunk,
   markParseCacheChunkStale,
-  PARSE_CACHE_VERSION,
   packParseCacheChunks,
 } from '../../../storage/parse-cache.js';
 import {
@@ -41,6 +42,7 @@ import {
   durableChunkHasStaleShards,
 } from '../../../storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../workers/parse-worker.js';
+import { resolveParseWorkerUrl } from '../workers/worker-entry.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
 import type { WorkerExtractedData } from '../parsing-processor.js';
 import {
@@ -116,7 +118,6 @@ import fs from 'node:fs';
 import { heapPressureRemedy, memoryAutopilotDisabled } from '../utils/effective-ram.js';
 import path from 'node:path';
 import v8 from 'node:v8';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { isDev } from '../utils/env.js';
 import { isVerboseIngestionEnabled } from '../utils/verbose.js';
@@ -456,6 +457,7 @@ export async function runChunkedParseAndResolve(
   exportedTypeMap: ExportedTypeMap;
   allFetchCalls: ExtractedFetchCall[];
   allFetchWrapperDefs: FetchWrapperDef[];
+  allFetchWrapperCalls: FetchWrapperCall[];
   allExtractedRoutes: ExtractedRoute[];
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   selectedRoutes: ReadonlySet<ExtractedRoute | ExtractedDecoratorRoute>;
@@ -711,32 +713,11 @@ export async function runChunkedParseAndResolve(
   const getOrCreateWorkerPool = (): WorkerPool => {
     if (workerPool) return workerPool;
     try {
-      // Test-only injection: integration tests pass a custom worker script URL
-      // via `workerUrlForTest` so they can drive the chunk-loop with
-      // deterministically-misbehaving workers without mocking the module import
-      // graph. When unset, the normal src/ → dist/ resolution runs.
-      let workerUrl =
-        options?.workerUrlForTest ?? new URL('../workers/parse-worker.js', import.meta.url);
-      // When running under vitest, import.meta.url points to src/ where no .js exists.
-      // Fall back to the compiled dist/ worker so the pool can spawn real worker threads.
-      const thisDir = fileURLToPath(new URL('.', import.meta.url));
-      if (!options?.workerUrlForTest && !fs.existsSync(fileURLToPath(workerUrl))) {
-        const distWorker = path.resolve(
-          thisDir,
-          '..',
-          '..',
-          '..',
-          '..',
-          'dist',
-          'core',
-          'ingestion',
-          'workers',
-          'parse-worker.js',
-        );
-        if (fs.existsSync(distWorker)) {
-          workerUrl = pathToFileURL(distWorker);
-        }
-      }
+      // Reuse the exact entry captured before cache lookup. Direct pipeline
+      // callers use the same resolver without loading a worker on cache hits.
+      const workerUrl =
+        options?.parseWorkerUrl ??
+        resolveParseWorkerUrl(import.meta.url, options?.workerUrlForTest);
       // Thread the ParsedFile store path into the pool so workers write their
       // own shards (#1983 parallel serialization). `parsedFileStorePath` is
       // declared below but this closure only runs from inside the chunk loop,
@@ -773,8 +754,10 @@ export async function runChunkedParseAndResolve(
   const bindingAccumulator = new BindingAccumulator();
   const allFetchCalls: ExtractedFetchCall[] = [];
   const allFetchWrapperDefs: FetchWrapperDef[] = [];
+  const allFetchWrapperCalls: FetchWrapperCall[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
+  const allRouteFacts: { filePath: string; facts: unknown; routePosition: number }[] = [];
   const allRouterIncludes: ExtractedRouterInclude[] = [];
   const allRouterImports: ExtractedRouterImport[] = [];
   const allRouterConstructorPrefixes: ExtractedRouterConstructorPrefix[] = [];
@@ -807,20 +790,26 @@ export async function runChunkedParseAndResolve(
   // there is no storage path (tests / direct pipeline calls), we fall back to
   // retaining them in `allParsedFiles` (small-repo path, preserves prior
   // behavior). Cleared up-front so a prior run's shards never leak in.
-  const parsedFileStorePath = parseCache?.storagePath;
+  const parsedFileStorePath = options?.parsedFileStorePath ?? parseCache?.writeStoragePath;
   if (parsedFileStorePath) await clearParsedFileStore(parsedFileStorePath);
   // Durable, content-addressed ParsedFile store (#2038 warm-cache coverage) —
   // a sibling of the run-scoped store, NOT cleared per run. Workers write a
   // shard per chunk hash; on a warm parse-cache hit we restore the chunk's
   // shards into the run-scoped store so scope-resolution streams them without
   // re-parsing. `durableHitEntries` is the prior run's path-coverage index,
-  // version-gated by PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk
+  // gated by the same base identity as the worker-result cache (a mismatch ⇒ every chunk
   // re-dispatches, which repopulates the durable store).
   const durableParsedFileDir =
-    parsedFileStorePath !== undefined ? getDurableParsedFileDir(parsedFileStorePath) : undefined;
+    parseCache?.writeStoragePath !== undefined
+      ? getDurableParsedFileDir(parseCache.writeStoragePath)
+      : undefined;
+  const durableReadStoragePath = parseCache?.storagePath;
   const durableHitEntries =
-    durableParsedFileDir !== undefined
-      ? await loadDurableParsedFileIndex(durableParsedFileDir, PARSE_CACHE_VERSION)
+    parseCache && durableReadStoragePath !== undefined
+      ? await loadDurableParsedFileIndex(
+          getDurableParsedFileDir(durableReadStoragePath),
+          parseCache.identity.base,
+        )
       : new Map<string, ReadonlySet<string>>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
@@ -994,12 +983,18 @@ export async function runChunkedParseAndResolve(
         if (chunkWorkerData.fetchCalls?.length) {
           for (const item of chunkWorkerData.fetchCalls) allFetchCalls.push(item);
         }
+        for (const item of chunkWorkerData.fetchWrapperCalls ?? []) allFetchWrapperCalls.push(item);
         if (chunkWorkerData.fetchWrapperDefs?.length) {
           for (const item of chunkWorkerData.fetchWrapperDefs) allFetchWrapperDefs.push(item);
         }
         if (chunkWorkerData.routes?.length) {
           for (const item of chunkWorkerData.routes) allExtractedRoutes.push(item);
         }
+        for (const item of chunkWorkerData.routeFacts ?? [])
+          allRouteFacts.push({
+            ...item,
+            routePosition: item.routePosition + allDecoratorRoutes.length,
+          });
         if (chunkWorkerData.decoratorRoutes?.length) {
           for (const item of chunkWorkerData.decoratorRoutes) allDecoratorRoutes.push(item);
         }
@@ -1342,6 +1337,7 @@ export async function runChunkedParseAndResolve(
         }));
         chunkHash = computeChunkHash(
           entries,
+          parseCache.identity,
           // Only worker-visible pdg config participates in the key —
           // pdgMaxEdgesPerFunction is emit-time-only and deliberately
           // excluded (see PdgCacheKey in parse-cache.ts; #2099 F3). The line
@@ -1378,10 +1374,15 @@ export async function runChunkedParseAndResolve(
         cachedRaw !== undefined &&
         cachedRaw.length > 0 &&
         chunkHash !== null &&
-        durableParsedFileDir !== undefined &&
+        durableReadStoragePath !== undefined &&
         parsedFileStorePath !== undefined &&
         durableExpectedPaths !== undefined &&
-        (await durableChunkHasShards(parsedFileStorePath, chunkHash, durableExpectedPaths));
+        (await durableChunkHasShards(
+          parsedFileStorePath,
+          chunkHash,
+          durableExpectedPaths,
+          durableReadStoragePath,
+        ));
 
       // Set by whichever branch queues this chunk; drives the close below.
       let roundIsFull = false;
@@ -1558,6 +1559,85 @@ export async function runChunkedParseAndResolve(
     const graphExports = buildExportedTypeMapFromGraph(graph, model.symbols);
     for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
   }
+
+  const routeFilePaths = new Set(allPaths);
+  const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
+  for (const filePath of new Set(allRouteFacts.map((file) => file.filePath))) {
+    const language = getLanguageFromFilename(filePath);
+    if (language === null || routeResolutionConfigs.has(language)) continue;
+    const resolver = SCOPE_RESOLVERS.get(language);
+    routeResolutionConfigs.set(
+      language,
+      capturedResolutionConfigs?.has(language)
+        ? capturedResolutionConfigs.get(language)
+        : resolver?.loadResolutionConfig === undefined
+          ? undefined
+          : await resolver.loadResolutionConfig(repoPath),
+    );
+  }
+  let routeResolutionFiles = allParsedFiles;
+  const resolveRouteModuleTargets = (
+    fromFile: string,
+    moduleSpecifier: string,
+    parsedImport?: ParsedImport,
+  ): readonly string[] => {
+    const language = getLanguageFromFilename(fromFile);
+    if (language === null) return [];
+    const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
+      moduleSpecifier,
+      fromFile,
+      routeFilePaths,
+      routeResolutionConfigs.get(language),
+      { parsedFiles: routeResolutionFiles, ...(parsedImport ? { parsedImport } : {}) },
+    );
+    if (typeof target === 'string') return [target];
+    return target ?? [];
+  };
+  const resolveRouteImportTargets = (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ): readonly string[] =>
+    resolveRouteModuleTargets(fromFile, parsedImport.targetRaw ?? '', parsedImport);
+
+  // A resolver's identity defines a fact family, including providers sharing
+  // one language implementation. Shared ingestion never inspects the payload.
+  const routeFactGroups = new Map<
+    NonNullable<LanguageProvider['resolveRouteFacts']>,
+    typeof allRouteFacts
+  >();
+  for (const file of allRouteFacts) {
+    const resolve = getProviderForFile(file.filePath)?.resolveRouteFacts;
+    if (!resolve) continue;
+    const group = routeFactGroups.get(resolve) ?? [];
+    group.push(file);
+    routeFactGroups.set(resolve, group);
+  }
+  const resolvedRoutesByFile = new Map<string, ExtractedDecoratorRoute[]>();
+  for (const [resolve, files] of routeFactGroups) {
+    for (const route of resolve(files, { resolveImportTargets: resolveRouteModuleTargets })) {
+      const routes = resolvedRoutesByFile.get(route.filePath) ?? [];
+      routes.push(route);
+      resolvedRoutesByFile.set(route.filePath, routes);
+    }
+  }
+  // Preserve the capture slot across sub-batch, chunk and cache boundaries.
+  // Insert before path expansion can change the decorator array's positions.
+  const routesAtPosition = new Map<number, ExtractedDecoratorRoute[]>();
+  for (const file of allRouteFacts) {
+    const routes = resolvedRoutesByFile.get(file.filePath);
+    if (!routes) continue;
+    const slot = routesAtPosition.get(file.routePosition) ?? [];
+    for (const route of routes) slot.push(route);
+    routesAtPosition.set(file.routePosition, slot);
+    resolvedRoutesByFile.delete(file.filePath);
+  }
+  const withResolvedRoutes: ExtractedDecoratorRoute[] = [];
+  for (let index = 0; index <= allDecoratorRoutes.length; index++) {
+    for (const route of routesAtPosition.get(index) ?? []) withResolvedRoutes.push(route);
+    if (index < allDecoratorRoutes.length) withResolvedRoutes.push(allDecoratorRoutes[index]);
+  }
+  allDecoratorRoutes.length = 0;
+  for (const route of withResolvedRoutes) allDecoratorRoutes.push(route);
 
   // FastAPI router-prefix resolution (cross-file).
   //
@@ -1835,7 +1915,6 @@ export async function runChunkedParseAndResolve(
     'parse-impl-return',
     `exportedTypeMap=${exportedTypeMap.size} parsedFiles=${allParsedFiles.length} nodes=${graph.nodeCount}`,
   );
-  const routeFilePaths = new Set(allPaths);
   // Route files whose handlers resolve through imports: data route tables, and
   // routes of a language that resolves its own handlers (`resolveRouteHandler`).
   // Both need the file's parsed imports and its language's resolution config.
@@ -1848,7 +1927,6 @@ export async function runChunkedParseAndResolve(
       )
       .map((route) => route.filePath),
   );
-  const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
   for (const filePath of dataRouteFilePaths) {
     const language = getLanguageFromFilename(filePath);
     if (language === null || routeResolutionConfigs.has(language)) continue;
@@ -1857,28 +1935,9 @@ export async function runChunkedParseAndResolve(
       language,
       capturedResolutionConfigs?.has(language)
         ? capturedResolutionConfigs.get(language)
-        : resolver?.loadResolutionConfig === undefined
-          ? undefined
-          : await resolver.loadResolutionConfig(repoPath),
+        : await resolver?.loadResolutionConfig?.(repoPath),
     );
   }
-  let routeResolutionFiles = allParsedFiles;
-  const resolveRouteImportTargets = (
-    parsedImport: ParsedImport,
-    fromFile: string,
-  ): readonly string[] => {
-    const language = getLanguageFromFilename(fromFile);
-    if (language === null) return [];
-    const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
-      parsedImport.targetRaw ?? '',
-      fromFile,
-      routeFilePaths,
-      routeResolutionConfigs.get(language),
-      { parsedFiles: routeResolutionFiles, parsedImport },
-    );
-    if (typeof target === 'string') return [target];
-    return target ?? [];
-  };
   const resolveRouteImportTarget = (
     parsedImport: ParsedImport,
     fromFile: string,
@@ -1955,6 +2014,7 @@ export async function runChunkedParseAndResolve(
     exportedTypeMap,
     allFetchCalls,
     allFetchWrapperDefs,
+    allFetchWrapperCalls,
     allExtractedRoutes,
     allDecoratorRoutes,
     selectedRoutes,

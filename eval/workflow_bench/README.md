@@ -244,11 +244,25 @@ Every evaluated repo-local skill root is over-mounted read-only for the full
 model session, and an immutable empty user-level skills directory prevents a
 writable `$HOME` skill from shadowing it. Skill-use evidence comes only from
 the bounded stream captured directly from Claude stdout by the parent. The
-runner parses every event through EOF, requires one final result, correlates
+runner parses every event through EOF and requires a terminal result. A
+background-task completion can start another foreground turn in the pinned
+Claude CLI: those results must have distinct IDs in the same session, complete
+per-turn usage, successful outcomes, and nondecreasing cumulative cost. The
+runner sums their tokens and turn counts, takes the last cumulative cost, and
+measures the whole process duration including the background wait. Missing,
+replayed, mismatched, or unsuccessful continuations remain excluded. It correlates
 an exact Skill request ID with one later successful result, structurally
 redacts the event objects, and stores the canonical redacted JSONL with a
 digest. Files written beneath the agent's `$HOME` are never trusted as
 evidence.
+
+Release evaluation allows 3600 seconds per session in both runtimes and arms.
+Run `38873262106` hit the former 1800-second limit twice while still editing
+and testing; the longer ceiling gives those sessions headroom, not a guarantee
+of completion. The overall deadline and 5400-second evidence/cleanup reserve
+remain enforced. Treat this ceiling and the result-accounting change as harness
+differences when comparing against older runs; invalid historical measurements
+are not repaired retroactively.
 
 Sessions use a private home without stored Claude login/keychain state, and
 do not inherit `ANTHROPIC_AUTH_TOKEN`. Supply an Anthropic API key
