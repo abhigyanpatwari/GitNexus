@@ -51,8 +51,26 @@ import { rArityCompatibility, rMergeBindings } from './simple-hooks.js';
 const VIRTUAL_CLASS_NAME = 'VIRTUAL';
 
 /**
+ * Whether `def` is declared by a call that carries the class name as a string
+ * (`setClass("A", ...)`, `setRefClass("A", ...)`): the name starts after the declaration
+ * does. `A <- R6Class(...)` starts at its name. Only the call form can write the S4
+ * sentinel `contains = "VIRTUAL"`; an R6 `inherit = VIRTUAL` yields an `inherits` reference
+ * of the same name that is an ordinary base class.
+ */
+function isDeclaredByNamingCall(def: SymbolDefinition): boolean {
+  const name = def.nameRange;
+  const declaration = def.declarationRange;
+  if (name === undefined || declaration === undefined) return false;
+  return (
+    name.startLine > declaration.startLine ||
+    (name.startLine === declaration.startLine && name.startCol > declaration.startCol)
+  );
+}
+
+/**
  * Mint the `VIRTUAL` placeholder Class node (once) and an EXTENDS edge from
- * every S4 class whose `contains=` names it. Scope is deliberately limited to
+ * every S4 class whose `contains=` names it (not an R6 class whose `inherit=` names a
+ * class called `VIRTUAL`). Scope is deliberately limited to
  * the literal string `"VIRTUAL"`: other S4 base-type sentinels (`"numeric"`,
  * `"list"`, …) are not treated as placeholder classes, which would be a
  * separate design decision.
@@ -81,7 +99,7 @@ function emitRVirtualHeritageEdges(
   for (const site of scopes.referenceSites) {
     if (site.kind !== 'inherits' || site.name !== VIRTUAL_CLASS_NAME) continue;
     const callerClass = findEnclosingClassDef(site.inScope, scopes);
-    if (callerClass === undefined) continue;
+    if (callerClass === undefined || !isDeclaredByNamingCall(callerClass)) continue;
     const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
     if (callerGraphId === undefined || emitted.has(callerGraphId)) continue;
 
