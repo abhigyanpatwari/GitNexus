@@ -60,13 +60,15 @@ export function routeMatches(fetchURL: string, routeURL: string): boolean {
   const fetchParts = fetchURL.split('/').filter(Boolean);
   const routeParts = routeURL.split('/').filter(Boolean);
 
+  const isDynamicSegment = (part: string) => part.startsWith('[') || part.startsWith(':');
+
   // Check for catch-all route: [...param] or optional catch-all [[...param]]
   const lastRoutePart = routeParts[routeParts.length - 1];
   if (lastRoutePart?.startsWith('[...') || lastRoutePart?.startsWith('[[...')) {
     // Catch-all: match if fetch has at least as many segments as route (minus catch-all)
     if (fetchParts.length < routeParts.length - 1) return false;
     return routeParts.slice(0, -1).every((part, i) => {
-      if (part.startsWith('[') || fetchParts[i].startsWith('[')) return true;
+      if (isDynamicSegment(part) || isDynamicSegment(fetchParts[i])) return true;
       return part === fetchParts[i];
     });
   }
@@ -74,7 +76,7 @@ export function routeMatches(fetchURL: string, routeURL: string): boolean {
   if (fetchParts.length !== routeParts.length) return false;
 
   return fetchParts.every((part, i) => {
-    if (part.startsWith('[') || routeParts[i].startsWith('[')) return true;
+    if (isDynamicSegment(part) || isDynamicSegment(routeParts[i])) return true;
     return part === routeParts[i];
   });
 }
