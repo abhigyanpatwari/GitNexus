@@ -14,14 +14,16 @@
  * these swap invariants do not apply — see run-analyze's platform guard.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { execSync } from 'child_process';
+import { execFileSync, execSync, spawnSync } from 'child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 type LbugAdapter = typeof import('../../src/core/lbug/lbug-adapter.js');
 type RepoManager = typeof import('../../src/storage/repo-manager.js');
 type FsAtomic = typeof import('../../src/storage/fs-atomic.js');
 type EscalationGate = typeof import('../../src/core/incremental/escalation-gate.js');
+type CheckpointDriver = typeof import('../../src/core/lbug/wal-checkpoint-driver.js');
 const ctx = vi.hoisted(() => ({
   loadMock: vi.fn(),
   realLoad: null as LbugAdapter['loadGraphToLbug'] | null,
@@ -29,13 +31,23 @@ const ctx = vi.hoisted(() => ({
   realDelete: null as LbugAdapter['deleteNodesForFiles'] | null,
   closeMock: vi.fn(),
   realClose: null as LbugAdapter['closeLbug'] | null,
+  closeBeforeExitMock: vi.fn(),
+  realCloseBeforeExit: null as LbugAdapter['closeLbugBeforeExit'] | null,
   saveMetaMock: vi.fn(),
   realSaveMeta: null as RepoManager['saveMeta'] | null,
   renameMock: vi.fn(),
   realRename: null as FsAtomic['retryRename'] | null,
   escalateMock: vi.fn(),
   realEscalate: null as EscalationGate['shouldEscalateIncrementalWrite'] | null,
+  finalCheckpointMock: vi.fn(),
+  realFinalCheckpoint: null as CheckpointDriver['runCheckpointWithRetry'] | null,
 }));
+vi.mock('../../src/core/lbug/wal-checkpoint-driver.js', async (importOriginal) => {
+  const actual = await importOriginal<CheckpointDriver>();
+  ctx.realFinalCheckpoint = actual.runCheckpointWithRetry;
+  ctx.finalCheckpointMock.mockImplementation(actual.runCheckpointWithRetry);
+  return { ...actual, runCheckpointWithRetry: ctx.finalCheckpointMock };
+});
 // Delegating mocks keep real graph, metadata, and registry writes while
 // allowing failures at the write and publication boundaries.
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
@@ -43,14 +55,17 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   ctx.realLoad = actual.loadGraphToLbug;
   ctx.realDelete = actual.deleteNodesForFiles;
   ctx.realClose = actual.closeLbug;
+  ctx.realCloseBeforeExit = actual.closeLbugBeforeExit;
   ctx.loadMock.mockImplementation(actual.loadGraphToLbug);
   ctx.deleteMock.mockImplementation(actual.deleteNodesForFiles);
   ctx.closeMock.mockImplementation(actual.closeLbug);
+  ctx.closeBeforeExitMock.mockImplementation(actual.closeLbugBeforeExit);
   return {
     ...actual,
     loadGraphToLbug: ctx.loadMock,
     deleteNodesForFiles: ctx.deleteMock,
     closeLbug: ctx.closeMock,
+    closeLbugBeforeExit: ctx.closeBeforeExitMock,
   };
 });
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
@@ -122,6 +137,8 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
     );
     ctx.closeMock.mockReset();
     ctx.closeMock.mockImplementation(() => ctx.realClose!());
+    ctx.closeBeforeExitMock.mockReset();
+    ctx.closeBeforeExitMock.mockImplementation(() => ctx.realCloseBeforeExit!());
     ctx.saveMetaMock.mockReset();
     ctx.saveMetaMock.mockImplementation((...a: Parameters<RepoManager['saveMeta']>) =>
       ctx.realSaveMeta!(...a),
@@ -134,6 +151,11 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
     ctx.escalateMock.mockImplementation(
       (...a: Parameters<EscalationGate['shouldEscalateIncrementalWrite']>) =>
         ctx.realEscalate!(...a),
+    );
+    ctx.finalCheckpointMock.mockReset();
+    ctx.finalCheckpointMock.mockImplementation(
+      (...args: Parameters<CheckpointDriver['runCheckpointWithRetry']>) =>
+        ctx.realFinalCheckpoint!(...args),
     );
   });
 
@@ -192,6 +214,277 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
       // published it, so the live index is byte-for-byte untouched.
       expect(await identity(lbugPath)).toBe(before);
     } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  it.each([
+    { mode: 'wal', failure: 'publication' },
+    { mode: 'checkpoint', failure: 'publication' },
+    { mode: 'wal', failure: 'checkpoint' },
+    { mode: 'checkpoint', failure: 'checkpoint' },
+  ])(
+    'preserves live $mode recovery data across a failed $failure and retry (#3591)',
+    async ({ mode, failure }) => {
+      const { repo, cleanup } = await makeRepo();
+      const readerId = `live-recovery-${mode}`;
+      try {
+        await runFullAnalysis(repo, { skipFts: true }, { onProgress: () => {} });
+        const { lbugPath, storagePath } = getStoragePaths(repo);
+        const metadata = await loadMeta(storagePath);
+        execFileSync(
+          process.execPath,
+          [
+            fileURLToPath(new URL('../helpers/publication-live-wal.mjs', import.meta.url)),
+            lbugPath,
+            mode,
+          ],
+          { timeout: 30_000 },
+        );
+        await fs.writeFile(
+          path.join(repo, 'a.ts'),
+          'export function replacement() { return 2; }\n',
+        );
+        if (failure === 'publication') {
+          ctx.renameMock.mockRejectedValueOnce(
+            new Error('injected live recovery boundary failure'),
+          );
+        } else {
+          let injected = false;
+          ctx.finalCheckpointMock.mockImplementation(
+            (options: Parameters<CheckpointDriver['runCheckpointWithRetry']>[0]) => {
+              if (!options?.checkpointFn && !injected) {
+                injected = true;
+                return Promise.reject(new Error('injected live recovery boundary failure'));
+              }
+              return ctx.realFinalCheckpoint!(options);
+            },
+          );
+        }
+        await expect(
+          runFullAnalysis(repo, { force: true, skipFts: true }, { onProgress: () => {} }),
+        ).rejects.toThrow('injected live recovery boundary failure');
+        expect((await loadMeta(storagePath))?.indexedAt).toBe(metadata?.indexedAt);
+        // Observe the writer's receipt before a pool reader can repair anything.
+        const residual = (await fs.readdir(path.dirname(lbugPath))).filter((name) =>
+          /^lbug\.(wal|shadow|checkpoint)/.test(name),
+        );
+        expect(residual).toEqual([]);
+        const coldNames = execFileSync(
+          process.execPath,
+          [
+            '-e',
+            `
+          const { Database, Connection } = require('@ladybugdb/core');
+          (async () => {
+            const db = new Database(process.argv[1], 256 * 1024 * 1024, false, true);
+            const conn = new Connection(db);
+            const result = await conn.query('MATCH (f:Function) RETURN f.name AS name');
+            console.log(JSON.stringify((await result.getAll()).map(row => row.name).sort()));
+            await conn.close(); await db.close();
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+        `,
+            lbugPath,
+          ],
+          { encoding: 'utf8', cwd: process.cwd(), timeout: 30_000 },
+        );
+        expect(JSON.parse(coldNames)).toEqual(['caller', 'greet', 'walOnly']);
+        await poolInit(readerId, lbugPath);
+        const rows = await poolQuery(
+          readerId,
+          'MATCH (f:Function) RETURN f.name AS name ORDER BY name',
+        );
+        expect(rows.map((row) => row.name)).toEqual(['caller', 'greet', 'walOnly']);
+        await poolClose(readerId);
+        await runFullAnalysis(repo, { force: true, skipFts: true }, { onProgress: () => {} });
+        await poolInit(readerId, lbugPath);
+        expect(await poolQuery(readerId, 'MATCH (f:Function) RETURN f.name AS name')).toEqual([
+          { name: 'replacement' },
+        ]);
+      } finally {
+        await poolClose(readerId);
+        await cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it.each([
+    { suffix: '.wal', skipNativeCloseOnExit: false },
+    { suffix: '.shadow', skipNativeCloseOnExit: false },
+    { suffix: '.wal.checkpoint', skipNativeCloseOnExit: false },
+    { suffix: '.wal.checkpoint', skipNativeCloseOnExit: true },
+    { suffix: '.wal.missing-shadow.1234-abcd', skipNativeCloseOnExit: false },
+  ])(
+    'refuses residual $suffix (skipNativeCloseOnExit=$skipNativeCloseOnExit) and preserves cold readers (#3591)',
+    async ({ suffix, skipNativeCloseOnExit }) => {
+      const { repo, cleanup } = await makeRepo();
+      const readerId = `publication-residual-${suffix}`;
+      try {
+        await runFullAnalysis(repo, {}, { onProgress: () => {} });
+        const { lbugPath, storagePath } = getStoragePaths(repo);
+        const oldGraph = await fs.readFile(lbugPath);
+        const oldMeta = await loadMeta(storagePath);
+        await fs.writeFile(
+          path.join(repo, 'a.ts'),
+          'export function replacement() { return 42; }\n',
+        );
+        execSync('git -c user.name=t -c user.email=t@t commit -am replacement', {
+          cwd: repo,
+          stdio: 'pipe',
+        });
+
+        // Controlled publication-boundary fault: real indexing, checkpoint and
+        // close run first. A residual recovery file must never accompany a
+        // published main file, irrespective of the earlier checkpoint receipt.
+        ctx.loadMock.mockClear();
+        const closeMock = skipNativeCloseOnExit ? ctx.closeBeforeExitMock : ctx.closeMock;
+        const realClose = skipNativeCloseOnExit ? ctx.realCloseBeforeExit! : ctx.realClose!;
+        closeMock.mockImplementation(async () => {
+          await realClose();
+          if (ctx.loadMock.mock.calls.length === 0) return;
+          const stage = (await fs.readdir(path.dirname(lbugPath))).find(
+            (entry) =>
+              entry.startsWith('lbug.staging.') &&
+              !entry.includes('.wal') &&
+              !entry.endsWith('.shadow'),
+          );
+          expect(stage).toBeDefined();
+          await fs.writeFile(
+            path.join(path.dirname(lbugPath), `${stage}${suffix}`),
+            'injected residual',
+          );
+        });
+        await expect(
+          runFullAnalysis(repo, { force: true, skipNativeCloseOnExit }, { onProgress: () => {} }),
+        ).rejects.toThrow(/publish|consolidat|sidecar/i);
+        expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(true);
+        expect(await loadMeta(storagePath)).toMatchObject({
+          lastCommit: oldMeta!.lastCommit,
+          indexedAt: oldMeta!.indexedAt,
+        });
+        await poolInit(readerId, lbugPath);
+        const rows = await poolQuery(readerId, 'MATCH (f:Function) RETURN f.name AS name');
+        expect(rows.map((row) => (row as { name: string }).name).sort()).toEqual([
+          'caller',
+          'greet',
+        ]);
+        await poolClose(readerId);
+        // A new native process has no pool cache or retained reader handle.
+        const coldNames = execFileSync(
+          process.execPath,
+          [
+            '-e',
+            `
+          const { Database, Connection } = require('@ladybugdb/core');
+          (async () => {
+            const db = new Database(process.argv[1], 256 * 1024 * 1024, false, true);
+            const conn = new Connection(db);
+            const result = await conn.query('MATCH (f:Function) RETURN f.name AS name');
+            console.log(JSON.stringify((await result.getAll()).map(row => row.name).sort()));
+            await conn.close(); await db.close();
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+        `,
+            lbugPath,
+          ],
+          { encoding: 'utf8', timeout: 30_000 },
+        );
+        expect(JSON.parse(coldNames)).toEqual(['caller', 'greet']);
+
+        // A failed stage must not make recovery a permanent failure loop.
+        closeMock.mockImplementation(realClose);
+        await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
+        await poolInit(readerId, lbugPath);
+        const recovered = await poolQuery(readerId, 'MATCH (f:Function) RETURN f.name AS name');
+        expect(recovered.map((row) => (row as { name: string }).name).sort()).toEqual([
+          'replacement',
+        ]);
+      } finally {
+        await poolClose(readerId);
+        await cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it.each(['rejected', 'unverified', 'manual-disabled'])(
+    'keeps the published graph when the final full-rebuild checkpoint is %s (#3591)',
+    async (outcome) => {
+      const { repo, cleanup } = await makeRepo();
+      try {
+        await runFullAnalysis(repo, {}, { onProgress: () => {} });
+        const { lbugPath, storagePath } = getStoragePaths(repo);
+        const oldGraph = await fs.readFile(lbugPath);
+        const oldMeta = await loadMeta(storagePath);
+        if (outcome === 'manual-disabled') vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
+        if (outcome === 'rejected') {
+          ctx.finalCheckpointMock.mockRejectedValueOnce(
+            new Error('injected final checkpoint failure'),
+          );
+        } else {
+          ctx.finalCheckpointMock.mockResolvedValueOnce({ attempts: 1, flushed: false });
+        }
+        await expect(
+          runFullAnalysis(repo, { force: true }, { onProgress: () => {} }),
+        ).rejects.toThrow(/checkpoint/i);
+        expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(true);
+        expect(await loadMeta(storagePath)).toMatchObject({
+          lastCommit: oldMeta!.lastCommit,
+          indexedAt: oldMeta!.indexedAt,
+        });
+      } finally {
+        vi.unstubAllEnvs();
+        await cleanup();
+      }
+    },
+    180_000,
+  );
+
+  it('recovers after a CLI process exits immediately before publication (#3591)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const readerId = 'interrupted-publication';
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const { lbugPath, storagePath } = getStoragePaths(repo);
+      const oldGraph = await fs.readFile(lbugPath);
+      const oldMeta = await loadMeta(storagePath);
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export function replacement() { return 42; }\n');
+      execSync('git -c user.name=t -c user.email=t@t commit -am replacement', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+      const child = spawnSync(
+        process.execPath,
+        [
+          fileURLToPath(new URL('../helpers/interrupted-publication-runner.mjs', import.meta.url)),
+          repo,
+        ],
+        { encoding: 'utf8', timeout: 120_000 },
+      );
+      expect(child.error, child.stderr).toBeUndefined();
+      expect(child.status, child.stderr).toBe(73);
+      expect((await fs.readFile(lbugPath)).equals(oldGraph)).toBe(true);
+      expect(await loadMeta(storagePath)).toMatchObject({
+        indexedAt: oldMeta!.indexedAt,
+        lastCommit: oldMeta!.lastCommit,
+      });
+      await poolInit(readerId, lbugPath);
+      expect(
+        (await poolQuery(readerId, 'MATCH (f:Function) RETURN f.name AS name'))
+          .map((row) => row.name)
+          .sort(),
+      ).toEqual(['caller', 'greet']);
+      await poolClose(readerId);
+      await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
+      await poolInit(readerId, lbugPath);
+      expect(
+        (await poolQuery(readerId, 'MATCH (f:Function) RETURN f.name AS name')).map(
+          (row) => row.name,
+        ),
+      ).toEqual(['replacement']);
+    } finally {
+      await poolClose(readerId);
       await cleanup();
     }
   }, 180_000);

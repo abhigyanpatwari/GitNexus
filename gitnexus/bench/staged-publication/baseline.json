@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "commit": "22a7608b7c5ff77302357c0f90c8d31294801b25",
+  "runtime": "Node 24.19.0, Linux x64, overlay, Intel Core i9-12900K",
+  "linear_scaling_budget": 2,
+  "functions_per_file": 32,
+  "sizes": [
+    {
+      "files": 16,
+      "functions": 512,
+      "fingerprint": "19518326db7f2d095a77e3a19642edf38249e653d626387ebcc57df8aaba9c7d",
+      "median_ms": 2850.1473540000006,
+      "samples_ms": [2839.400887, 2850.1473540000006, 3202.0789289999993]
+    },
+    {
+      "files": 64,
+      "functions": 2048,
+      "fingerprint": "89f9dd905722438427100c61cac5113046abc9368c9e6f91e2dde95b0daf0c1f",
+      "median_ms": 3170.829733000006,
+      "samples_ms": [3023.8665120000005, 3170.829733000006, 3256.097853000003]
+    }
+  ],
+  "regression_budget": 1.25
+}
