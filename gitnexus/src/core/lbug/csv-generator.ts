@@ -480,7 +480,7 @@ export interface StreamedCSVResult {
 
 /**
  * Stream all CSV data directly to disk files.
- * Iterates graph nodes exactly ONCE — routes each node to the right writer.
+ * Validates node identities in one pass, then streams nodes to their writers.
  * File contents are lazy-read from disk with a generous LRU cache.
  *
  * `onNodePhaseComplete` (optional, #2203 parallelism leg): fired exactly once,
