@@ -250,3 +250,68 @@ describe('R CfgVisitor — return, nesting, join key', () => {
     expect(result.status).toBe('no-facts');
   });
 });
+
+// docs/languages/r-provider.md, "Control flow / Not modelled": control flow nested inside an
+// expression stays in one straight-line block, and `stop()`, `on.exit()` and `tryCatch()`
+// handlers are ordinary calls. A statement that is only such an expression and the code after it
+// coalesce into a single block between ENTRY and EXIT, with no branch edge.
+describe('R CfgVisitor — control flow inside an expression is not modelled', () => {
+  const straightLine = (body: string): void => {
+    const cfg = r.cfgOf(`f <- function(c) {\n  ${body}\n  after()\n}\n`);
+    expect(blockTexts(cfg)).toEqual([`${body}\nafter()`]);
+    expect(shape(cfg)).toEqual([`ENTRY -seq-> ${body}\nafter()`, `${body}\nafter() -seq-> EXIT`]);
+    expect(computeControlDependence(cfg).edges).toEqual([]);
+  };
+
+  it.each([
+    'y <- if (c) a() else b()',
+    'switch(c, a = x(), b = y())',
+    'c && a()',
+    'c || a()',
+    'ifelse(c, a(), b())',
+    'stop("x")',
+    'on.exit(cleanup())',
+    'tryCatch(a(), error = function(e) b())',
+  ])('%s stays one block with no branch', (body) => {
+    straightLine(body);
+  });
+
+  it('return() inside tryCatch({ }) or local({ }) does not reach EXIT early', () => {
+    straightLine('tryCatch({\n    return(1)\n  }, error = function(e) 2)');
+    straightLine('local({\n    return(1)\n  })');
+  });
+
+  it('break inside tryCatch({ }) in a loop leaves the loop only through its structural exit', () => {
+    const cfg = r.cfgOf(
+      `f <- function(c) {\n  for (i in 1:3) tryCatch({ break }, error = function(e) 1)\n  after()\n}\n`,
+    );
+    expect(shape(cfg)).toEqual([
+      '<exit> -seq-> after()',
+      'ENTRY -seq-> i in 1:3',
+      'after() -seq-> EXIT',
+      'i in 1:3 -cond-false-> <exit>',
+      'i in 1:3 -cond-true-> tryCatch({ break }, error = function(e) 1)',
+      'tryCatch({ break }, error = function(e) 1) -loop-back-> i in 1:3',
+    ]);
+  });
+});
+
+describe('R CfgVisitor — break and next with no enclosing loop', () => {
+  it('break falls back to an edge to EXIT', () => {
+    const cfg = r.cfgOf(`f <- function(c) {\n  break\n  after()\n}\n`);
+    expect(shape(cfg)).toEqual([
+      'ENTRY -seq-> break',
+      'after() -seq-> EXIT',
+      'break -break-> EXIT',
+    ]);
+  });
+
+  it('next falls back to an edge to EXIT', () => {
+    const cfg = r.cfgOf(`f <- function(c) {\n  next\n  after()\n}\n`);
+    expect(shape(cfg)).toEqual([
+      'ENTRY -seq-> next',
+      'after() -seq-> EXIT',
+      'next -continue-> EXIT',
+    ]);
+  });
+});
