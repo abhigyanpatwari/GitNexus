@@ -402,11 +402,10 @@ const countMismatchMessage = (
  * @param model - Model name for the request body
  * @param apiKey - Bearer token (only used in Authorization header)
  * @param batchIndex - Logical batch number (for error context)
- * @param dimensions - Optional output-vector size. When provided, sent as
- *   the `dimensions` field in the request body. Endpoints that implement
- *   Matryoshka truncation (OpenAI text-embedding-3-*, Cohere embed-v3,
- *   Voyage) return a truncated vector at that size; endpoints that do not
- *   recognise the field may ignore it or return 400. Set
+ * @param dimensions - Optional output-vector size. Voyage uses its
+ *   `output_dimension` field; other OpenAI-compatible endpoints use
+ *   `dimensions`. Endpoints that do not recognise the field may ignore it or
+ *   return 400. Set
  *   `GITNEXUS_EMBEDDING_REQUEST_DIMS=omit` for strict backends while keeping
  *   `GITNEXUS_EMBEDDING_DIMS` set to the returned vector size.
  */
@@ -424,12 +423,27 @@ const httpEmbedBatch = async (
   timeoutMs = DEFAULT_HTTP_TIMEOUT_MS,
   retryTimeouts = false,
 ): Promise<EmbeddingItem[]> => {
-  const requestBody: { input: string[]; model: string; dimensions?: number } = {
+  const requestBody: {
+    input: string[];
+    model: string;
+    dimensions?: number;
+    output_dimension?: number;
+  } = {
     input: batch,
     model,
   };
   if (dimensions !== undefined) {
-    requestBody.dimensions = dimensions;
+    let hostname = '';
+    try {
+      hostname = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+    } catch {
+      // Fetch below owns malformed-URL reporting.
+    }
+    if (hostname === 'voyageai.com' || hostname.endsWith('.voyageai.com')) {
+      requestBody.output_dimension = dimensions;
+    } else {
+      requestBody.dimensions = dimensions;
+    }
   }
 
   // Built on demand, not up front. Both describe faults, so in a healthy run —
