@@ -303,7 +303,7 @@ export const R_SCOPE_QUERY = `
   arguments: (arguments
     (argument
       name: (identifier) @_contains1
-      (#match? @_contains1 "^(contains|CONTAINS)$")
+      (#match? @_contains1 "^(contains)$")
       value: (string
         content: (string_content) @reference.inherits))))
 
@@ -315,7 +315,7 @@ export const R_SCOPE_QUERY = `
   arguments: (arguments
     (argument
       name: (identifier) @_contains2
-      (#match? @_contains2 "^(contains|CONTAINS)$")
+      (#match? @_contains2 "^(contains)$")
       value: (call
         function: (identifier) @_cfn2
         (#match? @_cfn2 "^c$")
