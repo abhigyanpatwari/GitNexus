@@ -16,6 +16,7 @@ Definitions:
 
 - Functions defined by assignment (`<-`, `=`, `<<-`). S3 methods appear as ordinary functions with dotted names such as `print.foo`.
 - S4 classes (`setClass`), generics (`setGeneric`), methods (`setMethod`) and slots (`representation`, `slots`).
+- A `setMethod()` is owned by the class its signature names: the string, or the first argument of `signature(...)` or `c(...)`. A method on several classes (multiple dispatch) belongs to its first class, so `signature("A", "B")` and `signature("A", "C")` give one method of `A` (the first written wins) and a signature whose first argument is not a string names no owner.
 - R6 classes with their methods, fields and active bindings.
 - RefClass (`setRefClass`) classes with their methods and fields.
 - Slots and fields given as `list(...)`, `representation(...)` or `c(...)`. A named entry (`c(a = "numeric")`) records its type; an unnamed string in `slots = c("a", "b")` or `fields = c("a", "b")` names an untyped member, as in R. An unnamed string in `representation(...)` or `list(...)` is not a member.
