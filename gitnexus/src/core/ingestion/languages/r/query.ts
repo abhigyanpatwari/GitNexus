@@ -80,7 +80,6 @@
  */
 
 import Parser from 'tree-sitter';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 import R from '@eagleoutice/tree-sitter-r';
 
 /**
