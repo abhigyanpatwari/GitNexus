@@ -55,6 +55,9 @@
  * never allocated in full) and, once nothing is left, later patterns are refused without
  * being parsed (the first pattern that does not fit ends the allowance; a pattern is at most
  * {@link MAX_STATES} states, so that only happens after the allowance is nearly used up).
+ * A pattern refused after its NFA was partly built is charged for the build (see
+ * {@link REFUSED_BUILD_WORK_PER_UNIT}), and once the work budget is spent later patterns are
+ * refused without being parsed, so refused patterns cost no more than matched ones.
  * Budgets nest: a package's budget is a {@link SharedWorkBudget.child} of the
  * load's, so one package cannot take the whole load's allowance and leave every other
  * package's patterns unable to run.
@@ -132,6 +135,10 @@ export const MAX_PACKAGE_WORK = 30_000_000;
  * exceed the load's allowance on their own.
  */
 export const MAX_PACKAGE_STATES = 100_000;
+
+/** Why a pattern was refused because the work budget was spent before it was compiled. */
+const WORK_BUDGET_REASON =
+  'the work budget for this package or repository is spent (too many or too costly patterns)';
 
 /** Why a pattern was refused because the allowance of states was spent. */
 const STATE_ALLOWANCE_REASON =
@@ -220,6 +227,14 @@ const MAX_MEMO_ENTRIES = 100_000;
  * the budget like every other cost.
  */
 const MEMO_HIT_WORK = 1;
+
+/**
+ * Work charged per state or build step of a pattern's NFA that was built and then refused. Building
+ * a state costs about eight state visits (85 ns against 10 ns, measured), and a refused pattern
+ * keeps no states to be counted against the allowance, so the budget would otherwise never see
+ * the time it took.
+ */
+const REFUSED_BUILD_WORK_PER_UNIT = 8;
 
 /** Thrown internally for unsupported or invalid input; never escapes this module. */
 class Reject extends Error {}
@@ -670,6 +685,11 @@ class Nfa {
   readonly arg: Array<CharSet | number | null> = [];
   private steps = 0;
 
+  /** States built plus build steps taken so far: what the build has cost, win or lose. */
+  get buildWork(): number {
+    return this.kind.length + this.steps;
+  }
+
   add(kind: number, out: number, out1: number, arg: CharSet | number | null): number {
     if (this.kind.length >= this.limit) reject(this.limitReason);
     this.kind.push(kind);
@@ -1051,25 +1071,34 @@ export function compileLinearRegexDetailed(
   source: string,
   shared?: SharedWorkBudget,
 ): LinearRegexResult {
-  // With nothing left of the state allowance, refuse without even parsing the pattern.
+  // With nothing left of the state allowance, or of the work budget (which refused patterns
+  // draw on too, see below), refuse without even parsing the pattern. A matcher compiled from
+  // a spent budget would answer false for every name anyway.
   const room = shared?.statesLeft ?? MAX_STATES;
   if (room <= 0) return { regex: null, reason: STATE_ALLOWANCE_REASON };
+  if (shared?.isSpent === true) return { regex: null, reason: WORK_BUDGET_REASON };
   if (source.length > MAX_PATTERN_LENGTH) {
     return { regex: null, reason: `pattern is longer than ${MAX_PATTERN_LENGTH} characters` };
   }
+  let nfa: Nfa | undefined;
   try {
     const ast = new Parser(source).parse();
     // The build stops at the allowance, so a pattern that does not fit never has its NFA
     // allocated in full.
-    const nfa = room < MAX_STATES ? new Nfa(room, STATE_ALLOWANCE_REASON) : new Nfa();
+    nfa = room < MAX_STATES ? new Nfa(room, STATE_ALLOWANCE_REASON) : new Nfa();
     const match = nfa.add(K_MATCH, -1, -1, null);
     const start = nfa.build(ast, match);
     shared?.reserveStates(nfa.kind.length);
     return { regex: new LinearRegex(source, nfa, start, shared) };
   } catch (err) {
-    // `Reject` is the expected path; a stack overflow or any other failure also means
-    // "cannot match safely", which for an exportPattern is the same as never matching.
     if (err instanceof Reject && err.message === STATE_ALLOWANCE_REASON) shared?.closeStates(room);
+    // A refused pattern may already have built up to the whole state cap (or the build step
+    // cap) before it was refused, and a NAMESPACE can carry any number of them. Charge what it
+    // built, so that hostile refusals use up the work budget as hostile matches do, and the
+    // spent budget then refuses later patterns before they are parsed. (`Reject` is the
+    // expected path; a stack overflow or any other failure also means "cannot match safely",
+    // which for an exportPattern is the same as never matching.)
+    if (nfa !== undefined) shared?.charge(nfa.buildWork * REFUSED_BUILD_WORK_PER_UNIT);
     return {
       regex: null,
       reason: err instanceof Reject ? err.message : 'pattern could not be compiled',
