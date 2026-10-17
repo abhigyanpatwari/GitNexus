@@ -347,11 +347,18 @@ def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_asset
     selected, skipped = select_tasks(tasks, include_expensive=False)
     assert [task["id"] for task in selected] == [
         "trivial-status-json-alias",
-        "inv-bug-c-system-include",
+        "inv-feature-c-include-provenance",
         "inv-feature-list-repos-filter",
     ]
     assert skipped == ["cross-module-parse-retry"]
-    # v1.6.12 predates all four fixes, including the C fix already on main.
+    assert len(tasks) == 4
+    c_task = next(task for task in tasks if task["id"] == "inv-feature-c-include-provenance")
+    assert c_task["class"] == "investigation-feature"
+    assert "npx tsc --noEmit" in c_task["verify"]
+    assert "test/unit/scope-resolution/c/c-include-provenance.test.ts" in c_task["verify"]
+    assert "test/unit/scope-resolution/external-import-conformance.test.ts" in c_task["verify"]
+    assert not c_task.get("setup")
+    # v1.6.12 lacks all four requested behaviors, including retained C include provenance.
     assert {task["ref"] for task in tasks} == {"c4ecf398de637cf779ab2238e69958cfd5d601ce"}
     assert all(not task.get("sandbox_copy") for task in tasks)
     assert all(task["sandbox_dependencies"] for task in tasks)
