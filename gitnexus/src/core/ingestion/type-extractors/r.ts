@@ -7,6 +7,7 @@ import type {
 } from './types.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { getRClassNameArgument } from '../field-extractors/r.js';
+import { isRLeftAssignment } from '../languages/r/assignment.js';
 import { rBareName } from '../languages/r/bare-name.js';
 
 /**
@@ -112,6 +113,7 @@ const anchoredType = (description: string): string | undefined =>
  */
 const declaredClassName = (node: SyntaxNode): string | undefined => {
   if (node.type === 'binary_operator') {
+    if (!isRLeftAssignment(node)) return undefined;
     const lhs = node.childForFieldName('lhs');
     const rhs = node.childForFieldName('rhs');
     if (lhs?.type !== 'identifier' || rhs?.type !== 'call') return undefined;
@@ -202,7 +204,7 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
   const fn = node.parent?.parent;
   if (fn?.type !== 'function_definition') return;
   const assignment = fn.parent;
-  if (assignment?.type !== 'binary_operator') return;
+  if (!assignment || !isRLeftAssignment(assignment)) return;
   const rhs = assignment.childForFieldName('rhs');
   if (rhs?.startIndex !== fn.startIndex || rhs.endIndex !== fn.endIndex) return;
 
@@ -232,7 +234,7 @@ const extractInitializer: InitializerExtractor = (node, env, classNames): void =
  * and S4 `obj <- new("ClassName", ...)` patterns.
  */
 const scanConstructorBinding: ConstructorBindingScanner = (node) => {
-  if (node.type !== 'binary_operator') return undefined;
+  if (!isRLeftAssignment(node)) return undefined;
   const lhs = node.childForFieldName('lhs');
   const rhs = node.childForFieldName('rhs');
   if (!lhs || !rhs) return undefined;

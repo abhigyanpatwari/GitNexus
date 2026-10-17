@@ -14,6 +14,7 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { BaseFieldExtractor } from '../field-extractor.js';
+import { isRLeftAssignment } from '../languages/r/assignment.js';
 import { isRNamingArgument } from '../languages/r/naming-argument.js';
 import type {
   FieldExtractorContext,
@@ -230,9 +231,9 @@ export function getRClassNameOfOwnerNode(ownerNode: SyntaxNode): string | null {
   return getRClassNameArgument(args);
 }
 
-/** Check if a binary_operator node is an R6 class assignment. */
+/** Check if a node is an R6 class assignment (`X <- R6Class(...)`; `X + R6Class(...)` is not). */
 function isR6Class(node: SyntaxNode): boolean {
-  if (node.type !== 'binary_operator') return false;
+  if (!isRLeftAssignment(node)) return false;
   const rhs = node.childForFieldName('rhs');
   if (!rhs || rhs.type !== 'call') return false;
   const fn = rhs.childForFieldName('function');

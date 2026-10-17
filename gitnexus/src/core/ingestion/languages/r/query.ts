@@ -11,6 +11,10 @@
  *
  * R specifics encoded here:
  *
+ *   - Every `binary_operator` pattern is an assignment: `operator: ["<-" "<<-" "="]`
+ *     (see `assignment.ts`). The grammar uses one node for every infix operator, so
+ *     without it `x + R6Class(...)` or `x == function() 1` would declare something.
+ *
  *   - A Class scope spans the ENTIRE `R6Class(...)`/`setClass(...)` call
  *     (the whole `binary_operator` for the `name <- R6Class(...)` shape),
  *     not just `public = list(...)` — the `inherit=`/`contains=` argument
@@ -95,6 +99,7 @@ export const R_SCOPE_QUERY = `
 ;; inside the deriving class's own scope.
 (binary_operator
   lhs: (identifier)
+  operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
       rhs: (identifier) @_r6ns_scope
@@ -103,6 +108,7 @@ export const R_SCOPE_QUERY = `
 ;; R6 class via bare call (ClassName <- R6Class(...))
 (binary_operator
   lhs: (identifier)
+  operator: ["<-" "<<-" "="]
   rhs: (call
     function: (identifier) @_r6bare_scope
     (#match? @_r6bare_scope "^R6Class$"))) @scope.class
@@ -116,6 +122,7 @@ export const R_SCOPE_QUERY = `
 
 (binary_operator
   lhs: (identifier) @declaration.name
+  operator: ["<-" "<<-" "="]
   rhs: (function_definition)) @declaration.function
 
 ;; Function scope on the SAME assignment node as the declaration above, so the
@@ -124,6 +131,7 @@ export const R_SCOPE_QUERY = `
 ;; lockstep — identical structure, identical anchor node (see file header).
 (binary_operator
   lhs: (identifier)
+  operator: ["<-" "<<-" "="]
   rhs: (function_definition)) @scope.function
 
 ;; ── Declarations — classes (name only; no qualified_name, see file header) ─
@@ -139,6 +147,7 @@ export const R_SCOPE_QUERY = `
 
 (binary_operator
   lhs: (identifier) @declaration.name
+  operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
       rhs: (identifier) @_r6ns_decl
@@ -146,6 +155,7 @@ export const R_SCOPE_QUERY = `
 
 (binary_operator
   lhs: (identifier) @declaration.name
+  operator: ["<-" "<<-" "="]
   rhs: (call
     function: (identifier) @_r6bare_decl
     (#match? @_r6bare_decl "^R6Class$"))) @declaration.class
@@ -163,6 +173,7 @@ export const R_SCOPE_QUERY = `
 ;; R6 methods via namespace call (inside public/private/active = list(...))
 (binary_operator
   lhs: (identifier) @_class1
+  operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
       rhs: (identifier) @_r6ns_m
@@ -182,6 +193,7 @@ export const R_SCOPE_QUERY = `
 ;; R6 methods via bare call (inside public/private/active = list(...))
 (binary_operator
   lhs: (identifier) @_class2
+  operator: ["<-" "<<-" "="]
   rhs: (call
     function: (identifier) @_r6bare_m
     (#match? @_r6bare_m "^R6Class$")
@@ -250,6 +262,7 @@ export const R_SCOPE_QUERY = `
 
 (binary_operator
   lhs: (identifier) @type-binding.name
+  operator: ["<-" "<<-" "="]
   rhs: (call
     function: (extract_operator
       lhs: (identifier) @type-binding.type
@@ -260,6 +273,7 @@ export const R_SCOPE_QUERY = `
 
 (binary_operator
   lhs: (identifier)
+  operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
       rhs: (identifier) @_r6ns_h
@@ -272,6 +286,7 @@ export const R_SCOPE_QUERY = `
 
 (binary_operator
   lhs: (identifier)
+  operator: ["<-" "<<-" "="]
   rhs: (call
     function: (identifier) @_r6bare_h
     (#match? @_r6bare_h "^R6Class$")

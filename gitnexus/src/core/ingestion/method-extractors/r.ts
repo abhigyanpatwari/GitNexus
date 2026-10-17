@@ -12,6 +12,7 @@
 
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { isRLeftAssignment } from '../languages/r/assignment.js';
 import { getRMatchedArgument } from '../languages/r/naming-argument.js';
 import { getRClassNameArgument } from '../field-extractors/r.js';
 import type {
@@ -185,7 +186,7 @@ function extractRefClassMethods(
 // ---------------------------------------------------------------------------
 
 function isR6Class(node: SyntaxNode): boolean {
-  if (node.type !== 'binary_operator') return false;
+  if (!isRLeftAssignment(node)) return false;
   const rhs = node.childForFieldName('rhs');
   if (!rhs || rhs.type !== 'call') return false;
   const fn = rhs.childForFieldName('function');
