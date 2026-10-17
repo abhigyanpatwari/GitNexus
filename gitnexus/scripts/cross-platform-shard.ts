@@ -89,6 +89,11 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/fts-extension-e2e.test.ts': 380,
   'test/integration/skip-fts.test.ts': 110,
   'test/integration/analyze-wal-checkpoint-failure.test.ts': 86,
+  // Provisional load hints for newly registered persistence suites, based on
+  // local native runs. The atomic suite skips Windows but runs on macOS.
+  // Replace these estimates with the first platform CI measurements.
+  'test/integration/analyze-atomic-swap.test.ts': 600,
+  'test/unit/incremental-write-integrity.test.ts': 180,
   'test/integration/cli-limit-e2e.test.ts': 75,
   'test/unit/hooks.test.ts': 26,
   'test/integration/analyze-heap-oom-e2e.test.ts': 23,
