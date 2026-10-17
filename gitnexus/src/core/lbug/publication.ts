@@ -49,6 +49,12 @@ export async function consolidateLbugForPublication(dbPath: string): Promise<voi
   if ((await residualSidecars(dbPath)).length === 0) return;
   const releaseInitLock = await acquireInitLock(dbPath);
   try {
+    // A missing-shadow quarantine cannot be replayed. Refuse before even a
+    // read-triggered recovery/checkpoint can change the retained main file.
+    const quarantinePrefix = `${path.basename(dbPath)}.wal.missing-shadow.`;
+    if ((await residualSidecars(dbPath)).some((name) => name.startsWith(quarantinePrefix))) {
+      throw new Error('Quarantined WAL requires recovery with its missing shadow file.');
+    }
     const handle = await openLbugConnection(lbug, dbPath, { throwOnWalReplayFailure: true });
     const query = async (cypher: string): Promise<void> => {
       const result = await handle.conn.query(cypher);

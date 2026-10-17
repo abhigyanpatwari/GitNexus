@@ -103,6 +103,7 @@ import {
 import { runWorkerAnalysis } from '../../src/server/analyze-worker-core.js';
 import type { WorkerMessage } from '../../src/server/analyze-worker.js';
 import { createTempDir } from '../helpers/test-db.js';
+import { seedEmbeddingsForFiles, stampEmbeddingCount } from '../helpers/embedding-seed.js';
 
 const isWin = process.platform === 'win32';
 
@@ -213,6 +214,53 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
       // The build failed in the temp; the swap (skipped on failure) never
       // published it, so the live index is byte-for-byte untouched.
       expect(await identity(lbugPath)).toBe(before);
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('preserves a pre-existing quarantine before opening the embedding cache (#3591)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, { skipFts: true }, { onProgress: () => {} });
+      const { lbugPath, storagePath } = getStoragePaths(repo);
+      const seeded = await seedEmbeddingsForFiles(repo, ['a.ts'], 2);
+      const nodeIds = seeded.get('a.ts')!;
+      expect(nodeIds).toHaveLength(2);
+      await stampEmbeddingCount(storagePath, nodeIds.length);
+      const oldGraph = await fs.readFile(lbugPath);
+      const oldMeta = await loadMeta(storagePath);
+      const quarantine = `${lbugPath}.wal.missing-shadow.1234-abcd`;
+      const evidence = Buffer.from('controlled quarantine: retain for recovery');
+      await fs.writeFile(quarantine, evidence);
+      // Stop the unfixed implementation before it reaches embedding generation.
+      // The preservation guard must reject earlier, before any graph write.
+      ctx.loadMock.mockRejectedValueOnce(new Error('injected later rebuild failure'));
+      await expect(
+        runFullAnalysis(repo, { force: true, skipFts: true }, { onProgress: () => {} }),
+      ).rejects.toThrow(/consolidat|recovery files/i);
+      expect(await fs.readFile(quarantine)).toEqual(evidence);
+      expect(await fs.readFile(lbugPath)).toEqual(oldGraph);
+      expect(await loadMeta(storagePath)).toEqual(oldMeta);
+      const coldIds = execFileSync(
+        process.execPath,
+        [
+          '-e',
+          `
+          const { Database, Connection } = require('@ladybugdb/core');
+          (async () => {
+            const db = new Database(process.argv[1], 256 * 1024 * 1024, false, true, 1024 ** 3);
+            const conn = new Connection(db);
+            const result = await conn.query('MATCH (e:CodeEmbedding) RETURN e.nodeId AS id');
+            console.log(JSON.stringify((await result.getAll()).map(row => row.id).sort()));
+            await conn.close(); await db.close();
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+        `,
+          lbugPath,
+        ],
+        { encoding: 'utf8', timeout: 30_000 },
+      );
+      expect(JSON.parse(coldIds)).toEqual(nodeIds.sort());
     } finally {
       await cleanup();
     }

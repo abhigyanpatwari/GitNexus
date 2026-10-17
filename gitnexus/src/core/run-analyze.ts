@@ -2799,6 +2799,23 @@ async function runFullAnalysisInner(
   // before the embedding plan, the parse cache, and the emit mode are decided.
   applyCollectedForce();
 
+  // Where the swap is allowed:
+  //  - POSIX renames an open file, so the usual skip-native-close (#2264) is
+  //    fine and the swap always applies.
+  //  - Windows can swap only when a real close is safe to release the build
+  //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
+  //    crash). Unverified on Windows CI; falls back to in-place otherwise.
+  const posixSwap = process.platform !== 'win32';
+  // #2614 Windows: the forced real-close before the rename re-bets that #2264 is
+  // --pdg-only, which is unproven (the CLI/worker skip the native close
+  // UNCONDITIONALLY) and unverifiable without a Windows runner. Keep it opt-in
+  // (GITNEXUS_ATOMIC_WINDOWS_SWAP=1) so the default Windows analyze stays on the
+  // proven in-place path; enable it only to test the Windows swap.
+  const windowsSwapOk =
+    process.platform === 'win32' &&
+    options.pdg !== true &&
+    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
+
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
   //   --embeddings              -> load cache, restore, then generate any new ones
@@ -2871,6 +2888,11 @@ async function runFullAnalysisInner(
   // possible the dirty block above already threw a LbugWipeError, so this
   // open is replay-free by construction (FIX 1 of this shipping review).
   if (shouldLoadCache && existingMeta) {
+    // Cache initialization is writable and may discard quarantined WALs.
+    // Preserve the live family before this first open, including runs whose
+    // incremental write later escalates to a staged full rebuild. Keep this
+    // outside the cache-load catch: a preservation failure must stop analysis.
+    if (posixSwap || windowsSwapOk) await consolidateLbugForPublication(lbugPath);
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initAnalysisLbug(lbugPath);
@@ -3210,22 +3232,6 @@ async function runFullAnalysisInner(
   // rename on Windows. Windows keeps the current in-place behavior
   // (buildPath === lbugPath, no swap) until that is resolved (see §12/follow-up).
   const isFullRebuild = !(isIncremental && hashDiff);
-  // Where the swap is allowed:
-  //  - POSIX renames an open file, so the usual skip-native-close (#2264) is
-  //    fine and the swap always applies.
-  //  - Windows can swap only when a real close is safe to release the build
-  //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
-  //    crash). Unverified on Windows CI; falls back to in-place otherwise.
-  const posixSwap = process.platform !== 'win32';
-  // #2614 Windows: the forced real-close before the rename re-bets that #2264 is
-  // --pdg-only, which is unproven (the CLI/worker skip the native close
-  // UNCONDITIONALLY) and unverifiable without a Windows runner. Keep it opt-in
-  // (GITNEXUS_ATOMIC_WINDOWS_SWAP=1) so the default Windows analyze stays on the
-  // proven in-place path; enable it only to test the Windows swap.
-  const windowsSwapOk =
-    process.platform === 'win32' &&
-    options.pdg !== true &&
-    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
   // Incremental atomicity stages the whole index before mutation. It remains
   // opt-in for ordinary analyze runs; watch mode requests it for failure
   // preservation. The copy requests a filesystem clone and records its actual
