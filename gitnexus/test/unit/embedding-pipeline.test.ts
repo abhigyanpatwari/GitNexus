@@ -106,14 +106,21 @@ describe('contentHashForNode', () => {
     expect(contentHashForNode(node)).toBe(contentHashForNode(node));
   });
 
-  it('matches sha1(generateEmbeddingText(node, node.content))', () => {
+  it('fingerprints the template, final input budget and generated text', () => {
     const node = makeNode();
     const expected = createHash('sha1')
       .update(EMBEDDING_TEXT_VERSION)
-      .update('\n')
+      .update(`\n${DEFAULT_EMBEDDING_CONFIG.maxInputChars}\n`)
       .update(generateEmbeddingText(node, node.content))
       .digest('hex');
     expect(contentHashForNode(node)).toBe(expected);
+  });
+
+  it('invalidates cached chunks when the final input budget changes', () => {
+    const node = makeNode();
+    expect(contentHashForNode(node, { maxInputChars: 2048 })).not.toBe(
+      contentHashForNode(node, { maxInputChars: 4096 }),
+    );
   });
 
   it('changes when node content is edited', () => {
@@ -155,7 +162,7 @@ describe('contentHashForNode', () => {
   });
 
   it('exports a text template version marker', () => {
-    expect(EMBEDDING_TEXT_VERSION).toBe('v5');
+    expect(EMBEDDING_TEXT_VERSION).toBe('v6');
   });
 });
 
@@ -367,6 +374,157 @@ describe('runEmbeddingPipeline incremental filter', () => {
   const onProgress = (p: EmbeddingProgress) => {
     progressUpdates.push({ ...p });
   };
+
+  it.each([400, 413, 422])(
+    'isolates HTTP %i inputs without starving healthy nodes after many rejected chunks',
+    async (status) => {
+      const { HttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const submitted: string[][] = [];
+      mockEmbedderWith(async (texts) => {
+        submitted.push(texts);
+        if (texts.some((text) => text.includes('Enum: bad'))) {
+          throw new HttpEmbeddingError('input rejected', { status });
+        }
+        return texts.map(() => new Float32Array(384));
+      });
+      const nodes: EmbeddableNode[] = [
+        {
+          id: 'Enum:bad',
+          name: 'bad',
+          label: 'Enum',
+          filePath: 'bad.ts',
+          content: 'x'.repeat(900),
+        },
+        {
+          id: 'Enum:good',
+          name: 'good',
+          label: 'Enum',
+          filePath: 'good.ts',
+          content: 'enum Good {}',
+        },
+      ];
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+      const result = await runEmbeddingPipeline(
+        mockExecuteQuery(nodes),
+        mockExecuteWithReusedStatement(),
+        onProgress,
+        { chunkSize: 100, overlap: 0, subBatchSize: 32 },
+        undefined,
+        new Map(),
+      );
+      expect(result.failedNodeIds).toEqual(['Enum:bad']);
+      expect(result.nodesProcessed).toBe(1);
+      expect(
+        stmtCalls
+          .filter((call) => call.cypher.includes('CREATE'))
+          .flatMap((call) => call.params)
+          .some((row) => row.nodeId === 'Enum:good'),
+      ).toBe(true);
+      expect(submitted.length).toBeLessThanOrEqual(submitted[0].length * 2 - 1);
+      expect(
+        submitted.filter((texts) => texts.length === 1 && texts[0].includes('Enum: bad')).length,
+      ).toBeGreaterThanOrEqual(5);
+    },
+  );
+
+  it('bounds an endpoint that rejects every distinct node before deleting later batches', async () => {
+    const { HttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+    const submitted: string[][] = [];
+    mockEmbedderWith(async (texts) => {
+      submitted.push(texts);
+      throw new HttpEmbeddingError('unsupported model', { status: 400 });
+    });
+    const nodes: EmbeddableNode[] = Array.from({ length: 40 }, (_, i) => ({
+      id: `Enum:e${i}`,
+      name: `e${i}`,
+      label: 'Enum',
+      filePath: 'enums.ts',
+      content: `enum E${i} {}`,
+    }));
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+    await expect(
+      runEmbeddingPipeline(
+        mockExecuteQuery(nodes),
+        mockExecuteWithReusedStatement(),
+        onProgress,
+        { batchSize: 8, subBatchSize: 8 },
+        undefined,
+        new Map(nodes.map((n) => [n.id, 'old'])),
+      ),
+    ).rejects.toThrow(/input rejections.*unsupported model/i);
+    expect(submitted).toHaveLength(15);
+    expect(stmtCalls.flatMap((call) => call.params).some((row) => row.nodeId === nodes[8].id)).toBe(
+      false,
+    );
+    expect(progressUpdates.at(-1)?.phase).toBe('error');
+  });
+
+  it('counts original sub-batches for the outage ratio after rejected inputs are isolated', async () => {
+    const { HttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+    mockEmbedderWith(async (texts) => {
+      if (texts.some((text) => /Enum: n(?:\d*[02468])\n/.test(text))) {
+        throw new HttpEmbeddingError('input rejected', { status: 400 });
+      }
+      if (texts.some((text) => /Enum: n\d*1\n/.test(text))) throw new Error('load shedding');
+      return texts.map(() => new Float32Array(384));
+    });
+    const nodes: EmbeddableNode[] = Array.from({ length: 320 }, (_, i) => ({
+      id: `Enum:n${i}`,
+      name: `n${i}`,
+      label: 'Enum',
+      filePath: 'enums.ts',
+      content: `enum N${i} {}`,
+    }));
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+    await expect(
+      runEmbeddingPipeline(
+        mockExecuteQuery(nodes),
+        mockExecuteWithReusedStatement(),
+        onProgress,
+        { batchSize: 16, subBatchSize: 8 },
+        undefined,
+        new Map(),
+      ),
+    ).rejects.toThrow(/embed sub-batches failed/);
+  });
+
+  it.each([401, 403, 429, 503, undefined])(
+    'does not bisect endpoint or transport failure %s',
+    async (status) => {
+      const { HttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const submitted: string[][] = [];
+      mockEmbedderWith(async (texts) => {
+        submitted.push(texts);
+        throw new HttpEmbeddingError('endpoint unavailable', { status });
+      });
+      const nodes = Array.from(
+        { length: 6 },
+        (_, i): EmbeddableNode => ({
+          id: `Enum:e${i}`,
+          name: `e${i}`,
+          label: 'Enum',
+          filePath: 'enums.ts',
+          content: `enum E${i} {}`,
+        }),
+      );
+      const { runEmbeddingPipeline } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+      const result = await runEmbeddingPipeline(
+        mockExecuteQuery(nodes),
+        mockExecuteWithReusedStatement(),
+        onProgress,
+        { subBatchSize: 8 },
+        undefined,
+        new Map(),
+      );
+      expect(submitted).toHaveLength(1);
+      expect(result.failedNodeIds).toHaveLength(6);
+      expect(result.nodesProcessed).toBe(0);
+    },
+  );
 
   it('falls back to text-bearing File nodes when a repo has no code symbols', async () => {
     mockEmbedderSetup();

@@ -3,6 +3,7 @@ import {
   generateEmbeddingText,
   truncateDescription,
   extractDeclarationOnly,
+  splitEmbeddingText,
 } from '../../src/core/embeddings/text-generator.js';
 import {
   CHUNKING_RULES,
@@ -22,6 +23,18 @@ const baseNode: EmbeddableNode = {
 };
 
 describe('text-generator', () => {
+  it.each([2, 17, 4096])(
+    'preserves all final generated text within a %i character budget',
+    (budget) => {
+      const text = 'Header: 超长😀\n' + '中文😀abc'.repeat(3000);
+      const chunks = [...splitEmbeddingText(text, budget)];
+      expect(chunks.join('')).toBe(text);
+      expect(
+        chunks.every((chunk) => chunk.length <= budget && Buffer.from(chunk).toString() === chunk),
+      ).toBe(true);
+    },
+  );
+
   describe('generateEmbeddingText', () => {
     it('leads with name and code, dropping verbose metadata lines (#2333)', () => {
       const node: EmbeddableNode = {
@@ -418,6 +431,20 @@ describe('text-generator', () => {
       expect(text).toContain('[preceding context]: ...parseJSON(text: string)');
       expect(text).not.toContain('Methods: parseJSON, validate');
       expect(text).not.toContain('Properties: options, cache');
+    });
+
+    it('keeps a declaration-aware container on decorated and blank-led later chunks', () => {
+      for (const prefix of ['\n\n', '@Component({\n selector: "app-root",\n})\n']) {
+        const node = {
+          ...baseNode,
+          label: 'Class',
+          name: 'Parser',
+          content: `${prefix}export class Parser {\n parse() { return 1; }\n}`,
+        };
+        expect(generateEmbeddingText(node, 'parse() { return 1; }', {}, 1)).toContain(
+          'Container: export class Parser {',
+        );
+      }
     });
 
     it('adds preceding context to non-structural chunk text', () => {

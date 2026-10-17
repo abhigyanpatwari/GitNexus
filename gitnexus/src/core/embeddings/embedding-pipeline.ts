@@ -17,8 +17,8 @@ import {
   embeddingToArray,
   isEmbedderReady,
 } from './embedder.js';
-import { isHttpMode } from './http-client.js';
-import { generateEmbeddingText } from './text-generator.js';
+import { isHttpMode, HttpEmbeddingError } from './http-client.js';
+import { generateEmbeddingText, splitEmbeddingText } from './text-generator.js';
 import { chunkNode, characterChunk } from './chunker.js';
 import { extractStructuralNames } from './structural-extractor.js';
 import {
@@ -32,6 +32,7 @@ import {
   LABEL_METHOD,
   LABELS_WITH_EXPORTED,
   STRUCTURAL_LABELS,
+  DEFAULT_EMBEDDING_CONFIG,
   collectBestChunks,
 } from './types.js';
 import {
@@ -82,7 +83,7 @@ const ensureVectorExtensionAvailable = async (): Promise<boolean> => {
  * invalidate existing vectors, such as metadata/header shape changes,
  * structural container context changes, or preceding-context formatting rules.
  */
-export const EMBEDDING_TEXT_VERSION = 'v5';
+export const EMBEDDING_TEXT_VERSION = 'v6';
 
 /**
  * Compute a stable content fingerprint for an embeddable node.
@@ -103,8 +104,49 @@ export const contentHashForNode = (
     node.content,
     config,
   );
-  return createHash('sha1').update(EMBEDDING_TEXT_VERSION).update('\n').update(text).digest('hex');
+  return createHash('sha1')
+    .update(EMBEDDING_TEXT_VERSION)
+    .update(`\n${config.maxInputChars ?? DEFAULT_EMBEDDING_CONFIG.maxInputChars}\n`)
+    .update(text)
+    .digest('hex');
 };
+
+const isInputRejection = (error: unknown): boolean =>
+  error instanceof HttpEmbeddingError &&
+  (error.status === 400 || error.status === 413 || error.status === 422);
+
+type EmbeddedRange = { start: number; end: number } & (
+  | { embeddings: Float32Array[] }
+  | { error: unknown }
+);
+
+/** Bisect only input rejections, with at most 2n-1 requests per sub-batch.
+ * Authentication, throttling, transport and cancellation retain their existing
+ * bounded retry/failure policy instead of multiplying requests. */
+async function* embedInputRanges(
+  texts: string[],
+  subBatchSize: number,
+  signal?: AbortSignal,
+): AsyncGenerator<EmbeddedRange> {
+  async function* request(start: number, end: number): AsyncGenerator<EmbeddedRange> {
+    try {
+      const embeddings = await embedBatch(texts.slice(start, end), { signal });
+      yield { start, end, embeddings };
+    } catch (error) {
+      if (signal?.aborted || isCancellationError(error)) throw error;
+      if (isInputRejection(error) && end - start > 1) {
+        const middle = start + Math.floor((end - start) / 2);
+        yield* request(start, middle);
+        yield* request(middle, end);
+      } else {
+        yield { start, end, error };
+      }
+    }
+  }
+  for (let start = 0; start < texts.length; start += subBatchSize) {
+    yield* request(start, Math.min(start + subBatchSize, texts.length));
+  }
+}
 
 /**
  * Progress callback type
@@ -684,6 +726,8 @@ export const runEmbeddingPipeline = async (
     // counter's reset-on-success blinds it to.
     let subBatchesAttempted = 0;
     let subBatchFailures = 0;
+    const rejectedNodesSinceSuccess = new Set<string>();
+    let firstInputRejection: { err: unknown } | undefined;
     // Sized from this run's own node set AND its configured sub-batch size, not
     // a flat constant, so a resume run (whose node set is only the pending ids)
     // and an operator-tuned `subBatchSize` both still arm the guard — see
@@ -783,6 +827,7 @@ export const runEmbeddingPipeline = async (
         }
 
         let prevTail = '';
+        let inputIndex = 0;
         for (const chunk of chunks) {
           const text = generateEmbeddingText(
             node,
@@ -791,14 +836,16 @@ export const runEmbeddingPipeline = async (
             chunk.chunkIndex,
             prevTail,
           );
-          allTexts.push(text);
-          allUpdates.push({
-            nodeId: node.id,
-            chunkIndex: chunk.chunkIndex,
-            startLine: chunk.startLine,
-            endLine: chunk.endLine,
-            contentHash: hash,
-          });
+          for (const input of splitEmbeddingText(text, finalConfig.maxInputChars)) {
+            allTexts.push(input);
+            allUpdates.push({
+              nodeId: node.id,
+              chunkIndex: inputIndex++,
+              startLine: chunk.startLine,
+              endLine: chunk.endLine,
+              contentHash: hash,
+            });
+          }
           prevTail = overlap > 0 ? chunk.text.slice(-overlap) : '';
         }
       }
@@ -821,14 +868,26 @@ export const runEmbeddingPipeline = async (
       // Carries EITHER abort reason — the consecutive-ceiling rethrow or the
       // cumulative-ratio abort — hence the reason-neutral name.
       let abortError: { err: unknown } | undefined;
-      for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
-        const subTexts = allTexts.slice(si, si + EMBED_SUB_BATCH);
-        const subUpdates = allUpdates.slice(si, si + EMBED_SUB_BATCH);
-        subBatchesAttempted += 1;
+      let lastAttemptedSubBatch = -1;
+      let lastFailedSubBatch = -1;
+      for await (const result of embedInputRanges(
+        allTexts,
+        EMBED_SUB_BATCH,
+        pipelineOptions.signal,
+      )) {
+        const subTexts = allTexts.slice(result.start, result.end);
+        const subUpdates = allUpdates.slice(result.start, result.end);
+        // Bisection must not multiply the denominator of the outage guard.
+        const subBatch = Math.floor(result.start / EMBED_SUB_BATCH);
+        if (subBatch !== lastAttemptedSubBatch) {
+          subBatchesAttempted += 1;
+          lastAttemptedSubBatch = subBatch;
+        }
 
         let embeddings: Float32Array[];
         try {
-          embeddings = await embedBatch(subTexts, { signal: pipelineOptions.signal });
+          if ('error' in result) throw result.error;
+          embeddings = result.embeddings;
         } catch (embedErr) {
           // Never swallow a cancel as a "tolerable" failure — the operator asked
           // us to stop, and the run has no business continuing (or deleting rows).
@@ -839,8 +898,22 @@ export const runEmbeddingPipeline = async (
           // keep going; the cleanup DELETE after this loop makes the drop safe.
           const droppedNodeIds = new Set(subUpdates.map((u) => u.nodeId));
           for (const nodeId of droppedNodeIds) batchFailedNodeIds.add(nodeId);
+          if (isInputRejection(embedErr)) {
+            // Bad inputs are pending work, not evidence of an endpoint outage.
+            // Do not let many rejected chunks starve later healthy nodes.
+            for (const nodeId of droppedNodeIds) rejectedNodesSinceSuccess.add(nodeId);
+            firstInputRejection ??= { err: embedErr };
+            logger.warn(
+              { err: embedErr },
+              `Embedding input rejected; ${droppedNodeIds.size} node(s) remain pending`,
+            );
+            continue;
+          }
           consecutiveSubBatchFailures += 1;
-          subBatchFailures += 1;
+          if (subBatch !== lastFailedSubBatch) {
+            subBatchFailures += 1;
+            lastFailedSubBatch = subBatch;
+          }
           const streakError = (streakFirstError ??= { err: embedErr });
           // Log under `err` so pino's standard serializer keeps the message and
           // stack — the previous `{ embedErr }` key serialized to `{}` (#2114).
@@ -875,6 +948,8 @@ export const runEmbeddingPipeline = async (
         }
         consecutiveSubBatchFailures = 0;
         streakFirstError = undefined;
+        rejectedNodesSinceSuccess.clear();
+        firstInputRejection = undefined;
 
         const dbUpdates = subUpdates.map((u, i) => ({
           ...u,
@@ -883,6 +958,20 @@ export const runEmbeddingPipeline = async (
 
         await batchInsertEmbeddings(executeWithReusedStatement, dbUpdates);
         throwIfCancelled();
+      }
+
+      // Finish this batch before judging a rejecting endpoint: one large bad
+      // node must not prevent a healthy sibling from being attempted. Count
+      // distinct nodes, not its chunks, and retain later batches on total failure.
+      if (!abortError && rejectedNodesSinceSuccess.size >= MAX_CONSECUTIVE_SUB_BATCH_FAILURES) {
+        const cause = firstInputRejection?.err;
+        abortError = {
+          err: new Error(
+            `[embed] Aborting after input rejections for ${rejectedNodesSinceSuccess.size} nodes without a successful input; ` +
+              `check the endpoint model and input budget. ${cause instanceof Error ? cause.message : String(cause)}`,
+            { cause },
+          ),
+        };
       }
 
       // A failed sub-batch leaves the node HALF embedded, and half is worse than
