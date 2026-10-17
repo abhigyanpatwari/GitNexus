@@ -12,15 +12,21 @@ import { registersS3Method, rRenameProvider } from '../../src/core/ingestion/lan
 const parser = new Parser();
 parser.setLanguage(R as Parameters<Parser['setLanguage']>[0]);
 
-/** Run the provider's safety check for renaming `helper` to `newName`, with these functions defined. */
-function verdict(newName: string, defined: readonly string[]): string {
-  const source = defined.map((name) => `${name} <- function(x) x`).join('\n');
+type Definition = { readonly name: string; readonly type: string };
+
+/** Run the provider's safety check for renaming `helper` to `newName`, with these definitions. */
+function verdictWith(
+  newName: string,
+  defs: readonly Definition[],
+  nodes: readonly Record<string, unknown>[] = [],
+): string {
+  const source = defs.map((d) => `${d.name} <- function(x) x`).join('\n');
   const files = new Map([
     [
       'a.R',
       {
         tree: parser.parse(source),
-        parsed: { localDefs: defined.map((name) => ({ qualifiedName: name })) },
+        parsed: { localDefs: defs.map((d) => ({ qualifiedName: d.name, type: d.type })) },
       },
     ],
   ]);
@@ -28,10 +34,20 @@ function verdict(newName: string, defined: readonly string[]): string {
     target: { type: 'Function', qualifiedName: 'helper', filePath: 'a.R' },
     newName,
     files,
-    graph: { forEachNode: () => undefined },
+    graph: {
+      forEachNode: (visit: (node: { properties: Record<string, unknown> }) => void) =>
+        nodes.forEach((properties) => visit({ properties })),
+    },
   } as never);
   return issue ? issue.code : 'ok';
 }
+
+/** The same, with every name defined as a plain function. */
+const verdict = (newName: string, defined: readonly string[]): string =>
+  verdictWith(
+    newName,
+    defined.map((name) => ({ name, type: 'Function' })),
+  );
 
 describe('R rename: the S3 registration guard', () => {
   it('refuses a name whose first dot split is a defined function', () => {
@@ -57,6 +73,47 @@ describe('R rename: the S3 registration guard', () => {
     expect(verdict('my.helper', [])).toBe('ok');
     expect(verdict('to.json.foo', [])).toBe('ok');
     expect(verdict('toJson.foo', ['to.json'])).toBe('ok');
+  });
+
+  it('treats only functions as generics, not classes or members of the same name', () => {
+    // The positive control: the same name defined as a function is refused.
+    expect(verdictWith('Widget.foo', [{ name: 'Widget', type: 'Function' }])).toBe(
+      'unsupported_occurrence',
+    );
+    for (const type of ['Class', 'Method', 'Property']) {
+      expect(verdictWith('Widget.foo', [{ name: 'Widget', type }]), type).toBe('ok');
+    }
+    // A name with a Class and a Function of the same spelling is still refused.
+    expect(
+      verdictWith('Widget.foo', [
+        { name: 'Widget', type: 'Class' },
+        { name: 'Widget', type: 'Function' },
+      ]),
+    ).toBe('unsupported_occurrence');
+  });
+
+  it('refuses a rename only for the NAMESPACE export of a function, not of a member', () => {
+    const inPackage = (label: string) =>
+      rRenameProvider.checkSafety?.({
+        target: { type: 'Function', qualifiedName: 'helper', filePath: 'R/a.R' },
+        newName: 'helper2',
+        files: new Map([
+          ['R/a.R', { tree: parser.parse('helper <- function(x) x'), parsed: { localDefs: [] } }],
+        ]),
+        graph: {
+          forEachNode: (
+            visit: (node: { label: string; properties: Record<string, unknown> }) => void,
+          ) =>
+            visit({
+              label,
+              properties: { filePath: 'R/a.R', name: 'helper', isExported: true },
+            }),
+        },
+      } as never)?.code ?? 'ok';
+    expect(inPackage('Function')).toBe('unsupported_occurrence');
+    expect(inPackage('Method')).toBe('ok');
+    expect(inPackage('Property')).toBe('ok');
+    expect(inPackage('Class')).toBe('ok');
   });
 
   it('allows a name with no dot, and a name that merely starts with a dot', () => {

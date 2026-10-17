@@ -277,10 +277,14 @@ export const rRenameProvider: RenameProvider = {
     const name = rBareName(target.qualifiedName ?? '');
     if (target.type !== 'Function')
       return unsupported('Only plain R functions can be renamed; classes and members are refused.');
+    // Only a function can be an S3 generic: an R6 or S4 class, a member or a field of the same
+    // spelling is not one, so a name like `Widget.foo` beside `Widget <- R6Class(...)` is free.
     const defined = new Set(
       [...files.values()].flatMap((source) =>
         source.parsed.localDefs.flatMap((d) =>
-          d.qualifiedName === undefined ? [] : [rBareName(d.qualifiedName)],
+          d.type !== 'Function' || d.qualifiedName === undefined
+            ? []
+            : [rBareName(d.qualifiedName)],
         ),
       ),
     );
@@ -321,6 +325,7 @@ export const rRenameProvider: RenameProvider = {
     let exported = false;
     graph.forEachNode((node) => {
       if (
+        node.label === 'Function' &&
         node.properties.filePath === file &&
         typeof node.properties.name === 'string' &&
         rBareName(node.properties.name) === name &&
