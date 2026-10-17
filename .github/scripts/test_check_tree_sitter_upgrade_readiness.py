@@ -361,6 +361,50 @@ class FetchHelperReadPhaseErrors(TestCase):
             self.assertIsNone(readiness.npm_view_json("tree-sitter-anything"))
 
 
+class NpmRegistryUrl(TestCase):
+    """The registry names a scoped package as one path segment with the slash
+    encoded (``@scope%2Fname``). The unencoded form is served today, but the
+    encoded one is the documented spelling, so the script does not rely on that."""
+
+    @staticmethod
+    def _requested_urls(pkg: str) -> list[str]:
+        import urllib.request
+
+        seen: list[str] = []
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, *a, **k):
+                return b"{}"
+
+        def _fake_urlopen(req, *a, **k):
+            seen.append(req.full_url)
+            return _Resp()
+
+        with mock.patch.object(readiness, "OFFLINE", False), mock.patch.object(
+            urllib.request, "urlopen", side_effect=_fake_urlopen
+        ):
+            readiness.npm_view_json(pkg)
+        return seen
+
+    def test_scoped_package_slash_is_encoded(self):
+        self.assertEqual(
+            self._requested_urls(_R_GRAMMAR),
+            ["https://registry.npmjs.org/@eagleoutice%2Ftree-sitter-r/latest"],
+        )
+
+    def test_unscoped_package_is_unchanged(self):
+        self.assertEqual(
+            self._requested_urls("tree-sitter-go"),
+            ["https://registry.npmjs.org/tree-sitter-go/latest"],
+        )
+
+
 class ReportRendering(TestCase):
     @classmethod
     def setUpClass(cls):
