@@ -25,6 +25,7 @@ import {
   readRenameSourceVersion,
 } from './preview-plans.js';
 import type { RenameSourceVersion } from './preview-plans.js';
+import { validateRenameResolution, type RenameResolutionVersion } from './resolution-version.js';
 
 export interface RenameOptions extends SharedRenameOptions {
   plan_token?: string;
@@ -102,6 +103,8 @@ export async function executeRenamePlan(
   plan: RenamePlan,
   dryRun = true,
   evidence: ReadonlyMap<string, RenameSourceVersion> = new Map(),
+  approvedTargets?: ReadonlyMap<string, string>,
+  resolution?: RenameResolutionVersion,
 ): Promise<RenameResult> {
   const changes: FileChange[] = [];
   // Reuse encoded snapshots across the full-scope checks instead of encoding
@@ -125,6 +128,11 @@ export async function executeRenamePlan(
     for (const [file, unsorted] of [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b))) {
       const absolute = repositoryPath(repoPath, file);
       const real = await checkedRealPath(repoPath, file);
+      if (approvedTargets && approvedTargets.get(absolute) !== real)
+        throw new RenameFailure(
+          'source_changed',
+          `Source target changed after preview: ${file}. Review a fresh preview.`,
+        );
       if (realPaths.has(real))
         throw new RenameFailure(
           'duplicate_file',
@@ -173,6 +181,10 @@ export async function executeRenamePlan(
       // Unedited sources also contribute semantic evidence. Already installed
       // files must match their landed outputs rather than their old snapshots.
       await validateSnapshots(expectedSnapshots, evidence);
+      // Configuration discovery is bounded independently of the edit count.
+      // Check after staging, just before the first installation; later source
+      // checks retain the same cooperative-workspace race boundary as writes.
+      if (landed.length === 0) await validateRenameResolution(resolution);
       // A later evidence read can race with an edit to this destination. Recheck
       // last; validation and replacement remain separate filesystem operations.
       if (
@@ -240,13 +252,27 @@ export async function renameSymbol(
         graphNodes,
         referenceFiles,
       );
-      return await executeRenamePlan(repoPath, plan, false, plan.evidence);
+      return await executeRenamePlan(
+        repoPath,
+        plan,
+        false,
+        plan.evidence,
+        plan.targets,
+        plan.resolution,
+      );
     }
     const { planGraphRename } = await import('./graph-rename.js');
     const sources = await renameSourceInventory(repoPath);
-    const plan = await planGraphRename(repoPath, symbol, options, graphNodes, referenceFiles);
+    const { resolution, ...plan } = await planGraphRename(
+      repoPath,
+      symbol,
+      options,
+      graphNodes,
+      referenceFiles,
+    );
     const result = await executeRenamePlan(repoPath, plan, options.dry_run ?? true);
     if (result.status === 'success' && options.dry_run !== false) {
+      await validateRenameResolution(resolution);
       if (JSON.stringify(sources) !== JSON.stringify(await renameSourceInventory(repoPath)))
         throw new RenameFailure(
           'source_set_changed',
@@ -258,6 +284,7 @@ export async function renameSymbol(
         graphNodes,
         referenceFiles,
         sources,
+        resolution,
       );
     }
     return result;

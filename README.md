@@ -902,8 +902,13 @@ Review the exact UTF-16 spans and coverage, then call `rename` with the same
 selectors, `dry_run: false`, and its returned `plan_token` to apply exactly those edits.
 Tokens are single-use, expire after 15 minutes or a server restart, and may be
 evicted by the bounded retained-plan cache. Changed source contents, physical
-targets, indexed declarations or source-file sets (including untracked additions)
+targets, indexed declarations, provider resolution configuration or source-file sets (including untracked additions)
 require a fresh reviewed preview. Omitting `dry_run` also previews.
+Configuration is compared by provider resolution semantics; comment-only changes
+that preserve those semantics are accepted. Unedited source aliases of an edited
+physical file block preview. Apply checks configuration before the first write
+and source contents and approved targets before each replacement; these checks
+assume a cooperative checkout and do not form a filesystem transaction.
 Counts describe occurrences, including multiple edits on one line. The graph
 selects indexed declarations and files; GitNexus's language providers rebuild
 semantic scopes from the current source and resolve exact name spans.

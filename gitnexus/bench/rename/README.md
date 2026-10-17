@@ -54,3 +54,10 @@ to measure their evidence capture. Both 400-source validation cases must stay
 below one second and a normalized scaling ratio of 2.5. Reviewed application
 also has a one-second ceiling. The existing rename step in `ci-tests.yml` runs
 all these checks with `--check`.
+
+Reviewed application includes capability consumption and its configuration
+validation, approved-target checks, staging and installation. It uses the real
+provider configuration loader and asserts exactly two apply-time refreshes: at
+capability validation and before the first installation. Configuration discovery
+therefore stays independent of edited-file count. Source bytes and targets still
+receive per-replacement checks; these filesystem operations are not a transaction.

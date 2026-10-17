@@ -78,6 +78,14 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
   };
 }
 
+async function loadResolutionConfig(repoPath: string, fresh = false) {
+  return {
+    tsconfigs: await loadTsconfigIndex(repoPath),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
+    nuxtAutoImports: await loadNuxtAutoImports(repoPath),
+  };
+}
+
 const typescriptScopeResolver: ScopeResolver = {
   populateWorkspaceReferences: (parsedFiles) =>
     canonicalizeWorkspaceBindings(parsedFiles, canonicalTypeScriptName),
@@ -104,11 +112,8 @@ const typescriptScopeResolver: ScopeResolver = {
   // workspace pass; the orchestrator awaits this once.
   // `nuxtAutoImports` is null for non-Nuxt projects (no .nuxt/imports.d.ts),
   // so this adds zero overhead to ordinary TypeScript repos.
-  loadResolutionConfig: async (repoPath: string) => ({
-    tsconfigs: await loadTsconfigIndex(repoPath),
-    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath),
-    nuxtAutoImports: await loadNuxtAutoImports(repoPath),
-  }),
+  loadResolutionConfig,
+  refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
 
   // TypeScript declaration merging + LEGB: local > import > wildcard,
   // separated by declaration space (value / type / namespace). The

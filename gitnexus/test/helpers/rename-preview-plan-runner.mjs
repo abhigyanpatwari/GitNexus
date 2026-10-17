@@ -10,6 +10,7 @@ import * as adapter from '../../dist/core/lbug/lbug-adapter.js';
 const [temporary, reportPath, mode, coldUid, coldToken] = process.argv.slice(2);
 const root = path.join(temporary, 'repo');
 const repo = 'rename-preview-plan';
+const physicalTargets = mode.startsWith('physical-target');
 if (mode === 'cold-apply') {
   const cold = new LocalBackend();
   try {
@@ -34,6 +35,19 @@ const sources = {
   'c.ts':
     "import { target } from './a';\nexport function untracked() { return target() + target(); }\n",
 };
+const configs = {
+  'tsconfig.json': '{"extends":"./base.config.json"}',
+  'base.config.json': '{"compilerOptions":{"baseUrl":".","paths":{"@entry":["./a.ts"]}}}',
+  'package.json': '{"name":"original-package","private":true}',
+};
+if (mode === 'resolution-config') {
+  sources['other.ts'] = 'export function target() { return 2; }\n';
+  for (const file of ['b.ts', 'c.ts']) sources[file] = sources[file].replace("'./a'", "'@entry'");
+}
+if (mode === 'rust-config') {
+  for (const file of Object.keys(sources)) delete sources[file];
+  sources['lib.rs'] = 'pub fn target() -> i32 { 1 }\npub fn caller() -> i32 { target() }\n';
+}
 if (mode === 'large-evidence') {
   process.env.GITNEXUS_MAX_FILE_SIZE = '32768';
   sources['evidence1.ts'] = 'export const unrelated1 = 1;\n';
@@ -44,8 +58,25 @@ try {
   await fs.mkdir(root);
   for (const [file, text] of Object.entries(sources))
     await fs.writeFile(path.join(root, file), text);
+  if (mode === 'resolution-config')
+    for (const [file, text] of Object.entries(configs))
+      await fs.writeFile(path.join(root, file), text);
+  if (mode === 'rust-config')
+    await fs.writeFile(
+      path.join(root, 'Cargo.toml'),
+      '[package]\nname = "rename-config"\nversion = "0.1.0"\nedition = "2021"\n[lib]\npath = "lib.rs"\n',
+    );
+  if (physicalTargets) {
+    await fs.rename(path.join(root, 'a.ts'), path.join(root, 'first.data'));
+    await fs.writeFile(path.join(root, 'second.data'), sources['a.ts']);
+    await fs.symlink(path.join(root, 'first.data'), path.join(root, 'a.ts'), 'file');
+  }
   execFileSync('git', ['init', '-q'], { cwd: root });
-  execFileSync('git', ['add', 'a.ts', 'b.ts'], { cwd: root });
+  execFileSync(
+    'git',
+    ['add', ...(mode === 'rust-config' ? ['lib.rs', 'Cargo.toml'] : ['a.ts', 'b.ts'])],
+    { cwd: root },
+  );
   const indexed = await runFullAnalysis(
     root,
     {
@@ -69,9 +100,15 @@ try {
       await fs.writeFile(path.join(root, file), sources[file]);
     execFileSync('git', ['add', 'existing-tracked.ts'], { cwd: root });
   }
+  if (physicalTargets) {
+    sources['z-evidence.ts'] = 'export const evidence = 1;\n';
+    await fs.writeFile(path.join(root, 'z-evidence.ts'), sources['z-evidence.ts']);
+  }
   await adapter.initLbug(path.join(indexed.storagePath, 'lbug'), { skipFts: true });
   const targets = await adapter.executeQuery(
-    "MATCH (n:Function) WHERE n.name = 'target' RETURN n.id AS id",
+    "MATCH (n:Function) WHERE n.name = 'target' AND n.filePath = '" +
+      (mode === 'rust-config' ? 'lib.rs' : 'a.ts') +
+      "' RETURN n.id AS id",
   );
   assert.equal(targets.length, 1);
   const calls = await adapter.executeQuery(
@@ -79,7 +116,10 @@ try {
       targets[0].id +
       "' RETURN DISTINCT a.name AS name",
   );
-  assert.deepEqual(calls.map((x) => x.name).sort(), ['tracked', 'untracked']);
+  assert.deepEqual(
+    calls.map((x) => x.name).sort(),
+    mode === 'rust-config' ? ['caller'] : ['tracked', 'untracked'],
+  );
   if (mode === 'large-evidence') {
     const evidence = await adapter.executeQuery(
       "MATCH (n) WHERE n.filePath IN ['evidence1.ts', 'evidence2.ts'] RETURN labels(n) AS kind, n.name AS name, n.filePath AS file",
@@ -117,7 +157,128 @@ try {
       assert.equal(await fs.readFile(path.join(root, file), 'utf8'), text);
   };
 
-  let plan = await preview();
+  let plan;
+  if (mode === 'rust-config') {
+    plan = await preview();
+    assert.equal(plan.status, 'success', JSON.stringify(plan));
+    assert.equal(plan.total_edits, 2);
+    const applied = await apply(plan);
+    assert.equal(applied.status, 'success', JSON.stringify(applied));
+    assert.deepEqual(applied.changes, plan.changes);
+    assert.equal(
+      await fs.readFile(path.join(root, 'lib.rs'), 'utf8'),
+      sources['lib.rs'].replaceAll('target', 'renamed'),
+    );
+    await fs.writeFile(
+      reportPath,
+      JSON.stringify({ status: 'passed', nodes: indexed.stats.nodes }),
+    );
+    process.exit();
+  }
+  if (mode === 'resolution-config') {
+    const cases = [
+      [
+        'direct paths',
+        'tsconfig.json',
+        '{"compilerOptions":{"baseUrl":".","paths":{"@entry":["./other.ts"]}}}',
+      ],
+      [
+        'arbitrary inherited config',
+        'base.config.json',
+        '{"compilerOptions":{"baseUrl":".","paths":{"@entry":["./other.ts"]}}}',
+      ],
+      ['removed governing config', 'tsconfig.json', null],
+      ['new nested config', 'nested/tsconfig.json', '{"compilerOptions":{"baseUrl":".."}}'],
+      ['memoized workspace package', 'package.json', '{"name":"changed-package","private":true}'],
+    ];
+    for (const [label, file, text] of cases) {
+      plan = await preview();
+      assert.equal(plan.status, 'success', JSON.stringify({ label, plan }));
+      assert.equal(plan.total_edits, 7);
+      const absolute = path.join(root, file);
+      if (text === null) await fs.unlink(absolute);
+      else {
+        await fs.mkdir(path.dirname(absolute), { recursive: true });
+        await fs.writeFile(absolute, text);
+      }
+      const rejected = await apply(plan);
+      assert.equal(rejected.code, 'resolution_changed', JSON.stringify({ label, rejected }));
+      assert.equal(rejected.applied, false);
+      await unchanged();
+      if (Object.hasOwn(configs, file)) await fs.writeFile(absolute, configs[file]);
+      else await fs.rm(path.dirname(absolute), { recursive: true });
+    }
+    plan = await preview();
+    // Configuration semantics, rather than irrelevant formatting, bind the plan.
+    await fs.appendFile(path.join(root, 'base.config.json'), '\n// comment-only change\n');
+    const applied = await apply(plan);
+    assert.equal(applied.status, 'success', JSON.stringify(applied));
+    assert.deepEqual(applied.changes, plan.changes);
+    for (const change of plan.changes) {
+      let expected = sources[change.file_path];
+      for (const edit of [...change.edits].sort((a, b) => b.start - a.start))
+        expected =
+          expected.slice(0, edit.start) + edit.new_text + expected.slice(edit.start + edit.length);
+      assert.equal(await fs.readFile(path.join(root, change.file_path), 'utf8'), expected);
+    }
+    assert.equal(await fs.readFile(path.join(root, 'other.ts'), 'utf8'), sources['other.ts']);
+    await fs.writeFile(
+      reportPath,
+      JSON.stringify({ status: 'passed', nodes: indexed.stats.nodes }),
+    );
+    process.exit();
+  }
+  if (physicalTargets) {
+    // The graph and semantic planner remain real; an extra source path aliases
+    // a reviewed destination and must be rejected before any capability is issued.
+    if (mode === 'physical-targets') {
+      const alias = path.join(root, 'alias.ts');
+      await fs.symlink(path.join(root, 'a.ts'), alias, 'file');
+      const ambiguous = await preview();
+      assert.equal(ambiguous.code, 'duplicate_file', JSON.stringify(ambiguous));
+      assert.equal(ambiguous.plan_token, undefined);
+      await unchanged();
+      await fs.unlink(alias);
+    }
+    plan = await preview();
+    assert.equal(plan.status, 'success', JSON.stringify(plan));
+    // Controlled filesystem race after take() has validated the edited a.ts,
+    // while it reads a later evidence path. Identical bytes hide target drift
+    // unless execution retains the preview's approved canonical destination.
+    const originalRealpath = fs.realpath.bind(fs);
+    let retargeted = false;
+    fs.realpath = async (...args) => {
+      if (!retargeted && String(args[0]) === path.join(root, 'z-evidence.ts')) {
+        retargeted = true;
+        await fs.unlink(path.join(root, 'a.ts'));
+        await fs.symlink(path.join(root, 'second.data'), path.join(root, 'a.ts'), 'file');
+      }
+      return originalRealpath(...args);
+    };
+    let rejected;
+    try {
+      rejected = await apply(plan);
+    } finally {
+      fs.realpath = originalRealpath;
+    }
+    assert.equal(retargeted, true);
+    assert.equal(rejected.code, 'source_changed', JSON.stringify(rejected));
+    assert.equal(rejected.applied, false);
+    await unchanged();
+    for (const file of ['first.data', 'second.data'])
+      assert.equal(await fs.readFile(path.join(root, file), 'utf8'), sources['a.ts']);
+    await fs.unlink(path.join(root, 'a.ts'));
+    await fs.symlink(path.join(root, 'first.data'), path.join(root, 'a.ts'), 'file');
+    plan = await preview();
+    assert.equal((await apply(plan)).status, 'success');
+    assert.equal(await fs.readFile(path.join(root, 'second.data'), 'utf8'), sources['a.ts']);
+    await fs.writeFile(
+      reportPath,
+      JSON.stringify({ status: 'passed', nodes: indexed.stats.nodes }),
+    );
+    process.exit();
+  }
+  plan = await preview();
   assert.equal(plan.status, 'success', JSON.stringify(plan));
   assert.equal(
     typeof plan.plan_token,

@@ -485,6 +485,16 @@ export interface ScopeResolver {
   loadResolutionConfig?(repoPath: string): Promise<unknown> | unknown;
 
   /**
+   * Fresh configuration for a rename preview or capability validation. Providers
+   * with workspace caches bypass them here; shared rename never interprets the
+   * value or discovers language-specific configuration files itself.
+   */
+  refreshResolutionConfig?(
+    repoPath: string,
+    filePaths: readonly string[],
+  ): Promise<unknown> | unknown;
+
+  /**
    * Capture metadata from the scan's complete, nonignored candidate paths,
    * before unreadable/large source files are filtered out. Called once for a
    * language present in the scan. The compact result is shared by every

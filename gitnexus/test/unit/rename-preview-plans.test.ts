@@ -7,6 +7,10 @@ import {
   RenamePreviewPlans,
   renameSourceInventory,
 } from '../../src/mcp/local/rename/preview-plans.js';
+import {
+  renameResolutionVersion,
+  validateRenameResolution,
+} from '../../src/mcp/local/rename/resolution-version.js';
 
 describe('immutable rename preview capabilities', () => {
   let root: string;
@@ -20,7 +24,9 @@ describe('immutable rename preview capabilities', () => {
     },
   ];
   beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), 'rename-preview-capability-'));
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'rename-preview-capability-')),
+    );
     store = new RenamePreviewPlans();
     await fs.writeFile(path.join(root, 'a.ts'), 'old();');
     plan = {
@@ -53,6 +59,40 @@ describe('immutable rename preview capabilities', () => {
     expect(approved.edits[0]!.new_text).toBe('newName');
     expect(approved.snapshots.get(path.join(root, 'a.ts'))).toBe('old();');
     expect(approved.coverage.limitations).toEqual([]);
+    expect(approved.targets.get(path.join(root, 'a.ts'))).toBe(
+      await fs.realpath(path.join(root, 'a.ts')),
+    );
+  });
+  it('rejects an unedited inventory alias of an edited physical file before publishing a token', async () => {
+    await fs.symlink(path.join(root, 'a.ts'), path.join(root, 'alias.ts'), 'file');
+    await expect(store.remember(root, plan, nodes, [], ['a.ts', 'alias.ts'])).rejects.toMatchObject(
+      { code: 'duplicate_file' },
+    );
+    expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe('old();');
+  });
+  it('normalizes data-only provider classes and compares nested Maps without losing entries', async () => {
+    class Config {
+      constructor(readonly paths = new Map([['entry', 'a.ts']])) {}
+    }
+    let current = new Config();
+    const version = renameResolutionVersion(current, async () => current);
+    await expect(validateRenameResolution(version)).resolves.toBeUndefined();
+    current = new Config(new Map([['entry', 'other.ts']]));
+    await expect(validateRenameResolution(version)).rejects.toMatchObject({
+      code: 'resolution_changed',
+    });
+  });
+  it('consumes a capability when fresh provider configuration fails to load', async () => {
+    let failed = false;
+    const resolution = renameResolutionVersion(null, async () => {
+      if (failed) throw new Error('injected configuration acquisition failure');
+      return null;
+    });
+    const token = await store.remember(root, plan, nodes, [], ['a.ts'], resolution);
+    failed = true;
+    await expect(take(token)).rejects.toThrow('injected configuration acquisition failure');
+    await expect(take(token)).rejects.toMatchObject({ code: 'invalid_plan' });
+    expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe('old();');
   });
   it('ignores optional context enrichment while preserving stable symbol identity', async () => {
     const enriched = { ...plan.symbol, methodMetadata: { returnType: 'number' } };
@@ -146,6 +186,15 @@ describe('immutable rename preview capabilities', () => {
   it('refuses oversized retained plans before cloning their source contents', async () => {
     plan.snapshots.set(path.join(root, 'a.ts'), 'x'.repeat(33 * 1024 * 1024));
     await expect(save()).rejects.toMatchObject({ code: 'plan_too_large' });
+  });
+  it('charges retained provider configuration against the same memory cap', async () => {
+    const resolution = renameResolutionVersion(
+      new Map([['scope', 'x'.repeat(17 * 1024 * 1024)]]),
+      async () => null,
+    );
+    await expect(store.remember(root, plan, nodes, [], ['a.ts'], resolution)).rejects.toMatchObject(
+      { code: 'plan_too_large' },
+    );
   });
   it('rejects graph drift independently of unchanged source contents', async () => {
     const token = await save();

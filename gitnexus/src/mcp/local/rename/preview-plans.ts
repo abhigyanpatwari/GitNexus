@@ -10,6 +10,7 @@ import {
   type RenameSymbol,
 } from 'gitnexus-shared';
 import { walkRepositoryPaths } from '../../../core/ingestion/filesystem-walker.js';
+import { validateRenameResolution, type RenameResolutionVersion } from './resolution-version.js';
 
 const MAX_BYTES = 64 * 1024 * 1024;
 const MAX_PLANS = 16;
@@ -32,6 +33,9 @@ export interface RenameSourceVersion {
 export interface RetainedRenamePlan extends RenamePlan {
   /** Evidence-only sources retain hashes and targets rather than full source text. */
   evidence: ReadonlyMap<string, RenameSourceVersion>;
+  /** Approved edited targets survive validation and are never re-established by apply. */
+  targets: ReadonlyMap<string, string>;
+  resolution?: RenameResolutionVersion;
 }
 
 function symbolIdentity(symbol: RenameSymbol): string {
@@ -107,12 +111,14 @@ export class RenamePreviewPlans {
     nodes: readonly GraphNode[],
     references: readonly string[],
     sources: string[],
+    resolution?: RenameResolutionVersion,
   ): Promise<string> {
     const editedPaths = new Set(plan.edits.map((edit) => path.resolve(root, edit.file_path)));
     const unindexedPaths = sources
       .map((file) => path.resolve(root, file))
       .filter((file) => !plan.snapshots.has(file));
-    let bytes = 512 + JSON.stringify([plan.symbol, plan.coverage]).length * 2;
+    let bytes =
+      512 + JSON.stringify([plan.symbol, plan.coverage]).length * 2 + (resolution?.bytes ?? 0);
     for (const [file, source] of plan.snapshots)
       bytes += file.length * 4 + 512 + (editedPaths.has(file) ? source.length * 2 : 0);
     for (const edit of plan.edits) bytes += JSON.stringify(edit).length * 2 + 64;
@@ -125,10 +131,15 @@ export class RenamePreviewPlans {
       );
     const immutable: RetainedRenamePlan = {
       ...structuredClone({
-        ...plan,
+        symbol: plan.symbol,
+        new_name: plan.new_name,
+        coverage: plan.coverage,
+        edits: plan.edits,
         snapshots: new Map([...plan.snapshots].filter(([file]) => editedPaths.has(file))),
       }),
       evidence: new Map(),
+      targets: new Map(),
+      resolution,
     };
     const versions = new Map<string, RenameSourceVersion>();
     const evidence = new Map<string, RenameSourceVersion>();
@@ -137,8 +148,19 @@ export class RenamePreviewPlans {
     // An existing unindexed source can gain a reference without changing the
     // inventory paths. Bind its contents and target without replanning its edits.
     for (const file of unindexedPaths) versions.set(file, await readRenameSourceVersion(file));
-    for (const [file, version] of versions) if (!editedPaths.has(file)) evidence.set(file, version);
+    const targets = new Map([...editedPaths].map((file) => [file, versions.get(file)!.real]));
+    const editedTargets = new Set(targets.values());
+    for (const [file, version] of versions) {
+      if (editedPaths.has(file)) continue;
+      if (editedTargets.has(version.real))
+        throw new RenameFailure(
+          'duplicate_file',
+          `An unedited source aliases a rename destination: ${path.relative(root, file)}`,
+        );
+      evidence.set(file, version);
+    }
     immutable.evidence = evidence;
+    immutable.targets = targets;
     const token = randomBytes(32).toString('hex');
     const canonicalRoot = await fs.realpath(root);
     const graph = graphVersion(nodes, references);
@@ -211,6 +233,7 @@ export class RenamePreviewPlans {
         `Source contents or target changed after preview: ${path.relative(root, file)}. Review a fresh preview.`,
       );
     }
+    await validateRenameResolution(preview.plan.resolution);
     return preview.plan;
   }
 }

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { executeRenamePlan, type RenamePlan } from '../../src/mcp/local/rename/rename-plan.js';
+import { renameResolutionVersion } from '../../src/mcp/local/rename/resolution-version.js';
 
 describe('exact rename plan application', () => {
   let root: string;
@@ -218,6 +219,34 @@ describe('exact rename plan application', () => {
     expect(await fs.readFile(path.join(root, 'b.ts'), 'utf8')).toBe('finish()');
     expect((await fs.readdir(root)).sort()).toEqual(['a.ts', 'b.ts']);
   });
+  it.each(['changed', 'failed'] as const)(
+    'rechecks provider configuration after staging and reports zero writes when %s',
+    async (failure) => {
+      const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()' });
+      let staged = false;
+      const resolution = renameResolutionVersion({ entry: 'a.ts' }, async () => {
+        if (staged && failure === 'failed') throw new Error('injected provider refresh failure');
+        return { entry: staged ? 'other.ts' : 'a.ts' };
+      });
+      const originalWrite = fs.writeFile.bind(fs);
+      vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+        await originalWrite(...args);
+        staged = true;
+      });
+      const result = await executeRenamePlan(root, p, false, new Map(), undefined, resolution);
+      expect(result).toMatchObject({
+        status: 'error',
+        applied: false,
+        total_edits: 0,
+        failed_files: ['a.ts'],
+        unattempted_files: ['b.ts'],
+        code: failure === 'changed' ? 'resolution_changed' : 'write_failed',
+      });
+      expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe('close()');
+      expect(await fs.readFile(path.join(root, 'b.ts'), 'utf8')).toBe('close()');
+      expect((await fs.readdir(root)).sort()).toEqual(['a.ts', 'b.ts']);
+    },
+  );
 
   it.each([0, 1])(
     'blocks installation when an unedited snapshot changes while staging file %i',

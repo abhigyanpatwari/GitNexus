@@ -13,6 +13,8 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { executeRenamePlan } from '../../src/mcp/local/rename/rename-plan.ts';
 import { planGraphRename } from '../../src/mcp/local/rename/graph-rename.ts';
+import { renameResolutionVersion } from '../../src/mcp/local/rename/resolution-version.ts';
+import { SCOPE_RESOLVERS } from '../../src/core/ingestion/scope-resolution/pipeline/registry.ts';
 import {
   RenamePreviewPlans,
   renameSourceInventory,
@@ -195,21 +197,43 @@ try {
   const reviewedTimes = [];
   let reviewedOriginalTextBytes = 0;
   let reviewedRetainedTextBytes = 0;
+  let reviewedConfigRefreshes = 0;
   for (let repeat = 0; repeat < 3; repeat++) {
     const repository = await fs.mkdtemp(path.join(root, 'reviewed-apply-'));
     const plan = await fixture(300, 100, 8, repository);
     const store = new RenamePreviewPlans();
+    const resolver = SCOPE_RESOLVERS.get('typescript');
+    let refreshes = 0;
+    const refresh = async () => {
+      refreshes++;
+      return resolver.refreshResolutionConfig(repository, [...plan.snapshots.keys()]);
+    };
+    const resolution = renameResolutionVersion(await refresh(), refresh);
     const token = await store.remember(
       repository,
       plan,
       [],
       [],
       await renameSourceInventory(repository),
+      resolution,
     );
     const started = performance.now();
     const retained = await store.take(token, repository, plan.symbol, plan.new_name, [], []);
-    const result = await executeRenamePlan(repository, retained, false, retained.evidence);
+    const result = await executeRenamePlan(
+      repository,
+      retained,
+      false,
+      retained.evidence,
+      retained.targets,
+      retained.resolution,
+    );
     reviewedTimes.push(performance.now() - started);
+    reviewedConfigRefreshes = refreshes - 1;
+    assert.equal(
+      reviewedConfigRefreshes,
+      2,
+      'configuration discovery must not scale with edited-file count',
+    );
     reviewedOriginalTextBytes = [...plan.snapshots.values()].reduce(
       (sum, source) => sum + source.length * 2,
       0,
@@ -257,6 +281,7 @@ try {
     unindexed_validation_scaling_ratio:
       unindexedLarge.validation_ms / unindexedSmall.validation_ms / 4,
     reviewed_apply_100_sources_8_edits_ms: median(reviewedTimes),
+    reviewed_apply_config_refreshes: reviewedConfigRefreshes,
     reviewed_original_source_text_bytes: reviewedOriginalTextBytes,
     reviewed_retained_source_text_bytes: reviewedRetainedTextBytes,
   };
