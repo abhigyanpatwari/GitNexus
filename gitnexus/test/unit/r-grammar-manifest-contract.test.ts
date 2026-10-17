@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { grammarRebuildPackage } from '../../src/core/tree-sitter/parser-loader.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const manifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as {
@@ -43,5 +44,16 @@ describe('R grammar entry in the shipped package.json', () => {
 
   it('is the only audited version of the R grammar', () => {
     expect(auditedPeerKeys().filter((k) => k.startsWith(`${R_GRAMMAR}@`))).toHaveLength(1);
+  });
+});
+
+describe('the npm rebuild hint for a grammar that failed to load', () => {
+  it('names the scoped R grammar package, not tree-sitter-r', () => {
+    expect(grammarRebuildPackage('r')).toBe(R_GRAMMAR);
+  });
+
+  it('keeps the tree-sitter-<language> default for every other language', () => {
+    expect(grammarRebuildPackage('go')).toBe('tree-sitter-go');
+    expect(grammarRebuildPackage('python')).toBe('tree-sitter-python');
   });
 });

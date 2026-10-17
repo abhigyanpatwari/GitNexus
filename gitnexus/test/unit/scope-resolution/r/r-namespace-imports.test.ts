@@ -23,6 +23,7 @@ import type {
 import {
   isRGlobalNameFallbackPlausible,
   populateRNamespaceImports,
+  rFileBelongsToDiscoveredPackage,
   rFileTopLevel,
   rPackageDirForFile,
   rRecordedPackageTopLevelNames,
@@ -134,6 +135,33 @@ describe('rPackageDirForFile', () => {
 });
 
 // ─── rFileTopLevel ──────────────────────────────────────────────────────────
+
+describe('rFileBelongsToDiscoveredPackage', () => {
+  const cfg: RPackageConfig = {
+    packages: new Map([['pkg', 'pkgs/pkg']]),
+    namespaceInfoByPackageDir: new Map(),
+    packageDirs: new Set(['other']),
+    truncated: false,
+  };
+
+  it.each([undefined, null])('is false without a package config (%s)', (missing) => {
+    expect(rFileBelongsToDiscoveredPackage('R/a.R', missing)).toBe(false);
+    expect(rFileBelongsToDiscoveredPackage('pkgs/pkg/R/a.R', missing)).toBe(false);
+  });
+
+  it('is true for an R/ file of a registered package', () => {
+    expect(rFileBelongsToDiscoveredPackage('pkgs/pkg/R/a.R', cfg)).toBe(true);
+  });
+
+  it('is true for an R/ file of a directory only recorded in packageDirs', () => {
+    expect(rFileBelongsToDiscoveredPackage('other/R/a.R', cfg)).toBe(true);
+  });
+
+  it('is false outside every discovered package, and outside R/', () => {
+    expect(rFileBelongsToDiscoveredPackage('stray/R/a.R', cfg)).toBe(false);
+    expect(rFileBelongsToDiscoveredPackage('pkgs/pkg/tests/a.R', cfg)).toBe(false);
+  });
+});
 
 describe('rFileTopLevel', () => {
   const parsed = parse(

@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import type { RPackageConfig } from '../../../../src/core/ingestion/languages/r/package-config.js';
+import { rQualifiedDefinitionCount } from '../../../../src/core/ingestion/languages/r/namespace-imports.js';
 import {
   populateRQualifiedCalls,
   resolveRQualifiedFreeCall,
@@ -61,5 +62,46 @@ describe('populateRQualifiedCalls: <name>/R/ ownership', () => {
     const caller = parsedFiles[2];
     expect(caller.referenceSites).toHaveLength(1); // not dropped as a duplicate definition
     expect(resolveRQualifiedFreeCall(callSite, caller)?.filePath).toBe('x/foo/R/b.R');
+  });
+});
+
+describe('populateRQualifiedCalls: module state', () => {
+  const config = (): RPackageConfig => ({
+    packages: new Map([['foo', 'pkgs/foo']]),
+    namespaceInfoByPackageDir: new Map(),
+    truncated: false,
+  });
+
+  it.each([
+    ['an empty context', {}],
+    ['a context whose resolutionConfig is undefined', { resolutionConfig: undefined }],
+    ['a context whose resolutionConfig is null', { resolutionConfig: null }],
+  ])('runs without a package config (%s)', (_name, ctx) => {
+    const parsedFiles = [definingFile('pkgs/foo/R/a.R'), callerFile('scripts/use.R')];
+    expect(() => populateRQualifiedCalls(parsedFiles, ctx)).not.toThrow();
+    // No config, so nothing proves `foo` external: the site stays and nothing is recorded.
+    expect(parsedFiles[1].referenceSites).toHaveLength(1);
+  });
+
+  it('forgets the previous run: a run with no qualified call records no definition count', () => {
+    const cfg = config();
+    populateRQualifiedCalls([definingFile('pkgs/foo/R/a.R'), callerFile('scripts/use.R')], {
+      resolutionConfig: cfg,
+    });
+    expect(rQualifiedDefinitionCount(cfg, 'foo', 'helper')).toBe(1);
+
+    populateRQualifiedCalls([definingFile('pkgs/foo/R/a.R')], { resolutionConfig: cfg });
+    expect(rQualifiedDefinitionCount(cfg, 'foo', 'helper')).toBeUndefined();
+  });
+
+  it('forgets the previous run precise targets: a later run does not resolve its site', () => {
+    const cfg = config();
+    const first = [definingFile('pkgs/foo/R/a.R'), callerFile('scripts/use.R')];
+    populateRQualifiedCalls(first, { resolutionConfig: cfg });
+    expect(resolveRQualifiedFreeCall(callSite, first[1])?.filePath).toBe('pkgs/foo/R/a.R');
+
+    const second = [callerFile('scripts/use.R')];
+    populateRQualifiedCalls(second, { resolutionConfig: cfg });
+    expect(resolveRQualifiedFreeCall(callSite, second[0])).toBeUndefined();
   });
 });
