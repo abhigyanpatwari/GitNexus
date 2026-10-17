@@ -56,7 +56,28 @@ export function getRTopLevelMethodOwnerName(node: SyntaxNode): string | null {
 
   // The owner is the `signature` argument, as R matches it (named first, then by position).
   const signature = getRMatchedArgument(args, SET_METHOD_FORMALS, 'signature');
-  return extractQuotedString(signature?.childForFieldName('value') ?? null);
+  const value = signature?.childForFieldName('value') ?? null;
+  return extractQuotedString(value) ?? extractFirstSignatureClass(value);
+}
+
+/**
+ * The class a `signature("A", "B")`, `signature(object = "A")` or `c("A", "B")` value dispatches
+ * on first: the string of its first argument, named or not. A method on several classes (multiple
+ * dispatch) belongs to the first one, so methods of one generic on different first classes keep
+ * distinct ids and an owner; two methods that differ only in a later class share an id and the
+ * first written wins. A first argument that is not a string (a variable, a call) names no owner.
+ */
+function extractFirstSignatureClass(value: SyntaxNode | null): string | null {
+  if (!value || value.type !== 'call') return null;
+  const fn = value.childForFieldName('function');
+  const callee = fn?.type === 'namespace_operator' ? fn.childForFieldName('rhs') : fn;
+  if (callee?.type !== 'identifier' || (callee.text !== 'signature' && callee.text !== 'c')) {
+    return null;
+  }
+  const first = value
+    .childForFieldName('arguments')
+    ?.namedChildren.find((c) => c.type === 'argument');
+  return extractQuotedString(first?.childForFieldName('value') ?? null);
 }
 
 // ---------------------------------------------------------------------------

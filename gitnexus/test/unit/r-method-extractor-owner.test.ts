@@ -67,9 +67,28 @@ describe('R method extractor: setMethod owner is the signature argument', () => 
     expect(methodOwner(source)).toBe('Foo');
   });
 
-  it('names no owner when the signature is not a string', () => {
-    expect(methodOwner('setMethod("show", c("A", "B"), function(object) 1)')).toBeNull();
-    expect(methodOwner('setMethod("show", signature("A"), function(object) 1)')).toBeNull();
+  it.each([
+    ['signature("A")', 'setMethod("show", signature("A"), function(object) 1)', 'A'],
+    ['signature(name = "B")', 'setMethod("show", signature(object = "B"), function(o) 1)', 'B'],
+    [
+      'signature(x, y) uses the first class',
+      'setMethod("f", signature("A", "B"), function(x, y) 1)',
+      'A',
+    ],
+    ['c("A", "B")', 'setMethod("show", c("P2", "Q"), function(object) 1)', 'P2'],
+    ['c(object = "A")', 'setMethod("show", c(object = "A"), function(object) 1)', 'A'],
+    ['named signature = signature(...)', 'setMethod("show", signature = signature("A"))', 'A'],
+    ['methods::signature(...)', 'setMethod("show", methods::signature("A"), function(o) 1)', 'A'],
+  ])('takes the first class of a multi-class signature: %s', (_label, source, owner) => {
+    expect(methodOwner(source)).toBe(owner);
+  });
+
+  it('names no owner when the signature is not a string or a literal signature call', () => {
+    expect(methodOwner('setMethod("show", sig, function(object) 1)')).toBeNull();
+    expect(methodOwner('setMethod("show", signature(cls), function(object) 1)')).toBeNull();
+    expect(methodOwner('setMethod("show", signature(cls, "B"), function(object) 1)')).toBeNull();
+    expect(methodOwner('setMethod("show", list("A"), function(object) 1)')).toBeNull();
+    expect(methodOwner('setMethod("show", signature(), function(object) 1)')).toBeNull();
     expect(methodOwner('setMethod("show", where = "pkg")')).toBeNull();
   });
 });

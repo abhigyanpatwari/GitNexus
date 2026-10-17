@@ -75,9 +75,8 @@ describe('R S4/RefClass definitions are named by their first argument only', () 
     expect(methods.filter((n) => n === 'describe')).toHaveLength(1);
     expect(methods).not.toContain('Derived');
     const hasMethod = getRelationships(result, 'HAS_METHOD').filter((e) => e.source === 'Derived');
-    // `signature("Derived")` (a call, not a string) names no owner today; that is
-    // unchanged by the anchor, so only the string-signature `show` is owned.
-    expect(hasMethod.map((e) => e.target)).toEqual(['show']);
+    // `signature("Derived")` names its first class, as the string signature does.
+    expect(hasMethod.map((e) => e.target).sort()).toEqual(['describe', 'show']);
   });
 
   it('keeps slot, field and representation properties', () => {
