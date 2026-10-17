@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { promises as fs } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
@@ -9,6 +11,9 @@ import {
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
 import * as adapter from '../../src/core/lbug/lbug-adapter.js';
+import { runFullAnalysis } from '../../src/core/run-analyze.js';
+import { getStoragePaths, loadMeta } from '../../src/storage/repo-manager.js';
+import { seedEmbeddingsForFiles, stampEmbeddingCount } from '../helpers/embedding-seed.js';
 
 describe('embedding identity integrity (#3569)', () => {
   let tmp: TestDBHandle | undefined;
@@ -28,6 +33,7 @@ describe('embedding identity integrity (#3569)', () => {
     'duplicate',
     'negative-chunk',
     'fractional-chunk',
+    'overflow-chunk',
   ])('rejects %j before replacing any existing embedding', async (invalid) => {
     tmp = await createTempDir('gitnexus-test-embedding-identity-');
     const dbPath = path.join(tmp.dbPath, 'lbug');
@@ -49,11 +55,17 @@ describe('embedding identity integrity (#3569)', () => {
             ...replacement,
             nodeId: invalid.endsWith('-chunk') ? 'Function:source.ts:other' : invalid,
             chunkIndex:
-              invalid === 'negative-chunk' ? -1 : invalid === 'fractional-chunk' ? 0.5 : 0,
+              invalid === 'negative-chunk'
+                ? -1
+                : invalid === 'fractional-chunk'
+                  ? 0.5
+                  : invalid === 'overflow-chunk'
+                    ? 2147483648
+                    : 0,
           };
     const failure = await batchInsertEmbeddings(adapter.executeWithReusedStatement, [
-      replacement,
       invalidUpdate,
+      replacement,
     ]).catch((error: unknown) => error);
     await adapter.closeLbug();
     await adapter.initLbug(dbPath, { skipFts: true });
@@ -64,6 +76,79 @@ describe('embedding identity integrity (#3569)', () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toMatch(/embedding.*(identity|node.?id|key|chunk)/i);
   });
+
+  it.each([
+    { limit: '2048', invalid: 'negative' },
+    { limit: '0', invalid: 'negative' },
+    { limit: '0', invalid: 'blank' },
+    { limit: '2048', invalid: 'duplicate' },
+  ])(
+    'preserves healthy cached vectors before writeback ($invalid, limit=$limit)',
+    async ({ limit, invalid }) => {
+      tmp = await createTempDir('gitnexus-test-corrupt-cache-');
+      const repo = path.join(tmp.dbPath, 'repo');
+      await fs.mkdir(repo);
+      vi.stubEnv('GITNEXUS_HOME', path.join(tmp.dbPath, 'home'));
+      vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+      vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'never');
+      vi.stubEnv('GITNEXUS_EMBEDDING_CACHE_IN_MEMORY_LIMIT', limit);
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      const source = path.join(repo, 'source.ts');
+      await fs.writeFile(
+        source,
+        'export function good() { return 1; }\nexport function bad() { return 2; }\n',
+      );
+      execFileSync('git', ['add', '.'], { cwd: repo });
+      execFileSync(
+        'git',
+        [
+          '-c',
+          'user.name=t',
+          '-c',
+          'user.email=t@t',
+          '-c',
+          'commit.gpgsign=false',
+          'commit',
+          '-qm',
+          'initial',
+        ],
+        { cwd: repo },
+      );
+      await runFullAnalysis(repo, { skipFts: true }, { onProgress: () => {} });
+      const { lbugPath, storagePath } = getStoragePaths(repo);
+      const seeded = await seedEmbeddingsForFiles(repo, ['source.ts'], 2);
+      expect(seeded.get('source.ts')).toHaveLength(2);
+      await stampEmbeddingCount(storagePath, 2);
+      const oldMeta = await loadMeta(storagePath);
+      await adapter.initLbug(lbugPath, { skipFts: true });
+      const badId = seeded.get('source.ts')![1]!;
+      const goodId = seeded.get('source.ts')![0]!;
+      // Controlled stored corruption, not a reproduction of the host's producer.
+      await adapter.executeWithReusedStatement(
+        invalid === 'negative'
+          ? 'MATCH (e:CodeEmbedding {nodeId: $id}) SET e.chunkIndex = -1'
+          : 'MATCH (e:CodeEmbedding {nodeId: $id}) SET e.nodeId = $replacement',
+        [{ id: badId, replacement: invalid === 'blank' ? '' : goodId }],
+      );
+      const query =
+        'MATCH (e:CodeEmbedding) RETURN e.id AS id, e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.embedding AS embedding ORDER BY id';
+      const before = await adapter.executeQuery(query);
+      await adapter.closeLbug();
+      await fs.appendFile(source, '// incremental update\n');
+      const failure = await runFullAnalysis(
+        repo,
+        { skipFts: true },
+        { onProgress: () => {} },
+      ).catch((error: unknown) => error);
+      await adapter.closeLbug();
+      await adapter.initLbug(lbugPath, { skipFts: true });
+      expect(await adapter.executeQuery(query)).toEqual(before);
+      expect(await loadMeta(storagePath)).toEqual(oldMeta);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/embedding.*(identity|node.?id|key|chunk)/i);
+    },
+    180_000,
+  );
 
   it.each([
     '',

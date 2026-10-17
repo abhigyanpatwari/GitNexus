@@ -287,6 +287,7 @@ import {
   snapshotEmbeddingDims,
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
+import { assertUniqueEmbeddingKeys, EmbeddingIntegrityError } from './embeddings/embedding-keys.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
@@ -2814,6 +2815,7 @@ async function runFullAnalysisInner(
   let cachedSnapshot: CachedEmbeddingsSnapshot = emptyCachedEmbeddingsSnapshot();
   const adoptCachedEmbeddings = (raw: CachedEmbeddingsSnapshot): void => {
     cachedSnapshot = normalizeCachedEmbeddings(raw);
+    assertUniqueEmbeddingKeys(cachedSnapshot.rows, 'Cached embedding');
   };
   const discardCachedEmbeddings = (): void => {
     disposeEmbeddingSpill(cachedSnapshot.spill);
@@ -2874,6 +2876,13 @@ async function runFullAnalysisInner(
       adoptCachedEmbeddings(await loadCachedEmbeddings());
       await closeLbug();
     } catch (err: any) {
+      discardCachedEmbeddings();
+      try {
+        await closeLbug();
+      } catch {
+        /* preserve the original cache failure */
+      }
+      if (err instanceof EmbeddingIntegrityError) throw err;
       // Surface cache-load failures explicitly: silently swallowing here would
       // re-introduce the original silent-data-loss symptom (embeddings end up
       // at 0 in meta.json with no diagnostic) through a different door.
@@ -2882,12 +2891,6 @@ async function runFullAnalysisInner(
           `(${err?.message ?? String(err)}). ` +
           `Embeddings will not be preserved on this run.`,
       );
-      discardCachedEmbeddings();
-      try {
-        await closeLbug();
-      } catch {
-        /* swallow */
-      }
     }
   }
 
@@ -2947,6 +2950,7 @@ async function runFullAnalysisInner(
             `for ${recovered.embeddingNodeIds.size} node(s); unchanged content can reuse them.`,
         );
       } catch (err) {
+        if (err instanceof EmbeddingIntegrityError) throw err;
         log(
           `Warning: could not recover staged embeddings (${(err as Error).message}); ` +
             'the retry will regenerate missing chunks.',
@@ -3807,12 +3811,13 @@ async function runFullAnalysisInner(
             );
           }
         } catch (err: any) {
+          discardCachedEmbeddings();
+          if (err instanceof EmbeddingIntegrityError) throw err;
           log(
             `Warning: could not load cached embeddings ` +
               `(${err?.message ?? String(err)}). ` +
               `Embeddings will not be preserved on this run.`,
           );
-          discardCachedEmbeddings();
         }
       }
       // Hoisted out of the `||` below (§5.D): the size verdict has to be KNOWN
@@ -4514,6 +4519,7 @@ async function runFullAnalysisInner(
               }
               materialized = materializeCachedEmbeddings(cachedSnapshot, batch, spillReader);
             } catch (err) {
+              if (!shouldGenerateEmbeddings) throw err;
               for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not materialize ${batch.length} cached embedding(s) for restore ` +
@@ -4525,6 +4531,7 @@ async function runFullAnalysisInner(
               await batchInsert(executeWithReusedStatement, materialized);
               restoredEmbeddingCount += batch.length;
             } catch (err) {
+              if (err instanceof EmbeddingIntegrityError || !shouldGenerateEmbeddings) throw err;
               for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not restore ${batch.length} cached embedding(s) ` +

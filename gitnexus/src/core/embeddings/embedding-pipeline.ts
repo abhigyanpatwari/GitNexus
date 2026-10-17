@@ -48,6 +48,7 @@ import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import { logger } from '../logger.js';
 import { assertValidGraphNodeId } from '../graph/node-identity.js';
+import { assertUniqueEmbeddingKeys } from './embedding-keys.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -251,22 +252,11 @@ export const batchInsertEmbeddings = async (
     contentHash?: string;
   }>,
 ): Promise<void> => {
-  const keys = new Set<string>();
   // Validate the whole pending batch before DELETE can replace any valid row.
   // Existing-row retries and duplicate keys within one batch are distinct.
+  assertUniqueEmbeddingKeys(updates, 'Embedding write');
   const paramsList = updates.map((u) => {
-    assertValidGraphNodeId(u.nodeId, 'Embedding write');
-    if (!Number.isSafeInteger(u.chunkIndex) || u.chunkIndex < 0) {
-      throw new Error(
-        'Embedding write: invalid chunk index; expected a non-negative safe integer.',
-      );
-    }
     const id = `${u.nodeId}:${u.chunkIndex}`;
-    if (keys.has(id))
-      throw new Error(
-        `Embedding write: duplicate pending key ${JSON.stringify(id.slice(0, 160))}.`,
-      );
-    keys.add(id);
     return {
       id,
       nodeId: u.nodeId,
