@@ -5,6 +5,7 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import { attachDeferredROwners } from '../../src/core/ingestion/languages/r/post-parse.js';
 import { generateId } from '../../src/lib/utils.js';
+import { _captureLogger } from '../../src/core/logger.js';
 
 // Characterisation tests for the R deferred-owner attach.
 // R classes are calls (`R6::R6Class`, `setRefClass`, `setMethod`), so the worker cannot always name
@@ -120,10 +121,10 @@ describe('attachDeferredROwners', () => {
     expect(graph.getNode(propId)!.properties).not.toHaveProperty('ownerId');
   });
 
-  it('(b) leaves the hint and registers nothing when two classes share the name', () => {
+  it('(b) leaves the hint and registers nothing when two classes share the name and the member sits in neither file', () => {
     const { graph, model, addClass, addMember, edges } = setup();
-    const first = addClass('Foo', 'R/a.R');
-    addClass('Foo', 'R/b.R');
+    const first = addClass('Foo', 'R/b.R');
+    addClass('Foo', 'R/c.R');
     const nodeId = addMember('Method', 'run', { ownerNameHint: 'Foo' });
 
     attachDeferredROwners(graph, model, 'Method', 'HAS_METHOD');
@@ -221,5 +222,98 @@ describe('attachDeferredROwners', () => {
     expect(model.methods.lookupAllByOwner(ownerId, 'run')).toHaveLength(1);
     expect(model.methods.lookupAllByOwner(otherId, 'run')).toHaveLength(0);
     expect(model.symbols.lookupExactAll(FILE, 'run')[0].ownerId).toBe(ownerId);
+  });
+
+  it('(h) a class defined twice in one file is one class: both of its members attach', () => {
+    const { graph, model, addClass, addMember, edges } = setup();
+    const ownerId = addClass('Foo');
+    // The worker registers a class once per definition; two definitions in one file share a node id.
+    model.symbols.add(FILE, 'Foo', ownerId, 'Class');
+    expect(model.types.lookupClassByName('Foo')).toHaveLength(2);
+    const method = addMember('Method', 'run', { ownerNameHint: 'Foo' });
+    const field = addMember('Property', 'x', { ownerNameHint: 'Foo' });
+
+    attachDeferredROwners(graph, model, 'Method', 'HAS_METHOD');
+    attachDeferredROwners(graph, model, 'Property', 'HAS_PROPERTY');
+
+    expect(graph.getNode(method)!.properties.ownerId).toBe(ownerId);
+    expect(graph.getNode(field)!.properties.ownerId).toBe(ownerId);
+    expect(edges('HAS_METHOD').map((r) => r.sourceId)).toEqual([ownerId]);
+    expect(edges('HAS_PROPERTY').map((r) => r.sourceId)).toEqual([ownerId]);
+  });
+
+  it('(i) classes of one name in two files: each member attaches to the class of its own file', () => {
+    const { graph, model, addClass, addMember, edges } = setup();
+    const inR = addClass('Stack', 'R/a.R');
+    const inTests = addClass('Stack', 'tests/helper.R');
+    const m1 = addMember('Method', 'push', { ownerNameHint: 'Stack' }, { filePath: 'R/a.R' });
+    const m2 = addMember(
+      'Method',
+      'push',
+      { ownerNameHint: 'Stack' },
+      { filePath: 'tests/helper.R' },
+    );
+
+    attachDeferredROwners(graph, model, 'Method', 'HAS_METHOD');
+
+    expect(graph.getNode(m1)!.properties.ownerId).toBe(inR);
+    expect(graph.getNode(m2)!.properties.ownerId).toBe(inTests);
+    expect(
+      edges('HAS_METHOD')
+        .map((r) => `${r.sourceId}->${r.targetId}`)
+        .sort(),
+    ).toEqual([`${inR}->${m1}`, `${inTests}->${m2}`].sort());
+    expect(model.methods.lookupAllByOwner(inR, 'push').map((d) => d.nodeId)).toEqual([m1]);
+    expect(model.methods.lookupAllByOwner(inTests, 'push').map((d) => d.nodeId)).toEqual([m2]);
+  });
+
+  it('(j) a file that defines the class twice and another file that defines it once still resolve to the member file', () => {
+    const { graph, model, addClass, addMember } = setup();
+    const inA = addClass('Foo', 'R/a.R');
+    model.symbols.add('R/a.R', 'Foo', inA, 'Class');
+    addClass('Foo', 'R/b.R');
+    const nodeId = addMember('Method', 'run', { ownerNameHint: 'Foo' }, { filePath: 'R/a.R' });
+
+    attachDeferredROwners(graph, model, 'Method', 'HAS_METHOD');
+
+    expect(graph.getNode(nodeId)!.properties.ownerId).toBe(inA);
+  });
+
+  it('(k) names the ambiguous class in one warning, once per call, when the own file cannot decide', () => {
+    const { graph, model, addClass, addMember } = setup();
+    addClass('Foo', 'R/a.R');
+    addClass('Foo', 'R/b.R');
+    // `Bar` is defined in neither of the member files twice over: both files define it.
+    addClass('Bar', 'R/a.R');
+    addClass('Bar', 'R/b.R');
+    const m1 = addMember('Method', 'one', { ownerNameHint: 'Foo' }, { filePath: 'R/c.R' });
+    addMember('Method', 'two', { ownerNameHint: 'Foo' }, { filePath: 'R/d.R' });
+    addMember('Method', 'three', { ownerNameHint: 'Bar' }, { filePath: 'R/c.R' });
+    const cap = _captureLogger();
+    let messages: string[];
+    try {
+      attachDeferredROwners(graph, model, 'Method', 'HAS_METHOD');
+      messages = cap.records().map((r) => String(r.msg ?? ''));
+    } finally {
+      cap.restore();
+    }
+
+    expect(graph.getNode(m1)!.properties.ownerNameHint).toBe('Foo');
+    expect(messages).toHaveLength(1);
+    const message = messages[0];
+    expect(message).toContain('"Bar", "Foo"');
+    expect(message).toContain('2 class name(s)');
+  });
+
+  it('(l) a missing class, or one in another language, does not warn', () => {
+    const { graph, model, addMember } = setup();
+    addMember('Method', 'run', { ownerNameHint: 'Missing' });
+    const cap = _captureLogger();
+    try {
+      attachDeferredROwners(graph, model, 'Method', 'HAS_METHOD');
+      expect(cap.records()).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
   });
 });

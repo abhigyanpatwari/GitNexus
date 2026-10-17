@@ -32,11 +32,57 @@ import {
 } from './package-config.js';
 import { rBareName } from './bare-name.js';
 import { rOwningPackageDir } from './namespace-imports.js';
-import type { GraphNode } from 'gitnexus-shared';
+import type { GraphNode, SymbolDefinition } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { generateId } from '../../../../lib/utils.js';
+import { logger } from '../../../logger.js';
 
 type EdgeLabel = 'HAS_METHOD' | 'HAS_PROPERTY';
+
+/** Most class names quoted in the warning for owner hints that stay ambiguous. */
+const MAX_LISTED_AMBIGUOUS_OWNERS = 5;
+
+/**
+ * The R classes named `name`, one per graph node. The class registry is shared by every
+ * language, so a Python `Circle` next to an R `Circle` must not make the name ambiguous, nor
+ * stand in for an R class that is absent. It also appends without de-duplication: a class
+ * defined twice in one file (a script re-defining it, `if (x) Foo <- R6Class(...) else Foo <-
+ * R6Class(...)`, a factory called from two places) registers the same node twice, which is
+ * one class, not an ambiguity.
+ */
+const distinctRClassDefs = (
+  graph: KnowledgeGraph,
+  model: MutableSemanticModel,
+  name: string,
+): SymbolDefinition[] => {
+  const byNode = new Map<string, SymbolDefinition>();
+  for (const def of model.types.lookupClassByName(name)) {
+    if (byNode.has(def.nodeId)) continue;
+    if (graph.getNode(def.nodeId)?.properties.language !== SupportedLanguages.R) continue;
+    byNode.set(def.nodeId, def);
+  }
+  return [...byNode.values()];
+};
+
+/**
+ * The class a member's owner hint names. A single class wins. When several distinct classes
+ * share the name (the same helper in `R/` and `tests/`, a package copied into a second
+ * directory), the one defined in the member's own file wins: a method or field written inside
+ * `Foo <- R6Class(...)` always belongs to the `Foo` of that file, and a `setMethod()` next to
+ * its `setClass()` does too. When the member's file defines none of them, or several, the owner is
+ * undecidable from the name and the member stays unowned.
+ */
+const pickOwnerClass = (
+  graph: KnowledgeGraph,
+  classDefs: readonly SymbolDefinition[],
+  memberFilePath: string,
+): SymbolDefinition | undefined => {
+  if (classDefs.length === 1) return classDefs[0];
+  const sameFile = classDefs.filter(
+    (def) => graph.getNode(def.nodeId)?.properties.filePath === memberFilePath,
+  );
+  return sameFile.length === 1 ? sameFile[0] : undefined;
+};
 
 /**
  * Resolve R deferred owner hints into ownerIds. Runs post-parse, after all
@@ -48,6 +94,7 @@ export const attachDeferredROwners = (
   nodeLabel: 'Method' | 'Property',
   edgeType: EdgeLabel,
 ): void => {
+  const ambiguousOwners = new Set<string>();
   graph.forEachNode((node: GraphNode) => {
     // Skip immediately for non-R nodes — avoids doing any further work per node
     // in this full-graph traversal for repos with no R files at all.
@@ -64,20 +111,22 @@ export const attachDeferredROwners = (
       typeof node.properties.ownerNameHint === 'string' ? node.properties.ownerNameHint : null;
     if (!ownerNameHint) return;
 
-    // The class registry is shared by every language, so a Python `Circle` next to an R
-    // `Circle` must not make the name ambiguous, nor stand in for an R class that is absent.
-    const classDefs = model.types
-      .lookupClassByName(ownerNameHint)
-      .filter((def) => graph.getNode(def.nodeId)?.properties.language === SupportedLanguages.R);
-    if (classDefs.length !== 1) return; // ambiguous or not found — leave hint for debugging
-    const ownerId = classDefs[0].nodeId;
+    const filePath = typeof node.properties.filePath === 'string' ? node.properties.filePath : '';
+    const classDefs = distinctRClassDefs(graph, model, ownerNameHint);
+    const owner = pickOwnerClass(graph, classDefs, filePath);
+    if (owner === undefined) {
+      // Not found, or several classes of this name that the member's own file cannot tell apart:
+      // leave the hint for debugging and report the second case once per call.
+      if (classDefs.length > 1) ambiguousOwners.add(ownerNameHint);
+      return;
+    }
+    const ownerId = owner.nodeId;
 
     // 1. Patch the graph node.
     node.properties.ownerId = ownerId;
     delete node.properties.ownerNameHint;
 
     // 2. Mutate the SymbolDefinition in place (shared ref across indexes).
-    const filePath = typeof node.properties.filePath === 'string' ? node.properties.filePath : '';
     const name = typeof node.properties.name === 'string' ? node.properties.name : '';
     const defs = model.symbols.lookupExactAll(filePath, name);
     const def = defs.find((d) => d.nodeId === node.id);
@@ -103,6 +152,17 @@ export const attachDeferredROwners = (
       reason: '',
     });
   });
+
+  if (ambiguousOwners.size > 0) {
+    const names = [...ambiguousOwners].sort();
+    const listed = names.slice(0, MAX_LISTED_AMBIGUOUS_OWNERS).map((n) => JSON.stringify(n));
+    const more = names.length - listed.length;
+    logger.warn(
+      `R: ${nodeLabel} nodes of ${names.length} class name(s) were left without an owner because ` +
+        `several classes share the name and the member's own file does not define exactly one ` +
+        `of them (${listed.join(', ')}${more > 0 ? `, and ${more} more` : ''})`,
+    );
+  }
 };
 
 /**
