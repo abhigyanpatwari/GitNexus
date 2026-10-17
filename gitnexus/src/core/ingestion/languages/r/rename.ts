@@ -40,22 +40,48 @@ function rStringValue(text: string): string | null {
 
 /**
  * Generics of base R and its default packages that an S3 method name `generic.class` can register
- * against, whether or not the indexed sources define them. Not exhaustive: it covers the generics
- * a project is most likely to meet by accident, and the repository's own functions are checked
- * separately.
+ * against, whether or not the indexed sources define them: the S3 group generics (`Ops`, `Math`,
+ * `Summary`, `Complex`, `matrixOps`) and the functions each group dispatches, the `is.*` and `as.*`
+ * generics, and the common generics of base, stats, utils and graphics. Not exhaustive, and it
+ * names no other package's generics (`tidy`, `filter`, ...); the repository's own functions are
+ * checked separately.
  */
 const BASE_GENERICS: ReadonlySet<string> = new Set(
-  (
-    'print format summary plot lines points text image hist barplot boxplot pairs persp ' +
-    'as.character as.data.frame as.list as.vector as.numeric as.integer as.logical as.matrix ' +
-    'as.Date as.POSIXct as.POSIXlt as.factor as.table as.function as.environment as.double ' +
-    'length names dim dimnames levels rev sort unique duplicated anyDuplicated rep seq ' +
-    'mean median quantile range max min round diff scale cut split merge subset transform ' +
-    'with within head tail t c cbind rbind toString all.equal is.na labels str ' +
-    'update predict residuals coef fitted anova simulate terms formula family weights ' +
-    'vcov logLik AIC BIC nobs deviance confint profile model.frame row.names open close ' +
-    'by aggregate droplevels relevel reorder xtfrm solve determinant julian months weekdays'
-  ).split(' '),
+  [
+    // Group generics, and the members of the Math, Summary and Complex groups
+    'Ops Math Summary Complex matrixOps',
+    'abs sign sqrt floor ceiling trunc round signif exp log expm1 log1p cos sin tan cospi sinpi tanpi',
+    'acos asin atan cosh sinh tanh acosh asinh atanh lgamma gamma digamma trigamma',
+    'cumsum cumprod cummax cummin',
+    'all any sum prod max min range',
+    'Arg Conj Im Mod Re',
+    // is.* and as.* generics
+    'is.na is.nan is.finite is.infinite is.numeric is.array is.matrix is.unsorted is.list is.vector',
+    'is.character is.logical is.integer is.double is.complex is.function is.environment',
+    'as.character as.numeric as.integer as.logical as.double as.complex as.raw as.vector as.list',
+    'as.data.frame as.matrix as.array as.Date as.POSIXct as.POSIXlt as.difftime as.factor as.table',
+    'as.function as.environment as.name as.symbol as.call as.expression as.formula as.pairlist',
+    'as.numeric_version as.package_version as.hexmode as.octmode as.roman as.person as.personList',
+    'as.ts as.dist as.hclust as.dendrogram as.stepfun as.single',
+    // base
+    'print format summary length names dim dimnames levels rev sort rep seq unique duplicated',
+    'anyDuplicated anyNA unlist c t cbind rbind toString all.equal labels diff scale cut split',
+    'merge subset transform with within by aggregate droplevels relevel reorder xtfrm solve',
+    'determinant rowsum row.names julian months weekdays quarters units open close flush seek',
+    'truncate mean median quantile sort_by unsplit stack unstack kronecker aperm',
+    // stats
+    'update predict residuals coef fitted anova AIC BIC logLik nobs simulate terms formula family',
+    'weights vcov deviance confint profile model.frame model.matrix sigma df.residual extractAIC',
+    'add1 drop1 effects alias case.names variable.names dummy.coef proj influence rstandard',
+    'rstudent cooks.distance hatvalues dfbeta dfbetas covratio density lag window time start end',
+    'frequency cycle deltat na.omit na.exclude na.fail na.action naprint naresid napredict',
+    'biplot screeplot qqnorm termplot knots cophenetic loadings smooth qr chol',
+    // graphics and utils
+    'plot lines points text image hist barplot boxplot pairs persp head tail str',
+    'toBibtex toLatex',
+  ]
+    .join(' ')
+    .split(' '),
 );
 
 /**

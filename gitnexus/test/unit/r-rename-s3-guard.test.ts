@@ -69,6 +69,46 @@ describe('R rename: the S3 registration guard', () => {
     }
   });
 
+  it('refuses a method of every S3 group generic and of each function a group dispatches', () => {
+    const groups: Record<string, string> = {
+      group: 'Ops Math Summary Complex matrixOps',
+      Math: 'abs sign sqrt floor ceiling trunc round signif exp log expm1 log1p cos sin tan cospi sinpi tanpi acos asin atan cosh sinh tanh acosh asinh atanh lgamma gamma digamma trigamma cumsum cumprod cummax cummin',
+      Summary: 'all any sum prod max min range',
+      Complex: 'Arg Conj Im Mod Re',
+      'is.*': 'is.numeric is.na is.nan is.finite is.infinite is.array is.matrix is.unsorted',
+      'as.*':
+        'as.complex as.raw as.double as.vector as.list as.matrix as.Date as.POSIXct as.factor',
+      common:
+        'print format summary plot toString unique rev sort rep seq length names dim levels as.character as.numeric as.data.frame c t mean median head tail merge split within with subset transform update predict residuals coef fitted anova AIC BIC logLik nobs simulate unlist',
+    };
+    for (const [group, names] of Object.entries(groups)) {
+      for (const generic of names.split(' ')) {
+        expect(verdict(`${generic}.foo`, []), `${group}: ${generic}.foo`).toBe(
+          'unsupported_occurrence',
+        );
+      }
+    }
+  });
+
+  it('refuses a method of a group generic at any dot split', () => {
+    expect(verdict('Ops.money', [])).toBe('unsupported_occurrence');
+    expect(verdict('sum.items.extra', [])).toBe('unsupported_occurrence');
+    expect(verdict('as.complex.foo.bar', [])).toBe('unsupported_occurrence');
+  });
+
+  it('allows a name that only resembles a group generic or a base generic', () => {
+    for (const name of [
+      'sums.foo',
+      'mysum.foo',
+      'Opsy.foo',
+      'math.foo',
+      'is_numeric.foo',
+      'a.sum',
+    ]) {
+      expect(verdict(name, []), name).toBe('ok');
+    }
+  });
+
   it('allows a dotted name when no prefix is a function or a base generic', () => {
     expect(verdict('my.helper', [])).toBe('ok');
     expect(verdict('to.json.foo', [])).toBe('ok');
