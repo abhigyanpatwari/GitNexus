@@ -371,7 +371,7 @@ describe('R function definitions and calls', () => {
 
     expect(roxygenFunc).toBeDefined();
     expect(noTagFunc).toBeDefined();
-    // Without NAMESPACE, rExportChecker defaults to true for all functions
+    // Without NAMESPACE, the R export check defaults to true for all functions
     expect(roxygenFunc!.properties.isExported).toBe(true);
     expect(noTagFunc!.properties.isExported).toBe(true);
   });
