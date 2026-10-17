@@ -61,7 +61,6 @@ const NEAR_MISSES: readonly string[] = [
   'Rcheck',
   'pkg.rcheck',
   'pkg.Rcheck.bak',
-  '.Rcheck',
 ];
 
 describe('R package discovery skips vendored and generated trees', () => {

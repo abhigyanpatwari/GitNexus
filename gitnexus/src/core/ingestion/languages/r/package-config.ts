@@ -9,6 +9,7 @@ import {
 import { compileRExportPatternDetailed, type RExportMatcher } from './export-pattern.js';
 import { SharedWorkBudget } from './linear-regex.js';
 import { isDev } from '../../utils/env.js';
+import { isHardcodedIgnoredDirectory } from '../../../../config/ignore-service.js';
 import { logger } from '../../../logger.js';
 
 /** An `exportPattern()` argument that was not compiled, and why. */
@@ -27,8 +28,9 @@ export interface RPackageConfig {
    * code unit (so `a-b/x` beats `a/x`: `-` sorts before `/`); the others are
    * not entries here (their NAMESPACE is still recorded in
    * {@link namespaceInfoByPackageDir}, which is keyed by directory). Installed
-   * libraries and check output (`renv`, `packrat`, `revdep`, `<name>.Rcheck`) are
-   * not searched, so their packages are not entries here.
+   * libraries and check output (`renv`, `packrat`, `revdep`, `<name>.Rcheck`), dot-directories
+   * and the directories the indexer ignores are not searched, and a `DESCRIPTION` with a
+   * `Built:` field (an installed package) is not read, so none of their packages are entries here.
    */
   packages: Map<string, string>;
   /** Package-scoped NAMESPACE config keyed by package dir relative to repo root. */
@@ -200,15 +202,23 @@ const VENDORED_LIBRARY_DIR_NAMES: ReadonlySet<string> = new Set(['renv', 'packra
 const RCHECK_SUFFIX = '.Rcheck';
 
 /**
- * True for a directory that discovery must not enter. The match is on the directory's own
- * name, exact and case-sensitive: `renv`, `packrat` or `revdep`, or `<something>.Rcheck`
- * (a name that is only the suffix is not one). Look-alikes such as `renv-tools`, `Renv`,
- * `revdeps` or `pkg.rcheck` are ordinary directories and may hold a real package.
+ * True for a directory that discovery must not enter: `renv`, `packrat` or `revdep`,
+ * `<something>.Rcheck` (a name that is only the suffix is not one), any dot-directory
+ * (`.Rlibs`, `.git`, `.Rproj.user`), and every directory the indexer itself never reads
+ * ({@link isHardcodedIgnoredDirectory}: `vendor`, `build`, `dist`, `lib64`, `fixtures`, ...).
+ * The indexer indexes no file under those, so a package in one is not part of the repository,
+ * and a tree of them would otherwise spend the scan budgets. The match is on the directory's
+ * own name, exact and case-sensitive: `renv-tools`, `Renv`, `revdeps` or `pkg.rcheck` are
+ * ordinary directories and may hold a real package. The indexer's rules that need the
+ * directory's location (a root-level `env` or `generated`, an `env` with `pyvenv.cfg`) are not
+ * applied; neither holds an R package in practice.
  */
 function isSkippedDirName(name: string): boolean {
   return (
     SKIPPED_DIR_NAMES.has(name) ||
     VENDORED_LIBRARY_DIR_NAMES.has(name) ||
+    name.startsWith('.') ||
+    isHardcodedIgnoredDirectory(name) ||
     (name.length > RCHECK_SUFFIX.length && name.endsWith(RCHECK_SUFFIX))
   );
 }
@@ -248,6 +258,17 @@ function descriptionPackageName(content: string): string | undefined {
 }
 
 /**
+ * True when a `DESCRIPTION` file's text has a `Built:` field. `R CMD INSTALL` adds it to the
+ * copy it installs; a source package never has one, so a `DESCRIPTION` with it belongs to an
+ * installed library package (`lib/`, `library/`, a site library checked in), not to the
+ * repository's own packages.
+ */
+function isInstalledPackageDescription(content: string): boolean {
+  const text = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+  return /^Built:/m.test(text);
+}
+
+/**
  * Scan the subtrees the main walk skipped for a package it never discovered.
  *
  * Iterative DFS over `roots` under one global `budget` of directories (skipping
@@ -282,7 +303,13 @@ export async function hidesUndiscoveredPackage(
         try {
           const content = await fs.readFile(path.join(dir, entry.name), 'utf-8');
           const pkgName = descriptionPackageName(content);
-          if (pkgName !== undefined && !knownPackageNames.has(pkgName)) return true;
+          if (
+            pkgName !== undefined &&
+            !knownPackageNames.has(pkgName) &&
+            !isInstalledPackageDescription(content)
+          ) {
+            return true;
+          }
         } catch {
           return true;
         }
@@ -336,7 +363,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
             const descPath = path.join(dir, entry.name);
             const content = await fs.readFile(descPath, 'utf-8');
             const pkgName = descriptionPackageName(content);
-            if (pkgName !== undefined) {
+            if (pkgName !== undefined && !isInstalledPackageDescription(content)) {
               const pkgDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
               packageDirs.add(pkgDir);
               // Same name in several directories: keep the preferred one, whatever the
