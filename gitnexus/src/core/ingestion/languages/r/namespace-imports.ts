@@ -182,10 +182,14 @@ function parseArgs(text: string, openIdx: number): { args: string[]; end: number
   return null;
 }
 
+/** A bare directive argument R reads as a symbol: a letter or `.`, then letters, digits, `.` and `_`. */
+const BARE_NAME = /^[\p{L}.][\p{L}\p{N}._]*$/u;
+
 /**
  * Strip whitespace and one layer of surrounding quotes/backticks from a raw
  * argument. Returns `''` for empty or non-simple arguments (unterminated quote,
- * or anything that is not a single bare/quoted token) so callers can skip them.
+ * or anything that is not a single quoted token or bare symbol) so callers can skip
+ * them. A bare operator or indexing expression (`a+b`, `x[1]`) is not a symbol.
  */
 function normaliseArg(raw: string): string {
   const trimmed = raw.trim();
@@ -199,9 +203,8 @@ function normaliseArg(raw: string): string {
     // A string is R-unescaped; a backticked name keeps an escaped backtick as written (see `rBareName`).
     return (first === '`' ? inner : unescapeRString(inner)).trim();
   }
-  // Bare token: reject anything containing whitespace, quotes, or parens (e.g. `x = y`, nested calls).
-  if (/[\s"'`()=]/.test(trimmed)) return '';
-  return trimmed;
+  // Bare token: a syntactic name. Anything else (`x = y`, a nested call, an expression) is rejected.
+  return BARE_NAME.test(trimmed) ? trimmed : '';
 }
 
 /**

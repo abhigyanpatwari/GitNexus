@@ -363,6 +363,38 @@ describe('parseRNamespaceImportFrom', () => {
   });
 });
 
+describe('parseRNamespaceImportFrom: a bare argument is a syntactic name', () => {
+  // R reads a bare directive argument as a symbol, so an operator or indexing expression is not
+  // a name; only a quoted or backticked argument can spell one.
+  const names = (args: string) =>
+    parseRNamespaceImportFrom(`importFrom(pkg, ${args})\n`).map((e) => e.name);
+
+  it('keeps bare names with dots, underscores, digits and letters outside ASCII', () => {
+    expect(names('ok_1, .dot, a.b.c, R6, \u00fcber')).toEqual([
+      'ok_1',
+      '.dot',
+      'a.b.c',
+      'R6',
+      '\u00fcber',
+    ]);
+  });
+
+  it.each(['foo+bar', 'a-b', 'x[1]', 'a$b', 'a@b', 'x:y', 'a%in%b', 'a|b', '!a'])(
+    'drops the bare expression %s but keeps its neighbours',
+    (expression) => {
+      expect(names(`first, ${expression}, last`)).toEqual(['first', 'last']);
+    },
+  );
+
+  it('still reads the same text when it is quoted or backticked', () => {
+    expect(names('"foo+bar", `x[1]`')).toEqual(['foo+bar', 'x[1]']);
+  });
+
+  it('drops a bare name that starts with a digit', () => {
+    expect(names('first, 2fa, last')).toEqual(['first', 'last']);
+  });
+});
+
 describe('loadRPackageConfig -> RNamespaceInfo.importFrom', () => {
   const pool = createTempDirPool('gn-r-ns-');
 
