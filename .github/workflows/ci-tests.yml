@@ -744,6 +744,11 @@ jobs:
         run: node --import tsx bench/rename/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Generated embedding input budget / scaling guards (#3607)
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/embedding-inputs/measure.cjs --check
+        working-directory: gitnexus
+
       - name: Callable-value-flow target-index guards (#2693)
         if: ${{ !cancelled() }}
         # Build-free: asserts buildGraphTargetIndex resolves an unchanged target
@@ -1074,6 +1079,11 @@ jobs:
         # bound that unblocks full-kernel-scale repos). Fails on fingerprint drift
         # or any resident BasicBlock.
         run: node --import tsx bench/emit-persistence/measure-streaming.mjs --check
+        working-directory: gitnexus
+
+      - name: Directory symlink coverage / scaling guards (#3608)
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/symlink-coverage/measure.cjs --check
         working-directory: gitnexus
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)

@@ -309,7 +309,7 @@ describe('getNextStepHint (via tool call response)', () => {
 
 describe('getNextStepHint rename', () => {
   const apply =
-    'rename({symbol_uid: "Method:src/a.ts:A.run#0", new_name: "go", dry_run: false, repo: "demo"})';
+    'rename({symbol_uid: "Method:src/a.ts:A.run#0", new_name: "go", dry_run: false, plan_token: "<plan_token from this preview>", repo: "demo"})';
 
   it.each([
     ['omitted', { symbol_uid: 'Method:src/a.ts:A.run#0', new_name: 'go', repo: 'demo' }],
@@ -325,7 +325,12 @@ describe('getNextStepHint rename', () => {
   });
 
   it('shows the detect_changes hint only after an explicit dry_run:false', () => {
-    const hint = getNextStepHint('rename', { new_name: 'go', repo: 'demo', dry_run: false });
+    const hint = getNextStepHint(
+      'rename',
+      { new_name: 'go', repo: 'demo', dry_run: false },
+      false,
+      { status: 'success', applied: true, application_status: 'applied' },
+    );
     expect(hint).toContain('detect_changes({repo: "demo"})');
     expect(hint).not.toContain('dry_run: false');
   });
@@ -342,14 +347,38 @@ describe('getNextStepHint rename', () => {
   it('names symbol_name, quoted, when no symbol_uid was sent and omits repo when absent', () => {
     const hint = getNextStepHint('rename', { symbol_name: 'run "fast"', new_name: 'go' });
     expect(hint).toContain(
-      'rename({symbol_name: "run \\"fast\\"", new_name: "go", dry_run: false})',
+      'rename({symbol_name: "run \\"fast\\"", new_name: "go", dry_run: false, plan_token: "<plan_token from this preview>"})',
     );
   });
 
   it('never suggests applying from a read-only server', () => {
     const hint = getNextStepHint('rename', { new_name: 'go', dry_run: true }, true);
     expect(hint).toContain('MCP read-only mode cannot apply it');
+    expect(hint).toContain('fresh preview from a server that permits writes');
+    expect(hint).toContain("that server's plan_token");
     expect(hint).not.toContain('dry_run: false');
+    expect(hint).not.toContain('detect_changes');
+  });
+  it.each(['plan_required', 'invalid_plan', 'plan_mismatch', 'source_changed'])(
+    'requests a fresh preview when apply fails with %s',
+    (code) => {
+      const hint = getNextStepHint('rename', { dry_run: false }, false, {
+        status: 'error',
+        applied: false,
+        code,
+      });
+      expect(hint).toContain('fresh rename preview');
+      expect(hint).toContain('plan_token');
+      expect(hint).not.toContain('detect_changes');
+    },
+  );
+  it('directs partial operations to reconcile exact write lists before retrying', () => {
+    const hint = getNextStepHint('rename', { dry_run: false }, false, {
+      status: 'partial',
+      applied: true,
+      application_status: 'partial',
+    });
+    expect(hint).toContain('failed_files and unattempted_files');
     expect(hint).not.toContain('detect_changes');
   });
 });

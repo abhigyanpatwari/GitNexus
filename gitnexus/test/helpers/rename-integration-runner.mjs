@@ -171,7 +171,19 @@ try {
   const preview = await backend.callTool('rename', { ...request, dry_run: true });
   assert.equal(preview.status, specification.expect.status, JSON.stringify(preview));
   await assertSources(before);
-  const applied = await backend.callTool('rename', { ...request, dry_run: false });
+  const applied =
+    specification.expect.status === 'success'
+      ? await backend.callTool('rename', {
+          ...request,
+          dry_run: false,
+          plan_token: preview.plan_token,
+        })
+      : preview;
+  if (specification.expect.status !== 'success') {
+    const refusedApply = await backend.callTool('rename', { ...request, dry_run: false });
+    assert.equal(refusedApply.code, 'plan_required');
+    assert.equal(refusedApply.applied, false);
+  }
   assert.equal(applied.status, specification.expect.status, JSON.stringify(applied));
   if (specification.expect.status === 'success') {
     assert.equal(preview.applied, false);
