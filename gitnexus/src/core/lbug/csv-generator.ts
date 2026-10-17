@@ -106,7 +106,7 @@ export const sanitizeUTF8 = (str: string): string => {
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-    .replace(/[\uD800-\uDFFF]/g, '')
+    .replace(/[\uD800-\uDFFF]/gu, '')
     .replace(/[\uFFFE\uFFFF]/g, '');
 };
 
