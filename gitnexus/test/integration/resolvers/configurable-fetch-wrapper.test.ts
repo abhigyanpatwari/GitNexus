@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 /**
  * Integration test: configurable fetch wrappers (#1589/#1852 residual)
  *
@@ -15,16 +16,14 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import {
-  loadParseCache,
-  saveParseCache,
-  PARSE_CACHE_VERSION,
-} from '../../../src/storage/parse-cache.js';
+import { loadParseCache, saveParseCache } from '../../../src/storage/parse-cache.js';
 import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
 } from '../../../src/storage/parsedfile-store.js';
 import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const FIXTURE = path.join(FIXTURES, 'configurable-fetch-wrapper');
 
@@ -36,16 +35,16 @@ describe('Configurable fetch wrapper consumer extraction', () => {
 
   beforeAll(async () => {
     cacheDir = await mkdtemp(path.join(tmpdir(), 'fetch-wrapper-cache-'));
-    const parseCache = await loadParseCache(cacheDir);
+    const parseCache = await loadParseCache(cacheDir, parseIdentity, cacheDir);
     withoutConfig = await runPipelineFromRepo(FIXTURE, () => {}, { parseCache });
     await saveParseCache(cacheDir, parseCache);
     await pruneAndSaveDurableParsedFileStore(
       getDurableParsedFileDir(cacheDir),
-      PARSE_CACHE_VERSION,
+      parseIdentity.base,
       parseCache.usedKeys,
     );
     warmConfig = await runPipelineFromRepo(FIXTURE, () => {}, {
-      parseCache: await loadParseCache(cacheDir),
+      parseCache: await loadParseCache(cacheDir, parseIdentity, cacheDir),
       fetchWrappers: ['doRequest', 'client.doRequest', 'this.doRequest', 'super.doRequest'],
     });
     withConfig = await runPipelineFromRepo(FIXTURE, () => {}, {

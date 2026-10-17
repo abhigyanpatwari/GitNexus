@@ -5,6 +5,7 @@ import { mkdtemp, rm, readdir, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import type { ParsedFile } from 'gitnexus-shared';
+import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
 import {
   clearParsedFileStore,
   persistParsedFileChunk,
@@ -1053,6 +1054,82 @@ describe('parsedfile-store receiverChain sanitation', () => {
       expect(await durableChunkHasShards(live, liveOnly, new Set(['keep.c']))).toBe(true);
       expect(await durableChunkHasShards(live, rewritten, new Set(['new.c']))).toBe(true);
       expect(await durableChunkHasShards(live, rewritten, new Set(['old.c']))).toBe(false);
+    } finally {
+      await rm(live, { recursive: true, force: true });
+      await rm(staged, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes a failed staged repair from the durable index even when the old directory survives', async () => {
+    const live = await mkdtemp(path.join(tmpdir(), 'pf-live-repair-'));
+    const staged = await mkdtemp(path.join(tmpdir(), 'pf-stage-repair-'));
+    const durable = getDurableParsedFileDir(live);
+    const repaired = '5'.repeat(64);
+    const healthy = '6'.repeat(64);
+    const originalRm = nodeFsPromises.rm;
+    let restoreRemove: (() => void) | undefined;
+    try {
+      persistDurableParsedFileShardSync(durable, repaired, 1, 0, [makeParsedFile('old.c')]);
+      persistDurableParsedFileShardSync(durable, healthy, 1, 0, [makeParsedFile('healthy.c')]);
+      const keys = new Set([repaired, healthy]);
+      await pruneAndSaveDurableParsedFileStore(durable, TEST_PARSE_IDENTITY.base, keys);
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(staged), repaired, 2, 0, [
+        makeParsedFile('new.c'),
+      ]);
+      const liveChunk = path.join(durable, repaired);
+      const blocked = new Set([liveChunk, `${liveChunk}.replacing`]);
+      const removeSpy = vi
+        .spyOn(nodeFsPromises, 'rm')
+        .mockImplementation(async (target, options) => {
+          if (blocked.has(String(target))) {
+            throw Object.assign(new Error('simulated blocked repair'), { code: 'EACCES' });
+          }
+          return originalRm(target, options);
+        });
+      restoreRemove = () => removeSpy.mockRestore();
+
+      await mergeStagedDurableParsedFileStore(live, staged, TEST_PARSE_IDENTITY.base, keys);
+
+      // The failed replacement and failed prune both occurred. Old bytes must
+      // not regain eligibility merely because they can still be read.
+      expect(removeSpy).toHaveBeenCalledWith(`${liveChunk}.replacing`, {
+        recursive: true,
+        force: true,
+      });
+      expect(removeSpy).toHaveBeenCalledWith(liveChunk, { recursive: true, force: true });
+      expect(existsSync(liveChunk)).toBe(true);
+      expect(await loadDurableParsedFileIndex(durable, TEST_PARSE_IDENTITY.base)).toEqual(
+        new Map([[healthy, new Set(['healthy.c'])]]),
+      );
+      expect(await durableChunkHasShards(live, repaired, new Set(['new.c']))).toBe(false);
+    } finally {
+      restoreRemove?.();
+      await rm(live, { recursive: true, force: true });
+      await rm(staged, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the live index when staging cannot be enumerated', async () => {
+    const live = await mkdtemp(path.join(tmpdir(), 'pf-live-unreadable-'));
+    const staged = await mkdtemp(path.join(tmpdir(), 'pf-stage-unreadable-'));
+    const durable = getDurableParsedFileDir(live);
+    const key = '7'.repeat(64);
+    try {
+      persistDurableParsedFileShardSync(durable, key, 1, 0, [makeParsedFile('old.c')]);
+      await pruneAndSaveDurableParsedFileStore(durable, TEST_PARSE_IDENTITY.base, new Set([key]));
+      const indexPath = path.join(durable, 'index.json');
+      const before = await readFile(indexPath);
+      // A regular file at the directory path makes readdir reject with ENOTDIR
+      // on every platform, including root, without mocking filesystem success.
+      await writeFile(getDurableParsedFileDir(staged), 'not a directory');
+
+      await expect(
+        mergeStagedDurableParsedFileStore(live, staged, TEST_PARSE_IDENTITY.base, new Set()),
+      ).rejects.toThrow();
+      expect(await readFile(indexPath)).toEqual(before);
+      expect(await loadDurableParsedFileIndex(durable, TEST_PARSE_IDENTITY.base)).toEqual(
+        new Map([[key, new Set(['old.c'])]]),
+      );
     } finally {
       await rm(live, { recursive: true, force: true });
       await rm(staged, { recursive: true, force: true });

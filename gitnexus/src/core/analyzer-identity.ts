@@ -439,7 +439,7 @@ function resolveRuntimeVariant(): RuntimeVariant {
 
 function snapshotReadableFile(candidate: string): ReadableFileState {
   const link = lstatSync(candidate, { bigint: true });
-  const target = statSync(candidate, { bigint: true });
+  const target = link.isFile() ? link : statSync(candidate, { bigint: true });
   if (!target.isFile()) throw new Error(`Analyzer identity input is not a file: ${candidate}`);
   return {
     link: statState(link),
@@ -2292,7 +2292,7 @@ const probe = async (request) => {
       if (JSON.stringify(state(link)) !== JSON.stringify(state(after))) return null;
       return { type: 'directory-inventory', state: state(after), entriesDigest };
     }
-    const target = await fs.stat(request.absolutePath, { bigint: true });
+    const target = link.isFile() ? link : await fs.stat(request.absolutePath, { bigint: true });
     if (!target.isFile()) return null;
     const result = { type: 'readable-file', state: { link: state(link), target: state(target) } };
     if (link.isSymbolicLink()) result.state.symlinkTarget = await fs.readlink(request.absolutePath);
@@ -2878,3 +2878,15 @@ export function finalizeAnalyzerRunnerIdentity(
   }
   return finalIdentity;
 }
+
+/** Narrow, non-loading artifact primitives shared by parser identity.
+ * The analyzer receipt and its existing cache retain their separate contract. */
+export const analyzerIdentityArtifacts = {
+  hashCanonicalFrames,
+  hashStableFile,
+  snapshotReadableFile,
+  snapshotDirectoryInventory,
+  resolveBuildRoot,
+  resolveRuntimeVariant,
+  isInside,
+};

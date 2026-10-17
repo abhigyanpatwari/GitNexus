@@ -311,7 +311,7 @@ Application validates all captured source snapshots before each per-file replace
 
 ### Callable-value flow
 
-First-class callable values use a language-neutral inclusion analysis in `passes/callable-value-flow.ts`. Providers recognize their own syntax and emit JSON-safe `CallableFlowSite` facts (`seed`, `copy`, `alias`, `address`, `load`, `store`, `formal`, `argument`, and `invoke`) into `ParsedFile`; shared ingestion never branches on a language name. These always-on facts cross workers and the durable parse store, whose schema is bumped whenever their semantic shape changes.
+First-class callable values use a language-neutral inclusion analysis in `passes/callable-value-flow.ts`. Providers recognize their own syntax and emit JSON-safe `CallableFlowSite` facts (`seed`, `copy`, `alias`, `address`, `load`, `store`, `formal`, `argument`, and `invoke`) into `ParsedFile`; shared ingestion never branches on a language name. These always-on facts cross workers and the durable parse store. Changes to their producers or shared contracts automatically change the base parser identity used by both caches.
 
 The emit stage defers only invocation sites proven to reference a flow cell. Ordinary receiver/free/reference passes still resolve direct callees first and record exact callee IDs by file/line/column. Property dispatch then runs before callable flow because a property-dispatched wrapper call can seed actual-to-formal propagation. The callable solver consumes those direct targets, propagates callable sets through lexical cells and formals, and emits `CALLS` at the real indirect invocation site with reason `callable-value-flow` (confidence 0.8 for a singleton, 0.7 for a bounded multi-target set).
 
@@ -331,7 +331,7 @@ Standalone (regex-based) providers such as COBOL participate via `ScopeResolver.
 
 A compound receiver (`svc.getUser().address.save()`) is captured as a compact string on `ReferenceSite.receiverChain`. `utils/receiver-chain-codec.ts` is the ONE encoder/decoder — capture emitters, the scope-resolution fold, and the durable ParsedFile store all import it rather than hand-rolling the format.
 
-Wire format is **v2**: `2|<base>|<step>|<step>…`, one-character version prefix, then base-first steps, each a one-character kind sigil plus the member name (`c` = call, `f` = field). `a` (await) and `i` (index) are **name-free** and encode as a bare sigil — an awaited call's name already lives on its `c` step, and a subscript key is a value, not a lookup-able identifier. The version went 1 → 2 when those two kinds were added, and a decoder REFUSES a foreign version rather than decoding the prefix it understands: a chain missing its await/index hop decodes cleanly as a different, shorter chain and would type the receiver against the wrong member. The format is unescaped (`|` and `~` cannot occur in an identifier), so an unencodable name is refused rather than escaped, and the payload is capped at `MAX_RECEIVER_CHAIN_BYTES` / `MAX_CHAIN_DEPTH` steps. Because these strings live in the incremental parse cache and the durable ParsedFile store, a format change requires a `PARSE_CACHE_VERSION` schema bump — a stale cache would otherwise replay v1 chains this build discards.
+Wire format is **v2**: `2|<base>|<step>|<step>…`, one-character version prefix, then base-first steps, each a one-character kind sigil plus the member name (`c` = call, `f` = field). `a` (await) and `i` (index) are **name-free** and encode as a bare sigil — an awaited call's name already lives on its `c` step, and a subscript key is a value, not a lookup-able identifier. The version went 1 → 2 when those two kinds were added, and a decoder REFUSES a foreign version rather than decoding the prefix it understands: a chain missing its await/index hop decodes cleanly as a different, shorter chain and would type the receiver against the wrong member. The format is unescaped (`|` and `~` cannot occur in an identifier), so an unencodable name is refused rather than escaped, and the payload is capped at `MAX_RECEIVER_CHAIN_BYTES` / `MAX_CHAIN_DEPTH` steps. These strings live in both parse stores. Codec and capture changes automatically invalidate their caches through the base parser identity; the explicit receiver-chain wire version and foreign-version rejection still govern decoding.
 
 Receivers the resolver could not type are not silently dropped. Each records a `ResolutionOutcome` (`scope-resolution/resolution-outcome.ts`) carrying the receiver's *shape* (`classifyReceiverShape`: `chain-call` / `chain-field` / `chain-mixed` / `chain-unwrap` / `no-chain` — the bench censuses these) and its *origin* (`in-program` / `external` / `unknown`). `scope-resolution/unresolved-receivers.ts` aggregates them per member name into the index-persisted `unresolvedReceiverMembers` summary, keeping in-program and external counts under separate keys. Only in-program drops make a count short: an external-rooted call (`System.out.println`, `fetch(...)`) has no in-graph node an edge could have reached, so it is reported but does not hedge. `impact` / `context` read that summary and publish `epistemic: 'exact' | 'lower-bound'`, prose `boundaries`, and the machine-readable `causes` split (`EpistemicCauses` in `mcp/local/local-backend.ts`).
 
@@ -549,6 +549,60 @@ the read-only open is retried — see `sidecar-recovery.ts`
 `lbug-interrupted-checkpoint-recovery` integration test.
 
 Managed by `repo-manager.ts`.
+
+### Automatic parse-cache identity
+
+`core/parse-cache-identity.ts` derives full SHA-256 base and PDG identities
+from sorted, framed logical paths and raw artifact bytes. It needs no Git
+history, branch name, timestamp, network access, or contributor-assigned
+semantic version. The boundary is intentionally conservative:
+
+| Component                | Owned inputs                                                                                                                                                                    |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Base                     | `core/ingestion/**` except the PDG-only paths below, `core/tree-sitter/**`, `lib/**`, `core/graph/**`, and the audited support/storage files listed in `PARSE_CACHE_BASE_FILES` |
+| PDG                      | `core/ingestion/cfg/**` and the classified COBOL extraction helpers `languages/cobol/flow.ts` and `flow-harvest.ts`; the shared COBOL tokenizer remains in base                 |
+| Runtime and dependencies | The actual selected worker, shared source/compiled runtime or packaged `dist/_shared`, grammar/parser/native/loader dependency closure, and effective runtime/loader options    |
+
+Source execution covers both source inputs and the compiled worker when that
+is the selected entry. Editing source invalidates identity immediately; it
+does not compile that worker. Run `npm run build` before expecting changed
+worker facts. Installed packages derive identity from their shipped runtime
+without requiring source, Git metadata, or a development compiler. Native
+binary bytes and loader fallback candidates are covered even when package
+versions stay the same. Unsupported resolution modes such as
+`--preserve-symlinks` cannot be verified and disable persistent cache reuse.
+
+Raw bytes mean comments and formatting inside owned roots can invalidate
+reuse. Repository documentation, UI, unrelated CLI files, and unrelated
+dependencies do not change this parser identity; broader analyzer freshness
+rules still apply. New files inside an owned root are included automatically.
+Inputs outside that boundary require an ownership decision and an update to
+`test/unit/parse-cache-input-coverage.test.ts`, which audits imports, dynamic
+loaders, runtime assets, and shared dependencies.
+
+Both the worker-result index and durable `ParsedFile` index validate the base
+identity before workers can be skipped. Physical chunk keys bind that identity
+and sorted source path/content hashes; PDG-enabled chunks additionally bind
+the PDG identity and resolved function-line cap. A CFG-only change therefore
+does not invalidate ordinary chunks. Legacy numeric, missing, malformed, or
+foreign identities miss; a concurrently pruned shard is also a miss.
+
+`RepoMeta.parseCacheIdentity` records the effective parser identity for
+unchanged-analysis and shared-current adoption checks. Analysis resolves it
+once, stages fresh cache writes, and verifies artifacts again before
+publication. A changed build rejects publication; failed staging or build
+verification keeps the published cache pair. Cache-write failures after graph
+publication warn without rolling back the successful graph. If identity is
+unverifiable, the run uses bounded transient `ParsedFile` storage without
+persistent cache reads or writes.
+`--no-parse-cache` instead requests a cold parse and publishes its fresh cache
+generation on success. FTS-only maintenance retains the old parser receipt.
+
+These checks complement graph `SCHEMA_FINGERPRINT`, the analyzer runner
+receipt, embedding preservation, and explicit wire-format checks such as the
+V8 envelope and receiver-chain version. Benchmark semantic goldens still
+require review of changed facts and pack membership; automatic compatibility
+does not approve a new baseline.
 
 ## LadybugDB schema
 
