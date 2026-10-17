@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
 import { rParameterKind, rRenameProvider } from '../../src/core/ingestion/languages/r/rename.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 
 const parser = new Parser();
 parser.setLanguage(R as Parameters<Parser['setLanguage']>[0]);
@@ -37,7 +38,7 @@ function verdict(source: string): string {
     target: { type: 'Function', qualifiedName: 'helper', filePath: 'a.R' },
     newName: 'assist',
     files,
-    graph: { forEachNode: () => undefined },
+    graph: createKnowledgeGraph(),
   } as never);
   return issue ? issue.code : 'ok';
 }

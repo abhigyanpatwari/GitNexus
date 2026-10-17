@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { registersS3Method, rRenameProvider } from '../../src/core/ingestion/languages/r/rename.js';
 
 const parser = new Parser();
@@ -15,11 +16,7 @@ parser.setLanguage(R as Parameters<Parser['setLanguage']>[0]);
 type Definition = { readonly name: string; readonly type: string };
 
 /** Run the provider's safety check for renaming `helper` to `newName`, with these definitions. */
-function verdictWith(
-  newName: string,
-  defs: readonly Definition[],
-  nodes: readonly Record<string, unknown>[] = [],
-): string {
+function verdictWith(newName: string, defs: readonly Definition[]): string {
   const source = defs.map((d) => `${d.name} <- function(x) x`).join('\n');
   const files = new Map([
     [
@@ -34,10 +31,7 @@ function verdictWith(
     target: { type: 'Function', qualifiedName: 'helper', filePath: 'a.R' },
     newName,
     files,
-    graph: {
-      forEachNode: (visit: (node: { properties: Record<string, unknown> }) => void) =>
-        nodes.forEach((properties) => visit({ properties })),
-    },
+    graph: createKnowledgeGraph(),
   } as never);
   return issue ? issue.code : 'ok';
 }
@@ -133,23 +127,24 @@ describe('R rename: the S3 registration guard', () => {
   });
 
   it('refuses a rename only for the NAMESPACE export of a function, not of a member', () => {
-    const inPackage = (label: string) =>
-      rRenameProvider.checkSafety?.({
-        target: { type: 'Function', qualifiedName: 'helper', filePath: 'R/a.R' },
-        newName: 'helper2',
-        files: new Map([
-          ['R/a.R', { tree: parser.parse('helper <- function(x) x'), parsed: { localDefs: [] } }],
-        ]),
-        graph: {
-          forEachNode: (
-            visit: (node: { label: string; properties: Record<string, unknown> }) => void,
-          ) =>
-            visit({
-              label,
-              properties: { filePath: 'R/a.R', name: 'helper', isExported: true },
-            }),
-        },
-      } as never)?.code ?? 'ok';
+    const inPackage = (label: 'Function' | 'Method' | 'Property' | 'Class') => {
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: `${label}:R/a.R:helper`,
+        label,
+        properties: { filePath: 'R/a.R', name: 'helper', isExported: true },
+      });
+      return (
+        rRenameProvider.checkSafety?.({
+          target: { type: 'Function', qualifiedName: 'helper', filePath: 'R/a.R' },
+          newName: 'helper2',
+          files: new Map([
+            ['R/a.R', { tree: parser.parse('helper <- function(x) x'), parsed: { localDefs: [] } }],
+          ]),
+          graph,
+        } as never)?.code ?? 'ok'
+      );
+    };
     expect(inPackage('Function')).toBe('unsupported_occurrence');
     expect(inPackage('Method')).toBe('ok');
     expect(inPackage('Property')).toBe('ok');
