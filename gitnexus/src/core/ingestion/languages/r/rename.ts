@@ -249,6 +249,43 @@ function insideFunction(node: Parser.SyntaxNode): boolean {
 }
 
 /**
+ * Whether `node`, an identifier spelled like the new name, is used to READ a binding: a value
+ * (`sapply(x, paste)`, `x <- letters`, a default `f = assist`) or a callee. After the rename
+ * the renamed function is the global of that name, so a read that reached something else
+ * (a base or attached object, another package's function) would be captured by it. Not reads:
+ * a bound name (`assist <- 3`, a parameter, a `for` variable), an argument name (`f(assist = 1)`),
+ * a member (`x$assist`, `x@assist`) and a qualified name (`pkg::assist`).
+ */
+function readsNewName(node: Parser.SyntaxNode, newName: string): boolean {
+  const parent = node.parent;
+  if (parent === null) return true;
+  switch (parent.type) {
+    case 'argument':
+      if (parent.childForFieldName('name')?.id === node.id) return false;
+      break;
+    case 'parameter':
+      if (parent.childForFieldName('name')?.id === node.id) return false;
+      break;
+    case 'extract_operator':
+      if (parent.childForFieldName('rhs')?.id === node.id) return false;
+      break;
+    case 'namespace_operator':
+      return false;
+    case 'for_statement':
+      if (parent.childForFieldName('variable')?.id === node.id) return false;
+      break;
+    case 'binary_operator':
+      if (assignmentTarget(parent)?.id === node.id) return false;
+      break;
+  }
+  // A parameter of the enclosing function binds the name locally: a read of it, or a call of it
+  // when it can only be a function (no default), never reaches the global.
+  const local = innermostParameterKind(node, newName);
+  if (local === null) return true;
+  return isCallee(node) && local !== 'function';
+}
+
+/**
  * A name R also writes between its operands: an infix function (`%+%`, `%in%`) or an operator
  * (`+`, `[[`). Its uses are operator tokens, not `identifier` nodes, so a rename would edit the
  * definition and leave every `a %+% b` calling a function that no longer exists.
@@ -371,6 +408,14 @@ export const rRenameProvider: RenameProvider = {
           superassignedName(node) === newName
         )
           return collision('The new name is already assigned as a variable at top level.');
+        if (
+          node.type === 'identifier' &&
+          rBareName(node.text) === newName &&
+          readsNewName(node, newName)
+        )
+          return collision(
+            'The new name is already read here as a value or called; the renamed function would capture it.',
+          );
         // `name <<- value` (inside a function or not) is a global re-definition that the
         // scope graph keeps as a separate declaration, so a rename would leave it behind.
         if (node.type === 'identifier' && isCallee(node) && rBareName(node.text) === name) {

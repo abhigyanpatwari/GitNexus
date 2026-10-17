@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that the sources pass as a function value (sapply(x, paste)): the renamed global would capture the base function.",
+  "categories": ["name-collision", "value-reference", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "ref.R", "startLine": 0 },
+  "newName": "paste",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}
