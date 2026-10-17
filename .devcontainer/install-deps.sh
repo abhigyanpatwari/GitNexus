@@ -50,6 +50,8 @@ echo "[install-deps] 2/4: clear stale .husky/_ runtime cache"
 # the new container's `node` user overwrite a `.husky/_/h` file that an earlier
 # container wrote under a different UID. So we delete it. `.husky/_` is a
 # gitignored runtime cache, and husky rebuilds it during the root `npm install`.
+# The tracked .husky/pre-commit is preserved. Verification below fails setup if
+# regeneration was skipped or failed, so this cleanup cannot silently disable it.
 # Husky upstream has no fix for this UID clash.
 rm -rf .husky/_
 
@@ -58,6 +60,7 @@ echo "[install-deps] 3/4: npm install at root, then gitnexus-shared (build requi
 # Then gitnexus-shared, which must be built before installing gitnexus-web or
 # gitnexus. Both of those depend on it via `file:../gitnexus-shared`.
 npm install
+node .devcontainer/verify-git-hooks.cjs
 cd /workspace/gitnexus-shared
 npm install
 npm run build

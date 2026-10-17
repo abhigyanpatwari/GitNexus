@@ -48,7 +48,7 @@ Windows-native works, but Docker Desktop's Windows bind-mount layer has rough ed
 
 - **File watchers can miss events.** Vite / jest `--watch` running inside the container watching workspace files mounted from `D:\...` may miss changes — chokidar polling (`CHOKIDAR_USEPOLLING=true`) is the usual workaround.
 - **`npm install` is 3-5× slower** through the Windows-to-Linux bind-mount translation than on a WSL2-native filesystem.
-- **Permission edge cases.** The husky `.husky/_/h` EPERM class we hit earlier in this PR is specific to Windows-side bind mounts changing UID ownership between container runs. `post-create.sh` clears the cache defensively to keep this from being fatal, but it's still a real source of friction.
+- **Permission edge cases.** The husky `.husky/_/h` EPERM class we hit earlier in this PR is specific to Windows-side bind mounts changing UID ownership between container runs. `install-deps.sh` rebuilds the generated cache and verifies the pre-commit hook, but it's still a real source of friction.
 
 If you hit any of those and want to migrate to WSL2 later, the steps are below.
 
@@ -318,7 +318,7 @@ VS Code's Ports panel shows forwarded ports once their listener starts.
 - **Native grammar builds add ~30s to first install.** Tree-sitter Dart/Proto/Swift/Kotlin are all vendored uniformly: `node-gyp-build` picks a committed GitNexus-built prebuilt `.node` at install time (no compile), and only falls back to compiling from the vendored source during `postinstall` if no prebuild matches the host (then a toolchain is needed). Set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` (in your shell or `remoteEnv`, then rebuild) to skip all four; each loses parsing for the affected language(s), and the install still succeeds.
 - **`tree-sitter-kotlin`/`tree-sitter-swift` warnings on install** only appear when no prebuild matches the platform-arch (per `AGENTS.md`); they are non-fatal — parsing for that language is simply unavailable.
 - **`.mcp.json` works inside the container**: `npx -y gitnexus@latest mcp` resolves cleanly because npm registry is reachable and the workspace bind mount exposes the same `.mcp.json` the host sees.
-- **Husky pre-commit fires inside the container** without extra setup. The root `npm install` (run automatically in `postCreateCommand`) installs the hook via `package.json` `prepare`.
+- **Husky pre-commit is verified during setup.** The root `npm install` in `updateContentCommand` installs the hook via `package.json` `prepare`. Only its generated `.husky/_` cache is cleared for stale Windows permissions; the tracked `.husky/pre-commit` stays intact. Setup fails if the hook is missing, Git points elsewhere, or `HUSKY=0` disables it. Run `npm run prepare` at the repository root to restore the hook.
 
 ## Rebuild / reset
 

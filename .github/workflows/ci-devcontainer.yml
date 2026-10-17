@@ -1,10 +1,9 @@
 name: Devcontainer Smoke
 
 # Smoke-tests .devcontainer/ whenever it changes. Two things happen here.
-# First, unit tests run on the pure host->container config transforms: the
-# plugin-registry path translation, and the strip of the machine field from
-# $HOME/.claude.json. Second, the devcontainer image is built through the
-# standard @devcontainers/cli path. That CLI reads build.args from
+# First, unit tests cover host->container config transforms and actual Husky
+# pre-commit enforcement in temporary repositories. Second, the image is built
+# through the standard @devcontainers/cli path. That CLI reads build.args from
 # devcontainer.json, so the version pin there stays the single source of truth.
 on:
   push:
@@ -42,8 +41,13 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - name: Unit-test the host->container config transforms
-        run: node --test .devcontainer/translate-plugin-registries.test.cjs
+      # Hook tests install real Husky in temporary repositories.
+      - name: Install hook test tooling
+        run: |
+          npm ci --no-audit --no-fund
+          node .devcontainer/verify-git-hooks.cjs
+      - name: Unit-test devcontainer setup and hooks
+        run: node --test .devcontainer/translate-plugin-registries.test.cjs .devcontainer/verify-git-hooks.test.cjs
       - name: Syntax-check the lifecycle shell scripts
         run: |
           bash -n .devcontainer/install-deps.sh
