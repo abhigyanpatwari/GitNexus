@@ -1081,6 +1081,11 @@ jobs:
         run: node --import tsx bench/emit-persistence/measure-streaming.mjs --check
         working-directory: gitnexus
 
+      - name: Directory symlink coverage / scaling guards (#3608)
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/symlink-coverage/measure.cjs --check
+        working-directory: gitnexus
+
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         if: ${{ !cancelled() }}
         env:
