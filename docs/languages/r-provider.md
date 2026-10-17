@@ -140,7 +140,7 @@ R has no inline type annotations, so the "Type Annotations" column of the langua
 - Definition captures are in `R_QUERIES` (`tree-sitter-queries.ts`); scope, import, type-binding, heritage and reference captures are in `languages/r/query.ts`. Keep each declaration pattern and its matching `@scope.function` pattern in lockstep, as the comments in `query.ts` explain.
 - The captures for `setClass`, `setRefClass`, `setGeneric`, `setMethod` and for `library` / `require` / `source` are deliberately loose. The argument that names the definition or the import is chosen afterwards in `languages/r/naming-argument.ts`, because a query-level prefix that skips leading comments and named arguments is quadratic in the argument count.
 - Resolution wiring is in `languages/r/scope-resolver.ts`, registered in `SCOPE_RESOLVERS`. Package discovery and NAMESPACE parsing are in `package-config.ts` and `namespace-imports.ts`; qualified calls in `qualified-call.ts`; owner and export post-processing in `post-parse.ts` and `owner-hooks.ts`.
-- Changing what the scope query captures changes what cached parsed files contain, so raise `SCHEMA_BUMP`.
+- Changing what the scope query captures changes what cached parsed files contain. There is no counter to raise: the parse-cache identity is derived from the bytes of the owned source roots and the grammar packages, so the change invalidates stale caches by itself. Rebuild `dist` and verify a cold parse followed by warm reuse, as CONTRIBUTING's "Parser changes and cache compatibility" section describes.
 - Shared code under `gitnexus/src/core/ingestion/` must not name languages; add behaviour through the provider hooks.
 
 ## Tests

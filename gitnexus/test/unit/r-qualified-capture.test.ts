@@ -3,7 +3,7 @@
  *
  * The free-call qualified hook fires only when a site carries `rawQualifiedName`, which the
  * scope extractor copies from the `@reference.qualified-name` capture. Cached files cannot be
- * re-read, hence the capture (and a SCHEMA_BUMP) rather than re-parsing at resolve time.
+ * re-read, hence the capture rather than re-parsing at resolve time.
  *
  * Each form asserts the call, its name and the whole `namespace_operator` text together,
  * so a form that fails to parse or loses its name capture cannot pass.
