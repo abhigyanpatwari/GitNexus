@@ -512,7 +512,11 @@ export function invalidateNodeWorkspacePackages(repoRoot: string): void {
 
 export async function loadNodeWorkspacePackages(
   repoRoot: string,
+  options?: { fresh?: boolean },
 ): Promise<NodeWorkspacePackages | null> {
+  // Rename capabilities must observe package changes without replacing the
+  // indexing pass's shared memo or joining an older in-flight acquisition.
+  if (options?.fresh) return loadNodeWorkspacePackagesUncached(repoRoot);
   const key = path.resolve(repoRoot);
   const cached = workspacePackagesMemo.get(key);
   if (cached !== undefined) return cached;

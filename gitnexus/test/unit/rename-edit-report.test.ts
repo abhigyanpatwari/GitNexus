@@ -183,7 +183,10 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
   it('applies only displayed spans, preserving unrelated same-line keys and symbols', async () => {
     const backend = stubbedBackend();
     const preview = await callRename(backend, tmpDir);
-    const result = await callRename(backend, tmpDir, { dry_run: false });
+    const result = await callRename(backend, tmpDir, {
+      dry_run: false,
+      plan_token: preview.plan_token,
+    });
     expect(result, JSON.stringify(result)).toMatchObject({
       status: 'success',
       applied: true,
@@ -224,12 +227,17 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
   });
 
   it('reports only the files and occurrences whose writes landed', async () => {
+    const backend = stubbedBackend();
+    const preview = await callRename(backend, tmpDir);
     const originalRename = fsPromises.rename.bind(fsPromises);
     vi.spyOn(fsPromises, 'rename').mockImplementation(async (source, destination) => {
       if (String(destination).endsWith(`${path.sep}writer.ts`)) throw new Error('EACCES');
       return originalRename(source, destination);
     });
-    const result = await callRename(stubbedBackend(), tmpDir, { dry_run: false });
+    const result = await callRename(backend, tmpDir, {
+      dry_run: false,
+      plan_token: preview.plan_token,
+    });
     expect(result, JSON.stringify(result)).toMatchObject({
       status: 'partial',
       applied: true,

@@ -478,15 +478,20 @@ A graph too large to analyze at all returns \`{ error, truncated: true }\` with 
   },
   {
     name: 'rename',
-    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default: dry_run omitted or true never writes; dry_run:false applies exact resolved name spans after checking source snapshots. Preview first, review semantic_edits and coverage, then re-call with dry_run:false.
+    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default: dry_run omitted or true never writes; dry_run:false requires the plan_token returned by a successful preview and applies exactly that captured edit set after checking source snapshots and targets. Preview first, review semantic_edits and coverage, then re-call with dry_run:false and plan_token.
 Pass symbol_uid from context() to select the declaration. Unsupported syntax, ambiguous bindings, and incomplete coverage fail closed; no compiler or text-search fallback is used.
-Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Legacy graph_edits and text_search_edits are zero. Partial writes are not transactional: changes lists only landed edits, failed_files the file that failed, and unattempted_files later files never touched; review before retrying. Separate preview/apply calls recompute the plan.
+Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Preview plan_token is single-use, expires after 15 minutes or a server restart, and can be evicted when retained previews reach 16 plans or 64 MiB. Apply rejects changed sources (including untracked files), source-file inventories, graph targets, repositories, and destination names; it never replans edits. Legacy graph_edits and text_search_edits are zero. Partial writes are not transactional: changes lists only landed edits, failed_files the file that failed, and unattempted_files later files never touched; reconcile and preview again before retrying.
 Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates verbatim; re-call with symbol_uid. After application, run tests and detect_changes().`,
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
         ...RENAME_PROPERTIES,
+        plan_token: {
+          type: 'string',
+          description:
+            'Opaque single-use token returned by the reviewed preview. Required with dry_run:false; keep the same repository, target, and new_name.',
+        },
         dry_run: {
           type: 'boolean',
           description:

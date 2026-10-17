@@ -57,7 +57,7 @@ checkout and reports nothing changed, which reads as a verified refactor.
 - [ ] rename({symbol_name: "oldName", new_name: "newName", dry_run: true}) — preview semantic edits (omitting dry_run also previews)
 - [ ] Confirm the previewed file paths are in the bound repository/worktree
 - [ ] Review exact graph-backed semantic spans, coverage, and limitations
-- [ ] If satisfied: rename({..., dry_run: false}) — apply edits
+- [ ] If satisfied: rename({..., dry_run: false, plan_token: "<token from preview>"}) — apply exactly the reviewed edits
 - [ ] detect_changes() — verify only expected files changed
 - [ ] Run tests for affected processes
 ```
@@ -98,10 +98,15 @@ rename({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app
 → changes: [{file_path, edits: [{start, length, line, old_text, new_text, confidence: "semantic"}]}]
 ```
 
-`dry_run` omitted or `true` previews and never writes; `dry_run: false` applies.
+`dry_run` omitted or `true` previews and never writes; `dry_run: false` requires
+the successful preview's `plan_token`. Keep the same repository, selected symbol,
+and destination name. Tokens are single-use, expire after 15 minutes or a server
+restart, and may be evicted when retained previews reach 16 plans or 64 MiB.
+Any apply attempt consumes the token; request and review a fresh preview to retry.
 An MCP server started with `GITNEXUS_MCP_READ_ONLY=1` still lists `rename`, but
 as preview-only: it rejects any `dry_run` other than omitted or `true`, so apply
-from a client that is not read-only.
+through a server that permits writes. Request and review a fresh preview there;
+tokens belong to the process that issued them.
 
 Rename uses the indexed graph and GitNexus's own semantic layer. Language
 providers resolve current source through scopes and bindings; no compiler or
@@ -116,8 +121,12 @@ limits, including class renames requiring a file move, remain explicit in result
 There is no regex fallback: legacy `graph_edits` and `text_search_edits` are zero.
 Comments, strings, and unrelated same-spelled symbols are not replacements.
 
-Preview and apply use the same planner. Results use `result_version: 2`;
-`total_edits` counts occurrences, not matching lines. Exact replacements are shown in `new_text`. Separate preview and apply calls recompute the plan.
+Preview captures the exact semantic plan, source hashes and physical file targets.
+Apply validates that plan and executes its edits without replanning. Changes to
+indexed targets, source bytes or paths (including newly added untracked source
+files) reject the plan before writing. Unindexed files remain outside semantic
+coverage; analyze first when they need refactoring. Results use `result_version: 2`;
+`total_edits` counts occurrences, not matching lines. Exact replacements are shown in `new_text`.
 Check `planning_status`, `application_status`, and `applied`. A completed apply
 has `status: "success"`, `application_status: "applied"`, and `applied: true`.
 A successful preview has not written files. `rename` does not accept `branch`:
@@ -130,6 +139,9 @@ result carries `code` and `error`; nothing was written unless the last row appli
 | --- | --- |
 | `stale_graph` | Re-analyze the bound repository, then preview again with `rename` (`dry_run` omitted or `true`). |
 | `source_changed` | Preview again against the current source and review it. If it appears during an apply, see the `partial` row. |
+| `plan_required`, `invalid_plan`, `plan_mismatch` | Apply needs the successful preview's token and identical repository, symbol and new name. Expired, consumed or evicted plans require a fresh reviewed preview. |
+| `source_set_changed` | Source paths changed, including untracked files. Re-analyze and review a fresh preview. |
+| `plan_too_large` | The captured plan exceeds the 64 MiB retention budget. Narrow the indexed repository before previewing again. |
 | `unsupported_*` | Stop automated rename and inspect the reported limitation. Use a language-aware manual refactor if needed. |
 | Ambiguous target (`status: "ambiguous"` with candidates) | Inspect the returned candidates or `context`, then preview with the chosen `symbol_uid`. |
 | `ambiguous_reference`, `incomplete_semantics` | The planner could not prove a reference, import, or declaration is covered. Stop automated rename; resolve the named location by hand or pick a different symbol. |
@@ -199,7 +211,7 @@ RETURN caller.name, caller.filePath ORDER BY caller.filePath
 
 2. Review semantic spans and provider coverage; inspect dynamic references separately
 
-3. rename({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app", dry_run: false})
+3. rename({symbol_name: "validateUser", new_name: "authenticateUser", repo: "my-app", dry_run: false, plan_token: "<token from step 1>"})
    → Applied 12 edits across 8 files
 
 4. detect_changes({scope: "all", repo: "my-app"})

@@ -1,10 +1,10 @@
-<!-- version: 1.8.0 -->
+<!-- version: 1.9.0 -->
 <!--
   Metadata: version, last reviewed, scope, model policy, reference docs, changelog.
-  Last updated: 2026-07-16
+  Last updated: 2026-10-17
 -->
 
-Last reviewed: 2026-07-16
+Last reviewed: 2026-10-17
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -43,6 +43,7 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 
 | Date       | Version | Change                                                                                                                                                   |
 | ---------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-17 | 1.9.0   | Require the reviewed preview's `plan_token` when applying semantic rename (#2973). |
 | 2026-07-20 | 1.8.0   | The CI review agent runs `gitnexus-review` as a coordinated swarm — six `ci-personas/` lanes dispatched via the `Agent` tool with a bounded critic gate. |
 | 2026-07-16 | 1.7.0   | `/gitnexus-plan` asks depth up front in interactive runs; `/gitnexus-lfg` gate slimmed to proceed/stop.                                                  |
 | 2026-07-16 | 1.6.0   | Renamed `/gitnexus-pr-review` to `/gitnexus-review` and added PR, branch/range, and local-change targets.                                                |
@@ -82,7 +83,7 @@ This project is indexed by GitNexus as **GitNexus** (248612 symbols, 565510 rela
 
 - NEVER edit a function, class, or method before MCP/CLI impact analysis.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read `UNKNOWN` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
-- NEVER rename symbols with find-and-replace — use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false`.
+- NEVER rename symbols with find-and-replace — use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false` and that preview's `plan_token`.
 - NEVER commit before MCP/CLI graph change analysis.
 
 ## Resources
