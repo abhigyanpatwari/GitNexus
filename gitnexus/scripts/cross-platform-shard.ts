@@ -89,6 +89,9 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/fts-extension-e2e.test.ts': 380,
   'test/integration/skip-fts.test.ts': 110,
   'test/integration/analyze-wal-checkpoint-failure.test.ts': 86,
+  // Windows run 39046807237 measured 308s before two cases reached recovery.
+  // Allow the measured ~19s recovery cost for each corrected in-place case.
+  'test/unit/incremental-write-integrity.test.ts': 360,
   'test/integration/cli-limit-e2e.test.ts': 75,
   'test/unit/hooks.test.ts': 26,
   'test/integration/analyze-heap-oom-e2e.test.ts': 23,

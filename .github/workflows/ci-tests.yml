@@ -1033,6 +1033,11 @@ jobs:
         run: node --expose-gc --import tsx bench/cfg/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Staged publication durability / scaling guards (#3591)
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/staged-publication/measure.cjs --check
+        working-directory: gitnexus
+
       - name: Emit-persistence throughput / byte-identity guards (#2203)
         if: ${{ !cancelled() }}
         # Build-free: asserts streamAllCSVsToDisk output is byte-identical
