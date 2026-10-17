@@ -36,7 +36,8 @@
  * of `a...ab` each exhaust it in ~0.4 s against 50,000 distinct 100-character names.
  * Realistic patterns stay far below it: 500 alternated identifiers, anchored or not,
  * cost about 20 visits per name, because alternatives that share a prefix share
- * states. Verdicts are memoised per distinct name, so a repeated name costs one lookup.
+ * states. Verdicts are memoised per distinct name, so a repeated name costs one lookup, which is
+ * charged as one visit.
  *
  * The per-matcher cap does not bound how many matchers there are, and a NAMESPACE can
  * carry as many `exportPattern()` lines as it likes (200 hostile ones cost ~77 s). So
@@ -212,6 +213,13 @@ export class SharedWorkBudget {
 
 /** Most distinct names whose verdict a matcher remembers. */
 const MAX_MEMO_ENTRIES = 100_000;
+
+/**
+ * Work charged for answering from a remembered verdict: one state visit, about the cost of a
+ * map lookup. Keeps a repeated name from being free, so that matchers x lookups is bounded by
+ * the budget like every other cost.
+ */
+const MEMO_HIT_WORK = 1;
 
 /** Thrown internally for unsupported or invalid input; never escapes this module. */
 class Reject extends Error {}
@@ -827,7 +835,12 @@ export class LinearRegex {
   /** True when the pattern matches anywhere in `name` (an unanchored search). */
   test(name: string): boolean {
     const known = this.verdicts.get(name);
-    if (known !== undefined) return known;
+    if (known !== undefined) {
+      // A remembered verdict is cheap but not free: a caller that asks about the same names of
+      // thousands of matchers over and over would otherwise cost time no budget counts.
+      this.charge(MEMO_HIT_WORK);
+      return known;
+    }
     if (this.work >= MAX_TOTAL_WORK || this.shared?.isSpent === true) {
       this.exhausted = true;
       return false;
