@@ -33,6 +33,7 @@ function fingerprint(directory, runtime = process) {
   const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'package.json')));
   for (const dependency of Object.values({
     ...manifest.dependencies,
+    ...manifest.devDependencies,
     ...manifest.optionalDependencies,
   })) {
     if (typeof dependency !== 'string' || !dependency.startsWith('file:')) continue;

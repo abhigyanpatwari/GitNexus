@@ -53,28 +53,32 @@ test('runtime ABI changes and explicit repair invalidate reuse', (t) => {
   assert.equal(ensureDependencies(f.root, { run: f.run, runtime, force: true }), true);
 });
 
-test('local file-dependency manifest changes invalidate reuse', (t) => {
-  const f = fixture(t);
-  const local = path.join(f.root, 'local');
-  fs.mkdirSync(local);
-  fs.writeFileSync(path.join(local, 'package.json'), '{"version":"1.0.0"}');
-  fs.writeFileSync(
-    path.join(f.root, 'package.json'),
-    '{"dependencies":{"example":"1.0.0","local":"file:./local"}}',
-  );
-  const run = () => {
-    f.run();
-    fs.mkdirSync(path.join(f.root, 'node_modules/local'), { recursive: true });
-    fs.copyFileSync(
-      path.join(local, 'package.json'),
-      path.join(f.root, 'node_modules/local/package.json'),
-    );
-  };
-  ensureDependencies(f.root, { run });
-  assert.equal(ensureDependencies(f.root, { run }), false);
-  fs.writeFileSync(path.join(local, 'package.json'), '{"version":"1.0.1"}');
-  assert.equal(ensureDependencies(f.root, { run }), true);
-});
+for (const group of ['dependencies', 'devDependencies', 'optionalDependencies']) {
+  test(`local file-dependency manifest changes in ${group} invalidate reuse`, (t) => {
+    const f = fixture(t);
+    const local = path.join(f.root, 'local');
+    fs.mkdirSync(local);
+    fs.writeFileSync(path.join(local, 'package.json'), '{"version":"1.0.0"}');
+    const manifest = { dependencies: { example: '1.0.0' } };
+    manifest[group] ??= {};
+    manifest[group].local = 'file:./local';
+    fs.writeFileSync(path.join(f.root, 'package.json'), JSON.stringify(manifest));
+    const run = () => {
+      f.run();
+      fs.mkdirSync(path.join(f.root, 'node_modules/local'), { recursive: true });
+      fs.copyFileSync(
+        path.join(local, 'package.json'),
+        path.join(f.root, 'node_modules/local/package.json'),
+      );
+    };
+    ensureDependencies(f.root, { run });
+    assert.equal(ensureDependencies(f.root, { run }), false);
+    fs.writeFileSync(path.join(local, 'package.json'), '{"version":"1.0.1"}');
+    assert.equal(ensureDependencies(f.root, { run }), true);
+    assert.equal(ensureDependencies(f.root, { run }), false);
+    assert.equal(f.count(), 2);
+  });
+}
 
 test('tracked native source and installer edits invalidate reuse', (t) => {
   const f = fixture(t);
