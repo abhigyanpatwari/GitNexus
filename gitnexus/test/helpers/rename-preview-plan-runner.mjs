@@ -36,9 +36,8 @@ const sources = {
 };
 if (mode === 'large-evidence') {
   process.env.GITNEXUS_MAX_FILE_SIZE = '32768';
-  const padding = 'x'.repeat(20 * 1024 * 1024);
-  sources['evidence1.ts'] = 'export const unrelated1 = 1;\n/*' + padding + '*/\n';
-  sources['evidence2.ts'] = 'export const unrelated2 = 2;\n/*' + padding + '*/\n';
+  sources['evidence1.ts'] = 'export const unrelated1 = 1;\n';
+  sources['evidence2.ts'] = 'export const unrelated2 = 2;\n';
 }
 let backend;
 try {
@@ -81,6 +80,20 @@ try {
       "' RETURN DISTINCT a.name AS name",
   );
   assert.deepEqual(calls.map((x) => x.name).sort(), ['tracked', 'untracked']);
+  if (mode === 'large-evidence') {
+    const evidence = await adapter.executeQuery(
+      "MATCH (n) WHERE n.filePath IN ['evidence1.ts', 'evidence2.ts'] RETURN labels(n) AS kind, n.name AS name, n.filePath AS file",
+    );
+    for (let index = 1; index <= 2; index++) {
+      const file = `evidence${index}.ts`;
+      assert.ok(evidence.some((node) => node.file === file && node.kind === 'File'));
+      assert.ok(evidence.some((node) => node.file === file && node.name === `unrelated${index}`));
+      // Grow existing indexed sources before preview, as a normal local edit.
+      // Rename plans against >64 MiB of semantic input without a large native COPY.
+      sources[file] += '/*' + 'x'.repeat(20 * 1024 * 1024) + '*/\n';
+      await fs.writeFile(path.join(root, file), sources[file]);
+    }
+  }
   if (mode === 'unindexed-evidence') {
     const unindexed = await adapter.executeQuery(
       "MATCH (n:File) WHERE n.filePath IN ['existing-tracked.ts', 'existing-untracked.ts'] RETURN n.filePath AS path",

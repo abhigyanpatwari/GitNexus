@@ -20,11 +20,6 @@ it.each(['standard', 'large-evidence', 'unindexed-evidence'])(
       GITNEXUS_INDEX_LOCK_BACKEND: 'file',
       GITNEXUS_LBUG_EXTENSION_INSTALL: 'off',
       GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000',
-      // Large retained-source evidence exercises publication of 40 MiB of text;
-      // keep the native COPY checkpoint above the ordinary 256 MiB test budget.
-      ...(mode === 'large-evidence'
-        ? { GITNEXUS_LBUG_BUFFER_POOL_SIZE: String(1024 * 1024 * 1024) }
-        : {}),
     };
     delete env.GITNEXUS_STORAGE_ROOT;
     try {

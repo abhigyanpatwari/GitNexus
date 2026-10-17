@@ -2576,18 +2576,16 @@ describe('LocalBackend.callTool', () => {
 
   it('rename: a first apply-edit write failure reports status:error + failed_files (#2283)', async () => {
     // Real graph/semantic resolution produces an edit; staging its replacement fails.
-    (executeParameterized as any)
-      .mockResolvedValueOnce([
-        {
-          id: 'Function:src/target.ts:oldName',
-          name: 'oldName',
-          type: 'Function',
-          filePath: 'src/target.ts',
-          startLine: 1,
-          endLine: 1,
-        },
-      ])
-      .mockResolvedValue([]);
+    mockSymbolRows([
+      {
+        id: 'Function:src/target.ts:oldName',
+        name: 'oldName',
+        type: 'Function',
+        filePath: 'src/target.ts',
+        startLine: 1,
+        endLine: 1,
+      },
+    ]);
     const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-'));
     (listRegisteredRepos as any).mockResolvedValue([
       { ...MOCK_REPO_ENTRY, path: repoDir, storagePath: path.join(repoDir, '.gitnexus') },
@@ -2608,6 +2606,13 @@ describe('LocalBackend.callTool', () => {
         endLine: 1,
       },
     ]);
+    const preview = await backend.callTool('rename', {
+      symbol_name: 'oldName',
+      new_name: 'newName',
+      dry_run: true,
+    });
+    expect(preview.status).toBe('success');
+    expect(preview.plan_token).toEqual(expect.any(String));
     const writeSpy = vi
       .spyOn(fsPromises, 'writeFile')
       .mockRejectedValue(new Error('EACCES: permission denied'));
@@ -2616,6 +2621,7 @@ describe('LocalBackend.callTool', () => {
         symbol_name: 'oldName',
         new_name: 'newName',
         dry_run: false,
+        plan_token: preview.plan_token,
       });
       expect(result.status).toBe('error');
       expect(result.failed_files).toContain('src/target.ts');

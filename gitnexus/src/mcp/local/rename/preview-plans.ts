@@ -10,10 +10,6 @@ import {
   type RenameSymbol,
 } from 'gitnexus-shared';
 import { walkRepositoryPaths } from '../../../core/ingestion/filesystem-walker.js';
-import {
-  getProviderForFile,
-  needsContentLanguageClassification,
-} from '../../../core/ingestion/languages/index.js';
 
 const MAX_BYTES = 64 * 1024 * 1024;
 const MAX_PLANS = 16;
@@ -62,6 +58,9 @@ export async function readRenameSourceVersion(file: string): Promise<RenameSourc
 
 /** Include untracked and oversized sources; a size filter must not hide new targets. */
 export async function renameSourceInventory(root: string): Promise<string[]> {
+  // Provider modules belong to rename execution, never MCP server startup.
+  const { getProviderForFile, needsContentLanguageClassification } =
+    await import('../../../core/ingestion/languages/index.js');
   let sources: string[] = [];
   await walkRepositoryPaths(root, undefined, {
     quiet: true,

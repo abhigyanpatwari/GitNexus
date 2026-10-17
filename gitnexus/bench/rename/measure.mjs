@@ -206,7 +206,10 @@ try {
       [],
       await renameSourceInventory(repository),
     );
+    const started = performance.now();
     const retained = await store.take(token, repository, plan.symbol, plan.new_name, [], []);
+    const result = await executeRenamePlan(repository, retained, false, retained.evidence);
+    reviewedTimes.push(performance.now() - started);
     reviewedOriginalTextBytes = [...plan.snapshots.values()].reduce(
       (sum, source) => sum + source.length * 2,
       0,
@@ -215,9 +218,6 @@ try {
       (sum, source) => sum + source.length * 2,
       0,
     );
-    const started = performance.now();
-    const result = await executeRenamePlan(repository, retained, false, retained.evidence);
-    reviewedTimes.push(performance.now() - started);
     assert.equal(result.application_status, 'applied');
     assert.equal(result.total_edits, 2400);
     for (const [file, original] of plan.snapshots)
