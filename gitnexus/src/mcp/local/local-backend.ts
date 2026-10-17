@@ -14,6 +14,8 @@ import {
   scoreImpactRisk,
   unusedAxesForImpactWalk,
   getLanguageFromFilename,
+  blockedRenameResult,
+  RenameFailure,
   type ImpactRiskResult,
   type GraphNode,
   type NodeLabel,
@@ -6939,9 +6941,25 @@ export class LocalBackend {
       new_name: string;
       file_path?: string;
       dry_run?: boolean;
+      plan_token?: string;
     },
   ): Promise<any> {
     await this.ensureInitialized(repo);
+    if (params.dry_run === false && (typeof params.plan_token !== 'string' || !params.plan_token)) {
+      return blockedRenameResult(
+        {
+          uid: params.symbol_uid,
+          name: params.symbol_name ?? '',
+          filePath: params.file_path ?? '',
+          startLine: 0,
+        },
+        params.new_name,
+        new RenameFailure(
+          'plan_required',
+          'Apply requires plan_token from a successful rename preview. Preview and review the exact edits first.',
+        ),
+      );
+    }
     if (!params.symbol_name && !params.symbol_uid) {
       return { error: 'Either symbol_name or symbol_uid is required.' };
     }

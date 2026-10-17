@@ -144,6 +144,10 @@ const PLATFORM_LOGIC = [
   // #3073: cwd-based repository selection canonicalizes real paths, compares
   // platform separators/case, and rejects nested Git-boundary fallthrough.
   'test/unit/calltool-dispatch.test.ts',
+  // Preview capabilities use real file symlinks, canonical temp paths, atomic
+  // replacements and physical-target drift checks on each host filesystem.
+  'test/unit/rename-preview-plans.test.ts',
+  'test/unit/rename-plan.test.ts',
   // The index write-lock (#2658) selects its backend by process.platform — the
   // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
   // fallback — and its socket-backend describe block is gated to linux/win32.
@@ -160,6 +164,9 @@ const LBUG_NATIVE = [
   // Inline-handler findings must survive native persistence and cold explain
   // readers on each OS; passing the Ubuntu-only taint suite is insufficient.
   'test/integration/taint-explain.test.ts',
+  // Real indexing/MCP previews include tracked/untracked edits, file-symlink
+  // retargets and staging failures; the helper runs in a separate native process.
+  'test/integration/rename-preview-plan.test.ts',
   'test/integration/rename-provider-matrix.test.ts',
   'test/integration/rename-provider-c.test.ts',
   'test/integration/rename-provider-cobol.test.ts',
@@ -182,6 +189,11 @@ const LBUG_NATIVE = [
   'test/integration/pdg-explicit-owner.test.ts',
   'test/integration/skip-fts.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
+  // Native COPY, cached vectors and cold shared-store readers vary by platform.
+  'test/integration/embedding-identity-integrity.test.ts',
+  'test/integration/shared-store-embedding-reuse.test.ts',
+  // Real endpoint retries include native index writes and cold database reads.
+  'test/integration/embedding-input-isolation.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
   'test/integration/lbug-pool-stability.test.ts',
@@ -213,6 +225,10 @@ const LBUG_NATIVE = [
   'test/integration/fts-description-search.test.ts',
   'test/integration/staleness-and-stability.test.ts',
   'test/integration/analyze-wal-checkpoint-failure.test.ts',
+  // Publication, cold readers and sidecar handling depend on native filesystem behavior.
+  'test/integration/analyze-atomic-swap.test.ts',
+  'test/unit/incremental-write-integrity.test.ts',
+  'test/unit/lbug-publication.test.ts',
   'test/integration/fts-stemmer-sweep.test.ts',
   'test/integration/lbug-multiwriter-deadlock.test.ts',
   // #2409 batched incremental writeback: chunked IN-list DETACH DELETEs +
@@ -362,6 +378,7 @@ const FILESYSTEM = [
   // skips itself where chmod cannot block a delete, so run it everywhere.
   'test/unit/parsedfile-store.test.ts',
   'test/integration/filesystem-walker.test.ts',
+  'test/integration/analyze-directory-symlinks.test.ts',
   'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
