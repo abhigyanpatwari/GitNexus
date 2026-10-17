@@ -208,6 +208,38 @@ function normaliseArg(raw: string): string {
 }
 
 /**
+ * The generic named by the first argument of `S3method()`. R >= 3.6 also accepts a generic of
+ * another package, `S3method(pkg::generic, class)` (roxygen2 writes it for
+ * `@exportS3Method pkg::generic`), whose method is still `generic.class`: the text after the
+ * last `::` or `:::` outside quotes and backticks is the generic. `''` when the argument is not
+ * a plain name, a quoted name, or a `pkg::name` pair of those.
+ */
+function s3GenericArg(raw: string): string {
+  const trimmed = raw.trim();
+  let operatorEnd = -1;
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (isQuote(ch)) {
+      const end = skipQuoted(trimmed, i);
+      if (end === -1) return '';
+      i = end - 1;
+    } else if (ch === ':' && trimmed[i + 1] === ':') {
+      operatorEnd = trimmed[i + 2] === ':' ? i + 3 : i + 2;
+      i = operatorEnd - 1;
+    }
+  }
+  if (operatorEnd === -1) {
+    // A quoted generic spelled with its package: `"pkg::generic"`.
+    const name = normaliseArg(trimmed);
+    const colons = name.lastIndexOf('::');
+    return colons === -1 ? name : name.slice(colons + 2).replace(/^:/, '');
+  }
+  // Both sides must be names; the package side is only checked, never used.
+  const before = trimmed.slice(0, operatorEnd).replace(/:+$/, '');
+  return normaliseArg(before) ? normaliseArg(trimmed.slice(operatorEnd)) : '';
+}
+
+/**
  * When `text[i]` starts an `if (cond)`, the index just after its condition group; `-1`
  * when the condition is malformed; `null` when no `if` starts here.
  */
@@ -425,7 +457,7 @@ function exportPatternArg(raw: string): string {
 /**
  * Extract the export directives from NAMESPACE text: `export`, `exportClasses`
  * and `exportMethods` names, `S3method(generic, class[, method])` as `method`
- * (else `generic.class`), and `exportPattern("…")` sources. Multi-line, quoted,
+ * (else `generic.class`; `pkg::generic` names the generic after the `::`), and `exportPattern("…")` sources. Multi-line, quoted,
  * backticked, commented and CRLF input is handled like {@link
  * parseRNamespaceImportFrom}. Non-simple arguments (named, nested calls) are
  * skipped. Never throws; returns empty lists for empty or garbled input.
@@ -440,7 +472,7 @@ export function parseRNamespaceExports(text: string): RNamespaceExports {
         if (pattern) exportPatterns.push(pattern);
       }
     } else if (head === 'S3method') {
-      const generic = normaliseArg(args[0] ?? '');
+      const generic = s3GenericArg(args[0] ?? '');
       const cls = normaliseArg(args[1] ?? '');
       if (generic && cls) {
         // The optional third argument names the function registered as the method;

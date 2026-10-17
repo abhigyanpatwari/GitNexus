@@ -43,7 +43,7 @@ Heritage:
 
 Exports:
 
-- Read from each local package's NAMESPACE: `export()`, `exportClasses()`, `exportMethods()`, `S3method()` and `exportPattern()`. `S3method(generic, class, method)` exports `method`, the function R registers, else `generic.class`. A `DESCRIPTION` file with a `Package:` line marks a package root.
+- Read from each local package's NAMESPACE: `export()`, `exportClasses()`, `exportMethods()`, `S3method()` and `exportPattern()`. `S3method(generic, class, method)` exports `method`, the function R registers, else `generic.class`; a generic of another package, `S3method(pkg::generic, class)`, exports `generic.class`. A `DESCRIPTION` file with a `Package:` line marks a package root.
 
 ## Resolution model
 

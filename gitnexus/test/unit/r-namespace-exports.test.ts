@@ -128,6 +128,34 @@ describe('loadRPackageConfig -> RNamespaceInfo exports', () => {
       const { names } = await load('S3method(print, foo)\nS3method(summary, foo, sum_foo)\n');
       expect(names).toEqual(['print.foo', 'sum_foo']);
     });
+
+    // Delayed registration (R >= 3.6): the generic belongs to another package, the method is
+    // still `generic.class`. roxygen2 writes this for `@exportS3Method pkg::generic`.
+    it('names the method after the generic, not after pkg::generic', async () => {
+      const { names } = await load(
+        [
+          'S3method(dplyr::filter, my_df)',
+          'S3method(pillar:::pillar_shaft,my_df)',
+          'S3method(dplyr :: `mutate`, my_df)',
+          'S3method("tibble::as_tibble", my_df)',
+          'S3method(stats::sd, my_df, sd_impl)',
+        ].join('\n') + '\n',
+      );
+      expect(names).toEqual([
+        'as_tibble.my_df',
+        'filter.my_df',
+        'mutate.my_df',
+        'pillar_shaft.my_df',
+        'sd_impl',
+      ]);
+    });
+
+    it('skips an S3method() whose pkg::generic is not a pair of names', async () => {
+      const { names } = await load(
+        'S3method(::filter, a)\nS3method(dplyr::, b)\nS3method(a::b::, c)\n',
+      );
+      expect(names).toEqual([]);
+    });
   });
 
   describe('comments and line endings', () => {
