@@ -310,6 +310,9 @@ VS Code's Ports panel shows forwarded ports once their listener starts.
 
 ## Known gotchas
 
+- **Warm installs reuse the npm cache.** Lifecycle installs prefer cached packages and skip audit requests and funding notices; cache misses still download normally, and native addon/prepare scripts still run. Run `npm audit` in each package when checking vulnerabilities. Volume ownership repair changes only entries whose owner or group differs from `node`.
+- **VS Code skips generated indexes, build output, dependencies, and nested worktrees when watching/searching.** Open a sibling worktree as its own window when developing there. These exclusions do not change Vite or Vitest watchers.
+- **Memory follows the running workload.** The image leaves `NODE_OPTIONS` unset, so Node uses its defaults and `gitnexus analyze` uses its RAM-aware sizing. For a specific indexing run, use `gitnexus analyze --memory-budget 4096` to set a 4 GiB heap budget. Docker Desktop's VM memory allocation still bounds the container.
 - **LadybugDB integration tests may fail in containers** (file-locking, `AGENTS.md` § Testing). Default to `npm run test:unit` inside the container; run integration tests on the host. Tracking issue: documented as a known limitation.
 - **Single-writer LadybugDB constraint** (`GUARDRAILS.md` § LadybugDB lock). Don't run `gitnexus analyze` on the host and inside the container against the same `.gitnexus/` directory simultaneously — the second writer will get `database busy`.
 - **Native grammar builds add ~30s to first install.** Tree-sitter Dart/Proto/Swift/Kotlin are all vendored uniformly: `node-gyp-build` picks a committed GitNexus-built prebuilt `.node` at install time (no compile), and only falls back to compiling from the vendored source during `postinstall` if no prebuild matches the host (then a toolchain is needed). Set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` (in your shell or `remoteEnv`, then rebuild) to skip all four; each loses parsing for the affected language(s), and the install still succeeds.
@@ -350,6 +353,8 @@ Bump the version pins in `.devcontainer/devcontainer.json` `build.args` and rebu
 - **Playwright e2e support.** `gitnexus-web`'s `npm run test:e2e` needs Chromium libs that the base image doesn't ship. Use the host for e2e until a Playwright layer is added.
 
 ## Troubleshooting
+
+If `[install-deps]` prints `npm warn EBADENGINE` with Node 22.16.0, run **Dev Containers: Rebuild Container** from the Command Palette after updating this checkout. The image now pins Node 22.23.3; workspace dependencies require at least 22.22.2 on the Node 22 line. Re-running `npm install` in the old container does not update its Node runtime.
 
 | Symptom                                                                                      | Likely cause                                                                                                                           | Fix                                                                                                                                                                                                                                                                         |
 | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

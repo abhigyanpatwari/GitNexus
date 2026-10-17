@@ -14,13 +14,14 @@
 # `@devcontainers/cli` / the VS Code Dev Containers resolver. That resolver's
 # image-name parser rejects the combined `name:tag@sha256:...` form.
 #
-# The digest below is for the `1-22-bookworm` tag. It is the multi-arch
-# manifest-list digest, so it still picks the right platform. To refresh it when
-# bumping the readable tag, run:
+# The digest below is for `5.2.3-22-bookworm` (Node 22.23.3). Workspace
+# dependencies require at least Node 22.22.2 on the Node 22 line. It is the
+# multi-arch manifest-list digest, so it still picks the right platform.
+# To refresh it when bumping the readable tag, run:
 #   docker buildx imagetools inspect \
-#     mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm \
+#     mcr.microsoft.com/devcontainers/typescript-node:5.2.3-22-bookworm \
 #     --format '{{json .Manifest.Digest}}'
-FROM mcr.microsoft.com/devcontainers/typescript-node@sha256:7c2e711a4f7b02f32d2da16192d5e05aa7c95279be4ce889cff5df316f251c1d
+FROM mcr.microsoft.com/devcontainers/typescript-node@sha256:0cb6b4bfcb0458a6c1d2345934fb9de35da7b9d32343f47e49d9bd66feeac780
 
 # Bun is installed via the official remote script (bun.sh/install), pinned by
 # version. Claude Code and Cursor also use official install scripts (no version
@@ -38,8 +39,6 @@ ENV BUN_VERSION=${BUN_VERSION} \
     BUN_INSTALL=/home/${USERNAME}/.bun \
     TZ=${TZ} \
     DEVCONTAINER=true \
-    NODE_OPTIONS=--max-old-space-size=4096 \
-    GITNEXUS_AUTO_HEAP=0 \
     POWERLEVEL9K_DISABLE_GITSTATUS=true
 
 # Native build toolchain that gitnexus/postinstall needs. It compiles

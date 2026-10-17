@@ -67,7 +67,8 @@ for d in "${DIRS[@]}"; do
     # devcontainer.json without its matching DIRS entry being removed too — then
     # provisioning skips it instead of failing before credentials ever sync.
     [ -d "$d" ] || continue
-    sudo find "$d" -xdev -exec chown -h node:node {} +
+    # Avoid chown syscalls for the already-correct entries on reused volumes.
+    sudo find "$d" -xdev \( ! -user node -o ! -group node \) -exec chown -h node:node {} +
 done
 
 echo "[post-create] 2/4: sync AI CLI credentials + identity from host"

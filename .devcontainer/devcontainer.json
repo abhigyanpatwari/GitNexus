@@ -43,6 +43,8 @@
 
   "remoteUser": "node",
   "updateRemoteUserUID": true,
+  // Reap orphaned subprocesses from CLI workers and test runs.
+  "init": true,
 
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
@@ -332,6 +334,26 @@
           "source.fixAll.eslint": "explicit"
         },
         "files.eol": "\n",
+        // Generated indexes and sibling worktrees can dwarf the source tree.
+        // These exclusions affect VS Code only; Vite and test watchers keep
+        // their own configuration.
+        "files.watcherExclude": {
+          "**/node_modules/**": true,
+          "**/.gitnexus/**": true,
+          "**/.worktrees/**": true,
+          "**/.claude/worktrees/**": true,
+          "**/dist/**": true,
+          "**/coverage/**": true
+        },
+        "search.exclude": {
+          "**/node_modules": true,
+          "**/.gitnexus": true,
+          "**/.worktrees": true,
+          "**/.claude/worktrees": true,
+          "**/dist": true,
+          "**/coverage": true
+        },
+        "git.autoRepositoryDetection": "openEditors",
         "terminal.integrated.defaultProfile.linux": "zsh",
         "terminal.integrated.profiles.linux": {
           "bash": { "path": "bash", "icon": "terminal-bash" },
