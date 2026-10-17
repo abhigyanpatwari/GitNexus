@@ -190,8 +190,11 @@ export function expandRWildcardNames(
  * such candidates so `foo(x)` cannot collide with `print.foo`.
  *
  * Applies to every candidate the hook sees, including R6/R5 members whose
- * qualified name is `Class.member`: a bare `member(x)` never reaches those
- * either.
+ * qualified name is `Class.member`. A bare `member(x)` never reaches an R6
+ * member (it is called through `self$member()` or `obj$member()`), so the
+ * refusal is right for R6. RefClass methods are different: a method calls its
+ * siblings and inherited methods by bare name, and those calls get no edge
+ * here (see "Limits" in `docs/languages/r-provider.md`).
  */
 export function rIsCallableVisibleFromCaller(ctx: {
   readonly candidate: SymbolDefinition;
@@ -222,7 +225,8 @@ export const rScopeResolver: ScopeResolver = {
   emitHeritageEdges: (graph, parsedFiles, nodeLookup, scopes) =>
     emitRVirtualHeritageEdges(graph, parsedFiles, nodeLookup, scopes),
 
-  // R has no `super`.
+  // R6's `super$method()` is not resolved: nothing binds `super` to the parent class, so there
+  // is no receiver type to walk from. Off, rather than answering a wrong parent.
   isSuperReceiver: () => false,
 
   // R's dynamic-dispatch `self$field$method()` chains and R6/S4 field access

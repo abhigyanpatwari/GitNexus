@@ -1,9 +1,12 @@
 /**
  * R language provider.
  *
- * R uses wildcard import semantics — library() and source() bring
- * everything into scope (no named imports). No special call routing
- * is needed (unlike Ruby); R imports are parsed as standard import nodes.
+ * `library()` / `require()` of a local package are wildcard imports: every top-level
+ * name of the package becomes visible. `source()` binds no name; it only records a file
+ * dependency. Named imports come from NAMESPACE `importFrom()` entries, which
+ * `populateRNamespaceImports` turns into `named` imports before resolution. No special
+ * call routing is needed (unlike Ruby); `emitRScopeCaptures` (`r/captures.ts`) produces
+ * the import captures from the R scope query rather than from standard import nodes.
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
