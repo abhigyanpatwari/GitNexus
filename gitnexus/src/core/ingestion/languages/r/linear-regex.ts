@@ -14,7 +14,8 @@
  * Supported: literals, `.`, bracket expressions, `\d \D \w \W \s \S \b \B`, the
  * single-character escapes, `^ $`, groups (capturing and `(?:)`), alternation and the
  * quantifiers `* + ? {n} {n,} {n,m}` (lazy forms behave identically for a yes/no
- * test). Not supported, and compiled to `null`: back-references and look-around (no
+ * test). Not supported, and compiled to `null`: back-references (`\1` to `\9`, whether or not
+ * the group exists, as in TRE) and look-around (no
  * linear-time algorithm), named groups, legacy octal escapes, patterns longer than
  * {@link MAX_PATTERN_LENGTH} and patterns whose expansion exceeds {@link MAX_STATES}.
  * A syntax error also yields `null`. Matching is over UTF-16 code units, as
@@ -544,6 +545,9 @@ class Parser {
         // Identity escape (no named groups exist; `parseGroup` rejects those).
         return { code: 0x6b };
       default:
+        // `\1`-`\9` are back-references to R's TRE, whether or not that group exists (an
+        // absent one is an invalid regex there), so `\8` and `\9` are refused too although
+        // JavaScript's Annex B reads them as a literal digit when the pattern has fewer groups.
         if (c >= '1' && c <= '9') reject('back-reference or legacy octal escape');
         return { code: c.charCodeAt(0) };
     }

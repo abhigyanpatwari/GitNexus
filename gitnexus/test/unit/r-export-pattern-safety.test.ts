@@ -596,6 +596,30 @@ describe('compileRExportPattern: leading ] in a bracket expression', () => {
   });
 });
 
+// `$` is the end of the name only: neither JavaScript (no `m` flag) nor TRE (no REG_NEWLINE)
+// lets it match before a final line terminator, as PCRE and Python do. `\1` to `\9` are
+// back-references in TRE even when the group is absent, so they are refused, `\8` and `\9`
+// included, where JavaScript's Annex B would read them as a literal digit (outside a class).
+describe('compileRExportPattern: `$` and numbered escapes', () => {
+  it.each([
+    ['^foo$', 'foo\n'],
+    ['foo$', 'foo\n'],
+    ['^foo$', 'foo\r'],
+    ['^foo$', 'foo\u2028'],
+  ])('%s does not match %j, as RegExp does not', (pattern, name) => {
+    expect(new RegExp(pattern).test(name)).toBe(false);
+    expect(compileRExportPattern(pattern)?.test(name)).toBe(false);
+    expect(compileRExportPattern(pattern)?.test('foo')).toBe(true);
+  });
+
+  it.each(['\\1', '\\7', '\\8', '\\9', 'a\\8', '(a)\\9'])(
+    '%s is refused as a back-reference',
+    (pattern) => {
+      expect(compileRExportPattern(pattern)).toBeNull();
+    },
+  );
+});
+
 // Differential check against the JavaScript RegExp the matcher replaced. Patterns are
 // built from a fixed atom list by a seeded generator, so the corpus is deterministic.
 // Names are short enough that even a catastrophic generated pattern finishes instantly
