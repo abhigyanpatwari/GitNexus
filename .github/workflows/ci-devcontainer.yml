@@ -11,10 +11,12 @@ on:
     paths:
       - '.devcontainer/**'
       - '.github/workflows/ci-devcontainer.yml'
+      - 'gitnexus-web/package-lock.json'
   pull_request:
     paths:
       - '.devcontainer/**'
       - '.github/workflows/ci-devcontainer.yml'
+      - 'gitnexus-web/package-lock.json'
 
 permissions:
   contents: read
@@ -47,7 +49,7 @@ jobs:
           npm ci --no-audit --no-fund
           node .devcontainer/verify-git-hooks.cjs
       - name: Unit-test devcontainer setup and hooks
-        run: node --test .devcontainer/translate-plugin-registries.test.cjs .devcontainer/verify-git-hooks.test.cjs .devcontainer/seed-codex.test.cjs .devcontainer/tune-9p.test.cjs
+        run: node --test .devcontainer/*.test.cjs
       - name: Syntax-check the lifecycle shell scripts
         run: |
           bash -n .devcontainer/install-deps.sh
@@ -56,9 +58,13 @@ jobs:
           bash -n .devcontainer/tune-9p.sh
 
   build:
-    name: Build devcontainer image
+    name: Build devcontainer image (${{ matrix.profile }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [default, ui]
     steps:
       # persist-credentials: false — this is a read-only build smoke that
       # never pushes. The setting keeps GITHUB_TOKEN out of .git/config,
@@ -69,6 +75,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+      - name: Generate UI profile
+        if: matrix.profile == 'ui'
+        run: node .devcontainer/profile.cjs ui
       # Builds the image the same way a developer's "Reopen in Container" does.
       # @devcontainers/cli reads devcontainer.json (jsonc format), resolves
       # build.args (including BUN_VERSION), and runs the Dockerfile. This smoke
@@ -110,10 +119,12 @@ jobs:
           echo "::warning::failed to pre-pull ${img} after 3 attempts; continuing — build step may still succeed"
           exit 1
       - name: Build devcontainer via @devcontainers/cli
+        env:
+          DEVCONTAINER_CONFIG: ${{ matrix.profile == 'ui' && '.devcontainer/generated/devcontainer.json' || '.devcontainer/devcontainer.json' }}
         run: |
           set -euo pipefail
           for attempt in 1 2; do
-            if npx --yes @devcontainers/cli@0.87.0 build --workspace-folder .; then
+            if npx --yes @devcontainers/cli@0.87.0 build --workspace-folder . --config "$DEVCONTAINER_CONFIG" --frozen-lockfile; then
               if [ "$attempt" -eq 2 ]; then
                 echo "::notice::devcontainer build retry succeeded (attempt 2); investigate if this recurs across runs."
               fi

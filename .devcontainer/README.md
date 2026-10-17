@@ -20,7 +20,7 @@ A cross-platform Dev Container that pre-installs Claude Code, OpenAI Codex CLI, 
 2. Install [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
 3. Install [Node.js](https://nodejs.org/) on the **host** (Node 18+). This is the only host-side toolchain dependency beyond Docker and VS Code — the devcontainer's `initializeCommand` runs `node .devcontainer/ensure-host-config-dirs.cjs` to set up the bind-mount source directories before container create. If you already use Claude Code or another Node-based CLI on the host, you're already set.
 4. Open the repo in VS Code → Command Palette → **Dev Containers: Reopen in Container**.
-5. Wait for the first build (~3–6 minutes) and `postCreateCommand` to finish installing workspace dependencies.
+5. Wait for the image build and lifecycle commands to finish preparing dependencies and AI CLI configuration.
 6. Authenticate the three CLIs once — see [First-time CLI authentication](#first-time-cli-authentication) below.
 
 ## Windows 11 setup
@@ -85,6 +85,64 @@ Open the repo folder in VS Code → **Reopen in Container**. The image is multi-
 ## Linux
 
 Same as macOS — open in VS Code and reopen in container. `updateRemoteUserUID: true` (default) shifts the container's `node` user UID/GID to match your host user, so bind-mounted files stay writable without extra setup.
+
+## Workspace and image profiles
+
+The main configuration keeps your existing host checkout bind-mounted at `/workspace`. For Windows hosts, the WSL2 filesystem setup above avoids the Windows filesystem translation. Additional profiles are generated from the main configuration, using host Node.js with no npm installation required:
+
+```bash
+# A separate checkout in a Docker-managed native filesystem volume.
+node .devcontainer/profile.cjs native --ref main
+
+# Bind-mounted checkout with Chromium system dependencies and browser cache.
+node .devcontainer/profile.cjs ui
+
+# Combine the native workspace and UI support.
+node .devcontainer/profile.cjs native --ui --ref main
+
+# Pull a published toolchain image instead of building locally.
+node .devcontainer/profile.cjs prebuilt
+node .devcontainer/profile.cjs prebuilt --ui
+```
+
+These commands overwrite the ignored `.devcontainer/generated/devcontainer.json`. Select that configuration when reopening the folder in Dev Containers, or pass `--config .devcontainer/generated/devcontainer.json` to the Dev Container CLI. Regenerate after changing the main configuration. Existing containers need recreation when switching workspace mounts.
+
+The native profile clones the selected **remote branch** of GitNexus into its volume before dependency setup. It does not copy uncommitted host edits. Push your branch first and use `--ref your-branch` to work on it. Reused volumes keep their current branch and local changes; the bootstrap neither resets nor automatically pulls an existing checkout. The volume is the authoritative checkout: use Git to export changes before removing it. Host credentials/configuration still use the existing read-only staging mounts.
+
+UI profiles install OS dependencies during the image build using the Playwright version in `gitnexus-web/package-lock.json`. Setup installs matching Chromium binaries into a persistent browser-cache volume. They also allocate 1 GiB of private shared memory. Prebuilt UI profiles require the `main-ui` image variant; explicit images passed with `--image` must include those OS dependencies.
+
+## Dependency reuse, storage and diagnostics
+
+Setup records completed installations inside each dependency volume. Fingerprints cover package manifests, lockfiles, local file-dependency manifests, Node version/ABI, npm version, architecture, and tracked native grammar/build inputs. A matching receipt with all direct dependencies present skips `npm ci`. Missing dependencies or changed inputs cause a clean reinstall, with lifecycle scripts enabled. Failed installs leave no valid receipt.
+
+Husky preparation and verification **always run**, including cached setup. Shared and CLI source builds run independently of dependency reuse, so pulling source changes still refreshes compiled output. After pulling changes in a running container, run:
+
+```bash
+bash .devcontainer/install-deps.sh
+
+# Repair nested dependency damage, new untracked native build inputs, or
+# changed npm installation settings that are outside the fingerprint.
+GITNEXUS_FORCE_DEPS=1 bash .devcontainer/install-deps.sh
+```
+
+The shared GitNexus store and registry persist under `GITNEXUS_HOME=/home/node/.gitnexus` in a native named volume, retaining worktree sharing. Existing checkout-local `.gitnexus` directories stay in place; a new mount does not hide or replace them. The native workspace profile also places checkout-local indexes on its native filesystem. If moving an existing container whose shared store lives only in its writable layer, export that store before deleting the old container.
+
+Setup prints timings for ownership repair, dependency installation/reuse, builds, and browser provisioning. Inspect the environment at any time with:
+
+```bash
+node .devcontainer/doctor.cjs
+node .devcontainer/dev-test.cjs core test/unit/resolve-invocation.test.ts
+node .devcontainer/dev-test.cjs web
+GITNEXUS_DEV_TEST_WORKERS=2 node .devcontainer/dev-test.cjs core --watch
+```
+
+The diagnostic command reports CPU/memory allowance, cgroup memory events, memory/I/O pressure, disk space/inodes, file-descriptor and watcher limits, filesystem options, and hook status. The development test runner chooses up to four workers, respecting cgroup v2 CPU/memory limits and leaving interactive headroom. Its explicit override accepts 1–99 workers. The ordinary package test commands and CI test configuration remain available. Ownership repair still checks nested entries on each setup; timings can establish whether a more aggressive cache is worthwhile.
+
+## Prebuilt images
+
+`.github/workflows/devcontainer-publish.yml` verifies the tooling and publishes amd64/arm64 core and UI images to GHCR on relevant `main` pushes or manual dispatch on `main`. Pull requests do not publish images. Registry build caches are separate for the two variants. Consumers supply runtime mounts and lifecycle commands; published toolchain metadata excludes those settings to avoid duplicate lifecycle execution.
+
+The rolling tags are `ghcr.io/abhigyanpatwari/gitnexus-devcontainer:main` and `:main-ui`, available **after the first successful publication**. A fork publishes under its own repository-derived name. Each publication also records a unique `sha-COMMIT-run-RUN-ATTEMPT` tag in the workflow summary (with `-ui` for UI images). Pass that full reference or an image digest with `--image` to select a fixed build. Combine `native --image IMAGE` to use a prebuilt image with a native workspace. Local builds remain the default while the publishing workflow is reviewed and merged. New GHCR packages are [private by default](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry); a maintainer must enable public visibility for anonymous pulls, or developers must authenticate to GHCR. The workflow links the package to this repository using its OCI source label.
 
 ## 9p workspace tuning
 
@@ -372,7 +430,7 @@ Codex uses the [official standalone installer](https://developers.openai.com/cod
 
 - **Egress firewall — the most important hardening still outstanding.** The original plan included an opt-in iptables/ipset firewall adapted from Anthropic's reference devcontainer. It was deferred to a follow-up PR — `runArgs` is static in `devcontainer.json`, so toggling NET_ADMIN/NET_RAW capabilities cleanly requires either a separate `devcontainer-firewall.json` profile or an `initializeCommand`-generated overlay. Until it lands, the read surface in [§ Trust boundary](#trust-boundary-concretely) has no network containment — anything readable can be exfiltrated. Track at the project's issue tracker if you need this.
 - **Codespaces tuning.** Host configuration mounts and `SYS_ADMIN` support are not actively tested there.
-- **Playwright e2e support.** `gitnexus-web`'s `npm run test:e2e` needs Chromium libs that the base image doesn't ship. Use the host for e2e until a Playwright layer is added.
+- **Non-Chromium browsers.** The UI profile provisions Chromium. Firefox/WebKit need their own browser binaries and system dependencies.
 
 ## Troubleshooting
 
@@ -383,7 +441,7 @@ If `[install-deps]` prints `npm warn EBADENGINE` with Node 22.16.0, run **Dev Co
 | `GitNexus devcontainer one-time Windows setup` banner from `initializeCommand`               | First-time Windows-native Reopen-in-Container; `HOME` env var was missing                                                              | The script just ran `setx HOME "%USERPROFILE%"` for you. Close ALL VS Code windows (File → Exit) and reopen — see [Windows 11 setup](#windows-11-setup)                                                                                                                     |
 | `bind source path does not exist: /.claude` (or similar) from Docker                         | Windows-native `HOME` env var is still missing even after one rebuild — `setx` may have failed or VS Code wasn't fully restarted       | Run `setx HOME "%USERPROFILE%"` in a Windows shell manually, fully exit VS Code (check Task Manager that no `Code.exe` remains), reopen                                                                                                                                     |
 | `EACCES` / `EPERM` writing into `~/.claude`, `~/.codex`, or `~/.cursor` inside the container | Stale state from a previous container with a different effective UID                                                                   | Move the affected dir aside and let the CLI rebuild it (`mv ~/.claude ~/.claude.bak` and log in again). Long-term: WSL2 setup, which doesn't hit this class of issue                                                                                                        |
-| `EPERM: operation not permitted, copyfile ... '.husky/_/h'` in `postCreateCommand`           | Leftover `.husky/_/` from a previous container run on a Windows-side bind mount                                                        | `post-create.sh` already runs `rm -rf .husky/_` defensively. If you hit this on an older config, delete `.husky/_/` on the host and rebuild. Long-term: clone in WSL2                                                                                                       |
+| `EPERM: operation not permitted, copyfile ... '.husky/_/h'` in `postCreateCommand`           | Leftover `.husky/_/` from a previous container run on a Windows-side bind mount                                                        | `install-deps.sh` regenerates `.husky/_` and verifies the active hook. If you hit this on an older config, delete `.husky/_/` on the host and rebuild. Long-term: clone in WSL2                                                                                                       |
 | Vite never hot-reloads                                                                       | Repo cloned on Windows side, not WSL2                                                                                                  | Re-clone inside WSL2                                                                                                                                                                                                                                                        |
 | `gitnexus-web` can't reach the backend                                                       | `4747` was remapped or backend isn't running                                                                                           | Verify the Ports panel shows `4747` forwarded with no remap; start the backend with `cd gitnexus && npx gitnexus serve`                                                                                                                                                     |
 | `npm install` fails on tree-sitter-swift / proto / dart                                      | Native build toolchain missing                                                                                                         | This shouldn't happen in the devcontainer — verify the apt layer installed `python3 make g++`. If iterating, set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` to skip the vendored grammars                                                                                          |

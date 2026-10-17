@@ -280,6 +280,7 @@
     "source=${localEnv:HOME}/.azure,target=/home/node/.azure,type=bind,readonly",
     "source=commandhistory-${devcontainerId},target=/commandhistory,type=volume",
     "source=npm-cache-${devcontainerId},target=/home/node/.npm,type=volume",
+    "source=gitnexus-store-${devcontainerId},target=/home/node/.gitnexus,type=volume",
     "source=${localWorkspaceFolderBasename}-root-node-modules-${devcontainerId},target=/workspace/node_modules,type=volume",
     "source=${localWorkspaceFolderBasename}-gitnexus-node-modules-${devcontainerId},target=/workspace/gitnexus/node_modules,type=volume",
     "source=${localWorkspaceFolderBasename}-gitnexus-web-node-modules-${devcontainerId},target=/workspace/gitnexus-web/node_modules,type=volume",
@@ -318,6 +319,7 @@
   "containerEnv": {
     "CODEX_HOME": "/home/node/.codex",
     "HISTFILE": "/commandhistory/.zsh_history",
+    "GITNEXUS_HOME": "/home/node/.gitnexus",
     "WORKSPACE_9P_TUNE": "${localEnv:WORKSPACE_9P_TUNE:1}",
     "WORKSPACE_9P_MSIZE": "${localEnv:WORKSPACE_9P_MSIZE:1048576}"
   },
@@ -386,10 +388,10 @@
   },
 
   // Lifecycle split (from the Dev Container spec):
-  // - `updateContentCommand` runs on container-create AND whenever the
-  //   workspace content changes, such as a lockfile update. It owns installing
-  //   the workspace dependencies. Re-installing on every container-create
-  //   wastes time when nothing changed, but it must re-run when deps change.
+  // - `updateContentCommand` prepares dependencies after workspace content is
+  //   available during creation/prebuild refresh. It reuses successful installs
+  //   when inputs match. In a running container, explicitly run install-deps.sh
+  //   after pulling dependency changes; this hook is not a lockfile watcher.
   // - `postCreateCommand` runs once on container-create. It owns syncing the
   //   AI CLI credentials and identity from the host. That work should happen
   //   exactly once per container instance, not on every content update.

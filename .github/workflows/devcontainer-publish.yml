@@ -1,0 +1,75 @@
+name: Publish Development Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.devcontainer/**'
+      - 'gitnexus-web/package-lock.json'
+      - '.github/workflows/devcontainer-publish.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devcontainer-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [core, ui]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Verify development tooling before publishing
+        run: |
+          npm ci --no-audit --no-fund
+          node --test .devcontainer/*.test.cjs
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Generate toolchain-only configuration
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          if [ "$PROFILE" = ui ]; then
+            node .devcontainer/profile.cjs image-build --ui
+          else
+            node .devcontainer/profile.cjs image-build
+          fi
+      - name: Build both architectures, cache and publish
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-devcontainer"
+          suffix=""
+          if [ "$PROFILE" = ui ]; then suffix="-ui"; fi
+          tag="${image}:sha-${GITHUB_SHA}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}${suffix}"
+          cache="${image}:buildcache-${PROFILE}"
+          npx --yes @devcontainers/cli@0.87.0 build \
+            --workspace-folder . --config .devcontainer/generated/devcontainer.json \
+            --frozen-lockfile --platform linux/amd64,linux/arm64 \
+            --image-name "$tag" --push true \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --cache-from "$cache" --cache-to "type=registry,ref=${cache},mode=max"
+          docker buildx imagetools create --tag "${image}:main${suffix}" "$tag"
+          echo "Published ${tag}" >> "$GITHUB_STEP_SUMMARY"
