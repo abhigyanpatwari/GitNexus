@@ -11,7 +11,9 @@ export function unboundCallableName(node: SyntaxNode): string | undefined {
   if (parent?.type !== 'return_statement' && !isCallback) return undefined;
   return (
     node.childForFieldName('name')?.text ??
-    `fn@${node.startPosition.row}:${node.startPosition.column}`
+    // Display names also ride the identifier-only taint-path codec. Internal
+    // anonymous identity remains positional through the provider identity hook.
+    `fn_${node.startPosition.row}_${node.startPosition.column}`
   );
 }
 

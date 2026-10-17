@@ -3,11 +3,11 @@
     "scaling_budget": 2,
     "small": {
       "functions": 96,
-      "fingerprint": "c7abdcba0cb2322af0e090dfd77c12be1d5de9929b99cad2bbd83c0e0822a0b9"
+      "fingerprint": "616f56191848b238238ff190561092a37a0f9648c4e7e7d0a61e9033a71d4885"
     },
     "large": {
       "functions": 384,
-      "fingerprint": "c6240fd09b3a002695ef5dc4823d7277bfa18c3d84e694d3e120e74ba91268a5"
+      "fingerprint": "4321c065614a223eb03dff54632e6133eebc5146edade30a1be963acbb9e5904"
     }
   },
   "returned": {

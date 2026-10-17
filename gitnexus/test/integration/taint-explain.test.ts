@@ -440,6 +440,12 @@ withTestLbugDB(
       expect(second).toEqual(first);
       const findings = first.findings.filter((f: any) => f.interprocedural);
       expect(findings).toHaveLength(11);
+      for (const finding of findings) {
+        expect(finding.pathIncomplete).toBeUndefined();
+        expect(finding.hops.length).toBeGreaterThanOrEqual(2);
+        expect(finding.hops[0].function).toBe(finding.source.function);
+        expect(finding.hops.at(-1).function).toBe(finding.sink.function);
+      }
       expect(
         findings.every(
           (f: any) =>
