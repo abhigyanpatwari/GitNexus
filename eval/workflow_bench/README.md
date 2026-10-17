@@ -786,6 +786,30 @@ the shared `vitest.config.mts` as an oracle file and pass it explicitly with
 `--config`. Prefer `verify` commands that use the repo's own npm scripts (they
 carry build pre-hooks).
 
+The C scenario is `inv-feature-c-include-provenance`. At its pinned task
+commit, ingestion drops literal system includes before resolution. The task
+requires retaining the header identity and enough provenance to prevent
+unconfigured system includes from matching unrelated repository headers,
+while keeping quoted local and relative includes resolvable. Computed macro
+includes remain outside this task's scope. Its hidden oracle parses real C
+source and passes the resulting import through the decomposer, interpreter,
+and resolver; it does not require a particular metadata field or encoding.
+
+Offline controls must show that the untouched task base fails the intended
+behavioral assertion and that two independent, type-correct repairs pass both
+the hidden oracle and the complete authored verification command. Negative
+controls also reject dropped imports, lost header identity, and false system
+header matches. These controls run with the pinned task dependencies through
+`test_shipped_oracles_reject_task_base_and_accept_reference_fixes`.
+
+This replaces `inv-bug-c-system-include`, whose oracle constructed an import
+state the pinned parser did not produce and constrained the repair's internal
+representation. Historical scores for that task are not valid evidence of C
+ingestion quality and are not comparable with the replacement task. The new
+task ID, prompt, verification command, and oracle bytes produce a new task
+digest. Old agent patches are not available for rescoring; keep historical
+measurements unchanged and compare only runs with matching task contracts.
+
 ## Relation to the SWE-bench harness
 
 The rest of `eval/` benchmarks GitNexus _tools_ inside a litellm agent loop
