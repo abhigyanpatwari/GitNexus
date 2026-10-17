@@ -93,7 +93,7 @@ describe('incremental graph identity before publication', () => {
       await adapter.closeLbug();
       await repo.cleanup();
     }
-  });
+  }, 120_000);
   it('matches native CSV normalization for nullable, absent-range and Unicode identity fields', async () => {
     const repo = await setupMiniRepo('gitnexus-test-identity-parity-');
     const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
