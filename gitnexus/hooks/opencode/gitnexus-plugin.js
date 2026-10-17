@@ -198,12 +198,38 @@ export function resolveCliInvocation() {
 }
 
 /**
+ * Shell metacharacters that would let a search pattern inject commands when
+ * the CLI must be invoked through a shell (the Windows PATH fallback — the
+ * only useShell arm; node+dist and non-Windows PATH arms never use a shell).
+ * A pattern containing any of these is dropped: a skipped augment is always
+ * safe, a successfully injected command is not.
+ */
+const SHELL_UNSAFE_RE = /[&|<>^"`$;()\r\n%']/;
+
+/** True when pattern must not be forwarded through a shell invocation. */
+export function isShellMetaUnsafe(pattern) {
+  return typeof pattern === 'string' && SHELL_UNSAFE_RE.test(pattern);
+}
+
+/**
+ * Shell-mode guard used by runAugment: refuse to spawn when the resolved
+ * invocation needs a shell AND the pattern carries metacharacters.
+ */
+export function shouldSkipAugmentForShell(invocation, pattern) {
+  return Boolean(invocation && invocation.useShell && isShellMetaUnsafe(pattern));
+}
+
+/**
  * Run `gitnexus augment <pattern>` in `cwd` and return the marked context,
  * or '' on any failure (no repo, no index, lock contention, timeout).
  */
 export function runAugment(pattern, cwd) {
   const invocation = resolveCliInvocation();
   if (!invocation) return '';
+  // The pattern originates from tool arguments (agent- and repo-influenced).
+  // Never forward it through a shell: cmd.exe would re-parse metacharacters
+  // (`rg -e foo^& del /f ...`) into extra commands.
+  if (shouldSkipAugmentForShell(invocation, pattern)) return '';
   try {
     const child = spawnSync(invocation.cmd, [...invocation.argv, 'augment', '--', pattern], {
       encoding: 'utf-8',

@@ -203,8 +203,12 @@ async function removeHookEntries(
  */
 async function removeFile(filePath: string, dryRun: boolean): Promise<boolean> {
   try {
-    const stat = await fs.stat(filePath);
-    if (!stat.isFile()) return false;
+    // lstat, not stat: stat follows symlinks, so a dangling plugin symlink
+    // would throw ENOENT and be treated as absent — surviving uninstall at
+    // the auto-loaded plugins path. A symlink (dangling or not) is itself
+    // the thing to unlink; rm never dereferences it.
+    const stat = await fs.lstat(filePath);
+    if (!stat.isFile() && !stat.isSymbolicLink()) return false;
   } catch (err) {
     // Only "not there" is a clean no-op; anything else (EACCES, EIO, ...)
     // must surface — the caller records it in result.errors.

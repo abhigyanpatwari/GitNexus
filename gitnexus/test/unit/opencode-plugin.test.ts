@@ -31,9 +31,11 @@ import {
   extractBashSearchPattern,
   extractOpenCodePattern,
   isGitMutationCommand,
+  isShellMetaUnsafe,
   parseStatusPayload,
   resolveCliInvocation,
   runAugment,
+  shouldSkipAugmentForShell,
 } from '../../hooks/opencode/gitnexus-plugin.js';
 
 describe('extractOpenCodePattern', () => {
@@ -259,6 +261,41 @@ describe('createAfterHook', () => {
     ).resolves.toBeUndefined();
     expect(output.output).toEqual({ structured: true });
     await expect(after(null, null)).resolves.toBeUndefined();
+  });
+});
+
+describe('isShellMetaUnsafe / shouldSkipAugmentForShell', () => {
+  it.each([
+    'foo & calc',
+    'foo|bar',
+    'a > b',
+    'a < b',
+    'x^&y',
+    'a"b',
+    "a'b",
+    'a`b',
+    'a$b',
+    'a;b',
+    'a(b)',
+    'a%PATH%',
+  ])('flags %s', (p) => expect(isShellMetaUnsafe(p)).toBe(true));
+
+  it.each(['UserService', 'std::vector', 'foo-bar_baz', 'a.b/c'])('allows %s', (p) =>
+    expect(isShellMetaUnsafe(p)).toBe(false),
+  );
+
+  it('rejects non-strings', () => {
+    expect(isShellMetaUnsafe(null)).toBe(false);
+    expect(isShellMetaUnsafe(undefined)).toBe(false);
+  });
+
+  it('skips only when the invocation needs a shell', () => {
+    const shell = { cmd: 'gitnexus', argv: [], useShell: true };
+    const node = { cmd: 'node', argv: ['cli.js'], useShell: false };
+    expect(shouldSkipAugmentForShell(shell, 'foo & calc')).toBe(true);
+    expect(shouldSkipAugmentForShell(shell, 'UserService')).toBe(false);
+    expect(shouldSkipAugmentForShell(node, 'foo & calc')).toBe(false);
+    expect(shouldSkipAugmentForShell(null, 'foo & calc')).toBe(false);
   });
 });
 

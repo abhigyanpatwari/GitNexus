@@ -449,15 +449,16 @@ describe('uninstallCommand', () => {
     await fs.mkdir(path.dirname(pluginFile), { recursive: true });
     await fs.writeFile(pluginFile, '// gitnexus', 'utf-8');
 
-    // Simulate EACCES on the plugin stat only; every other stat passes through.
-    const realStat = fs.stat.bind(fs);
-    const statSpy = vi.spyOn(fs, 'stat').mockImplementation((async (p: any, ...rest: any[]) => {
+    // Simulate EACCES on the plugin lookup only; every other call passes
+    // through. removeFile uses lstat (symlink-safe), so spy on that.
+    const realLstat = fs.lstat.bind(fs);
+    const statSpy = vi.spyOn(fs, 'lstat').mockImplementation((async (p: any, ...rest: any[]) => {
       if (String(p).endsWith(path.join('plugins', 'gitnexus.js'))) {
         const err: any = new Error(`EACCES: permission denied, stat '${p}'`);
         err.code = 'EACCES';
         throw err;
       }
-      return (realStat as any)(p, ...rest);
+      return (realLstat as any)(p, ...rest);
     }) as any);
 
     const logSpy = vi.spyOn(console, 'log');
@@ -472,6 +473,26 @@ describe('uninstallCommand', () => {
     // The plugin file was never reached (rm), so it still exists.
     expect(await fs.readFile(pluginFile, 'utf-8')).toBe('// gitnexus');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('removes a dangling plugin symlink instead of treating it as absent', async () => {
+    const pluginFile = path.join(tempHome, '.config', 'opencode', 'plugins', 'gitnexus.js');
+    const missingTarget = path.join(tempHome, 'does-not-exist.js');
+    await fs.mkdir(path.dirname(pluginFile), { recursive: true });
+    try {
+      await fs.symlink(missingTarget, pluginFile);
+    } catch (err: any) {
+      // Windows without developer mode / admin cannot create symlinks.
+      if (['EPERM', 'EOPNOTSUPP', 'UNKNOWN'].includes(err?.code)) return;
+      throw err;
+    }
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    // Before the fix, stat() followed the link, ENOENT'd, and the symlink
+    // survived at the auto-loaded plugins path.
+    await expect(fs.lstat(pluginFile)).rejects.toThrow();
   });
 
   // ── Antigravity MCP + hooks (AfterTool / gitnexus-antigravity-hook) ──
