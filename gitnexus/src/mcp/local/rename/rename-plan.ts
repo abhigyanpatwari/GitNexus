@@ -17,10 +17,13 @@ export { RenameFailure } from 'gitnexus-shared';
 export type { RenameSymbol, RenamePlan, RenameCoverage, OccurrenceEdit } from 'gitnexus-shared';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import type { GraphNode } from 'gitnexus-shared';
 import { logger } from '../../../core/logger.js';
-import { RenamePreviewPlans, renameSourceInventory } from './preview-plans.js';
+import {
+  RenamePreviewPlans,
+  renameSourceInventory,
+  readRenameSourceVersion,
+} from './preview-plans.js';
 import type { RenameSourceVersion } from './preview-plans.js';
 
 export interface RenameOptions extends SharedRenameOptions {
@@ -80,20 +83,11 @@ async function validateSnapshots(
   const evidenceFiles = [...evidence];
   for (let start = 0; start < evidenceFiles.length; start += 8) {
     const batch = evidenceFiles.slice(start, start + 8);
-    const versions = await Promise.all(
-      batch.map(async ([file]) => ({
-        real: await fs.realpath(file),
-        bytes: await fs.readFile(file),
-      })),
-    );
+    const versions = await Promise.all(batch.map(([file]) => readRenameSourceVersion(file)));
     for (let index = 0; index < batch.length; index++) {
       const [file, expected] = batch[index]!;
       const current = versions[index]!;
-      if (
-        current.real === expected.real &&
-        createHash('sha256').update(current.bytes).digest('hex') === expected.hash
-      )
-        continue;
+      if (current.real === expected.real && current.hash === expected.hash) continue;
       throw new RenameFailure(
         'source_changed',
         `Semantic evidence changed while applying rename: ${file}. Review a fresh preview.`,

@@ -61,6 +61,15 @@ try {
     },
     { onProgress() {} },
   );
+  if (mode === 'unindexed-evidence') {
+    // These supported files exist before preview, but were never indexed.
+    // Exercise both Git states without substituting a fake graph or planner.
+    sources['existing-tracked.ts'] = 'export const trackedUnrelated = 1;\n';
+    sources['existing-untracked.ts'] = 'export const untrackedUnrelated = 2;\n';
+    for (const file of ['existing-tracked.ts', 'existing-untracked.ts'])
+      await fs.writeFile(path.join(root, file), sources[file]);
+    execFileSync('git', ['add', 'existing-tracked.ts'], { cwd: root });
+  }
   await adapter.initLbug(path.join(indexed.storagePath, 'lbug'), { skipFts: true });
   const targets = await adapter.executeQuery(
     "MATCH (n:Function) WHERE n.name = 'target' RETURN n.id AS id",
@@ -72,6 +81,12 @@ try {
       "' RETURN DISTINCT a.name AS name",
   );
   assert.deepEqual(calls.map((x) => x.name).sort(), ['tracked', 'untracked']);
+  if (mode === 'unindexed-evidence') {
+    const unindexed = await adapter.executeQuery(
+      "MATCH (n:File) WHERE n.filePath IN ['existing-tracked.ts', 'existing-untracked.ts'] RETURN n.filePath AS path",
+    );
+    assert.deepEqual(unindexed, []);
+  }
   await adapter.closeLbug();
   backend = new LocalBackend();
   assert.equal(await backend.init(), true);
@@ -97,6 +112,41 @@ try {
     'preview must bind later apply to an immutable plan',
   );
   assert.ok(plan.plan_token.length >= 32);
+  if (mode === 'unindexed-evidence') {
+    for (const file of ['existing-tracked.ts', 'existing-untracked.ts']) {
+      plan = await preview();
+      assert.equal(plan.status, 'success', JSON.stringify(plan));
+      const reference = "import { target } from './a';\nexport const added = target();\n";
+      await fs.writeFile(path.join(root, file), reference);
+      const rejected = await apply(plan);
+      assert.equal(rejected.code, 'source_changed', JSON.stringify(rejected));
+      assert.equal(rejected.applied, false);
+      assert.equal(await fs.readFile(path.join(root, file), 'utf8'), reference);
+      for (const indexedFile of ['a.ts', 'b.ts', 'c.ts'])
+        assert.equal(await fs.readFile(path.join(root, indexedFile), 'utf8'), sources[indexedFile]);
+      await fs.writeFile(path.join(root, file), sources[file]);
+    }
+    plan = await preview();
+    const applied = await apply(plan);
+    assert.equal(applied.status, 'success', JSON.stringify(applied));
+    assert.deepEqual(applied.changes, plan.changes);
+    for (const change of plan.changes) {
+      let expected = sources[change.file_path];
+      for (const edit of [...change.edits].sort((a, b) => b.start - a.start))
+        expected =
+          expected.slice(0, edit.start) + edit.new_text + expected.slice(edit.start + edit.length);
+      assert.equal(await fs.readFile(path.join(root, change.file_path), 'utf8'), expected);
+    }
+    for (const file of ['existing-tracked.ts', 'existing-untracked.ts'])
+      assert.equal(await fs.readFile(path.join(root, file), 'utf8'), sources[file]);
+    await backend.dispose();
+    backend = undefined;
+    await fs.writeFile(
+      reportPath,
+      JSON.stringify({ status: 'passed', nodes: indexed.stats.nodes }),
+    );
+    process.exit();
+  }
   if (mode === 'large-evidence') {
     assert.equal(plan.coverage.source_file_count, 5);
     const originalTextBytes = Object.values(sources).reduce(

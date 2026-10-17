@@ -19,7 +19,11 @@ import {
 } from '../../src/mcp/local/rename/preview-plans.ts';
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-rename-bench-'));
-const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+const median = (values) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+};
 async function fixture(count, sourceCount = 1, editedCount = 1, directory = root) {
   const text = '// 🐈\r\n' + `writer.close(); // ${'x'.repeat(160)}\r\n`.repeat(count);
   const snapshots = new Map();
@@ -49,9 +53,11 @@ async function fixture(count, sourceCount = 1, editedCount = 1, directory = root
     edits,
   };
 }
-async function retainedPreview(sourceCount) {
+async function retainedPreview(sourceCount, indexedCount = sourceCount) {
   const repository = await fs.mkdtemp(path.join(root, 'retained-'));
   const plan = await fixture(1, sourceCount, 1, repository);
+  for (let file = indexedCount; file < sourceCount; file++)
+    plan.snapshots.delete(path.join(repository, `${file}.ts`));
   const store = new RenamePreviewPlans();
   const sources = await renameSourceInventory(repository);
   const saveTimes = [];
@@ -224,6 +230,8 @@ try {
   }
   const retainedSmall = await retainedPreview(100);
   const retainedLarge = await retainedPreview(400);
+  const unindexedSmall = await retainedPreview(100, 50);
+  const unindexedLarge = await retainedPreview(400, 200);
   const measurement = {
     small_ms,
     large_ms,
@@ -242,6 +250,12 @@ try {
       retainedLarge.validation_ms / retainedSmall.validation_ms / 4,
     original_400_source_text_bytes: retainedLarge.original_source_text_bytes,
     retained_400_source_text_bytes: retainedLarge.retained_source_text_bytes,
+    retain_100_sources_half_unindexed_ms: unindexedSmall.save_ms,
+    validate_100_sources_half_unindexed_ms: unindexedSmall.validation_ms,
+    retain_400_sources_half_unindexed_ms: unindexedLarge.save_ms,
+    validate_400_sources_half_unindexed_ms: unindexedLarge.validation_ms,
+    unindexed_validation_scaling_ratio:
+      unindexedLarge.validation_ms / unindexedSmall.validation_ms / 4,
     reviewed_apply_100_sources_8_edits_ms: median(reviewedTimes),
     reviewed_original_source_text_bytes: reviewedOriginalTextBytes,
     reviewed_retained_source_text_bytes: reviewedRetainedTextBytes,
@@ -261,6 +275,10 @@ try {
     assert.ok(
       measurement.retained_validation_scaling_ratio < 2.5,
       `Reviewed-plan validation became superlinear: ${measurement.retained_validation_scaling_ratio}`,
+    );
+    assert.ok(
+      unindexedLarge.validation_ms < 1000 && measurement.unindexed_validation_scaling_ratio < 2.5,
+      `Unindexed-source validation exceeded its linear/1s budgets: ${JSON.stringify(unindexedLarge)}`,
     );
     assert.ok(
       planning.scaling_ratio < planning_bound,

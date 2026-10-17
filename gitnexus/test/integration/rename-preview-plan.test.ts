@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-it.each(['standard', 'large-evidence'])(
+it.each(['standard', 'large-evidence', 'unindexed-evidence'])(
   'binds public apply to the reviewed persisted semantic plan for tracked and untracked files (%s)',
   async (mode) => {
     const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rename-preview-plan-'));

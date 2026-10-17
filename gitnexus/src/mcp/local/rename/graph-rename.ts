@@ -705,8 +705,8 @@ export async function planGraphRename(
         ...new Set([...sourceResolvers.values()].map((sourceResolver) => sourceResolver.language)),
       ],
       limitations: [
-        'Only indexed source files covered by this language provider are included.',
-        'Source files added after the last analyze are not indexed and are not checked; re-run analyze before renaming if files were added.',
+        'Only indexed source files covered by this language provider contribute rename locations.',
+        'Source files added after the last analyze are not indexed and contribute no rename locations; re-run analyze before renaming if files were added.',
       ],
     },
   };

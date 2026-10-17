@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -23,7 +24,7 @@ interface Preview {
   plan: RetainedRenamePlan;
   graph: string;
   sources: string[];
-  versions: Map<string, { real: string; hash: string }>;
+  versions: Map<string, RenameSourceVersion>;
   expires: number;
   bytes: number;
 }
@@ -49,6 +50,15 @@ function symbolIdentity(symbol: RenameSymbol): string {
 }
 
 const hash = (text: string): string => createHash('sha256').update(text).digest('hex');
+
+/** Hash every byte with bounded memory, including sources above the index size limit. */
+export async function readRenameSourceVersion(file: string): Promise<RenameSourceVersion> {
+  const real = await fs.realpath(file);
+  const digest = createHash('sha256');
+  for await (const chunk of createReadStream(file, { highWaterMark: 64 * 1024 }))
+    digest.update(chunk);
+  return { real, hash: digest.digest('hex') };
+}
 
 /** Include untracked and oversized sources; a size filter must not hide new targets. */
 export async function renameSourceInventory(root: string): Promise<string[]> {
@@ -100,11 +110,15 @@ export class RenamePreviewPlans {
     sources: string[],
   ): Promise<string> {
     const editedPaths = new Set(plan.edits.map((edit) => path.resolve(root, edit.file_path)));
+    const unindexedPaths = sources
+      .map((file) => path.resolve(root, file))
+      .filter((file) => !plan.snapshots.has(file));
     let bytes = 512 + JSON.stringify([plan.symbol, plan.coverage]).length * 2;
     for (const [file, source] of plan.snapshots)
       bytes += file.length * 4 + 512 + (editedPaths.has(file) ? source.length * 2 : 0);
     for (const edit of plan.edits) bytes += JSON.stringify(edit).length * 2 + 64;
     for (const source of sources) bytes += source.length * 2 + 32;
+    for (const file of unindexedPaths) bytes += file.length * 4 + 512;
     if (bytes > MAX_BYTES)
       throw new RenameFailure(
         'plan_too_large',
@@ -117,12 +131,14 @@ export class RenamePreviewPlans {
       }),
       evidence: new Map(),
     };
-    const versions = new Map<string, { real: string; hash: string }>();
+    const versions = new Map<string, RenameSourceVersion>();
     const evidence = new Map<string, RenameSourceVersion>();
-    for (const [file, source] of plan.snapshots) {
+    for (const [file, source] of plan.snapshots)
       versions.set(file, { real: await fs.realpath(file), hash: hash(source) });
-      if (!editedPaths.has(file)) evidence.set(file, versions.get(file)!);
-    }
+    // An existing unindexed source can gain a reference without changing the
+    // inventory paths. Bind its contents and target without replanning its edits.
+    for (const file of unindexedPaths) versions.set(file, await readRenameSourceVersion(file));
+    for (const [file, version] of versions) if (!editedPaths.has(file)) evidence.set(file, version);
     immutable.evidence = evidence;
     const token = randomBytes(32).toString('hex');
     const canonicalRoot = await fs.realpath(root);
@@ -185,11 +201,8 @@ export class RenamePreviewPlans {
       );
     for (const [file, version] of preview.versions) {
       try {
-        if (
-          (await fs.realpath(file)) === version.real &&
-          hash(await fs.readFile(file, 'utf8')) === version.hash
-        )
-          continue;
+        const current = await readRenameSourceVersion(file);
+        if (current.real === version.real && current.hash === version.hash) continue;
       } catch (error) {
         if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? ''))
           throw error;

@@ -88,6 +88,39 @@ describe('immutable rename preview capabilities', () => {
     });
     await expect(take(token)).rejects.toMatchObject({ code: 'invalid_plan' });
   });
+  it('retains and checks existing inventory sources absent from semantic snapshots', async () => {
+    const file = path.join(root, 'unindexed.ts');
+    await fs.writeFile(file, 'export const unrelated = 1;');
+    const sources = await renameSourceInventory(root);
+    const token = await store.remember(root, plan, nodes, [], sources);
+    const retained = await take(token);
+    expect(retained.evidence.get(file)).toMatchObject({
+      real: file,
+      hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(retained.snapshots.has(file)).toBe(false);
+
+    const changed = await store.remember(root, plan, nodes, [], sources);
+    await fs.writeFile(file, 'old();');
+    await expect(take(changed)).rejects.toMatchObject({ code: 'source_changed' });
+  });
+  it('checks the final bytes of an oversized unindexed source without retaining its text', async () => {
+    const file = path.join(root, 'generated.ts');
+    const bytes = 16 * 1024 * 1024;
+    const handle = await fs.open(file, 'w');
+    await handle.truncate(bytes);
+    await handle.close();
+    const sources = await renameSourceInventory(root);
+    const token = await store.remember(root, plan, nodes, [], sources);
+    const retained = await take(token);
+    expect(retained.evidence.has(file)).toBe(true);
+    expect(retained.snapshots.size).toBe(1);
+    const changed = await store.remember(root, plan, nodes, [], sources);
+    const update = await fs.open(file, 'r+');
+    await update.write(Buffer.from('x'), 0, 1, bytes - 1);
+    await update.close();
+    await expect(take(changed)).rejects.toMatchObject({ code: 'source_changed' });
+  });
   it('rejects expiry and capabilities from another server', async () => {
     const token = await save();
     await expect(
