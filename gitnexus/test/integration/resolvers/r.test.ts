@@ -1454,3 +1454,81 @@ describe('R deferred-owner attach (r-packages)', () => {
     expect(leftover).toEqual([]);
   });
 });
+
+// Callers outside `R/` (tests, scripts, vignettes, inst) reach the package's functions: through
+// library() when the script attaches the package, otherwise through the unique-name fallback
+// at the lower confidence. Pinned as the whole edge set, so a missing, extra or misdirected
+// edge fails, and so does an edge to a function NAMESPACE keeps private.
+describe('R CALLS from outside R/ into the package (r-package-layout)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-package-layout'), () => {});
+  }, 60000);
+
+  const calls = () =>
+    getRelationships(result, 'CALLS')
+      .map(
+        (e) =>
+          `${e.sourceFilePath}:${e.source} -> ${e.targetFilePath}:${e.target} | ` +
+          `${e.rel.reason} | ${String(e.rel.confidence)}`,
+      )
+      .sort();
+
+  it('is exactly the edges from tests/, scripts/, vignettes/ and inst/ to the exported functions', () => {
+    expect(calls()).toEqual(
+      [
+        'inst/scripts/run.R:root_inst_script -> R/root.R:root_exported | global-name-fallback | 0.5',
+        'pkgs/nested/tests/testthat/test-nested.R:nested_test_helper -> pkgs/nested/R/nested.R:nested_exported | global-name-fallback | 0.5',
+        'scripts/use.R:root_script_entry -> R/root.R:root_exported | import-resolved | 0.85',
+        'tests/testthat/test-root.R:root_test_helper -> R/root.R:root_exported | global-name-fallback | 0.5',
+        'vignettes/demo.R:root_vignette_helper -> R/root.R:root_exported | global-name-fallback | 0.5',
+      ].sort(),
+    );
+  });
+
+  it('binds a test helper of the nested package to the nested package, not to the enclosing one', () => {
+    const edge = getRelationships(result, 'CALLS').find((e) => e.source === 'nested_test_helper');
+    expect(edge?.targetFilePath).toBe('pkgs/nested/R/nested.R');
+  });
+
+  it('creates no edge to a function the NAMESPACE keeps private', () => {
+    const toHidden = getRelationships(result, 'CALLS').filter(
+      (e) => e.target === 'root_hidden' || e.target === 'nested_hidden',
+    );
+    expect(toHidden).toEqual([]);
+  });
+});
+
+// The whole CALLS set of the 20-file project, so that an edge that is misdirected, or one that
+// replaces another, fails even when the totals stay the same.
+describe('R golden CALLS edge set (r-packages)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-packages'), () => {});
+  }, 60000);
+
+  it('is exactly the edges below, with their reasons and confidences', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .map(
+        (e) =>
+          `${e.sourceFilePath}:${e.source} -> ${e.targetFilePath}:${e.target} | ` +
+          `${e.rel.reason} | ${String(e.rel.confidence)}`,
+      )
+      .sort();
+    expect(calls).toEqual(
+      [
+        'pkgA/R/add_outliers.R:AddOutlierStatuses -> pkgB/R/clean_data.R:CleanData | import-resolved | 0.85',
+        'pkgA/R/s3.R:render_widget -> pkgA/R/s3.R:describe | local-call | 0.85',
+        'pkgA/R/s4_and_r6.R:s4_and_r6.R -> pkgA/R/s4_and_r6.R:clean_magrittr | local-call | 0.85',
+        'pkgA/R/s4_and_r6.R:s4_and_r6.R -> pkgA/R/s4_and_r6.R:clean_native | local-call | 0.85',
+        'pkgA/R/s4_and_r6.R:s4_and_r6.R -> pkgA/R/s4_and_r6.R:transform_magrittr | local-call | 0.85',
+        'pkgA/R/s4_and_r6.R:s4_and_r6.R -> pkgA/R/s4_and_r6.R:transform_native | local-call | 0.85',
+        'scripts/run_analysis.R:run_analysis.R -> pkgA/R/models.R:count | import-resolved | 0.85',
+        'scripts/run_analysis.R:run_analysis.R -> pkgA/R/utils.R:HelperFunc | import-resolved | 0.85',
+        'scripts/run_analysis.R:run_analysis.R -> pkgB/R/clean_data.R:CleanData | import-resolved | 0.85',
+      ].sort(),
+    );
+  });
+});
