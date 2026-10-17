@@ -6215,7 +6215,7 @@ export class LocalBackend {
       findings: pageFindings,
       totalFindings: totalFindings + interprocTotal,
       ...(truncated ? { truncated: true } : {}),
-      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled. Closure/callback, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. SANITIZES (kill) edges are queryable via cypher.',
+      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled, including sources read inside inline callbacks and returned handlers. Captured closure-variable, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. SANITIZES (kill) edges are queryable via cypher.',
     };
   }
 

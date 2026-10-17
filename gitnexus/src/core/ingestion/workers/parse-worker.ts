@@ -993,7 +993,10 @@ const callableOwnQualifiedName = (
   // An anonymous callable has no name of its own, so it IS its position: the
   // `ownName === null` branch below carries the position INSTEAD of a name,
   // never in addition to one, so the two spellings cannot stack.
-  const ownName = efnResult?.funcName ?? genericFuncName(fnNode) ?? null;
+  const ownName =
+    efnResult?.identityName !== undefined
+      ? efnResult.identityName
+      : (efnResult?.funcName ?? genericFuncName(fnNode) ?? null);
   let finalLabel = efnResult?.label ?? inferFunctionLabel(fnNode.type);
   if (provider.labelOverride) {
     const override = provider.labelOverride(fnNode, finalLabel);
@@ -1091,13 +1094,15 @@ const findEnclosingFunctionId = (
         // nested prefix exists it IS `ownerName`, so this branch and the
         // owner branch below cannot disagree about which prefix applies.
         const qualifiedName =
-          nestedPrefix !== undefined
-            ? nestedCallableQualifiedName(nestedPrefix, current, funcName)
-            : ownerName
-              ? `${ownerName}.${funcName}`
-              : needsArrayPosition
-                ? positionQualifiedCallableName(funcName, current.startPosition)
-                : funcName;
+          efnResult?.identityName === null
+            ? callableOwnQualifiedName(current, filePath, provider)
+            : nestedPrefix !== undefined
+              ? nestedCallableQualifiedName(nestedPrefix, current, funcName)
+              : ownerName
+                ? `${ownerName}.${funcName}`
+                : needsArrayPosition
+                  ? positionQualifiedCallableName(funcName, current.startPosition)
+                  : funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
         // When same-arity collisions exist, also append ~type1,type2.
@@ -2364,6 +2369,11 @@ const processFileGroup = (
       const cjsDefaultExportName = isCjsDefaultExport
         ? (cjsDefaultExportOwnName ?? deriveDefaultExportHocName(file.path))
         : null;
+      const inferredFunction =
+        !nameNode && nodeLabel === 'Function' && definitionNode
+          ? provider.methodExtractor?.extractFunctionName?.(definitionNode, file.path)
+          : undefined;
+      const inferredFunctionName = inferredFunction?.funcName;
 
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (
@@ -2371,7 +2381,8 @@ const processFileGroup = (
         nodeLabel !== 'Constructor' &&
         !extractedClassSymbol &&
         !defaultExportHocName &&
-        !cjsDefaultExportName
+        !cjsDefaultExportName &&
+        !inferredFunctionName
       )
         continue;
 
@@ -2379,6 +2390,7 @@ const processFileGroup = (
         extractedClassSymbol?.name ??
         defaultExportHocName ??
         cjsDefaultExportName ??
+        inferredFunctionName ??
         (nameNode ? nameNode.text : 'init');
       // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
       // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
@@ -2427,6 +2439,7 @@ const processFileGroup = (
       // (ids still use `definitionNode` via `localIdentity`).
       const startPosition =
         definitionNode &&
+        !inferredFunctionName &&
         (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
           ? boundCallableStartPosition(
               definitionNode,
@@ -2632,27 +2645,29 @@ const processFileGroup = (
           : undefined;
 
       const qualifiedNameBeforeModScope =
-        rustImplQualifiedName !== undefined
-          ? rustImplQualifiedName
-          : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
-            // scope id keys the worker-path node, matching the sequential path.
-            (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
-              provider.classExtractor?.qualifiedNodeId === true &&
-              qualifiedTypeName !== undefined
-            ? qualifiedTypeName
-            : nestedCallablePrefix !== undefined && definitionNode
-              ? nestedCallableQualifiedName(nestedCallablePrefix, definitionNode, nodeName)
-              : enclosingClassInfo
-                ? `${enclosingClassInfo.className}.${nodeName}`
-                : // A member whose owner is named by the assignment rather than
-                  // by an enclosing container (`Foo.prototype.bar = …`) qualifies
-                  // by that owner, so two constructors in one file that both
-                  // define `bar` stay distinct nodes.
-                  objectLiteralOwnerInfo?.ownerName !== undefined
-                  ? `${objectLiteralOwnerInfo.ownerName}.${nodeName}`
-                  : isArrayContainedObjectCallable
-                    ? positionQualifiedCallableName(nodeName, startPosition)
-                    : nodeName;
+        inferredFunction?.identityName === null && definitionNode
+          ? callableOwnQualifiedName(definitionNode, file.path, provider)
+          : rustImplQualifiedName !== undefined
+            ? rustImplQualifiedName
+            : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
+              // scope id keys the worker-path node, matching the sequential path.
+              (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
+                provider.classExtractor?.qualifiedNodeId === true &&
+                qualifiedTypeName !== undefined
+              ? qualifiedTypeName
+              : nestedCallablePrefix !== undefined && definitionNode
+                ? nestedCallableQualifiedName(nestedCallablePrefix, definitionNode, nodeName)
+                : enclosingClassInfo
+                  ? `${enclosingClassInfo.className}.${nodeName}`
+                  : // A member whose owner is named by the assignment rather than
+                    // by an enclosing container (`Foo.prototype.bar = …`) qualifies
+                    // by that owner, so two constructors in one file that both
+                    // define `bar` stay distinct nodes.
+                    objectLiteralOwnerInfo?.ownerName !== undefined
+                    ? `${objectLiteralOwnerInfo.ownerName}.${nodeName}`
+                    : isArrayContainedObjectCallable
+                      ? positionQualifiedCallableName(nodeName, startPosition)
+                      : nodeName;
 
       // #2742: qualify by the enclosing `mod` chain, so two same-named items at
       // different module depths in one file are DISTINCT nodes. Without this,
@@ -3020,10 +3035,7 @@ const processFileGroup = (
           name: nodeName,
           filePath: file.path,
           startLine,
-          ...(shouldObjectOwnerQualifyCallable(nodeLabel) &&
-          (objectLiteralBindingInfo?.ownerName || isArrayContainedObjectCallable)
-            ? { startColumn }
-            : {}),
+          ...(shouldObjectOwnerQualifyCallable(nodeLabel) ? { startColumn } : {}),
           endLine: definitionNode ? mapRow(definitionNode.endPosition.row) : startLine,
           language: language,
           isExported,

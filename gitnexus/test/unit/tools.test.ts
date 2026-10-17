@@ -484,7 +484,10 @@ describe('GITNEXUS_TOOLS', () => {
     expect(d).toContain('--pdg');
     expect(d).toContain('intra-procedural');
     // The named blind-spot classes (plan KTD10) must reach the consumer.
-    expect(d.toLowerCase()).toContain('closure/callback');
+    expect(d.toLowerCase()).toContain('captured closure-variable flows are not modeled');
+    expect(d.toLowerCase()).toContain(
+      'sources read inside inline callbacks and returned handlers can flow through helper functions',
+    );
     expect(d.toLowerCase()).toContain('property/field');
     expect(d.toLowerCase()).toContain('guard-style');
     expect(d.toLowerCase()).toContain('cross-function');

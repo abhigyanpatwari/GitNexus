@@ -15,12 +15,6 @@
       "baselineActual": []
     },
     {
-      "id": "explain.inline-flow",
-      "issue": 3489,
-      "reason": "Inline route callbacks lack the cross-function source summary (#3489).",
-      "baselineActual": []
-    },
-    {
       "id": "explain.guard",
       "issue": 3490,
       "reason": "Guard-style sanitizers are a documented taint limitation (#3490).",

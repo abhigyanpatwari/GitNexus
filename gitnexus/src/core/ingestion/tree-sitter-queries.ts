@@ -15,9 +15,11 @@ import {
   ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
   DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
 } from './ts-js-hoc-utils.js';
+import { unboundCallableQuery } from './languages/typescript/unbound-callables.js';
 
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
+${unboundCallableQuery('definition.function')}
 (class_declaration
   name: (type_identifier) @name) @definition.class
 
@@ -789,6 +791,7 @@ export const TYPESCRIPT_QUERIES = `
 
 // JavaScript queries - works with tree-sitter-javascript
 export const JAVASCRIPT_QUERIES = `
+${unboundCallableQuery('definition.function')}
 (class_declaration
   name: (identifier) @name) @definition.class
 
