@@ -3,13 +3,12 @@ import { getCParser } from '../gitnexus/src/core/ingestion/languages/c/query.js'
 import { splitCInclude } from '../gitnexus/src/core/ingestion/languages/c/import-decomposer.js';
 import { interpretCImport } from '../gitnexus/src/core/ingestion/languages/c/interpret.js';
 import { cScopeResolver } from '../gitnexus/src/core/ingestion/languages/c/scope-resolver.js';
-import type { SyntaxNode } from '../gitnexus/src/core/ingestion/utils/ast-helpers.js';
 
 function parseInclude(spelling: string) {
   const tree = getCParser().parse(`#include ${spelling}\n`);
   const node = tree.rootNode.namedChildren.find((child) => child.type === 'preproc_include');
-  expect(node, 'native parser must produce an include node').toBeDefined();
-  const captures = splitCInclude(node as SyntaxNode);
+  if (node === undefined) throw new Error('native parser must produce an include node');
+  const captures = splitCInclude(node);
   return captures === null ? null : interpretCImport(captures);
 }
 
@@ -24,7 +23,7 @@ function headerIdentity(target: string): string {
   return target;
 }
 
-const files = new Set([
+const workspaceFiles = new Set([
   'src/main.c',
   'src/stdio.h',
   'include/project.h',
@@ -33,11 +32,11 @@ const files = new Set([
 ]);
 
 describe.each([
-  { name: 'workspace headers', files, resolutionConfig: undefined },
+  { name: 'workspace headers', files: workspaceFiles, resolutionConfig: undefined },
   {
     name: 'discovered headers',
     files: new Set(['src/main.c']),
-    resolutionConfig: new Set([...files].filter((file) => file.endsWith('.h'))),
+    resolutionConfig: new Set([...workspaceFiles].filter((file) => file.endsWith('.h'))),
   },
 ])('hidden oracle: retained C include provenance ($name)', ({ files, resolutionConfig }) => {
   it.each([
