@@ -29,7 +29,7 @@ describe('embedding identity integrity (#3569)', () => {
     'negative-chunk',
     'fractional-chunk',
   ])('rejects %j before replacing any existing embedding', async (invalid) => {
-    tmp = await createTempDir('gn-embedding-identity-');
+    tmp = await createTempDir('gitnexus-test-embedding-identity-');
     const dbPath = path.join(tmp.dbPath, 'lbug');
     await adapter.initLbug(dbPath, { skipFts: true });
     const original = {
@@ -74,7 +74,7 @@ describe('embedding identity integrity (#3569)', () => {
     'Function:bad\rid',
     'Function:bad\uFFFFid',
   ])('rejects malformed graph ID %j before CSV COPY', async (id) => {
-    tmp = await createTempDir('gn-graph-identity-');
+    tmp = await createTempDir('gitnexus-test-graph-identity-');
     await adapter.initLbug(path.join(tmp.dbPath, 'lbug'), { skipFts: true });
     const graph = createKnowledgeGraph();
     graph.addNode({
@@ -97,7 +97,7 @@ describe('embedding identity integrity (#3569)', () => {
   });
 
   it('preserves distinct supplementary Unicode identities through COPY and cold reopen', async () => {
-    tmp = await createTempDir('gn-unicode-identity-');
+    tmp = await createTempDir('gitnexus-test-unicode-identity-');
     const dbPath = path.join(tmp.dbPath, 'lbug');
     await adapter.initLbug(dbPath, { skipFts: true });
     const graph = createKnowledgeGraph();
@@ -156,7 +156,7 @@ describe('embedding identity integrity (#3569)', () => {
         vi.stubEnv('GITNEXUS_EMBEDDING_URL', `http://127.0.0.1:${address.port}`);
         vi.stubEnv('GITNEXUS_EMBEDDING_MODEL', 'identity-fixture');
         vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'never');
-        tmp = await createTempDir('gn-persisted-identity-');
+        tmp = await createTempDir('gitnexus-test-persisted-identity-');
         await adapter.initLbug(path.join(tmp.dbPath, 'lbug'), { skipFts: true });
         // Controlled malformed stored row; this does not claim to reproduce the
         // original Windows Java producer that left thousands of blank scan rows.

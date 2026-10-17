@@ -504,6 +504,10 @@ export const streamAllCSVsToDisk = async (
   onNodePhaseComplete?: (nodeFiles: Map<NodeTableName, { csvPath: string; rows: number }>) => void,
   contentRetention: ContentRetention = 'full',
 ): Promise<StreamedCSVResult> => {
+  // Validate before opening writers: rejection must not strand their handles
+  // or replace existing CSV artifacts. The iterator adds no graph-sized copy.
+  for (const node of graph.iterNodes()) assertValidGraphNodeId(node.id, 'Graph COPY');
+
   // Deterministic (id-sorted) node/relationship row order when enabled;
   // default off = today's graph-insertion order (byte-identical).
   const sortOutput = parseTruthyEnv(process.env.GITNEXUS_SORT_GRAPH_OUTPUT);
@@ -644,9 +648,6 @@ export const streamAllCSVsToDisk = async (
 
     // --- SINGLE PASS over all nodes ---
     for (const node of orderedNodes(graph, sortOutput)) {
-      // Reject before COPY rather than allowing CSV sanitization to collapse
-      // malformed identities into an empty or already-used primary key.
-      assertValidGraphNodeId(node.id, 'Graph COPY');
       if (seenNodeIds.has(node.id)) continue;
       seenNodeIds.add(node.id);
 
