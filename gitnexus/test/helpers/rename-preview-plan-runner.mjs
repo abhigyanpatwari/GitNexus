@@ -169,6 +169,8 @@ try {
       await fs.readFile(path.join(root, 'lib.rs'), 'utf8'),
       sources['lib.rs'].replaceAll('target', 'renamed'),
     );
+    await backend.dispose();
+    backend = undefined;
     await fs.writeFile(
       reportPath,
       JSON.stringify({ status: 'passed', nodes: indexed.stats.nodes }),
@@ -222,6 +224,8 @@ try {
       assert.equal(await fs.readFile(path.join(root, change.file_path), 'utf8'), expected);
     }
     assert.equal(await fs.readFile(path.join(root, 'other.ts'), 'utf8'), sources['other.ts']);
+    await backend.dispose();
+    backend = undefined;
     await fs.writeFile(
       reportPath,
       JSON.stringify({ status: 'passed', nodes: indexed.stats.nodes }),
@@ -283,6 +287,8 @@ try {
         assert.equal(await fs.readFile(path.join(root, 'first.data'), 'utf8'), expected);
     }
     assert.equal(await fs.readFile(path.join(root, 'second.data'), 'utf8'), sources['a.ts']);
+    await backend.dispose();
+    backend = undefined;
     await fs.writeFile(
       reportPath,
       JSON.stringify({ status: 'passed', nodes: indexed.stats.nodes }),

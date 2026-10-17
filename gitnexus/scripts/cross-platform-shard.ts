@@ -68,6 +68,9 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/rename-provider-typescript.test.ts': 625,
   'test/integration/rename-provider-vue.test.ts': 200,
   'test/integration/rename-provider-zig.test.ts': 183,
+  // Provisional: seven real-indexing child cases, using the existing ~25s
+  // Windows persisted-fixture profile above. Replace with observed CI timing.
+  'test/integration/rename-preview-plan.test.ts': 175,
   'test/integration/mcp-index-generation.test.ts': 201,
   'test/unit/incremental-dirty-recovery.test.ts': 76,
   // Re-measured after the analyze --watch e2e landed in #3072. The previous
