@@ -81,6 +81,13 @@ function isVueScopeContextLanguage(lang: SupportedLanguages | null): boolean {
   return lang !== null && VUE_SCOPE_CONTEXT_LANGUAGES.has(lang);
 }
 
+async function loadResolutionConfig(repoPath: string, fresh = false) {
+  return {
+    tsconfigs: await loadTsconfigIndex(repoPath),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
+  };
+}
+
 const vueScopeResolver: ScopeResolver = {
   populateWorkspaceReferences: (parsedFiles) =>
     canonicalizeWorkspaceBindings(parsedFiles, canonicalTypeScriptName),
@@ -95,10 +102,8 @@ const vueScopeResolver: ScopeResolver = {
 
   // Vue projects universally use TypeScript — load tsconfig so path
   // aliases (`@/`, `~/`, `#/`) resolve through the standard branch.
-  loadResolutionConfig: async (repoPath: string) => ({
-    tsconfigs: await loadTsconfigIndex(repoPath),
-    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath),
-  }),
+  loadResolutionConfig,
+  refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
 
   // TypeScript LEGB semantics apply inside `<script>` / `<script setup>`.
   mergeBindings: (existing, incoming) => [...typescriptMergeBindings([...existing, ...incoming])],

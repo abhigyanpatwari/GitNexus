@@ -416,8 +416,18 @@ export GITNEXUS_EMBEDDING_MAX_ATTEMPTS=3     # optional, total attempts (1-20)
 export GITNEXUS_EMBEDDING_RETRY_CAP_MS=5000  # optional, maximum retry delay
 export GITNEXUS_EMBEDDING_MIN_INTERVAL_MS=0  # optional, minimum request spacing
 export GITNEXUS_EMBEDDING_HTTP_TIMEOUT_MS=180000 # optional, per-request timeout (max 300000)
+export GITNEXUS_EMBEDDING_MAX_INPUT_CHARS=4096 # optional, final generated input budget (minimum 2)
 gitnexus analyze . --embeddings
 ```
+
+The input budget includes generated headers and context. Longer inputs are split
+without truncating their text. It counts UTF-16 characters, not model tokens;
+lower it for endpoints with smaller token limits. Changing it invalidates cached
+embedding chunks. Input rejections (HTTP 400, 413 or 422) are isolated by splitting
+the request batch, so healthy inputs can finish. Rejected nodes remain pending and
+are retried by the next analyze run. Repeated rejections across distinct nodes
+without a successful input stop the run after the current node batch, preserving
+later batches and reporting a likely endpoint or input-budget configuration problem.
 
 `GITNEXUS_EMBEDDING_REQUEST_DIMS` controls only the `dimensions` field sent in
 the request body, independently of `GITNEXUS_EMBEDDING_DIMS` (which still

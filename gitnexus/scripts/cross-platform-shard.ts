@@ -68,6 +68,9 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/rename-provider-typescript.test.ts': 625,
   'test/integration/rename-provider-vue.test.ts': 200,
   'test/integration/rename-provider-zig.test.ts': 183,
+  // Provisional: seven real-indexing child cases, using the existing ~25s
+  // Windows persisted-fixture profile above. Replace with observed CI timing.
+  'test/integration/rename-preview-plan.test.ts': 175,
   'test/integration/mcp-index-generation.test.ts': 201,
   'test/unit/incremental-dirty-recovery.test.ts': 76,
   // Re-measured after the analyze --watch e2e landed in #3072. The previous
@@ -88,7 +91,16 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/skills-e2e.test.ts': 550,
   'test/integration/fts-extension-e2e.test.ts': 380,
   'test/integration/skip-fts.test.ts': 110,
+  // Provisional: twice the local native-suite duration, pending Windows CI.
+  // These scheduling hints do not change test timeouts or pass/fail gates.
+  'test/integration/embedding-identity-integrity.test.ts': 180,
+  'test/integration/shared-store-embedding-reuse.test.ts': 140,
+  // Provisional: twice the 88.42s local native run, pending Windows CI timing.
+  'test/integration/embedding-input-isolation.test.ts': 180,
   'test/integration/analyze-wal-checkpoint-failure.test.ts': 86,
+  // Windows run 39046807237 measured 308s before two cases reached recovery.
+  // Allow the measured ~19s recovery cost for each corrected in-place case.
+  'test/unit/incremental-write-integrity.test.ts': 360,
   'test/integration/cli-limit-e2e.test.ts': 75,
   'test/unit/hooks.test.ts': 26,
   'test/integration/analyze-heap-oom-e2e.test.ts': 23,

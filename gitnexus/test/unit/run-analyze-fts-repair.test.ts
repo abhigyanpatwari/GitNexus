@@ -2638,6 +2638,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       embeddings: [],
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      acquireInitLock: vi.fn(async () => async () => {}),
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
       getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),

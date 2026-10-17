@@ -358,6 +358,7 @@ describe('intended standard-skill improvements stay in every applicable copy', (
         const content = fs.readFileSync(file, 'utf-8');
         expect(content, file).not.toContain('rename_preview');
         expect(content, file).toContain('dry_run');
+        expect(content, file).toContain('plan_token');
       }
     }
     for (const file of standardSkillCopies('gitnexus-refactoring')) {
@@ -365,7 +366,9 @@ describe('intended standard-skill improvements stay in every applicable copy', (
       expect(content).toContain(
         'rename({symbol_name: "oldName", new_name: "newName", dry_run: true})',
       );
-      expect(content).toContain('rename({..., dry_run: false})');
+      expect(content).toContain(
+        'rename({..., dry_run: false, plan_token: "<token from preview>"})',
+      );
     }
   });
 
