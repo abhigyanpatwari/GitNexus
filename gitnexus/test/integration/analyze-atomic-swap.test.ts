@@ -270,6 +270,7 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
           /^lbug\.(wal|shadow|checkpoint)/.test(name),
         );
         expect(residual).toEqual([]);
+        expect(await lingeringTemp(lbugPath)).toEqual([]);
         const coldNames = execFileSync(
           process.execPath,
           [

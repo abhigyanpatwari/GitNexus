@@ -15,10 +15,15 @@ async function residualSidecars(dbPath: string): Promise<string[]> {
     throw error;
   }
   const prefix = `${path.basename(dbPath)}.`;
-  return entries.filter(
-    (name) =>
-      name.startsWith(prefix) && /^(wal|shadow|checkpoint)(?:\.|$)/.test(name.slice(prefix.length)),
-  );
+  return entries.filter((name) => {
+    if (!name.startsWith(prefix)) return false;
+    const suffix = name.slice(prefix.length);
+    // Dirty recovery deliberately retains these completed forensic archives.
+    // They cannot be replayed by the engine. Incomplete `.next` parks and all
+    // other recovery residues still require intervention before publication.
+    if (suffix === 'wal.dirty-recovery' || suffix === 'shadow.dirty-recovery') return false;
+    return /^(wal|shadow|checkpoint)(?:\.|$)/.test(suffix);
+  });
 }
 
 /** A publication receipt must describe one consolidated file, including on 9p

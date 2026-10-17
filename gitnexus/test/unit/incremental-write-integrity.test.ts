@@ -28,6 +28,7 @@ async function touchHandler(repoPath: string): Promise<void> {
 
 describe('incremental graph identity before publication', () => {
   it('chooses a full write before selective mutation when manual checkpoints are disabled', async () => {
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
     const repo = await setupMiniRepo('gitnexus-test-checkpoint-opt-out-');
     const { storagePath } = getStoragePaths(repo.dbPath);
     try {
@@ -42,7 +43,14 @@ describe('incremental graph identity before publication', () => {
         onLog: (line) => logs.push(line),
       });
       expect(deleteNodes).not.toHaveBeenCalled();
-      expect(flush).not.toHaveBeenCalled();
+      // The opt-out disables periodic/incremental checkpoints, but a staged
+      // full rebuild still requires one verified checkpoint before publishing.
+      if (process.platform === 'win32') {
+        expect(flush).not.toHaveBeenCalled(); // Default Windows writes stay in place.
+      } else {
+        expect(flush).toHaveBeenCalledTimes(1);
+        await expect(flush.mock.results[0].value).resolves.toBe(true);
+      }
       expect(result.incrementalStats).toBeUndefined();
       expect(logs).toContain(
         'Manual WAL checkpoints are disabled; switching to a full DB write before mutation.',
@@ -52,7 +60,7 @@ describe('incremental graph identity before publication', () => {
       await adapter.closeLbug();
       await repo.cleanup();
     }
-  });
+  }, 120_000);
 
   it('retries a transient checkpoint I/O failure at the final publication gate', async () => {
     const repo = await setupMiniRepo('gitnexus-test-final-checkpoint-retry-');

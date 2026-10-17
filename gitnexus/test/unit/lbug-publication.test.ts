@@ -32,9 +32,22 @@ it.each([
   '.checkpoint.apply.lock',
   '.wal.missing-shadow.1234-abcd',
   '.shadow.orphan.1234',
+  '.wal.dirty-recovery.next',
+  '.shadow.dirty-recovery.next',
 ])('refuses a persistent %s and names the affected database', async (suffix) => {
   const db = path.join(root, 'lbug');
   await fs.writeFile(`${db}${suffix}`, 'pending recovery');
   await expect(assertLbugPublicationReady(db)).rejects.toThrow(db);
   expect(await fs.readFile(`${db}${suffix}`, 'utf8')).toBe('pending recovery');
+});
+
+it('retains completed dirty-recovery archives without blocking publication', async () => {
+  const db = path.join(root, 'lbug');
+  for (const suffix of ['.wal.dirty-recovery', '.shadow.dirty-recovery']) {
+    await fs.writeFile(`${db}${suffix}`, 'retained crash evidence');
+  }
+  await assertLbugPublicationReady(db);
+  for (const suffix of ['.wal.dirty-recovery', '.shadow.dirty-recovery']) {
+    expect(await fs.readFile(`${db}${suffix}`, 'utf8')).toBe('retained crash evidence');
+  }
 });
