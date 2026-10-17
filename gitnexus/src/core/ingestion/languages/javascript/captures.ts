@@ -996,6 +996,13 @@ export function emitJsScopeCaptures(
         unbound,
         unboundCallableName(unbound)!,
       );
+      if (unbound.childForFieldName('name') === null) {
+        grouped['@declaration.binding-name'] = syntheticCapture(
+          '@declaration.binding-name',
+          unbound,
+          '',
+        );
+      }
     }
     if (fnDeclAnchor !== undefined) {
       const arrowNode = findFunctionNode(

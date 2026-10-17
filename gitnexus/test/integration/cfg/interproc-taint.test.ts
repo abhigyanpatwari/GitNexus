@@ -31,6 +31,52 @@ function taintPaths(result: PipelineResult) {
 
 describe('U9 — end-to-end interprocedural taint (--pdg)', () => {
   it.each(['ts', 'js'])(
+    'does not bind or resolve anonymous %s display names as callable identifiers (#3489)',
+    async (extension) => {
+      const repoDir = repos.dir();
+      fs.writeFileSync(
+        path.join(repoDir, `callbacks.${extension}`),
+        `function fn_1_13() { return 1; }
+app.get('/', () => { fn_1_13(); });
+app.get('/', () => { fn_2_13(); });
+function outside() { fn_2_13(); }
+function make() { return function handler() { handler(); app.get('/', () => handler()); }; }
+function outsideNamed() { handler(); }
+const bound = () => { bound(); };
+function callBound() { bound(); }
+`,
+      );
+      fs.writeFileSync(
+        path.join(repoDir, `other.${extension}`),
+        'function other() { fn_2_13(); handler(); }',
+      );
+      const result = await runPipelineFromRepo(repoDir, () => {}, { pdg: true });
+      const nodes = [...result.graph.iterNodes()];
+      const calls = [...result.graph.iterRelationships()].filter((r) => r.type === 'CALLS');
+      const named = result.graph.getNode(`Function:callbacks.${extension}:fn_1_13`)!;
+      const anonymous = result.graph.getNode(`Function:callbacks.${extension}:fn@1:13`)!;
+      const unbound = nodes.find((n) => n.properties.name === 'fn_2_13')!;
+      expect(named).toBeDefined();
+      expect(anonymous).toBeDefined();
+      expect(unbound).toBeDefined();
+      expect(calls.some((r) => r.sourceId === anonymous.id && r.targetId === named.id)).toBe(true);
+      expect(calls.some((r) => r.targetId === anonymous.id || r.targetId === unbound.id)).toBe(
+        false,
+      );
+      const handler = nodes.find((n) => n.properties.name === 'handler')!;
+      const outside = nodes.filter((n) => ['outsideNamed', 'other'].includes(n.properties.name!));
+      expect(calls.some((r) => r.sourceId === handler.id && r.targetId === handler.id)).toBe(true);
+      expect(calls.some((r) => r.targetId === handler.id && r.sourceId !== handler.id)).toBe(true);
+      expect(
+        calls.some((r) => r.targetId === handler.id && outside.some((n) => n.id === r.sourceId)),
+      ).toBe(false);
+      const bound = nodes.find((n) => n.properties.name === 'bound' && n.label === 'Function')!;
+      const caller = nodes.find((n) => n.properties.name === 'callBound')!;
+      expect(calls.some((r) => r.sourceId === bound.id && r.targetId === bound.id)).toBe(true);
+      expect(calls.some((r) => r.sourceId === caller.id && r.targetId === bound.id)).toBe(true);
+    },
+  );
+  it.each(['ts', 'js'])(
     'keeps %s inline and returned handlers as distinct callers and taint summary owners (#3489)',
     async (extension) => {
       const fixture = path.join(__dirname, 'fixtures', 'inline-taint-repo');
