@@ -44,6 +44,12 @@
  * partition depend on the very machine load it is trying to protect against.
  */
 export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
+  // Provisional Windows estimates, not Windows measurements: these native
+  // inline-handler proofs took 7.25/6.86/6.52s on Node24 Linux. Apply the
+  // runner's documented ~5x slowdown and round up; keep the watchdog unchanged.
+  'test/integration/cfg/interproc-taint.test.ts': 40,
+  'test/integration/function-local-identity.test.ts': 35,
+  'test/integration/taint-explain.test.ts': 35,
   // Conservative estimates from Windows run 38144297115: persisted
   // rename cases include native indexing and take up to ~25s each. Keep
   // each language together while charging its complete fixture inventory.

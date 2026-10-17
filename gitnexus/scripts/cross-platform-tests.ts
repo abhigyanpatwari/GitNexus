@@ -157,6 +157,9 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  // Inline-handler findings must survive native persistence and cold explain
+  // readers on each OS; passing the Ubuntu-only taint suite is insufficient.
+  'test/integration/taint-explain.test.ts',
   'test/integration/rename-provider-matrix.test.ts',
   'test/integration/rename-provider-c.test.ts',
   'test/integration/rename-provider-cobol.test.ts',
@@ -317,6 +320,9 @@ const SPAWN_CLI = [
 // Worker threads tests — exercise real worker_threads which have
 // platform-specific behavior (thread spawning, IPC, exit handling)
 const WORKER_THREADS = [
+  // Native callback parsing and exact caller/summary ownership (#3489).
+  'test/integration/cfg/interproc-taint.test.ts',
+  'test/integration/function-local-identity.test.ts',
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
