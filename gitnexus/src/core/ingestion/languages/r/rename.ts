@@ -214,6 +214,32 @@ function superassignedName(node: Parser.SyntaxNode): string | null {
   return target?.type === 'identifier' ? rBareName(target.text) : null;
 }
 
+/** The left-hand side of `<-`, `=`, `<<-`, or the right-hand side of `->`, `->>`; null for any other node. */
+function assignmentTarget(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  if (node.type !== 'binary_operator') return null;
+  const operator = node.childForFieldName('operator')?.text;
+  if (operator === '<-' || operator === '=' || operator === '<<-')
+    return node.childForFieldName('lhs');
+  if (operator === '->' || operator === '->>') return node.childForFieldName('rhs');
+  return null;
+}
+
+/**
+ * Whether a call of `name` sits in the target of an assignment: `helper(z) <- 5`,
+ * `helper(z)$a <- 1`, `names(helper(z)) <- v`. R runs the replacement function `helper<-`
+ * there, not `helper`, so renaming the getter would strand the setter.
+ */
+function callsInAssignmentTarget(node: Parser.SyntaxNode, name: string): boolean {
+  const target = assignmentTarget(node);
+  // A plain name or a string names the variable being bound, not a function being called.
+  if (target === null || target.type === 'identifier' || target.type === 'string') return false;
+  for (const inner of walkNamedNodes(target)) {
+    if (inner.type === 'identifier' && isCallee(inner) && rBareName(inner.text) === name)
+      return true;
+  }
+  return false;
+}
+
 /**
  * A name R also writes between its operands: an infix function (`%+%`, `%in%`) or an operator
  * (`+`, `[[`). Its uses are operator tokens, not `identifier` nodes, so a rename would edit the
@@ -286,6 +312,12 @@ export const rRenameProvider: RenameProvider = {
     const name = rBareName(target.qualifiedName ?? '');
     if (target.type !== 'Function')
       return unsupported('Only plain R functions can be renamed; classes and members are refused.');
+    // `f(x) <- v` calls the replacement function `f<-`, so a name ending in `<-` is half of a pair
+    // whose other half is written differently.
+    if (name.endsWith('<-') || newName.endsWith('<-'))
+      return unsupported(
+        'A replacement function (`name<-`) is called as `name(x) <- value`; those calls are not renamed.',
+      );
     if (isOperatorName(name) || isOperatorName(newName))
       return unsupported(
         'An infix function or operator (`%op%`, `+`) is also written between its operands; those uses are not renamed.',
@@ -318,6 +350,10 @@ export const rRenameProvider: RenameProvider = {
                 'A parameter of this name may hold a function, so this call may reach the parameter or the function being renamed.',
             };
         }
+        if (callsInAssignmentTarget(node, name))
+          return unsupported(
+            'A call of this name is the target of an assignment (`name(x) <- value`), which calls the replacement function `name<-`; a rename would strand it.',
+          );
         if (superassignedName(node) === name)
           return {
             code: 'ambiguous_reference',
@@ -326,7 +362,11 @@ export const rRenameProvider: RenameProvider = {
           };
         if (node.type !== 'string') continue;
         const value = rStringValue(node.text);
-        if (value !== null && (value === name || value === newName))
+        // `"name<-" <- function(x, value)` defines the replacement function by string.
+        if (
+          value !== null &&
+          (value === name || value === newName || value === `${name}<-` || value === `${newName}<-`)
+        )
           return unsupported(
             'A string literal spells this name; S3, S4, R6 and dynamic lookup resolve it by string.',
           );
