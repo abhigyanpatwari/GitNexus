@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that would register a method of a base generic (print.foo), although the repository defines no print().",
+  "categories": ["s3", "name-collision", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "helper.R", "startLine": 0 },
+  "newName": "print.foo",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

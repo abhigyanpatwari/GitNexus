@@ -38,8 +38,10 @@ _spec.loader.exec_module(readiness)  # type: ignore[union-attr]
 # The exact row-diff regex the workflow's change-detection bot uses
 # (.github/workflows/tree-sitter-upgrade-readiness.yml) — byte-identical so a matrix
 # format change that would silently break change-detection fails here. Group 2 is
-# ONLY the Status cell ([^|]+? before the final `|$`).
-_ROW_DIFF_RE = re.compile(r"\| `(tree-sitter-[^`]+)` \|.*\| ([^|]+?) \|$", re.M)
+# ONLY the Status cell ([^|]+? before the final `|$`). Group 1 is the grammar
+# name, optionally scoped (`@eagleoutice/tree-sitter-r`).
+_R_GRAMMAR = "@eagleoutice/tree-sitter-r"
+_ROW_DIFF_RE = re.compile(r"\| `((?:@[^/`]+/)?tree-sitter-[^`]+)` \|.*\| ([^|]+?) \|$", re.M)
 # Mirrors the scheduled issue-update summary extraction in
 # tree-sitter-upgrade-readiness.yml. If the report prose changes again, the issue
 # comment should not silently degrade to "?/? ready. ? blocker(s)".
@@ -216,6 +218,93 @@ class AssertCurrent(TestCase):
         self.assertIn("outside current runtime range", buf.getvalue())
 
 
+class AssertCurrentCoversR(TestCase):
+    """R is an npm grammar under a scoped name; --assert-current must check its
+    installed ABI against the current runtime's range like any other grammar."""
+
+    def test_out_of_range_r_abi_fails_the_gate_and_names_r(self):
+        real = readiness.extract_language_version
+
+        def fake(parser_c):
+            return 99 if "tree-sitter-r" in parser_c.parts else real(parser_c)
+
+        import urllib.request
+        buf = io.StringIO()
+        with mock.patch.object(readiness, "extract_language_version", side_effect=fake), \
+             mock.patch.object(urllib.request, "urlopen", side_effect=AssertionError("network")), \
+             contextlib.redirect_stdout(buf):
+            code = readiness.assert_current()
+        self.assertEqual(code, 1)
+        self.assertIn(f"{_R_GRAMMAR}: installed ABI 99 outside current runtime range", buf.getvalue())
+
+
+class ScopedGrammarName(TestCase):
+    """The R grammar's package name is scoped (`@eagleoutice/tree-sitter-r`); every
+    place that recognises a grammar by a `tree-sitter-` prefix must cope with it."""
+
+    def test_pinned_versions_include_the_scoped_grammar(self):
+        pkg = json.loads((_REPO_ROOT / "gitnexus" / "package.json").read_text())
+        pinned = readiness.read_pinned_grammar_versions()
+        self.assertEqual(pinned.get(_R_GRAMMAR), pkg["dependencies"][_R_GRAMMAR])
+        # Selection is by grammar basename: the runtime and non-grammar scoped
+        # dependencies are still excluded.
+        self.assertNotIn("tree-sitter", pinned)
+        self.assertNotIn("@ladybugdb/core", pinned)
+
+    def test_r_row_shows_its_pin_and_is_a_blocker_not_a_bump_candidate(self):
+        # Production-faithful R metadata: npm latest 1.1.2 (what package.json pins) with peer ^0.21.0 — blocks 0.25 and is NOT behind latest.
+        def fake_npm(pkg: str):
+            if pkg == _R_GRAMMAR:
+                return {"version": "1.1.2", "peerDependencies": {"tree-sitter": "^0.21.0"}}
+            return {"version": "9.9.9", "peerDependencies": {"tree-sitter": "^0.25.0"}}
+
+        def fake_fetch(url: str, timeout: int = 8):
+            if "parser.c" in url and "alex-pinkus" not in url:
+                return "#define LANGUAGE_VERSION 14\n"
+            if "/commits/" in url:
+                return json.dumps({"sha": "0123456789abcdef"})
+            return None
+
+        buf = io.StringIO()
+        with mock.patch.object(readiness, "npm_view_json", side_effect=fake_npm), \
+             mock.patch.object(readiness, "fetch_text", side_effect=fake_fetch), \
+             contextlib.redirect_stdout(buf):
+            code = readiness.main()
+        report = buf.getvalue()
+        row = next(l for l in report.splitlines() if l.startswith(f"| `{_R_GRAMMAR}` |"))
+        cells = [c.strip() for c in row.strip().strip("|").split("|")]
+        self.assertEqual(cells[1], "1.1.2")  # Pinned
+        self.assertEqual(cells[-1], "Peer patch required")
+        self.assertEqual(code, 1)
+        self.assertIn(f"`{_R_GRAMMAR}@1.1.2` — peer `^0.21.0`", report)  # Blocked bucket
+        # On latest already: not a bump candidate (pre-fix the lost pin made it
+        # one). Other grammars are mocked at 9.9.9 and so do appear in that list;
+        # only R's own line is asserted absent.
+        self.assertNotIn(f"- `{_R_GRAMMAR}`: ", report)
+        self.assertNotIn(f"`{_R_GRAMMAR}` — pinned", report)
+
+    def test_row_diff_regex_captures_scoped_and_unscoped_names(self):
+        rows = (
+            "| `@eagleoutice/tree-sitter-r` | ^1.1.2 | 1.1.2 | ^0.21.0 | **No** | 14 | 14 | Peer patch required |\n"
+            "| `tree-sitter-go` | ^0.23.0 | 0.25.0 | ^0.25.0 | Yes | 14 | 14 | Ready |\n"
+        )
+        self.assertEqual(
+            dict(_ROW_DIFF_RE.findall(rows)),
+            {"@eagleoutice/tree-sitter-r": "Peer patch required", "tree-sitter-go": "Ready"},
+        )
+
+    def test_row_diff_regex_mirror_matches_the_workflow(self):
+        # The workflow's change-detection regex is the one that matters; the
+        # mirror above is only worth anything while it is the same expression.
+        workflow = (
+            _REPO_ROOT / ".github" / "workflows" / "tree-sitter-upgrade-readiness.yml"
+        ).read_text(encoding="utf-8")
+        match = re.search(r"md\.matchAll\(/(.+)/gm\)", workflow)
+        self.assertIsNotNone(match, "row-diff regex not found in the workflow")
+        # JS regex literals escape `/`; Python patterns do not.
+        self.assertEqual(match.group(1).replace("\\/", "/"), _ROW_DIFF_RE.pattern)
+
+
 class FetchHelperReadPhaseErrors(TestCase):
     """Read-phase transport failures — raised by resp.read() AFTER urlopen has
     returned (ConnectionResetError, ssl.SSLError, socket.timeout,
@@ -326,6 +415,17 @@ class ReportRendering(TestCase):
         self.assertNotIn("Could not check", self.report)
         self.assertNotIn("fetch failed", self.report)
 
+    def test_r_grammar_is_listed_npm_queried_and_diffable(self):
+        # R is an npm dependency, so it takes the npm path (queried, not vendored)
+        # and its row must be captured by the change-detection regex despite the
+        # scoped package name.
+        self.assertEqual(
+            readiness.GRAMMARS.get(_R_GRAMMAR),
+            ("r-lib/tree-sitter-r", "main", "src/parser.c"),
+        )
+        self.assertIn(_R_GRAMMAR, _render_report.last_npm_calls)
+        self.assertIn(_R_GRAMMAR, self.rows)
+
     def test_held_swift_renders_held_and_keeps_exit_nonzero(self):
         # Status is the last matrix cell (the row-diff regex captures the whole
         # tail, not just status, so read the cell directly).
@@ -361,17 +461,19 @@ class ReportRendering(TestCase):
         self.assertIsNotNone(ready)
         self.assertIsNotNone(blockers)
         # Counts are derived from _render_report()'s mock corpus (all npm peer
-        # deps mocked permissive): of the 10 npm-installed grammars, 9 render
+        # deps mocked permissive): of the 11 npm-installed grammars, 10 render
         # Ready and 1 — tree-sitter-cpp — is the intentional pin (#1242), so it is
         # not counted ready. The remaining workarounds are that intentional pin
         # and Swift's declaration-recovery hold.
-        self.assertEqual(ready.groups(), ("9", "10"))
+        self.assertEqual(ready.groups(), ("10", "11"))
         self.assertEqual(blockers.group(1), "2")
 
     def test_lists_every_pack_time_peer_patch_with_its_drop_condition(self):
         patched = readiness.read_patched_peers()
-        # Guards the AUDITED_PEERS regex: the bundle script patches 8 manifests today.
-        self.assertGreaterEqual(len(patched), 8)
+        # Guards the AUDITED_PEERS regex: the bundle script patches 9 manifests
+        # today, including the scoped R grammar.
+        self.assertGreaterEqual(len(patched), 9)
+        self.assertIn((_R_GRAMMAR, "1.1.2", "^0.21.0"), patched)
         self.assertIn(f"## Pack-time peer patches ({len(patched)})", self.report)
         for name, version, _ in patched:
             self.assertIn(f"- `{name}@{version}`", self.report)
@@ -382,6 +484,8 @@ class ReportRendering(TestCase):
         self.assertIn("required while intentionally pinned", line("tree-sitter-cpp@0.23.4"))
         self.assertIn("transitive", line("tree-sitter-javascript@0.23.1"))
         self.assertIn("transitive", line("tree-sitter-c@0.23.6"))
+        # The scoped R grammar is a direct pin, so its patch is listed like any other.
+        self.assertIn("can drop: bump to `9.9.9`", line(f"{_R_GRAMMAR}@1.1.2"))
 
     def test_target_runtime_is_the_bundled_pin(self):
         pkg = json.loads((_REPO_ROOT / "gitnexus" / "package.json").read_text())

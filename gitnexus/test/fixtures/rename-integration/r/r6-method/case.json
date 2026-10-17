@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse to rename an R6 method: the provider only renames plain functions, and a class member is not one.",
+  "categories": ["r6", "negative", "unchanged-on-error"],
+  "target": { "name": "dep", "kind": "Method", "file": "counter.R", "startLine": 2 },
+  "newName": "dependency",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

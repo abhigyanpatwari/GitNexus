@@ -69,6 +69,8 @@ GRAMMARS: dict[str, tuple[str, str, str]] = {
     "tree-sitter-python":     ("tree-sitter/tree-sitter-python",     "master", "src/parser.c"),
     "tree-sitter-ruby":       ("tree-sitter/tree-sitter-ruby",       "master", "src/parser.c"),
     "tree-sitter-rust":       ("tree-sitter/tree-sitter-rust",       "master", "src/parser.c"),
+    # Scoped npm package: the only grammar whose name does not start with "tree-sitter-".
+    "@eagleoutice/tree-sitter-r": ("r-lib/tree-sitter-r",             "main",   "src/parser.c"),
     "tree-sitter-swift":      ("alex-pinkus/tree-sitter-swift",      "main",   "src/parser.c"),
     "tree-sitter-typescript": ("tree-sitter/tree-sitter-typescript", "master",  "typescript/src/parser.c"),
     # Vendored parsers — kept here so the upstream coords for drift
@@ -162,13 +164,15 @@ def read_pinned_grammar_versions() -> dict[str, str]:
 
     Looks at both runtime and optional dependencies. Returns the raw range
     string (e.g. '0.21.4', '^0.23.0', 'file:./vendor/...') so the report can
-    expose how flexible each pin is.
+    expose how flexible each pin is. A grammar is recognised by its package
+    basename, so a scoped package (``@scope/tree-sitter-x``) is included, keyed
+    by its full name.
     """
     pkg = _load_package_json()
     pinned: dict[str, str] = {}
     for section in ("dependencies", "optionalDependencies"):
         for name, spec in (pkg.get(section) or {}).items():
-            if name.startswith("tree-sitter-"):
+            if name.rsplit("/", 1)[-1].startswith("tree-sitter-"):
                 pinned[name] = spec
     return pinned
 
@@ -182,7 +186,7 @@ def read_patched_peers() -> list[tuple[str, str, str]]:
     """
     script = GITNEXUS_DIR / "scripts" / "prepare-tree-sitter-bundle.cjs"
     return re.findall(
-        r"\['(tree-sitter[\w-]*)@([\d.]+)',\s*'([^']+)'\]",
+        r"\['((?:@[\w.-]+/)?tree-sitter[\w-]*)@([\d.]+)',\s*'([^']+)'\]",
         script.read_text(encoding="utf-8"),
     )
 

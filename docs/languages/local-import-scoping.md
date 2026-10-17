@@ -31,7 +31,7 @@ pin that distinction.
 ## Providers with expanded lexical support
 
 These seven entries are part of the
-[18-provider registry](../../gitnexus/src/core/ingestion/languages/index.ts).
+[19-provider registry](../../gitnexus/src/core/ingestion/languages/index.ts).
 The evidence links cover exact targets and negative cases, not just edge counts.
 
 | Provider | Supported behavior | Source and regression evidence |

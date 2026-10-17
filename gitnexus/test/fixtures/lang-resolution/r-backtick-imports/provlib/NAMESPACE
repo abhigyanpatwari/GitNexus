@@ -1,0 +1,5 @@
+export(`%||%`)
+export(`odd fn`)
+export(plain_fn)
+export(`shadowed_op`)
+export(qualified_op)

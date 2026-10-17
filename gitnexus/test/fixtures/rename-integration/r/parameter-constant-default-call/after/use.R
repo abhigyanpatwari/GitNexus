@@ -1,0 +1,5 @@
+assist <- function(v) v + 1
+
+use <- function(x, helper = 2) {
+  assist(x)
+}
