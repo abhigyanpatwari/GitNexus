@@ -32,7 +32,7 @@ function bootstrap(root, url, ref) {
   }
   const upstream = `refs/remotes/origin/${ref}`;
   git('fetch', 'origin', `refs/heads/${ref}:${upstream}`);
-  git('checkout', '--track', '-b', ref, upstream);
+  git('checkout', '--no-overwrite-ignore', '--track', '-b', ref, upstream);
 }
 
 module.exports = { bootstrap };

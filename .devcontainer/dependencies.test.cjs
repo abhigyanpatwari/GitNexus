@@ -80,7 +80,11 @@ test('tracked native source and installer edits invalidate reuse', (t) => {
   const f = fixture(t);
   fs.mkdirSync(path.join(f.root, 'scripts'));
   fs.mkdirSync(path.join(f.root, 'vendor'));
+  fs.mkdirSync(path.join(f.root, 'prebuilds/bundled'), { recursive: true });
   fs.writeFileSync(path.join(f.root, 'scripts/build-tree-sitter-grammars.cjs'), '// original');
+  fs.writeFileSync(path.join(f.root, 'scripts/arm64-prebuild.cjs'), '// original validator');
+  fs.writeFileSync(path.join(f.root, 'prebuilds/bundled/manifest.json'), '{"schemaVersion":1}');
+  fs.writeFileSync(path.join(f.root, 'prebuilds/bundled/grammar.node'), Buffer.from([1, 2, 3]));
   fs.writeFileSync(path.join(f.root, 'vendor/grammar.c'), '// original');
   const git = (...args) =>
     execFileSync(
@@ -104,6 +108,8 @@ test('tracked native source and installer edits invalidate reuse', (t) => {
     'package.json',
     'package-lock.json',
     'scripts/build-tree-sitter-grammars.cjs',
+    'scripts/arm64-prebuild.cjs',
+    'prebuilds/bundled',
     'vendor/grammar.c',
   );
   git('commit', '-m', 'fixture');
@@ -116,6 +122,15 @@ test('tracked native source and installer edits invalidate reuse', (t) => {
     '// changed installer',
   );
   assert.equal(ensureDependencies(f.root, { run: f.run }), true);
+  for (const [file, content] of [
+    ['scripts/arm64-prebuild.cjs', '// changed validator'],
+    ['prebuilds/bundled/manifest.json', '{"schemaVersion":2}'],
+    ['prebuilds/bundled/grammar.node', Buffer.from([4, 5, 6])],
+  ]) {
+    fs.writeFileSync(path.join(f.root, file), content);
+    assert.equal(ensureDependencies(f.root, { run: f.run }), true, file);
+    assert.equal(ensureDependencies(f.root, { run: f.run }), false, file);
+  }
 });
 
 test('failed reinstall removes its receipt and is retried', (t) => {

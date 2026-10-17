@@ -21,7 +21,15 @@ function profile(
   } = {},
 ) {
   if (imageOnly && image) throw new Error('--image cannot be used with image-build');
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(ref)) throw new Error('Invalid clone branch');
+  if (
+    typeof ref !== 'string' ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(ref) ||
+    ref === 'HEAD' ||
+    ref.includes('..') ||
+    ref.endsWith('.') ||
+    ref.split('/').some((part) => !part || part.startsWith('.') || part.endsWith('.lock'))
+  )
+    throw new Error('Invalid clone branch');
   if (image && !/^[a-z0-9][a-z0-9./:_@-]+$/.test(image)) throw new Error('Invalid image reference');
   if (
     native &&
@@ -92,8 +100,8 @@ function profile(
     );
     result = replaceOnce(
       result,
-      /"capAdd": \["SYS_ADMIN"\],/,
-      '"capAdd": ["SYS_ADMIN"],\n  "runArgs": ["--shm-size=1g"],',
+      /"workspaceMount":/,
+      '"runArgs": ["--shm-size=1g"],\n  "workspaceMount":',
     );
   }
   return result;

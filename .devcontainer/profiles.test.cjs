@@ -62,6 +62,49 @@ test('profile generator rejects unsafe values and changed canonical layout', () 
   );
 });
 
+test('native branch validation rejects invalid Git refs before generation', () => {
+  for (const ref of [
+    'foo..',
+    'topic/.hidden',
+    'topic/name.lock',
+    'topic/name.lock/child',
+    'topic//child',
+    'topic/name.',
+    'topic/',
+    'HEAD',
+  ]) {
+    assert.notEqual(spawnSync('git', ['check-ref-format', '--branch', ref]).status, 0);
+    assert.throws(() => profile(source, { native: true, ref }), /Invalid clone branch/);
+  }
+  for (const ref of [
+    'main',
+    'feature/fix-123',
+    'release/v1.2.3',
+    'topic/name.locked',
+    'topic/name.LOCK',
+  ]) {
+    assert.equal(spawnSync('git', ['check-ref-format', '--branch', ref]).status, 0);
+    assert.equal(
+      parse(profile(source, { native: true, ref })).containerEnv.GITNEXUS_CLONE_REF,
+      ref,
+    );
+  }
+});
+
+test('UI variants preserve empty, custom, and absent capability selections', () => {
+  for (const capabilities of [[], ['SYS_PTRACE'], undefined]) {
+    const customized = source.replace(
+      '  "capAdd": ["SYS_ADMIN"],',
+      capabilities === undefined ? '' : `  "capAdd": ${JSON.stringify(capabilities)},`,
+    );
+    for (const options of [{}, { native: true }, { image: 'ghcr.io/example/devcontainer:ui' }]) {
+      const c = parse(profile(customized, { ...options, ui: true, playwright: '1.63.0' }));
+      assert.deepEqual(c.capAdd, capabilities);
+      assert.deepEqual(c.runArgs, ['--shm-size=1g']);
+    }
+  }
+});
+
 test('native profiles accept fork remotes over HTTPS and Git SSH', () => {
   for (const url of [
     'https://github.com/contributor/GitNexus.git',
@@ -102,6 +145,7 @@ test('profile CLI validates combinations before writing and generates fork confi
     [['native', '--ref', '--ui'], /--ref requires a value/],
     [['prebuilt', '--url', 'https://github.com/user/repo.git'], /require the native profile/],
     [['native', '--ref', 'main', '--ref', 'other'], /Duplicate profile argument/],
+    [['native', '--ref', 'foo..'], /Invalid clone branch/],
   ]) {
     const result = run(...args);
     assert.notEqual(result.status, 0);
@@ -187,4 +231,16 @@ test('native workspace preserves edits, rejects a different origin and resumes i
   fs.writeFileSync(path.join(conflict, 'file'), 'pre-existing user file');
   assert.throws(() => bootstrap(conflict, origin, 'main'));
   assert.equal(fs.readFileSync(path.join(conflict, 'file'), 'utf8'), 'pre-existing user file');
+  const ignored = path.join(root, 'ignored-conflict');
+  fs.mkdirSync(ignored);
+  execFileSync('git', ['init', '-q'], { cwd: ignored });
+  fs.writeFileSync(path.join(ignored, '.git/info/exclude'), 'file\n');
+  fs.writeFileSync(path.join(ignored, 'file'), 'ignored user file');
+  assert.throws(() => bootstrap(ignored, origin, 'main'));
+  assert.equal(fs.readFileSync(path.join(ignored, 'file'), 'utf8'), 'ignored user file');
+  // Preserve the user's file elsewhere, then verify the same checkout can resume.
+  fs.renameSync(path.join(ignored, 'file'), path.join(ignored, 'saved-user-file'));
+  bootstrap(ignored, origin, 'main');
+  assert.equal(fs.readFileSync(path.join(ignored, 'file'), 'utf8'), 'source');
+  assert.equal(fs.readFileSync(path.join(ignored, 'saved-user-file'), 'utf8'), 'ignored user file');
 });

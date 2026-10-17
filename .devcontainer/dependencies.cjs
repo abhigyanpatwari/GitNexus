@@ -8,8 +8,10 @@ const { execFileSync } = require('node:child_process');
 const markerName = '.gitnexus-devcontainer-install.json';
 const nativeInputs = [
   'vendor',
+  'prebuilds/bundled',
   'scripts/build-tree-sitter-grammars.cjs',
   'scripts/prepare-tree-sitter-bundle.cjs',
+  'scripts/arm64-prebuild.cjs',
 ];
 
 function fingerprint(directory, runtime = process) {
