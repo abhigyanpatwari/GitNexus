@@ -89,7 +89,14 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/skills-e2e.test.ts': 550,
   'test/integration/fts-extension-e2e.test.ts': 380,
   'test/integration/skip-fts.test.ts': 110,
+  // Provisional: twice the local native-suite duration, pending Windows CI.
+  // These scheduling hints do not change test timeouts or pass/fail gates.
+  'test/integration/embedding-identity-integrity.test.ts': 180,
+  'test/integration/shared-store-embedding-reuse.test.ts': 140,
   'test/integration/analyze-wal-checkpoint-failure.test.ts': 86,
+  // Windows run 39046807237 measured 308s before two cases reached recovery.
+  // Allow the measured ~19s recovery cost for each corrected in-place case.
+  'test/unit/incremental-write-integrity.test.ts': 360,
   'test/integration/cli-limit-e2e.test.ts': 75,
   'test/unit/hooks.test.ts': 26,
   'test/integration/analyze-heap-oom-e2e.test.ts': 23,
