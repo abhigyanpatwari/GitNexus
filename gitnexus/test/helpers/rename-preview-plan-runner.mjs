@@ -270,7 +270,18 @@ try {
     await fs.unlink(path.join(root, 'a.ts'));
     await fs.symlink(path.join(root, 'first.data'), path.join(root, 'a.ts'), 'file');
     plan = await preview();
-    assert.equal((await apply(plan)).status, 'success');
+    const applied = await apply(plan);
+    assert.equal(applied.status, 'success', JSON.stringify(applied));
+    assert.deepEqual(applied.changes, plan.changes);
+    for (const change of plan.changes) {
+      let expected = sources[change.file_path];
+      for (const edit of [...change.edits].sort((a, b) => b.start - a.start))
+        expected =
+          expected.slice(0, edit.start) + edit.new_text + expected.slice(edit.start + edit.length);
+      assert.equal(await fs.readFile(path.join(root, change.file_path), 'utf8'), expected);
+      if (change.file_path === 'a.ts')
+        assert.equal(await fs.readFile(path.join(root, 'first.data'), 'utf8'), expected);
+    }
     assert.equal(await fs.readFile(path.join(root, 'second.data'), 'utf8'), sources['a.ts']);
     await fs.writeFile(
       reportPath,
