@@ -70,6 +70,32 @@ function isUnderPackageRDir(
 }
 
 /**
+ * The directory names `<name>` of the `.../<name>/R/<file>` paths in `filePaths` that no
+ * discovered package owns: the names {@link isUnderPackageRDir} would accept, read from all the
+ * paths once. {@link rQualifierLocality} asks about every qualifier of a run; answering each from
+ * this set instead of a scan of every path makes the work linear in the paths plus the
+ * qualifiers instead of their product.
+ */
+export function rUnownedPackageDirNames(
+  filePaths: Iterable<string>,
+  cfg: RPackageConfig | null | undefined,
+): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const filePath of filePaths) {
+    const parts = filePath.replace(/\\/g, '/').split('/');
+    let owned: boolean | undefined;
+    // `R` must be a directory (not the last segment), with the package directory before it.
+    for (let i = 0; i + 2 < parts.length; i++) {
+      if (parts[i + 1] !== 'R' || names.has(parts[i])) continue;
+      owned ??= rFileBelongsToDiscoveredPackage(parts.join('/'), cfg);
+      if (owned) break;
+      names.add(parts[i]);
+    }
+  }
+  return names;
+}
+
+/**
  * Locality of the package named by a qualifier.
  *
  *  - `local`: `pkg` is in `cfg.packages`, or a parsed file sits under a
@@ -88,10 +114,16 @@ export function rQualifierLocality(
   pkg: string,
   cfg: RPackageConfig | null | undefined,
   parsedFilePaths: ReadonlySet<string>,
+  /** {@link rUnownedPackageDirNames} of `parsedFilePaths`, when the caller asks many times. */
+  unownedPackageDirNames?: ReadonlySet<string>,
 ): RQualifierLocality {
   if (cfg?.packages.has(pkg) === true) return 'local';
-  for (const filePath of parsedFilePaths) {
-    if (isUnderPackageRDir(pkg, filePath, cfg)) return 'local';
+  if (unownedPackageDirNames !== undefined) {
+    if (unownedPackageDirNames.has(pkg)) return 'local';
+  } else {
+    for (const filePath of parsedFilePaths) {
+      if (isUnderPackageRDir(pkg, filePath, cfg)) return 'local';
+    }
   }
   if (cfg === null || cfg === undefined) return 'unknown';
   return cfg.truncated === true ? 'unknown' : 'external';
@@ -158,6 +190,7 @@ export function populateRQualifiedCalls(
 
   // Packages named by some qualified call, and how local each one is.
   let filePaths: Set<string> | undefined;
+  let unownedDirNames: ReadonlySet<string> | undefined;
   const localityByPackage = new Map<string, RQualifierLocality>();
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
@@ -165,7 +198,8 @@ export function populateRQualifiedCalls(
       const pkg = parseRQualifier(site.rawQualifiedName);
       if (pkg === undefined || localityByPackage.has(pkg)) continue;
       filePaths ??= new Set(parsedFiles.map((p) => p.filePath));
-      localityByPackage.set(pkg, rQualifierLocality(pkg, cfg, filePaths));
+      unownedDirNames ??= rUnownedPackageDirNames(filePaths, cfg);
+      localityByPackage.set(pkg, rQualifierLocality(pkg, cfg, filePaths, unownedDirNames));
     }
   }
   if (localityByPackage.size === 0) return;
