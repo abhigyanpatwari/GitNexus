@@ -70,8 +70,14 @@ export const MAX_PATTERN_LENGTH = 16384;
  */
 export const MAX_STATES = 16384;
 
-/** Deepest group nesting accepted; bounds the parser's and the builder's recursion. */
-const MAX_NESTING = 2048;
+/**
+ * Deepest group nesting accepted; bounds the parser's and the builder's recursion. It is set
+ * well inside what the call stack allows, so that the verdict does not depend on the machine:
+ * a cold process (no JIT warm-up, so the biggest frames) compiled 1,500 levels in the
+ * measurements and ran out of stack somewhere before 2,048, and 256 levels still compile on a
+ * quarter of the default stack (`node --stack-size=250`). No NAMESPACE nests groups this deep.
+ */
+export const MAX_NESTING = 256;
 
 /**
  * Most `build` calls for one pattern. States are capped separately, but a body that

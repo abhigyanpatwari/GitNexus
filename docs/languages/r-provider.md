@@ -97,6 +97,7 @@ Not supported:
 
 - Matching work and NFA states are counted in deterministic work units, never wall-clock time, so the outcome is the same on every machine. A NAMESPACE file is still read in full.
 - Caps, in `linear-regex.ts`: `MAX_TOTAL_WORK` (40,000,000 state visits per matcher), `MAX_SHARED_WORK` (100,000,000 matching visits per load), `MAX_PACKAGE_WORK` (30,000,000 per package), `MAX_SHARED_STATES` (500,000 NFA states per load) and `MAX_PACKAGE_STATES` (100,000 per package); a single pattern is also capped by `MAX_PATTERN_LENGTH` (16,384 characters) and `MAX_STATES` (16,384).
+- Groups nested deeper than 256 (`MAX_NESTING`) are refused with the reason "groups are nested too deeply". The limit sits well inside the call stack (a quarter of the default stack still compiles 256 levels), so the verdict is the same cold or warm and on every machine.
 - A pattern that does not fit is dropped, exports nothing and is warned about: at most 50 patterns are named per package (`MAX_LISTED_DROPPED_PATTERNS`), followed by a summary line counting the rest.
 - The first pattern refused for lack of states closes that package's allowance, so later patterns in the package are refused without being parsed.
 - One hostile package cannot exhaust the load budget alone (it is limited to its own share), but several can (three, for matching work); packages processed after that degrade, with warnings. Which package degrades follows graph node order.
