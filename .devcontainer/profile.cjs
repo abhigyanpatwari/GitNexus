@@ -30,7 +30,9 @@ function profile(
     ref.split('/').some((part) => !part || part.startsWith('.') || part.endsWith('.lock'))
   )
     throw new Error('Invalid clone branch');
-  if (image && !/^[a-z0-9][a-z0-9./:_@-]+$/.test(image)) throw new Error('Invalid image reference');
+  // Character safety check only; Docker validates the image reference grammar.
+  if (image && !/^[a-zA-Z0-9][a-zA-Z0-9./:_@-]*$/.test(image))
+    throw new Error('Invalid image reference');
   if (
     native &&
     !/^(?:https:\/\/[a-zA-Z0-9.-]+(?::[0-9]+)?\/|ssh:\/\/git@[a-zA-Z0-9.-]+(?::[0-9]+)?\/|git@[a-zA-Z0-9.-]+:)[a-zA-Z0-9._/-]+$/.test(
@@ -44,8 +46,6 @@ function profile(
     const end = result.indexOf('\n  // Runs on the HOST', start);
     if (start < 0 || end < 0) throw new Error('Canonical build block changed');
     result = result.slice(0, start) + `  "image": ${JSON.stringify(image)},\n` + result.slice(end);
-    // The published devcontainer image already contains this feature.
-    result = replaceOnce(result, /"features": \{[\s\S]*?\n  \},/, '"features": {},');
   } else {
     result = replaceOnce(result, /"dockerfile": "Dockerfile"/, '"dockerfile": "../Dockerfile"');
     result = replaceOnce(result, /"context": "\."/, '"context": ".."');

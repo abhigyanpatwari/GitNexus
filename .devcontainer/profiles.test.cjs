@@ -30,12 +30,38 @@ test('native/UI profile inherits hooks, storage and defaults while changing work
   assert.equal(c.updateContentCommand, 'bash .devcontainer/install-deps.sh');
 });
 
-test('prebuilt consumers retain runtime lifecycle and do not reinstall image features', () => {
-  const c = parse(profile(source, { image: 'ghcr.io/example/devcontainer@sha256:abcd' }));
-  assert.equal(c.build, undefined);
-  assert.equal(c.image, 'ghcr.io/example/devcontainer@sha256:abcd');
-  assert.deepEqual(c.features, {});
-  assert.equal(c.postCreateCommand, 'bash .devcontainer/post-create.sh');
+test('image consumers retain configured features and runtime lifecycle', () => {
+  for (const options of [{}, { native: true }, { ui: true }, { native: true, ui: true }]) {
+    const image = 'ghcr.io/example/devcontainer@sha256:abcd';
+    const c = parse(profile(source, { ...options, image }));
+    assert.equal(c.build, undefined);
+    assert.equal(c.image, image);
+    assert.deepEqual(c.features, parse(source).features);
+    assert.ok(c.features['ghcr.io/devcontainers/features/github-cli:1']);
+    assert.equal(c.postCreateCommand, 'bash .devcontainer/post-create.sh');
+  }
+});
+
+test('image selection accepts short names, uppercase tags, ports and digests', () => {
+  for (const image of [
+    'a',
+    'a:RC',
+    'ghcr.io/example/image:ReleaseCandidate',
+    'localhost:5000/example/image:ReleaseCandidate',
+    `ghcr.io/example/image@sha256:${'a'.repeat(64)}`,
+    `ghcr.io/example/image:RC@sha256:${'a'.repeat(64)}`,
+  ]) {
+    assert.equal(parse(profile(source, { image })).image, image);
+  }
+  for (const image of [
+    '--privileged',
+    'image;bad',
+    'image name',
+    'image\nname',
+    '$(id)',
+    '"image"',
+  ])
+    assert.throws(() => profile(source, { image }), /Invalid image reference/);
 });
 
 test('published toolchain metadata excludes host mounts and lifecycle hooks', () => {
@@ -163,6 +189,20 @@ test('profile CLI validates combinations before writing and generates fork confi
   const c = parse(fs.readFileSync(path.join(config, 'generated/devcontainer.json'), 'utf8'));
   assert.equal(c.containerEnv.GITNEXUS_CLONE_URL, 'https://github.com/contributor/GitNexus.git');
   assert.equal(c.containerEnv.GITNEXUS_CLONE_REF, 'feature/fork-only');
+  for (const args of [
+    ['prebuilt'],
+    ['prebuilt', '--ui'],
+    ['native', '--image', 'a'],
+    ['ui', '--image', 'ghcr.io/example/image:ReleaseCandidate'],
+  ]) {
+    const result = run(...args);
+    assert.equal(result.status, 0, result.stderr);
+    const generated = parse(
+      fs.readFileSync(path.join(config, 'generated/devcontainer.json'), 'utf8'),
+    );
+    assert.deepEqual(generated.features, parse(source).features);
+    if (args.includes('--image')) assert.equal(generated.image, args.at(-1));
+  }
 });
 
 test('native workspace preserves edits, rejects a different origin and resumes interrupted fetches', (t) => {
