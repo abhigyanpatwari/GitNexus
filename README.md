@@ -103,6 +103,16 @@ Indexing is memory-bound. If `gitnexus-server` runs out of memory on a large rep
 
 [![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/gitnexus/)
 
+### Deploy to ZopDay
+
+Deploy the browser-based web UI in one click:
+
+[![Deploy to ZopDay](https://zop.dev/deploytozopday-inkhard.svg)](https://zop.dev/zopday/app/deploy?image=ghcr.io/abhigyanpatwari/gitnexus-web:latest&port=4173&name=gitnexus-web)
+
+This deploys `gitnexus-web` on its own — a self-hosted copy of the client-side explorer, for teams that would rather run their own instance than use the public one. Indexing still happens in the browser over WebAssembly, so code never leaves the machine and no backend is exposed. Choose ZopCloud to have it run fully managed, or connect your own AWS or GCP account and ZopDay sets it up there instead.
+
+No environment variables are needed, and `GITNEXUS_UPSTREAM_URL` is deliberately left unset: with it unset the image serves the UI alone. Users who want Local Backend Mode run `gitnexus serve` on their own machine, and the page connects to it from the browser — `serve` stays off the public internet, as [SECURITY.md](SECURITY.md) advises.
+
 ## Two Ways to Use GitNexus
 
 |             | **CLI + MCP** (recommended)                                                        | **Web UI**                                                           |
