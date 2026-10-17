@@ -47,12 +47,13 @@ jobs:
           npm ci --no-audit --no-fund
           node .devcontainer/verify-git-hooks.cjs
       - name: Unit-test devcontainer setup and hooks
-        run: node --test .devcontainer/translate-plugin-registries.test.cjs .devcontainer/verify-git-hooks.test.cjs .devcontainer/seed-codex.test.cjs
+        run: node --test .devcontainer/translate-plugin-registries.test.cjs .devcontainer/verify-git-hooks.test.cjs .devcontainer/seed-codex.test.cjs .devcontainer/tune-9p.test.cjs
       - name: Syntax-check the lifecycle shell scripts
         run: |
           bash -n .devcontainer/install-deps.sh
           bash -n .devcontainer/post-create.sh
           bash -n .devcontainer/seed-codex.sh
+          bash -n .devcontainer/tune-9p.sh
 
   build:
     name: Build devcontainer image

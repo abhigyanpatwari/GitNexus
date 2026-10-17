@@ -84,6 +84,24 @@ Open the repo folder in VS Code → **Reopen in Container**. The image is multi-
 
 Same as macOS — open in VS Code and reopen in container. `updateRemoteUserUID: true` (default) shifts the container's `node` user UID/GID to match your host user, so bind-mounted files stay writable without extra setup.
 
+## Optional 9p workspace tuning
+
+`.devcontainer/tune-9p.sh` can attempt a larger 9p `msize` on each container start. It is **disabled by default**, and applies only when `/workspace` itself is a 9p mount. Check inside the container with:
+
+```bash
+findmnt -rn --mountpoint /workspace -o FSTYPE,OPTIONS
+```
+
+To try it, add `"capAdd": ["SYS_ADMIN"]` at the top level of `.devcontainer/devcontainer.json`, change the existing `containerEnv.WORKSPACE_9P_TUNE` value to `"1"`, and **rebuild** the devcontainer. `SYS_ADMIN` grants broad mount privileges and can weaken the read-only mount protections described below, so enable it only for this experiment. The default configuration does not grant it. The default target is 1 MiB (`1048576` bytes); change `containerEnv.WORKSPACE_9P_MSIZE` to choose another size. The existing defaults also accept these two variables from the host environment when creating the container.
+
+The helper uses `sudo -n` with a five-second timeout, skips other filesystems and mounts already at or above the target, and never fails startup. It reads the mount options again after a remount and distinguishes a verified target value from an unchanged or unknown value. To retry manually after enabling the capability:
+
+```bash
+WORKSPACE_9P_TUNE=1 bash .devcontainer/tune-9p.sh /workspace
+```
+
+This is an experiment, with no measured speedup claimed. [`msize` sets the 9p packet payload size](https://www.kernel.org/doc/html/latest/filesystems/9p.html), but [upstream Linux's 9p implementation](https://github.com/torvalds/linux/blob/master/fs/9p/vfs_super.c) has no reconfigure handler to apply a new value. A successful remount command can therefore leave `msize` unchanged; Docker Desktop's kernel and server may also limit it. Increasing privileges alone does not guarantee tuning will work. For Windows development, keeping the checkout on the WSL2 filesystem remains the documented setup above.
+
 ## How CLI state flows from your host
 
 ### AI CLIs (Claude Code, Codex, Cursor): copy-once from a read-only host stage + per-container credentials

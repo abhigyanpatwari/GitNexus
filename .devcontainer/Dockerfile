@@ -44,11 +44,12 @@ ENV BUN_VERSION=${BUN_VERSION} \
 # Native build toolchain that gitnexus/postinstall needs. It compiles
 # tree-sitter native bindings, the vendored Dart/Proto/Swift grammars, and the
 # @ladybugdb/core N-API addon (a native Node add-on). python3, make, and g++ are
-# required. This mirrors the apt block in the existing Dockerfile.cli /
+# required. util-linux supplies findmnt/mount for the optional 9p helper.
+# This mirrors the apt block in the existing Dockerfile.cli /
 # gitnexus/Dockerfile.test images.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        python3 make g++ git curl ca-certificates bash unzip \
+        python3 make g++ git curl ca-certificates bash unzip util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 # Create and chown the named-volume mount points (~/.npm, ~/.local,

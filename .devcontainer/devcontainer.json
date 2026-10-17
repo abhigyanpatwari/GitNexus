@@ -45,6 +45,8 @@
   "updateRemoteUserUID": true,
   // Reap orphaned subprocesses from CLI workers and test runs.
   "init": true,
+  // Optional 9p experiment: add "capAdd": ["SYS_ADMIN"] and enable
+  // WORKSPACE_9P_TUNE below, then rebuild. See README before granting it.
 
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
@@ -316,7 +318,9 @@
   // dependency explicit instead of silently following the default.
   "containerEnv": {
     "CODEX_HOME": "/home/node/.codex",
-    "HISTFILE": "/commandhistory/.zsh_history"
+    "HISTFILE": "/commandhistory/.zsh_history",
+    "WORKSPACE_9P_TUNE": "${localEnv:WORKSPACE_9P_TUNE:0}",
+    "WORKSPACE_9P_MSIZE": "${localEnv:WORKSPACE_9P_MSIZE:1048576}"
   },
 
   "customizations": {
@@ -390,8 +394,11 @@
   // - `postCreateCommand` runs once on container-create. It owns syncing the
   //   AI CLI credentials and identity from the host. That work should happen
   //   exactly once per container instance, not on every content update.
-  // Run both with an explicit `bash` so they don't depend on the script's
+  // - `postStartCommand` optionally attempts 9p tuning on every start; failure
+  //   never blocks startup.
+  // Run lifecycle scripts with an explicit `bash` so they don't depend on the script's
   // executable bit surviving the workspace bind mount.
   "updateContentCommand": "bash .devcontainer/install-deps.sh",
-  "postCreateCommand": "bash .devcontainer/post-create.sh"
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postStartCommand": "bash .devcontainer/tune-9p.sh || true"
 }
