@@ -144,7 +144,8 @@ const getCompactContainerContext = (
   declarationOnly: string,
 ): string | undefined => {
   const source = declarationOnly || cleanContent(cleanedContent.slice(0, 200));
-  const bounded = source.slice(0, 200);
+  // The prefix may cut a supplementary character between its two UTF-16 units.
+  const bounded = source.slice(0, 200).replace(/[\uD800-\uDBFF]$/, '');
   const nlIdx = bounded.indexOf('\n');
   const firstLine = (nlIdx === -1 ? bounded : bounded.substring(0, nlIdx)).trim();
   return firstLine ? `Container: ${firstLine}` : undefined;

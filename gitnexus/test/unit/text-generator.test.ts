@@ -433,6 +433,26 @@ describe('text-generator', () => {
       expect(text).not.toContain('Properties: options, cache');
     });
 
+    it.each([0, 1])(
+      'preserves Unicode at the compact container cutoff (chunk %i)',
+      (chunkIndex) => {
+        const prefix = 'export interface Handler { value: "';
+        const declaration = `${prefix}${'x'.repeat(199 - prefix.length)}😀"; }`;
+        const node = { ...baseNode, label: 'Interface', name: 'Handler', content: declaration };
+        const text = generateEmbeddingText(node, declaration, {}, chunkIndex);
+        expect(text).toContain('Container: export interface Handler');
+        expect(text).toContain('😀');
+        expect(Buffer.from(text).toString('utf8')).toBe(text);
+        const chunks = [...splitEmbeddingText(text, 200)];
+        expect(chunks.join('')).toBe(text);
+        expect(
+          chunks.every(
+            (chunk) => chunk.length <= 200 && Buffer.from(chunk).toString('utf8') === chunk,
+          ),
+        ).toBe(true);
+      },
+    );
+
     it('keeps a declaration-aware container on decorated and blank-led later chunks', () => {
       for (const prefix of ['\n\n', '@Component({\n selector: "app-root",\n})\n']) {
         const node = {
