@@ -37,7 +37,8 @@ All three are `BasicBlock → BasicBlock` edges in the single `CodeRelation` tab
 - `pdg_query({ mode: 'controls', target })` — CDG. For the anchored function,
   each edge: controlling predicate block → dependent block + branch sense in
   `reason` (`'T'` = predicate's true/taken arm, `'F'` = false/fall-through). An
-  edge into an early-return/throw block is flagged `guard: true`.
+  edge into a `return`, `throw`, `continue`, or `break` block is flagged
+  `guard: true` (early control transfer, not just a function exit).
 - `pdg_query({ mode: 'flows', target, variable? })` — REACHING_DEF def→use
   edges; `variable` filters to one binding.
 
@@ -52,10 +53,12 @@ Prefer the dedicated, bounded `pdg_query` surface for guard discovery:
 pdg_query({ mode: 'controls', target: '<function-or-file>' })
 ```
 
-Filter the returned rows for `guard: true` when you only need early-return or
-throw guards. The tool requires an explicit target and applies its own bounded
-result limit, so it cannot accidentally turn a local guard lookup into a
-repository-wide CDG scan.
+Filter the returned rows for `guard: true` to find early control-transfer
+guards (`return`, `throw`, `continue`, or `break`). If you only need function
+exits, also filter `dependent.text` for a leading `return` or `throw`; the
+`guard` flag alone includes loop `continue`/`break` statements. The tool
+requires an explicit target and applies its own bounded result limit, so it
+cannot accidentally turn a local guard lookup into a repository-wide CDG scan.
 
 If you are debugging the graph and truly need raw Cypher, keep the same two
 constraints explicit: anchor the blocks to one known function/file span **and**
