@@ -85,6 +85,48 @@ Commits within a PR may use any style — only the **merged PR title** shows up 
 
 Maintainers may request changes for correctness, tests, performance, or consistency with existing patterns. Keeping diffs focused makes review faster.
 
+### Parser changes and cache compatibility
+
+Parser compatibility is derived automatically from the parser artifacts and
+effective options. There is no semantic counter to allocate, reconcile with
+the base branch, or regenerate as a checked-in digest. Parallel parser changes
+under the same package version produce different identities from their bytes.
+
+The ownership boundary is declared in
+`gitnexus/src/core/parse-cache-identity.ts`: ingestion, Tree-sitter, `lib`, graph
+helpers, audited support/storage files, the selected worker, shared runtime,
+and parser/native/loader dependencies. CFG extraction and the classified COBOL
+flow helpers have a separate PDG identity. See
+[Architecture](ARCHITECTURE.md#automatic-parse-cache-identity) for the boundary
+and publication safeguards. Raw bytes are covered, so formatting or comments
+inside these roots can conservatively invalidate caches. Repository docs, UI,
+unrelated CLI files, and unrelated dependencies are outside this boundary.
+
+For a parser change:
+
+1. Check that every new import, loader, runtime asset, and effective option is
+   covered. A new boundary needs an explicit ownership/classification decision
+   and coverage-audit update; a new provider inside an owned root is included
+   automatically.
+2. Run `npm run build` from `gitnexus/` before validating changed parser facts.
+   A source edit invalidates source-mode cache identity immediately, but does
+   not compile the selected worker: an old `dist` worker can still emit old
+   facts until rebuilt.
+3. Verify a real cold parse followed by warm reuse of both worker results and
+   durable `ParsedFile` shards, asserting graph facts as well as cache metrics.
+   For extraction-only PDG changes, verify ordinary chunks remain reusable.
+   Run the focused identity and coverage guards from `gitnexus/`:
+   `npm test -- test/unit/parse-cache-identity.test.ts test/unit/parse-cache-input-coverage.test.ts`.
+4. Review benchmark golden/fingerprint changes explicitly. Explain changed
+   output or pack membership and why the new baseline is intended, then run
+   the exact benchmark check. Automatic invalidation does not establish that
+   a semantic or performance change is correct.
+
+Graph DDL still has its own automatic `SCHEMA_FINGERPRINT`, and analyzer
+freshness still has its runner-identity receipt. Intentional wire-format
+versions, including the V8 envelope and receiver-chain codec, retain their
+own compatibility rules. Preserve those checks when changing a format.
+
 ## GitHub Actions — Concurrency Convention
 
 Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:` block using this convention:

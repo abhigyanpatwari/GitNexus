@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 /**
  * Dispatch rounds — batching cache packs into one pool round.
  *
@@ -24,8 +25,16 @@ import path from 'node:path';
 
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { PARSE_CACHE_VERSION, packParseCacheChunks } from '../../src/storage/parse-cache.js';
-import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
+import {
+  emptyParseCache,
+  loadParseCache,
+  packParseCacheChunks,
+  saveParseCache,
+  type ParseCache,
+} from '../../src/storage/parse-cache.js';
+import { mergeStagedDurableParsedFileStore } from '../../src/storage/parsedfile-store.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const ORIGINAL_ROUND_BYTES = process.env.GITNEXUS_PARSE_ROUND_BYTES;
 
@@ -91,17 +100,30 @@ describe('parse-impl dispatch rounds', () => {
       .sort()
       .join('\n');
 
-  const run = async (parseCache?: {
-    version: string;
-    entries: Map<string, ParseWorkerResult[]>;
-    usedKeys: Set<string>;
-    storagePath: string;
-    onDiskKeys: Set<string>;
-  }) => {
+  const stagingPath = () => fs.mkdtempSync(path.join(storageDir, 'run-'));
+  const newCache = () =>
+    emptyParseCache(parseIdentity, {
+      storagePath: storageDir,
+      writeStoragePath: stagingPath(),
+    });
+
+  const publishCache = async (cache: ParseCache) => {
+    if (!cache.writeStoragePath) throw new Error('Expected a staged cache');
+    const saved = await saveParseCache(storageDir, cache);
+    await mergeStagedDurableParsedFileStore(
+      storageDir,
+      cache.writeStoragePath,
+      parseIdentity.base,
+      new Set(saved),
+    );
+    return loadParseCache(storageDir, parseIdentity, stagingPath());
+  };
+
+  const run = async (parseCache?: ParseCache) => {
     const scan = files();
     const rels = scan.map((f) => f.path);
     const graph = createKnowledgeGraph();
-    await runChunkedParseAndResolve(
+    const metrics = await runChunkedParseAndResolve(
       graph,
       scan,
       rels,
@@ -111,7 +133,7 @@ describe('parse-impl dispatch rounds', () => {
       () => {},
       parseCache ? { parseCache } : {},
     );
-    return graph;
+    return { graph, metrics };
   };
 
   it('the fixture really does split into more packs than the byte budget needs', () => {
@@ -134,10 +156,10 @@ describe('parse-impl dispatch rounds', () => {
     // 1 byte closes a round after every cache-missing chunk — the pre-round
     // behaviour, and the control arm for the batched default.
     process.env.GITNEXUS_PARSE_ROUND_BYTES = '1';
-    const perChunk = await run();
+    const { graph: perChunk } = await run();
 
     delete process.env.GITNEXUS_PARSE_ROUND_BYTES;
-    const batched = await run();
+    const { graph: batched } = await run();
 
     expect(batched.nodeCount).toBe(perChunk.nodeCount);
     expect(batched.relationshipCount).toBe(perChunk.relationshipCount);
@@ -156,17 +178,12 @@ describe('parse-impl dispatch rounds', () => {
     // order but pulls worker output with a separate `missIdx` cursor, so a
     // hit sitting between two misses is exactly where that cursor can slip.
     // Cold-then-warm alone never exercises it -- every entry is the same kind.
-    const cache = {
-      version: PARSE_CACHE_VERSION,
-      entries: new Map<string, ParseWorkerResult[]>(),
-      usedKeys: new Set<string>(),
-      storagePath: storageDir,
-      onDiskKeys: new Set<string>(),
-    };
+    const cache = newCache();
 
-    const cold = await run(cache);
-    const cachedPacks = cache.onDiskKeys.size + cache.entries.size;
+    const { graph: cold } = await run(cache);
+    const cachedPacks = (cache.stagedKeys?.size ?? 0) + cache.entries.size;
     expect(cachedPacks).toBeGreaterThan(1);
+    const published = await publishCache(cache);
 
     // Edit ONE file. Its pack now misses; every other pack still hits, so the
     // next run's rounds carry both kinds together.
@@ -175,7 +192,9 @@ describe('parse-impl dispatch rounds', () => {
       'export function ts0() { return 999; }\nexport function ts0Extra() { return 1; }\n',
     );
 
-    const mixed = await run(cache);
+    const { graph: mixed, metrics } = await run(published);
+    expect(metrics.parseCacheHitFileCount).toBeGreaterThan(0);
+    expect(metrics.reparsedFileCount).toBeGreaterThan(0);
 
     // The edited file's NEW symbol must be present, proving the miss chunk's
     // fresh worker output landed under its own file...
@@ -197,27 +216,25 @@ describe('parse-impl dispatch rounds', () => {
   });
 
   it('stores each pack’s own worker output, so a warm replay reproduces the cold graph', async () => {
-    const cache = {
-      version: PARSE_CACHE_VERSION,
-      entries: new Map<string, ParseWorkerResult[]>(),
-      usedKeys: new Set<string>(),
-      storagePath: storageDir,
-      onDiskKeys: new Set<string>(),
-    };
+    const cache = newCache();
 
     // Cold: every pack misses, and the round writes each pack's results under
     // that pack's own hash.
-    const cold = await run(cache);
-    // With a storagePath the chunk bodies land on disk and the hash is tracked
-    // in `onDiskKeys`; without one they stay in `entries`. Count both so the
+    const { graph: cold } = await run(cache);
+    // With a writeStoragePath the chunk bodies land in staging and the hash is
+    // tracked in `stagedKeys`; failed writes stay in `entries`. Count both so the
     // assertion pins "more than one pack was cached", not the storage route.
-    expect(cache.onDiskKeys.size + cache.entries.size).toBeGreaterThan(1);
-    expect(cache.usedKeys.size).toBe(cache.onDiskKeys.size + cache.entries.size);
+    const cachedPacks = (cache.stagedKeys?.size ?? 0) + cache.entries.size;
+    expect(cachedPacks).toBeGreaterThan(1);
+    expect(cache.usedKeys.size).toBe(cachedPacks);
+    const published = await publishCache(cache);
 
     // Warm: every pack replays from its cache entry with no worker dispatch.
     // If a round had attributed pack A's results to pack B's key, the replayed
     // graph would differ here even though the cold run looked correct.
-    const warm = await run(cache);
+    const { graph: warm, metrics } = await run(published);
+    expect(metrics.reparsedFileCount).toBe(0);
+    expect(metrics.parseCacheHitFileCount).toBe(FIXTURE.length);
     expect(fingerprint(warm)).toBe(fingerprint(cold));
     expect(warm.nodeCount).toBe(cold.nodeCount);
     expect(warm.relationshipCount).toBe(cold.relationshipCount);

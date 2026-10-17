@@ -160,6 +160,13 @@ export interface RepoMeta {
    * matches the currently invoked analyzer.
    */
   runnerIdentity?: AnalyzerRunnerIdentity;
+  /** Parser artifacts and extraction options that produced the successful graph.
+   * Missing provenance never authorizes reuse. FTS-only repair preserves it.
+   */
+  parseCacheIdentity?: {
+    base: string;
+    pdg?: { identity: string; maxFunctionLines: number };
+  };
   /**
    * Canonical `origin` remote URL captured at index time. Used to
    * fingerprint the same logical repo across multiple on-disk clones
