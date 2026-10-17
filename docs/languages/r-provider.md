@@ -34,6 +34,7 @@ Imports:
 Calls:
 
 - Free calls, `obj$method()` calls (receiver typed as above), R6 `self$method()` calls, and calls inside native pipe (`|>`) chains.
+- A call through a name that a function's formal or one of its `for` variables binds (`function(data, transform) transform(data)`) gets no edge, not even to a top-level function of that name. The scope publishes those names as lexical names: they stop the lookup and the unique-name fallback. A formal with a constant default (`n = 2`, `x = NULL`, `s = "a"`) that the body never assigns is left out, because R skips a value that is not a function when it looks up a callee, so that call still reaches the function of that name (the rename provider reads it the same way); a formal that may hold a function, and a `for` variable, are not. A `for` loop outside every function binds nothing, and a variable assigned by `<-` in the body (`helper <- identity; helper(x)`) still does not shadow.
 - Named nested functions (closures) are indexed, and calls inside attribute to the nested function, which can shadow a top-level name. Top-level script calls outside any function are attributed to the File node.
 - `pkg::fn()` and `pkg:::fn()`, decided by the qualifier (see [Resolution model](#resolution-model)).
 
