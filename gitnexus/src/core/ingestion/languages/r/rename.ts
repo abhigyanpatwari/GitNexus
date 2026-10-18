@@ -509,6 +509,14 @@ export const rRenameProvider: RenameProvider = {
     // NAMESPACE the planner has just loaded from disk for this plan.
     const file = target.filePath;
     if (!/(^|\/)R\//.test(file)) return;
+    // roxygen2 regenerates NAMESPACE from `@export*` tags on the next `document()`, so a tag on
+    // the function's block would export the new name (and drop the old one) even when the
+    // NAMESPACE on disk says private now.
+    const tree = files.get(file)?.tree;
+    if (tree && hasRoxygenExportTag(tree.rootNode, name))
+      return unsupported(
+        'A roxygen2 @export tag is attached to this function; renaming it would change the exported name when NAMESPACE is next regenerated.',
+      );
     let exported = false;
     graph.forEachNode((node) => {
       if (
@@ -527,6 +535,28 @@ export const rRenameProvider: RenameProvider = {
     return currentNamespaceIssue(files.get(file)?.parsed, file, name);
   },
 };
+
+/** A roxygen2 tag that adds its object to NAMESPACE: `@export`, `@exportMethod`, `@exportS3Method`, ... */
+const ROXYGEN_EXPORT_TAG = /^#'[ \t]*@export\w*(?:[ \t]|$)/;
+
+/**
+ * Whether a top-level assignment of `name` in the file carries a roxygen2 `@export*` tag: a
+ * `#'` line in the run of comments that directly precedes it (a plain `#` comment in between
+ * does not break the run, as when roxygen2 collects the block). Text only; the tags are not parsed.
+ */
+function hasRoxygenExportTag(root: Parser.SyntaxNode, name: string): boolean {
+  for (const node of walkNamedNodes(root)) {
+    if (boundName(node) !== name || insideFunction(node)) continue;
+    for (let sibling = node.previousSibling; sibling; sibling = sibling.previousSibling) {
+      if (sibling.type !== 'comment') {
+        if (sibling.isNamed) break;
+        continue;
+      }
+      if (ROXYGEN_EXPORT_TAG.test(sibling.text)) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Whether the NAMESPACE read from disk for this plan leaves `name` (defined in `file`) private.

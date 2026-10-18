@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a private-looking package function whose roxygen2 block carries @export: the next document() would export the new name.",
+  "categories": ["namespace", "package-export", "roxygen", "negative", "unchanged-on-error"],
+  "target": { "name": "newfun", "kind": "Function", "file": "R/pub.R", "startLine": 4 },
+  "newName": "newfun2",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}
