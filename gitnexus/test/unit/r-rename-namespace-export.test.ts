@@ -137,6 +137,9 @@ describe('R rename: NAMESPACE export guard on a refined graph', () => {
   it('refuses a function the index could not prove private', async () => {
     // A package without a NAMESPACE file keeps the default public verdict.
     expect(await verdict('bare/R/a.R', 'hidden', 'secret')).toBe('unsupported_occurrence');
+    // So does an R/ directory that belongs to no package (no DESCRIPTION or NAMESPACE at all),
+    // as in a targets or drake project.
+    expect(await verdict('analysis/R/utils.R', 'hidden', 'secret')).toBe('unsupported_occurrence');
     // So does a graph that carries no refinement at all.
     expect(await verdict('pk/R/a.R', 'hidden', 'secret', { refine: false })).toBe(
       'unsupported_occurrence',
