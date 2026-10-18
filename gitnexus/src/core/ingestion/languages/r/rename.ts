@@ -353,8 +353,43 @@ const parseNames = createTreeSitterRenameSource({
   },
 });
 
+/**
+ * Functions R itself calls by name: package load and unload hooks and the session start and end
+ * hooks. A rename would leave them defined under a name nothing calls.
+ */
+const R_HOOK_FUNCTIONS: ReadonlySet<string> = new Set([
+  '.onLoad',
+  '.onAttach',
+  '.onUnload',
+  '.onDetach',
+  '.First',
+  '.Last',
+  '.First.sys',
+  '.First.lib',
+  '.Last.lib',
+]);
+
+/**
+ * The name the engine compares a graph symbol with the scope definition of. The engine reads a
+ * definition's simple name as the text after the last `.` of its qualified name (the rule that
+ * splits an owner from a member), which turns the leading-dot name `.helper` into `helper`; for a
+ * name that is only a leading dot and one word, the simple name is the whole name. Dotted names
+ * with a dot inside (`print.foo`, `.helper.foo`) are S3-style owner-qualified names and keep the
+ * engine's reading, so they stay refused.
+ */
+function rCanonicalName(
+  name: string,
+  context?: Parameters<NonNullable<RenameProvider['canonicalName']>>[1],
+): string {
+  const bare = rBareName(name);
+  const qualified = context?.definition?.qualifiedName;
+  if (qualified === undefined) return bare;
+  const full = rBareName(qualified);
+  return /^\.[^.]+$/.test(full) && bare === full.slice(1) ? full : bare;
+}
+
 export const rRenameProvider: RenameProvider = {
-  canonicalName: rBareName,
+  canonicalName: rCanonicalName,
   validateName(name) {
     // `...`, `..1`, `..2`, ... refer to the arguments passed down to a function; R reserves them.
     if (name === '...' || /^\.\.[0-9]+$/.test(name))
@@ -407,6 +442,10 @@ export const rRenameProvider: RenameProvider = {
     const name = rBareName(target.qualifiedName ?? '');
     if (target.type !== 'Function')
       return unsupported('Only plain R functions can be renamed; classes and members are refused.');
+    if (R_HOOK_FUNCTIONS.has(name))
+      return unsupported(
+        'R calls this function by name (a package or session hook); a renamed one would no longer run.',
+      );
     // `f(x) <- v` calls the replacement function `f<-`, so a name ending in `<-` is half of a pair
     // whose other half is written differently.
     if (name.endsWith('<-') || newName.endsWith('<-'))

@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a package load hook (.onLoad): R calls it by name, so a renamed hook would silently stop running.",
+  "categories": ["namespace", "negative", "unchanged-on-error"],
+  "target": { "name": ".onLoad", "kind": "Function", "file": "R/pub.R", "startLine": 2 },
+  "newName": "on_load",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}
