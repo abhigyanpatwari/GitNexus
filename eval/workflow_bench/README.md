@@ -71,6 +71,32 @@ plus a savings row: input / cache / output tokens, cost, wall time).
 
 ## Release evaluation
 
+### Measure an unmerged PR against a previous run
+
+Dispatch **Release evaluation** from `main` with `candidate_pr`, its exact
+`expected_pr_sha`, and a successful main `comparison_run_id`. For example:
+
+```bash
+gh workflow run release-evaluation.yml --ref main \
+  -f candidate_pr=3621 \
+  -f expected_pr_sha=98b7793d4c0997489ef4b433068688e85abdb18e \
+  -f comparison_run_id=39039452570 \
+  -f model=gpt-5.6-sol -f effort=xhigh
+```
+
+This preview measures only the PR runtime's MCP arm: all four tasks, three
+repetitions each. It reuses the selected run's MCP measurements as the historical
+comparison and does not rerun no-MCP or stable sessions. A moved PR head,
+different model/effort, changed measurement inputs, stale evidence, or incompatible
+task/oracle/dependency pins rejects the comparison. Per-task solve counts remain
+visible alongside billed model cost; incomplete evidence cannot claim savings.
+
+The harness and protected runner still execute from `main`; the PR runtime is
+built and run in the existing containment. Results use the separate
+`pr-cost-comparison-<sha>` artifact and schema, and cannot approve a release.
+Cost differences against a historical run are descriptive measurements, not
+proof of statistical significance or attribution to only that PR.
+
 ### RC regression decision
 
 `workflow_bench.release_gate` compares a candidate report with a freshly

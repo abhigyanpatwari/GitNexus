@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import yaml
 import pytest
 
@@ -93,6 +94,75 @@ def test_release_comparison_is_scheduled_or_manual_and_gates_outcomes():
     assert "releases/latest" in scripts
     assert "workflow_bench.release_gate" in scripts
     assert "--stable-sha" in scripts and "--candidate-sha" in scripts
+
+
+def test_pr_preview_uses_trusted_main_and_authenticates_history_before_paid_sessions():
+    document = workflow("release-evaluation.yml")
+    inputs = document[True]["workflow_dispatch"]["inputs"]
+    assert {"candidate_pr", "expected_pr_sha", "comparison_run_id"} <= inputs.keys()
+    job = document["jobs"]["evaluate"]
+    assert "refs/heads/main" in job["if"]
+    assert job["environment"] == "gitnexus-evolution"
+    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    steps = job["steps"]
+    resolve = next(step for step in steps if step.get("id") == "resolve")
+    assert "workflow_bench.pr_evaluation resolve" in resolve["run"]
+    assert '--sha "$INPUT_PR_SHA"' in resolve["run"]
+    # Standard release candidates still require reviewed main ancestry.
+    assert 'git merge-base --is-ancestor "$sha" HEAD' in resolve["run"]
+    baseline = next(step for step in steps if "workflow_bench.pr_evaluation baseline" in step.get("run", ""))
+    paid = next(step for step in steps if "workflow_bench.runner" in step.get("run", ""))
+    assert steps.index(baseline) < steps.index(paid)
+    assert "inputs.candidate_pr != ''" in baseline["if"]
+    assert 'arms=(baseline)' in paid["run"]
+    dependencies = next(step for step in steps if "workflow_bench.pr_evaluation dependencies" in step.get("run", ""))
+    assert steps.index(dependencies) < steps.index(paid)
+    assert "inputs.candidate_pr != ''" in dependencies["if"]
+
+
+def test_pr_preview_cannot_publish_release_approval_evidence():
+    steps = workflow("release-evaluation.yml")["jobs"]["evaluate"]["steps"]
+    gate = next(step for step in steps if "workflow_bench.release_gate" in step.get("run", ""))
+    assert "inputs.candidate_pr == ''" in gate["if"]
+    uploads = [step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")]
+    release = next(step for step in uploads if step["with"]["name"].startswith("release-agent-evaluation-"))
+    preview = next(step for step in uploads if step["with"]["name"].startswith("pr-cost-comparison-"))
+    assert "inputs.candidate_pr == ''" in release["if"]
+    assert "inputs.candidate_pr != ''" in preview["if"]
+    assert "agent-evaluation.json" not in preview["with"]["path"]
+    assert "pr-cost-comparison.json" in preview["with"]["path"]
+
+
+@pytest.mark.parametrize("pr,runtimes,arms", [
+    ("3621", ["candidate"], ["baseline"]),
+    ("", ["stable", "candidate"], ["baseline_nomcp", "baseline"]),
+])
+def test_real_paid_step_selects_only_the_requested_runtime_and_arms(tmp_path, pr, runtimes, arms):
+    steps = workflow("release-evaluation.yml")["jobs"]["evaluate"]["steps"]
+    script = next(step["run"] for step in steps if "workflow_bench.runner" in step.get("run", ""))
+    script = re.sub(r"\$\{\{.*?\}\}", str(int(time.time()) + 7200), script)
+    # Exercise the real shell branching without running a model or a timeout.
+    binary = tmp_path / "uv"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['CAPTURE_ARGS'], 'a') as output:\n"
+        "    output.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    binary.chmod(0o755)
+    log = tmp_path / "arguments.jsonl"
+    subprocess.run(
+        ["bash", "--noprofile", "--norc", "-c", script], check=True, capture_output=True,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.defpath}", "CAPTURE_ARGS": str(log),
+             "INPUT_PR": pr, "MODEL": "gpt-5.6-sol", "EFFORT": "xhigh",
+             "GITHUB_WORKSPACE": str(tmp_path), "RUNNER_TEMP": str(tmp_path)},
+    )
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(calls) == len(runtimes)
+    for arguments, runtime in zip(calls, runtimes, strict=True):
+        assert arguments[arguments.index("--gitnexus-root") + 1] == str(tmp_path / runtime)
+        assert arguments[arguments.index("--arms") + 1:arguments.index("--runs")] == arms
+        assert arguments[arguments.index("--runs") + 1] == "3"
 
 
 def test_release_session_headroom_keeps_the_global_stop_reserve():
