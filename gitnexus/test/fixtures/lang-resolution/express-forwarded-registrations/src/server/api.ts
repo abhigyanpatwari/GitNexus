@@ -4,7 +4,7 @@ import { mountSSEProgress } from './sse-progress';
 
 export const registerWebUI = (app: express.Express, staticDir: string | null): void => {
   if (!staticDir) return;
-  app.get('/', (_req, res) => res.sendFile('index.html'));
+  app.get('/', (_req, res) => res.sendFile('index.html', { root: staticDir }));
 };
 
 export async function createServer(jobs: unknown) {

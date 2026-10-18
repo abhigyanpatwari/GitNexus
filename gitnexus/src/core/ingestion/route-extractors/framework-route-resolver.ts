@@ -335,19 +335,25 @@ export function resolveFrameworkRouteFacts(
         const fn = parameter(expression)?.fn;
         for (const name of (fn && fnNames.get(fn)) ?? []) forwardingNames.add(name);
       }
-  const calleeName = (callee: FrameworkExpression): string | undefined =>
+  /** Local and imported names a callee may be known by (`import { a as b }` gives both). */
+  const calleeNames = (callee: FrameworkExpression): string[] =>
     callee.kind === 'binding'
-      ? callee.id.slice(callee.id.lastIndexOf('\0') + 1)
+      ? [
+          callee.id.slice(callee.id.lastIndexOf('\0') + 1),
+          ...(bindings.get(callee.id)?.values ?? []).flatMap((value) =>
+            value.kind === 'import' ? [value.name] : [],
+          ),
+        ]
       : callee.kind === 'import' || callee.kind === 'member'
-        ? callee.name
-        : undefined;
+        ? [callee.name]
+        : [];
   const sitesOf = new Map<
     string,
     { filePath: string; arguments: FrameworkExpression[]; paths: (string[] | null)[] }[]
   >();
   for (const file of files)
     for (const invocation of forwardingNames.size ? file.invocations : []) {
-      if (!forwardingNames.has(calleeName(invocation.callee) ?? '')) continue;
+      if (!calleeNames(invocation.callee).some((name) => forwardingNames.has(name))) continue;
       const callee = evaluate(invocation.callee, file.filePath);
       if (callee?.kind !== 'handler' || !callee.fn) continue;
       const sites = sitesOf.get(callee.fn) ?? [];
@@ -364,12 +370,16 @@ export function resolveFrameworkRouteFacts(
   const forwardedTargets = (call: FrameworkCallFact, filePath: string): Target[] | undefined => {
     const receiverParam = parameter(call.receiver);
     const pathParam = call.paths ? undefined : parameter(call.arguments[0]);
-    const fn = receiverParam?.fn ?? pathParam?.fn;
+    // The receiver, the path or any argument (a mounted child) may be forwarded;
+    // all of them must come from the same function.
+    const fns = new Set(
+      [call.receiver, ...call.arguments].flatMap((expression) => parameter(expression)?.fn ?? []),
+    );
+    const [fn] = fns;
     const sites = fn ? sitesOf.get(fn) : undefined;
     // No call site proves an argument: evaluate the call as written, which keeps
     // an unknown mount path suppressing its child router (no invented root).
-    if (!fn || !sites || (receiverParam && pathParam && receiverParam.fn !== pathParam.fn))
-      return undefined;
+    if (!fn || !sites || fns.size > 1) return undefined;
     return sites.map((site) => {
       const fromSite = (expression: FrameworkExpression | undefined) => {
         const forwarded = parameter(expression);

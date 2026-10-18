@@ -120,11 +120,37 @@ export function extractFrameworkRouteFacts(
     return owner?.scope ? bindingKey(owner.scope.id, name) : undefined;
   };
   const isGlobal = (node: Node, name: string) => ownership(node, name)?.status === 'absent';
+  /** Whether a scope between `target` and `fn` declares the name `target` writes. */
+  const shadowedBetween = (target: Node, fn: Node): boolean => {
+    const declares = (node: Node | null | undefined) =>
+      !!node &&
+      (node.type === 'identifier'
+        ? node.text === target.text
+        : node.descendantsOfType('identifier').some((id) => id.text === target.text));
+    for (let scope = target.parent; scope && scope.id !== fn.id; scope = scope.parent) {
+      const ownsVar = FUNCTION_TYPES.includes(scope.parent?.type ?? '');
+      if (
+        children(scope).some(
+          (statement) =>
+            (statement.type === 'lexical_declaration' ||
+              (ownsVar && statement.type === 'variable_declaration')) &&
+            children(statement).some((d) => declares(d.childForFieldName('name'))),
+        ) ||
+        (FUNCTION_TYPES.includes(scope.type) &&
+          (declares(scope.childForFieldName('parameter')) ||
+            declares(scope.childForFieldName('parameters')))) ||
+        (scope.type === 'catch_clause' && declares(scope.childForFieldName('parameter')))
+      )
+        return true;
+    }
+    return false;
+  };
   const functionValue = (fn: Node): FrameworkExpression => {
     const single = fn.childForFieldName('parameter');
     const params = single ? [single] : children(fn.childForFieldName('parameters'));
     // A parameter written anywhere in the body, nested closures included, is
     // not the argument any more; fail closed rather than track which write runs.
+    // A write to a same-named binding a nested scope declares is not to it.
     const written = new Set(
       fn
         .descendantsOfType([
@@ -132,9 +158,9 @@ export function extractFrameworkRouteFacts(
           'augmented_assignment_expression',
           'update_expression',
         ])
-        .map(
-          (write) => (write.childForFieldName('left') ?? write.childForFieldName('argument'))?.text,
-        ),
+        .map((write) => write.childForFieldName('left') ?? write.childForFieldName('argument'))
+        .filter((target) => target && !shadowedBetween(target, fn))
+        .map((target) => target?.text),
     );
     return {
       kind: 'handler',

@@ -195,6 +195,21 @@ function handler() {} function other() {}`);
     ]);
   });
 
+  it('follows a helper called through an aliased import', () => {
+    const result = resolve({
+      'sse.ts': `export const mountSSEProgress = (app, routePath) => { app.get(routePath, handler); };`,
+      'server.ts': `import express from 'express';
+      import { mountSSEProgress as mountProgress } from './sse';
+      const app = express();
+      mountProgress(app, '/api/progress');`,
+    });
+    expect(
+      result.registrations.map(
+        ({ route }) => `${route.httpMethod} ${route.routePath} ${route.filePath}`,
+      ),
+    ).toEqual(['GET /api/progress sse.ts']);
+  });
+
   it('declines forwarding through two hops, unproven arguments, and reassigned parameters', () => {
     expect(
       urls(`
@@ -257,6 +272,18 @@ function handler() {} function other() {}`);
       calls: `function wire(target) { const swap = () => { target = other; }; swap(); target.use('/api', router); }
       wire(app);`,
       routes: ['GET /users'],
+    },
+    {
+      shape: 'a helper forwarding only its mounted child',
+      calls: `function mountChild(child) { app.use('/api', child); }
+      mountChild(router);`,
+      routes: ['GET /api/users'],
+    },
+    {
+      shape: 'a write to a same-named local in a nested block',
+      calls: `function wire(target) { { let target; target = other; } target.use('/api', router); }
+      wire(app);`,
+      routes: ['GET /api/users'],
     },
     {
       shape: 'a property write on another function',
