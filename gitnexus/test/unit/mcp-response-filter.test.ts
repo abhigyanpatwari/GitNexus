@@ -149,26 +149,29 @@ describe('opt-in MCP response filters', () => {
   });
 
   it.each([
-    null,
-    [],
-    'incoming',
-    ['risk'],
-    ['incoming', null],
-    ['__proto__'],
-    Array(100).fill('incoming'),
-  ])('rejects malformed section filters: %j', (value) => {
+    { label: 'null', value: null },
+    { label: 'empty array', value: [] },
+    { label: 'scalar string', value: 'incoming' },
+    { label: 'unsupported section', value: ['risk'] },
+    { label: 'non-string member', value: ['incoming', null] },
+    { label: 'prototype key', value: ['__proto__'] },
+    { label: 'too many sections', value: Array(100).fill('incoming') },
+  ])('rejects malformed section filters: $label', ({ value }) => {
     expect(() => resolveMcpResponseFilter('context', { response_sections: value })).toThrow(
       /response_sections/,
     );
   });
-  it.each([null, [], ['calls'], ['MISSING'], ['CALLS', 1]])(
-    'rejects invalid relations: %j',
-    (value) => {
-      expect(() => resolveMcpResponseFilter('context', { relationTypes: value })).toThrow(
-        /relationTypes/,
-      );
-    },
-  );
+  it.each([
+    { label: 'null', value: null },
+    { label: 'empty array', value: [] },
+    { label: 'lowercase relation', value: ['calls'] },
+    { label: 'unsupported relation', value: ['MISSING'] },
+    { label: 'non-string member', value: ['CALLS', 1] },
+  ])('rejects invalid relations: $label', ({ value }) => {
+    expect(() => resolveMcpResponseFilter('context', { relationTypes: value })).toThrow(
+      /relationTypes/,
+    );
+  });
   it('rejects conflicting filters and unsupported group routing', () => {
     expect(() =>
       resolveMcpResponseFilter('context', {
