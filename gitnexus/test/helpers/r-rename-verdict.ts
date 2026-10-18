@@ -1,7 +1,8 @@
 /**
  * Run the R rename provider's safety check on real parsed sources and a real knowledge graph.
  * `localDefs` are read off the sources the way the indexer would list plain top-level functions
- * (`name <- function`), so a function defined in another file is visible to the checks.
+ * (`name <- function`, `name <<- function` and `name = function`), so a function defined in
+ * another file is visible to the checks.
  */
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
@@ -21,7 +22,7 @@ export interface RVerdictInput {
   readonly targetFile?: string;
 }
 
-const FUNCTION_DEF = /^(`[^`\n]+`|[A-Za-z.][A-Za-z0-9._]*)\s*<-\s*function/gm;
+const FUNCTION_DEF = /^(`[^`\n]+`|[A-Za-z.][A-Za-z0-9._]*)\s*(?:<-|<<-|=(?!=))\s*function/gm;
 
 /** The issue the provider reports (`code`, `message`), or null when it accepts the rename. */
 export function rIssue(input: RVerdictInput): { code: string; message: string } | null {

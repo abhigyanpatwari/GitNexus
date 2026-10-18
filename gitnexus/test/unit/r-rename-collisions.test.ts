@@ -48,6 +48,28 @@ describe('R rename: a new name that already exists', () => {
     ).toBe('name_collision');
   });
 
+  it.each(['<-', '<<-', '='])(
+    'lists a function defined with %s, so another file defining the new name is refused',
+    (op) => {
+      expect(
+        rIssue({
+          files: { 'a.R': HELPER, 'b.R': `assist ${op} function(v) v * 2\n` },
+          newName: 'assist',
+        })?.code,
+      ).toBe('name_collision');
+    },
+  );
+
+  it('sees a generic defined with = when it guards against a new S3 method name', () => {
+    // `to_json = function(x) x` makes `to_json.foo` an S3 method of an indexed function.
+    expect(
+      rIssue({
+        files: { 'a.R': HELPER, 'b.R': 'to_json = function(x) x\n' },
+        newName: 'to_json.foo',
+      })?.code,
+    ).toBe('unsupported_occurrence');
+  });
+
   it('refuses a <<- to the new name from inside a function', () => {
     expect(verdict('install <- function() { assist <<- 3 }\n')).toBe('name_collision');
     expect(verdict('install <- function() { 3 ->> assist }\n')).toBe('name_collision');
