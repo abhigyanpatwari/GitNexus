@@ -350,6 +350,19 @@ const parseNames = createTreeSitterRenameSource({
 export const rRenameProvider: RenameProvider = {
   canonicalName: rBareName,
   validateName(name) {
+    // `...`, `..1`, `..2`, ... refer to the arguments passed down to a function; R reserves them.
+    if (name === '...' || /^\.\.[0-9]+$/.test(name))
+      return {
+        code: 'invalid_name',
+        message:
+          'Choose a valid nonreserved R identifier: `...` and `..1`, `..2`, ... are reserved.',
+      };
+    if (/[^\x00-\x7f]/.test(name))
+      return {
+        code: 'invalid_name',
+        message:
+          'Choose a valid nonreserved R identifier. New names are limited to ASCII letters, digits, `.` and `_` (conservative by design).',
+      };
     if (!/^(?:[A-Za-z]|\.(?![0-9]))[A-Za-z0-9._]*$/.test(name) || RESERVED.has(name))
       return { code: 'invalid_name', message: 'Choose a valid nonreserved R identifier.' };
   },
@@ -393,6 +406,12 @@ export const rRenameProvider: RenameProvider = {
     if (name.endsWith('<-') || newName.endsWith('<-'))
       return unsupported(
         'A replacement function (`name<-`) is called as `name(x) <- value`; those calls are not renamed.',
+      );
+    // A name made only of non-ASCII characters (`λ`) is an identifier in a UTF-8 session, not an
+    // operator; the provider reads ASCII names only, so it says that rather than "operator".
+    if (/^[^\x00-\x7f]+$/.test(name))
+      return unsupported(
+        'Only ASCII identifiers are renamed; this name is not a supported identifier.',
       );
     if (isOperatorName(name) || isOperatorName(newName))
       return unsupported(
