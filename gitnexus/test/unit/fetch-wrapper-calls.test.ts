@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
-import { extractFetchWrapperCalls } from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
+import {
+  extractFetchWrapperCalls,
+  fetchWrapperFacts,
+} from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
 
 for (const [name, grammar] of [
   ['JavaScript', JavaScript],
@@ -54,6 +57,110 @@ for (const [name, grammar] of [
       ]);
     });
 
+    // A wrapper calls fetch itself, through a global object or a local alias;
+    // it carries a URL when its first parameter reaches fetch's URL argument,
+    // directly or through a callee it forwards that parameter to (#1852, #3488).
+    it.each([
+      {
+        shape: 'a direct call nested deeper than the old depth limit',
+        source: `async function load(url) {
+          try { for (;;) { if (url) { const r = await fetch(url); return r; } } } catch (e) {}
+        }`,
+        facts: { seed: true, forwardsUrl: true, forwardsTo: [{ callee: 'fetch', module: null }] },
+      },
+      {
+        shape: 'an exported arrow const',
+        source: 'export const load = async (url) => { const r = await fetch(url); return r; };',
+        facts: { seed: true, forwardsUrl: true, forwardsTo: [{ callee: 'fetch', module: null }] },
+      },
+      {
+        shape: 'an alias of globalThis.fetch',
+        source: `async function resilientFetch(input, init, opts = {}) {
+          const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+          try { return await fetchImpl(input, init); } catch (e) { throw e; }
+        }`,
+        facts: {
+          seed: true,
+          forwardsUrl: true,
+          forwardsTo: [{ callee: 'fetchImpl', module: null }],
+        },
+      },
+      {
+        shape: 'window.fetch',
+        source: 'function load(url = "/x") { return window.fetch(url); }',
+        facts: {
+          seed: true,
+          forwardsUrl: true,
+          forwardsTo: [{ callee: 'window.fetch', module: null }],
+        },
+      },
+      {
+        shape: 'a URL built from the parameter',
+        source: 'function apiFetch(path, opts) { return fetch(`${API_BASE}${path}`, opts); }',
+        facts: { seed: true, forwardsUrl: true, forwardsTo: [] },
+      },
+      {
+        shape: 'a fetch whose URL is not the parameter',
+        source: `function track(event) {
+          return fetch('/api/events', { method: 'POST', body: JSON.stringify(event) });
+        }`,
+        facts: {
+          seed: true,
+          forwardsUrl: false,
+          forwardsTo: [{ callee: 'JSON.stringify', module: null }],
+        },
+      },
+      {
+        shape: 'a forwarder to another wrapper',
+        source: `const fetchWithTimeout = async (url, init = {}) => {
+          try { return await resilientFetch(url, { ...init }, {}); } finally { done(); }
+        };`,
+        facts: {
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [{ callee: 'resilientFetch', module: null }],
+        },
+      },
+      {
+        shape: 'fetch named only in a string, a comment, and an unrelated property',
+        source: `function goTo(path) {
+          const fail = (e) => console.warn('Failed to fetch route data', e);
+          /* we never fetch here */
+          const mode = node.kind === 'fetch';
+          try { history.pushState(null, '', path); } catch (e) { fail(e); }
+        }`,
+        facts: { seed: false, forwardsUrl: false, forwardsTo: [] },
+      },
+      {
+        shape: 'an unrelated function',
+        source: 'function log(message) { console.log("x", message); }',
+        facts: { seed: false, forwardsUrl: false, forwardsTo: [] },
+      },
+      {
+        shape: 'a forwarder to a relative named import',
+        source: `import { request as send } from '../desktop/ipc.js';
+        export function openPage(path) { return send(path); }`,
+        facts: {
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [{ callee: 'request', module: 'src/desktop/ipc' }],
+        },
+      },
+      {
+        shape: 'a forwarder to a same-file function',
+        source: `function request(channel) { return ipc.invoke(channel); }
+        export const openPage = (path) => request(path);`,
+        facts: {
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [{ callee: 'request', module: 'src/web/client' }],
+        },
+      },
+    ])('reads wrapper facts from $shape', ({ source, facts }) => {
+      const root = parser.parse(source).rootNode;
+      expect(fetchWrapperFacts(root.namedChildren.at(-1)!, 'src/web/client.ts')).toEqual(facts);
+    });
+
     it('preserves configured instance and inherited wrappers', () => {
       expect(
         extract(`class Client extends Base {
@@ -72,6 +179,12 @@ for (const [name, grammar] of [
       ]);
     });
 
+    it('keeps a base-URL template whose remainder is a path (#3488)', () => {
+      expect(extract('doRequest(`${base}/api/users/${id}`)')).toMatchObject([
+        { functionName: 'doRequest', fetchURL: '${base}/api/users/${id}' },
+      ]);
+    });
+
     it.each([
       '// doRequest("/api/things")',
       '/* doRequest("/api/things") */',
@@ -83,6 +196,8 @@ for (const [name, grammar] of [
       'client["doRequest"]("/api/things")',
       'getClient().doRequest("/api/things")',
       'doRequest("https://example.com/api/things")',
+      'doRequest(`${base}api/things`)',
+      'doRequest(`${scheme}://${host}/api/things`)',
     ])('does not invent a candidate for %s', (source) => {
       expect(extract(source)).toEqual([]);
     });

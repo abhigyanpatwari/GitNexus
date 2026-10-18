@@ -16,6 +16,7 @@ import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { isTemplateRouteCandidate } from '../utils/template-file.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
+import { moduleStem, type ForwardedCallee } from '../route-extractors/fetch-wrapper.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
 import {
@@ -502,12 +503,45 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     // provider captures each call's complete callee and first argument during
     // parsing; no source reread, reparse, or type-argument scanning is needed.
     // Configured names also cover wrappers built on axios/custom clients.
-    const configuredWrappers = ctx.options?.fetchWrappers ?? [];
-    const wrapperNames = new Set<string>(
-      [...(allFetchWrapperDefs ?? []).map((d) => d.functionName), ...configuredWrappers].filter(
-        (n): n is string => typeof n === 'string' && n.trim().length > 0,
-      ),
+    const configuredWrappers = (ctx.options?.fetchWrappers ?? []).filter(
+      (n): n is string => typeof n === 'string' && n.trim().length > 0,
     );
+    const wrapperDefs = allFetchWrapperDefs ?? [];
+    const wrapperNames = new Set<string>([
+      ...wrapperDefs.filter((d) => d.seed).map((d) => d.functionName),
+      ...configuredWrappers,
+    ]);
+    // A function that forwards its own first parameter to a URL-carrying
+    // wrapper is one too (`fetchWithTimeout(url)` → `resilientFetch(url)` →
+    // fetch, #3488). A callee the caller's file declares or imports from a
+    // relative module must be a URL carrier in exactly that module; otherwise
+    // (a package import) the name is followed only when every recorded
+    // function of that name carries a URL. So a same-named function elsewhere
+    // (an IPC `request(channel)`) or a fetch caller whose first parameter is
+    // not the URL (`track(event)`) lends nothing. The set only grows, so this
+    // reaches a fixed point.
+    const carriers = new Set(wrapperDefs.filter((d) => d.forwardsUrl));
+    const defsByName = new Map<string, typeof wrapperDefs>();
+    const defsByModule = new Map<string, typeof wrapperDefs>();
+    for (const def of wrapperDefs) {
+      const key = `${moduleStem(def.filePath)}\0${def.functionName}`;
+      defsByName.set(def.functionName, [...(defsByName.get(def.functionName) ?? []), def]);
+      defsByModule.set(key, [...(defsByModule.get(key) ?? []), def]);
+    }
+    const carriesUrl = ({ callee, module }: ForwardedCallee): boolean =>
+      configuredWrappers.includes(callee) ||
+      (module === null
+        ? (defsByName.get(callee)?.every((def) => carriers.has(def)) ?? false)
+        : (defsByModule.get(`${module}\0${callee}`)?.some((def) => carriers.has(def)) ?? false));
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const def of wrapperDefs) {
+        if (carriers.has(def) || !def.forwardsTo.some(carriesUrl)) continue;
+        carriers.add(def);
+        wrapperNames.add(def.functionName);
+        grew = true;
+      }
+    }
     if (wrapperNames.size > 0 && routeRegistry.size > 0) {
       for (const call of allFetchWrapperCalls ?? []) {
         if (wrapperNames.has(call.functionName)) allFetchCalls.push(call);

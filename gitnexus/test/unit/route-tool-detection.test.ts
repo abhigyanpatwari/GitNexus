@@ -146,6 +146,30 @@ describe('normalizeFetchURL', () => {
     // Function call wrapper
     expect(normalizeFetchURL('getApiUrl()')).toBeNull();
   });
+
+  // A leading `${base}` before `/` is the backend's base URL, not a route
+  // segment (#3488), as in the group layer (#3111).
+  it.each([
+    ['`${_backendUrl}/api/repos`', '/api/repos'],
+    ['${_backendUrl}/api/file?${params}', '/api/file'],
+    ['${scheme}${host}/api/x/${id}', '/api/x/[param]'],
+    ['/${locale}/api/x', '/[param]/api/x'],
+    ['${base}api/x', null],
+    ['${proto}//host/api/x', null],
+    ['${scheme}://${host}/api/x', null],
+    // Nothing but params left would match every route of that depth.
+    ['${base}/${id}', null],
+    ['${base}/', null],
+    ['${base}/${path}${query}', null],
+    ['${base}/${id}.json', null],
+    ['${base}/${dir}/${file}.php', null],
+    // A `?` inside an interpolation does not end the path, and an
+    // interpolation glued to the last static segment is a query or suffix.
+    ['${_backendUrl}/api/processes${repo ? `?repo=${repo}` : ""}', '/api/processes'],
+    ['/api/items${suffix}', '/api/items'],
+  ])('reads the base-URL template %s as %s', (raw, expected) => {
+    expect(normalizeFetchURL(raw)).toBe(expected);
+  });
 });
 
 // ---------------------------------------------------------------------------

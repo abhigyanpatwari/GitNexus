@@ -42,3 +42,29 @@ describe('Fetch wrapper consumer FETCHES edge extraction', () => {
     expect(edges.length).toBe(2);
   });
 });
+
+// GitNexus's own web client (#3488): `fetchWithTimeout(`${_backendUrl}/api/repos`)`
+// reaches fetch through `resilientFetch` and a local `fetchImpl` alias, and the
+// URL starts with a base-URL binding.
+describe('Base-URL wrapper consumer FETCHES edge extraction', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'fetch-base-url-wrapper'), () => {});
+  }, 60000);
+
+  it('links base-URL calls through a forwarding wrapper chain, and nothing else', () => {
+    const edges = getRelationships(result, 'FETCHES')
+      .map((e) => `${e.sourceFilePath} -> ${e.rel.targetId.replace(/^Route:/, '')}`)
+      .sort();
+    expect(edges).toEqual([
+      'web/backend-client.ts -> GET /api/analyze/:jobId',
+      'web/backend-client.ts -> GET /api/file',
+      'web/backend-client.ts -> GET /api/processes',
+      'web/backend-client.ts -> GET /api/repos',
+      'web/backend-client.ts -> POST /api/query',
+      'web/client-request.ts -> GET /api/repos',
+      'web/direct.ts -> GET /api/direct',
+    ]);
+  });
+});

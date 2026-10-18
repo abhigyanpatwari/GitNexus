@@ -725,6 +725,18 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
   return [...keys];
 };
 
+/** Segments of a matching route that match the fetch URL by kind: static to static, dynamic to param. */
+const matchSpecificity = (fetchURL: string, routeURL: string): number => {
+  const fetchParts = fetchURL.split('/').filter(Boolean);
+  return routeURL
+    .split('/')
+    .filter(Boolean)
+    .filter(
+      (part, i) =>
+        part === fetchParts[i] || (/^[[:{]/.test(part) && fetchParts[i]?.startsWith('[')),
+    ).length;
+};
+
 /**
  * Create FETCHES edges from extracted fetch() calls to matching Route nodes.
  * When consumerContents is provided, extracts property access patterns from
@@ -763,42 +775,49 @@ export const processNextjsFetchRoutes = (
     const normalized = normalizeFetchURL(call.fetchURL);
     if (!normalized) continue;
 
-    for (const [routeURL, routeKeys] of routeUrlToKeys) {
-      if (routeMatches(normalized, routeURL)) {
-        const sourceId = generateId('File', call.filePath);
+    // `[param]` matches any route segment, so `/api/analyze/[param]` matches
+    // both `/api/analyze/upload` and `/api/analyze/:jobId`: take the route
+    // whose segments match by kind most often, keeping the first on a tie.
+    let best: [string, string[]] | undefined;
+    let bestScore = -1;
+    for (const entry of routeUrlToKeys) {
+      if (!routeMatches(normalized, entry[0])) continue;
+      const score = matchSpecificity(normalized, entry[0]);
+      if (score > bestScore) [best, bestScore] = [entry, score];
+    }
+    if (!best) continue;
+    const [, routeKeys] = best;
+    const sourceId = generateId('File', call.filePath);
 
-        // Extract consumer accessed keys if file content is available
-        let reason = 'fetch-url-match';
-        if (consumerContents) {
-          const content = consumerContents.get(call.filePath);
-          if (content) {
-            const accessedKeys = extractConsumerAccessedKeys(content);
-            if (accessedKeys.length > 0) {
-              reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
-            }
-          }
+    // Extract consumer accessed keys if file content is available
+    let reason = 'fetch-url-match';
+    if (consumerContents) {
+      const content = consumerContents.get(call.filePath);
+      if (content) {
+        const accessedKeys = extractConsumerAccessedKeys(content);
+        if (accessedKeys.length > 0) {
+          reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
         }
-
-        // Encode multi-fetch count so downstream can set confidence
-        const fetchCount = routeCountByFile.get(call.filePath) ?? 1;
-        if (fetchCount > 1) {
-          reason = `${reason}|fetches:${fetchCount}`;
-        }
-
-        // Connect to every Route node at this URL (one per verb).
-        for (const routeKey of routeKeys) {
-          const routeNodeId = generateId('Route', routeKey);
-          graph.addRelationship({
-            id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
-            sourceId,
-            targetId: routeNodeId,
-            type: 'FETCHES',
-            confidence: 0.9,
-            reason,
-          });
-        }
-        break;
       }
+    }
+
+    // Encode multi-fetch count so downstream can set confidence
+    const fetchCount = routeCountByFile.get(call.filePath) ?? 1;
+    if (fetchCount > 1) {
+      reason = `${reason}|fetches:${fetchCount}`;
+    }
+
+    // Connect to every Route node at this URL (one per verb).
+    for (const routeKey of routeKeys) {
+      const routeNodeId = generateId('Route', routeKey);
+      graph.addRelationship({
+        id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
+        sourceId,
+        targetId: routeNodeId,
+        type: 'FETCHES',
+        confidence: 0.9,
+        reason,
+      });
     }
   }
 };
