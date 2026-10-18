@@ -3,6 +3,8 @@
 // Converts file paths to route URLs, extracts HTTP methods from App Router
 // route handlers, normalises fetch URLs, and matches fetch calls to routes.
 
+import { stripLeadingTemplatePrefix } from './route-path.js';
+
 // Convert a Next.js file path to its API route URL.
 // Supports both App Router (app/**/route.ts) and Pages Router
 // (pages/api/**/*.ts) conventions.
@@ -34,17 +36,51 @@ export function nextjsFileToRouteURL(filePath: string): string | null {
   return null;
 }
 
+const PARAM = '\uE000';
+
+/** Replace each brace-balanced `${…}` with PARAM, keeping nested templates inside it. */
+function collapseInterpolations(url: string): string {
+  let out = '';
+  for (let i = 0; i < url.length; i++) {
+    if (url[i] !== '$' || url[i + 1] !== '{') {
+      out += url[i];
+      continue;
+    }
+    let depth = 0;
+    let end = i + 1;
+    for (; end < url.length; end++) {
+      if (url[end] === '{') depth++;
+      else if (url[end] === '}' && --depth === 0) break;
+    }
+    if (end >= url.length) return out + url.slice(i);
+    out += PARAM;
+    i = end;
+  }
+  return out;
+}
+
 // Normalise a fetch URL so it can be matched against route patterns.
-// - Strips query strings (?page=1)
+// - Strips a leading base-URL binding (`${backendUrl}/api/x` → `/api/x`, #3488)
+// - Strips query strings (?page=1), including one built inside an interpolation
 // - Replaces template-literal expressions (${slug}) with [param]
 // - Returns null for URLs that cannot be statically resolved (string
 //   concatenation, function calls, non-API paths).
 export function normalizeFetchURL(rawURL: string): string | null {
-  let url = rawURL.split('?')[0];
-  url = url.replace(/\$\{[^}]+\}/g, '[param]');
-  url = url.replace(/^`|`$/g, '');
+  const unquoted = rawURL.replace(/^`|`$/g, '');
+  const unbound = stripLeadingTemplatePrefix(unquoted);
+  if (unbound === null) return null;
+  // Collapse interpolations before splitting, so the `?` of
+  // `${repo ? `?repo=${repo}` : ''}` does not end the path; one glued to the
+  // end of the last static segment is a query or suffix, not a segment.
+  let url = collapseInterpolations(unbound).split('?')[0];
+  url = url.replace(/([^/\uE000])\uE000+$/, '$1').replace(/\uE000/g, '[param]');
   // Strip file extensions from URLs (PHP projects use /api/upload.php but routes are /api/upload)
   url = url.replace(/\.(php|asp|aspx|jsp|cgi)$/, '');
+  // With the base gone, a path whose every segment is a param (`${base}/${id}`,
+  // `${base}/${id}.json`) would match every route of that depth.
+  if (unbound !== unquoted && url.split('/').every((part) => !part || part.startsWith('['))) {
+    return null;
+  }
 
   if (url.includes('+') || url.includes('(')) return null;
   // Must be an absolute path

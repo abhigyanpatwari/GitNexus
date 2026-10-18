@@ -212,6 +212,13 @@ They follow explicit ESM/CommonJS imports and exports through the configured
 `router` is not evidence; type-only imports, shadowed bindings, conflicting writes,
 and unproven factories do not establish a receiver. Directly proven Hono verb
 registrations remain supported, without applying Express mounting semantics.
+A registration whose receiver, literal path or mounted router is a parameter of a
+named function (`mountSSEProgress(app, '/p', jobs)` → `app.get(routePath, …)`)
+resolves through each call site of that function, once per site and in the
+helper's file. This is one hop only: a site argument that is itself a parameter,
+an unproven argument, or a reassigned parameter establishes nothing, and a helper
+with no recorded call site is read as written, so an unknown mount path still
+suppresses its router's standalone paths.
 
 A standalone router retains its local paths. A known dynamic mount suppresses
 that fallback, while independently proven static mounts remain available. Cycles

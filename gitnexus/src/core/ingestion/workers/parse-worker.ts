@@ -1,4 +1,8 @@
-import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
+import {
+  fetchWrapperFacts,
+  type FetchWrapperCall,
+  type ForwardedCallee,
+} from '../route-extractors/fetch-wrapper.js';
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
   boundCallableStartPosition,
@@ -357,6 +361,12 @@ export interface ExtractedFetchCall {
 export interface FetchWrapperDef {
   filePath: string;
   functionName: string;
+  /** Calls fetch itself; otherwise a wrapper only through `forwardsTo`. */
+  seed: boolean;
+  /** Its first parameter reaches the URL argument of that fetch call. */
+  forwardsUrl: boolean;
+  /** Callees given this function's own first parameter as their first argument. */
+  forwardsTo: ForwardedCallee[];
 }
 
 /** See {@link ExtractedDecoratorRoute.handlerReceiver}. */
@@ -1419,23 +1429,6 @@ const processBatch = (
   }
 
   return result;
-};
-
-/**
- * Walk a tree-sitter AST subtree looking for a call to the global `fetch()` function.
- * Returns `true` if found within `maxDepth` levels of nesting — keeps the check
- * lightweight so it doesn't slow down parse-worker on large function bodies.
- */
-const checkForFetchCall = (node: SyntaxNode, depth = 0, maxDepth = 5): boolean => {
-  if (depth > maxDepth) return false;
-  if (node.type === 'call_expression') {
-    const fn = node.childForFieldName('function');
-    if (fn?.type === 'identifier' && fn.text === 'fetch') return true;
-  }
-  for (let i = 0; i < node.childCount; i++) {
-    if (checkForFetchCall(node.child(i)!, depth + 1, maxDepth)) return true;
-  }
-  return false;
 };
 
 // HTTP client methods that are ONLY used by clients, not Express route registration.
@@ -3168,17 +3161,19 @@ const processFileGroup = (
         });
       }
 
-      // ── Fetch wrapper detection: record functions that call fetch() internally ──
+      // ── Fetch wrapper detection: functions that call fetch() or forward their URL ──
       if (
         nodeLabel === 'Function' &&
         definitionNode &&
         nameNode &&
         (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript)
       ) {
-        if (checkForFetchCall(definitionNode)) {
+        const facts = fetchWrapperFacts(definitionNode, file.path);
+        if (facts.seed || facts.forwardsTo.length > 0) {
           result.fetchWrapperDefs.push({
             filePath: file.path,
             functionName: nameNode.text,
+            ...facts,
           });
         }
       }
