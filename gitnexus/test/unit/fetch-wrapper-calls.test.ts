@@ -182,6 +182,27 @@ for (const [name, grammar] of [
         facts: { seed: false, forwardsUrl: false, forwardsTo: [] },
       },
       {
+        shape: 'a window parameter rather than the browser global',
+        source: 'function wrapper(url, window) { return window.fetch(url); }',
+        facts: {
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [{ callee: 'window.fetch', module: null }],
+        },
+      },
+      {
+        shape: 'an uncalled nested function declaration',
+        source: `function setup(path) {
+          function helper() { return fetch('/api/x'); }
+          return register(path);
+        }`,
+        facts: {
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [{ callee: 'register', module: null }],
+        },
+      },
+      {
         shape: 'a parameter shadowed by a local',
         source: `function fixed(url) { { const url = '/health'; return fetch(url); } }`,
         facts: { seed: true, forwardsUrl: false, forwardsTo: [] },

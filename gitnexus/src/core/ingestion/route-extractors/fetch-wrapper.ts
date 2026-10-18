@@ -279,20 +279,48 @@ export function fetchWrapperFacts(
   // runs (`const later = () => resilientFetch(url)`), so its calls prove
   // nothing; a helper that is called or passed on (a retry callback) counts.
   const body = definedFunction(definition);
-  const unused = definition.descendantsOfType('variable_declarator').filter((d) => {
-    const name = d.childForFieldName('name');
-    return (
-      // Not the definition's own `const load = (url) => …` declarator.
-      !!body &&
-      body.startIndex <= d.startIndex &&
-      d.endIndex <= body.endIndex &&
-      FUNCTION_TYPES.includes(d.childForFieldName('value')?.type ?? '') &&
-      name?.type === 'identifier' &&
-      !definition
-        .descendantsOfType('identifier')
-        .some((id) => id.text === name.text && id.id !== name.id)
-    );
-  });
+  const referenced = (name: Parser.SyntaxNode) =>
+    definition
+      .descendantsOfType('identifier')
+      .some((id) => id.text === name.text && id.id !== name.id);
+  const unused = definition
+    .descendantsOfType([
+      'variable_declarator',
+      'function_declaration',
+      'generator_function_declaration',
+    ])
+    .filter((d) => {
+      const name = d.childForFieldName('name');
+      return (
+        // Not the definition itself or its own `const load = (url) => …` declarator.
+        !!body &&
+        d.id !== body.id &&
+        body.startIndex <= d.startIndex &&
+        d.endIndex <= body.endIndex &&
+        (d.type !== 'variable_declarator' ||
+          FUNCTION_TYPES.includes(d.childForFieldName('value')?.type ?? '')) &&
+        name?.type === 'identifier' &&
+        !referenced(name)
+      );
+    });
+  // `window.fetch` through a parameter or local named `window` is that value's
+  // method, not the platform fetch.
+  const localNames = new Set([
+    ...definition
+      .descendantsOfType('variable_declarator')
+      .map((d) => d.childForFieldName('name')?.text),
+    ...definition
+      .descendantsOfType(FUNCTION_TYPES)
+      .flatMap((fn) =>
+        [fn.childForFieldName('parameter'), fn.childForFieldName('parameters')].flatMap((params) =>
+          params?.type === 'identifier'
+            ? [params.text]
+            : (params?.descendantsOfType('identifier').map((id) => id.text) ?? []),
+        ),
+      ),
+  ]);
+  const platformFetch = (name: string) =>
+    FETCH_CALLEES.has(name) && (name === 'fetch' || !localNames.has(name.split('.')[0]));
   const runs = (call: Parser.SyntaxNode) =>
     !unused.some((d) => d.startIndex <= call.startIndex && call.endIndex <= d.endIndex);
   let seed = false;
@@ -304,7 +332,7 @@ export function fetchWrapperFacts(
     const argument = call
       .childForFieldName('arguments')
       ?.namedChildren.find((child) => child.type !== 'comment');
-    if (FETCH_CALLEES.has(name) || isAlias(name, call)) {
+    if (platformFetch(name) || isAlias(name, call)) {
       seed = true;
       if (carries(argument)) forwardsUrl = true;
     }
