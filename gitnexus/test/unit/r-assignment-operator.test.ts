@@ -16,8 +16,10 @@ import { R_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { R_SCOPE_QUERY } from '../../src/core/ingestion/languages/r/query.js';
 import { RFieldExtractor } from '../../src/core/ingestion/field-extractors/r.js';
 import { rMethodExtractor } from '../../src/core/ingestion/method-extractors/r.js';
-import { getRTopLevelPropertyOwnerName } from '../../src/core/ingestion/field-extractors/r.js';
-import { getRTopLevelMethodOwnerName } from '../../src/core/ingestion/method-extractors/r.js';
+import {
+  findRFieldOwnerNode,
+  getRTopLevelPropertyOwnerName,
+} from '../../src/core/ingestion/field-extractors/r.js';
 import { buildTypeEnv } from '../../src/core/ingestion/type-env.js';
 import { typeConfig } from '../../src/core/ingestion/type-extractors/r.js';
 import type { FieldExtractorContext } from '../../src/core/ingestion/field-types.js';
@@ -127,8 +129,18 @@ describe('R extractors: only an assignment declares a class', () => {
   };
   const SOURCE = (op: string) => `x ${op} R6Class("A", public = list(f = function() 1, v = 1))`;
 
+  /** The `name = ...` entry of the `list(...)` argument inside `node`. */
+  const entry = (node: ReturnType<typeof assignment>, name: string) => {
+    const found = node.descendantsOfType('argument').find((a) => a.text.startsWith(`${name} =`));
+    if (!found) throw new Error(`no ${name} entry`);
+    return found;
+  };
+
   it.each(['<-', '=', '<<-'])('treats an R6Class assignment with %s as a class', (op) => {
     const node = assignment(SOURCE(op));
+    // The owner walk the members use finds the class from inside its list.
+    expect(findRFieldOwnerNode(entry(node, 'f'))).toBe(node);
+    expect(getRTopLevelPropertyOwnerName(entry(node, 'v'))).toBe('x');
     expect(new RFieldExtractor().isTypeDeclaration(node)).toBe(true);
     expect(rMethodExtractor.isTypeDeclaration(node)).toBe(true);
     expect(new RFieldExtractor().extract(node, fieldContext)?.ownerFqn).toBe('x');
@@ -141,13 +153,9 @@ describe('R extractors: only an assignment declares a class', () => {
     expect(rMethodExtractor.isTypeDeclaration(node)).toBe(false);
     expect(new RFieldExtractor().extract(node, fieldContext)).toBeNull();
     expect(rMethodExtractor.extract(node, methodContext)).toBeNull();
-    const entry = (name: string) => {
-      const found = node.descendantsOfType('argument').find((a) => a.text.startsWith(`${name} =`));
-      if (!found) throw new Error(`no ${name} entry`);
-      return found;
-    };
-    expect(getRTopLevelPropertyOwnerName(entry('v'))).toBeNull();
-    expect(getRTopLevelMethodOwnerName(entry('f'))).toBeNull();
+    // No owner walk reaches a class from a member of `x + R6Class(...)`.
+    expect(getRTopLevelPropertyOwnerName(entry(node, 'v'))).toBeNull();
+    expect(findRFieldOwnerNode(entry(node, 'f'))).toBeNull();
   });
 });
 
