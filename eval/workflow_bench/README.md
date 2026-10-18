@@ -73,16 +73,23 @@ plus a savings row: input / cache / output tokens, cost, wall time).
 
 ### Measure an unmerged PR against a previous run
 
-Dispatch **Release evaluation** from `main` with `candidate_pr`, its exact
-`expected_pr_sha`, and a successful main `comparison_run_id`. For example:
+Add **`run-cost-evaluation`** to an open PR targeting `main`:
 
 ```bash
-gh workflow run release-evaluation.yml --ref main \
-  -f candidate_pr=3621 \
-  -f expected_pr_sha=98b7793d4c0997489ef4b433068688e85abdb18e \
-  -f comparison_run_id=39039452570 \
-  -f model=gpt-5.6-sol -f effort=xhigh
+gh pr edit 3621 --add-label run-cost-evaluation
 ```
+
+Only a repository writer's label event can request this paid comparison. The
+trusted dispatcher pins the labeled head and selects the newest successful main
+Release evaluation with a full release artifact (searching the latest 100 runs),
+using `gpt-5.6-sol` at `xhigh`. It skips previews and runner-only probes. An
+incompatible or expired baseline fails before paid sessions; it never starts a
+fresh paid baseline automatically. The workflow inputs are internal transport;
+manual PR dispatches also require the label. Ordinary pushes do not request runs.
+Remove and re-add the label to request another measurement; rerunning the label
+dispatcher itself is ignored. The evaluator checks the live label and head on
+resolution and immediately before paid sessions. Removing the label prevents
+sessions that have not started; use Actions cancellation for a run already active.
 
 This preview measures only the PR runtime's MCP arm: all four tasks, three
 repetitions each. It reuses the selected run's MCP measurements as the historical

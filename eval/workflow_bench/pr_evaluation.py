@@ -20,6 +20,7 @@ from typing import Any
 
 SHA = re.compile(r"[0-9a-f]{40}")
 REPO = re.compile(r"[\w.-]+/[\w.-]+")
+COST_LABEL = "run-cost-evaluation"
 # These additions orchestrate the preview; they do not change the measured
 # runner, task/oracle bytes, dependency lock or pinned agent CLI.
 PREVIEW_PATHS = {
@@ -54,7 +55,81 @@ def resolve_pr(repo: str, number: int, expected_sha: str) -> str:
         or pr.get("base", {}).get("repo", {}).get("full_name") != repo
     ):
         raise ValueError("PR is closed, moved from the requested SHA, or targets a different repository/branch")
+    if COST_LABEL not in {label.get("name") for label in pr.get("labels", [])}:
+        raise ValueError(f"PR must retain the {COST_LABEL} label to enable a cost comparison")
     return expected_sha
+
+
+def dispatch_labeled_pr(repo: str, event: dict[str, Any]) -> int:
+    """Request one pinned comparison on main from a trusted label event."""
+    if (
+        not REPO.fullmatch(repo)
+        or event.get("repository", {}).get("full_name") != repo
+        or event.get("action") != "labeled"
+        or event.get("label", {}).get("name") != COST_LABEL
+    ):
+        raise ValueError("expected a cost-evaluation label event for this repository")
+    actor = event.get("sender", {}).get("login", "")
+    if not re.fullmatch(r"[\w-]+(?:\[bot\])?", actor):
+        raise ValueError("invalid label actor")
+    permission = _gh_json(f"repos/{repo}/collaborators/{actor}/permission")
+    if permission.get("permission") not in ("admin", "maintain", "write"):
+        raise ValueError("only repository writers may request paid evaluations")
+    pr = event.get("pull_request", {})
+    number = event.get("number")
+    sha = resolve_pr(repo, number, pr.get("head", {}).get("sha", ""))
+    # Previews and runner-only probes are not historical release measurements.
+    # The evaluator authenticates the chosen artifact's contents before spend.
+    runs = _gh_json(
+        f"repos/{repo}/actions/workflows/release-evaluation.yml/runs?branch=main&status=success&per_page=100"
+    )
+    for run in runs.get("workflow_runs", []):
+        if (
+            run.get("conclusion") != "success"
+            or run.get("head_branch") != "main"
+            or run.get("event") not in ("schedule", "workflow_dispatch")
+            or run.get("head_repository", {}).get("full_name") != repo
+            or type(run.get("id")) is not int
+            or run["id"] < 1
+            or not SHA.fullmatch(run.get("head_sha", ""))
+        ):
+            continue
+        artifacts = _gh_json(f"repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100")
+        if artifacts.get("total_count", 0) > 100:
+            raise ValueError("historical artifact list is truncated")
+        matches = [
+            item
+            for item in artifacts.get("artifacts", [])
+            if isinstance(item.get("name"), str)
+            and re.fullmatch(r"release-agent-evaluation-[0-9a-f]{40}", item["name"])
+            and item.get("expired") is False
+        ]
+        if len(matches) != 1:
+            continue
+        resolve_pr(repo, number, sha)
+        _gh(
+            [
+                "workflow",
+                "run",
+                "release-evaluation.yml",
+                "--repo",
+                repo,
+                "--ref",
+                "main",
+                "-f",
+                f"candidate_pr={number}",
+                "-f",
+                f"expected_pr_sha={sha}",
+                "-f",
+                f"comparison_run_id={run['id']}",
+                "-f",
+                "model=gpt-5.6-sol",
+                "-f",
+                "effort=xhigh",
+            ]
+        )
+        return run["id"]
+    raise ValueError("no full successful main Release evaluation found in the latest 100 runs")
 
 
 def require_comparable_harness(repo: str, previous_sha: str, harness_sha: str) -> None:
@@ -315,6 +390,9 @@ def render_markdown(report: dict[str, Any]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    dispatch = commands.add_parser("dispatch-label")
+    dispatch.add_argument("--repo", required=True)
+    dispatch.add_argument("--event", type=Path, required=True)
     resolve = commands.add_parser("resolve")
     resolve.add_argument("--repo", required=True)
     resolve.add_argument("--pr", type=int, required=True)
@@ -334,7 +412,10 @@ def main() -> None:
     summarize.add_argument("--pr", type=int, required=True)
     summarize.add_argument("--run-id", type=int, required=True)
     args = parser.parse_args()
-    if args.command == "resolve":
+    if args.command == "dispatch-label":
+        run_id = dispatch_labeled_pr(args.repo, json.loads(args.event.read_text()))
+        print(f"Requested PR cost comparison on main against Release evaluation run {run_id}.")
+    elif args.command == "resolve":
         print(f"sha={resolve_pr(args.repo, args.pr, args.sha)}")
     elif args.command == "baseline":
         report = fetch_baseline(args.repo, args.run_id, args.harness_sha, args.model, args.effort)

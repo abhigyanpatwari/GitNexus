@@ -22,7 +22,7 @@ on:
         type: string
         default: latest-rc
       candidate_pr:
-        description: 'Optional open PR number for a cost preview; requires expected_pr_sha and comparison_run_id'
+        description: 'Label dispatcher input: PR must have run-cost-evaluation; requires SHA and comparison run'
         type: string
         default: ''
       expected_pr_sha:
@@ -179,6 +179,7 @@ jobs:
     permissions:
       contents: read
       actions: read # Authenticate and download the explicitly selected historical measurement.
+      pull-requests: read
     env:
       INPUT_REF: ${{ inputs.candidate_ref || 'latest-rc' }}
       INPUT_PR: ${{ inputs.candidate_pr }}
@@ -353,6 +354,14 @@ jobs:
               --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
           done
+      - name: Recheck PR opt-in and pinned head immediately before paid sessions
+        if: inputs.candidate_pr != ''
+        working-directory: eval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m workflow_bench.pr_evaluation resolve \
+            --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR" --sha "$INPUT_PR_SHA"
       - name: Run repeated paired agent sessions
         timeout-minutes: 1140
         working-directory: eval

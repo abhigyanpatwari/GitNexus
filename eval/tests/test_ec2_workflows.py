@@ -103,7 +103,7 @@ def test_pr_preview_uses_trusted_main_and_authenticates_history_before_paid_sess
     job = document["jobs"]["evaluate"]
     assert "refs/heads/main" in job["if"]
     assert job["environment"] == "gitnexus-evolution"
-    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    assert job["permissions"] == {"contents": "read", "actions": "read", "pull-requests": "read"}
     steps = job["steps"]
     resolve = next(step for step in steps if step.get("id") == "resolve")
     assert "workflow_bench.pr_evaluation resolve" in resolve["run"]
@@ -118,6 +118,25 @@ def test_pr_preview_uses_trusted_main_and_authenticates_history_before_paid_sess
     dependencies = next(step for step in steps if "workflow_bench.pr_evaluation dependencies" in step.get("run", ""))
     assert steps.index(dependencies) < steps.index(paid)
     assert "inputs.candidate_pr != ''" in dependencies["if"]
+    opt_in = next(step for step in steps if step.get("name", "").startswith("Recheck PR opt-in"))
+    assert steps.index(opt_in) + 1 == steps.index(paid)
+    assert 'workflow_bench.pr_evaluation resolve' in opt_in["run"]
+    assert "inputs.candidate_pr != ''" in opt_in["if"]
+
+
+def test_cost_request_is_label_only_and_executes_trusted_base_code():
+    document = workflow("pr-cost-evaluation.yml")
+    assert document[True] == {"pull_request_target": {"types": ["labeled"], "branches": ["main"]}}
+    assert document["permissions"] == {}
+    job = document["jobs"]["request"]
+    assert "github.event.label.name == 'run-cost-evaluation'" in job["if"]
+    assert "github.run_attempt == 1" in job["if"]
+    assert job["runs-on"] == "ubuntu-latest" and "environment" not in job
+    assert job["permissions"] == {"contents": "read", "pull-requests": "read", "actions": "write"}
+    checkout, dispatch = job["steps"]
+    assert checkout["with"] == {"ref": "${{ github.sha }}", "persist-credentials": False}
+    assert "dispatch-label" in dispatch["run"] and '"$GITHUB_EVENT_PATH"' in dispatch["run"]
+    assert "${{ github.event." not in dispatch["run"]
 
 
 def test_pr_preview_cannot_publish_release_approval_evidence():

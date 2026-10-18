@@ -144,7 +144,12 @@ def test_cost_regression_remains_a_valid_measurement(evidence):
 
 
 def pr_payload():
-    return {"state": "open", "head": {"sha": NEW}, "base": {"ref": "main", "repo": {"full_name": REPO}}}
+    return {
+        "state": "open",
+        "head": {"sha": NEW},
+        "base": {"ref": "main", "repo": {"full_name": REPO}},
+        "labels": [{"name": pr_evaluation.COST_LABEL}],
+    }
 
 
 def test_pr_resolution_is_bound_to_the_explicit_reviewed_sha(monkeypatch):
@@ -159,6 +164,8 @@ def test_pr_resolution_is_bound_to_the_explicit_reviewed_sha(monkeypatch):
         lambda pr: pr["head"].update(sha=OLD),
         lambda pr: pr["base"].update(ref="feature"),
         lambda pr: pr["base"]["repo"].update(full_name="other/repo"),
+        lambda pr: pr.update(labels=[]),
+        lambda pr: pr.pop("labels"),
     ],
 )
 def test_moved_or_wrong_target_pr_is_rejected_before_paid_work(monkeypatch, mutation):
@@ -167,6 +174,146 @@ def test_moved_or_wrong_target_pr_is_rejected_before_paid_work(monkeypatch, muta
     monkeypatch.setattr(pr_evaluation, "_gh_json", lambda endpoint: payload)
     with pytest.raises(ValueError):
         pr_evaluation.resolve_pr(REPO, 3621, NEW)
+
+
+@pytest.fixture
+def label_request(monkeypatch):
+    event = {
+        "repository": {"full_name": REPO},
+        "action": "labeled",
+        "label": {"name": pr_evaluation.COST_LABEL},
+        "sender": {"login": "maintainer"},
+        "number": 3621,
+        "pull_request": pr_payload(),
+    }
+    run = {
+        "id": 90,
+        "conclusion": "success",
+        "head_branch": "main",
+        "event": "workflow_dispatch",
+        "head_repository": {"full_name": REPO},
+        "head_sha": OLD,
+    }
+    payloads = {
+        f"repos/{REPO}/collaborators/maintainer/permission": {"permission": "write"},
+        f"repos/{REPO}/pulls/3621": pr_payload(),
+        f"repos/{REPO}/actions/workflows/release-evaluation.yml/runs?branch=main&status=success&per_page=100": {
+            "workflow_runs": [run],
+        },
+        f"repos/{REPO}/actions/runs/90/artifacts?per_page=100": {
+            "total_count": 1,
+            "artifacts": [{"name": f"release-agent-evaluation-{OLD}", "expired": False}],
+        },
+    }
+    calls = []
+    monkeypatch.setattr(pr_evaluation, "_gh_json", payloads.__getitem__)
+    monkeypatch.setattr(pr_evaluation, "_gh", lambda args: calls.append(args))
+    return event, payloads, calls
+
+
+def test_label_dispatch_pins_head_main_baseline_and_model(label_request):
+    event, _, calls = label_request
+    assert pr_evaluation.dispatch_labeled_pr(REPO, event) == 90
+    assert calls == [
+        [
+            "workflow",
+            "run",
+            "release-evaluation.yml",
+            "--repo",
+            REPO,
+            "--ref",
+            "main",
+            "-f",
+            "candidate_pr=3621",
+            "-f",
+            f"expected_pr_sha={NEW}",
+            "-f",
+            "comparison_run_id=90",
+            "-f",
+            "model=gpt-5.6-sol",
+            "-f",
+            "effort=xhigh",
+        ]
+    ]
+
+
+@pytest.mark.parametrize("permission", ["read", "triage", "none", ""])
+def test_label_requires_repository_write_permission(label_request, permission):
+    event, payloads, calls = label_request
+    payloads[f"repos/{REPO}/collaborators/maintainer/permission"]["permission"] = permission
+    with pytest.raises(ValueError, match="repository writers"):
+        pr_evaluation.dispatch_labeled_pr(REPO, event)
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda event: event.update(action="synchronize"),
+        lambda event: event["label"].update(name="run-ci"),
+        lambda event: event["repository"].update(full_name="other/repo"),
+        lambda event: event["sender"].update(login="name/permission"),
+    ],
+)
+def test_unrelated_events_never_dispatch(label_request, mutation):
+    event, _, calls = label_request
+    mutation(event)
+    with pytest.raises(ValueError):
+        pr_evaluation.dispatch_labeled_pr(REPO, event)
+    assert not calls
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda pr: pr.update(labels=[]),
+        lambda pr: pr["head"].update(sha=OLD),
+    ],
+)
+def test_label_or_head_changed_during_discovery_never_dispatches(label_request, monkeypatch, mutation):
+    event, payloads, calls = label_request
+    reads = 0
+
+    def api(endpoint):
+        nonlocal reads
+        if endpoint == f"repos/{REPO}/pulls/3621":
+            reads += 1
+            if reads == 2:
+                mutation(payloads[endpoint])
+        return payloads[endpoint]
+
+    monkeypatch.setattr(pr_evaluation, "_gh_json", api)
+    with pytest.raises(ValueError):
+        pr_evaluation.dispatch_labeled_pr(REPO, event)
+    assert reads == 2 and not calls
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        {"name": f"pr-cost-comparison-{NEW}", "expired": False},
+        {"name": f"release-agent-evaluation-{OLD}", "expired": True},
+        None,
+    ],
+)
+def test_label_skips_preview_expired_and_probe_runs(label_request, artifact):
+    event, payloads, calls = label_request
+    runs = next(value["workflow_runs"] for value in payloads.values() if "workflow_runs" in value)
+    runs.insert(0, {**runs[0], "id": 91})
+    payloads[f"repos/{REPO}/actions/runs/91/artifacts?per_page=100"] = {
+        "total_count": int(artifact is not None),
+        "artifacts": [] if artifact is None else [artifact],
+    }
+    assert pr_evaluation.dispatch_labeled_pr(REPO, event) == 90
+    assert len(calls) == 1
+
+
+def test_label_without_a_full_baseline_does_not_dispatch(label_request):
+    event, payloads, calls = label_request
+    payloads[f"repos/{REPO}/actions/runs/90/artifacts?per_page=100"]["artifacts"] = []
+    with pytest.raises(ValueError, match="no full successful"):
+        pr_evaluation.dispatch_labeled_pr(REPO, event)
+    assert not calls
 
 
 def test_previous_measurement_accepts_only_preview_orchestration_changes(monkeypatch):
