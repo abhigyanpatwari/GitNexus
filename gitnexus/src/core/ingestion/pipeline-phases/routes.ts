@@ -549,14 +549,13 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     // A call whose callee the file declares or imports relatively must reach a
     // wrapper in exactly that module; a package or member callee keeps the
     // name match.
-    const isWrapperCall = ({ functionName, module }: FetchWrapperCall): boolean =>
-      module === undefined
+    const isWrapperCall = ({ functionName, module, declaredName }: FetchWrapperCall): boolean =>
+      configuredWrappers.includes(functionName) ||
+      (module === undefined
         ? wrapperNames.has(functionName)
-        : configuredWrappers.includes(functionName) ||
-          (defsByModule
-            .get(`${module}\0${functionName}`)
-            ?.some((def) => def.seed || carriers.has(def)) ??
-            false);
+        : (defsByModule
+            .get(`${module}\0${declaredName ?? functionName}`)
+            ?.some((def) => def.seed || carriers.has(def)) ?? false));
     if (wrapperNames.size > 0 && routeRegistry.size > 0) {
       for (const call of allFetchWrapperCalls ?? []) {
         if (isWrapperCall(call)) allFetchCalls.push(call);

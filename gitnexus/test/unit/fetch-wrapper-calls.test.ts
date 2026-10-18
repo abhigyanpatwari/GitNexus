@@ -149,6 +149,18 @@ for (const [name, grammar] of [
         },
       },
       {
+        shape: 'a nested helper that never runs, beside a retry callback that does',
+        source: `function defer(url) {
+          const later = () => resilientFetch(url);
+          return withRetry(() => send(url));
+        }`,
+        facts: {
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [{ callee: 'send', module: null }],
+        },
+      },
+      {
         shape: 'a parameter shadowed by a local',
         source: `function fixed(url) { { const url = '/health'; return fetch(url); } }`,
         facts: { seed: true, forwardsUrl: false, forwardsTo: [] },
@@ -188,11 +200,11 @@ for (const [name, grammar] of [
           function local(u) {}`),
           'src/web/page.ts',
           0,
-        ).map(({ functionName, module }) => ({ functionName, module })),
+        ).map(({ functionName, module, declaredName }) => ({ functionName, module, declaredName })),
       ).toEqual([
-        { functionName: 'request', module: 'src/web/api' },
-        { functionName: 'local', module: 'src/web/page' },
-        { functionName: 'api.request', module: undefined },
+        { functionName: 'send', module: 'src/web/api', declaredName: 'request' },
+        { functionName: 'local', module: 'src/web/page', declaredName: undefined },
+        { functionName: 'api.request', module: undefined, declaredName: undefined },
       ]);
     });
 

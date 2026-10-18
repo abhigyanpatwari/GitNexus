@@ -6,9 +6,12 @@ import { stripLeadingTemplatePrefix } from './route-path.js';
 
 /** A candidate is not an HTTP sink until its name matches a known wrapper. */
 export interface FetchWrapperCall extends ExtractedFetchCall {
+  /** The callee as written at the call site (`send` for `import { request as send }`). */
   functionName: string;
   /** Module stem declaring a bare callee, when this file declares or imports it relatively. */
   module?: string;
+  /** The name the callee is declared under in `module`, when it differs from `functionName`. */
+  declaredName?: string;
 }
 
 function calleeName(node: Parser.SyntaxNode | null): string | undefined {
@@ -51,10 +54,11 @@ export function extractFetchWrapperCalls(
     const declared = calleeDeclarations(tree.rootNode, filePath).get(functionName);
     calls.push({
       filePath,
-      functionName: declared?.callee ?? functionName,
+      functionName,
       fetchURL,
       lineNumber: call.startPosition.row + lineOffset + 1,
       ...(declared?.module ? { module: declared.module } : {}),
+      ...(declared && declared.callee !== functionName ? { declaredName: declared.callee } : {}),
     });
   }
   return calls;
@@ -244,10 +248,30 @@ export function fetchWrapperFacts(
       ? argument.text === parameter
       : ['template_string', 'binary_expression'].includes(argument.type) &&
         argument.descendantsOfType('identifier').some((id) => id.text === parameter));
+  // A nested helper bound to a local that is never referenced again never
+  // runs (`const later = () => resilientFetch(url)`), so its calls prove
+  // nothing; a helper that is called or passed on (a retry callback) counts.
+  const body = definedFunction(definition);
+  const unused = definition.descendantsOfType('variable_declarator').filter((d) => {
+    const name = d.childForFieldName('name');
+    return (
+      // Not the definition's own `const load = (url) => …` declarator.
+      !!body &&
+      body.startIndex <= d.startIndex &&
+      d.endIndex <= body.endIndex &&
+      FUNCTION_TYPES.includes(d.childForFieldName('value')?.type ?? '') &&
+      name?.type === 'identifier' &&
+      !definition
+        .descendantsOfType('identifier')
+        .some((id) => id.text === name.text && id.id !== name.id)
+    );
+  });
+  const runs = (call: Parser.SyntaxNode) =>
+    !unused.some((d) => d.startIndex <= call.startIndex && call.endIndex <= d.endIndex);
   let seed = false;
   let forwardsUrl = false;
   const forwardsTo = new Map<string, ForwardedCallee>();
-  for (const call of definition.descendantsOfType('call_expression')) {
+  for (const call of definition.descendantsOfType('call_expression').filter(runs)) {
     const name = calleeName(call.childForFieldName('function'));
     if (!name) continue;
     const argument = call

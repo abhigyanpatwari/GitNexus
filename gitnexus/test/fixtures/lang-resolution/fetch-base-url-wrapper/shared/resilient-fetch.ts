@@ -16,6 +16,9 @@ export async function resilientFetch(
       lastResponse = await fetchImpl(input, init);
       if (lastResponse.status < 500) return lastResponse;
     } catch (err) {
+      // A timeout or abort leaves the signal aborted: retrying cannot succeed.
+      if (err instanceof DOMException && ['AbortError', 'TimeoutError'].includes(err.name))
+        throw err;
       lastError = err;
     }
   }
