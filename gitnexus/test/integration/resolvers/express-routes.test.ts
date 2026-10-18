@@ -26,6 +26,34 @@ import {
 
 const parseIdentity = await runtimeParseIdentity();
 
+// GitNexus's own server registers through helpers that receive the app and,
+// for SSE progress, the path (#3487); the app comes from `express()` in the
+// caller, so each registration resolves through exactly one call site.
+describe('Express registrations forwarded through helper parameters', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'express-forwarded-registrations'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits each helper registration once per call site, in the helper file', () => {
+    expect(
+      getNodesByLabelFull(result, 'Route')
+        .map((node) => `${node.properties.method} ${node.name} ${node.properties.filePath}`)
+        .sort(),
+    ).toEqual([
+      '* /api/mcp src/server/mcp-http.ts',
+      'GET / src/server/api.ts',
+      'GET /api/analyze/:jobId/progress src/server/sse-progress.ts',
+      'GET /api/embed/:jobId/progress src/server/sse-progress.ts',
+      'GET /api/info src/server/api.ts',
+    ]);
+  });
+});
+
 describe('Express/Hono route detection', () => {
   let result: PipelineResult;
 
