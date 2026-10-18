@@ -280,6 +280,12 @@ function handler() {} function other() {}`);
       routes: ['GET /api/users'],
     },
     {
+      shape: 'a parameter reassigned by destructuring',
+      calls: `function wire(target) { [target] = [other]; target.use('/api', router); }
+      wire(app);`,
+      routes: ['GET /users'],
+    },
+    {
       shape: 'a write to a same-named local in a nested block',
       calls: `function wire(target) { { let target; target = other; } target.use('/api', router); }
       wire(app);`,

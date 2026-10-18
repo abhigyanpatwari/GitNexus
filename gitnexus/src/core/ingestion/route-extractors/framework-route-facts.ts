@@ -159,8 +159,17 @@ export function extractFrameworkRouteFacts(
           'update_expression',
         ])
         .map((write) => write.childForFieldName('left') ?? write.childForFieldName('argument'))
-        .filter((target) => target && !shadowedBetween(target, fn))
-        .map((target) => target?.text),
+        // A destructuring target (`[app] = [other]`) writes each name it binds;
+        // a member target (`app.locals = …`) writes a property, not the binding.
+        .flatMap((target) =>
+          !target || ['member_expression', 'subscript_expression'].includes(target.type)
+            ? []
+            : target.type === 'identifier'
+              ? [target]
+              : target.descendantsOfType(['identifier', 'shorthand_property_identifier_pattern']),
+        )
+        .filter((target) => !shadowedBetween(target, fn))
+        .map((target) => target.text),
     );
     return {
       kind: 'handler',

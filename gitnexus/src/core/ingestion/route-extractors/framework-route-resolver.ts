@@ -368,7 +368,6 @@ export function resolveFrameworkRouteFacts(
   }
   /** Receiver, paths and arguments per call site, or undefined when nothing is forwarded. */
   const forwardedTargets = (call: FrameworkCallFact, filePath: string): Target[] | undefined => {
-    const receiverParam = parameter(call.receiver);
     const pathParam = call.paths ? undefined : parameter(call.arguments[0]);
     // The receiver, the path or any argument (a mounted child) may be forwarded;
     // all of them must come from the same function.
