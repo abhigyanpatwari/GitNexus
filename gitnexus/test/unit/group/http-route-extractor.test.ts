@@ -2938,6 +2938,61 @@ def create_order():
         consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
       ).toBeDefined();
     });
+
+    it('reads prefixed Python literals and f-string URLs as paths (#1675)', async () => {
+      const dir = path.join(tmpDir, 'python-prefixed-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'client.py'),
+        `
+import requests
+
+BASE = "https://svc.local"
+
+def calls(svc, item_id):
+    requests.get(f"{BASE}/api/items")
+    requests.get(F"/api/items/{item_id:d}")
+    requests.post(rf"/api/raw")
+    requests.put(b"/api/bytes")
+    requests.delete(u'/api/legacy')
+    requests.request("PATCH", f"https://svc.local/api/abs/{item_id!r}")
+    requests.get(url=f"""{BASE}/api/keyword""")
+    requests.get(f"{BASE}api/relative")
+    requests.get(f"/api/odd/{ {} }")
+    uri = f"{BASE}/api/wrapped/{item_id}"
+    svc.fetch(uri=uri)
+    relative = "api/v1/relative"
+    svc.fetch(uri=relative)
+    root = f"{BASE}/"
+    svc.fetch(uri=root)
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumerIds = contracts
+        .filter((c) => c.role === 'consumer')
+        .map((c) => c.contractId)
+        .sort();
+
+      // A leading interpolation followed by `/` is a host binding, as for a JS
+      // template (#3111); one with no `/` after it is not a routable path, and
+      // a variable url that is only the host is skipped like a literal root.
+      expect(consumerIds).toEqual(
+        [
+          'http::DELETE::/api/legacy',
+          'http::GET::/api/items',
+          'http::GET::/api/items/{param}',
+          'http::GET::/api/keyword',
+          'http::GET::/api/odd/{param}',
+          'http::GET::/api/v1/relative',
+          'http::GET::/api/wrapped/{param}',
+          'http::PATCH::/api/abs/{param}',
+          'http::POST::/api/raw',
+          'http::PUT::/api/bytes',
+        ].sort(),
+      );
+    });
+
     it('extracts Python httpx.AsyncClient calls assigned to attributes or aliases', async () => {
       const dir = path.join(tmpDir, 'python-httpx-consumer');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
