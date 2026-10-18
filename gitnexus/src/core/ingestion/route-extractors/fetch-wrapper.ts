@@ -229,9 +229,20 @@ export function fetchWrapperFacts(
   // An alias counts only where its declaring function encloses the call: a
   // nested helper's `const fetchImpl = globalThis.fetch` says nothing about an
   // outer `fetchImpl` parameter.
-  const aliases = definition
-    .descendantsOfType('variable_declarator')
-    .filter((d) => namesFetch(d.childForFieldName('value')));
+  // A name redeclared with any other value anywhere in the function (a block
+  // that shadows it) is not an alias at all: which declaration a call reads
+  // would need lexical scoping this pass does not do.
+  const declarators = definition.descendantsOfType('variable_declarator');
+  const conflicting = new Set(
+    declarators
+      .filter((d) => !namesFetch(d.childForFieldName('value')))
+      .map((d) => d.childForFieldName('name')?.text),
+  );
+  const aliases = declarators.filter(
+    (d) =>
+      namesFetch(d.childForFieldName('value')) &&
+      !conflicting.has(d.childForFieldName('name')?.text),
+  );
   const declaresParameter = (fn: Parser.SyntaxNode, name: string) =>
     [fn.childForFieldName('parameter'), fn.childForFieldName('parameters')].some((params) =>
       params?.type === 'identifier'

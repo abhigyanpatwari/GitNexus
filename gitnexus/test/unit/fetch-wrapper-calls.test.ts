@@ -174,6 +174,14 @@ for (const [name, grammar] of [
         },
       },
       {
+        shape: 'an alias shadowed by a block-scoped redeclaration',
+        source: `function f() {
+          const fetchImpl = globalThis.fetch;
+          { const fetchImpl = other; fetchImpl('/api/x'); }
+        }`,
+        facts: { seed: false, forwardsUrl: false, forwardsTo: [] },
+      },
+      {
         shape: 'a parameter shadowed by a local',
         source: `function fixed(url) { { const url = '/health'; return fetch(url); } }`,
         facts: { seed: true, forwardsUrl: false, forwardsTo: [] },
