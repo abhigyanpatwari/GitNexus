@@ -102,6 +102,19 @@ describe('Go net/http providers', () => {
       expected: [{ method: '*', path: '/api/any', name: 'anyHandler' }],
     },
     {
+      shape: 'a HEAD pattern, read as GET like the http.Head consumer',
+      body: '\thttp.HandleFunc("HEAD /api/ping", ping)\n\tr.HandleFunc("/api/both", both).Methods("GET", "HEAD")',
+      expected: [
+        { method: 'GET', path: '/api/ping', name: 'ping' },
+        { method: 'GET', path: '/api/both', name: 'both' },
+      ],
+    },
+    {
+      shape: 'a router parameter mounted under a stripped prefix',
+      body: '}\n\nfunc serve(root, sub *http.ServeMux) {\n\tsub.HandleFunc("/users", users)\n\troot.Handle("/api/", http.StripPrefix("/api", sub))',
+      expected: [],
+    },
+    {
       shape: 'a gorilla Methods chain after other route matchers',
       body: '\tr.HandleFunc("/api/hosted", hosted).Host("api.example.com").Methods("POST")',
       expected: [{ method: 'POST', path: '/api/hosted', name: 'hosted' }],

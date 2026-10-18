@@ -17,8 +17,9 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  * Go HTTP plugin. Handles:
  *   - gin / echo framework routing — `r.GET("/path", handler)`, including
  *     prefixes from route groups bound in the same function (`r.Group("/api")`)
- *   - net/http-style providers — `HandleFunc` / `Handle` on any receiver,
- *     method-agnostic unless a Go 1.22 pattern or gorilla `.Methods` names it
+ *   - net/http-style providers — `HandleFunc` / `Handle` on a proven net/http,
+ *     gorilla or chi router, method-agnostic unless a Go 1.22 pattern or
+ *     gorilla `.Methods` names it
  *   - net/http consumer — `http.Get(...)`, `http.NewRequest("METHOD", ...)`
  *   - resty consumer — `client.R().Delete("/path")`
  */
@@ -767,8 +768,10 @@ function mountedRouters(root: Parser.SyntaxNode): { values: Set<number>; factori
       const name =
         arg.type === 'identifier' ? arg.text : (callee?.childForFieldName('field') ?? callee)?.text;
       if (name) factories.add(name);
-      const value = arg.type === 'identifier' ? findBinding(arg) : null;
-      if (value && value !== CONFLICT) values.add(value.id);
+      // A router parameter is mounted by its declaration, a local by its value.
+      const binding = arg.type === 'identifier' ? lookupBinding(arg) : null;
+      if (isParamBinding(binding)) values.add(binding.param.id);
+      else if (binding && binding !== CONFLICT) values.add(binding.id);
     }
   }
   return { values, factories };
@@ -824,6 +827,7 @@ function stdlibRouter(
   const value = receiver.type === 'identifier' ? lookupBinding(receiver) : receiver;
   if (!value || value === CONFLICT) return null;
   if (isParamBinding(value)) {
+    if (mounted.values.has(value.param.id)) return null;
     const literal = value.param.parent?.parent;
     const call = literal?.type === 'func_literal' ? literal.parent?.parent : null;
     const fn = call?.type === 'call_expression' ? call.childForFieldName('function') : null;
@@ -1058,8 +1062,10 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
         router && pattern !== null ? registrationPattern(pattern, router.serveMux) : null;
       if (!router || !route) continue;
       const call = pathNode.parent?.parent;
+      // HEAD is read as GET, the convention this plugin's `http.Head` consumers
+      // already use, so a HEAD route pairs with them.
       const methods = (call && gorillaMethods(call)) ?? [route.method];
-      for (const method of methods) {
+      for (const method of new Set(methods.map((verb) => (verb === 'HEAD' ? 'GET' : verb)))) {
         out.push({
           role: 'provider',
           framework: 'go-stdlib',
