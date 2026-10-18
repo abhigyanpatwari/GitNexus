@@ -7,6 +7,11 @@
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { REL_TYPES } from 'gitnexus-shared';
+import {
+  CONTEXT_RELATION_TYPES,
+  CONTEXT_RESPONSE_SECTIONS,
+  QUERY_RESPONSE_SECTIONS,
+} from './response-filter.js';
 
 export interface ToolDefinition {
   name: string;
@@ -20,7 +25,9 @@ export interface ToolDefinition {
         type: string;
         description?: string;
         default?: unknown;
-        items?: { type: string };
+        items?: { type: string; enum?: string[] };
+        minItems?: number;
+        maxItems?: number;
         enum?: string[];
         const?: boolean;
         minimum?: number;
@@ -204,6 +211,14 @@ ${HOT_READ_STALENESS_NOTE}`,
           minimum: 1,
           maximum: QUERY_MAX_MAX_SYMBOLS,
         },
+        response_sections: {
+          type: 'array',
+          items: { type: 'string', enum: [...QUERY_RESPONSE_SECTIONS] },
+          minItems: 1,
+          maxItems: QUERY_RESPONSE_SECTIONS.length,
+          description:
+            'Optional single-repo output view: select processes, process_symbols, and/or definitions. For symbol discovery use ["process_symbols", "definitions"] with include_content:false and chain_depth:0. Warnings and staleness always remain; response_filter identifies omitted sections, not absent evidence. Does not change ranking or existing search limits. Omit for existing full output. Not supported for @group routing.',
+        },
         include_content: {
           type: 'boolean',
           description:
@@ -353,6 +368,22 @@ ${HOT_READ_STALENESS_NOTE}`,
         uid: {
           type: 'string',
           description: 'Direct symbol UID from prior tool results (zero-ambiguity lookup)',
+        },
+        response_sections: {
+          type: 'array',
+          items: { type: 'string', enum: [...CONTEXT_RESPONSE_SECTIONS] },
+          minItems: 1,
+          maxItems: CONTEXT_RESPONSE_SECTIONS.length,
+          description:
+            'Optional single-repo output view: select incoming, outgoing, processes, chain, routes, and/or typed_properties. The symbol and all warnings/completeness/staleness fields always remain. For callers only use ["incoming"] plus relationTypes:["CALLS"]. Omitted data is not evidence of absence; remove filters to expand. Does not change traversal or existing reference limits. Omit for existing full output. Not supported for @group routing.',
+        },
+        relationTypes: {
+          type: 'array',
+          items: { type: 'string', enum: [...CONTEXT_RELATION_TYPES] },
+          minItems: 1,
+          maxItems: CONTEXT_RELATION_TYPES.length,
+          description:
+            'Optional uppercase relationship categories to retain in the existing incoming/outgoing view, e.g. ["CALLS"] or ["CALLS", "USES"]. This filters the returned bounded reference window; it does not search for additional matches or filter chain. If response_sections is set, it must include incoming or outgoing. Omit for all existing categories. Single-repo MCP only, not @group routing.',
         },
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
         file: {
