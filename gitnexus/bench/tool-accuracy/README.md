@@ -65,8 +65,8 @@ Main at `50aa4be3b2c2c9a1561fc44878e5d8f87b99d16e` repaired three #3487 route
 checks and all four #3499 checks, and their allowances were removed: **18/31
 pass, 13 fail**.
 The JSON report records every desired and actual answer independently of gate
-status. Callback and guard taint findings are currently documented limitations;
-their stronger desired answers remain visible as known gaps.
+status. Inline-callback taint now passes and its allowance is removed. Guard
+taint remains a documented limitation and a visible known gap.
 
 `known-gaps.json` is an explicit, reviewed list of failing check IDs with issue,
 reason and observed baseline answers. There is no wildcard, skip, automatic

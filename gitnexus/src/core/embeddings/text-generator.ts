@@ -143,9 +143,11 @@ const getCompactContainerContext = (
   cleanedContent: string,
   declarationOnly: string,
 ): string | undefined => {
-  const source = declarationOnly || cleanedContent;
-  const nlIdx = source.indexOf('\n');
-  const firstLine = (nlIdx === -1 ? source : source.substring(0, nlIdx)).trim();
+  const source = declarationOnly || cleanContent(cleanedContent.slice(0, 200));
+  // The prefix may cut a supplementary character between its two UTF-16 units.
+  const bounded = source.slice(0, 200).replace(/[\uD800-\uDBFF]$/, '');
+  const nlIdx = bounded.indexOf('\n');
+  const firstLine = (nlIdx === -1 ? bounded : bounded.substring(0, nlIdx)).trim();
   return firstLine ? `Container: ${firstLine}` : undefined;
 };
 
@@ -159,9 +161,18 @@ const generateStructuralTypeText = (
   const header = buildEmbeddingHeader(node, config);
   const parts: string[] = [header];
   const isFirstChunk = chunkIndex === undefined || chunkIndex === 0;
-  const cleanedContent = cleanContent(node.content);
-  const declarationOnly = extractDeclarationOnly(cleanedContent);
-  const compactContainerContext = getCompactContainerContext(cleanedContent, declarationOnly);
+  // Only the first chunk needs the whole declaration. Later chunks must not
+  // repeatedly scan and allocate the complete container's source.
+  const cleanedContent = isFirstChunk ? cleanContent(node.content) : undefined;
+  const declarationOnly = extractDeclarationOnly(
+    cleanedContent ?? cleanContent(node.content.slice(0, 200)),
+  );
+  // A long decorator or comment may hide the declaration beyond the bounded
+  // prefix. The graph identity still names the container without rescanning it.
+  const compactContainerContext = getCompactContainerContext(
+    isFirstChunk ? node.content : `${node.label} ${node.name}`,
+    declarationOnly,
+  );
 
   if (compactContainerContext) {
     parts.push(compactContainerContext);
@@ -183,12 +194,31 @@ const generateStructuralTypeText = (
   }
 
   const cleanedChunk = cleanContent(codeBody);
-  if (cleanedChunk && cleanedChunk !== cleanedContent) {
+  if (
+    cleanedChunk &&
+    cleanedChunk !== cleanedContent &&
+    !(isFirstChunk && declarationOnly.includes(cleanedChunk))
+  ) {
     parts.push('', cleanedChunk);
   }
 
   return parts.join('\n');
 };
+
+/** Budget the final text, including headers and generated context. Preserve all
+ * text and Unicode pairs; character limits are not a model-specific tokenizer. */
+export function* splitEmbeddingText(text: string, maxChars: number): Generator<string> {
+  if (!Number.isSafeInteger(maxChars) || maxChars < 2) {
+    throw new Error('Embedding input budget must be a safe integer of at least 2');
+  }
+  for (let start = 0; start < text.length; ) {
+    let end = Math.min(start + maxChars, text.length);
+    const last = text.charCodeAt(end - 1);
+    if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+    yield text.slice(start, end);
+    start = end;
+  }
+}
 
 const DECL_START_RE =
   /^(?:(?:export|pub|data|abstract)\s+)*(?:type\s+\w+\s+struct|(?:class|struct|enum|interface)\s)/;

@@ -604,7 +604,11 @@ export function getLabelFromCaptures(
     !captureMap['definition.constructor'] &&
     !captureMap['definition.class'] &&
     !captureMap['definition.struct'] &&
-    !hasDefaultExportHocNameSeed
+    !hasDefaultExportHocNameSeed &&
+    !(
+      captureMap['definition.function'] &&
+      provider.methodExtractor?.extractFunctionName?.(captureMap['definition.function'])?.funcName
+    )
   )
     return null;
 
