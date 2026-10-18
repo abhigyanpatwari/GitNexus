@@ -27,11 +27,10 @@ export function fastestWithin<T>(
   attempt: () => TimedAttempt<T>,
   tries = 3,
 ): TimedAttempt<T> {
-  let best: TimedAttempt<T> | undefined;
-  for (let i = 0; i < tries; i++) {
+  let best = attempt();
+  for (let i = 1; i < tries && best.ms > budgetMs; i++) {
     const current = attempt();
-    if (best === undefined || current.ms < best.ms) best = current;
-    if (current.ms <= budgetMs) break;
+    if (current.ms < best.ms) best = current;
   }
-  return best!;
+  return best;
 }

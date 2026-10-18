@@ -97,13 +97,12 @@ export function measureScaling<T>(
   // the next attempt does not reproduce was scheduler noise (a pause during the small run
   // shrinks nothing, but one during the large run inflates it). Stop at the first attempt within
   // the limit; otherwise report the lowest ratio seen.
-  let best: ReturnType<typeof measureScalingOnce<T>> | undefined;
-  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+  let best = measureScalingOnce(prepare, build);
+  for (let attempt = 1; attempt < ATTEMPTS && best.ratio > MAX_RATIO; attempt++) {
     const current = measureScalingOnce(prepare, build);
-    if (best === undefined || current.ratio < best.ratio) best = current;
-    if (current.ratio <= MAX_RATIO) break;
+    if (current.ratio < best.ratio) best = current;
   }
-  return best!;
+  return best;
 }
 
 function measureScalingOnce<T>(

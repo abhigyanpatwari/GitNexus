@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { rRenameProvider } from '../../src/core/ingestion/languages/r/rename.js';
 
 const canonical = (name: string, qualifiedName: string): string =>
-  rRenameProvider.canonicalName!(name, { definition: { qualifiedName } } as never);
+  rRenameProvider.canonicalName?.(name, { definition: { qualifiedName } } as never) ?? '';
 
 describe('R rename: canonicalName of leading-dot names', () => {
   it('maps the engine simple name of a one-word leading-dot function back to the whole name', () => {
@@ -22,7 +22,7 @@ describe('R rename: canonicalName of leading-dot names', () => {
     expect(canonical('circle', 'area.circle')).toBe('circle');
     expect(canonical('foo', '.helper.foo')).toBe('foo');
     expect(canonical('helper', 'helper')).toBe('helper');
-    expect(rRenameProvider.canonicalName!('`odd`')).toBe('odd');
+    expect(rRenameProvider.canonicalName?.('`odd`') ?? '').toBe('odd');
   });
 
   it('does not rewrite an unrelated simple name', () => {
