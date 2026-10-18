@@ -878,7 +878,11 @@ function registrationPattern(
   serveMux: boolean,
 ): { method: string; path: string } | null {
   if (!serveMux) return pattern.startsWith('/') ? { method: '*', path: pattern } : null;
-  const parts = /^(?:([A-Za-z]+)[ \t]+)?(?:[A-Za-z0-9.-]+(?::\d+)?)?(\/\S*)$/.exec(pattern.trim());
+  // The method is an HTTP token (`GET`, `M-SEARCH`); it must start with a letter.
+  const parts =
+    /^(?:([A-Za-z][\w!#$%&'*+.^`|~-]*)[ \t]+)?(?:[A-Za-z0-9.-]+(?::\d+)?)?(\/\S*)$/.exec(
+      pattern.trim(),
+    );
   return parts
     ? { method: parts[1]?.toUpperCase() ?? '*', path: parts[2].replace(/\{\$\}$/, '') }
     : null;
@@ -1055,7 +1059,15 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       const receiverNode = match.captures.receiver;
       const args = codeChildren(pathNode?.parent);
       if (!pathNode || !receiverNode || args.length !== 2 || args[0].id !== pathNode.id) continue;
-      if (!HANDLER_ARG_TYPES.has(args[1].type)) continue;
+      // `http.HandlerFunc(h)` converts a function to a Handler: `h` is the handler.
+      const conversion = args[1].type === 'call_expression' ? args[1] : null;
+      const converted = codeChildren(conversion?.childForFieldName('arguments'));
+      const handler =
+        conversion?.childForFieldName('function')?.childForFieldName('field')?.text ===
+          'HandlerFunc' && converted.length === 1
+          ? converted[0]
+          : args[1];
+      if (!HANDLER_ARG_TYPES.has(handler.type)) continue;
       const router = stdlibRouter(receiverNode, imports, mounted);
       const pattern = stringLiteral(pathNode);
       const route =
@@ -1072,7 +1084,7 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
           method,
           path: joinRoutePath(router.prefix, route.path),
           confidence: 0.8,
-          ...handlerDetection(args[1], declaredNames),
+          ...handlerDetection(handler, declaredNames),
         });
       }
     }

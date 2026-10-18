@@ -102,6 +102,16 @@ describe('Go net/http providers', () => {
       expected: [{ method: '*', path: '/api/any', name: 'anyHandler' }],
     },
     {
+      shape: 'an http.HandlerFunc conversion',
+      body: '\thttp.Handle("/api/conv", http.HandlerFunc(conv))',
+      expected: [{ method: '*', path: '/api/conv', name: 'conv' }],
+    },
+    {
+      shape: 'a hyphenated method token',
+      body: '\thttp.HandleFunc("M-SEARCH /discover", discover)',
+      expected: [{ method: 'M-SEARCH', path: '/discover', name: 'discover' }],
+    },
+    {
       shape: 'a HEAD pattern, read as GET like the http.Head consumer',
       body: '\thttp.HandleFunc("HEAD /api/ping", ping)\n\tr.HandleFunc("/api/both", both).Methods("GET", "HEAD")',
       expected: [
