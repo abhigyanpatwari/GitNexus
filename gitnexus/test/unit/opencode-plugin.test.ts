@@ -82,6 +82,12 @@ describe('extractBashSearchPattern', () => {
     expect(extractBashSearchPattern('rg -n -e UserService setup.ts')).toBe('UserService');
   });
 
+  it('keeps quoted multi-word phrases intact instead of truncating at the space', () => {
+    expect(extractBashSearchPattern('rg "foo bar" .')).toBe('foo bar');
+    expect(extractBashSearchPattern("grep -r 'user service' src")).toBe('user service');
+    expect(extractBashSearchPattern('rg -e "foo bar" file.ts')).toBe('foo bar');
+  });
+
   it('rejects short tokens and non-search commands', () => {
     expect(extractBashSearchPattern('rg -n "ab" .')).toBeNull();
     expect(extractBashSearchPattern('npm test')).toBeNull();

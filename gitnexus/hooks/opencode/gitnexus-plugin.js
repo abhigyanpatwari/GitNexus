@@ -103,12 +103,44 @@ const FLAGS_WITH_VALUES = new Set([
 ]);
 
 /**
+ * Split an argv string into tokens, respecting single/double quoting so a
+ * multi-word search phrase stays one token: `rg "foo bar"` → [rg, foo bar].
+ * Quotes are consumed (they delimit, they are not part of the token).
+ */
+function tokenizeArgv(command) {
+  const tokens = [];
+  let current = '';
+  let quote = null;
+  for (const ch of command) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+/**
  * Parse the first search positional out of an rg/grep argv string.
  * Returns null when the command is not a search or the token is too short.
  */
 export function extractBashSearchPattern(command) {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
-  const tokens = command.split(/\s+/);
+  const tokens = tokenizeArgv(command);
   let foundCmd = false;
   // 'skip' = drop the next token (flag value); 'pattern' = take it as the search.
   let pending = null;
@@ -119,8 +151,7 @@ export function extractBashSearchPattern(command) {
     }
     if (pending === 'pattern') {
       pending = null;
-      const cleaned = token.replace(/['"]/g, '');
-      return cleaned.length >= 3 ? cleaned : null;
+      return token.length >= 3 ? token : null;
     }
     if (!foundCmd) {
       if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
@@ -131,8 +162,7 @@ export function extractBashSearchPattern(command) {
       else if (FLAGS_WITH_VALUES.has(token)) pending = 'skip';
       continue;
     }
-    const cleaned = token.replace(/['"]/g, '');
-    return cleaned.length >= 3 ? cleaned : null;
+    return token.length >= 3 ? token : null;
   }
   return null;
 }
@@ -172,9 +202,11 @@ export function isGitMutationCommand(command) {
 }
 
 /**
- * Resolve how to invoke the GitNexus CLI. Prefers the install-patched
- * absolute dist path, then `GITNEXUS_HOOK_CLI_PATH`, then a `gitnexus`
- * binary on PATH. Returns null when nothing is usable.
+ * Resolve how to invoke the GitNexus CLI (same precedence as the Claude
+ * adapter): 1) `GITNEXUS_HOOK_CLI_PATH` when it points at an existing file
+ * (test/diagnostic override), 2) the install-patched absolute dist path,
+ * 3) a `gitnexus` binary on PATH (shell mode on Windows). Never returns
+ * null — the PATH arm is the last resort; callers still guard defensively.
  */
 export function resolveCliInvocation() {
   const fromEnv = process.env.GITNEXUS_HOOK_CLI_PATH;
@@ -230,8 +262,12 @@ export function runAugment(pattern, cwd) {
   // Never forward it through a shell: cmd.exe would re-parse metacharacters
   // (`rg -e foo^& del /f ...`) into extra commands.
   if (shouldSkipAugmentForShell(invocation, pattern)) return '';
+  // Shell mode joins argv with bare spaces (no quoting), so a multi-word
+  // phrase must be wrapped to stay one argument. Safe: the guard above has
+  // already dropped any pattern containing a quote or other metacharacter.
+  const forwarded = invocation.useShell ? `"${pattern}"` : pattern;
   try {
-    const child = spawnSync(invocation.cmd, [...invocation.argv, 'augment', '--', pattern], {
+    const child = spawnSync(invocation.cmd, [...invocation.argv, 'augment', '--', forwarded], {
       encoding: 'utf-8',
       timeout: 10000,
       cwd,
