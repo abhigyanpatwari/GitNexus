@@ -40,8 +40,9 @@ describe('R rename: functions R calls by name', () => {
         files: new Map(),
         graph: undefined,
       } as never);
-      expect(issue?.code).toBe('unsupported_occurrence');
-      expect(issue?.message).toMatch(/hook/);
+      const refusal = issue as { code?: string; message?: string } | undefined;
+      expect(refusal?.code).toBe('unsupported_occurrence');
+      expect(refusal?.message).toMatch(/hook/);
     },
   );
 });
