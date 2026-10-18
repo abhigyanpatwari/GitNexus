@@ -3,7 +3,12 @@ import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
 /** Provider-private facts. Only JSON values cross the worker/cache boundary. */
 export type FrameworkExpression =
   | { kind: 'unknown' }
-  | { kind: 'handler' }
+  /**
+   * A function value. `fn` identifies it and `params` holds each parameter's
+   * binding id (null for a destructured or rest parameter), so a registration
+   * on a parameter can be resolved from the function's call sites.
+   */
+  | { kind: 'handler'; fn?: string; params?: (string | null)[] }
   | { kind: 'array'; elements: FrameworkExpression[] }
   | { kind: 'binding'; id: string }
   | { kind: 'import'; source: string; name: string }
@@ -26,6 +31,14 @@ export interface FrameworkCallFact {
   handlerName?: string;
 }
 
+/** A call to a plain or imported function: the sites a parameter is forwarded from. */
+export interface FrameworkInvocationFact {
+  callee: FrameworkExpression;
+  arguments: FrameworkExpression[];
+  /** Literal paths of each argument, for a path forwarded as a parameter. */
+  paths: (string[] | null)[];
+}
+
 export interface FrameworkRouteFacts {
   filePath: string;
   bindings: { id: string; value: FrameworkExpression }[];
@@ -35,6 +48,7 @@ export interface FrameworkRouteFacts {
   /** Property writes invalidate the value behind aliases, including imports. */
   mutations: FrameworkExpression[];
   calls: FrameworkCallFact[];
+  invocations: FrameworkInvocationFact[];
 }
 
 export interface FrameworkAllocation {

@@ -7,6 +7,20 @@ import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route
 type Node = Parser.SyntaxNode;
 const UNKNOWN: FrameworkExpression = { kind: 'unknown' };
 const HANDLER: FrameworkExpression = { kind: 'handler' };
+/** Expressions that can evaluate to a framework allocation passed into a helper. */
+const CARRIER_KINDS = new Set<FrameworkExpression['kind']>([
+  'binding',
+  'call',
+  'member',
+  'import',
+  'array',
+]);
+const FUNCTION_TYPES = [
+  'arrow_function',
+  'function_expression',
+  'function_declaration',
+  'generator_function_declaration',
+];
 const METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'all', 'route', 'use']);
 const children = (node: Node | null | undefined): Node[] =>
   node?.namedChildren.filter((child) => child.type !== 'comment') ?? [];
@@ -41,6 +55,7 @@ export function extractFrameworkRouteFacts(
     invalidBindings: [],
     mutations: [],
     calls: [],
+    invocations: [],
   };
   const scopes = buildScopeTree(parsedFile.scopes);
   const positions = buildPositionIndex(parsedFile.scopes);
@@ -53,6 +68,11 @@ export function extractFrameworkRouteFacts(
     importsAtPosition.set(key, imports);
   }
   const expressionCache = new Map<number, FrameworkExpression>();
+  const importedNames = new Set(
+    parsedFile.parsedImports.flatMap((imported) =>
+      'localName' in imported ? [imported.localName] : [],
+    ),
+  );
   const bindingKey = (scope: string, name: string): string => `${scope}\0${name}`;
   const ownership = (node: Node, name = node.text, atUse = false) => {
     const scope = positions.atPosition(
@@ -100,6 +120,39 @@ export function extractFrameworkRouteFacts(
     return owner?.scope ? bindingKey(owner.scope.id, name) : undefined;
   };
   const isGlobal = (node: Node, name: string) => ownership(node, name)?.status === 'absent';
+  const functionValue = (fn: Node): FrameworkExpression => {
+    const single = fn.childForFieldName('parameter');
+    const params = single ? [single] : children(fn.childForFieldName('parameters'));
+    // A parameter written anywhere in the body, nested closures included, is
+    // not the argument any more; fail closed rather than track which write runs.
+    const written = new Set(
+      fn
+        .descendantsOfType([
+          'assignment_expression',
+          'augmented_assignment_expression',
+          'update_expression',
+        ])
+        .map(
+          (write) => (write.childForFieldName('left') ?? write.childForFieldName('argument'))?.text,
+        ),
+    );
+    return {
+      kind: 'handler',
+      fn: `${filePath}:${fn.startIndex}`,
+      params: params
+        // TypeScript's `this: T` declares the receiver, not an argument position.
+        .filter((param) => param.childForFieldName('pattern')?.type !== 'this')
+        .map((param) => {
+          let name: Node | null = param;
+          if (param.type === 'required_parameter' || param.type === 'optional_parameter')
+            name = param.childForFieldName('pattern');
+          if (name?.type === 'assignment_pattern') name = name.childForFieldName('left');
+          return (
+            (name?.type === 'identifier' && !written.has(name.text) && bindingId(name)) || null
+          );
+        }),
+    };
+  };
 
   const expression = (node: Node | null | undefined, depth = 0): FrameworkExpression => {
     if (!node || depth > 64 || node.hasError) return UNKNOWN;
@@ -123,14 +176,7 @@ export function extractFrameworkRouteFacts(
       ].includes(node.type)
     ) {
       value = expression(children(node)[0], depth + 1);
-    } else if (
-      [
-        'arrow_function',
-        'function_expression',
-        'function_declaration',
-        'generator_function_declaration',
-      ].includes(node.type)
-    ) {
+    } else if (FUNCTION_TYPES.includes(node.type)) {
       value = HANDLER;
     } else if (node.type === 'member_expression') {
       const name = node.childForFieldName('property');
@@ -225,13 +271,20 @@ export function extractFrameworkRouteFacts(
       }
     } else if (node.type === 'variable_declarator') {
       const name = node.childForFieldName('name');
-      if (name) bind(name, expression(node.childForFieldName('value')));
+      const value = node.childForFieldName('value');
+      // Only a named function can be called by name, so only it carries the
+      // identity and parameters call-site forwarding needs.
+      if (name)
+        bind(
+          name,
+          value && FUNCTION_TYPES.includes(value.type) ? functionValue(value) : expression(value),
+        );
     } else if (
       node.type === 'function_declaration' ||
       node.type === 'generator_function_declaration'
     ) {
       const name = node.childForFieldName('name');
-      if (name) bind(name, HANDLER);
+      if (name) bind(name, functionValue(node));
     } else if (node.type === 'export_statement') {
       const sourceNode = node.childForFieldName('source');
       const source = sourceNode && plainString(sourceNode);
@@ -249,13 +302,15 @@ export function extractFrameworkRouteFacts(
             );
         }
       } else if (node.children.some((child) => child.type === 'default')) {
+        const declaration =
+          node.childForFieldName('value') ??
+          node.childForFieldName('declaration') ??
+          children(node)[0];
         exported(
           'default',
-          expression(
-            node.childForFieldName('value') ??
-              node.childForFieldName('declaration') ??
-              children(node)[0],
-          ),
+          declaration && FUNCTION_TYPES.includes(declaration.type)
+            ? functionValue(declaration)
+            : expression(declaration),
         );
       } else if (source) {
         const namespace = children(node).find((child) => child.type === 'namespace_export');
@@ -382,6 +437,26 @@ export function extractFrameworkRouteFacts(
           lineNumber: node.startPosition.row + lineOffset,
           ...(handler?.type === 'identifier' ? { handlerName: handler.text } : {}),
         });
+      } else if (
+        callee?.type === 'identifier' ||
+        (callee?.type === 'member_expression' &&
+          importedNames.has(callee.childForFieldName('object')?.text ?? ''))
+      ) {
+        // A helper such as `mountRoutes(app, '/p')` may register on its
+        // parameters. Only a plain call or a namespace/default import member can
+        // reach a named function; arguments after a spread have no position.
+        const arguments_ = args(node);
+        const spread = arguments_.findIndex((argument) => argument.type === 'spread_element');
+        const positional = spread < 0 ? arguments_ : arguments_.slice(0, spread);
+        // Keep only arguments that can carry an allocation or a literal path;
+        // a call passing neither cannot forward anything a resolver could use.
+        const carried = positional.map((argument) => {
+          const value = expression(argument);
+          return CARRIER_KINDS.has(value.kind) ? value : UNKNOWN;
+        });
+        const paths = positional.map((argument) => literalPaths(argument));
+        if (carried.some((value) => value !== UNKNOWN) || paths.some((path) => path !== null))
+          facts.invocations.push({ callee: expression(callee), arguments: carried, paths });
       }
     }
   }
@@ -392,5 +467,41 @@ export function extractFrameworkRouteFacts(
     if (cjsDefaultAssignments <= 1) facts.exports.push(...cjsExports);
   }
   facts.invalidBindings = [...invalid];
+  // A callee bound in this file to anything but a named function, an import or
+  // an alias (a callback parameter such as `next(err)`, a local object) can
+  // never reach a function registering on its parameters.
+  // An argument bound to a parameter or a function cannot be an allocation (a
+  // site argument that is itself a parameter never resolves), so it is dropped,
+  // and so is a call left with nothing to forward.
+  const valueKinds = new Map<string, Set<FrameworkExpression['kind']>>();
+  for (const { id, value } of facts.bindings)
+    valueKinds.set(id, (valueKinds.get(id) ?? new Set()).add(value.kind));
+  const callable = (id: string) =>
+    ['handler', 'import', 'binding', 'member'].some((kind) =>
+      valueKinds.get(id)?.has(kind as FrameworkExpression['kind']),
+    );
+  const allocatable = (value: FrameworkExpression): boolean => {
+    switch (value.kind) {
+      case 'binding':
+        return [...(valueKinds.get(value.id) ?? [])].some(
+          (kind) => kind !== 'handler' && kind !== 'unknown',
+        );
+      case 'member':
+        return allocatable(value.object);
+      case 'call':
+        return allocatable(value.callee);
+      case 'array':
+        return value.elements.some(allocatable);
+      default:
+        return value.kind === 'import';
+    }
+  };
+  facts.invocations = facts.invocations.flatMap((invocation) => {
+    if (invocation.callee.kind === 'binding' && !callable(invocation.callee.id)) return [];
+    const carried = invocation.arguments.map((value) => (allocatable(value) ? value : UNKNOWN));
+    return carried.some((value) => value !== UNKNOWN) || invocation.paths.some(Boolean)
+      ? [{ ...invocation, arguments: carried }]
+      : [];
+  });
   return facts;
 }
