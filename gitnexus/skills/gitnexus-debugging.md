@@ -17,7 +17,8 @@ description: "Use when the user is debugging a bug, tracing an error, or asking 
 
 A root cause traced in the wrong repository is a wrong root cause.
 
-Call `list_repos {}` before the first tool call. With one indexed repository,
+Bind once using a confirmed registry name/path or configured MCP default. Call
+`list_repos {}` if the target is not yet known; reuse that binding across calls. With one indexed repository,
 use the examples below as written. With more than one, pass `repo` on every
 call: an omitted `repo` normally errors, but under an MCP policy with a
 configured default it resolves to that default silently. If you cannot tell
@@ -34,10 +35,10 @@ diagnosis.
 ## Workflow
 
 ```
-0. list_repos {}                                          → Bind repo
-1. query({search_query: "<error or symptom>"})            → Find related execution flows
+0. Bind the repo once (list_repos only if not already known)
+1. If the suspect is unknown, query for the error/symptom with small result limits
 2. context({name: "<suspect>"})                    → See callers/callees/processes
-3. READ gitnexus://repo/{name}/process/{name}                → Trace execution flow
+3. Read a process resource only if its trace resolves an open question
 4. cypher({statement: "MATCH path..."})                 → Custom traces if needed
 ```
 
@@ -47,7 +48,7 @@ diagnosis.
 ## Checklist
 
 ```
-- [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
+- [ ] Once per session: bind repo; explicit repo when >1 indexed, ask if ambiguous
 - [ ] Understand the symptom (error message, unexpected behavior)
 - [ ] query for error text or related code
 - [ ] Identify the suspect function from returned processes
@@ -57,6 +58,28 @@ diagnosis.
 - [ ] Read source files to confirm root cause
 - [ ] State the repository and index freshness with the diagnosis
 ```
+
+## Keep investigations focused
+
+Start with a known symbol's `context`, or a small `query` (`limit: 3`,
+`max_symbols: 3`, `include_content: false`, `chain_depth: 0`) to discover one.
+When the server advertises these single-repository filters, request only the
+needed evidence:
+
+```text
+context({uid: "<suspect id>", repo: "my-app", include_content: true,
+         response_sections: ["outgoing"], relationTypes: ["CALLS"]})
+trace({from_uid: "<suspect id>", to_uid: "<failure id>", repo: "my-app"})
+```
+
+`symbol` and completeness/staleness diagnostics remain in a filtered context.
+`relationTypes` filters the returned incoming/outgoing categories only; it does
+not expand their existing bounded window or filter an explicitly requested chain.
+For callback registration, include `USES`; for imports or inheritance, request
+those relation types or omit the filter. Omitted references are not absent
+references. Broaden when the hypothesis needs it, and preserve UNKNOWN/partial
+warnings. Confirm source and tests before claiming a root cause. A useful 2–3
+call investigation is a goal, not a reason to skip verification or pre-edit impact.
 
 ## Debugging Patterns
 

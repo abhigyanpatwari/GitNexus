@@ -43,6 +43,11 @@ import {
 } from './repository-policy.js';
 import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
 import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-arguments.js';
+import {
+  applyMcpResponseFilter,
+  resolveMcpResponseFilter,
+  withoutMcpResponseFilterArgs,
+} from './response-filter.js';
 
 /**
  * Next-step hints appended to tool responses.
@@ -269,8 +274,16 @@ export function createMCPServer(
         const listed = toolForReadOnlyMcp(repositoryPolicy.toolForMcp(advertisedTool), readOnly);
         assertKnownMcpToolArguments(name, typedArgs, listed.inputSchema.properties);
       }
+      const responseFilter = resolveMcpResponseFilter(schemaSource, typedArgs);
       maxTokens = resolveMcpMaxTokens(name, typedArgs);
-      const result = await scopedBackend.callTool(name, withoutMcpBudgetArg(typedArgs));
+      const backendArgs = withoutMcpResponseFilterArgs(
+        withoutMcpBudgetArg(typedArgs),
+        responseFilter,
+      );
+      const result = applyMcpResponseFilter(
+        await scopedBackend.callTool(name, backendArgs),
+        responseFilter,
+      );
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly, result);
 
