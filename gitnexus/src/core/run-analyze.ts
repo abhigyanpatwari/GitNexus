@@ -37,6 +37,7 @@ import { constants as fsConstants, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { retryRename } from '../storage/fs-atomic.js';
+import { assertLbugPublicationReady, consolidateLbugForPublication } from './lbug/publication.js';
 import {
   acquireIndexLock,
   requireExclusiveIndexLock,
@@ -61,6 +62,7 @@ import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
+  acquireInitLock,
   loadGraphToLbug,
   getLbugStats,
   executeQuery,
@@ -140,6 +142,7 @@ import { resolveFtsVersionPair } from './lbug/vendored-extension-path.js';
 import {
   startWalCheckpointDriver,
   checkpointOnce,
+  runCheckpointWithRetry,
   isManualCheckpointEnabled,
   readCheckpointActivity,
   type CheckpointActivity,
@@ -287,6 +290,7 @@ import {
   snapshotEmbeddingDims,
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
+import { assertUniqueEmbeddingKeys, EmbeddingIntegrityError } from './embeddings/embedding-keys.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
@@ -2796,6 +2800,23 @@ async function runFullAnalysisInner(
   // before the embedding plan, the parse cache, and the emit mode are decided.
   applyCollectedForce();
 
+  // Where the swap is allowed:
+  //  - POSIX renames an open file, so the usual skip-native-close (#2264) is
+  //    fine and the swap always applies.
+  //  - Windows can swap only when a real close is safe to release the build
+  //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
+  //    crash). Unverified on Windows CI; falls back to in-place otherwise.
+  const posixSwap = process.platform !== 'win32';
+  // #2614 Windows: the forced real-close before the rename re-bets that #2264 is
+  // --pdg-only, which is unproven (the CLI/worker skip the native close
+  // UNCONDITIONALLY) and unverifiable without a Windows runner. Keep it opt-in
+  // (GITNEXUS_ATOMIC_WINDOWS_SWAP=1) so the default Windows analyze stays on the
+  // proven in-place path; enable it only to test the Windows swap.
+  const windowsSwapOk =
+    process.platform === 'win32' &&
+    options.pdg !== true &&
+    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
+
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
   //   --embeddings              -> load cache, restore, then generate any new ones
@@ -2814,6 +2835,7 @@ async function runFullAnalysisInner(
   let cachedSnapshot: CachedEmbeddingsSnapshot = emptyCachedEmbeddingsSnapshot();
   const adoptCachedEmbeddings = (raw: CachedEmbeddingsSnapshot): void => {
     cachedSnapshot = normalizeCachedEmbeddings(raw);
+    assertUniqueEmbeddingKeys(cachedSnapshot.rows, 'Cached embedding');
   };
   const discardCachedEmbeddings = (): void => {
     disposeEmbeddingSpill(cachedSnapshot.spill);
@@ -2868,12 +2890,24 @@ async function runFullAnalysisInner(
   // possible the dirty block above already threw a LbugWipeError, so this
   // open is replay-free by construction (FIX 1 of this shipping review).
   if (shouldLoadCache && existingMeta) {
+    // Cache initialization is writable and may discard quarantined WALs.
+    // Preserve the live family before this first open, including runs whose
+    // incremental write later escalates to a staged full rebuild. Keep this
+    // outside the cache-load catch: a preservation failure must stop analysis.
+    if (posixSwap || windowsSwapOk) await consolidateLbugForPublication(lbugPath);
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initAnalysisLbug(lbugPath);
       adoptCachedEmbeddings(await loadCachedEmbeddings());
       await closeLbug();
     } catch (err: any) {
+      discardCachedEmbeddings();
+      try {
+        await closeLbug();
+      } catch {
+        /* preserve the original cache failure */
+      }
+      if (err instanceof EmbeddingIntegrityError) throw err;
       // Surface cache-load failures explicitly: silently swallowing here would
       // re-introduce the original silent-data-loss symptom (embeddings end up
       // at 0 in meta.json with no diagnostic) through a different door.
@@ -2882,12 +2916,6 @@ async function runFullAnalysisInner(
           `(${err?.message ?? String(err)}). ` +
           `Embeddings will not be preserved on this run.`,
       );
-      discardCachedEmbeddings();
-      try {
-        await closeLbug();
-      } catch {
-        /* swallow */
-      }
     }
   }
 
@@ -2947,6 +2975,7 @@ async function runFullAnalysisInner(
             `for ${recovered.embeddingNodeIds.size} node(s); unchanged content can reuse them.`,
         );
       } catch (err) {
+        if (err instanceof EmbeddingIntegrityError) throw err;
         log(
           `Warning: could not recover staged embeddings (${(err as Error).message}); ` +
             'the retry will regenerate missing chunks.',
@@ -3207,22 +3236,6 @@ async function runFullAnalysisInner(
   // rename on Windows. Windows keeps the current in-place behavior
   // (buildPath === lbugPath, no swap) until that is resolved (see §12/follow-up).
   const isFullRebuild = !(isIncremental && hashDiff);
-  // Where the swap is allowed:
-  //  - POSIX renames an open file, so the usual skip-native-close (#2264) is
-  //    fine and the swap always applies.
-  //  - Windows can swap only when a real close is safe to release the build
-  //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
-  //    crash). Unverified on Windows CI; falls back to in-place otherwise.
-  const posixSwap = process.platform !== 'win32';
-  // #2614 Windows: the forced real-close before the rename re-bets that #2264 is
-  // --pdg-only, which is unproven (the CLI/worker skip the native close
-  // UNCONDITIONALLY) and unverifiable without a Windows runner. Keep it opt-in
-  // (GITNEXUS_ATOMIC_WINDOWS_SWAP=1) so the default Windows analyze stays on the
-  // proven in-place path; enable it only to test the Windows swap.
-  const windowsSwapOk =
-    process.platform === 'win32' &&
-    options.pdg !== true &&
-    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
   // Incremental atomicity stages the whole index before mutation. It remains
   // opt-in for ordinary analyze runs; watch mode requests it for failure
   // preservation. The copy requests a filesystem clone and records its actual
@@ -3268,6 +3281,9 @@ async function runFullAnalysisInner(
   // valve. Nothing between here and there reads either binding except
   // `initLbug(buildPath)`, which the upgrade re-runs against the staging path.
   let useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
+  // Recover a valid live delta before staging its replacement. In-place runs
+  // retain the adapter's existing recovery path.
+  if (useAtomicSwap) await consolidateLbugForPublication(lbugPath);
   // Set only at the first operation that can mutate the live graph store.
   // Pre-write failures (config, lock, parsing, metadata, importer expansion)
   // remain retryable even when this platform cannot use an atomic swap.
@@ -3807,12 +3823,13 @@ async function runFullAnalysisInner(
             );
           }
         } catch (err: any) {
+          discardCachedEmbeddings();
+          if (err instanceof EmbeddingIntegrityError) throw err;
           log(
             `Warning: could not load cached embeddings ` +
               `(${err?.message ?? String(err)}). ` +
               `Embeddings will not be preserved on this run.`,
           );
-          discardCachedEmbeddings();
         }
       }
       // Hoisted out of the `||` below (§5.D): the size verdict has to be KNOWN
@@ -4514,6 +4531,7 @@ async function runFullAnalysisInner(
               }
               materialized = materializeCachedEmbeddings(cachedSnapshot, batch, spillReader);
             } catch (err) {
+              if (!shouldGenerateEmbeddings) throw err;
               for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not materialize ${batch.length} cached embedding(s) for restore ` +
@@ -4525,6 +4543,7 @@ async function runFullAnalysisInner(
               await batchInsert(executeWithReusedStatement, materialized);
               restoredEmbeddingCount += batch.length;
             } catch (err) {
+              if (err instanceof EmbeddingIntegrityError || !shouldGenerateEmbeddings) throw err;
               for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not restore ${batch.length} cached embedding(s) ` +
@@ -5435,6 +5454,11 @@ async function runFullAnalysisInner(
     // Stop the manual checkpoint driver before closeLbug so its
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
+    if (useAtomicSwap && !wroteChangedSubgraphOnly && !(await runCheckpointWithRetry()).flushed) {
+      // Publication requires durability even when periodic/manual checkpoints
+      // are disabled. A best-effort close cannot certify the staged file.
+      throw new Error('Cannot publish staged index: final checkpoint could not be verified.');
+    }
     // CLI callers (about to process.exit) skip the native close to dodge a
     // LadybugDB destructor double-free after --pdg writes — closeLbugBeforeExit
     // CHECKPOINTs for durability then leaves the handles for process exit to
@@ -5469,20 +5493,14 @@ async function runFullAnalysisInner(
         )
       : false;
     if (useAtomicSwap && builtDbExists) {
-      await retryRename(buildPath, lbugPath);
-      liveIndexMutationStarted = true;
-      // Clear any sidecars orphaned beside the replaced file. A cleanly-closed
-      // prior index has none; a crashed one could, and it would be replay
-      // poison next to the freshly published index. Best-effort.
-      for (const suffix of ['.wal', '.shadow', '.wal.checkpoint'] as const) {
-        await fs.rm(`${lbugPath}${suffix}`, { force: true }).catch(() => {});
-      }
-      // #2614 F4: if the final checkpoint silently failed, the build may still
-      // carry a residual .wal/.shadow under the temp name. MOVE it beside the
-      // published index (not orphan/delete it) so the next open replays the
-      // delta, rather than leaving it under a name LadybugDB never reconciles.
-      for (const suffix of ['.wal', '.shadow'] as const) {
-        await fs.rename(`${buildPath}${suffix}`, `${lbugPath}${suffix}`).catch(() => {});
+      await assertLbugPublicationReady(buildPath);
+      const releaseInitLock = await acquireInitLock(lbugPath);
+      try {
+        await assertLbugPublicationReady(lbugPath);
+        await retryRename(buildPath, lbugPath);
+        liveIndexMutationStarted = true;
+      } finally {
+        await releaseInitLock();
       }
     }
 

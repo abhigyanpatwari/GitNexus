@@ -21,7 +21,11 @@ import {
   weightOf,
   WINDOWS_WEIGHTS_SEC,
 } from '../../scripts/cross-platform-shard.js';
-import { ALL_CROSS_PLATFORM, WORKER_THREADS } from '../../scripts/cross-platform-tests.js';
+import {
+  ALL_CROSS_PLATFORM,
+  LBUG_NATIVE,
+  WORKER_THREADS,
+} from '../../scripts/cross-platform-tests.js';
 
 // Replay the actual CI partition, including shard-count changes as the suite grows.
 const workflow = readFileSync(
@@ -35,6 +39,19 @@ const allShards = (files: readonly string[], total: number): readonly (readonly 
   Array.from({ length: total }, (_unused, i) => shardFiles(files, i + 1, total));
 
 describe('cross-platform shard partition', () => {
+  it('selects the native inline-handler proofs exactly once across the CI shards', () => {
+    const proofs = [
+      [LBUG_NATIVE, 'test/integration/taint-explain.test.ts'],
+      [WORKER_THREADS, 'test/integration/cfg/interproc-taint.test.ts'],
+      [WORKER_THREADS, 'test/integration/function-local-identity.test.ts'],
+    ] as const;
+    const selected = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).flat();
+    for (const [category, file] of proofs) {
+      expect(category.filter((candidate) => candidate === file)).toEqual([file]);
+      expect(selected.filter((candidate) => candidate === file)).toEqual([file]);
+    }
+  });
+
   it('selects both real-worker local-import proofs exactly once across the CI shards', () => {
     const proofs = [
       'test/integration/local-import-worker-parity.test.ts',

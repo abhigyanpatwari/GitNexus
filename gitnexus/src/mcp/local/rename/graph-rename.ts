@@ -52,6 +52,26 @@ import {
   type RenameSymbol,
   type OccurrenceEdit,
 } from './rename-plan.js';
+import { renameResolutionVersion, type RenameResolutionVersion } from './resolution-version.js';
+
+interface GraphRenamePlan extends RenamePlan {
+  resolution: RenameResolutionVersion;
+}
+
+/** Keep the retained callback outside the planner's large lexical context. */
+function resolutionConfigReader(
+  resolver: ScopeResolver,
+  repoPath: string,
+  filePaths: readonly string[],
+): () => Promise<unknown> {
+  const sources = [...filePaths];
+  return async () =>
+    resolver.refreshResolutionConfig
+      ? resolver.refreshResolutionConfig(repoPath, sources)
+      : resolver.captureResolutionConfig
+        ? resolver.captureResolutionConfig(repoPath, sources)
+        : resolver.loadResolutionConfig?.(repoPath);
+}
 
 type SemanticObservation = Parameters<
   NonNullable<Parameters<typeof runScopeResolution>[0]['onResolved']>
@@ -80,7 +100,7 @@ export async function planGraphRename(
   options: RenameOptions,
   graphNodes: readonly GraphNode[],
   referenceFiles: readonly string[] = [],
-): Promise<RenamePlan> {
+): Promise<GraphRenamePlan> {
   const targetNode = graphNodes.find((node) => node.id === symbol.uid);
   if (
     !targetNode ||
@@ -259,9 +279,9 @@ export async function planGraphRename(
         ),
       );
   }
-  const resolutionConfig = resolver.captureResolutionConfig
-    ? await resolver.captureResolutionConfig(repoPath, filePaths)
-    : await resolver.loadResolutionConfig?.(repoPath);
+  const refresh = resolutionConfigReader(resolver, repoPath, filePaths);
+  const resolutionConfig = await refresh();
+  const resolution = renameResolutionVersion(resolutionConfig, refresh);
   const before = resolveSources(files, graphNodes, resolver, resolutionConfig);
   const { parsedFiles, indexes, referenceBindings } = before.observation;
   const definitions = parsedFiles.flatMap((file) => [...file.localDefs]);
@@ -694,6 +714,7 @@ export async function planGraphRename(
   );
   return {
     symbol,
+    resolution,
     new_name: options.new_name,
     snapshots,
     edits: ordered,
@@ -705,8 +726,8 @@ export async function planGraphRename(
         ...new Set([...sourceResolvers.values()].map((sourceResolver) => sourceResolver.language)),
       ],
       limitations: [
-        'Only indexed source files covered by this language provider are included.',
-        'Source files added after the last analyze are not indexed and are not checked; re-run analyze before renaming if files were added.',
+        'Only indexed source files covered by this language provider contribute rename locations.',
+        'Source files added after the last analyze are not indexed and contribute no rename locations; re-run analyze before renaming if files were added.',
       ],
     },
   };

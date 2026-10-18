@@ -132,6 +132,8 @@ export const walkRepositoryPaths = async (
   let processed = 0;
   let skippedLarge = 0;
   const skippedLargePaths: string[] = [];
+  let skippedNonRegular = 0;
+  const skippedNonRegularPreview: string[] = [];
 
   for (let start = 0; start < filtered.length; start += READ_CONCURRENCY) {
     const batch = filtered.slice(start, start + READ_CONCURRENCY);
@@ -139,6 +141,14 @@ export const walkRepositoryPaths = async (
       batch.map(async (relativePath) => {
         const fullPath = path.join(repoPath, relativePath);
         const stat = await fs.stat(fullPath);
+        // glob's nodir still returns symlinks to directories. Follow the same
+        // target that hashing reads, retaining file symlinks but no directories
+        // or special files that cannot belong to the indexed coverage set.
+        if (!stat.isFile()) {
+          skippedNonRegular++;
+          if (skippedNonRegularPreview.length < 5) skippedNonRegularPreview.push(relativePath);
+          return null;
+        }
         if (stat.size > maxFileSizeBytes) {
           skippedLarge++;
           skippedLargePaths.push(relativePath);
@@ -170,6 +180,14 @@ export const walkRepositoryPaths = async (
   deduplicatedEntries.sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
   );
+
+  if (skippedNonRegular > 0 && !options.quiet) {
+    warnLargeFileSkip(
+      `  Skipped ${skippedNonRegular} non-regular entries (directory symlinks and special files are not indexed): ` +
+        skippedNonRegularPreview.sort().join(', ') +
+        (skippedNonRegular > 5 ? ', ...' : ''),
+    );
+  }
 
   if (skippedLarge > 0 && !options.quiet) {
     const isDefault = maxFileSizeBytes === DEFAULT_MAX_FILE_SIZE_BYTES;

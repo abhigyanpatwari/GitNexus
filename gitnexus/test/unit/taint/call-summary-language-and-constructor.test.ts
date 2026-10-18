@@ -6,11 +6,14 @@
 //      constructor never receives a CALL_SUMMARY edge (FUNCTIONISH_LABELS).
 
 import { describe, it, expect } from 'vitest';
-import { cfgOf } from '../../helpers/ts-cfg-harness.js';
+import { cfgOf, cfgsOf } from '../../helpers/ts-cfg-harness.js';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import { computeReachingDefs } from '../../../src/core/ingestion/cfg/reaching-defs.js';
 import { harvestCallSummary } from '../../../src/core/ingestion/taint/call-summary-harvest.js';
-import { buildFunctionNodeIndex } from '../../../src/core/ingestion/taint/summary-harvest-driver.js';
+import {
+  buildFunctionNodeIndex,
+  harvestFileCallSummaries,
+} from '../../../src/core/ingestion/taint/summary-harvest-driver.js';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 
 describe('CALL_SUMMARY language coverage (U10)', () => {
@@ -29,6 +32,32 @@ describe('CALL_SUMMARY language coverage (U10)', () => {
 });
 
 describe('buildFunctionNodeIndex — Constructor exclusion (U10)', () => {
+  it('joins same-line functions by column and never aliases a missing callable to its neighbor (#3489)', () => {
+    const cfgs = cfgsOf(
+      'function first(v: string) { return v; } function second(v: string) { return v; }',
+    );
+    const graph = createKnowledgeGraph();
+    for (const [i, cfg] of cfgs.entries()) {
+      graph.addNode({
+        id: `Function:${i}`,
+        label: 'Function',
+        properties: {
+          name: `fn${i}`,
+          filePath: cfg.filePath,
+          startLine: cfg.functionStartLine - 1,
+          startColumn: cfg.functionStartColumn,
+        },
+      });
+    }
+    const all = harvestFileCallSummaries(buildFunctionNodeIndex(graph), cfgs);
+    expect(all.unresolved).toBe(0);
+    expect(all.summaries.map((s) => s.fnId).sort()).toEqual(['Function:0', 'Function:1']);
+    const partial = createKnowledgeGraph();
+    partial.addNode(graph.getNode('Function:0')!);
+    const missing = harvestFileCallSummaries(buildFunctionNodeIndex(partial), cfgs);
+    expect(missing.unresolved).toBe(1);
+    expect(missing.summaries.map((s) => s.fnId)).toEqual(['Function:0']);
+  });
   it('indexes Function and Method nodes but NOT Constructor (no return-value ascent)', () => {
     const graph = createKnowledgeGraph();
     graph.addNode({

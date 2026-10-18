@@ -105,8 +105,16 @@ describe('rename checkout source policy', () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  const rename = ({ args }: (typeof routes)[number]) =>
-    backend.callTool('rename', { repo: NAME, symbol_uid: UID, new_name: 'renamed', ...args });
+  // Policy refusals must precede capability consumption; a permitted apply uses
+  // an actual reviewed preview token below.
+  const rename = ({ args, applies }: (typeof routes)[number], planToken = 'source-policy-test') =>
+    backend.callTool('rename', {
+      repo: NAME,
+      symbol_uid: UID,
+      new_name: 'renamed',
+      ...(applies ? { plan_token: planToken } : {}),
+      ...args,
+    });
 
   const expectUnavailable = (result: any, reason: string) => {
     expect(result).toMatchObject({ code: 'source-unavailable', reason });
@@ -129,7 +137,9 @@ describe('rename checkout source policy', () => {
   }
 
   it.each(routes)('permits $route under full retention with a live checkout', async (route) => {
-    const result = await rename(route);
+    const preview = route.applies ? await rename(routes[1]) : undefined;
+    if (preview) expect(preview.status).toBe('success');
+    const result = await rename(route, preview?.plan_token);
     expect(result.status).toBe('success');
     expect(result.total_edits).toBe(2);
     expect(result.changes[0].edits[0].before).toContain('retention-private-body');

@@ -82,10 +82,11 @@ try {
   for (const dry_run of [true, false]) {
     const result = await backend.callTool('rename', { ...request, dry_run });
     assert.equal(result.status, 'error', JSON.stringify(result));
-    assert.equal(result.code, expectedCode, JSON.stringify(result));
-    assert.equal(result.planning_status, expectedPlanning);
+    assert.equal(result.code, dry_run ? expectedCode : 'plan_required', JSON.stringify(result));
+    assert.equal(result.planning_status, dry_run ? expectedPlanning : 'blocked');
     assert.equal(result.application_status, 'not_started');
     assert.equal(result.applied, false);
+    assert.equal(result.result_version, 2);
     assert.equal(result.total_edits, 0);
     assert.equal(result.files_affected, 0);
     assert.deepEqual(result.changes, []);
