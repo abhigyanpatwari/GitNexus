@@ -1,0 +1,66 @@
+name: PR cost evaluation request
+
+on:
+  pull_request_target:
+    types: [labeled]
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  request:
+    if: >-
+      github.repository == 'abhigyanpatwari/GitNexus' &&
+      github.event.label.name == 'run-cost-evaluation' &&
+      github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    outputs:
+      pr: ${{ steps.request.outputs.pr }}
+      sha: ${{ steps.request.outputs.sha }}
+      comparison_run_id: ${{ steps.request.outputs.comparison_run_id }}
+      run_attempt: ${{ steps.request.outputs.run_attempt }}
+    steps:
+      # pull_request_target uses trusted base code; never check out the PR here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Request one pinned comparison from trusted main
+        id: request
+        working-directory: eval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -m workflow_bench.pr_evaluation dispatch-label \
+            --repo "$GITHUB_REPOSITORY" --event "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+  evaluate:
+    needs: [request]
+    if: needs.request.outputs.run_attempt == github.run_attempt
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+      id-token: write
+    uses: ./.github/workflows/release-evaluation.yml
+    # Named forwarding also binds the callee's environment-only secrets.
+    secrets:
+      GITNEXUS_EVOLUTION_AWS_ROLE_ARN: ${{ secrets.GITNEXUS_EVOLUTION_AWS_ROLE_ARN }}
+      GITNEXUS_EVOLUTION_EC2_INSTANCE_ID: ${{ secrets.GITNEXUS_EVOLUTION_EC2_INSTANCE_ID }}
+      GITNEXUS_BENCH_OPENAI_API_KEY: ${{ secrets.GITNEXUS_BENCH_OPENAI_API_KEY }}
+      GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
+    with:
+      candidate_pr: ${{ needs.request.outputs.pr }}
+      expected_pr_sha: ${{ needs.request.outputs.sha }}
+      comparison_run_id: ${{ needs.request.outputs.comparison_run_id }}
