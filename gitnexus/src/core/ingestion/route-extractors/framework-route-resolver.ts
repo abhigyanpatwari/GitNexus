@@ -324,6 +324,13 @@ export function resolveFrameworkRouteFacts(
         });
         fnNames.set(value.fn, (fnNames.get(value.fn) ?? new Set()).add(name));
       }
+  // `export { mountRoutes as setup }` exports the binding: callers know `setup`.
+  for (const file of files)
+    for (const { name, value } of file.exports) {
+      const bound = value.kind === 'binding' ? bindings.get(value.id)?.values : undefined;
+      const fn = bound?.length === 1 && bound[0].kind === 'handler' ? bound[0].fn : undefined;
+      if (fn) fnNames.set(fn, (fnNames.get(fn) ?? new Set()).add(name));
+    }
   const parameter = (expression: FrameworkExpression | undefined) =>
     expression?.kind === 'binding' ? parameterOf.get(expression.id) : undefined;
   // Only calls that can reach a function registering on its parameters are

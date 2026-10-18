@@ -195,6 +195,21 @@ function handler() {} function other() {}`);
     ]);
   });
 
+  it('follows a helper exported under another name', () => {
+    const result = resolve({
+      'routes.ts': `function mountRoutes(app) { app.get('/api/renamed', handler); }
+      export { mountRoutes as setup };`,
+      'server.ts': `import express from 'express';
+      import { setup } from './routes';
+      setup(express());`,
+    });
+    expect(
+      result.registrations.map(
+        ({ route }) => `${route.httpMethod} ${route.routePath} ${route.filePath}`,
+      ),
+    ).toEqual(['GET /api/renamed routes.ts']);
+  });
+
   it('follows a helper called through an aliased import', () => {
     const result = resolve({
       'sse.ts': `export const mountSSEProgress = (app, routePath) => { app.get(routePath, handler); };`,
