@@ -2501,6 +2501,42 @@ describe('Python return type inference', () => {
   });
 });
 
+describe('Python nullable assignment result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-conditional-return-type'),
+      () => {},
+    );
+  }, 60000);
+
+  it.each([
+    'direct',
+    'conditional',
+    'reverse_conditional',
+    'or_none',
+    'none_or',
+    'class_constructor',
+  ])('resolves %s to User.save', (source) => {
+    const saveCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === source && edge.target === 'save',
+    );
+    expect(saveCalls).toHaveLength(1);
+    expect(saveCalls[0]?.rel.targetId).toContain('User.save');
+  });
+
+  it.each(['two_factories', 'and_none', 'none_and', 'or_other'])(
+    'does not infer a single receiver type for %s',
+    (source) => {
+      const saveCalls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === source && edge.target === 'save',
+      );
+      expect(saveCalls).toHaveLength(0);
+    },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Issue #289: static/classmethod classes must have HAS_METHOD edges
 // ---------------------------------------------------------------------------
