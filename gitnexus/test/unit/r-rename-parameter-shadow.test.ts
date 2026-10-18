@@ -48,24 +48,14 @@ describe('rParameterKind', () => {
     expect(kindOf('use <- function(x, helper) helper(x)')).toBe('function');
   });
 
-  it.each([
-    '2',
-    '2L',
-    '1i',
-    '"s"',
-    'TRUE',
-    'FALSE',
-    'NULL',
-    'NA',
-    'NA_integer_',
-    'Inf',
-    'NaN',
-    '-1',
-  ])('treats the constant default %s as not a function', (constant) => {
-    expect(kindOf(`use <- function(x, helper = ${constant}) helper(x)`)).toBe('constant');
-  });
+  it.each(['2', '2L', '1i', '"s"', 'TRUE', 'FALSE', 'NA', 'NA_integer_', 'Inf', 'NaN', '-1'])(
+    'treats the constant default %s as not a function',
+    (constant) => {
+      expect(kindOf(`use <- function(x, helper = ${constant}) helper(x)`)).toBe('constant');
+    },
+  );
 
-  it.each(['function(z) z', '\\(z) z', 'identity', 'c(1, 2)', 'x + 1', 'list()'])(
+  it.each(['function(z) z', '\\(z) z', 'NULL', 'identity', 'c(1, 2)', 'x + 1', 'list()'])(
     'treats the default %s as possibly a function',
     (expression) => {
       expect(kindOf(`use <- function(x, helper = ${expression}) helper(x)`)).toBe('maybe');
@@ -105,6 +95,10 @@ describe('R rename: a call that a same-named parameter may or may not shadow', (
     expect(verdict('use <- function(x, helper = function(z) z) { helper(x) }')).toBe(
       'ambiguous_reference',
     );
+  });
+
+  it('refuses a call under a parameter that defaults to NULL: it can hold a callback', () => {
+    expect(verdict('use <- function(x, helper = NULL) { helper(x) }')).toBe('ambiguous_reference');
   });
 
   it('refuses a call under a parameter with a computed default', () => {

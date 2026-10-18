@@ -42,6 +42,10 @@ describe('R calls through a formal or a loop variable', () => {
     expect(targets('constant_default')).toEqual(['transform']);
   });
 
+  it('does not bind a call through a formal that defaults to NULL: it can hold a callback', () => {
+    expect(targets('null_default')).toEqual([]);
+  });
+
   it('does not bind a call through a formal that defaults to a function', () => {
     expect(targets('function_default')).toEqual([]);
   });

@@ -17,4 +17,6 @@ plain <- function(data) transform(data)
 
 constant_default <- function(data, transform = 2) transform(data)
 
+null_default <- function(data, transform = NULL) transform(data)
+
 function_default <- function(data, validate = function(x) x) validate(data)

@@ -98,7 +98,11 @@ export function registersS3Method(newName: string, defined: ReadonlySet<string>)
   return false;
 }
 
-/** Default values that can never be a function. */
+/**
+ * Default values that can never be a function. `NULL` is not one of them: it is the usual
+ * placeholder of an optional callback (`function(x, helper = NULL) helper(x)`), so the formal
+ * may hold a function when the caller supplies one.
+ */
 const CONSTANT_DEFAULTS: ReadonlySet<string> = new Set([
   'float',
   'integer',
@@ -106,7 +110,6 @@ const CONSTANT_DEFAULTS: ReadonlySet<string> = new Set([
   'string',
   'true',
   'false',
-  'null',
   'na',
   'inf',
   'nan',

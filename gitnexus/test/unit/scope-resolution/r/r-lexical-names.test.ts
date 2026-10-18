@@ -31,9 +31,9 @@ describe('rFunctionLexicalNames', () => {
   });
 
   it('skips a formal with a constant default that the body never assigns', () => {
-    expect(namesOf('f <- function(a, n = 2, s = "x", b = TRUE, z = NULL, m = -1) 1')).toEqual([
-      'a',
-    ]);
+    expect(namesOf('f <- function(a, n = 2, s = "x", b = TRUE, m = -1) 1')).toEqual(['a']);
+    // NULL is the usual placeholder of an optional callback, so that formal may hold a function.
+    expect(namesOf('f <- function(a, z = NULL) 1')).toEqual(['a', 'z']);
     // Assigned in the body, the formal may hold a function again.
     expect(namesOf('f <- function(a, n = 2) { n <- identity; n(a) }')).toEqual(['a', 'n']);
     // A constant-default formal that a loop also binds is a loop variable.
