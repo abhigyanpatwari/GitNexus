@@ -405,6 +405,21 @@ export async function hidesUndiscoveredPackage(
 }
 
 /**
+ * Largest DESCRIPTION or NAMESPACE read (4 MiB). Neither is a parsed source file, so the walker's
+ * per-file cap does not apply; a real one is a few kilobytes. A larger file is treated like one
+ * that cannot be read: a DESCRIPTION leaves its package undiscovered (discovery is then marked
+ * truncated), a NAMESPACE leaves the package without NAMESPACE information (rename refuses).
+ */
+const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
+
+/** Read a DESCRIPTION or NAMESPACE as UTF-8; rejects when it is larger than {@link MAX_MANIFEST_BYTES}. */
+async function readManifestFile(file: string): Promise<string> {
+  const { size } = await fs.stat(file);
+  if (size > MAX_MANIFEST_BYTES) throw new Error(`${path.basename(file)} is too large to read`);
+  return fs.readFile(file, 'utf-8');
+}
+
+/**
  * Discover the R packages of a repo. Always returns a config: a scan that finds
  * no package yields an empty {@link RPackageConfig.packages} map, and its
  * {@link RPackageConfig.truncated} flag says whether that result is complete
@@ -446,7 +461,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
         if (entry.isFile() && entry.name === 'DESCRIPTION') {
           try {
             const descPath = path.join(dir, entry.name);
-            const content = await fs.readFile(descPath, 'utf-8');
+            const content = await readManifestFile(descPath);
             const pkgName = descriptionPackageName(content);
             if (pkgName !== undefined && !isInstalledPackageDescription(content)) {
               const pkgDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
@@ -464,9 +479,13 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
                 }
               }
 
-              const nsPath = path.join(dir, 'NAMESPACE');
+              // The same test as DESCRIPTION: a regular file listed by the directory read, never
+              // a symlink (which could point outside the repository).
+              const nsEntry = entries.find((candidate) => candidate.name === 'NAMESPACE');
               try {
-                const nsContent = await fs.readFile(nsPath, 'utf-8');
+                if (nsEntry === undefined || !nsEntry.isFile())
+                  throw new Error('no NAMESPACE file');
+                const nsContent = await readManifestFile(path.join(dir, 'NAMESPACE'));
                 const parsedExports = parseRNamespaceExports(nsContent);
                 const namedExports = new Set<string>(parsedExports.namedExports);
                 // POSIX classes are translated; an uncompilable pattern is skipped (never
