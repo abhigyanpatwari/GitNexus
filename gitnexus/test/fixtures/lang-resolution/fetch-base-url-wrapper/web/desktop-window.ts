@@ -5,3 +5,5 @@ export function openPage(path: string) {
 }
 
 openPage('/settings');
+// A literal call to the imported IPC request(), not to the fetch wrapper of the same name.
+request('/settings');

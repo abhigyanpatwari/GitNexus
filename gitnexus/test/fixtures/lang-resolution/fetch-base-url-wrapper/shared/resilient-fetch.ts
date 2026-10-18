@@ -9,14 +9,16 @@ export async function resilientFetch(
   opts: ResilientFetchOptions = {},
 ): Promise<Response> {
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
-  let lastError: unknown;
+  let lastError: unknown = new Error('no attempts');
+  let lastResponse: Response | undefined;
   for (let attempt = 0; attempt < (opts.maxAttempts ?? 1); attempt++) {
     try {
-      const resp = await fetchImpl(input, init);
-      if (resp.status < 500) return resp;
+      lastResponse = await fetchImpl(input, init);
+      if (lastResponse.status < 500) return lastResponse;
     } catch (err) {
       lastError = err;
     }
   }
+  if (lastResponse) return lastResponse;
   throw lastError;
 }

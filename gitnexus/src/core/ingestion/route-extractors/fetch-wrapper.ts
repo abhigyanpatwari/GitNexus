@@ -7,6 +7,8 @@ import { stripLeadingTemplatePrefix } from './route-path.js';
 /** A candidate is not an HTTP sink until its name matches a known wrapper. */
 export interface FetchWrapperCall extends ExtractedFetchCall {
   functionName: string;
+  /** Module stem declaring a bare callee, when this file declares or imports it relatively. */
+  module?: string;
 }
 
 function calleeName(node: Parser.SyntaxNode | null): string | undefined {
@@ -46,11 +48,13 @@ export function extractFetchWrapperCalls(
     if (!stripLeadingTemplatePrefix(fetchURL)?.startsWith('/')) continue;
     const functionName = calleeName(call.childForFieldName('function'));
     if (!functionName) continue;
+    const declared = calleeDeclarations(tree.rootNode, filePath).get(functionName);
     calls.push({
       filePath,
-      functionName,
+      functionName: declared?.callee ?? functionName,
       fetchURL,
       lineNumber: call.startPosition.row + lineOffset + 1,
+      ...(declared?.module ? { module: declared.module } : {}),
     });
   }
   return calls;
@@ -65,11 +69,19 @@ const FUNCTION_TYPES = [
 ];
 const FETCH_CALLEES = new Set(['fetch', 'globalThis.fetch', 'window.fetch', 'self.fetch']);
 
-/** The name bound by a function's first parameter, when it is a plain identifier. */
-function firstParameterName(definition: Parser.SyntaxNode): string | undefined {
-  const fn = FUNCTION_TYPES.includes(definition.type)
+/** The function node a definition declares. */
+function definedFunction(definition: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
+  return FUNCTION_TYPES.includes(definition.type)
     ? definition
     : definition.descendantsOfType(FUNCTION_TYPES)[0];
+}
+
+/**
+ * The name bound by a function's first parameter, when it is a plain identifier
+ * that nothing inside the function redeclares; a shadowed name could be read
+ * where the parameter is not, so it is not followed at all.
+ */
+function firstParameterName(fn: Parser.SyntaxNode | undefined): string | undefined {
   if (!fn) return undefined;
   let param =
     fn.childForFieldName('parameter') ??
@@ -78,7 +90,33 @@ function firstParameterName(definition: Parser.SyntaxNode): string | undefined {
     param = param.childForFieldName('pattern');
   }
   if (param?.type === 'assignment_pattern') param = param.childForFieldName('left');
-  return param?.type === 'identifier' ? param.text : undefined;
+  if (param?.type !== 'identifier') return undefined;
+  const name = param.text;
+  const redeclared =
+    fn
+      .descendantsOfType('variable_declarator')
+      .some((d) => d.childForFieldName('name')?.text === name) ||
+    fn
+      .descendantsOfType(FUNCTION_TYPES)
+      .some(
+        (nested) =>
+          nested.id !== fn.id &&
+          [nested.childForFieldName('parameter'), nested.childForFieldName('parameters')].some(
+            (params) =>
+              params?.type === 'identifier'
+                ? params.text === name
+                : params?.descendantsOfType('identifier').some((id) => id.text === name),
+          ),
+      );
+  return redeclared ? undefined : name;
+}
+
+/** The nearest function enclosing `node`. */
+function enclosingFunction(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (FUNCTION_TYPES.includes(parent.type)) return parent;
+  }
+  return null;
 }
 
 /** A value naming fetch, through `??`/`||`, `?:`, parentheses, `as` or `await`. */
@@ -184,13 +222,21 @@ export function fetchWrapperFacts(
   forwardsTo: ForwardedCallee[];
 } {
   const declared = calleeDeclarations(definition.tree.rootNode, filePath);
-  const aliases = new Set(
-    definition
-      .descendantsOfType('variable_declarator')
-      .filter((d) => namesFetch(d.childForFieldName('value')))
-      .map((d) => d.childForFieldName('name')?.text),
-  );
-  const parameter = firstParameterName(definition);
+  // An alias counts only where its declaring function encloses the call: a
+  // nested helper's `const fetchImpl = globalThis.fetch` says nothing about an
+  // outer `fetchImpl` parameter.
+  const aliases = definition
+    .descendantsOfType('variable_declarator')
+    .filter((d) => namesFetch(d.childForFieldName('value')));
+  const isAlias = (name: string, call: Parser.SyntaxNode) =>
+    aliases.some((d) => {
+      const scope = enclosingFunction(d);
+      return (
+        d.childForFieldName('name')?.text === name &&
+        (!scope || (scope.startIndex <= call.startIndex && call.endIndex <= scope.endIndex))
+      );
+    });
+  const parameter = firstParameterName(definedFunction(definition));
   const carries = (argument: Parser.SyntaxNode | undefined): boolean =>
     !!parameter &&
     !!argument &&
@@ -207,7 +253,7 @@ export function fetchWrapperFacts(
     const argument = call
       .childForFieldName('arguments')
       ?.namedChildren.find((child) => child.type !== 'comment');
-    if (FETCH_CALLEES.has(name) || aliases.has(name)) {
+    if (FETCH_CALLEES.has(name) || isAlias(name, call)) {
       seed = true;
       if (carries(argument)) forwardsUrl = true;
     }

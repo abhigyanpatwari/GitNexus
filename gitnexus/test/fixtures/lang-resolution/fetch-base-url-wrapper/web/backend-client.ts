@@ -36,7 +36,7 @@ export const runQuery = async (cypher: string) => {
 
 export const listProcesses = async (repo?: string) => {
   const response = await fetchWithTimeout(
-    `${_backendUrl}/api/processes${repo ? `?repo=${repo}` : ''}`,
+    `${_backendUrl}/api/processes${repo ? `?repo=${encodeURIComponent(repo)}` : ''}`,
   );
   return response.json();
 };

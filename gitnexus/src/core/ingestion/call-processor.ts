@@ -777,15 +777,18 @@ export const processNextjsFetchRoutes = (
 
     // `[param]` matches any route segment, so `/api/analyze/[param]` matches
     // both `/api/analyze/upload` and `/api/analyze/:jobId`: take the route
-    // whose segments match by kind most often, keeping the first on a tie.
+    // whose segments match by kind most often. A tie (`/api/[param]` against
+    // `/api/foo` and `/api/bar`) has no evidence for either, so it links none.
     let best: [string, string[]] | undefined;
     let bestScore = -1;
+    let tied = false;
     for (const entry of routeUrlToKeys) {
       if (!routeMatches(normalized, entry[0])) continue;
       const score = matchSpecificity(normalized, entry[0]);
+      tied = score === bestScore || (tied && score < bestScore);
       if (score > bestScore) [best, bestScore] = [entry, score];
     }
-    if (!best) continue;
+    if (!best || tied) continue;
     const [, routeKeys] = best;
     const sourceId = generateId('File', call.filePath);
 

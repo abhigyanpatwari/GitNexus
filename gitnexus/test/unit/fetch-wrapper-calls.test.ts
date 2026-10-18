@@ -137,6 +137,23 @@ for (const [name, grammar] of [
         facts: { seed: false, forwardsUrl: false, forwardsTo: [] },
       },
       {
+        shape: 'an alias declared only in a nested helper',
+        source: `function run(url, fetchImpl) {
+          function setup() { const fetchImpl = globalThis.fetch; return fetchImpl; }
+          return fetchImpl(url);
+        }`,
+        facts: {
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [{ callee: 'fetchImpl', module: null }],
+        },
+      },
+      {
+        shape: 'a parameter shadowed by a local',
+        source: `function fixed(url) { { const url = '/health'; return fetch(url); } }`,
+        facts: { seed: true, forwardsUrl: false, forwardsTo: [] },
+      },
+      {
         shape: 'a forwarder to a relative named import',
         source: `import { request as send } from '../desktop/ipc.js';
         export function openPage(path) { return send(path); }`,
@@ -159,6 +176,24 @@ for (const [name, grammar] of [
     ])('reads wrapper facts from $shape', ({ source, facts }) => {
       const root = parser.parse(source).rootNode;
       expect(fetchWrapperFacts(root.namedChildren.at(-1)!, 'src/web/client.ts')).toEqual(facts);
+    });
+
+    it('records the module declaring a bare callee', () => {
+      expect(
+        extractFetchWrapperCalls(
+          parser.parse(`import { request as send } from './api';
+          send('/api/one');
+          local('/api/two');
+          api.request('/api/three');
+          function local(u) {}`),
+          'src/web/page.ts',
+          0,
+        ).map(({ functionName, module }) => ({ functionName, module })),
+      ).toEqual([
+        { functionName: 'request', module: 'src/web/api' },
+        { functionName: 'local', module: 'src/web/page' },
+        { functionName: 'api.request', module: undefined },
+      ]);
     });
 
     it('preserves configured instance and inherited wrappers', () => {

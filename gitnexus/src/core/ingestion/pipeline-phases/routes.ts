@@ -16,7 +16,11 @@ import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
 import { isTemplateRouteCandidate } from '../utils/template-file.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
-import { moduleStem, type ForwardedCallee } from '../route-extractors/fetch-wrapper.js';
+import {
+  moduleStem,
+  type FetchWrapperCall,
+  type ForwardedCallee,
+} from '../route-extractors/fetch-wrapper.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
 import {
@@ -542,9 +546,20 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         grew = true;
       }
     }
+    // A call whose callee the file declares or imports relatively must reach a
+    // wrapper in exactly that module; a package or member callee keeps the
+    // name match.
+    const isWrapperCall = ({ functionName, module }: FetchWrapperCall): boolean =>
+      module === undefined
+        ? wrapperNames.has(functionName)
+        : configuredWrappers.includes(functionName) ||
+          (defsByModule
+            .get(`${module}\0${functionName}`)
+            ?.some((def) => def.seed || carriers.has(def)) ??
+            false);
     if (wrapperNames.size > 0 && routeRegistry.size > 0) {
       for (const call of allFetchWrapperCalls ?? []) {
-        if (wrapperNames.has(call.functionName)) allFetchCalls.push(call);
+        if (isWrapperCall(call)) allFetchCalls.push(call);
       }
     }
 

@@ -10,3 +10,5 @@ export const loadAbsolute = () => fetch(`${scheme}://${host}/api/repos`);
 // A suffix or a query after a param leaves nothing static to match.
 export const loadJson = (path: string) => fetch(`${base}/${path}.json`);
 export const loadQuery = (path: string, query: string) => fetch(`${base}/${path}${query}`);
+// `${kind}` matches /api/kinds/foo and /api/kinds/bar equally: no evidence for either.
+export const loadKind = (kind: string) => fetch(`${base}/api/kinds/${kind}`);
