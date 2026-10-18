@@ -51,6 +51,15 @@ rules:
       # context) holds no write permissions. Header comment documents.
       - pr-labeler.yml
 
+      # pull_request_target is required for a label request on fork PRs to
+      # dispatch the protected evaluator on main. This hosted handler checks
+      # out only github.sha (the trusted base commit), never PR code, and
+      # verifies the labeling actor's repository write permission plus the
+      # live label/head before dispatch. No model secrets or EC2 credentials
+      # are available here; only the existing main workflow can run sessions.
+      # Tests lock down the base checkout, writer gate and changed-head denial.
+      - pr-cost-evaluation.yml
+
   # Note: cache-poisoning is NOT exempted. The two prior findings in
   # publish.yml and the former release-candidate.yml were fixed structurally
   # by dropping `cache: npm` from those workflows (matches the pattern used
