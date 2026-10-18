@@ -244,6 +244,28 @@ describe('rExportPatternMatches stops asking matchers once the budget is spent',
     expect(budget.spent).toBeLessThanOrEqual(1_000 + 4 * 16384);
   });
 
+  it('keeps the answer for a name it matched before the budget was spent, and only that', () => {
+    const budget = new SharedWorkBudget(1_000, 10_000_000);
+    const matcher = compileRExportPattern('^foo', budget);
+    expect(matcher).not.toBeNull();
+    const info = {
+      exportPatterns: [matcher as NonNullable<typeof matcher>],
+      exportPatternBudget: budget,
+    };
+    // A definition of `foo_a` is exported while the budget lasts ...
+    expect(rExportPatternMatches(info, 'foo_a')).toBe(true);
+    expect(rExportPatternMatches(info, 'bar')).toBe(false);
+    budget.charge(2_000);
+    expect(budget.isSpent).toBe(true);
+    // ... and a second definition of the same name (a duplicate) keeps that answer afterwards.
+    expect(rExportPatternMatches(info, 'foo_a')).toBe(true);
+    expect(budget.cutShort).toBe(true);
+    // A name nobody decided still answers false: documented fail-closed.
+    expect(rExportPatternMatches(info, 'foo_b')).toBe(false);
+    // A name decided unexported stays unexported.
+    expect(rExportPatternMatches(info, 'bar')).toBe(false);
+  });
+
   it('is spent by a spent parent', () => {
     const load = new SharedWorkBudget(10);
     const pkg = load.child();

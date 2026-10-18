@@ -108,23 +108,41 @@ export interface RNamespaceInfo {
  */
 export const MAX_LISTED_DROPPED_PATTERNS = 50;
 
+/** Most names remembered as matched per package, so a hostile name list cannot grow the set without bound. */
+const MAX_REMEMBERED_MATCHES = 100_000;
+
+/** Names a pattern list matched while its budget lasted (only for lists that draw on a budget). */
+const matchedWhileBudgetLasted = new WeakMap<object, Set<string>>();
+
 /**
  * True when one of the package's `exportPattern()` matchers matches `name`. Once the
- * package's work budget (or the load's) is spent it stops asking the matchers at all and
- * answers false, so the cost no longer grows as patterns x names; the patterns it did not
- * get to run are then reported by {@link reportRExportPatternProblems}.
+ * package's work budget (or the load's) is spent it stops asking the matchers, so the cost no
+ * longer grows as patterns x names. A name it matched while the budget lasted keeps that
+ * answer (one set lookup, so a duplicate-named definition does not flip from exported to
+ * private); a name it had not decided answers false, and the patterns it did not get to run are
+ * then reported by {@link reportRExportPatternProblems}.
  */
 export function rExportPatternMatches(
   info: Pick<RNamespaceInfo, 'exportPatterns' | 'exportPatternBudget'>,
   name: string,
 ): boolean {
   const budget = info.exportPatternBudget;
+  let remembered = matchedWhileBudgetLasted.get(info.exportPatterns);
   for (const pattern of info.exportPatterns) {
     if (budget?.isSpent === true) {
       budget.cutShort = true;
-      return false;
+      return remembered?.has(name) === true;
     }
-    if (pattern.test(name)) return true;
+    if (pattern.test(name)) {
+      if (budget !== undefined) {
+        if (remembered === undefined) {
+          remembered = new Set();
+          matchedWhileBudgetLasted.set(info.exportPatterns, remembered);
+        }
+        if (remembered.size < MAX_REMEMBERED_MATCHES) remembered.add(name);
+      }
+      return true;
+    }
   }
   return false;
 }
