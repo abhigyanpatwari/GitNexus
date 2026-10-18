@@ -33,7 +33,7 @@ import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
-import { loadRPackageConfig } from './package-config.js';
+import { loadRPackageConfig, recordRPackageConfig } from './package-config.js';
 import { rBareName } from './bare-name.js';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { resolveRImportTarget } from '../../import-resolvers/r.js';
@@ -258,6 +258,8 @@ export const rScopeResolver: ScopeResolver = {
   populateWorkspaceReferences: (parsedFiles, ctx) => {
     populateRNamespaceImports(parsedFiles, ctx);
     populateRQualifiedCalls(parsedFiles, ctx);
+    // The rename guard reads the NAMESPACE this pass was configured with (see `checkSafety`).
+    recordRPackageConfig(parsedFiles, ctx.resolutionConfig);
   },
   resolveQualifiedFreeCall: resolveRQualifiedFreeCall,
 

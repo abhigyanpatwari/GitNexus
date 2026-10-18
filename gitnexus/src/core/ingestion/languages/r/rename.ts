@@ -3,6 +3,12 @@ import type { NameClaim } from 'gitnexus-shared';
 import type { RenameIssue, RenameProvider } from '../../rename-provider.js';
 import { unescapeRString } from './export-pattern.js';
 import { rBareName } from './bare-name.js';
+import { rOwningPackageDir } from './namespace-imports.js';
+import {
+  rExportPatternsIncomplete,
+  rNamespaceExports,
+  recordedRPackageConfig,
+} from './package-config.js';
 import {
   canonicalizeRenameBindings,
   createTreeSitterRenameSource,
@@ -496,12 +502,13 @@ export const rRenameProvider: RenameProvider = {
           );
       }
     }
-    // NAMESPACE is not an indexed source, so a package function it exports (`export()`,
-    // `exportPattern()`, `S3method()`) would keep a stale entry. The rename planner's graph
-    // carries the indexed verdict: `isExported` is false only for a function that a NAMESPACE
-    // beside the package proves private, so a package without NAMESPACE, or a node with no
-    // verdict at all, is treated as exported and refused.
+    // NAMESPACE is not an indexed source, so an `export()`, `exportPattern()` or `S3method()`
+    // entry naming this function would be left behind by a rename. The persisted `isExported`
+    // is not proof of privacy: an edit of NAMESPACE alone does not re-process the unchanged
+    // `R/` files, so the flag can be stale. It is only half of the proof; the other half is the
+    // NAMESPACE the planner has just loaded from disk for this plan.
     const file = target.filePath;
+    if (!/(^|\/)R\//.test(file)) return;
     let exported = false;
     graph.forEachNode((node) => {
       if (
@@ -513,9 +520,52 @@ export const rRenameProvider: RenameProvider = {
       )
         exported = true;
     });
-    if (exported && /(^|\/)R\//.test(file))
+    if (exported)
       return unsupported(
         'A package function that NAMESPACE exports, or that the index cannot prove private, may have an export entry that is not renamed.',
       );
+    return currentNamespaceIssue(files.get(file)?.parsed, file, name);
   },
 };
+
+/**
+ * Whether the NAMESPACE read from disk for this plan leaves `name` (defined in `file`) private.
+ * Fail-closed: anything short of a NAMESPACE that was read, parsed completely and does not export
+ * the name is a refusal, so a stale persisted verdict cannot make a rename that strands an export
+ * go through.
+ */
+function currentNamespaceIssue(
+  parsed: object | undefined,
+  file: string,
+  name: string,
+): RenameIssue | void {
+  const config = recordedRPackageConfig(parsed);
+  if (config === undefined)
+    return {
+      code: 'incomplete_semantics',
+      status: 'unsupported',
+      message:
+        'The package NAMESPACE was not read for this rename, so the function cannot be proven private.',
+    };
+  const packageDir = rOwningPackageDir(file, config);
+  const info =
+    packageDir === undefined ? undefined : config.namespaceInfoByPackageDir.get(packageDir);
+  if (info === undefined || !info.hasNamespaceFile)
+    return {
+      code: 'incomplete_semantics',
+      status: 'unsupported',
+      message:
+        'The package has no NAMESPACE file that could be read now (it may have been removed or be unreadable), so the function cannot be proven private.',
+    };
+  if (rNamespaceExports(info, name))
+    return unsupported(
+      'The package NAMESPACE now exports this function (export(), exportPattern() or S3method()); that entry would not be renamed. Re-run analyze to refresh the index.',
+    );
+  if (rExportPatternsIncomplete(info))
+    return {
+      code: 'incomplete_semantics',
+      status: 'unsupported',
+      message:
+        'An exportPattern() of the package NAMESPACE could not be fully applied, so the function cannot be proven private.',
+    };
+}

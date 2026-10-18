@@ -147,6 +147,66 @@ export function rExportPatternMatches(
   return false;
 }
 
+/**
+ * True when the package's NAMESPACE exports `symbol`: an explicit `export()`, `exportClasses()`,
+ * `exportMethods()` or `S3method()` entry, or an `exportPattern()` match. The one test the
+ * indexer's export refinement and the rename guard both use.
+ */
+export function rNamespaceExports(
+  info: Pick<RNamespaceInfo, 'namedExports' | 'exportPatterns' | 'exportPatternBudget'>,
+  symbol: string,
+): boolean {
+  return info.namedExports.has(symbol) || rExportPatternMatches(info, symbol);
+}
+
+/**
+ * True when part of the package's `exportPattern()` entries is not in effect: a pattern that
+ * was dropped at load, or one that ran out of work budget. {@link rNamespaceExports} answers
+ * false for a name such a pattern was meant to cover, so a false answer is not proof that the
+ * name is private.
+ */
+export function rExportPatternsIncomplete(
+  info: Pick<
+    RNamespaceInfo,
+    | 'exportPatterns'
+    | 'exportPatternBudget'
+    | 'droppedExportPatterns'
+    | 'omittedDroppedExportPatterns'
+  >,
+): boolean {
+  return (
+    (info.droppedExportPatterns?.length ?? 0) > 0 ||
+    (info.omittedDroppedExportPatterns ?? 0) > 0 ||
+    info.exportPatternBudget?.isSpent === true ||
+    info.exportPatternBudget?.cutShort === true ||
+    info.exportPatterns.some((matcher) => matcher.exhausted === true)
+  );
+}
+
+/**
+ * The package config each parsed file was resolved with. The resolution pass records it
+ * (`recordRPackageConfig`, from the scope resolver's workspace hook) so that the rename guard,
+ * which receives the parsed files but not the config, can read the NAMESPACE the planner loaded
+ * from disk for this very plan rather than the export verdict persisted at index time.
+ */
+const packageConfigOfParsedFile = new WeakMap<object, RPackageConfig>();
+
+/** Record `resolutionConfig` (an {@link RPackageConfig}, if it is one) against each parsed file. */
+export function recordRPackageConfig(
+  parsedFiles: readonly object[],
+  resolutionConfig: unknown,
+): void {
+  if (typeof resolutionConfig !== 'object' || resolutionConfig === null) return;
+  const config = resolutionConfig as RPackageConfig;
+  if (!(config.namespaceInfoByPackageDir instanceof Map)) return;
+  for (const parsed of parsedFiles) packageConfigOfParsedFile.set(parsed, config);
+}
+
+/** The config recorded for `parsed`, or undefined when no resolution pass recorded one. */
+export function recordedRPackageConfig(parsed: object | undefined): RPackageConfig | undefined {
+  return parsed === undefined ? undefined : packageConfigOfParsedFile.get(parsed);
+}
+
 /** Longest pattern prefix quoted in a warning. */
 const QUOTED_PATTERN_LENGTH = 60;
 

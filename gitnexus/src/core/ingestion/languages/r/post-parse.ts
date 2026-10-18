@@ -26,7 +26,7 @@ import type { PostParseContext } from '../../language-provider.js';
 import {
   loadRPackageConfig,
   reportRExportPatternProblems,
-  rExportPatternMatches,
+  rNamespaceExports,
   type RNamespaceInfo,
   type RPackageConfig,
 } from './package-config.js';
@@ -203,11 +203,9 @@ export const refineRExportStatus = (
     if (!name) return;
 
     // NAMESPACE writes the symbol (`export(`%+%`)`); the node keeps the definition's spelling.
-    const symbol = rBareName(name);
-    if (nsInfo.namedExports.has(symbol)) return; // explicit export — keep public
-    // exportPatterns are precompiled linear-time matchers (see loadRPackageConfig) — no per-node recompile.
-    const matched = rExportPatternMatches(nsInfo, symbol);
-    if (matched) return;
+    // An explicit export or an exportPattern match keeps the node public. The patterns are
+    // precompiled linear-time matchers (see loadRPackageConfig): no per-node recompile.
+    if (rNamespaceExports(nsInfo, rBareName(name))) return;
 
     // Not in NAMESPACE → not exported.
     node.properties.isExported = false;

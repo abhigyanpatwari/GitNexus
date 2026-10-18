@@ -9,6 +9,7 @@ import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { registersS3Method, rRenameProvider } from '../../src/core/ingestion/languages/r/rename.js';
+import { recordRPackageConfig } from '../../src/core/ingestion/languages/r/package-config.js';
 
 const parser = new Parser();
 parser.setLanguage(R as Parameters<Parser['setLanguage']>[0]);
@@ -134,12 +135,21 @@ describe('R rename: the S3 registration guard', () => {
         label,
         properties: { filePath: 'R/a.R', name: 'helper', isExported: true },
       });
+      // A root package whose NAMESPACE, read for this plan, exports nothing.
+      const parsed = { localDefs: [] };
+      recordRPackageConfig([parsed], {
+        packages: new Map([['pk', '']]),
+        namespaceInfoByPackageDir: new Map([
+          [
+            '',
+            { hasNamespaceFile: true, namedExports: new Set(), exportPatterns: [], importFrom: [] },
+          ],
+        ]),
+      });
       const issue = rRenameProvider.checkSafety?.({
         target: { type: 'Function', qualifiedName: 'helper', filePath: 'R/a.R' },
         newName: 'helper2',
-        files: new Map([
-          ['R/a.R', { tree: parser.parse('helper <- function(x) x'), parsed: { localDefs: [] } }],
-        ]),
+        files: new Map([['R/a.R', { tree: parser.parse('helper <- function(x) x'), parsed }]]),
         graph,
       } as never);
       return issue ? issue.code : 'ok';
