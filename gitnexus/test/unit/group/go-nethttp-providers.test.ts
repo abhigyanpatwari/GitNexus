@@ -112,11 +112,12 @@ describe('Go net/http providers', () => {
       expected: [{ method: 'M-SEARCH', path: '/discover', name: 'discover' }],
     },
     {
-      shape: 'a HEAD pattern, read as GET like the http.Head consumer',
-      body: '\thttp.HandleFunc("HEAD /api/ping", ping)\n\tr.HandleFunc("/api/both", both).Methods("GET", "HEAD")',
+      shape: 'a HEAD-only pattern, kept apart from GET consumers',
+      body: '\thttp.HandleFunc("HEAD /api/ping", ping)\n\tr.HandleFunc("/api/both", both).Methods("GET", "HEAD", "GET")',
       expected: [
-        { method: 'GET', path: '/api/ping', name: 'ping' },
+        { method: 'HEAD', path: '/api/ping', name: 'ping' },
         { method: 'GET', path: '/api/both', name: 'both' },
+        { method: 'HEAD', path: '/api/both', name: 'both' },
       ],
     },
     {

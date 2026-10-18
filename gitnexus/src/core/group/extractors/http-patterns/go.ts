@@ -1074,10 +1074,10 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
         router && pattern !== null ? registrationPattern(pattern, router.serveMux) : null;
       if (!router || !route) continue;
       const call = pathNode.parent?.parent;
-      // HEAD is read as GET, the convention this plugin's `http.Head` consumers
-      // already use, so a HEAD route pairs with them.
+      // A HEAD-only route stays HEAD: read as GET it would pair with every
+      // ordinary GET consumer, which it does not serve.
       const methods = (call && gorillaMethods(call)) ?? [route.method];
-      for (const method of new Set(methods.map((verb) => (verb === 'HEAD' ? 'GET' : verb)))) {
+      for (const method of new Set(methods)) {
         out.push({
           role: 'provider',
           framework: 'go-stdlib',
