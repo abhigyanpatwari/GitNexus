@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildTypeEnv } from '../../src/core/ingestion/type-env.js';
+import { fastestWithin, timeWork } from '../helpers/timing-attempts.js';
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -575,11 +576,14 @@ run <- function(x) x
       const LINES = 20;
       const BOUND_MS = 2_000;
 
-      const timed = <T>(run: () => T): { value: T; ms: number } => {
-        const start = performance.now();
-        const value = run();
-        return { value, ms: performance.now() - start };
-      };
+      // Each attempt parses afresh, so a per-tree cache warmed by an earlier one cannot hide the cost.
+      const timedEnv = (parsed: ReturnType<typeof parse>) =>
+        fastestWithin(BOUND_MS, () =>
+          timeWork(() => {
+            const tree = parse(parsed.rootNode.text);
+            return () => buildTypeEnv(tree, SupportedLanguages.R);
+          }),
+        );
 
       it('finishes promptly on a long name followed by punctuation', () => {
         const line = "#' @param " + 'a'.repeat(LONG) + '!';
@@ -590,7 +594,7 @@ ${Array(LINES).fill(line).join('\n')}
 #' @param ok Data
 run <- function(ok) ok
 `);
-        const { value: typeEnv, ms } = timed(() => buildTypeEnv(tree, SupportedLanguages.R));
+        const { value: typeEnv, ms } = timedEnv(tree);
         expect(ms).toBeLessThan(BOUND_MS);
         // The malformed lines are skipped; the well-formed tag after them still binds.
         expect(flatGet(typeEnv, 'ok')).toBe('Data');
@@ -603,7 +607,7 @@ Data <- R6::R6Class("Data", public = list(fit = function() 1))
 #' @param na.rm {Data} ${'word '.repeat(LONG / 5)}
 run <- function(na.rm) na.rm
 `);
-        const { value: typeEnv, ms } = timed(() => buildTypeEnv(tree, SupportedLanguages.R));
+        const { value: typeEnv, ms } = timedEnv(tree);
         expect(ms).toBeLessThan(BOUND_MS);
         expect(flatGet(typeEnv, 'na.rm')).toBe('Data');
       });
@@ -615,7 +619,7 @@ Data <- R6::R6Class("Data", public = list(fit = function() 1))
 #' @param ${'.'.repeat(LONG)} Data
 run <- function(x) x
 `);
-        const { value: typeEnv, ms } = timed(() => buildTypeEnv(tree, SupportedLanguages.R));
+        const { value: typeEnv, ms } = timedEnv(tree);
         expect(ms).toBeLessThan(BOUND_MS);
         expect(flatGet(typeEnv, 'x')).toBeUndefined();
       });

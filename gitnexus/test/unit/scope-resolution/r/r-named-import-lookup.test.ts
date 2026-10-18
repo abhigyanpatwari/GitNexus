@@ -84,13 +84,13 @@ describe('resolveRNamedImport: the cost of a name the NAMESPACE does not export'
     expect(exports.walks).toBe(0);
   });
 
-  it('answers 20,000 lookups against 20,000 exports well inside a generous bound', () => {
-    const { cfg, file } = setup(20_000);
-    const start = performance.now();
+  it('answers 20,000 lookups against 20,000 exports with one walk of the export set', () => {
+    const { cfg, exports, file } = setup(20_000);
     for (let i = 0; i < 20_000; i++) {
-      resolveRNamedImport(cfg, 'prov', `private_fn_${String(i)}`, [file]);
+      expect(resolveRNamedImport(cfg, 'prov', `private_fn_${String(i)}`, [file])).toBeNull();
     }
-    // One set lookup each: a few milliseconds. The scan this replaced took about two seconds.
-    expect(performance.now() - start).toBeLessThan(500);
+    // Counted, not timed: the scan this replaced walked all 20,000 entries for every lookup
+    // (400 million steps, about two seconds); the index is built by a single walk.
+    expect(exports.walks).toBe(1);
   });
 });

@@ -7,6 +7,7 @@ import {
 } from '../../src/core/ingestion/languages/r/namespace-imports.js';
 import { loadRPackageConfig } from '../../src/core/ingestion/languages/r/package-config.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
+import { fastestWithin, timeWork } from '../helpers/timing-attempts.js';
 
 // `parseRNamespaceImportFrom` is pure and package-blind: it returns every
 // `importFrom()` pair in file order. Own-package drop, last-wins and external
@@ -278,12 +279,15 @@ describe('parseRNamespaceImportFrom', () => {
     it('reads a file of unterminated `{` blocks in linear time and keeps the directive after each', () => {
       // Every `if (a) {` has no `}`: each one used to rescan the rest of the file (8.8 s here).
       const src = 'if (a) {\nexport(x)\n'.repeat(16_000); // ~300 KB
-      const start = performance.now();
-      const { namedExports } = parseRNamespaceExports(src);
-      const imports = parseRNamespaceImportFrom(src + 'importFrom(p, f)\n');
-      expect(performance.now() - start).toBeLessThan(2_000);
-      expect(namedExports).toHaveLength(16_000);
-      expect(imports).toEqual([{ pkg: 'p', name: 'f' }]);
+      const { ms, value } = fastestWithin(2_000, () =>
+        timeWork(() => () => ({
+          namedExports: parseRNamespaceExports(src).namedExports,
+          imports: parseRNamespaceImportFrom(src + 'importFrom(p, f)\n'),
+        })),
+      );
+      expect(ms).toBeLessThan(2_000);
+      expect(value.namedExports).toHaveLength(16_000);
+      expect(value.imports).toEqual([{ pkg: 'p', name: 'f' }]);
     });
 
     it('still skips a closed block, and a block that a later quote aborts, as before', () => {

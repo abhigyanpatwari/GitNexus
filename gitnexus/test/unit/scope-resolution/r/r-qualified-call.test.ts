@@ -10,6 +10,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { cleanupTempDirSync } from '../../../helpers/test-db.js';
+import { fastestWithin, timeWork } from '../../../helpers/timing-attempts.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -71,9 +72,12 @@ describe('parseRQualifier', () => {
     // The lazy `[\s\S]*?` it used to be took ~0.4 s per 32,000 blanks and quadratically more
     // beyond; 20 of them took 7 s. The linear version takes milliseconds.
     const raw = '"' + ' '.repeat(32_000) + 'x"';
-    const start = performance.now();
-    for (let i = 0; i < 20; i++) expect(parseRQualifier(raw)).toBeUndefined();
-    expect(performance.now() - start).toBeLessThan(2_000);
+    const { ms } = fastestWithin(2_000, () =>
+      timeWork(() => () => {
+        for (let i = 0; i < 20; i++) expect(parseRQualifier(raw)).toBeUndefined();
+      }),
+    );
+    expect(ms).toBeLessThan(2_000);
   });
 
   it('still reads the package after a very long quoted name', () => {

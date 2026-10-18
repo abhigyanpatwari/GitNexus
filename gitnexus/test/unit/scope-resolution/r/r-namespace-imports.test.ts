@@ -12,6 +12,7 @@
  * (`RPackageConfig` has no other constructor than `loadRPackageConfig`).
  */
 import { describe, expect, it } from 'vitest';
+import { fastestWithin, timeWork } from '../../../helpers/timing-attempts.js';
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';
 import { rProvider } from '../../../../src/core/ingestion/languages/r.js';
@@ -668,10 +669,14 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
     it('looks a name up among export entries that hold a long run of backticks in linear time', () => {
       // `/^`+|`+$/g` took ~12 s per entry on this shape; the bound leaves a ten-fold margin.
       const hostile = `x${'`'.repeat(200_000)}y`;
-      const s = setup({ [F]: src }, { exports: [hostile, 'f'] });
-      const start = performance.now();
-      const answers = [resolve(s, 'scorelib', 'hidden'), resolve(s, 'scorelib', 'f')];
-      expect(performance.now() - start).toBeLessThan(2_000);
+      // Each attempt sets up afresh, so a memo built by an earlier one cannot hide the cost.
+      const { ms, value: answers } = fastestWithin(2_000, () =>
+        timeWork(() => {
+          const s = setup({ [F]: src }, { exports: [hostile, 'f'] });
+          return () => [resolve(s, 'scorelib', 'hidden'), resolve(s, 'scorelib', 'f')];
+        }),
+      );
+      expect(ms).toBeLessThan(2_000);
       expect(answers).toEqual([null, [F]]);
     });
 

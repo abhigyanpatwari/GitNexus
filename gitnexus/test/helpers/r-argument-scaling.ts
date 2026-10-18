@@ -9,7 +9,8 @@
  * quadrupled, a quadratic query ~16x. Timings use the fastest of several runs, so
  * scheduler noise on a loaded runner cannot inflate the ratio. Correctness of the
  * output is asserted by the callers at both sizes, so an early return or an empty
- * parse cannot pass as "fast".
+ * parse cannot pass as "fast". A measurement whose ratio is over the limit is repeated (at most
+ * ATTEMPTS times in all): a quadratic query is over it every time, a noisy runner is not.
  *
  * A ratio is only meaningful when the small run is long enough to measure. A shape
  * whose cost per argument is tiny (comments before the naming argument took about
@@ -33,6 +34,8 @@ const MAX_SMALL_N = 256_000;
  */
 const FLOOR_MS = 15;
 const REPEATS = 3;
+/** Whole measurements tried before a ratio over MAX_RATIO is reported. */
+const ATTEMPTS = 3;
 
 export interface ArgumentShape {
   readonly name: string;
@@ -87,6 +90,23 @@ export const SHAPES = {
  * the thunk that is timed.
  */
 export function measureScaling<T>(
+  prepare: (source: string) => () => T,
+  build: (n: number) => string,
+): { small: T; large: T; ratio: number; smallN: number; largeN: number } {
+  // A quadratic query is ~16x on every attempt, a linear one ~4x: a ratio over the limit that
+  // the next attempt does not reproduce was scheduler noise (a pause during the small run
+  // shrinks nothing, but one during the large run inflates it). Stop at the first attempt within
+  // the limit; otherwise report the lowest ratio seen.
+  let best: ReturnType<typeof measureScalingOnce<T>> | undefined;
+  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+    const current = measureScalingOnce(prepare, build);
+    if (best === undefined || current.ratio < best.ratio) best = current;
+    if (current.ratio <= MAX_RATIO) break;
+  }
+  return best!;
+}
+
+function measureScalingOnce<T>(
   prepare: (source: string) => () => T,
   build: (n: number) => string,
 ): { small: T; large: T; ratio: number; smallN: number; largeN: number } {

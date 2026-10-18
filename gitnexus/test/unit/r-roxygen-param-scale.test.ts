@@ -8,6 +8,7 @@ import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildTypeEnv } from '../../src/core/ingestion/type-env.js';
+import { fastestWithin, timeWork } from '../helpers/timing-attempts.js';
 
 const parser = new Parser();
 parser.setLanguage(R as Parameters<Parser['setLanguage']>[0]);
@@ -21,11 +22,13 @@ describe('roxygen @param types of a function with many formals and many doc line
       ...params.map((p) => `#' @param ${p} Circle`),
       `fn <- function(${params.join(', ')}) 1`,
     ].join('\n');
-    const tree = parser.parse(source, undefined, { bufferSize: 1 << 24 });
-
-    const start = performance.now();
-    const env = buildTypeEnv(tree, SupportedLanguages.R);
-    const elapsed = performance.now() - start;
+    // Each attempt parses afresh, so a per-tree cache warmed by an earlier one cannot hide the cost.
+    const { ms: elapsed, value: env } = fastestWithin(4_000, () =>
+      timeWork(() => {
+        const tree = parser.parse(source, undefined, { bufferSize: 1 << 24 });
+        return () => buildTypeEnv(tree, SupportedLanguages.R);
+      }),
+    );
 
     let bound = 0;
     for (const [, scope] of env.allScopes()) {
