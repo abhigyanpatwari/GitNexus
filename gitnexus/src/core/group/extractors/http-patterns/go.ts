@@ -17,7 +17,8 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  * Go HTTP plugin. Handles:
  *   - gin / echo framework routing — `r.GET("/path", handler)`, including
  *     prefixes from route groups bound in the same function (`r.Group("/api")`)
- *   - net/http stdlib — `http.HandleFunc("/path", handler)`
+ *   - net/http-style providers — `HandleFunc` / `Handle` on any receiver,
+ *     method-agnostic unless a Go 1.22 pattern or gorilla `.Methods` names it
  *   - net/http consumer — `http.Get(...)`, `http.NewRequest("METHOD", ...)`
  *   - resty consumer — `client.R().Delete("/path")`
  */
@@ -68,6 +69,37 @@ const HANDLER_ARG_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * How a provider detection names its handler argument. An inline `func(){…}`
+ * handler has no name → `name: null` and a `line`, so it resolves to its
+ * containing/closure symbol by line-span containment (like a consumer). A named
+ * handler keeps its name and resolves by name; `line` is harmless there. For a
+ * method value or a package-qualified function (`h.List`, `pkg.List`) that name
+ * is the field, and the operand (usually a local variable, not the receiver
+ * type) does not prove where `List` is declared — so the detection is marked
+ * qualifiedHandler: resolve only to a repo-wide unique `List`, never to a
+ * same-named local method that merely shares the name. A bare name declared
+ * more than once in this file (a function and a method of the same name)
+ * resolves only when the file holds exactly one match, rather than binding to
+ * whichever row the graph lists first.
+ */
+function handlerDetection(
+  handler: Parser.SyntaxNode,
+  declaredNames: ReadonlyMap<string, number>,
+): Pick<HttpDetection, 'name' | 'line' | 'qualifiedHandler' | 'strictHandlerResolution'> {
+  const isInline = handler.type === 'func_literal';
+  const isQualified = handler.type === 'selector_expression';
+  const name = isQualified ? (handler.childForFieldName('field')?.text ?? null) : handler.text;
+  return {
+    name: isInline ? null : name,
+    line: handler.startPosition.row + 1,
+    ...(isQualified ? { qualifiedHandler: true } : {}),
+    ...(!isQualified && !isInline && name && (declaredNames.get(name) ?? 0) > 1
+      ? { strictHandlerResolution: true }
+      : {}),
+  };
+}
+
+/**
  * The file's framework import aliases: which local qualifiers resolve to
  * echo and to gin. Matched on the EXACT import path (shared with ingestion via
  * go-shared.ts) rather than the local name, so
@@ -82,6 +114,10 @@ const HANDLER_ARG_TYPES: ReadonlySet<string> = new Set([
 function readFrameworkImports(root: Parser.SyntaxNode): {
   echo: Set<string>;
   gin: Set<string>;
+  /** net/http, gorilla/mux and go-chi/chi qualifiers, for `HandleFunc` receivers. */
+  http: Set<string>;
+  gorilla: Set<string>;
+  chi: Set<string>;
 } {
   // Imports sit only at file scope; skip bodies.
   const specs = root.namedChildren
@@ -89,6 +125,9 @@ function readFrameworkImports(root: Parser.SyntaxNode): {
     .flatMap((decl) => decl.descendantsOfType('import_spec'));
   const echo = new Set<string>();
   const gin = new Set<string>();
+  const http = new Set<string>();
+  const gorilla = new Set<string>();
+  const chi = new Set<string>();
   for (const spec of specs) {
     const importPath = stringLiteral(spec.childForFieldName('path'));
     if (importPath === null) continue;
@@ -96,8 +135,11 @@ function readFrameworkImports(root: Parser.SyntaxNode): {
     if (local === '_' || local === '.') continue;
     if (isEchoImportPath(importPath)) echo.add(local);
     else if (isGinImportPath(importPath)) gin.add(local);
+    else if (importPath === 'net/http') http.add(local);
+    else if (importPath === 'github.com/gorilla/mux') gorilla.add(local);
+    else if (/^github\.com\/go-chi\/chi(?:\/v\d+)?$/.test(importPath)) chi.add(local);
   }
-  return { echo, gin };
+  return { echo, gin, http, gorilla, chi };
 }
 
 // ─── Route groups: `v1 := r.Group("/api/v1")` ─────────────────────────
@@ -676,7 +718,11 @@ function groupPrefix(receiver: Parser.SyntaxNode, depth = 0): string | null {
   return outer === null ? null : joinRoutePath(outer, group.prefix);
 }
 
-// ─── Provider: net/http `http.HandleFunc("/p", handler)` ─────────────
+// ─── Provider: net/http `HandleFunc("/p", handler)` / `Handle(...)` ──
+// On the net/http package (DefaultServeMux), a local `http.NewServeMux()`, or a
+// gorilla/chi router (#1668). `HandleFunc`/`Handle` are common names outside
+// HTTP too (telebot's `b.Handle("/start", fn)`), so scan only accepts a
+// receiver `stdlibRouter` proves, with exactly a path and a handler argument.
 const HANDLE_FUNC_PATTERNS = compilePatterns({
   name: 'go-handle-func',
   language: Go,
@@ -686,16 +732,182 @@ const HANDLE_FUNC_PATTERNS = compilePatterns({
       query: `
         (call_expression
           function: (selector_expression
-            operand: (identifier) @pkg (#eq? @pkg "http")
-            field: (field_identifier) @fn (#eq? @fn "HandleFunc"))
+            operand: (_) @receiver
+            field: (field_identifier) @fn (#match? @fn "^Handle(Func)?$"))
           arguments: (argument_list
-            (interpreted_string_literal) @path
-            [(identifier) (func_literal)] @handler
-            .))
+            [(interpreted_string_literal) (raw_string_literal)] @path))
       `,
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
+
+type RouterImports = ReturnType<typeof readFrameworkImports>;
+/** A proven router and the path prefix its registrations inherit. */
+interface StdlibRouter {
+  prefix: string;
+  /** net/http's ServeMux, the only one that reads `[METHOD ][HOST]/PATH`. */
+  serveMux: boolean;
+}
+
+/**
+ * Routers this file serves under a path it strips or prefixes —
+ * `r.Mount("/api", sub)`, `http.StripPrefix("/api", sub)`, chi
+ * `r.Route("/api", apiRoutes)`, gorilla `.PathPrefix("/api").Handler(sub)` —
+ * by binding, and by the name of a function that builds or fills one
+ * (`r.Mount("/api", apiRouter())`). Their registered paths are not their URLs.
+ */
+function mountedRouters(root: Parser.SyntaxNode): { values: Set<number>; factories: Set<string> } {
+  const values = new Set<number>();
+  const factories = new Set<string>();
+  for (const call of root.descendantsOfType('call_expression')) {
+    const field = call.childForFieldName('function')?.childForFieldName('field')?.text;
+    if (!['Mount', 'StripPrefix', 'Handler', 'Route'].includes(field ?? '')) continue;
+    for (const arg of codeChildren(call.childForFieldName('arguments'))) {
+      const callee = arg.type === 'call_expression' ? arg.childForFieldName('function') : null;
+      const name =
+        arg.type === 'identifier' ? arg.text : (callee?.childForFieldName('field') ?? callee)?.text;
+      if (name) factories.add(name);
+      const value = arg.type === 'identifier' ? findBinding(arg) : null;
+      if (value && value !== CONFLICT) values.add(value.id);
+    }
+  }
+  return { values, factories };
+}
+
+/** The name of the function or method declaration enclosing `node`. */
+function enclosingFunctionName(node: Parser.SyntaxNode): string | undefined {
+  for (let n = node.parent; n; n = n.parent) {
+    if (n.type === 'function_declaration' || n.type === 'method_declaration') {
+      return n.childForFieldName('name')?.text;
+    }
+  }
+  return undefined;
+}
+
+/** `*http.ServeMux`, `*mux.Router`, `chi.Router` or `*chi.Mux` from the file's imports. */
+function routerType(type: Parser.SyntaxNode | null, imports: RouterImports): StdlibRouter | null {
+  const named = type?.type === 'pointer_type' ? codeChildren(type)[0] : type;
+  if (named?.type !== 'qualified_type') return null;
+  const pkg = named.childForFieldName('package')?.text ?? '';
+  const name = named.childForFieldName('name')?.text;
+  if (imports.http.has(pkg) && name === 'ServeMux') return { prefix: '', serveMux: true };
+  if (imports.gorilla.has(pkg) && name === 'Router') return { prefix: '', serveMux: false };
+  if (imports.chi.has(pkg) && (name === 'Router' || name === 'Mux')) {
+    return { prefix: '', serveMux: false };
+  }
+  return null;
+}
+
+/**
+ * What a `HandleFunc`/`Handle` receiver provably is (#1668): the net/http
+ * package (DefaultServeMux); a binding to `http.NewServeMux()`, gorilla
+ * `mux.NewRouter()` or chi `chi.NewRouter()`/`NewMux()`; a gorilla
+ * `X.PathPrefix("/p").Subrouter()` or the parameter of a chi
+ * `X.Route("/p", func(r chi.Router) {…})` (or `Group`) callback, joining "/p"
+ * to X's prefix; or a parameter typed as one of those routers, which keeps its
+ * literal paths as gin groups do. Anything else — a telebot bot, a struct
+ * field, a router the file mounts under a prefix (`mountedRouters`), a binding
+ * that control flow decides — is null, and the route is declined rather than
+ * stored under a URL it does not serve.
+ */
+function stdlibRouter(
+  receiver: Parser.SyntaxNode,
+  imports: RouterImports,
+  mounted: ReturnType<typeof mountedRouters>,
+  depth = 0,
+): StdlibRouter | null {
+  if (depth > MAX_GROUP_DEPTH) return null;
+  if (receiver.type === 'identifier' && imports.http.has(receiver.text) && !isLocalName(receiver)) {
+    return { prefix: '', serveMux: true };
+  }
+  if (mounted.factories.has(enclosingFunctionName(receiver) ?? '')) return null;
+  const value = receiver.type === 'identifier' ? lookupBinding(receiver) : receiver;
+  if (!value || value === CONFLICT) return null;
+  if (isParamBinding(value)) {
+    const literal = value.param.parent?.parent;
+    const call = literal?.type === 'func_literal' ? literal.parent?.parent : null;
+    const fn = call?.type === 'call_expression' ? call.childForFieldName('function') : null;
+    const field = fn?.type === 'selector_expression' ? fn.childForFieldName('field')?.text : '';
+    const parent = fn?.childForFieldName('operand');
+    if (!call || !parent || (field !== 'Route' && field !== 'Group')) {
+      return routerType(value.param.childForFieldName('type'), imports);
+    }
+    const args = codeChildren(call.childForFieldName('arguments'));
+    const prefix = field === 'Route' ? stringLiteral(args[0]) : '';
+    const outer = prefix === null ? null : stdlibRouter(parent, imports, mounted, depth + 1);
+    return outer && { prefix: joinRoutePath(outer.prefix, prefix), serveMux: false };
+  }
+  if (value.type !== 'call_expression' || mounted.values.has(value.id)) return null;
+  const fn = value.childForFieldName('function');
+  const field = fn?.childForFieldName('field')?.text;
+  const operand = fn?.childForFieldName('operand');
+  if (fn?.type !== 'selector_expression' || !operand) return null;
+  const pkg = operand.type === 'identifier' && !isLocalName(operand) ? operand.text : '';
+  if (field === 'NewServeMux' && imports.http.has(pkg)) return { prefix: '', serveMux: true };
+  if (
+    (field === 'NewRouter' && (imports.gorilla.has(pkg) || imports.chi.has(pkg))) ||
+    (field === 'NewMux' && imports.chi.has(pkg))
+  ) {
+    return { prefix: '', serveMux: false };
+  }
+  const pathPrefix =
+    operand.type === 'call_expression' ? operand.childForFieldName('function') : null;
+  const parent = pathPrefix?.childForFieldName('operand');
+  if (field !== 'Subrouter' || pathPrefix?.childForFieldName('field')?.text !== 'PathPrefix') {
+    return null;
+  }
+  const prefix = stringLiteral(codeChildren(operand.childForFieldName('arguments'))[0]);
+  const outer =
+    prefix === null || !parent ? null : stdlibRouter(parent, imports, mounted, depth + 1);
+  return outer && { prefix: joinRoutePath(outer.prefix, prefix), serveMux: false };
+}
+
+/**
+ * A registration pattern. net/http's ServeMux reads `[METHOD ][HOST]/[PATH]`
+ * (Go 1.22): without a method the handler serves every verb, so the route is
+ * method-agnostic (`*`), which the matcher pairs with consumers of any verb
+ * (#1670); the host and the `{$}` end-of-path anchor are not part of the
+ * route path. gorilla and chi take a plain `/path`. Null for anything else.
+ */
+function registrationPattern(
+  pattern: string,
+  serveMux: boolean,
+): { method: string; path: string } | null {
+  if (!serveMux) return pattern.startsWith('/') ? { method: '*', path: pattern } : null;
+  const parts = /^(?:([A-Za-z]+)[ \t]+)?(?:[A-Za-z0-9.-]+(?::\d+)?)?(\/\S*)$/.exec(pattern.trim());
+  return parts
+    ? { method: parts[1]?.toUpperCase() ?? '*', path: parts[2].replace(/\{\$\}$/, '') }
+    : null;
+}
+
+/** gorilla route matchers that may sit between the registration and `.Methods(...)`. */
+const GORILLA_ROUTE_MATCHERS = new Set(['Host', 'Schemes', 'Name', 'Headers', 'Queries']);
+
+/**
+ * Verbs from a gorilla/mux `.Methods(...)` on the registration's route chain
+ * (`r.HandleFunc("/p", h).Host("x").Methods("POST", http.MethodPut)`); null
+ * when there is none or one of its arguments is not a literal verb.
+ */
+function gorillaMethods(call: Parser.SyntaxNode): string[] | null {
+  for (let route = call; ; ) {
+    const selector = route.parent;
+    const next = selector?.parent;
+    if (selector?.type !== 'selector_expression' || next?.type !== 'call_expression') return null;
+    const field = selector.childForFieldName('field')?.text ?? '';
+    if (field === 'Methods') {
+      const verbs = codeChildren(next.childForFieldName('arguments')).map((arg) =>
+        arg.type === 'selector_expression'
+          ? (/^Method([A-Z][a-z]+)$/.exec(arg.childForFieldName('field')?.text ?? '')?.[1] ?? null)
+          : stringLiteral(arg),
+      );
+      return verbs.length > 0 && verbs.every((verb) => verb !== null)
+        ? verbs.map((verb) => verb.toUpperCase())
+        : null;
+    }
+    if (!GORILLA_ROUTE_MATCHERS.has(field)) return null;
+    route = next;
+  }
+}
 
 // ─── Consumer: net/http stdlib Get / Post / Head ─────────────────────
 const HTTP_CLIENT_METHOD_TO_HTTP: Record<string, string> = {
@@ -767,7 +979,7 @@ const RESTY_PATTERNS = compilePatterns({
 export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'go-http',
   language: Go,
-  scan(tree) {
+  scan(tree, _repoContext, fileRel) {
     const out: HttpDetection[] = [];
 
     // Framework providers: r.GET/POST/... on an engine or (nested) route group
@@ -819,60 +1031,44 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       const handlerNode = echoOrder ? rest[0] : rest[rest.length - 1];
       if (!HANDLER_ARG_TYPES.has(handlerNode.type)) continue;
       const path = receiverNode ? joinRoutePath(prefix, literalPath) : literalPath;
-      // An inline `func(){…}` handler has no name → emit `name: null` and a
-      // `line` so it resolves to its containing/closure symbol by line-span
-      // containment (like a consumer). A named handler keeps its name and
-      // resolves by name; `line` is harmless there. For a method value or a
-      // package-qualified function (`h.List`, `pkg.List`) that name is the
-      // field, and the operand (usually a local variable, not the receiver
-      // type) does not prove where `List` is declared — so the detection is
-      // marked qualifiedHandler: resolve only to a repo-wide unique `List`,
-      // never to a same-named local method that merely shares the name.
-      const isInlineHandler = handlerNode?.type === 'func_literal';
-      const isQualified = handlerNode?.type === 'selector_expression';
-      const handlerName = isQualified
-        ? (handlerNode.childForFieldName('field')?.text ?? null)
-        : (handlerNode?.text ?? null);
       out.push({
         role: 'provider',
         framework: 'go-framework',
         method: methodNode.text.toUpperCase(),
         path,
-        name: isInlineHandler ? null : handlerName,
-        line: (handlerNode ?? pathNode).startPosition.row + 1,
         confidence: 0.8,
-        ...(isQualified ? { qualifiedHandler: true } : {}),
-        // A bare name declared more than once in this file (a function and a
-        // method of the same name) resolves only when the file holds exactly
-        // one match, rather than binding to whichever row the graph lists first.
-        ...(!isQualified &&
-        !isInlineHandler &&
-        handlerName &&
-        (declaredNames.get(handlerName) ?? 0) > 1
-          ? { strictHandlerResolution: true }
-          : {}),
+        ...handlerDetection(handlerNode, declaredNames),
       });
     }
 
-    // net/http HandleFunc: default method GET
-    for (const match of runCompiledPatterns(HANDLE_FUNC_PATTERNS, tree)) {
+    // net/http-style HandleFunc / Handle on a proven router. A `_test.go`
+    // file's routers are httptest mocks, not services.
+    const mounted = mountedRouters(tree.rootNode);
+    for (const match of fileRel?.endsWith('_test.go')
+      ? []
+      : runCompiledPatterns(HANDLE_FUNC_PATTERNS, tree)) {
       const pathNode = match.captures.path;
-      const handlerNode = match.captures.handler;
-      if (!pathNode) continue;
-      const path = stringLiteral(pathNode);
-      if (path === null) continue;
-      // Inline `func(){…}` handler → resolve by containment (see go-framework
-      // note above); a named handler resolves by name.
-      const isInlineHandler = handlerNode?.type === 'func_literal';
-      out.push({
-        role: 'provider',
-        framework: 'go-stdlib',
-        method: 'GET',
-        path,
-        name: isInlineHandler ? null : (handlerNode?.text ?? null),
-        line: (handlerNode ?? pathNode).startPosition.row + 1,
-        confidence: 0.8,
-      });
+      const receiverNode = match.captures.receiver;
+      const args = codeChildren(pathNode?.parent);
+      if (!pathNode || !receiverNode || args.length !== 2 || args[0].id !== pathNode.id) continue;
+      if (!HANDLER_ARG_TYPES.has(args[1].type)) continue;
+      const router = stdlibRouter(receiverNode, imports, mounted);
+      const pattern = stringLiteral(pathNode);
+      const route =
+        router && pattern !== null ? registrationPattern(pattern, router.serveMux) : null;
+      if (!router || !route) continue;
+      const call = pathNode.parent?.parent;
+      const methods = (call && gorillaMethods(call)) ?? [route.method];
+      for (const method of methods) {
+        out.push({
+          role: 'provider',
+          framework: 'go-stdlib',
+          method,
+          path: joinRoutePath(router.prefix, route.path),
+          confidence: 0.8,
+          ...handlerDetection(args[1], declaredNames),
+        });
+      }
     }
 
     // net/http client: http.Get/Post/Head
