@@ -184,8 +184,13 @@ export function extractOpenCodePattern(tool, args) {
   }
   if (tool === 'glob') {
     const raw = typeof input.pattern === 'string' ? input.pattern : '';
-    const match = raw.match(/[*\/]([a-zA-Z][a-zA-Z0-9_-]{2,})/);
-    return match ? match[1] : null;
+    // Longest literal run (>=3 chars) in the glob, with glob metachars as
+    // delimiters: '**/UserService*' → UserService, 'src/**/*.ts' → src,
+    // '**/*.service.ts' → service. The older [*/]letter regex missed every
+    // recursive glob whose segments start with '*', '.', or another metachar.
+    const runs = raw.match(/[a-zA-Z0-9_-]{3,}/g);
+    if (!runs) return null;
+    return runs.reduce((best, run) => (run.length > best.length ? run : best));
   }
   if (tool === 'bash') {
     return extractBashSearchPattern(input.command);
@@ -193,12 +198,17 @@ export function extractOpenCodePattern(tool, args) {
   return null;
 }
 
-/** True for the git commands that move HEAD (same set as the Claude adapter). */
+/**
+ * True for the git commands that move HEAD (same set as the Claude adapter).
+ * Segments are checked after splitting on shell separators and each must
+ * START with `git`, so `echo 'git commit'` or `grep 'git commit' file` don't
+ * count as mutations while `cd x && git commit` still does.
+ */
 export function isGitMutationCommand(command) {
-  return (
-    typeof command === 'string' &&
-    /\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command)
-  );
+  if (typeof command !== 'string') return false;
+  return command
+    .split(/&&|\|\||;|\|/)
+    .some((seg) => /^\s*git\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(seg));
 }
 
 /**

@@ -48,7 +48,9 @@ describe('extractOpenCodePattern', () => {
 
   it('derives a token from glob patterns', () => {
     expect(extractOpenCodePattern('glob', { pattern: '**/UserService*' })).toBe('UserService');
-    expect(extractOpenCodePattern('glob', { pattern: 'src/**/*.ts' })).toBeNull();
+    expect(extractOpenCodePattern('glob', { pattern: 'src/**/*.ts' })).toBe('src');
+    expect(extractOpenCodePattern('glob', { pattern: '**/*.service.ts' })).toBe('service');
+    expect(extractOpenCodePattern('glob', { pattern: '**/*.{a,b}' })).toBeNull();
     expect(extractOpenCodePattern('glob', {})).toBeNull();
   });
 
@@ -102,11 +104,21 @@ describe('isGitMutationCommand', () => {
     'git rebase main',
     'git cherry-pick abc',
     'git pull',
+    'cd src && git commit -m x',
+    'npm test || git pull',
   ])('detects %s', (cmd) => expect(isGitMutationCommand(cmd)).toBe(true));
 
-  it.each(['git status', 'git diff', 'git stash push', 'npm test', ''])('ignores %s', (cmd) =>
-    expect(isGitMutationCommand(cmd)).toBe(false),
-  );
+  it.each([
+    'git status',
+    'git diff',
+    'git stash push',
+    'npm test',
+    '',
+    // Text that merely mentions a mutation must not count.
+    "echo 'git commit'",
+    "grep 'git commit' file.txt",
+    'cat notes.md | grep git-pull',
+  ])('ignores %s', (cmd) => expect(isGitMutationCommand(cmd)).toBe(false));
 
   it('rejects non-strings', () => {
     expect(isGitMutationCommand(null)).toBe(false);
