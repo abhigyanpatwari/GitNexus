@@ -70,19 +70,57 @@ describe('rMergeBindings: library() masking in the wildcard tier', () => {
     expect(ids(rMergeBindings([first, second], [], 's'))).toEqual(['Function:a/R/f.R:dup']);
   });
 
-  it('counts a package named by several calls at its last one, however the bindings are batched', () => {
+  it('keeps a package named by several calls where it was first attached, however the bindings are batched', () => {
     const a1 = attached('Function:pa/R/f.R:dup', at(1));
     const b2 = attached('Function:pb/R/f.R:dup', at(2));
     const a3 = attached('Function:pa/R/f.R:dup', at(3));
-    // library(pa); library(pb); library(pa): pa was attached last.
-    expect(ids(rMergeBindings([a1, b2], [a3], 's'))).toEqual(['Function:pa/R/f.R:dup']);
-    expect(ids(rMergeBindings([a3], [a1, b2], 's'))).toEqual(['Function:pa/R/f.R:dup']);
-    expect(ids(rMergeBindings([a1, b2, a3], [], 's'))).toEqual(['Function:pa/R/f.R:dup']);
-    // library(pb); library(pa); library(pb): pb was attached last.
+    // library(pa); library(pb); library(pa): R leaves pa where it was, so pb was attached last.
+    expect(ids(rMergeBindings([a1, b2], [a3], 's'))).toEqual(['Function:pb/R/f.R:dup']);
+    expect(ids(rMergeBindings([a3], [a1, b2], 's'))).toEqual(['Function:pb/R/f.R:dup']);
+    expect(ids(rMergeBindings([a1, b2, a3], [], 's'))).toEqual(['Function:pb/R/f.R:dup']);
+    // library(pb); library(pa); library(pb): pa was attached last.
     const a2 = attached('Function:pa/R/f.R:dup', at(2));
     const b1 = attached('Function:pb/R/f.R:dup', at(1));
     const b3 = attached('Function:pb/R/f.R:dup', at(3));
-    expect(ids(rMergeBindings([b1, a2], [b3], 's'))).toEqual(['Function:pb/R/f.R:dup']);
+    expect(ids(rMergeBindings([b1, a2], [b3], 's'))).toEqual(['Function:pa/R/f.R:dup']);
+  });
+
+  it('keeps first-attachment order when the bindings arrive one at a time, as the pipeline folds them', () => {
+    /** Fold `bindings` through the merger one at a time, in the given order. */
+    const fold = (...bindings: BindingRef[]): string[] => {
+      let merged: BindingRef[] = [];
+      for (const b of bindings) merged = rMergeBindings(merged, [b], 's');
+      return ids(merged);
+    };
+    const pa = (line: number) => attached('Function:pa/R/f.R:dup', at(line));
+    const pb = (line: number) => attached('Function:pb/R/f.R:dup', at(line));
+    // A/B/A -> B, B/A/B -> A, A/B/A/B -> B, A/A/B -> B, A/B/B -> B.
+    expect(fold(pa(1), pb(2), pa(3))).toEqual(['Function:pb/R/f.R:dup']);
+    expect(fold(pb(1), pa(2), pb(3))).toEqual(['Function:pa/R/f.R:dup']);
+    expect(fold(pa(1), pb(2), pa(3), pb(4))).toEqual(['Function:pb/R/f.R:dup']);
+    expect(fold(pa(1), pa(2), pb(3))).toEqual(['Function:pb/R/f.R:dup']);
+    expect(fold(pa(1), pb(2), pb(3))).toEqual(['Function:pb/R/f.R:dup']);
+    // The same shapes arriving in the opposite order give the same answer.
+    expect(fold(pa(3), pb(2), pa(1))).toEqual(['Function:pb/R/f.R:dup']);
+    expect(fold(pb(3), pa(2), pb(1))).toEqual(['Function:pa/R/f.R:dup']);
+  });
+
+  it('keeps every file of a package that is attached again, as one call attached them first', () => {
+    const x1 = attached('Function:px/R/x.R:dup', at(1));
+    const y1 = attached('Function:px/R/y.R:dup', at(1));
+    const q2 = attached('Function:pq/R/f.R:dup', at(2));
+    const x3 = attached('Function:px/R/x.R:dup', at(3));
+    const y3 = attached('Function:px/R/y.R:dup', at(3));
+    let merged: BindingRef[] = [];
+    for (const b of [x1, y1, q2, x3, y3]) merged = rMergeBindings(merged, [b], 's');
+    expect(ids(merged)).toEqual(['Function:pq/R/f.R:dup']);
+    const r1 = attached('Function:pq/R/f.R:dup', at(1));
+    const s2 = attached('Function:px/R/x.R:dup', at(2));
+    const t2 = attached('Function:px/R/y.R:dup', at(2));
+    const r3 = attached('Function:pq/R/f.R:dup', at(3));
+    merged = [];
+    for (const b of [r1, s2, t2, r3]) merged = rMergeBindings(merged, [b], 's');
+    expect(ids(merged)).toEqual(['Function:px/R/x.R:dup', 'Function:px/R/y.R:dup']);
   });
 
   it('keeps every file of the one package the last call attaches: that ambiguity stays', () => {
