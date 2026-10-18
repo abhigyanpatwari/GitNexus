@@ -24,6 +24,12 @@ def or_none():
         user.save()
 
 
+def none_or():
+    user = None or make_user()
+    if user is not None:
+        user.save()
+
+
 def class_constructor(flag):
     user = User() if flag else None
     if user is not None:
@@ -42,4 +48,9 @@ def and_none():
 
 def or_other():
     user = make_user() or make_other()
+    user.save()
+
+
+def none_and():
+    user = None and make_user()
     user.save()

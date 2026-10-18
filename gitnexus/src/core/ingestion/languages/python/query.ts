@@ -127,6 +127,14 @@ const PYTHON_SCOPE_QUERY = `
     operator: "or"
     right: (none))) @type-binding.constructor
 
+;; \`None or call()\` always evaluates to the call.
+(assignment
+  left: (identifier) @type-binding.name @call-result-assignment.lhs
+  right: (boolean_operator
+    left: (none)
+    operator: "or"
+    right: (call function: (identifier) @type-binding.type) @call-result-assignment.call)) @type-binding.constructor
+
 ;; For-loop iterable of an already-typed variable:
 ;;   def f(users: list[User]):
 ;;       for u in users:     # u: users (chained via post-pass)
