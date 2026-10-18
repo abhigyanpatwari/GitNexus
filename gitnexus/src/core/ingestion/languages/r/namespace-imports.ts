@@ -186,10 +186,10 @@ function parseArgs(text: string, openIdx: number): { args: string[]; end: number
 const BARE_NAME = /^[\p{L}.][\p{L}\p{N}._]*$/u;
 
 /**
- * Strip whitespace and one layer of surrounding quotes/backticks from a raw
- * argument. Returns `''` for empty or non-simple arguments (unterminated quote,
- * or anything that is not a single quoted token or bare symbol) so callers can skip
- * them. A bare operator or indexing expression (`a+b`, `x[1]`) is not a symbol.
+ * Strip the whitespace around a raw argument and one layer of surrounding quotes/backticks; the
+ * text inside the quotes is kept as written, spaces included. Returns `''` for empty or
+ * non-simple arguments (unterminated quote, or anything that is not a single quoted token or bare
+ * symbol) so callers can skip them. A bare operator or indexing expression (`a+b`, `x[1]`) is not a symbol.
  */
 function normaliseArg(raw: string): string {
   const trimmed = raw.trim();
@@ -201,7 +201,8 @@ function normaliseArg(raw: string): string {
     if (end !== trimmed.length) return '';
     const inner = trimmed.slice(1, -1);
     // A string is R-unescaped; a backticked name keeps an escaped backtick as written (see `rBareName`).
-    return (first === '`' ? inner : unescapeRString(inner)).trim();
+    // Not trimmed: R reads the quoted text as it stands, so `" a "` names the symbol ` a `.
+    return first === '`' ? inner : unescapeRString(inner);
   }
   // Bare token: a syntactic name. Anything else (`x = y`, a nested call, an expression) is rejected.
   return BARE_NAME.test(trimmed) ? trimmed : '';

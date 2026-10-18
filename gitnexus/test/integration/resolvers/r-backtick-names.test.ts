@@ -38,6 +38,12 @@ describe('R backtick-quoted definitions and the NAMESPACE', () => {
     expect(exported('`pat_hit`')).toBe(true);
   });
 
+  it('exports exactly the name a quoted export() spells, spaces included', () => {
+    // spaced/NAMESPACE says export(" a "): R exports the symbol ` a `, not `a`.
+    expect(exported('a')).toBe(false);
+    expect(exported('` a `')).toBe(true);
+  });
+
   it('still hides a definition the NAMESPACE does not export', () => {
     expect(exported('hidden_op')).toBe(false);
     expect(exported('plain_op')).toBe(true);

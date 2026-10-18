@@ -47,6 +47,20 @@ describe('parseRNamespaceImportFrom', () => {
     ]);
   });
 
+  it('keeps the whitespace inside a quoted or backticked name and trims the rest', () => {
+    const src = 'importFrom( pkg ,  " a " ,\t` odd fn `\t,   bare   , \'b\\t\')\n';
+    expect(parseRNamespaceImportFrom(src)).toEqual([
+      { pkg: 'pkg', name: ' a ' },
+      { pkg: 'pkg', name: ' odd fn ' },
+      { pkg: 'pkg', name: 'bare' },
+      { pkg: 'pkg', name: 'b\t' },
+    ]);
+    expect(
+      parseRNamespaceExports('export( " a " , ` odd fn `,   bare  )\nS3method(" print ", foo)\n')
+        .namedExports,
+    ).toEqual([' a ', ' odd fn ', 'bare', ' print .foo']);
+  });
+
   it('accepts bare, double-quoted, single-quoted and backticked names', () => {
     const src = `importFrom("dplyr", "mutate", 'filter', \`select\`, bare)\nimportFrom(magrittr, \`%>%\`, .data)\n`;
     expect(parseRNamespaceImportFrom(src)).toEqual([
