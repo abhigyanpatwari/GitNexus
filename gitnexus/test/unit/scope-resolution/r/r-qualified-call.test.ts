@@ -408,14 +408,15 @@ describe('loadRPackageConfig: truncation only when a skipped subtree hides an un
   });
 
   it('an unreadable DESCRIPTION is truncated, so its qualifier stays unknown', async () => {
-    const realReadFile = fs.readFile.bind(fs) as (...a: unknown[]) => Promise<unknown>;
+    // Manifests are read through one opened handle, so the open is where a read can fail.
+    const realOpen = fs.open.bind(fs) as (...a: unknown[]) => Promise<unknown>;
     const spy = vi
-      .spyOn(fs, 'readFile')
+      .spyOn(fs, 'open')
       .mockImplementation(((file: unknown, ...rest: unknown[]) =>
         path.basename(String(file)) === 'DESCRIPTION' &&
         path.basename(path.dirname(String(file))) === 'sub'
           ? Promise.reject(eacces(String(file)))
-          : realReadFile(file, ...rest)) as unknown as typeof fs.readFile);
+          : realOpen(file, ...rest)) as unknown as typeof fs.open);
     try {
       const cfg = await withRepo(async (root) => {
         await writePkg(path.join(root, 'sub'), 'hiddenpkg');

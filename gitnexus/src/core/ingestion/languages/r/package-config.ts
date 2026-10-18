@@ -1,4 +1,4 @@
-import type { Dirent } from 'fs';
+import { constants, type Dirent } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import {
@@ -386,7 +386,7 @@ export async function hidesUndiscoveredPackage(
         if (!isSkippedDirName(entry.name)) stack.push(path.join(dir, entry.name));
       } else if (entry.isFile() && entry.name === 'DESCRIPTION') {
         try {
-          const content = await fs.readFile(path.join(dir, entry.name), 'utf-8');
+          const content = await readManifestFile(path.join(dir, entry.name));
           const pkgName = descriptionPackageName(content);
           if (
             pkgName !== undefined &&
@@ -412,11 +412,41 @@ export async function hidesUndiscoveredPackage(
  */
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 
-/** Read a DESCRIPTION or NAMESPACE as UTF-8; rejects when it is larger than {@link MAX_MANIFEST_BYTES}. */
-async function readManifestFile(file: string): Promise<string> {
-  const { size } = await fs.stat(file);
-  if (size > MAX_MANIFEST_BYTES) throw new Error(`${path.basename(file)} is too large to read`);
-  return fs.readFile(file, 'utf-8');
+/**
+ * Read a DESCRIPTION or NAMESPACE as UTF-8. Rejects when the file cannot be read, is not a regular
+ * file, or is larger than {@link MAX_MANIFEST_BYTES}.
+ *
+ * The file is opened once and the type check, the size check and the read all use that one handle,
+ * so the file cannot be swapped between the check and the read (a `stat` by path followed by a
+ * `readFile` by path can). `O_NOFOLLOW` makes the open itself refuse a symlink where the platform
+ * has it; where it does not (Windows) the callers' directory read has already admitted only a
+ * regular file. `O_NONBLOCK` stops a FIFO blocking the open; it is then refused as not a file. At
+ * most one byte past the checked size is read, so a file that grows after the check is refused
+ * rather than read whole (or truncated).
+ */
+export async function readManifestFile(file: string): Promise<string> {
+  const handle = await fs.open(
+    file,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile()) throw new Error(`${path.basename(file)} is not a file`);
+    const { size } = opened;
+    if (size > MAX_MANIFEST_BYTES) throw new Error(`${path.basename(file)} is too large to read`);
+    // One byte more than the size checked above: reading it means the file grew.
+    const buffer = Buffer.allocUnsafe(size + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const chunk = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (chunk.bytesRead === 0) break;
+      bytesRead += chunk.bytesRead;
+    }
+    if (bytesRead > size) throw new Error(`${path.basename(file)} changed while it was read`);
+    return buffer.toString('utf-8', 0, bytesRead);
+  } finally {
+    await handle.close();
+  }
 }
 
 /**

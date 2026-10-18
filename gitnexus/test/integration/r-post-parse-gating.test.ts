@@ -5,7 +5,7 @@
  * language-specific work. Shared pipeline code must not run them for a repo that has no R files:
  * a non-R repo pays nothing (no directory walk, no manifest read).
  *
- * Observation point: `node:fs/promises` `readFile`. `loadRPackageConfig` imports the module's default
+ * Observation point: `node:fs/promises` `open` (manifests are read through one opened handle). `loadRPackageConfig` imports the module's default
  * export, so a spy on that object sees the loader wherever it lives (before or after it moves into
  * `languages/r/`). A depth-3 `DESCRIPTION` decoy makes the walk observable: reading it is impossible
  * without the breadth-first search reaching it.
@@ -61,11 +61,11 @@ describe('R post-parse gating', () => {
   // for languages with parsed files, so a repo with no R files never reads a manifest.
   it('a non-R repo with DESCRIPTION/NAMESPACE decoys never reads a manifest', async () => {
     const root = makeRepo({ 'src/main.py': 'def main():\n    return 1\n', ...DECOYS });
-    const readFile = vi.spyOn(fsp, 'readFile');
+    const open = vi.spyOn(fsp, 'open');
 
     await runPipelineFromRepo(root, () => {});
 
-    expect(manifestReads(readFile)).toEqual([]);
+    expect(manifestReads(open)).toEqual([]);
   }, 60000);
 
   it('rProvider.postParse is never invoked for a non-R repo and once for an R repo', async () => {
@@ -83,11 +83,11 @@ describe('R post-parse gating', () => {
 
   it('control: an R repo with the same layout reads the root DESCRIPTION (the spy sees the loader)', async () => {
     const root = makeRepo({ 'R/a.R': 'f <- function() 1\n', ...DECOYS });
-    const readFile = vi.spyOn(fsp, 'readFile');
+    const open = vi.spyOn(fsp, 'open');
 
     await runPipelineFromRepo(root, () => {});
 
-    const reads = manifestReads(readFile);
+    const reads = manifestReads(open);
     expect(reads.some((p) => p === path.join(root, 'DESCRIPTION').replace(/\\/g, '/'))).toBe(true);
   }, 60000);
 });
