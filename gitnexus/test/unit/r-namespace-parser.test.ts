@@ -450,3 +450,47 @@ describe('loadRPackageConfig -> RNamespaceInfo.importFrom', () => {
     expect(config?.namespaceInfoByPackageDir.get('')?.importFrom).toEqual([]);
   });
 });
+
+describe('parseRNamespaceExports: what the reader could not read', () => {
+  const unreadable = (src: string): boolean => parseRNamespaceExports(src).unreadable;
+
+  it.each([
+    ['a conditional export', 'if (getRversion() >= "4.1.0") export(newfun)\n'],
+    ['an else export', 'if (a) {\n} else export(newfun)\n'],
+    ['a conditional export block', 'if (a) {\n  export(newfun)\n}\n'],
+    ['a conditional S3method', 'if (a) S3method(print, foo)\n'],
+    ['a conditional exportPattern', 'if (a) exportPattern("^x")\n'],
+    ['a raw-string export', 'export(r"(newfun)")\n'],
+    ['a raw-string exportPattern', 'exportPattern(r"(^x)")\n'],
+    ['an expression argument', 'export(paste0("a", "b"))\n'],
+    ['an unbalanced directive that swallows an export', 'export(a\n  export(newfun)\nexport(b)\n'],
+    ['an unterminated quote that swallows an export', 'export("a)\n  export(newfun)\n'],
+    ['a string that spans lines', 'export("new\nfun")\n'],
+    ['an S3method without a readable class', 'S3method(print, r"(foo)")\n'],
+    ['an S3method with a named third argument', 'S3method(print, foo, method = impl)\n'],
+  ])('flags %s', (_label, src) => {
+    expect(unreadable(src)).toBe(true);
+  });
+
+  it.each([
+    ['an empty file', ''],
+    ['comments only', '# export(x)\n'],
+    [
+      'plain directives',
+      'export(a, b)\nexportClasses(C)\nS3method(print, foo, impl)\nexportPattern("^x")\n',
+    ],
+    ['a trailing comma', 'export(a, b,)\n'],
+    ['a multi-line export', 'export(\n  a,\n  b\n)\n'],
+    ['a conditional import', 'if (a) importFrom(x, y)\nelse import(z)\n'],
+    ['a conditional block with no export', 'if (a) {\n  importFrom(x, y)\n}\n'],
+    ['a malformed import that hides no export', 'importFrom(x, y\nexport(a)\n'],
+  ])('does not flag %s', (_label, src) => {
+    expect(unreadable(src)).toBe(false);
+  });
+
+  it('keeps the exports it can read next to the flag', () => {
+    const parsed = parseRNamespaceExports('export(kept)\nif (a) export(hidden)\n');
+    expect(parsed.namedExports).toEqual(['kept']);
+    expect(parsed.unreadable).toBe(true);
+  });
+});

@@ -66,6 +66,12 @@ const EXPORT_DIRECTIVES: ReadonlySet<string> = new Set([
   'exportPattern',
 ]);
 
+/** An export-family directive head followed by `(`, anywhere in a piece of NAMESPACE text. */
+const EXPORT_HEAD_IN_TEXT = new RegExp(
+  `(?<![\\p{L}\\p{N}._])(?:${[...EXPORT_DIRECTIVES].join('|')})\\s*\\(`,
+  'u',
+);
+
 /** Directives whose following statement is conditional and therefore ignored. */
 const CONDITIONAL_HEADS: ReadonlySet<string> = new Set(['if', 'else']);
 
@@ -361,9 +367,18 @@ interface RawDirective {
  * before and after is kept. Directives indented after a malformed one are
  * dropped with it.
  */
-function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): RawDirective[] {
+function scanRNamespaceDirectives(
+  text: string,
+  heads: ReadonlySet<string>,
+): { directives: RawDirective[]; hidesExport: boolean } {
   const directives: RawDirective[] = [];
   const blocks = new BraceBlocks(text);
+  // Set when the scan skipped or discarded text that names an export-family directive. The
+  // regions are disjoint (every skip moves `i` forward), so the tests cost one pass in total.
+  let hidesExport = false;
+  const skipped = (from: number, to: number): void => {
+    if (!hidesExport && EXPORT_HEAD_IN_TEXT.test(text.slice(from, to))) hidesExport = true;
+  };
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
@@ -374,7 +389,9 @@ function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): Raw
     if (isQuote(ch)) {
       const end = skipQuoted(text, i);
       if (end === -1) {
-        i = resyncAfterMalformed(text, i); // stray unterminated quote
+        const resume = resyncAfterMalformed(text, i); // stray unterminated quote
+        skipped(i, resume);
+        i = resume;
         continue;
       }
       i = end;
@@ -394,7 +411,9 @@ function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): Raw
     if (text[k] !== '(') {
       // `else` may be followed directly by a directive with no parens of its own.
       if (head === 'else') {
-        i = skipConditionalBody(text, k, blocks);
+        const end = skipConditionalBody(text, k, blocks);
+        skipped(k, end);
+        i = end;
         continue;
       }
       i = j;
@@ -403,18 +422,22 @@ function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): Raw
 
     const group = parseArgs(text, k);
     if (!group) {
-      i = resyncAfterMalformed(text, i); // discard this directive, resume at the next one
+      const resume = resyncAfterMalformed(text, i); // discard this directive, resume at the next one
+      skipped(i, resume);
+      i = resume;
       continue;
     }
     i = group.end;
 
     if (CONDITIONAL_HEADS.has(head)) {
-      i = skipConditionalBody(text, i, blocks);
+      const end = skipConditionalBody(text, i, blocks);
+      skipped(i, end);
+      i = end;
       continue;
     }
     if (heads.has(head)) directives.push({ head, args: group.args });
   }
-  return directives;
+  return { directives, hidesExport };
 }
 
 /**
@@ -423,7 +446,7 @@ function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): Raw
  */
 export function parseRNamespaceImportFrom(text: string): RNamespaceImportFromEntry[] {
   const entries: RNamespaceImportFromEntry[] = [];
-  for (const { args } of scanRNamespaceDirectives(text, IMPORT_FROM_DIRECTIVES)) {
+  for (const { args } of scanRNamespaceDirectives(text, IMPORT_FROM_DIRECTIVES).directives) {
     const values = args.map(normaliseArg);
     const pkg = values[0];
     if (!pkg) continue;
@@ -440,6 +463,15 @@ export interface RNamespaceExports {
   readonly namedExports: readonly string[];
   /** `exportPattern()` arguments, R-unescaped (an R string `"\\."` yields the regex source `\.`), in file order. */
   readonly exportPatterns: readonly string[];
+  /**
+   * True when the reader skipped, dropped or could not read something that may hide an export:
+   * a conditional (`if` / `else`) body or a malformed directive that names an export-family
+   * directive, or an argument of one it cannot read (an R 4.0 raw string, a string that spans
+   * lines, a name given as an expression, an `S3method()` without a readable generic and class).
+   * The lists above are then a lower bound, so the absence of a name from them does not show
+   * that it is private.
+   */
+  readonly unreadable: boolean;
 }
 
 /**
@@ -461,16 +493,21 @@ function exportPatternArg(raw: string): string {
  * (else `generic.class`; `pkg::generic` names the generic after the `::`), and `exportPattern("…")` sources. Multi-line, quoted,
  * backticked, commented and CRLF input is handled like {@link
  * parseRNamespaceImportFrom}. Non-simple arguments (named, nested calls) are
- * skipped. Never throws; returns empty lists for empty or garbled input.
+ * skipped, and so are conditional bodies and malformed directives; each of those that may hide
+ * an export sets {@link RNamespaceExports.unreadable}. Never throws; returns empty lists for
+ * empty or garbled input.
  */
 export function parseRNamespaceExports(text: string): RNamespaceExports {
   const namedExports: string[] = [];
   const exportPatterns: string[] = [];
-  for (const { head, args } of scanRNamespaceDirectives(text, EXPORT_DIRECTIVES)) {
+  const scan = scanRNamespaceDirectives(text, EXPORT_DIRECTIVES);
+  let unreadable = scan.hidesExport;
+  for (const { head, args } of scan.directives) {
     if (head === 'exportPattern') {
       for (const raw of args) {
         const pattern = exportPatternArg(raw);
         if (pattern) exportPatterns.push(pattern);
+        else if (raw.trim()) unreadable = true;
       }
     } else if (head === 'S3method') {
       const generic = s3GenericArg(args[0] ?? '');
@@ -480,15 +517,21 @@ export function parseRNamespaceExports(text: string): RNamespaceExports {
         // without it the method is `generic.class`.
         const method = normaliseArg(args[2] ?? '');
         namedExports.push(method || `${generic}.${cls}`);
+        // A third argument that is not a plain name (`method = impl`) registers a function
+        // this reader does not name.
+        if (!method && (args[2] ?? '').trim()) unreadable = true;
+      } else {
+        unreadable = true;
       }
     } else {
       for (const raw of args) {
         const name = normaliseArg(raw);
         if (name) namedExports.push(name);
+        else if (raw.trim()) unreadable = true;
       }
     }
   }
-  return { namedExports, exportPatterns };
+  return { namedExports, exportPatterns, unreadable };
 }
 
 // ─── Package lookup ─────────────────────────────────────────────────────────

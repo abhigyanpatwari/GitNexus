@@ -568,4 +568,11 @@ function currentNamespaceIssue(
       message:
         'An exportPattern() of the package NAMESPACE could not be fully applied, so the function cannot be proven private.',
     };
+  if (info.exportsUnreadable === true)
+    return {
+      code: 'incomplete_semantics',
+      status: 'unsupported',
+      message:
+        'The package NAMESPACE has an export directive the reader cannot apply (a conditional export, a raw-string or multi-line argument, or a malformed directive), so the function cannot be proven private.',
+    };
 }

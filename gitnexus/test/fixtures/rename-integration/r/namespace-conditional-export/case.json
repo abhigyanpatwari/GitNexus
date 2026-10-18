@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a package function that NAMESPACE exports only under a condition: the reader skips conditional bodies, so the function cannot be proven private and the export entry would go stale.",
+  "categories": ["namespace", "package-export", "negative", "unchanged-on-error"],
+  "target": { "name": "newfun", "kind": "Function", "file": "R/pub.R", "startLine": 2 },
+  "newName": "newfun2",
+  "expect": { "status": "error", "code": "incomplete_semantics", "planningStatus": "unsupported" },
+  "edges": []
+}

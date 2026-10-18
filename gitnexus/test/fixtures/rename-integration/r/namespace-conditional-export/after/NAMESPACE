@@ -1,0 +1,2 @@
+export(pub)
+if (getRversion() >= "4.1.0") export(newfun)

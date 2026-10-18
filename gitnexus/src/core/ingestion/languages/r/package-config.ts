@@ -97,6 +97,13 @@ export interface RNamespaceInfo {
    * is spent.
    */
   exportPatternBudget?: SharedWorkBudget;
+  /**
+   * True when the NAMESPACE reader skipped, dropped or could not read something that may hide an
+   * export (see {@link RNamespaceExports.unreadable}): a conditional export, a raw-string or
+   * multi-line argument, a malformed directive. A name absent from the export lists is then not
+   * proven private. Optional so that hand-built configs read as "nothing hidden".
+   */
+  exportsUnreadable?: boolean;
   /** `importFrom(pkg, name)` pairs in NAMESPACE file order (all entries, incl. self-imports and duplicates). */
   importFrom: readonly RNamespaceImportFromEntry[];
 }
@@ -490,6 +497,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
                   droppedExportPatterns,
                   omittedDroppedExportPatterns: omittedDropped,
                   exportPatternBudget: packageBudget,
+                  exportsUnreadable: parsedExports.unreadable,
                   importFrom: parseRNamespaceImportFrom(nsContent),
                 });
               } catch {
