@@ -5,7 +5,7 @@ import { defineRenameFixtureTests, renameCases } from '../helpers/rename-integra
 // would define no test and stay green. Pin the number of R cases: adding one means raising it.
 describe('R rename fixtures', () => {
   it('are all discovered', () => {
-    expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(56);
+    expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(58);
   });
 });
 

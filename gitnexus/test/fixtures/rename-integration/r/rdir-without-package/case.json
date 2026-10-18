@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a function in an R/ directory that belongs to no package (no DESCRIPTION or NAMESPACE, as in a targets or drake project): nothing proves it private.",
+  "categories": ["namespace", "package-export", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "R/utils.R", "startLine": 0 },
+  "newName": "secret",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}
