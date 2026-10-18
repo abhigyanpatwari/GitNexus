@@ -37,7 +37,7 @@ describe('parseRNamespaceImportFrom', () => {
     ]);
   });
 
-  it('parses a 6-line wrapped directive', () => {
+  it('parses a directive wrapped one argument per line', () => {
     const src = 'importFrom(\n  scorelib,\n  a,\n  b,\n  c,\n  d\n)\n';
     expect(parseRNamespaceImportFrom(src)).toEqual([
       { pkg: 'scorelib', name: 'a' },
