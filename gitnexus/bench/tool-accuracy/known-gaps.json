@@ -3,12 +3,6 @@
   "baselineSourceSha": "dd096e690c06e5d54ab3595c63b83f15e04b6191",
   "gaps": [
     {
-      "id": "api.template-wrapper",
-      "issue": 3488,
-      "reason": "Leading base-URL interpolation prevents wrapper consumer linking (#3488).",
-      "baselineActual": []
-    },
-    {
       "id": "explain.guard",
       "issue": 3490,
       "reason": "Guard-style sanitizers are a documented taint limitation (#3490).",

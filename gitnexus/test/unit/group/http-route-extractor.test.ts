@@ -677,6 +677,8 @@ app.add_url_rule('/api/users', view_func=list_users)
         path.join(dir, 'cmd/server.go'),
         `package main
 
+import "net/http"
+
 func main() {
   http.HandleFunc("/api/inline", func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte("ok"))
@@ -684,8 +686,8 @@ func main() {
 }
 `,
       );
-      // main() spans source lines 3-7 → 0-based [2,6]; the HandleFunc
-      // registration and its anonymous func are on line 4 (row 3), inside span.
+      // main() spans source lines 5-9 → 0-based [4,8]; the HandleFunc
+      // registration and its anonymous func are on line 6 (row 5), inside span.
       const mockDbExecutor = async (
         query: string,
         params?: Record<string, unknown>,
@@ -696,8 +698,8 @@ func main() {
               uid: 'fn-main',
               name: 'main',
               filePath: 'cmd/server.go',
-              startLine: 2,
-              endLine: 6,
+              startLine: 4,
+              endLine: 8,
               labels: ['Function'],
             },
           ];
@@ -706,7 +708,7 @@ func main() {
       };
       const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
       const provider = contracts.find(
-        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/inline',
+        (c) => c.role === 'provider' && c.contractId === 'http::*::/api/inline',
       );
       expect(provider).toMatchObject({
         symbolUid: 'fn-main',
@@ -764,6 +766,8 @@ func registerRoutes(r *gin.Engine) {
         path.join(dir, 'cmd/server.go'),
         `package main
 
+import "net/http"
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {}
 
 func main() {
@@ -783,16 +787,16 @@ func main() {
               uid: 'fn-healthHandler',
               name: 'healthHandler',
               filePath: 'cmd/server.go',
-              startLine: 2,
-              endLine: 2,
+              startLine: 4,
+              endLine: 4,
               labels: ['Function'],
             },
             {
               uid: 'fn-main',
               name: 'main',
               filePath: 'cmd/server.go',
-              startLine: 4,
-              endLine: 6,
+              startLine: 6,
+              endLine: 8,
               labels: ['Function'],
             },
           ];
@@ -801,7 +805,7 @@ func main() {
       };
       const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
       const provider = contracts.find(
-        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/health',
+        (c) => c.role === 'provider' && c.contractId === 'http::*::/api/health',
       );
       expect(provider).toMatchObject({
         symbolUid: 'fn-healthHandler',
@@ -1394,6 +1398,8 @@ public class UserController {
         `
 package main
 
+import "net/http"
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {}
 
 func main() {
@@ -1439,7 +1445,7 @@ func main() {
       expect(graphRouteMatches[0].symbolUid).toBe('uid-ctrl-list');
       expect(graphRouteMatches[0].meta.extractionStrategy).toBe('graph_assisted');
 
-      const sourceRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      const sourceRoute = providers.find((c) => c.contractId === 'http::*::/api/health');
       expect(sourceRoute).toBeDefined();
       expect(sourceRoute?.symbolName).toBe('healthHandler');
       expect(sourceRoute?.meta.extractionStrategy).toBe('source_scan');
@@ -2598,6 +2604,8 @@ func main() {
         `
 package main
 
+import "net/http"
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {}
 
 func main() {
@@ -2609,7 +2617,7 @@ func main() {
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const providers = contracts.filter((c) => c.role === 'provider');
 
-      const healthRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      const healthRoute = providers.find((c) => c.contractId === 'http::*::/api/health');
       expect(healthRoute).toBeDefined();
       expect(healthRoute?.symbolName).toBe('healthHandler');
     });
