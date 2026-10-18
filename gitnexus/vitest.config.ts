@@ -92,6 +92,7 @@ export default defineConfig({
             'test/integration/lbug-pool.test.ts',
             'test/integration/lbug-pool-stability.test.ts',
             'test/integration/local-backend.test.ts',
+            'test/integration/bm25-symbol-hydration.test.ts',
             'test/integration/local-backend-calltool.test.ts',
             'test/integration/spring-aop-mcp.test.ts',
             // Native @ladybugdb/core: loads a real graph through loadGraphToLbug
@@ -198,6 +199,7 @@ export default defineConfig({
             'test/integration/lbug-pool.test.ts',
             'test/integration/lbug-pool-stability.test.ts',
             'test/integration/local-backend.test.ts',
+            'test/integration/bm25-symbol-hydration.test.ts',
             'test/integration/local-backend-calltool.test.ts',
             'test/integration/spring-aop-mcp.test.ts',
             'test/integration/spring-destinations-lbug.test.ts',
