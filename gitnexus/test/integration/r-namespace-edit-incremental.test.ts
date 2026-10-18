@@ -6,6 +6,10 @@
  * analyse (`force`) repairs the flag itself. This pins all three: the stale flag (so that a fix in
  * the shared incremental write path shows up here), the refusal on the stale index, and the same
  * refusal on the repaired one.
+ *
+ * `other.R` also calls an external package (`stats::sd`), whose call site the qualified-call pass
+ * drops and so replaces the file's ParsedFile; the plan-time NAMESPACE read must survive that, on
+ * a full run and after an incremental one that re-uses the parse cache for the unchanged files.
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -55,7 +59,7 @@ it('refuses to rename a function that a NAMESPACE-only edit exported, on a stale
       ['DESCRIPTION', 'Package: pk\nVersion: 0.1.0\nTitle: Fixture\n'],
       ['NAMESPACE', 'export(pub)\n'],
       ['R/pub.R', 'pub <- function() 1\n'],
-      ['R/other.R', 'other <- function() 2\n'],
+      ['R/other.R', 'other <- function() stats::sd(c(2, 3))\n'],
     ]);
     for (const [file, source] of sources) {
       await fs.mkdir(path.dirname(path.join(repo, file)), { recursive: true });
@@ -78,7 +82,7 @@ it('refuses to rename a function that a NAMESPACE-only edit exported, on a stale
         dry_run: true,
       })) as { status: string; code?: string; planning_status?: string; total_edits: number };
       expect(await fs.readFile(path.join(repo, 'R/other.R'), 'utf8')).toBe(
-        'other <- function() 2\n',
+        'other <- function() stats::sd(c(2, 3))\n',
       );
       return preview;
     };
@@ -88,12 +92,19 @@ it('refuses to rename a function that a NAMESPACE-only edit exported, on a stale
     // NAMESPACE exports `pub` only: renaming the private `other` is allowed.
     expect(await previewRename()).toMatchObject({ status: 'success' });
 
+    // An incremental run that adds an unrelated file re-uses the parse cache of the others; the
+    // private `other` still renames.
+    await fs.writeFile(path.join(repo, 'R/extra.R'), 'extra <- function() 3\n');
+    commitAll(repo, 'add extra');
+    await runFullAnalysis(repo, options, callbacks);
+    expect(await previewRename()).toMatchObject({ status: 'success' });
+
     // Export `other` as well, and touch no source file.
     await fs.writeFile(path.join(repo, 'NAMESPACE'), 'export(pub)\nexport(other)\n');
     commitAll(repo, 'export other');
     await runFullAnalysis(repo, options, callbacks);
     // The stale verdict: `other` is exported now, but the unchanged file was not re-processed.
-    expect(await exportedByName(repo)).toEqual({ other: false, pub: true });
+    expect(await exportedByName(repo)).toEqual({ extra: false, other: false, pub: true });
     // ... and the rename planner does not trust it: it reads NAMESPACE again and refuses.
     expect(await previewRename()).toMatchObject({
       status: 'error',
@@ -103,7 +114,7 @@ it('refuses to rename a function that a NAMESPACE-only edit exported, on a stale
     });
 
     await runFullAnalysis(repo, { ...options, force: true }, callbacks);
-    expect(await exportedByName(repo)).toEqual({ other: true, pub: true });
+    expect(await exportedByName(repo)).toEqual({ extra: false, other: true, pub: true });
     // The repaired index refuses too: `other` is exported.
     expect(await previewRename()).toMatchObject({
       status: 'error',

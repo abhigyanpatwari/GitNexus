@@ -256,9 +256,14 @@ export const rScopeResolver: ScopeResolver = {
   // records the single definition a local one names for
   // `resolveQualifiedFreeCall` below. Import synthesis is unchanged and first.
   populateWorkspaceReferences: (parsedFiles, ctx) => {
+    // The rename guard reads the NAMESPACE this pass was configured with (see `checkSafety`),
+    // and looks it up by the ParsedFile objects it was handed. Both populate passes below
+    // replace entries of `parsedFiles` with copies (import synthesis; any dropped `pkg::fn`
+    // site), so the config is recorded against the objects as received, before any
+    // replacement, and again against the final array.
+    recordRPackageConfig(parsedFiles, ctx.resolutionConfig);
     populateRNamespaceImports(parsedFiles, ctx);
     populateRQualifiedCalls(parsedFiles, ctx);
-    // The rename guard reads the NAMESPACE this pass was configured with (see `checkSafety`).
     recordRPackageConfig(parsedFiles, ctx.resolutionConfig);
   },
   resolveQualifiedFreeCall: resolveRQualifiedFreeCall,
