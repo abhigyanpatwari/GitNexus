@@ -127,7 +127,10 @@ describe('dedicated runner readiness', () => {
     }
     const releaseDocument = load(release) as typeof workflowDocument;
     expect(Object.keys(releaseDocument.jobs?.evaluate?.env ?? {}).sort()).toEqual([
+      'COMPARISON_RUN_ID',
       'EFFORT',
+      'INPUT_PR',
+      'INPUT_PR_SHA',
       'INPUT_REF',
       'MODEL',
     ]);

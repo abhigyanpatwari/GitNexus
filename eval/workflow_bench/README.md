@@ -71,6 +71,41 @@ plus a savings row: input / cache / output tokens, cost, wall time).
 
 ## Release evaluation
 
+### Measure an unmerged PR against a previous run
+
+Add **`run-cost-evaluation`** to an open PR targeting `main`:
+
+```bash
+gh pr edit 3621 --add-label run-cost-evaluation
+```
+
+Only a repository **Maintain or Admin** role's label event can request this paid
+comparison; Write, Triage and Read roles cannot. The
+trusted dispatcher pins the labeled head and selects the newest successful main
+Release evaluation with a full release artifact (searching the latest 100 runs),
+using `gpt-5.6-sol` at `xhigh`. It skips previews and runner-only probes. An
+incompatible or expired baseline fails before paid sessions; it never starts a
+fresh paid baseline automatically. The authorized request calls the reusable
+evaluator; PR inputs are absent from manual dispatch. Ordinary pushes do not
+request runs.
+Remove and re-add the label to request another measurement; rerunning the label
+dispatcher itself is ignored. The evaluator checks the live label and head on
+resolution and immediately before paid sessions. Removing the label prevents
+sessions that have not started; use Actions cancellation for a run already active.
+
+This preview measures only the PR runtime's MCP arm: all four tasks, three
+repetitions each. It reuses the selected run's MCP measurements as the historical
+comparison and does not rerun no-MCP or stable sessions. A moved PR head,
+different model/effort, changed measurement inputs, stale evidence, or incompatible
+task/oracle/dependency pins rejects the comparison. Per-task solve counts remain
+visible alongside billed model cost; incomplete evidence cannot claim savings.
+
+The harness and protected runner still execute from `main`; the PR runtime is
+built and run in the existing containment. Results use the separate
+`pr-cost-comparison-<sha>` artifact and schema, and cannot approve a release.
+Cost differences against a historical run are descriptive measurements, not
+proof of statistical significance or attribution to only that PR.
+
 ### RC regression decision
 
 `workflow_bench.release_gate` compares a candidate report with a freshly
