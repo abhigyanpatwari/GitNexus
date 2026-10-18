@@ -390,6 +390,22 @@ The default repository must resolve to an allowed repository. Invalid, ambiguous
 <details>
 <summary><strong>MCP response budgets</strong></summary>
 
+Prefer explicit response filters before a byte cutoff. Single-repository MCP
+`query` and `context` accept `response_sections`: choose query sections
+(`processes`, `process_symbols`, `definitions`) or context sections (`incoming`,
+`outgoing`, `processes`, `chain`, `routes`, `typed_properties`). Context always
+keeps the selected symbol and also accepts `relationTypes: ["CALLS"]` to show
+only that category in the existing incoming/outgoing reference window. These
+options do not change graph search, ranking or traversal. They are not supported
+for `@group` routing; use a member's indexed repository name/path instead.
+
+For example, `context({uid: "<returned symbol id>", response_sections: ["incoming"],
+relationTypes: ["CALLS"]})` returns the symbol, its returned callers, and all
+completeness/staleness diagnostics. The `response_filter` field identifies omitted
+data; omission does not mean absence. Remove filters for a broader view. For
+impact, existing `summaryOnly`, `limit` and `offset` already provide focused views.
+Omitting these filters preserves the existing response.
+
 The `query`, `context`, and `impact` tools accept an optional positive-integer `maxTokens` argument. It bounds the complete formatted MCP response, including hints and error text, using a deterministic four-UTF-8-bytes-per-token estimate. When truncation is required, the response ends with `…` and remains valid UTF-8.
 
 Set `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` to apply the same guardrail when callers do not send `maxTokens`. An explicit tool argument takes precedence. Leaving both unset preserves the existing response byte-for-byte; this is a transport guardrail, not semantic pagination or an exact model-specific tokenizer limit.
