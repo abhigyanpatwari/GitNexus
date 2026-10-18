@@ -57,9 +57,12 @@ import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { canonicalizeWorkspaceBindings } from '../../scope-resolution/scope/canonicalize-bindings.js';
+import { canonicalTypeScriptName } from '../typescript/identifiers.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { vueProvider } from '../vue.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
+import { typescriptModuleExports } from '../typescript/module-exports.js';
 import { loadNodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
 import { typescriptArityCompatibility, typescriptMergeBindings } from '../typescript/index.js';
 import { makeVueResolveImportTarget } from './import-target.js';
@@ -78,19 +81,29 @@ function isVueScopeContextLanguage(lang: SupportedLanguages | null): boolean {
   return lang !== null && VUE_SCOPE_CONTEXT_LANGUAGES.has(lang);
 }
 
+async function loadResolutionConfig(repoPath: string, fresh = false) {
+  return {
+    tsconfigs: await loadTsconfigIndex(repoPath),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
+  };
+}
+
 const vueScopeResolver: ScopeResolver = {
+  populateWorkspaceReferences: (parsedFiles) =>
+    canonicalizeWorkspaceBindings(parsedFiles, canonicalTypeScriptName),
   language: SupportedLanguages.Vue,
   languageProvider: vueProvider,
   importEdgeReason: 'vue-scope: import',
+  importsBindAtLexicalScope: true,
+  ownedMembersBindAtModuleScope: false,
 
   resolveImportTarget: makeVueResolveImportTarget(),
+  moduleExports: typescriptModuleExports,
 
   // Vue projects universally use TypeScript — load tsconfig so path
   // aliases (`@/`, `~/`, `#/`) resolve through the standard branch.
-  loadResolutionConfig: async (repoPath: string) => ({
-    tsconfigs: await loadTsconfigIndex(repoPath),
-    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath),
-  }),
+  loadResolutionConfig,
+  refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
 
   // TypeScript LEGB semantics apply inside `<script>` / `<script setup>`.
   mergeBindings: (existing, incoming) => [...typescriptMergeBindings([...existing, ...incoming])],

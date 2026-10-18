@@ -279,7 +279,9 @@
  */
 
 import type { DecorationStripper } from '../scope/walkers.js';
+import type { SourceBindingRecorder } from '../source-binding-resolution.js';
 import type {
+  NameLookupOptions,
   BindingRef,
   Callsite,
   ConstraintContext,
@@ -452,6 +454,17 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
   ) => readonly string[];
 
+  /** Exact local module bindings, excluding definitions owned by nested scopes. */
+  readonly moduleExports?: (file: ParsedFile) => ReadonlyMap<string, SymbolDefinition>;
+
+  /** Filter local and transitive export names for wildcard imports. Opting in
+   * applies the filter both to re-export closures and imported bindings. */
+  readonly filterWildcardNames?: (
+    targetModuleScope: ScopeId,
+    availableNames: readonly string[],
+    parsedFiles: readonly ParsedFile[],
+  ) => readonly string[];
+
   /**
    * Optional one-shot loader for cross-file import-resolution config
    * (e.g. tsconfig path aliases for TypeScript, go.mod paths for Go,
@@ -470,6 +483,29 @@ export interface ScopeResolver {
    * `resolveImportTarget` casts it to the language's expected shape.
    */
   loadResolutionConfig?(repoPath: string): Promise<unknown> | unknown;
+
+  /**
+   * Fresh configuration for a rename preview or capability validation. Providers
+   * with workspace caches bypass them here; shared rename never interprets the
+   * value or discovers language-specific configuration files itself.
+   */
+  refreshResolutionConfig?(
+    repoPath: string,
+    filePaths: readonly string[],
+  ): Promise<unknown> | unknown;
+
+  /**
+   * Capture metadata from the scan's complete, nonignored candidate paths,
+   * before unreadable/large source files are filtered out. Called once for a
+   * language present in the scan. The compact result is shared by every
+   * resolution pass instead of calling loadResolutionConfig again.
+   * Capture failures must throw; consumers must not mutate the result.
+   * This is a stable-workspace input boundary, not an atomic filesystem snapshot.
+   */
+  captureResolutionConfig?(
+    repoPath: string,
+    filePaths: readonly string[],
+  ): Promise<unknown> | unknown;
 
   /**
    * Per-scope binding-merge precedence. The shared finalize pass
@@ -709,7 +745,9 @@ export interface ScopeResolver {
   ) => void;
 
   /**
-   * Optional workspace-wide enrichment of extracted reference sites. Runs
+   * Optional workspace-wide enrichment of extracted reference sites and their
+   * lexical name claims. Providers replace affected ParsedFile/scope records
+   * rather than mutating extraction snapshots or finalized indexes. Runs
    * after all files have been extracted and before reference finalization.
    * Use this when a per-file capture needs conservative facts from an
    * imported sibling (for example a compile-time branch constant).
@@ -880,6 +918,11 @@ export interface ScopeResolver {
    * publishing every file's imports at module scope. */
   readonly importsBindAtLexicalScope?: boolean;
 
+  /** Whether class-owned definitions also populate the legacy module lookup
+   * bucket. Disable when bare names must follow lexical bindings exclusively.
+   * Defaults to true; synthetic declarations remain available for dispatch. */
+  readonly ownedMembersBindAtModuleScope?: boolean;
+
   /**
    * Two `wildcard` re-exports that both DECLARE a name make it AMBIGUOUS in
    * this language — ECMAScript `export *` semantics, where the module simply
@@ -1039,6 +1082,40 @@ export interface ScopeResolver {
    * member a consumer can name through the hub is public by construction.
    */
   readonly namespaceExportsIncludeImportedNames?: boolean;
+
+  /**
+   * Whether `member`, a declaration reached through a namespace-qualified
+   * reference (`ns.member`, `ns.Type`, `x: ns.Type`) written OUTSIDE the
+   * namespace that declares it, is nameable from there.
+   *
+   * The namespace lookups (`findExportedDef` and the receiver-bound / qualified
+   * type paths built on it) read the target module's local bindings and treat
+   * every one as a public member; they carry no notion of a module-private
+   * declaration. A language whose visibility is decidable from the declaration
+   * alone states that rule here, so `ns.hidden` yields no binding instead of a
+   * confident `import-resolved` edge to a declaration the language forbids
+   * reaching. Returning `false` makes the namespace lookups behave as if the
+   * name were not declared.
+   *
+   * Consulted by: the namespace-member lookup (`findExportedDef`) behind the
+   * receiver-bound member / chain / typed-receiver paths and the compound
+   * receiver's construction branch, and the namespace-import branch of
+   * `findClassBindingInScope` (qualified type references, qualified constructor
+   * calls). NOT consulted by the name-guess tiers (that is
+   * `isGlobalNameFallbackPlausible`), by member selectors on a value, or by the
+   * `value-ref` registration lookup.
+   *
+   * A bare name bound through an import or a same-namespace sibling is the
+   * finalized-binding channel's business (it already decides what an import
+   * publishes), and this hook is deliberately not applied there: a sibling
+   * file's private declaration IS visible without qualification.
+   *
+   * **Only answer `false` when the reference is impossible, not when it is
+   * merely unproven** — a wrongly-refused member is a lost real edge. Must be
+   * pure. Undefined (the default) keeps every namespace member visible, which
+   * is the behaviour of every language that does not implement it.
+   */
+  readonly isNamespaceMemberVisible?: (ctx: { readonly member: SymbolDefinition }) => boolean;
 
   /**
    * When true, a qualified receiver is walked SEGMENT BY SEGMENT from its
@@ -1278,6 +1355,23 @@ export interface ScopeResolver {
   ) => readonly SymbolDefinition[] | undefined;
 
   /**
+   * Ordinary lexical lookup paired with `resolveAdlCandidates`. The provider
+   * preserves shared name-claim selection, then normalizes its declarations
+   * and reports whether the selected tier blocks argument-dependent lookup.
+   * Both hooks must be supplied to enable that additional candidate tier.
+   */
+  readonly resolveOrdinaryCallables?: (
+    startScope: ScopeId,
+    name: string,
+    scopes: ScopeResolutionIndexes,
+    options?: NameLookupOptions,
+  ) => {
+    readonly callables: readonly SymbolDefinition[];
+    readonly nonCallableFound: boolean;
+    readonly blockScopeDeclFound: boolean;
+  };
+
+  /**
    * Optional resolver for a module-qualified FREE call — a call written with
    * an explicit path but no value receiver (Rust `tools::dispatch(...)`, where
    * `tools` names a module, not a variable or a type).
@@ -1377,9 +1471,48 @@ export interface ScopeResolver {
       readonly localName: string;
       readonly importPath: string;
       readonly targetFile: string;
+      readonly explicitAlias?: boolean;
     },
     moduleFileExists: (filePath: string) => boolean,
   ) => readonly (readonly [spelling: string, targetFile: string])[] | undefined;
+
+  /** Stable identity of the namespace object bound by an import. Equal identities
+   * allow distinct receiver paths to remain visible across lexical scopes.
+   * Supplying this hook also suppresses same-scope import names with conflicting
+   * or unprovably equal identities; a lone namespace with undefined identity
+   * remains eligible. Without the hook, same-scope multi-target behavior stays. */
+  readonly namespaceBindingIdentity?: (edge: {
+    readonly localName: string;
+    readonly importPath: string;
+    readonly targetFile: string;
+    readonly explicitAlias?: boolean;
+  }) => string | undefined;
+
+  /** Enclosing class bodies are not lexical environments for namespace lookup.
+   * The reference's own class scope remains visible for class-body expressions. */
+  readonly namespaceSkipsEnclosingClasses?: boolean;
+
+  /** Prove namespace-valued receiver expressions using provider capture facts.
+   * Created once per receiver pass so providers can index local facts and memoize
+   * callable results. Targets feed the ordinary namespace-member path; declined
+   * call results retain their origin for final unresolved-call accounting. */
+  readonly createReceiverNamespaceResolver?: (
+    scopes: ScopeResolutionIndexes,
+    index: WorkspaceResolutionIndex,
+  ) => (
+    site: ReferenceSite,
+    parsed: ParsedFile,
+  ) =>
+    | {
+        readonly targetFiles?: readonly string[];
+        readonly callResultOrigin: {
+          readonly name: string;
+          readonly inScope: ScopeId;
+          /** False when this call is only one possible assignment origin. */
+          readonly isDefinite?: boolean;
+        };
+      }
+    | undefined;
 
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved
@@ -1391,7 +1524,7 @@ export interface ScopeResolver {
   readonly resolveReceiverMember?: (
     ownerDef: SymbolDefinition,
     memberName: string,
-    callsite: Callsite,
+    callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
@@ -1716,6 +1849,9 @@ export interface ScopeResolver {
     ctx: {
       readonly fileContents: ReadonlyMap<string, string>;
       readonly resolutionConfig?: unknown;
+      /** Observe the source declaration at the provider's actual decision,
+       * before runtime target expansion or graph edge deduplication. */
+      readonly recordSourceBinding?: SourceBindingRecorder;
     },
   ) => void;
 

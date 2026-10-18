@@ -185,7 +185,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         step for step in containment["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@")
     )
     claude_lock = json.loads((repo_root / ".github" / "claude-canary-runtime" / "package-lock.json").read_text())
-    setup_uv = "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9"
+    setup_uv = "astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7"
     assert workflow.count(setup_uv) >= 3
     assert workflow.count("version: '0.11.23'") >= 3
     assert workflow.count("uv run --locked --extra dev python -m pytest") >= 3
@@ -250,9 +250,14 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
         # set only on this job. Omitted from this list it skipped everywhere.
         "tests/test_mock_provider.py",
+        # Paired prepare/session/oracle/report composition uses that same native
+        # CLI and containment; it must execute here rather than skip everywhere.
+        "tests/test_release_evaluation_smoke.py",
         # These also need runtime dependencies absent from the locked pytest job.
         "tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant",
         "tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout",
+        "tests/test_oracle_assets.py::test_shipped_oracles_reject_task_base_and_accept_reference_fixes",
+        "tests/test_oracle_assets.py::test_in_flight_retry_oracle_rejects_startup_only_repairs",
         "-q",
         "--junitxml=pytest-ubuntu.xml",
     ]
@@ -342,10 +347,19 @@ def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_asset
     selected, skipped = select_tasks(tasks, include_expensive=False)
     assert [task["id"] for task in selected] == [
         "trivial-status-json-alias",
-        "inv-bug-c-system-include",
+        "inv-feature-c-include-provenance",
         "inv-feature-list-repos-filter",
     ]
     assert skipped == ["cross-module-parse-retry"]
+    assert len(tasks) == 4
+    c_task = next(task for task in tasks if task["id"] == "inv-feature-c-include-provenance")
+    assert c_task["class"] == "investigation-feature"
+    assert "npx tsc --noEmit" in c_task["verify"]
+    assert "test/unit/scope-resolution/c/c-include-provenance.test.ts" in c_task["verify"]
+    assert "test/unit/scope-resolution/external-import-conformance.test.ts" in c_task["verify"]
+    assert not c_task.get("setup")
+    # v1.6.12 lacks all four requested behaviors, including retained C include provenance.
+    assert {task["ref"] for task in tasks} == {"c4ecf398de637cf779ab2238e69958cfd5d601ce"}
     assert all(not task.get("sandbox_copy") for task in tasks)
     assert all(task["sandbox_dependencies"] for task in tasks)
     assert all(

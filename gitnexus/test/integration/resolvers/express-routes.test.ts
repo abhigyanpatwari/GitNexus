@@ -1,5 +1,19 @@
+import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 import { describe, it, expect, beforeAll } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'path';
+import {
+  loadParseCache,
+  pruneCache,
+  saveParseCache,
+  type ParseCache,
+} from '../../../src/storage/parse-cache.js';
+import {
+  getDurableParsedFileDir,
+  loadDurableParsedFileIndex,
+  pruneAndSaveDurableParsedFileStore,
+} from '../../../src/storage/parsedfile-store.js';
 import {
   FIXTURES,
   getRelationships,
@@ -7,7 +21,10 @@ import {
   getNodesByLabelFull,
   runPipelineFromRepo,
   type PipelineResult,
+  writeFixtureRepo,
 } from './helpers.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 describe('Express/Hono route detection', () => {
   let result: PipelineResult;
@@ -61,4 +78,363 @@ describe('Express/Hono route detection', () => {
     expect(healthEdge).toBeDefined();
     expect(healthEdge!.sourceFilePath).toContain('server.ts');
   });
+});
+
+describe('Express route identity and source priority', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'express-route-priority'), () => {});
+  }, 60000);
+
+  it('keeps production handlers when test stubs register the same route', () => {
+    const handled = getRelationships(result, 'HANDLES_ROUTE');
+    for (const route of ['/api/info', '/api/query']) {
+      const sources = handled
+        .filter((edge) => edge.target === route)
+        .map((edge) => edge.sourceFilePath);
+      expect(sources).toContain('src/server.ts');
+      expect(sources).not.toContain('spec/stubs.ts');
+    }
+  });
+
+  it('models app.all as method-agnostic, not GET', () => {
+    const mcpRoutes = getNodesByLabelFull(result, 'Route').filter(
+      (node) => node.name === '/api/mcp',
+    );
+    expect(mcpRoutes).toHaveLength(1);
+    expect(mcpRoutes[0].properties.method).toBe('*');
+  });
+
+  it('does not turn an Express RegExp matcher into an invented URL', () => {
+    expect(getNodesByLabel(result, 'Route')).not.toContain('/web');
+  });
+
+  it.each(['/ghost', '/ghost-block-comment', '/ghost-line-comment'])(
+    'does not classify the one-argument Map.get lookup %s as a route',
+    (route) => {
+      expect(getNodesByLabel(result, 'Route')).not.toContain(route);
+    },
+  );
+
+  it('does not turn stored route metadata into a dispatch guard', () => {
+    expect(getNodesByLabel(result, 'Route')).not.toContain('/comparison-ghost');
+  });
+
+  it.each([
+    ['/api/chained', ['GET']],
+    ['/api/chained-post', ['POST']],
+    ['/api/chained-multi', ['GET', 'POST']],
+    ['/api/chained-all', ['*']],
+  ])('uses the registered verbs for route builder %s', (route, methods) => {
+    const chainedRoutes = getNodesByLabelFull(result, 'Route').filter(
+      (node) => node.name === route,
+    );
+    expect(chainedRoutes.map((node) => node.properties.method).sort()).toEqual(methods);
+    const handled = getRelationships(result, 'HANDLES_ROUTE').filter(
+      (edge) => edge.target === route && edge.sourceLabel === 'File',
+    );
+    expect(handled).toHaveLength(methods.length);
+    expect(handled.every((edge) => edge.sourceFilePath === 'src/server.ts')).toBe(true);
+  });
+
+  it.each([
+    '/ghost-builder',
+    '/ghost-builder-empty',
+    '/ghost-builder-block-comment',
+    '/ghost-builder-line-comment',
+  ])('does not invent a route for builder %s without a handler', (route) => {
+    expect(getNodesByLabel(result, 'Route')).not.toContain(route);
+    expect(getRelationships(result, 'HANDLES_ROUTE').some((edge) => edge.target === route)).toBe(
+      false,
+    );
+  });
+
+  it('still indexes a test-only route when there is no production collision', () => {
+    expect(getNodesByLabel(result, 'Route')).toContain('/test-only');
+  });
+
+  it('preserves route ownership through serialized warm and mixed parse-cache replay', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-express-route-cache-'));
+    const repoDir = path.join(tempDir, 'repo');
+    const storageDir = path.join(tempDir, 'storage');
+    try {
+      fs.cpSync(path.join(FIXTURES, 'express-route-priority'), repoDir, { recursive: true });
+      const cold: ParseCache = {
+        identity: parseIdentity,
+        entries: new Map(),
+        usedKeys: new Set<string>(),
+        storagePath: storageDir,
+        writeStoragePath: storageDir,
+        onDiskKeys: new Set<string>(),
+      };
+      const coldResult = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: cold,
+        workerPoolSize: 1,
+      });
+      expect(coldResult.usedWorkerPool).toBe(true);
+      expect(coldResult.reparsedFileCount).toBe(2);
+      expect(coldResult.parseCacheHitFileCount).toBe(0);
+
+      pruneCache(cold, cold.usedKeys);
+      const savedKeys = await saveParseCache(storageDir, cold);
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(storageDir),
+        parseIdentity.base,
+        new Set(savedKeys),
+      );
+      const warm = await loadParseCache(storageDir, parseIdentity, storageDir);
+      expect(warm).not.toBeNull();
+      const warmResult = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: warm ?? undefined,
+        workerPoolSize: 1,
+      });
+      expect(warmResult.usedWorkerPool).toBe(false);
+      expect(warmResult.reparsedFileCount).toBe(0);
+      expect(warmResult.parseCacheHitFileCount).toBe(2);
+
+      // Keep the earlier test-file chunk cached while the production route
+      // definitions are parsed again. Comments do not change route semantics.
+      fs.appendFileSync(path.join(repoDir, 'src/server.ts'), '\n// unchanged endpoints\n');
+      const mixed = await loadParseCache(storageDir, parseIdentity, storageDir);
+      expect(mixed).not.toBeNull();
+      const mixedResult = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: mixed ?? undefined,
+        workerPoolSize: 1,
+      });
+      expect(mixedResult.usedWorkerPool).toBe(true);
+      expect(mixedResult.reparsedFileCount).toBe(1);
+      expect(mixedResult.parseCacheHitFileCount).toBe(1);
+
+      const project = (pipeline: PipelineResult) => ({
+        routes: getNodesByLabelFull(pipeline, 'Route')
+          .map((route) => ({
+            method: route.properties.method,
+            path: route.name,
+            filePath: route.properties.filePath,
+          }))
+          .sort(
+            (a, b) =>
+              a.path.localeCompare(b.path) || String(a.method).localeCompare(String(b.method)),
+          ),
+        handled: getRelationships(pipeline, 'HANDLES_ROUTE')
+          .filter((edge) => edge.sourceLabel === 'File')
+          .map((edge) => ({
+            method: pipeline.graph.getNode(edge.rel.targetId)?.properties.method,
+            path: edge.target,
+            filePath: edge.sourceFilePath,
+          }))
+          .sort(
+            (a, b) =>
+              a.path.localeCompare(b.path) || String(a.method).localeCompare(String(b.method)),
+          ),
+      });
+      const expected = [
+        { method: 'GET', path: '/api/chained', filePath: 'src/server.ts' },
+        { method: '*', path: '/api/chained-all', filePath: 'src/server.ts' },
+        { method: 'GET', path: '/api/chained-multi', filePath: 'src/server.ts' },
+        { method: 'POST', path: '/api/chained-multi', filePath: 'src/server.ts' },
+        { method: 'POST', path: '/api/chained-post', filePath: 'src/server.ts' },
+        { method: 'GET', path: '/api/info', filePath: 'src/server.ts' },
+        { method: '*', path: '/api/mcp', filePath: 'src/server.ts' },
+        { method: 'POST', path: '/api/query', filePath: 'src/server.ts' },
+        { method: 'POST', path: '/test-only', filePath: 'spec/stubs.ts' },
+      ];
+      const coldProjection = project(coldResult);
+      expect(coldProjection).toEqual({ routes: expected, handled: expected });
+      expect(project(warmResult)).toEqual(coldProjection);
+      expect(project(mixedResult)).toEqual(coldProjection);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('recomputes mixed-language mounts after mount-only, barrel-only and resolution-config edits', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-express-mount-cache-'));
+    const repoDir = path.join(tempDir, 'repo');
+    const storageDir = path.join(tempDir, 'storage');
+    const mountSource = (prefix: string) => `
+      import express from 'express';
+      import chosen from '@routes';
+      const app = express();
+      function before() {} function after() {}
+      app.use('${prefix}', [before, [chosen], after]);
+      app.use(['/v1', '/v2'], chosen);
+    `;
+    const config = (target: string) =>
+      JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@routes': [target] } } });
+    const project = (pipeline: PipelineResult) =>
+      getNodesByLabelFull(pipeline, 'Route')
+        .map((route) => ({
+          path: route.name,
+          file: route.properties.filePath,
+          handler: route.properties.handlerSymbolId,
+        }))
+        .sort((a, b) => a.path.localeCompare(b.path));
+    const expectedPaths = (prefix: string) =>
+      [
+        `${prefix}/users`,
+        `${prefix}/nested/details`,
+        '/v1/users',
+        '/v1/nested/details',
+        '/v2/users',
+        '/v2/nested/details',
+        '/other',
+      ].sort();
+    const paths = (pipeline: PipelineResult) => getNodesByLabel(pipeline, 'Route').sort();
+    const persist = async (cache: ParseCache) => {
+      pruneCache(cache, cache.usedKeys);
+      const keys = await saveParseCache(storageDir, cache);
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(storageDir),
+        parseIdentity.base,
+        new Set(keys),
+      );
+    };
+    try {
+      writeFixtureRepo(repoDir, {
+        'mount.ts': mountSource('/api'),
+        'barrel.ts': `export { default } from './via.js';`,
+        'via.js': `export { default } from './router';`,
+        'router.ts': `
+          import { Router } from 'express'; import { child } from './nested';
+          const router = Router();
+          function users() {} router.get('/users', users);
+          router.use('/nested', child); export default router;
+        `,
+        'nested.tsx': `
+          import express from 'express'; export const child = express.Router();
+          function details() {} child.get('/details', details);
+        `,
+        'other.ts': `
+          const express = require('express'); const other = express.Router();
+          function alternate() {} other.get('/other', alternate); module.exports = other;
+        `,
+        'tsconfig.json': config('barrel.ts'),
+      });
+      const inMemory = await runPipelineFromRepo(repoDir, () => {}, { workerPoolSize: 1 });
+      expect(paths(inMemory)).toEqual(expectedPaths('/api'));
+      const cold: ParseCache = {
+        identity: parseIdentity,
+        entries: new Map(),
+        usedKeys: new Set(),
+        storagePath: storageDir,
+        writeStoragePath: storageDir,
+        onDiskKeys: new Set(),
+      };
+      const durable = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: cold,
+        workerPoolSize: 2,
+      });
+      expect(durable.reparsedFileCount).toBe(6);
+      expect(project(durable)).toEqual(project(inMemory));
+      expect(project(durable).every((route) => route.handler !== undefined)).toBe(true);
+      await persist(cold);
+      expect(
+        (await loadDurableParsedFileIndex(getDurableParsedFileDir(storageDir), parseIdentity.base))
+          .size,
+      ).toBeGreaterThan(0);
+      const warm = await loadParseCache(storageDir, parseIdentity, storageDir);
+      const replay = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: warm,
+        workerPoolSize: 2,
+      });
+      expect(replay.reparsedFileCount).toBe(0);
+      expect(replay.parseCacheHitFileCount).toBe(6);
+      expect(project(replay)).toEqual(project(inMemory));
+
+      fs.writeFileSync(path.join(repoDir, 'mount.ts'), mountSource('/changed'));
+      const mountCache = await loadParseCache(storageDir, parseIdentity, storageDir);
+      const mountEdit = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: mountCache,
+        workerPoolSize: 1,
+      });
+      expect(mountEdit.reparsedFileCount).toBe(1);
+      expect(mountEdit.parseCacheHitFileCount).toBe(5);
+      expect(paths(mountEdit)).toEqual(expectedPaths('/changed'));
+      await persist(mountCache);
+
+      fs.writeFileSync(path.join(repoDir, 'barrel.ts'), `export { default } from './other';`);
+      const barrelCache = await loadParseCache(storageDir, parseIdentity, storageDir);
+      const barrelEdit = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: barrelCache,
+        workerPoolSize: 1,
+      });
+      expect(barrelEdit.reparsedFileCount).toBe(1);
+      expect(barrelEdit.parseCacheHitFileCount).toBe(5);
+      expect(paths(barrelEdit)).toEqual(
+        ['/changed/other', '/v1/other', '/v2/other', '/users', '/nested/details'].sort(),
+      );
+      await persist(barrelCache);
+
+      // Only resolver configuration changes: every source fact comes from the
+      // warm cache, but the current alias target must win over cached guesses.
+      fs.writeFileSync(path.join(repoDir, 'tsconfig.json'), config('via.js'));
+      const configCache = await loadParseCache(storageDir, parseIdentity, storageDir);
+      const configEdit = await runPipelineFromRepo(repoDir, () => {}, {
+        parseCache: configCache,
+        workerPoolSize: 2,
+      });
+      expect(configEdit.reparsedFileCount).toBe(0);
+      expect(configEdit.parseCacheHitFileCount).toBe(6);
+      expect(project(configEdit)).toEqual(project(mountEdit));
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it.each([137, 138, 139, 140, 143])(
+    'reparses route captures from a same-package v%i cache on upgrade',
+    async (previousSchema) => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-express-route-upgrade-'));
+      const repoDir = path.join(tempDir, 'repo');
+      const storageDir = path.join(tempDir, 'storage');
+      const previousVersion = `${previousSchema}+0.0.0-legacy`;
+      try {
+        fs.cpSync(path.join(FIXTURES, 'express-route-priority'), repoDir, { recursive: true });
+        const cache: ParseCache = {
+          identity: parseIdentity,
+          entries: new Map(),
+          usedKeys: new Set<string>(),
+          storagePath: storageDir,
+          writeStoragePath: storageDir,
+          onDiskKeys: new Set<string>(),
+        };
+        const initial = await runPipelineFromRepo(repoDir, () => {}, {
+          parseCache: cache,
+          workerPoolSize: 1,
+        });
+        expect(initial.reparsedFileCount).toBe(2);
+        pruneCache(cache, cache.usedKeys);
+        const savedKeys = await saveParseCache(storageDir, cache);
+        expect(savedKeys).toHaveLength(2);
+        const indexPath = path.join(storageDir, 'parse-cache', 'index.json');
+        const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+        fs.writeFileSync(indexPath, JSON.stringify({ ...index, version: previousVersion }));
+        const durableDir = getDurableParsedFileDir(storageDir);
+        await pruneAndSaveDurableParsedFileStore(durableDir, previousVersion, new Set(savedKeys));
+        expect((await loadDurableParsedFileIndex(durableDir, previousVersion)).size).toBe(2);
+
+        const upgraded = await loadParseCache(storageDir, parseIdentity, storageDir);
+        expect(upgraded.onDiskKeys?.size ?? 0).toBe(0);
+        expect(await loadDurableParsedFileIndex(durableDir, parseIdentity.base)).toEqual(new Map());
+        const result = await runPipelineFromRepo(repoDir, () => {}, {
+          parseCache: upgraded,
+          workerPoolSize: 1,
+        });
+        expect(result.reparsedFileCount).toBe(2);
+        expect(result.parseCacheHitFileCount).toBe(0);
+        const routes = getNodesByLabel(result, 'Route');
+        expect(routes).toContain('/api/info');
+        expect(routes).not.toContain('/ghost');
+        expect(routes).not.toContain('/comparison-ghost');
+        expect(
+          getNodesByLabelFull(result, 'Route').filter((node) => node.name === '/api/mcp'),
+        ).toHaveLength(1);
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
 });

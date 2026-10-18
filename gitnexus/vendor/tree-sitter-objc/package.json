@@ -1,6 +1,6 @@
 {
   "name": "tree-sitter-objc",
-  "version": "3.0.2",
+  "version": "3.0.2-g181a81b",
   "description": "Objective-C grammar for tree-sitter",
   "repository": "https://github.com/tree-sitter-grammars/tree-sitter-objc",
   "license": "MIT",
@@ -27,30 +27,14 @@
     "src/**",
     "*.wasm"
   ],
-  "dependencies": {
-    "node-addon-api": "^8.3.0",
-    "node-gyp-build": "^4.8.4",
-    "tree-sitter-c": "^0.23.4"
-  },
-  "devDependencies": {
-    "eslint": "^9.17.0",
-    "eslint-config-treesitter": "^1.0.2",
-    "prebuildify": "^6.0.1",
-    "tree-sitter-cli": "^0.24.5"
-  },
   "peerDependencies": {
-    "tree-sitter": "^0.22.1"
+    "tree-sitter": "0.25.1"
   },
   "peerDependenciesMeta": {
     "tree-sitter": {
       "optional": true
     }
   },
-  "scripts": {
-    "install": "node-gyp-build",
-    "lint": "eslint grammar.js",
-    "prestart": "tree-sitter build --wasm",
-    "start": "tree-sitter playground",
-    "test": "node --test bindings/node/*_test.js"
-  }
+  "_upstreamCommit": "181a81b8f23a2d593e7ab4259981f50122909fda",
+  "_vendoredBy": "gitnexus — upstream generated src/ and bindings/node/binding.cc copied byte-for-byte from https://github.com/tree-sitter-grammars/tree-sitter-objc@181a81b8f23a2d593e7ab4259981f50122909fda. GitNexus keeps its synchronous CommonJS loader and hardened binding.gyp. Prebuilds are rebuilt from these sources by build-tree-sitter-prebuilds.yml. Do not edit generated C by hand."
 }

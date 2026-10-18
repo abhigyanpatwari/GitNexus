@@ -1,0 +1,22 @@
+--- a/gitnexus/src/core/ingestion/workers/worker-pool.ts
++++ b/gitnexus/src/core/ingestion/workers/worker-pool.ts
+@@ -1351,7 +1351,18 @@
+       );
+     }
+     dispatchInFlight = true;
+-    return dispatchGroupsInner<TInput, TResult>(groups, onProgress).finally(() => {
++    const dispatchWithRetry = async (): Promise<TResult[][]> => {
++      for (let attempt = 0; ; attempt++) {
++        try {
++          return await dispatchGroupsInner<TInput, TResult>(groups, onProgress);
++        } catch (error) {
++          if (!(error instanceof WorkerPoolInitializationError) ||
++              error.crashClass !== 'transient-exhausted' || attempt >= 2) throw error;
++          await new Promise((resolve) => setTimeout(resolve, 10 * 2 ** attempt));
++        }
++      }
++    };
++    return dispatchWithRetry().finally(() => {
+       dispatchInFlight = false;
+     });
+   };

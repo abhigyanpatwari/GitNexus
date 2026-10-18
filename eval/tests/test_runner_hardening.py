@@ -486,6 +486,7 @@ def _stub_cell_dependencies(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "ce_plugin_mounts_for_arm", lambda *_a, **_k: [])
     monkeypatch.setattr(runner, "ce_plugin_dir_for_arm", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "prepare_sandbox", lambda **_k: nullcontext(SimpleNamespace(run=None)))
+    monkeypatch.setattr(runner, "seed_evaluated_skills", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "skill_fingerprint", lambda *_a, **_k: "skill-digest")
     monkeypatch.setattr(runner, "require_skill_fingerprint", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "_sandbox_git", lambda *_a, **_k: "c" * 40)
@@ -1101,3 +1102,46 @@ def test_enforce_phase_workspace_can_require_an_untouched_workspace(tmp_path):
     (tmp_path / "tracked.py").write_text("the review edited the code it was reviewing\n")
     with pytest.raises(ValueError, match="changed the read-only workspace"):
         runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=None)
+
+
+class _PatchSinkSandbox:
+    """Sandbox double whose sink either writes a fixed patch or fails."""
+
+    synthetic_guidance_paths = ()
+
+    def __init__(self, worktree: Path, *, patch: bytes | None) -> None:
+        self.worktree = worktree
+        self.patch = patch
+
+    def run(self, command, **_kwargs):
+        if self.patch is None:
+            return ManagedProcessResult(
+                state="exited", returncode=1, stdout_tail="", stderr_tail="git diff failed", duration_s=0.0
+            )
+        sink_output = command[5]  # sink script argv: limit, output path, git command
+        host_path = self.worktree / sink_output.removeprefix("/workspace/")
+        host_path.write_bytes(self.patch)
+        return ManagedProcessResult(state="exited", returncode=0, stdout_tail="", stderr_tail="", duration_s=0.0)
+
+
+def _failing_rmtree(path, *_args, **_kwargs):
+    raise PermissionError(13, "Permission denied", str(path))
+
+
+def test_capture_patch_returns_read_patch_and_reports_when_artifact_cleanup_fails(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(runner_artifacts.shutil, "rmtree", _failing_rmtree)
+
+    patch = runner_artifacts.capture_patch(_PatchSinkSandbox(tmp_path, patch=b"diff --git a b\n"), tmp_path, "abc")
+
+    assert patch == b"diff --git a b\n"
+    assert "patch artifact cleanup failed" in capsys.readouterr().err
+
+
+def test_capture_patch_cleanup_failure_does_not_replace_the_session_failure(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(runner_artifacts.shutil, "rmtree", _failing_rmtree)
+
+    with pytest.raises(ManagedProcessError) as caught:
+        runner_artifacts.capture_patch(_PatchSinkSandbox(tmp_path, patch=None), tmp_path, "abc")
+
+    assert any("patch artifact cleanup failed" in note for note in caught.value.__notes__)
+    assert capsys.readouterr().err == ""

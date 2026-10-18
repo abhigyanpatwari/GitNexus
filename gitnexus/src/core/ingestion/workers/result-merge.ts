@@ -34,6 +34,12 @@ export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): 
   appendAll(target.routes, src.routes);
   appendAll(target.fetchCalls, src.fetchCalls);
   appendAll(target.fetchWrapperDefs, src.fetchWrapperDefs);
+  if (src.fetchWrapperCalls) appendAll((target.fetchWrapperCalls ??= []), src.fetchWrapperCalls);
+  for (const file of src.routeFacts ?? [])
+    (target.routeFacts ??= []).push({
+      ...file,
+      routePosition: file.routePosition + target.decoratorRoutes.length,
+    });
   appendAll(target.decoratorRoutes, src.decoratorRoutes);
   if (src.routerIncludes) appendAll(target.routerIncludes, src.routerIncludes);
   if (src.routerImports) appendAll(target.routerImports, src.routerImports);
@@ -63,6 +69,15 @@ export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): 
   }
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
+  }
+  for (const [lang, counts] of Object.entries(src.cfgSkipped ?? {})) {
+    const skipped = (target.cfgSkipped ??= {});
+    const previous = skipped[lang];
+    skipped[lang] = {
+      tooManyLines: (previous?.tooManyLines ?? 0) + counts.tooManyLines,
+      tooDeeplyNested: (previous?.tooDeeplyNested ?? 0) + counts.tooDeeplyNested,
+      buildError: (previous?.buildError ?? 0) + counts.buildError,
+    };
   }
   if (src.skippedPaths && src.skippedPaths.length > 0) {
     appendAll((target.skippedPaths ??= []), src.skippedPaths);

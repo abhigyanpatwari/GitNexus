@@ -320,9 +320,10 @@ afterAll(async () => {
 });
 
 // Atomic publication is POSIX-specific; Windows uses the in-place path.
-describe
-  .skipIf(process.platform === 'win32')
-  .sequential('interrupted staged embedding recovery (real CLI and native DB)', () => {
+describe.skipIf(process.platform === 'win32')(
+  'interrupted staged embedding recovery (real CLI and native DB)',
+  { concurrent: false },
+  () => {
     it.each([
       ['plain', []],
       ['forced', ['--force', '--embeddings']],
@@ -446,4 +447,5 @@ describe
       },
       DEADLINE,
     );
-  });
+  },
+);

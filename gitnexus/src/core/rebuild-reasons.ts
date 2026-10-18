@@ -29,6 +29,7 @@ export const REBUILD_REASON_KEYS = [
   'analysis-features',
   'spring-vendor-prefixes',
   'runner-identity',
+  'parser-identity',
   'cjk-segmentation',
   'embedding-dims',
   'spring-actuator',

@@ -3,6 +3,11 @@ import * as fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import Parser from 'tree-sitter';
+import {
+  PROTO_GRPC_PLUGIN,
+  extractPackageFromTree,
+} from '../../../src/core/group/extractors/grpc-patterns/proto.js';
 
 const { parseSourceSafeSpy } = vi.hoisted(() => ({ parseSourceSafeSpy: vi.fn() }));
 
@@ -48,6 +53,49 @@ describe('GrpcExtractor', () => {
   });
 
   describe('proto file parsing', () => {
+    it('loads the native proto grammar and preserves syntax fields and service queries', () => {
+      expect(PROTO_GRPC_PLUGIN).not.toBeNull();
+      if (!PROTO_GRPC_PLUGIN) throw new Error('Vendored Protobuf grammar failed to initialize');
+      const plugin = PROTO_GRPC_PLUGIN;
+      const parser = new Parser();
+      parser.setLanguage(plugin.language);
+      const tree = parser.parse(`syntax = "proto3";
+package native.v1;
+service NativeService {
+  // rpc Removed (Request) returns (Response);
+  rpc Active (Request) returns (Response);
+}`);
+
+      expect(tree.rootNode.hasError).toBe(false);
+      const syntax = tree.rootNode.namedChildren.find((node) => node.type === 'syntax');
+      expect(syntax?.childForFieldName('version')?.text).toBe('"proto3"');
+      expect(extractPackageFromTree(tree)).toBe('native.v1');
+      expect(plugin.scan(tree).map((detection) => detection.symbolName)).toEqual([
+        'NativeService.Active',
+      ]);
+    });
+
+    it('excludes RPC declarations in comments and strings from the fallback map and contracts', async () => {
+      writeFile(
+        'api/commented-rpc.proto',
+        `syntax = "proto3";
+package commented;
+service Svc {
+  // rpc LineComment (Req) returns (Res);
+  /* rpc BlockComment (Req) returns (Res); */
+  option (description) = "rpc StringLiteral (Req) returns (Res);";
+  rpc Active (Req) returns (Res);
+}`,
+      );
+
+      // buildProtoMap always uses the manual parser, even when the native
+      // grammar is available. Assert it independently of plugin selection.
+      const services = await buildProtoMap(tmpDir);
+      expect(services.get('Svc')?.map((service) => service.methods)).toEqual([['Active']]);
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      expect(contracts.map((contract) => contract.symbolName)).toEqual(['Svc.Active']);
+    });
+
     it('test_extract_proto_service_single_rpc_returns_provider', async () => {
       writeFile(
         'proto/auth.proto',
@@ -169,6 +217,19 @@ service ServiceB {
         'grpc::multi.ServiceB/MethodB1',
         'grpc::multi.ServiceB/MethodB2',
       ]);
+    });
+
+    it('keeps same-named services from sibling protos in different packages', async () => {
+      writeFile('api/a.proto', 'package a;\nservice Svc { rpc Get (R) returns (R); }');
+      writeFile('api/b.proto', 'package b;\nservice Svc { rpc Get (R) returns (R); }');
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const ids = contracts
+        .filter((c) => c.role === 'provider')
+        .map((c) => `${c.symbolRef.filePath} ${c.contractId}`)
+        .sort();
+
+      expect(ids).toEqual(['api/a.proto grpc::a.Svc/Get', 'api/b.proto grpc::b.Svc/Get']);
     });
 
     it('test_extract_proto_with_nested_option_blocks_in_rpc', async () => {

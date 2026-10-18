@@ -630,19 +630,17 @@ describe('issue #1166 follow-up — HOC-wrapped variable declarations', () => {
     expect(findCall(sites, 'doB')?.attributedTo).toBe('handleSubmit');
   });
 
-  it('does NOT name a bare statement-level HOC call (unbound result)', () => {
+  it('keeps a bare HOC call at module level and attributes its callback by position', () => {
     // `useCallback(() => doStuff(), [])` at statement level (result thrown
-    // away). The walk climbs `arguments → call_expression → expression_statement`,
-    // which is NOT `variable_declarator`, so the branch returns null and the
-    // arrow stays anonymous. Calls inside attribute to no enclosing function.
+    // away) supplies no binding name. The callback has a positional identity
+    // so its calls belong to it without borrowing an authored name (#3489).
     const sites = collectCallAttributions(`
       useCallback(() => {
         doSomething();
       }, []);
     `);
-    // The `useCallback` call itself is module-level → null. The `doSomething`
-    // call is inside an unnamed arrow → null. Both must NOT borrow a name.
-    expect(findCall(sites, 'doSomething')?.attributedTo).toBeNull();
+    // The callback's exact position stays distinct from the module-level call.
+    expect(findCall(sites, 'doSomething')?.attributedTo).toBe('fn_1_18');
     expect(findCall(sites, 'useCallback')?.attributedTo).toBeNull();
   });
 

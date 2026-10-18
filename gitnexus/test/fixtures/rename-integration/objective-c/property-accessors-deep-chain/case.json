@@ -1,0 +1,33 @@
+{
+  "language": "objective-c",
+  "description": "Rename a property through a typed property chain, synthesized backing ivar, ordinary getter/setter and explicit accessor message.",
+  "categories": ["public-field", "deep-chain", "accessor-family"],
+  "target": {
+    "name": "value",
+    "kind": "Property",
+    "file": "Model.m",
+    "startLine": 1
+  },
+  "newName": "count",
+  "expect": {
+    "status": "success",
+    "edits": 10
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "copy:other:",
+        "kind": "Method",
+        "file": "Model.m",
+        "startLine": 16
+      },
+      "to": {
+        "name": "setValue:",
+        "kind": "Method",
+        "file": "Model.m",
+        "startLine": 15
+      }
+    }
+  ]
+}

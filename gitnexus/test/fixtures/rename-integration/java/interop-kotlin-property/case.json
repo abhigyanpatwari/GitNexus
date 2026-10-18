@@ -1,0 +1,20 @@
+{
+  "language": "java",
+  "description": "Refuse an indexed interoperating source name until cross-provider binding coverage is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "getTitle",
+    "kind": "Method",
+    "file": "Writer.java"
+  },
+  "newName": "getHeading",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

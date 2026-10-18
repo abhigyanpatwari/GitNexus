@@ -10,12 +10,16 @@ export function synthesizeGoReceiverBinding(fnNode: SyntaxNode): CaptureMatch | 
   if (param === undefined) return null;
   const nameNode = param.childForFieldName('name');
   const typeNode = param.childForFieldName('type');
-  if (nameNode === null || typeNode === null) return null;
+  if (typeNode === null) return null;
   const typeName = typeNode.text;
+  // Unnamed receivers still declare method ownership. Keep their self type
+  // fact under a key that cannot be a Go identifier, so it never creates a
+  // usable receiver variable. Type bindings do not register lexical symbols.
+  const boundName = nameNode?.text ?? '<unnamed-receiver>';
 
   return {
-    '@type-binding.self': syntheticCapture('@type-binding.self', fnNode, nameNode.text),
-    '@type-binding.name': syntheticCapture('@type-binding.name', nameNode, nameNode.text),
+    '@type-binding.self': syntheticCapture('@type-binding.self', fnNode, boundName),
+    '@type-binding.name': syntheticCapture('@type-binding.name', nameNode ?? param, boundName),
     '@type-binding.type': syntheticCapture('@type-binding.type', typeNode, typeName),
   };
 }

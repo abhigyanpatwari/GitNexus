@@ -68,6 +68,8 @@ export interface FinalizeOrchestratorOptions {
    * merge for bindings.
    */
   readonly hooks?: Partial<FinalizeHooks>;
+  /** Optional exact module export surface, independent of nested definitions. */
+  readonly moduleExports?: (file: ParsedFile) => ReadonlyMap<string, SymbolDefinition>;
   /**
    * Opaque workspace context forwarded to hooks. `undefined` today; Ring
    * 2 PKG #922 populates this with a real cross-file index for the
@@ -95,7 +97,7 @@ export function finalizeScopeModel(
   // materialization. Returns linked imports + merged bindings per module
   // scope + SCC condensation + stats.
   const finalizeInput = {
-    files: parsedFiles.map(toFinalizeFile),
+    files: parsedFiles.map((file) => toFinalizeFile(file, options.moduleExports?.(file))),
     workspaceIndex,
   };
   const finalizeOut = finalize(finalizeInput, hooks);
@@ -165,15 +167,32 @@ export function finalizeScopeModel(
 
 // ─── Internal ───────────────────────────────────────────────────────────────
 
-/** Shape-reduce a `ParsedFile` to the narrower `FinalizeFile` the shared
- *  algorithm reads. The subset is stable — `FinalizeFile` is a proper
- *  subset of `ParsedFile`. */
-function toFinalizeFile(file: ParsedFile): FinalizeFile {
+/** Shape-reduce parse output and attach the provider's exact export surface. */
+function toFinalizeFile(
+  file: ParsedFile,
+  localExports?: ReadonlyMap<string, SymbolDefinition>,
+): FinalizeFile {
+  const moduleScope = file.scopes.find((scope) => scope.id === file.moduleScope);
+  const moduleBindings = new Map(moduleScope?.bindings ?? []);
+  // Namespace members historically participate in the same-file unqualified
+  // fallback (notably C/C++ anonymous namespaces). Keep that language surface
+  // while excluding function/class-body bindings that caused #3499.
+  for (const scope of file.scopes) {
+    if (scope.kind !== 'Namespace') continue;
+    for (const [name, refs] of scope.bindings) {
+      moduleBindings.set(name, [...(moduleBindings.get(name) ?? []), ...refs]);
+    }
+  }
   return {
     filePath: file.filePath,
     moduleScope: file.moduleScope,
     parsedImports: file.parsedImports,
     localDefs: file.localDefs,
+    localExports,
+    // The extractor always emits the module scope. Its binding map is the
+    // authoritative lexical surface; `ownedDefs` is structural ownership and
+    // excludes hoisted top-level function/class declarations.
+    moduleBindings,
   };
 }
 
@@ -200,12 +219,14 @@ function collectReferenceSites(parsedFiles: readonly ParsedFile[]) {
  */
 function withDefaultHooks(partial: Partial<FinalizeHooks>): FinalizeHooks {
   return {
+    ownedMembersBindAtModuleScope: partial.ownedMembersBindAtModuleScope,
     importsBindAtLexicalScope: partial.importsBindAtLexicalScope === true,
     resolveImportTarget: partial.resolveImportTarget ?? (() => null),
     isNamespaceImport: partial.isNamespaceImport,
     wildcardCollisionIsAmbiguous: partial.wildcardCollisionIsAmbiguous === true,
     namedImportsBindTopLevelOnly: partial.namedImportsBindTopLevelOnly === true,
     expandsWildcardTo: partial.expandsWildcardTo ?? (() => []),
+    filterWildcardNames: partial.filterWildcardNames,
     mergeBindings:
       partial.mergeBindings ??
       ((

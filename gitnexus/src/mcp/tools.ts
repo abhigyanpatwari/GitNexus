@@ -22,6 +22,7 @@ export interface ToolDefinition {
         default?: unknown;
         items?: { type: string };
         enum?: string[];
+        const?: boolean;
         minimum?: number;
         maximum?: number;
         minLength?: number;
@@ -32,7 +33,7 @@ export interface ToolDefinition {
   };
 }
 
-const READ_ONLY_TOOL_ANNOTATIONS: ToolAnnotations = {
+export const READ_ONLY_TOOL_ANNOTATIONS: ToolAnnotations = {
   readOnlyHint: true,
   destructiveHint: false,
   idempotentHint: true,
@@ -97,11 +98,18 @@ export const CONTEXT_CHAIN_MAX_DEPTH = 3;
 const CWD_AWARE_REPO_OMISSION =
   'Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly.';
 const MUTATING_REPO_OMISSION =
-  'Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo.';
+  'Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo. A preview (dry_run omitted or true) may also omit it when the GitNexus process cwd is inside a registered path; dry_run:false always needs one of the first two.';
 
 /** Always-on identity+freshness field on query/context/impact/cypher object results (#3291). */
 const HOT_READ_STALENESS_NOTE =
   "Object results attach `staleness` even when current. Read `staleness.branch`/`lastCommit` for which index answered and `status` for freshness. Re-analyze only for `behind` or `diverged` — `current` is this clone's HEAD, not necessarily the default branch; `unknown` is unmeasurable, not stale. Field is only on object results (not raw-array cypher, error envelopes, or `@group` calls).";
+
+const RENAME_PROPERTIES: ToolDefinition['inputSchema']['properties'] = {
+  symbol_name: { type: 'string', description: 'Current symbol name to rename' },
+  symbol_uid: { type: 'string', description: 'Direct symbol UID from prior tool results' },
+  new_name: { type: 'string', description: 'The new identifier for the symbol' },
+  file_path: { type: 'string', description: 'File path to disambiguate common names' },
+};
 
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
@@ -470,37 +478,27 @@ A graph too large to analyze at all returns \`{ error, truncated: true }\` with 
   },
   {
     name: 'rename',
-    description: `Multi-file coordinated rename using the knowledge graph + text search.
-Finds all references via graph (high confidence) and regex text search (lower confidence). Preview by default.
-
-WHEN TO USE: Renaming a function, class, method, or variable across the codebase. Safer than find-and-replace.
-AFTER THIS: Run detect_changes() to verify no unexpected side effects.
-
-Each edit is tagged with confidence:
-- "graph": found via knowledge graph relationships (high confidence, safe to accept)
-- "text_search": found via regex text search (lower confidence, review carefully)
-
-Handles disambiguation via context()'s payload verbatim: an ambiguous symbol_name returns status "ambiguous" with ranked candidates and totalCandidates — the TRUE match count, not candidates[].length — plus candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window. Re-call with symbol_uid.`,
+    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default: dry_run omitted or true never writes; dry_run:false requires the plan_token returned by a successful preview and applies exactly that captured edit set after checking source snapshots and targets. Preview first, review semantic_edits and coverage, then re-call with dry_run:false and plan_token.
+Pass symbol_uid from context() to select the declaration. Unsupported syntax, ambiguous bindings, and incomplete coverage fail closed; no compiler or text-search fallback is used.
+Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Preview plan_token is single-use, expires after 15 minutes or a server restart, and can be evicted when retained previews reach 16 plans or 64 MiB. Apply rejects changed sources (including untracked files), source-file inventories, graph targets, repositories, and destination names; it never replans edits. Legacy graph_edits and text_search_edits are zero. Partial writes are not transactional: changes lists only landed edits, failed_files the file that failed, and unattempted_files later files never touched; reconcile and preview again before retrying.
+Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates verbatim; re-call with symbol_uid. After application, run tests and detect_changes().`,
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
-        symbol_name: { type: 'string', description: 'Current symbol name to rename' },
-        symbol_uid: {
+        ...RENAME_PROPERTIES,
+        plan_token: {
           type: 'string',
-          description: 'Direct symbol UID from prior tool results (zero-ambiguity)',
+          description:
+            'Opaque single-use token returned by the reviewed preview. Required with dry_run:false; keep the same repository, target, and new_name.',
         },
-        new_name: { type: 'string', description: 'The new name for the symbol' },
-        file_path: { type: 'string', description: 'File path to disambiguate common names' },
         dry_run: {
           type: 'boolean',
-          description: 'Preview edits without modifying files (default: true)',
+          description:
+            'Preview edits without modifying files (default: true). Pass false to apply.',
           default: true,
         },
-        repo: {
-          type: 'string',
-          description: `Repository name or path. ${MUTATING_REPO_OMISSION}`,
-        },
+        repo: { type: 'string', description: `Repository name or path. ${MUTATING_REPO_OMISSION}` },
       },
       required: ['new_name'],
     },
@@ -720,7 +718,7 @@ ANCHORED ("target" = file path or symbol/function name): full hop detail for tha
 CONTRACT CAVEATS (absent flows are NOT proof of safety):
 - Cross-function flows ARE modeled (#2084 M4): a source flowing through helper functions into a sink is found, via summary composition over the call graph (context-insensitive — return/call-site merging is accepted).
 - Cross-function matching is by callee NAME (context-insensitive): when one caller invokes two distinct same-named callees, a flow into one over-attributes to both — a cross-function finding does not prove the taint reached every same-named function (sound over-report, never a missed flow).
-- Closure/callback flows are invisible in both directions (e.g. arr.forEach(() => sink(y))) — the largest false-negative class.
+- Sources read inside inline callbacks and returned handlers can flow through helper functions. Captured closure-variable flows are not modeled (e.g. const y = source(); arr.forEach(() => sink(y))).
 - Property/field flows are not tracked (obj.x = taint; sink(obj.y) has no chain).
 - Guard-style sanitizers (if (isValid(x))) and implicit/control-dependence flows are not modeled.
 - CommonJS aliasing is partially modeled (require('<literal>') joins resolve; dynamic requires do not).
@@ -1122,7 +1120,7 @@ Optional caseSensitive and literal match HTTP /api/grep (default: case-insensiti
  * loop below skips `branch` for `CHECKOUT_SOURCE_TOOLS` — a pin would label
  * checkout bytes with another commit.
  */
-export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep']);
+export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep', 'rename']);
 
 export const REPO_SCOPED_TOOLS = new Set([
   'read_file',

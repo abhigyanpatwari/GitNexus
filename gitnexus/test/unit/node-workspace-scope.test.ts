@@ -38,6 +38,16 @@ afterAll(() => {
 });
 
 describe('workspace boundary', () => {
+  it('captures fresh rename configuration without replacing the indexing memo', async () => {
+    const root = repo({ 'package.json': pkg('original') });
+    const indexed = await loadNodeWorkspacePackages(root);
+    fs.writeFileSync(path.join(root, 'package.json'), pkg('changed'));
+    const fresh = await loadNodeWorkspacePackages(root, { fresh: true });
+    expect(fresh?.byName.has('changed')).toBe(true);
+    expect(fresh?.byName.has('original')).toBe(false);
+    expect(await loadNodeWorkspacePackages(root)).toBe(indexed);
+    expect(indexed?.byName.has('original')).toBe(true);
+  });
   it('admits a package the pnpm globs declare', async () => {
     const root = repo({
       'pnpm-workspace.yaml': 'packages:\n  - "packages/*"\n',

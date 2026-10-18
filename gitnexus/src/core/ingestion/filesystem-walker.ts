@@ -1,6 +1,7 @@
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { DEFAULT_MAX_FILE_SIZE_BYTES, getMaxFileSizeBytes } from './utils/max-file-size.js';
 import fs from 'fs/promises';
+import { readdir } from 'node:fs';
 import path from 'path';
 import { glob } from 'glob';
 import { createIgnoreFilter } from '../../config/ignore-service.js';
@@ -58,6 +59,8 @@ const warnLargeFileSkip = (message: string): void => {
 };
 
 export interface WalkRepositoryOptions {
+  /** Capture required metadata before stat/size filtering can omit its inputs. */
+  onPathsDiscovered?: (paths: readonly string[]) => Promise<void>;
   /**
    * Suppress the operator-facing large-file notice. Set by read-only callers
    * such as `status`, which reuse this scan purely to learn which files the
@@ -73,7 +76,7 @@ export interface WalkRepositoryOptions {
 }
 
 /**
- * Phase 1: Scan repository — stat files to get paths + sizes, no content loaded.
+ * Phase 1: Scan repository — capture required metadata, then stat paths + sizes.
  * Memory: ~10MB for 100K files vs ~1GB+ with content.
  */
 const assertWalkRootIsDirectory = async (repoPath: string): Promise<void> => {
@@ -100,17 +103,37 @@ export const walkRepositoryPaths = async (
   await assertWalkRootIsDirectory(repoPath);
   const ignoreFilter = await createIgnoreFilter(repoPath);
   const maxFileSizeBytes = options.maxFileSizeBytes ?? getMaxFileSizeBytes();
+  let enumerationError: NodeJS.ErrnoException | undefined;
 
-  const filtered = await glob('**/*', {
-    cwd: repoPath,
-    nodir: true,
-    dot: false,
-    ignore: ignoreFilter,
-  });
+  const filtered = (
+    await glob('**/*', {
+      cwd: repoPath,
+      nodir: true,
+      dot: false,
+      ignore: ignoreFilter,
+      // glob treats unreadable directories as empty. Required metadata must
+      // not silently lose declarations, so retain the first enumeration error.
+      fs:
+        options.onPathsDiscovered === undefined
+          ? undefined
+          : {
+              readdir(directory, readOptions, callback) {
+                readdir(directory, readOptions, (error, entries) => {
+                  if (error) enumerationError ??= error;
+                  callback(error, entries);
+                });
+              },
+            },
+    })
+  ).map((filePath) => filePath.replace(/\\/g, '/'));
+  if (enumerationError !== undefined) throw enumerationError;
+  await options.onPathsDiscovered?.(filtered);
   const entries: ScannedFile[] = [];
   let processed = 0;
   let skippedLarge = 0;
   const skippedLargePaths: string[] = [];
+  let skippedNonRegular = 0;
+  const skippedNonRegularPreview: string[] = [];
 
   for (let start = 0; start < filtered.length; start += READ_CONCURRENCY) {
     const batch = filtered.slice(start, start + READ_CONCURRENCY);
@@ -118,12 +141,20 @@ export const walkRepositoryPaths = async (
       batch.map(async (relativePath) => {
         const fullPath = path.join(repoPath, relativePath);
         const stat = await fs.stat(fullPath);
-        if (stat.size > maxFileSizeBytes) {
-          skippedLarge++;
-          skippedLargePaths.push(relativePath.replace(/\\/g, '/'));
+        // glob's nodir still returns symlinks to directories. Follow the same
+        // target that hashing reads, retaining file symlinks but no directories
+        // or special files that cannot belong to the indexed coverage set.
+        if (!stat.isFile()) {
+          skippedNonRegular++;
+          if (skippedNonRegularPreview.length < 5) skippedNonRegularPreview.push(relativePath);
           return null;
         }
-        return { path: relativePath.replace(/\\/g, '/'), size: stat.size };
+        if (stat.size > maxFileSizeBytes) {
+          skippedLarge++;
+          skippedLargePaths.push(relativePath);
+          return null;
+        }
+        return { path: relativePath, size: stat.size };
       }),
     );
 
@@ -149,6 +180,14 @@ export const walkRepositoryPaths = async (
   deduplicatedEntries.sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
   );
+
+  if (skippedNonRegular > 0 && !options.quiet) {
+    warnLargeFileSkip(
+      `  Skipped ${skippedNonRegular} non-regular entries (directory symlinks and special files are not indexed): ` +
+        skippedNonRegularPreview.sort().join(', ') +
+        (skippedNonRegular > 5 ? ', ...' : ''),
+    );
+  }
 
   if (skippedLarge > 0 && !options.quiet) {
     const isDefault = maxFileSizeBytes === DEFAULT_MAX_FILE_SIZE_BYTES;

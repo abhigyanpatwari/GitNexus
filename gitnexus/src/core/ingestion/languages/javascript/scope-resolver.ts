@@ -25,12 +25,12 @@
  *   - `allowGlobalFreeCallFallback: true` — CJS `require` patterns and
  *     global helpers (e.g. `process`, `console`) benefit from workspace-
  *     wide unique-name fallback. TypeScript uses explicit imports.
- *   - `loadResolutionConfig` is omitted — JavaScript projects don't use
- *     `tsconfig.json` path aliases in general. `tsconfigPaths: null` is
- *     threaded through the resolver adapter.
  *   - `hoistTypeBindingsToModule: true` — JSDoc `@returns {T}` bindings are
  *     synthesized on the function scope and hoisted, matching TypeScript's
  *     method return-type hoisting strategy for cross-file chain resolution.
+ *
+ * JavaScript loads declared tsconfig/jsconfig aliases and workspace-package
+ * data through the same configuration readers as TypeScript.
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
@@ -38,30 +38,45 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { canonicalizeWorkspaceBindings } from '../../scope-resolution/scope/canonicalize-bindings.js';
+import { canonicalTypeScriptName } from '../typescript/identifiers.js';
 import { javascriptProvider } from '../typescript.js';
 import { jsMergeBindings } from './merge-bindings.js';
 import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
+import { typescriptModuleExports } from '../typescript/module-exports.js';
 import { loadNodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
+import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
+
+async function loadResolutionConfig(repoPath: string, fresh = false) {
+  return {
+    tsconfigs: await loadTsconfigIndex(repoPath),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
+  };
+}
 
 const javascriptScopeResolver: ScopeResolver = {
+  postExtractSourceTextPolicy: 'uncached-files',
+  populateWorkspaceReferences: (parsedFiles) =>
+    canonicalizeWorkspaceBindings(parsedFiles, canonicalTypeScriptName),
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.JavaScript,
   languageProvider: javascriptProvider,
   importEdgeReason: 'javascript-scope: import',
+  importsBindAtLexicalScope: true,
+  ownedMembersBindAtModuleScope: false,
 
   resolveImportTarget: makeJsResolveImportTarget(),
+  moduleExports: typescriptModuleExports,
 
   // JavaScript resolution reads the same declared inputs TypeScript does —
   // `jsconfig.json` is a tsconfig by another name, and `package.json` is shared
   // outright. Without them a bare specifier used to fall through to suffix
   // matching (#2953); now it simply does not resolve.
-  loadResolutionConfig: async (repoPath: string) => ({
-    tsconfigs: await loadTsconfigIndex(repoPath),
-    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath),
-  }),
+  loadResolutionConfig,
+  refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
 
   // JavaScript LEGB — same tier ordering as TypeScript; no declaration-
   // merging across type/value/namespace spaces.
@@ -97,6 +112,7 @@ const javascriptScopeResolver: ScopeResolver = {
   // explicit imports at the call site. Workspace-wide unique-name fallback
   // recovers these edges.
   allowGlobalFreeCallFallback: true,
+  isGlobalNameFallbackPlausible: isJsSelfBoundCallableFallbackPlausible,
 
   // Same ECMAScript `export *` exclusivity as TypeScript: a name declared by
   // two wildcard sources is refused, not guessed.

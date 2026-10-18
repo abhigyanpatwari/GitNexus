@@ -23,6 +23,7 @@ import {
   buildClassRegistry,
   buildFieldRegistry,
   buildMethodRegistry,
+  buildMacroRegistry,
   buildDefIndex,
   buildMethodDispatchIndex,
   buildModuleScopeIndex,
@@ -974,5 +975,27 @@ describe('lookupCore direct invocation', () => {
       ctx,
     );
     expect(results).toEqual([]);
+  });
+});
+
+describe('independent kind namespaces', () => {
+  it('keeps macros visible through a same-named runtime parameter claim', () => {
+    const macro = mkDef({ nodeId: 'macro:emit', type: 'Macro' });
+    const module = mkScope({
+      id: 'module',
+      parent: null,
+      bindings: { emit: [mkBinding(macro, 'local')] },
+    });
+    const fn: Scope = {
+      ...mkScope({ id: 'fn', parent: module.id, kind: 'Function' }),
+      nameClaims: [{ name: 'emit', kind: 'binding', range: r(2, 0, 2, 8), purpose: 'value' }],
+    };
+    const ctx = makeCtx([module, fn], [macro]);
+    expect(
+      buildMacroRegistry(ctx)
+        .lookup('emit', fn.id)
+        .map((hit) => hit.def.nodeId),
+    ).toEqual([macro.nodeId]);
+    expect(buildMethodRegistry(ctx).lookup('emit', fn.id)).toEqual([]);
   });
 });

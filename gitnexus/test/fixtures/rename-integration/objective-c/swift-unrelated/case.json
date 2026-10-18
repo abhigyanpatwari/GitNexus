@@ -1,0 +1,19 @@
+{
+  "language": "objective-c",
+  "description": "Swift comments, strings and unrelated names do not block a proven selector rename.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "fetchData",
+    "kind": "Method",
+    "file": "Foo.h"
+  },
+  "newName": "loadData",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

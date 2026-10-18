@@ -7,7 +7,7 @@
  *
  * Supports multiple indexed repositories via the global registry.
  *
- * Tools: list_repos, query, cypher, context, read_file, grep, impact, detect_changes, rename
+ * Tools: list_repos, query, cypher, context, read_file, grep, impact, detect_changes, rename (preview by default; dry_run:false applies)
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
 
@@ -53,7 +53,12 @@ import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-argume
  * Design: Each hint is a short, actionable instruction (not a suggestion).
  * The hint references the specific tool/resource to use next.
  */
-function getNextStepHint(toolName: string, args: Record<string, any> | undefined): string {
+export function getNextStepHint(
+  toolName: string,
+  args: Record<string, any> | undefined,
+  readOnly = false,
+  toolResult?: unknown,
+): string {
   const repo = args?.repo;
   const repoParam = repo ? `, repo: "${repo}"` : '';
   const repoPath = repo || '{name}';
@@ -74,8 +79,29 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
     case 'detect_changes':
       return `\n\n---\n**Next:** Review affected processes. Use context() on high-risk changed symbols. READ gitnexus://repo/${repoPath}/process/{name} for full execution traces.`;
 
-    case 'rename':
-      return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ''}) to verify no unexpected side effects from the rename.`;
+    case 'rename': {
+      // Only an explicit dry_run:false can have written files. Everything else
+      // is a preview (omitted defaults to true), so the next step is to apply it,
+      // not to verify side effects that cannot exist yet.
+      if (args?.dry_run === false) {
+        const result =
+          toolResult !== null && typeof toolResult === 'object'
+            ? (toolResult as Record<string, unknown>)
+            : undefined;
+        if (result?.status === 'partial' || result?.application_status === 'partial')
+          return '\n\n---\n**Next:** Reconcile landed changes, failed_files and unattempted_files, then re-analyze and review a fresh preview before applying again. The operation was partial.';
+        if (result?.applied !== true)
+          return '\n\n---\n**Next:** No successful apply was confirmed. Inspect code and error, then request and review a fresh rename preview and use its plan_token to apply.';
+        return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ''}) to verify no unexpected side effects from the rename.`;
+      }
+      if (readOnly) {
+        return `\n\n---\n**Next:** This is a preview; MCP read-only mode cannot apply it. To apply, request and review a fresh preview from a server that permits writes, then use that server's plan_token.`;
+      }
+      const target = args?.symbol_uid
+        ? `symbol_uid: ${JSON.stringify(args.symbol_uid)}`
+        : `symbol_name: ${JSON.stringify(args?.symbol_name ?? '<symbol_name>')}`;
+      return `\n\n---\n**Next:** Preview only; no files were changed. If status is "success", review semantic_edits and coverage, then apply with rename({${target}, new_name: ${JSON.stringify(args?.new_name ?? '<new_name>')}, dry_run: false, plan_token: "<plan_token from this preview>"${repoParam}}). If it failed closed, act on its code and error rather than retrying unchanged.`;
+    }
 
     case 'cypher':
       return `\n\n---\n**Next:** To explore a result symbol, use context({name: "<name>"${repoParam}}). For schema reference, READ gitnexus://repo/${repoPath}/schema.`;
@@ -216,7 +242,8 @@ export function createMCPServer(
           name: tool.name,
           description: tool.description,
           inputSchema:
-            (tool.name === 'rename' ? mutatingRequiresRepo : readOnlyRequiresRepo) &&
+            // Read-only `rename` is preview-only, so it follows the read-tool rule.
+            (tool.name === 'rename' && !readOnly ? mutatingRequiresRepo : readOnlyRequiresRepo) &&
             REPO_SCOPED_TOOLS.has(tool.name)
               ? {
                   ...tool.inputSchema,
@@ -245,7 +272,7 @@ export function createMCPServer(
       maxTokens = resolveMcpMaxTokens(name, typedArgs);
       const result = await scopedBackend.callTool(name, withoutMcpBudgetArg(typedArgs));
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-      const hint = getNextStepHint(name, args as Record<string, any> | undefined);
+      const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly, result);
 
       return {
         content: [

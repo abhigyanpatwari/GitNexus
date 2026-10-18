@@ -1,0 +1,37 @@
+{
+  "language": "swift",
+  "description": "Keep escaped semantic keys aligned through persisted indexing, cached reload, and exact rename.",
+  "categories": [
+    "escaped-identifier",
+    "call-graph",
+    "cross-file"
+  ],
+  "target": {
+    "name": "`encode`",
+    "kind": "Function",
+    "file": "Sources/Vendor/Tools.swift"
+  },
+  "newName": "serialize",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "Sources/App/Main.swift"
+      },
+      "to": {
+        "name": "`encode`",
+        "kind": "Function",
+        "file": "Sources/Vendor/Tools.swift"
+      }
+    }
+  ],
+  "exactOutgoing": true,
+  "warmParseCache": true,
+  "expectedTargetName": "`serialize`"
+}

@@ -32,11 +32,11 @@
  *
  * ## Compatibility with `FinalizeFile`
  *
- * `FinalizeFile` (defined in `./finalize-algorithm.ts`) is a structural
- * subset of `ParsedFile` — `filePath`, `moduleScope`, `parsedImports`,
- * `localDefs`. A `ParsedFile` is trivially convertible to a `FinalizeFile`
- * by picking those four fields, so the finalize orchestrator threads
- * ParsedFile through to the shared algorithm without shape-shifting.
+ * `FinalizeFile` (defined in `./finalize-algorithm.ts`) is a projection of
+ * `ParsedFile`: `filePath`, `moduleScope`, `parsedImports`, and `localDefs`
+ * copy directly; `moduleBindings` is taken from the module scope's lexical
+ * binding map so flattened nested declarations do not become module bindings
+ * while hoisted top-level declarations remain visible.
  *
  * ## Source-of-truth invariant
  *

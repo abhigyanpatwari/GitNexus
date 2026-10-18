@@ -10,6 +10,8 @@ import {
 } from '../../../src/core/ingestion/languages/rust/cargo-targets.js';
 import { emitRustScopeCaptures } from '../../../src/core/ingestion/languages/rust/captures.js';
 import { interpretRustImport } from '../../../src/core/ingestion/languages/rust/interpret.js';
+import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
+import { rustScopeResolver } from '../../../src/core/ingestion/languages/rust/scope-resolver.js';
 
 const PACKAGE = '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n';
 const temporary: string[] = [];
@@ -28,6 +30,40 @@ function fixture(files: Record<string, string>): string {
 }
 
 describe('Cargo manifest target metadata', () => {
+  it.each(['2015', '2018'])(
+    'keeps relative use lookup consistent with Cargo edition %s',
+    async (edition) => {
+      const sources = {
+        'src/lib.rs': 'pub mod models; pub mod handler;',
+        'src/models/mod.rs': 'pub mod handler; pub use handler::Handler;',
+        'src/models/handler.rs': 'pub struct Handler {}',
+        'src/handler.rs': 'pub struct Handler {}',
+      };
+      const root = fixture({
+        'Cargo.toml': `[package]\nname = "edition-use"\nversion = "0.1.0"\nedition = "${edition}"\n`,
+        ...sources,
+      });
+      const config = await loadRustCargoTargets(root);
+      expect(config).toBeDefined();
+      const parsedFiles = Object.entries(sources).map(([file, source]) => {
+        const parsed = extractParsedFile(rustScopeResolver.languageProvider, source, file);
+        if (parsed === undefined) throw new Error(`Failed to parse ${file}`);
+        rustScopeResolver.populateOwners?.(parsed);
+        return parsed;
+      });
+      const owner = parsedFiles.find((file) => file.filePath === 'src/models/mod.rs')!;
+      expect(
+        rustScopeResolver.resolveImportTarget(
+          'handler::Handler',
+          owner.filePath,
+          new Set(Object.keys(sources)),
+          config,
+          { parsedFiles, parsedImport: owner.parsedImports[0] },
+        ),
+      ).toBe(edition === '2015' ? 'src/handler.rs' : 'src/models/handler.rs');
+    },
+  );
+
   it.each(['crate', 'self', 'super'])('preserves the %s keyword in a glob import', (keyword) => {
     const imports = emitRustScopeCaptures(`use ${keyword}::*;`, 'fixture.rs')
       .map(interpretRustImport)

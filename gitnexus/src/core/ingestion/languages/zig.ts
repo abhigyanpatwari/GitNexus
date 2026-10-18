@@ -1,3 +1,4 @@
+import { zigRenameProvider } from './zig/rename.js';
 /**
  * Zig Language Provider.
  *
@@ -47,6 +48,7 @@ import { zigMethodConfig } from '../method-extractors/configs/zig.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { zigVariableConfig } from '../variable-extractors/configs/zig.js';
 import { zigTypeConfig } from '../type-extractors/zig.js';
+import { createZigCfgVisitor } from '../cfg/visitors/zig.js';
 import {
   emitZigScopeCaptures,
   interpretZigImport,
@@ -65,6 +67,7 @@ import {
 } from './zig/index.js';
 
 export const zigProvider = defineLanguage({
+  rename: zigRenameProvider,
   id: SupportedLanguages.Zig,
   extensions: ['.zig'],
   entryPointPatterns: [
@@ -74,6 +77,7 @@ export const zigProvider = defineLanguage({
   astFrameworkPatterns: [],
   treeSitterQueries: ZIG_QUERIES,
   typeConfig: zigTypeConfig,
+  cfgVisitor: createZigCfgVisitor(),
   exportChecker: zigExportChecker,
   importResolver: createImportResolver(zigImportConfig),
   callExtractor: createCallExtractor(zigCallConfig),

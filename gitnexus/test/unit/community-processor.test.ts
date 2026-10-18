@@ -1,9 +1,12 @@
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { describe, it, expect, vi } from 'vitest';
+import { tsxLoaderUrl } from '../helpers/cli-entry.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import {
@@ -197,9 +200,19 @@ describe('community-processor', () => {
       vi.resetModules();
       vi.doMock('node:worker_threads', () => {
         class MockWorker extends EventEmitter {
-          constructor() {
+          constructor(_source?: string, options?: { workerData?: { graphologyPath?: string } }) {
             super();
             queueMicrotask(() => {
+              if (options?.workerData?.graphologyPath) {
+                // The Graphology Leiden worker: answer as the real one would.
+                this.emit('message', {
+                  ok: true,
+                  communities: { 'fn:a': 0, 'fn:b': 0 },
+                  count: 1,
+                  modularity: 0,
+                });
+                return;
+              }
               this.emit('message', { ok: true, partition: [0, 0], modularity: Number.NaN });
             });
           }
@@ -232,7 +245,7 @@ describe('community-processor', () => {
 
         expect(result.stats.engineRequested).toBe('icebug');
         expect(result.stats.engine).toBe('graphology');
-        expect(result.stats.fallbackReason).toContain('modularity');
+        expect(result.stats.fallbackReason).toBe('optional icebug modularity was not finite');
         expect(progress.some((message) => message.includes('falling back to Graphology'))).toBe(
           true,
         );
@@ -245,6 +258,64 @@ describe('community-processor', () => {
         vi.resetModules();
       }
     });
+
+    it.each(['icebug', 'auto'] as const)(
+      'preserves both fallback reasons when %s fails and Graphology times out',
+      async (engine) => {
+        vi.resetModules();
+        vi.useFakeTimers();
+        const icebugError = 'optional icebug could not load';
+        vi.doMock('node:worker_threads', () => {
+          class MockWorker extends EventEmitter {
+            constructor(_source?: string, options?: { workerData?: { graphologyPath?: string } }) {
+              super();
+              if (!options?.workerData?.graphologyPath) {
+                queueMicrotask(() => this.emit('message', { ok: false, error: icebugError }));
+              }
+              // The Graphology worker stays silent until its real deadline fires.
+            }
+
+            terminate(): Promise<number> {
+              return Promise.resolve(0);
+            }
+
+            unref(): void {}
+          }
+
+          return { Worker: MockWorker };
+        });
+
+        try {
+          const { processCommunities: processCommunitiesWithMockWorker } =
+            await import('../../src/core/ingestion/community-processor.js');
+          const graph = createKnowledgeGraph();
+          graph.addNode(makeNode('fn:a', 'a'));
+          graph.addNode(makeNode('fn:b', 'b'));
+          graph.addRelationship(makeRel('rel:ab', 'fn:a', 'fn:b'));
+
+          const pending = processCommunitiesWithMockWorker(graph, undefined, { engine });
+          await vi.advanceTimersByTimeAsync(60_000);
+          const result = await pending;
+
+          expect(result.stats).toMatchObject({
+            engineRequested: engine,
+            engine: 'graphology',
+            fallbackReason: `${icebugError}; Graphology Leiden timeout`,
+            totalCommunities: 1,
+            modularity: 0,
+            nodesProcessed: 2,
+          });
+          expect(result.memberships).toEqual([
+            { nodeId: 'fn:a', communityId: 'comm_0' },
+            { nodeId: 'fn:b', communityId: 'comm_0' },
+          ]);
+        } finally {
+          vi.useRealTimers();
+          vi.doUnmock('node:worker_threads');
+          vi.resetModules();
+        }
+      },
+    );
 
     it('falls back before icebug worker launch for nondeterministic options', async () => {
       const graph = createKnowledgeGraph();
@@ -370,6 +441,31 @@ module.exports = {
       expect(message).toMatchObject({ ok: false });
       expect(message.error).toContain('deterministic thread/seed controls');
     });
+  });
+
+  describe('graphology Leiden timeout', () => {
+    it('returns the fallback and exits naturally after terminating the hanging worker', () => {
+      const childPath = fileURLToPath(
+        new URL('../helpers/leiden-timeout-child.ts', import.meta.url),
+      );
+      // A fallback alone is not enough: the child must exit without process.exit().
+      // SIGKILL bounds cleanup if a regression leaves its worker running forever.
+      const child = spawnSync(process.execPath, ['--import', tsxLoaderUrl(), childPath], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        killSignal: 'SIGKILL',
+      });
+
+      expect(child.error).toBeUndefined();
+      expect(child.signal).toBeNull();
+      expect(child.status, child.stderr).toBe(0);
+      const result = JSON.parse(child.stdout);
+
+      expect(result.fallbackReason).toBe('Graphology Leiden timeout');
+      expect(result.count).toBe(1);
+      expect(new Set(Object.values(result.communities))).toEqual(new Set([0]));
+      expect(Object.keys(result.communities)).toHaveLength(105);
+    }, 15_000);
   });
 
   describe('vendored Leiden partitioning', () => {

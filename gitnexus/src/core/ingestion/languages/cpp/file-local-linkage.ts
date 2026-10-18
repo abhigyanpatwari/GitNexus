@@ -172,7 +172,7 @@ export function populateCppAnonymousNamespaceScopes(parsed: {
  * scope is reflected before any cross-file resolution pass consults the
  * set.
  *
- * A def is "not globally visible" when its nearest structurally enclosing
+ * A def is "not globally visible" when its nearest lexical binding
  * scope is a `Namespace` or `Class` — those require qualification
  * (`ns::name`, `Class::method`) for cross-file unqualified lookup.
  * Module-scoped defs remain globally visible.
@@ -183,6 +183,10 @@ export function populateCppNonGloballyVisible(parsed: {
     readonly id: ScopeId;
     readonly kind: string;
     readonly ownedDefs: readonly { readonly nodeId: string }[];
+    readonly bindings?: ReadonlyMap<
+      string,
+      readonly { readonly def: { readonly nodeId: string } }[]
+    >;
   }[];
 }): void {
   let set = nonGloballyVisibleNodeIds.get(parsed.filePath);
@@ -204,8 +208,15 @@ export function populateCppNonGloballyVisible(parsed: {
     // unqualified lookup that does not go through #include, so dropping
     // the structural visibility exclusion here is safe.
     if (scope.kind === 'Namespace' && anonymousNamespaceScopeIds.has(scope.id)) continue;
-    for (const def of scope.ownedDefs) {
-      set.add(def.nodeId);
+    // Scope-creating definitions own themselves structurally. Their lexical
+    // binding is what distinguishes a namespace function from a file function.
+    if (scope.bindings !== undefined) {
+      for (const bindings of scope.bindings.values()) {
+        for (const binding of bindings) set.add(binding.def.nodeId);
+      }
+    } else {
+      // Compatibility for manually constructed records without binding facts.
+      for (const def of scope.ownedDefs) set.add(def.nodeId);
     }
   }
 }
@@ -226,8 +237,7 @@ export function isCppDefGloballyVisible(filePath: string, nodeId: string): boole
 }
 
 /**
- * Return the names visible through a C++ wildcard import (`#include` or
- * `using namespace`).
+ * Return the names visible through a C++ header include.
  *
  * ## Contract
  *
@@ -247,10 +257,9 @@ export function isCppDefGloballyVisible(filePath: string, nodeId: string): boole
  * only dot-qualifies `qualifiedName` for `Class` scopes. Namespace-nested
  * defs (`namespace ns { void foo(); }`) arrive in `localDefs` with
  * `qualifiedName === 'foo'` and `ownerId === undefined`, indistinguishable
- * from a top-level free function. The structural truth lives in
- * `Scope.ownedDefs`: each scope lists what it structurally owns; the
- * Module scope owns only top-level symbols. We look the def up by
- * `nodeId` against the scope tree to identify its owning kind.
+ * from a top-level free function. `Scope.bindings` records lexical ownership;
+ * a function's own body scope structurally owns its definition. Prefer the
+ * binding owner and retain ownedDefs for older records without binding facts.
  *
  * ## `localDefs` consumer survey (recorded for future maintainers)
  *
@@ -306,14 +315,19 @@ export function expandCppWildcardNames(
   const target = moduleScopeIndex(parsedFiles).get(targetModuleScope);
   if (target === undefined) return [];
 
-  // Build nodeId → owning Scope map from the structural scope tree.
-  // `Scope.ownedDefs` is the canonical source of structural ownership;
-  // `localDefs` is its flattened union, which is why the original code
-  // leaked: walking only `localDefs` discards the owning-scope context.
+  // Build nodeId → owning Scope, retaining structural facts as a fallback
+  // before lexical binding ownership refines the definition's visibility.
   const ownerScopeByNodeId = new Map<string, Scope>();
   for (const scope of target.scopes) {
     for (const ownedDef of scope.ownedDefs) {
       ownerScopeByNodeId.set(ownedDef.nodeId, scope);
+    }
+  }
+  // Prefer lexical ownership over a definition's own body scope. A function
+  // inside a namespace has an owning Function scope and a Namespace binding.
+  for (const scope of target.scopes) {
+    for (const bindings of scope.bindings?.values() ?? []) {
+      for (const binding of bindings) ownerScopeByNodeId.set(binding.def.nodeId, scope);
     }
   }
 

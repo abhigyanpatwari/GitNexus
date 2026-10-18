@@ -20,15 +20,13 @@
  * `FunctionCfg.functionStartLine` is 1-based (the TS visitor's `row + 1`);
  * `Function`/`Method` node `startLine` is 0-based (`startPosition.row`). The
  * join therefore looks up node start line `functionStartLine - 1`
- * ({@link NODE_TO_CFG_LINE_OFFSET}). Function nodes carry no start column, so a
- * `(filePath, startLine)` collision — two functions opening on one line,
- * `{ a: () => x(), b: () => y() }` — is ambiguous: the CFG disambiguates with
- * `functionStartColumn` but the node does not, so a colliding anchor is DROPPED
- * (counted as `unresolved`) rather than risk attaching a summary to the wrong
- * function. Rare in practice; the alternative (cross-wired summaries) is unsound.
+ * ({@link NODE_TO_CFG_LINE_OFFSET}). Callable graph nodes carry their column
+ * during ingestion, so same-line functions join by exact position. Providers
+ * without column evidence retain the unique-line fallback; ambiguous anchors
+ * remain unresolved rather than attaching a summary to a different function.
  */
 
-import type { ParsedImport, GraphNode } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport, GraphNode } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { computeReachingDefs, type ReachingDefsSolver } from '../cfg/reaching-defs.js';
 import { DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION } from '../cfg/emit.js';
@@ -60,10 +58,15 @@ const FUNCTIONISH_LABELS = new Set(['Function', 'Method']);
  * Built ONCE per scope-resolution pass (the graph is whole-repo); reused across
  * every file's harvest.
  */
-export type FunctionNodeIndex = ReadonlyMap<string, ReadonlyMap<number, readonly string[]>>;
+export type FunctionNodeIndex = ReadonlyMap<string, ReadonlyMap<number, readonly string[]>> & {
+  readonly byPosition?: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
+  readonly columnAnchoredIds?: ReadonlySet<string>;
+};
 
 export function buildFunctionNodeIndex(graph: KnowledgeGraph): FunctionNodeIndex {
   const index = new Map<string, Map<number, string[]>>();
+  const byPosition = new Map<string, Map<string, string[]>>();
+  const columnAnchoredIds = new Set<string>();
   const add = (node: GraphNode): void => {
     if (!FUNCTIONISH_LABELS.has(node.label)) return;
     const filePath = node.properties.filePath;
@@ -77,18 +80,35 @@ export function buildFunctionNodeIndex(graph: KnowledgeGraph): FunctionNodeIndex
     const ids = byLine.get(startLine);
     if (ids) ids.push(node.id);
     else byLine.set(startLine, [node.id]);
+    const startColumn = node.properties.startColumn;
+    if (typeof startColumn === 'number') {
+      columnAnchoredIds.add(node.id);
+      let positions = byPosition.get(filePath);
+      if (!positions) {
+        positions = new Map();
+        byPosition.set(filePath, positions);
+      }
+      const key = `${startLine}:${startColumn}`;
+      const samePosition = positions.get(key);
+      if (samePosition) samePosition.push(node.id);
+      else positions.set(key, [node.id]);
+    }
   };
   for (const node of graph.iterNodes()) add(node);
-  return index;
+  return Object.assign(index, { byPosition, columnAnchoredIds });
 }
 
 /** Resolve a CFG anchor to a unique functionish node id, or undefined. */
 function resolveFnId(fnIndex: FunctionNodeIndex, cfg: FunctionCfg): string | undefined {
+  const exact = fnIndex.byPosition
+    ?.get(cfg.filePath)
+    ?.get(`${cfg.functionStartLine - NODE_TO_CFG_LINE_OFFSET}:${cfg.functionStartColumn}`);
+  if (exact !== undefined) return exact.length === 1 ? exact[0] : undefined;
   const byLine = fnIndex.get(cfg.filePath);
   if (!byLine) return undefined;
   const ids = byLine.get(cfg.functionStartLine - NODE_TO_CFG_LINE_OFFSET);
-  // Unique match only — a same-line collision is unresolvable (no node column).
-  return ids && ids.length === 1 ? ids[0] : undefined;
+  // Legacy/provider fallback only when the line has exactly one callable.
+  return ids && ids.length === 1 && !fnIndex.columnAnchoredIds?.has(ids[0]) ? ids[0] : undefined;
 }
 
 export interface FileSummaryResult {
@@ -112,8 +132,9 @@ export function harvestFileSummaries(
   maxFacts: number = DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
   // U12: shared per-file memoized solver (harvest/taint bucket — no maxBlockVisits).
   solve: ReachingDefsSolver = computeReachingDefs,
+  parsed?: ParsedFile,
 ): FileSummaryResult {
-  const importIndex = buildTaintImportIndex(parsedImports);
+  const importIndex = buildTaintImportIndex(parsedImports, parsed);
   const summaries: FunctionSummary[] = [];
   let unresolved = 0;
   let gaps = 0;

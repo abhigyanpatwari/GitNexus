@@ -14,6 +14,23 @@ import {
   type PipelineResult,
 } from './helpers.js';
 
+describe('PHP nested named functions become globally callable after declaration', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-nested-function'), () => {});
+  }, 60000);
+
+  it('resolves a sibling caller to the nested named function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find(
+      (candidate) =>
+        candidate.source === 'caller' && candidate.rel.targetId.includes('boot.target'),
+    );
+    expect(edge).toBeDefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Heritage: PSR-4 imports, extends, implements, trait use, enums, calls
 // ---------------------------------------------------------------------------
@@ -2107,8 +2124,8 @@ describe('PHP typed-property double-match dedup', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'php-typed-property-dedup'), () => {});
   }, 60000);
 
-  it('detects the Mixed class', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('Mixed');
+  it('detects the MixedProperties class', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('MixedProperties');
   });
 
   it('emits exactly one Property def for the typed property `$repo`', () => {

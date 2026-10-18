@@ -83,6 +83,9 @@ export interface OverloadNarrowingHookCtx {
   /** Conversion-rank scoring fallback (step 4b). Engages when the
    *  exact-type filter rejects every candidate. */
   readonly conversionRankFn?: ConversionRankFn;
+  /** Reject an empty conversion set when all argument and parameter slots are
+   * known. Used for block-scope declarations that prohibit ADL recovery. */
+  readonly incompatibleConversionsAreFinal?: boolean;
   /** Per-language argument-type prefixes whose conversion-rank failures
    *  should suppress genuinely ambiguous multi-overload sets instead of
    *  falling back to arity-only candidates. */
@@ -171,8 +174,8 @@ export function narrowOverloadCandidates(
       // pairwise dominance: F1 beats F2 only when F1 is not worse for
       // every arg and better for at least one. Non-dominated candidates
       // are returned; multiple survivors are genuinely ambiguous. When
-      // ranking also yields empty, fall through to the arity-filtered
-      // `candidates` set — matches pre-#1606 behavior.
+      // ranking also yields empty, retain the legacy arity fallback unless
+      // the caller requires a definitive conversion verdict with known slots.
       const ranked = rankByConversion(
         candidates,
         argTypes,
@@ -181,6 +184,21 @@ export function narrowOverloadCandidates(
       );
       if (ranked.length > 0) result = ranked;
       else if (
+        hookCtx.incompatibleConversionsAreFinal === true &&
+        argTypes.every((type) => type !== '') &&
+        candidates.every((candidate) => {
+          const params = candidate.parameterTypes;
+          return (
+            params !== undefined &&
+            argTypes.every((_, index) => {
+              const type = parameterTypeAt(params, index);
+              return type !== undefined && type !== '';
+            })
+          );
+        })
+      ) {
+        result = [];
+      } else if (
         candidates.length > 1 &&
         hasConversionOnlyArgType(argTypes, hookCtx.conversionOnlyArgTypePrefixes)
       ) {

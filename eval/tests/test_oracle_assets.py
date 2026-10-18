@@ -5,13 +5,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from workflow_bench import oracle_assets, runner
 from workflow_bench.evolution import evaluate_candidate
@@ -547,6 +550,237 @@ def test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert sentinel.read_text() == "ran:candidate-workspace"
+
+
+@pytest.fixture(scope="module")
+def scenario_control_base(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, dict[str, dict[str, object]]]:
+    """Use the immutable task source with the dependencies that grade it.
+
+    Release evaluation grades tasks with a toolchain built at the pinned task
+    commit. CI points GITNEXUS_ORACLE_TASK_DEPENDENCIES at that build; local runs
+    fall back to the current checkout's dependencies.
+    """
+
+    repository = Path(__file__).resolve().parents[2]
+    dependencies = Path(os.environ.get("GITNEXUS_ORACLE_TASK_DEPENDENCIES") or repository)
+    if not (dependencies / "gitnexus" / "node_modules" / ".bin" / "vitest").is_file():
+        pytest.skip("GitNexus Vitest dependencies are not installed")
+    tasks = yaml.safe_load((repository / "eval/workflow_bench/tasks.scenarios.yaml").read_text())["tasks"]
+    refs = {task["ref"] for task in tasks}
+    assert refs == {"c4ecf398de637cf779ab2238e69958cfd5d601ce"}
+    ref = next(iter(refs))
+    environment = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+    revision = subprocess.run(
+        ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
+        cwd=repository,
+        env=environment,
+        check=False,
+        capture_output=True,
+    )
+    if revision.returncode:
+        pytest.skip("pinned v1.6.12 task history is not available in this checkout")
+
+    workspace = tmp_path_factory.mktemp("oracle-controls")
+    archive = workspace / "task-base.tar"
+    with archive.open("wb") as output:
+        archived = subprocess.run(
+            [
+                "git",
+                "archive",
+                ref,
+                "gitnexus/src",
+                "gitnexus/vendor",
+                "gitnexus/test",
+                "gitnexus/tsconfig.json",
+                "gitnexus/vitest.config.ts",
+                "gitnexus/package.json",
+                "gitnexus-shared/package.json",
+            ],
+            cwd=repository,
+            env=environment,
+            stdout=output,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=120,
+        )
+    if archived.returncode:
+        pytest.skip("pinned task source blobs are unavailable; fetch v1.6.12 before running oracle controls")
+    base = workspace / "base"
+    base.mkdir()
+    if not hasattr(tarfile, "data_filter"):
+        pytest.skip("oracle controls need tarfile extraction filters (Python 3.11.4+)")
+    with tarfile.open(archive) as source:
+        source.extractall(base, filter="data")
+    for relative in ("node_modules", "gitnexus/node_modules", "gitnexus-shared/node_modules", "gitnexus-shared/dist"):
+        (base / relative).symlink_to(dependencies / relative, target_is_directory=True)
+    subprocess.run(["git", "init", "--quiet", str(base)], check=True, capture_output=True)
+    return base, {task["id"]: task for task in tasks}
+
+
+def _oracle_control_candidate(base: Path, destination: Path) -> Path:
+    shutil.copytree(base, destination, symlinks=True, ignore=shutil.ignore_patterns("vendor"))
+    (destination / "gitnexus/vendor").symlink_to(base / "gitnexus/vendor", target_is_directory=True)
+    return destination
+
+
+def _verify_shipped_oracle(candidate: Path, task: dict[str, object]) -> subprocess.CompletedProcess[str]:
+    snapshot = capture_task_oracle(task)
+    with staged_task_oracle(candidate, snapshot) as staged:
+        return subprocess.run(
+            ["/bin/sh", "-c", snapshot.command],
+            cwd=candidate,
+            env={**os.environ, oracle_assets.ORACLE_ENV_VAR: str(staged)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=180,
+        )
+
+
+def _assert_behavioral_rejection(completed: subprocess.CompletedProcess[str], assertion: str = "") -> None:
+    output = completed.stdout + completed.stderr
+    assert completed.returncode == 1, output
+    assert "AssertionError" in output, output
+    assert assertion in output, output
+    # An import/setup crash is not evidence that a behavioral control worked.
+    assert "Failed Suites" not in output, output
+    assert "Unhandled Errors" not in output, output
+
+
+def _check_c_provenance_mutants(candidate: Path, base: Path, task: dict[str, object]) -> None:
+    """Reject broken behavior, and distinguish module-load errors from evidence."""
+
+    interpret = Path("gitnexus/src/core/ingestion/languages/c/interpret.ts")
+    resolver = Path("gitnexus/src/core/ingestion/languages/c/scope-resolver.ts")
+    valid_interpret = (candidate / interpret).read_text()
+    valid_resolver = (candidate / resolver).read_text()
+    system_guards = re.findall(
+        r"\bconst\s+parsedImport\s*=\s*context\s*\?\.\s*parsedImport\s*;\s*"
+        r"if\s*\(\s*parsedImport\s*\?\.\s*kind\s*===\s*'wildcard'\s*&&\s*"
+        r"'isSystem'\s+in\s+parsedImport\s*&&\s*parsedImport\s*\.\s*isSystem\s*===\s*true\s*\)\s*"
+        r"\{\s*return\s+null\s*;\s*\}",
+        valid_resolver,
+    )
+    fallbacks = re.findall(
+        r"\breturn\s+resolveCImportTarget\s*\(\s*targetRaw\s*,\s*fromFile\s*,\s*allFilePaths\s*,?\s*\)\s*;",
+        valid_resolver,
+    )
+    assert len(system_guards) == 1, "expected exactly one C system-include guard"
+    assert len(fallbacks) == 1, "expected exactly one C resolver fallback"
+    system_guard, fallback = system_guards[0], fallbacks[0]
+    late_guard_resolver = valid_resolver.replace(system_guard, "").replace(fallback, system_guard + "\n    " + fallback)
+    assert valid_interpret.count("return parsedImport;") == 1
+    assert valid_interpret.count("targetRaw: source,") == 1
+    mutants = [
+        (interpret, (base / interpret).read_text(), "literal include <stdio.h> must be retained"),
+        (
+            interpret,
+            valid_interpret.replace("return parsedImport;", "return null;"),
+            'literal include "stdio.h" must be retained',
+        ),
+        (interpret, valid_interpret.replace("targetRaw: source,", "targetRaw: '',"), "retained header identity"),
+        (resolver, (base / resolver).read_text(), "include <stdio.h> resolution"),
+        (resolver, late_guard_resolver, "include <stdio.h> resolution"),
+    ]
+    for relative, broken, assertion in mutants:
+        path = candidate / relative
+        original = path.read_text()
+        assert broken != original
+        path.write_text(broken)
+        try:
+            _assert_behavioral_rejection(_verify_shipped_oracle(candidate, task), assertion)
+        finally:
+            path.write_text(original)
+
+    # A missing native-parser module must fail setup, never satisfy a negative
+    # behavioral control just because Vitest exits nonzero.
+    parser = candidate / "gitnexus/src/core/ingestion/languages/c/query.ts"
+    original_parser = parser.read_bytes()
+    parser.unlink()
+    try:
+        broken_setup = _verify_shipped_oracle(candidate, task)
+        assert "Failed Suites" in broken_setup.stdout + broken_setup.stderr
+        with pytest.raises(AssertionError):
+            _assert_behavioral_rejection(broken_setup, "literal include <stdio.h> must be retained")
+    finally:
+        parser.write_bytes(original_parser)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="oracle controls use POSIX dependency symlinks and shell commands")
+@pytest.mark.parametrize(
+    ("task_id", "reference"),
+    [
+        ("trivial-status-json-alias", "trivial-status-json-alias"),
+        ("inv-feature-c-include-provenance", "inv-feature-c-include-provenance-flag"),
+        ("inv-feature-c-include-provenance", "inv-feature-c-include-provenance-delimiter"),
+        ("inv-feature-list-repos-filter", "inv-feature-list-repos-filter"),
+        ("cross-module-parse-retry", "cross-module-parse-retry"),
+        ("cross-module-parse-retry", "cross-module-parse-retry-pool"),
+    ],
+)
+def test_shipped_oracles_reject_task_base_and_accept_reference_fixes(
+    tmp_path: Path,
+    scenario_control_base: tuple[Path, dict[str, dict[str, object]]],
+    task_id: str,
+    reference: str,
+) -> None:
+    base, tasks = scenario_control_base
+    candidate = _oracle_control_candidate(base, tmp_path / "candidate")
+    negative = _verify_shipped_oracle(candidate, tasks[task_id])
+    _assert_behavioral_rejection(
+        negative,
+        "literal include <stdio.h> must be retained" if task_id == "inv-feature-c-include-provenance" else "",
+    )
+
+    patches = Path(__file__).resolve().parents[1] / "workflow_bench/oracles/reference"
+    subprocess.run(["git", "apply", str(patches / f"{reference}.patch")], cwd=candidate, check=True)
+    positive = _verify_shipped_oracle(candidate, tasks[task_id])
+    assert positive.returncode == 0, positive.stdout + positive.stderr
+    if task_id == "inv-feature-c-include-provenance":
+        # A reference passing transpile-only Vitest is not enough: use the same
+        # typed, authored verification that an evaluated repair must satisfy.
+        authored = subprocess.run(
+            ["/bin/sh", "-c", str(tasks[task_id]["verify"])],
+            cwd=candidate,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=180,
+        )
+        assert authored.returncode == 0, authored.stdout + authored.stderr
+        if reference == "inv-feature-c-include-provenance-flag":
+            # This entry point is already selected by native CI; keep every C
+            # validity control reachable without changing workflow selection.
+            # Indent every existing code line differently without matching the
+            # reference's formatting; the behavioral controls must still work.
+            resolver = candidate / "gitnexus/src/core/ingestion/languages/c/scope-resolver.ts"
+            resolver.write_text(re.sub(r"(?m)^([ \t]+)", r"\t\1", resolver.read_text()))
+            positive = _verify_shipped_oracle(candidate, tasks[task_id])
+            assert positive.returncode == 0, positive.stdout + positive.stderr
+            _check_c_provenance_mutants(candidate, base, tasks[task_id])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="oracle controls use POSIX dependency symlinks and shell commands")
+@pytest.mark.parametrize(
+    "reference",
+    ["cross-module-parse-retry-startup-only", "cross-module-parse-retry-pool-startup-only"],
+)
+def test_in_flight_retry_oracle_rejects_startup_only_repairs(
+    tmp_path: Path,
+    scenario_control_base: tuple[Path, dict[str, dict[str, object]]],
+    reference: str,
+) -> None:
+    base, tasks = scenario_control_base
+    candidate = _oracle_control_candidate(base, tmp_path / "candidate")
+    patches = Path(__file__).resolve().parents[1] / "workflow_bench/oracles/reference"
+    subprocess.run(["git", "apply", str(patches / f"{reference}.patch")], cwd=candidate, check=True)
+
+    rejected = _verify_shipped_oracle(candidate, tasks["cross-module-parse-retry"])
+    output = rejected.stdout + rejected.stderr
+    assert rejected.returncode == 1, output
+    assert "AssertionError" in output
+    assert "recovers the same file after two transient" in output
+    assert "stops after two retries" in output
 
 
 def test_weakened_authored_tests_cannot_produce_a_promotion_decision() -> None:

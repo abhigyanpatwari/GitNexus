@@ -136,7 +136,10 @@ describe('pool-adapter storage-version fail-fast and lock-retry backoff', () => 
       return goodDb();
     });
 
-    const lockedInit = initLbug(lockedId, lockedPath);
+    // Handle the expected rejection before advancing the retry timers.
+    const lockedRejection = expect(initLbug(lockedId, lockedPath)).rejects.toThrow(
+      /LadybugDB unavailable for locked/,
+    );
     await vi.waitFor(() => {
       expect(createLbugDatabaseMock).toHaveBeenCalledTimes(1);
     });
@@ -151,7 +154,9 @@ describe('pool-adapter storage-version fail-fast and lock-retry backoff', () => 
       expect(createLbugDatabaseMock).toHaveBeenCalledTimes(3);
     });
     await vi.advanceTimersByTimeAsync(4000);
-    await expect(lockedInit).rejects.toThrow(/LadybugDB unavailable for locked/);
+    // Leave a turn for Node to detect any rejection without a handler.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await lockedRejection;
     expect(createLbugDatabaseMock).toHaveBeenCalledTimes(4);
   });
 });

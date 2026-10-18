@@ -121,6 +121,7 @@ export function tryEmitEdge(
   nodeLookup: GraphNodeLookup,
   site: {
     readonly inScope: ScopeId;
+    readonly callerScope?: ScopeId;
     readonly atRange: { startLine: number; startCol: number };
     readonly kind: string;
     /** See {@link isPhantomCalleeRead}. Set by the extractor from the
@@ -143,7 +144,12 @@ export function tryEmitEdge(
   // Inheritance edges are emitted directly by `preEmitInheritanceEdges` (which
   // owns the enclosing-class caller and the EXTENDS-vs-IMPLEMENTS type), so this
   // generic bridge derives caller + edge type purely from the site.
-  const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
+  const callerGraphId = resolveCallerGraphId(
+    site.callerScope ?? site.inScope,
+    scopes,
+    nodeLookup,
+    site.atRange,
+  );
   const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
   const edgeType = mapReferenceKindToEdgeType(site.kind as Reference['kind']);
   if (callerGraphId === undefined) return false;
@@ -214,6 +220,7 @@ export function tryEmitEdgeWithExplicitTargetId(
   nodeLookup: GraphNodeLookup,
   site: {
     readonly inScope: ScopeId;
+    readonly callerScope?: ScopeId;
     readonly atRange: { startLine: number; startCol: number };
     readonly kind: string;
     /** See `ReferenceSite.staticGated`; copied onto the emitted edge. */
@@ -226,7 +233,12 @@ export function tryEmitEdgeWithExplicitTargetId(
   collapseByCallerTarget = false,
   calleeCapture?: CalleeIdCaptureCtx,
 ): boolean {
-  const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
+  const callerGraphId = resolveCallerGraphId(
+    site.callerScope ?? site.inScope,
+    scopes,
+    nodeLookup,
+    site.atRange,
+  );
   const edgeType = mapReferenceKindToEdgeType(site.kind as Reference['kind']);
   if (callerGraphId === undefined) return false;
   if (edgeType === undefined) return false;

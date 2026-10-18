@@ -133,7 +133,7 @@ describe('resolveSharedStoreKey', () => {
     [{ [SHARED_STORE_ENV]: '0' }],
     [{ [STORAGE_PATH_ENV]: '/tmp/explicit-index' }],
     [{ [STORAGE_ROOT_ENV]: '/tmp/index-root' }],
-  ])('returns null for every checkout when disabled by %o', async (env) => {
+  ])('returns null for every checkout when disabled by %o (case %#)', async (env) => {
     const { main, wts } = await makeRepo(['wt']);
     expect(isSharedStoreDisabled(env)).toBe(true);
     expect(resolveSharedStoreKey(main, env)).toBeNull();

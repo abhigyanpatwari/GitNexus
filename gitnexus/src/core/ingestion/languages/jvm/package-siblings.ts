@@ -109,7 +109,9 @@ export function createJvmPackageSiblingVisibility(
         const moduleScopeId = parsed.scopes.find((scope) => scope.kind === 'Module')?.id;
         for (const scope of parsed.scopes) {
           if (scope.kind !== 'Class' || scope.parent !== moduleScopeId) continue;
-          const def = scope.ownedDefs.find((candidate) => isClassLike(candidate.type));
+          const def = scope.ownedDefs.find(
+            (candidate) => isClassLike(candidate.type) || candidate.type === 'Annotation',
+          );
           if (def !== undefined) classDefs.push({ def, filePath: parsed.filePath });
         }
       }

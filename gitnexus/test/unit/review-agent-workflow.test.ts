@@ -688,10 +688,10 @@ describe('gitnexus review-agent workflow security contract', () => {
     const expectedPins = [
       'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
       'actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3',
-      'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
-      'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
-      'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
-      'anthropics/claude-code-action/base-action@e0cf66d1d257526b5d07f141838c338921cb8455',
+      'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1',
+      'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9',
+      'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333',
+      'anthropics/claude-code-action/base-action@6fed3ca145920b639991cb756090506e1bcaf515',
     ];
 
     for (const pin of expectedPins) {
@@ -1442,8 +1442,8 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(analyze).toContain('fs.closeSync(descriptor)');
     expect(analyze).toContain('Buffer.byteLength');
     expect(analyze).toContain('60_000');
-    expect(analyze).toContain('actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
-    expect(publish).toContain('actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c');
+    expect(analyze).toContain('actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9');
+    expect(publish).toContain('actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333');
     expect(analyze).toContain('name=gitnexus-review-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}');
     expect(analyze).toContain('artifact_name: ${{ steps.artifact.outputs.name }}');
     expect(analyze).toContain('name: ${{ steps.artifact.outputs.name }}');

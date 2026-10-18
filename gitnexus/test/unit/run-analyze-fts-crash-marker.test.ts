@@ -22,6 +22,7 @@ import { ANALYSIS_FEATURES } from '../../src/core/analysis-feature-registry.js';
 import { resolveAnalysisFeatureVersions } from '../../src/core/analysis-features.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import { resolveParseCacheIdentity } from '../../src/core/parse-cache-identity.js';
 import { EMBEDDING_DIMS, SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   PROCESS_DETECTION_BUDGET_DEFAULTS,
@@ -67,18 +68,24 @@ const seedGitFile = async (repoPath: string): Promise<void> => {
   });
 };
 
-const incrementalMeta = (repoPath: string): RepoMeta => ({
-  repoPath,
-  lastCommit: 'stale-not-head',
-  indexedAt: new Date().toISOString(),
-  stats: {},
-  fileHashes: { [REL_FILE]: 'stale-hash' },
-  schemaFingerprint: SCHEMA_FINGERPRINT,
-  analysisFeatures: resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [REL_FILE]),
-  cjkSegmentation: getSearchFTSCjkSegmentation(),
-  embeddingDims: EMBEDDING_DIMS,
-  runnerIdentity: resolveAnalyzerRunnerIdentity(RUN_ANALYZE_URL.href),
-});
+const incrementalMeta = (repoPath: string): RepoMeta => {
+  const parser = resolveParseCacheIdentity(RUN_ANALYZE_URL.href);
+  if (parser.ok === false)
+    throw new Error(`Cannot verify fixture parser artifacts: ${parser.reason}`);
+  return {
+    repoPath,
+    lastCommit: 'stale-not-head',
+    indexedAt: new Date().toISOString(),
+    stats: {},
+    fileHashes: { [REL_FILE]: 'stale-hash' },
+    schemaFingerprint: SCHEMA_FINGERPRINT,
+    analysisFeatures: resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [REL_FILE]),
+    cjkSegmentation: getSearchFTSCjkSegmentation(),
+    embeddingDims: EMBEDDING_DIMS,
+    runnerIdentity: resolveAnalyzerRunnerIdentity(RUN_ANALYZE_URL.href),
+    parseCacheIdentity: { base: parser.identity.base },
+  };
+};
 
 const headCommit = (repoPath: string): string =>
   execSync('git rev-parse HEAD', { cwd: repoPath, encoding: 'utf8' }).trim();

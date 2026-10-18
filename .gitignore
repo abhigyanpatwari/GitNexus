@@ -31,6 +31,7 @@ npm-debug.log*
 
 # Testing
 coverage/
+.vitest/
 .tmp-test/
 gitnexus/.tmp-test/
 
@@ -86,6 +87,7 @@ gitnexus/test/fixtures/lang-resolution/**/bin
 GitNexus.sln
 # Git worktrees
 .worktrees/
+.devcontainer/generated/
 
 # Vendored tree-sitter grammar build artifacts (created at install time,
 # never committed). See docs/plans/2026-04-15-002-fix-tree-sitter-proto-vendor-deps-plan.md

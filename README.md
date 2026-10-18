@@ -169,7 +169,7 @@ flowchart TB
 | `trace`          | Shortest directed path between two symbols (call + class-member edges) |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
 | `check`          | Read-only structural checks against the indexed graph                  |
-| `rename`         | Multi-file coordinated rename with graph + text search                 |
+| `rename`         | Semantic rename — previews by default, `dry_run: false` with the preview's `plan_token` applies its exact reviewed edits |
 | `cypher`         | Raw Cypher graph queries                                               |
 | `route_map`      | API route map — which components fetch which endpoints, and handlers   |
 | `tool_map`       | MCP/RPC tool definitions — where they're defined and handled           |
@@ -372,7 +372,7 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 <details>
 <summary><strong>MCP read-only mode</strong></summary>
 
-Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. Raw `cypher`, rename and group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
+Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the proven single-repository read surface. `rename` stays available as a preview-only tool: its `dry_run` must be omitted or `true`, and any other value is rejected before backend dispatch. Raw `cypher`, group tools, group routing, and group resources are omitted from discovery and rejected before backend dispatch. Tool descriptions and generated setup/context resources are scrubbed so they do not recommend unavailable routes.
 
 The default is unchanged when the variable is unset or `0`. Any other value fails server startup rather than silently weakening the policy.
 
@@ -640,7 +640,8 @@ Most `analyze` knobs are also CLI flags (`--workers`, `--worker-timeout`, `--max
 | `GITNEXUS_SKIP_FTS` | unset | When exactly `1`, skips FTS extension loading and keyword index creation during analyze. Equivalent to `--skip-fts`; a later analyze without either option restores FTS. | Graph-only consumers with their own retrieval, or short-lived indexes that do not need keyword search. |
 | `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`             | `67108864` (64 MiB)                | LadybugDB WAL auto-checkpoint threshold in bytes. Equivalent to `--wal-checkpoint-threshold <bytes>`. `-1` keeps LadybugDB's stock threshold (~16 MiB). Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | You need a larger or smaller WAL auto-checkpoint threshold for your analyze workload.                                                                                                 |
 | `GITNEXUS_LBUG_BUFFER_POOL_SIZE`                | min(2 GiB, 80% RAM)                | LadybugDB buffer-pool ceiling in bytes for every GitNexus database (analyze, MCP server, serve, group bridges). `0` restores LadybugDB's native unbounded default of 80% of system RAM; invalid values warn and fall back to the default (#2557). During `analyze` the pool is right-sized to the graph, scaled on non-4 KiB-page hosts by the page-size granule ratio up to min(2 GiB × pageSize/4 KiB, 80% RAM) (#2631); this env var overrides all of that as an absolute value.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | A long-lived `gitnexus mcp` or a big incremental `analyze` uses too much memory, or a huge repo's working set genuinely needs a pool larger than 2 GiB.                               |
-| `GITNEXUS_LBUG_MAX_DB_SIZE`                     | `17179869184` (16 GiB)             | Maximum size in bytes of a single LadybugDB database file — an mmap/disk-address-space ceiling, not a memory limit (it does not constrain the buffer pool). Invalid values silently fall back to the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Indexing a genuinely huge monorepo whose on-disk graph index approaches 16 GiB.                                                                                                       |
+| `GITNEXUS_LBUG_MAX_DB_SIZE`                     | `17179869184` (16 GiB)             | Maximum size in bytes of a single LadybugDB database file — an mmap/disk-address-space ceiling, not a memory limit (it does not constrain the buffer pool). The native engine requires a power of two: any other positive integer is rounded up to the next power of two with a warning, and invalid values silently fall back to the default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Indexing a genuinely huge monorepo whose on-disk graph index approaches 16 GiB.                                                                                                       |
+| `GITNEXUS_ATOMIC_INCREMENTAL` | unset (the caller's choice) | `1` stages an incremental analyze into a copy of the index and swaps it in at the end, so a failed run leaves the live index untouched. `0` turns that off even for callers that request it (watch mode, auto-sync); the run logs a line when it overrides one. The cost: a failed in-place write can leave the live index partly written, and the next run then rebuilds it in full. A full rebuild, and an incremental run that escalates to a staged rebuild, still stage. POSIX only. | A staged incremental analyze fails (see *Troubleshooting* in the package README), or you need in-place writes. |
 | `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES`           | `8388608` (8 MB)                   | Per-job byte budget the pool will send to a worker in one `postMessage`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Very large individual files; mostly diagnostic — bumping past 8 MB risks structured-clone memory pressure.                                                                            |
 | `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                                | Max replacement spawns per worker slot before the slot is dropped from the active rotation. Bounds respawn loops on a chronically-crashing slot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Hosts where a flaky worker should retry more (raise) or fail-fast (lower) before the slot is dropped.                                                                                 |
 | `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs`            | Total retry wall-time budget per job before quarantining. Combined with `timeoutBackoffFactor`, prevents exponentially-growing retries from stalling for hours.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Slow files that legitimately need long total retry windows; lower to fail-fast on stalls.                                                                                             |
@@ -725,7 +726,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
-**Control flow (CFG, opt-in `--pdg`)** — per-function control-flow graphs (`BasicBlock` nodes + `CFG` edges) feeding the PDG/taint substrate, currently **TypeScript & JavaScript** (#2081 M1); other languages planned. Off by default.
+**Control flow (CFG, opt-in `--pdg`)** — provider-owned control-flow graphs (`BasicBlock` nodes + `CFG` edges) feed control dependence and reaching definitions across the registered source languages. AST providers describe callable regions; COBOL uses source-backed program regions. Unsupported constructs and region limits produce explicit skips. Off by default.
 
 ### Multi-Repo Architecture
 
@@ -874,18 +875,71 @@ changed_symbols: [validateUser, AuthService, ...]
 affected_processes: [LoginFlow, RegistrationFlow, ...]
 ```
 
-### Rename (Multi-File)
+### Rename (Graph and Semantic Layer)
 
+```js
+rename({symbol_name: "validateUser", new_name: "verifyUser", repo: "my-app", dry_run: true})
+// Omitting dry_run also previews. For an ambiguous name, repeat with the symbol_uid from context().
 ```
-rename({symbol_name: "validateUser", new_name: "verifyUser", dry_run: true})
 
+```text
+result_version: 2
 status: success
+planning_status: ready
+application_status: not_requested
+applied: false
 files_affected: 5
 total_edits: 8
-graph_edits: 6     (high confidence)
-text_search_edits: 2  (review carefully)
-changes: [...]
+semantic_edits: 8
+graph_edits: 0
+text_search_edits: 0
+text_search: not_used
+coverage: {name: "gitnexus-semantic", scope: "indexed-repository", languages: [...], limitations: [...], ...}
+changes: [{file_path, edits: [{start, length, old_text, new_text, line, confidence: "semantic"}]}]
 ```
+
+Review the exact UTF-16 spans and coverage, then call `rename` with the same
+selectors, `dry_run: false`, and its returned `plan_token` to apply exactly those edits.
+Tokens are single-use, expire after 15 minutes or a server restart, and may be
+evicted by the bounded retained-plan cache. Changed source contents, physical
+targets, indexed declarations, provider resolution configuration or source-file sets (including untracked additions)
+require a fresh reviewed preview. Omitting `dry_run` also previews.
+Configuration is compared by provider resolution semantics; comment-only changes
+that preserve those semantics are accepted. Unedited source aliases of an edited
+physical file block preview. Apply checks configuration before the first write
+and source contents and approved targets before each replacement; these checks
+assume a cooperative checkout and do not form a filesystem transaction.
+Counts describe occurrences, including multiple edits on one line. The graph
+selects indexed declarations and files; GitNexus's language providers rebuild
+semantic scopes from the current source and resolve exact name spans.
+
+Rename does not load a compiler or language service. Comments, strings, and
+unrelated same-spelled symbols are preserved. Unsupported syntax, ambiguous
+bindings, stale declarations, and incomplete occurrence coverage block writes.
+Coverage includes indexed files accepted by the selected language provider,
+including its supported embedded-language sources, and excludes unindexed files
+and external consumers. Each registered source-language provider supplies rename
+rules. Constructor, destructor, inheritance, and interface families require
+complete provider evidence. Dynamic or computed references block a rename when
+the provider cannot prove their binding or exclude them from the selected family.
+`rename` operates on the current checkout and rejects `branch`.
+
+Language-specific limits remain explicit in the result. For example, PHP handles
+case-insensitive function/class names separately from case-sensitive constants
+and properties, but refuses class renames that require moving a PSR-4 file.
+Java also refuses public top-level type renames that require a source-file move.
+Rename edits source spans; it does not move files or rewrite dynamic string names.
+
+Preview and apply recompute their plans independently. Source snapshots are
+checked before writes; this is not a cross-call preview token or transactional
+filesystem operation. The final destination check and replacement are separate
+operations, so another process can still change a file between them. Avoid
+concurrent source writes during application. On a write failure, `status: partial` and `failed_files`
+report the failed file and `unattempted_files` lists the later files that were never touched;
+`applied`, counts, and `changes` describe only landed edits.
+Inspect failures before retrying, and run type checking, tests, and
+`detect_changes` after applying. A valid identifier is not a guarantee against
+new-name collisions.
 
 ### Cypher Queries
 

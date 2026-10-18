@@ -343,6 +343,14 @@
     "captureGroups": 11,
     "digest": "c372e232faf99874eff46877b71f70b533b496832b762833f2b266ca9939978f"
   },
+  "php-nested-function/main.php": {
+    "captureGroups": 13,
+    "digest": "7fab180036a0224560d1be1f980e720aed1f0ac145b31bdda2db3ff30dd2df4f"
+  },
+  "php-nested-function/other.php": {
+    "captureGroups": 5,
+    "digest": "61a67454c4e1a950b86e7240ac3700a6e2ef4256a3a78ddb533c111823a5cbd1"
+  },
   "php-nullable-receiver/app/Models/Repo.php": {
     "captureGroups": 7,
     "digest": "44921bb2ae5aba27957cd45a7d3e515425f27f8e93af5d6285125b94f5d9ba88"
@@ -509,7 +517,7 @@
   },
   "php-typed-property-dedup/app/Services/Mixed.php": {
     "captureGroups": 15,
-    "digest": "25262e91a1f84e6b34c794c9bc4f61771f41325bc1c3d028901fbb8334284ca2"
+    "digest": "e6fb3d41d7229b638f4900953f3e46c3e63200bd95f22513e8ac2d5974563cbf"
   },
   "php-unresolved-receiver-arity/app/Models/Handler.php": {
     "captureGroups": 28,
@@ -520,8 +528,8 @@
     "digest": "474a7bac44ce6026b3cb4489d8d3d8e359959c32f43a10b32e006a1869ff0995"
   },
   "php-use-function-const/app/Config/constants.php": {
-    "captureGroups": 2,
-    "digest": "c045ce0a40c3396cdfbbf0fbbe24792fe2bba6dfba14f739b15a4bb5ae90a778"
+    "captureGroups": 3,
+    "digest": "f140ba6989fa70597842fb7f3115563a863c8542adcd4a5dac9ee79d6f0e3afc"
   },
   "php-use-function-const/app/Models/User.php": {
     "captureGroups": 10,

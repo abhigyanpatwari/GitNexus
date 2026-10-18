@@ -1,3 +1,4 @@
+import { rustRenameProvider } from './rust/rename.js';
 /**
  * Rust Language Provider
  *
@@ -126,6 +127,7 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const rustProvider = defineLanguage({
+  rename: rustRenameProvider,
   id: SupportedLanguages.Rust,
   extensions: ['.rs'],
   entryPointPatterns: [/^(get|post|put|delete)_handler$/i, /^handle_/, /^new$/, /^run$/, /^spawn/],

@@ -439,7 +439,7 @@ function resolveRuntimeVariant(): RuntimeVariant {
 
 function snapshotReadableFile(candidate: string): ReadableFileState {
   const link = lstatSync(candidate, { bigint: true });
-  const target = statSync(candidate, { bigint: true });
+  const target = link.isFile() ? link : statSync(candidate, { bigint: true });
   if (!target.isFile()) throw new Error(`Analyzer identity input is not a file: ${candidate}`);
   return {
     link: statState(link),
@@ -1199,7 +1199,9 @@ function collectRuntimePackages(
   edges: RuntimeDependencyEdge[];
 } {
   const rootManifestPath = path.join(packageRoot, 'package.json');
-  recordDirectoryGuard(directoryGuards, packageRoot);
+  // The package root also contains reports and temporary test output. Its
+  // inventory is not runtime input: the manifest, dependency resolution paths,
+  // build tree and vendored payloads each have their own guards.
   const rootRead = readManifest(rootManifestPath, options, budget, limits);
   const rootPackage: RuntimePackage = {
     root: packageRoot,
@@ -1421,6 +1423,7 @@ function collectArtifacts(
 function collectVendoredGrammarInputs(
   packageRoot: string,
   directoryGuards: Map<string, DependencyDirectoryGuard>,
+  pathGuards: Map<string, DependencyPathGuardResult>,
   options: AnalyzerIdentityResolveOptions,
   budget: RuntimeArtifactScanBudget,
   limits: AnalyzerIdentityTraversalLimits,
@@ -1429,8 +1432,8 @@ function collectVendoredGrammarInputs(
   artifacts: RuntimeArtifact[];
 } {
   const vendorRoot = path.join(packageRoot, 'vendor');
+  recordDependencyPathGuard(pathGuards, vendorRoot);
   if (!existsSync(vendorRoot) || !lstatSync(vendorRoot).isDirectory()) {
-    recordDirectoryGuard(directoryGuards, packageRoot);
     return { manifests: [], artifacts: [] };
   }
 
@@ -1505,6 +1508,7 @@ function collectDependencyInputs(
   const vendored = collectVendoredGrammarInputs(
     packageRoot,
     directoryGuards,
+    pathGuards,
     options,
     artifactScanBudget,
     limits,
@@ -2288,7 +2292,7 @@ const probe = async (request) => {
       if (JSON.stringify(state(link)) !== JSON.stringify(state(after))) return null;
       return { type: 'directory-inventory', state: state(after), entriesDigest };
     }
-    const target = await fs.stat(request.absolutePath, { bigint: true });
+    const target = link.isFile() ? link : await fs.stat(request.absolutePath, { bigint: true });
     if (!target.isFile()) return null;
     const result = { type: 'readable-file', state: { link: state(link), target: state(target) } };
     if (link.isSymbolicLink()) result.state.symlinkTarget = await fs.readlink(request.absolutePath);
@@ -2874,3 +2878,15 @@ export function finalizeAnalyzerRunnerIdentity(
   }
   return finalIdentity;
 }
+
+/** Narrow, non-loading artifact primitives shared by parser identity.
+ * The analyzer receipt and its existing cache retain their separate contract. */
+export const analyzerIdentityArtifacts = {
+  hashCanonicalFrames,
+  hashStableFile,
+  snapshotReadableFile,
+  snapshotDirectoryInventory,
+  resolveBuildRoot,
+  resolveRuntimeVariant,
+  isInside,
+};

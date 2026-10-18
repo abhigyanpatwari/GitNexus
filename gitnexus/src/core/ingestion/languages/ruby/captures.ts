@@ -1,4 +1,5 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { recordRubyMemberDispatch } from './member-dispatch.js';
 import {
   findChild,
   nodeIfType,
@@ -245,6 +246,30 @@ function isRubyInstanceIvarWrite(ivarNode: SyntaxNode | undefined): boolean {
   return false;
 }
 
+/** Whether an ordinary `def` has a provable lexical class/module definee. */
+function isRubyLexicalMethod(node: SyntaxNode): boolean {
+  if (node.type !== 'method') return false;
+  for (let ancestor = node.parent; ancestor !== null; ancestor = ancestor.parent) {
+    switch (ancestor.type) {
+      // Singleton bodies choose a different definee. A block's receiver can
+      // also rebind it, including through user helpers (see the ivar gate).
+      case 'singleton_method':
+      case 'singleton_class':
+      case 'do_block':
+      case 'block':
+      case 'lambda':
+      case 'begin_block':
+      case 'end_block':
+        return false;
+      case 'class':
+      case 'module':
+      case 'program':
+        return true;
+    }
+  }
+  return false;
+}
+
 export function emitRubyScopeCaptures(
   sourceText: string,
   _filePath: string,
@@ -271,6 +296,7 @@ export function emitRubyScopeCaptures(
     throw scopeExtractionError('scope query', _filePath, err);
   }
 
+  recordRubyMemberDispatch(tree.rootNode, _filePath);
   const out: CaptureMatch[] = [];
 
   for (const m of rawMatches) {
@@ -363,6 +389,17 @@ export function emitRubyScopeCaptures(
           if (nameCap !== undefined) {
             grouped['@declaration.name'] = nameCap;
           }
+        }
+
+        // Preserve AST classification across declaration.function → method
+        // reclassification. Parsing the source prefix here would confuse
+        // `def target.target` with an ordinary def and miss comments after def.
+        if (isRubyLexicalMethod(fnNode)) {
+          grouped['@declaration.lexical-method'] = syntheticCapture(
+            '@declaration.lexical-method',
+            fnNode,
+            'true',
+          );
         }
 
         const arity = computeRubyDeclarationArity(fnNode);
@@ -820,6 +857,17 @@ function decomposeRubyImport(callNode: SyntaxNode, anchor: Capture): CaptureMatc
   }
 
   if (sourcePath === '') return null;
+
+  // require_relative always resolves from this file, including a bare sibling
+  // spelling. Preserve that distinction for the provider's import resolver.
+  if (
+    methodName === 'require_relative' &&
+    !sourcePath.startsWith('./') &&
+    !sourcePath.startsWith('../') &&
+    !sourcePath.startsWith('/')
+  ) {
+    sourcePath = `./${sourcePath}`;
+  }
 
   const segments = sourcePath.replace(/\\/g, '/').split('/');
   const lastSegment = segments[segments.length - 1]!;

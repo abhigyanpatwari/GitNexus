@@ -51,16 +51,24 @@ import { tryEmitEdge, type CalleeIdCaptureCtx } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
-  findCallableBindingInScope,
+  findAllCallableBindingCandidatesInScope,
   findClassBindingInScope,
   findOwnedMember,
   isNamespaceNameShadowed,
   isOwnerNameShadowedBySomethingElse,
   lookupBindingsAt,
 } from '../scope/walkers.js';
+import {
+  collectNamespaceTargets,
+  type NamespaceTargetOptions,
+} from '../scope/namespace-targets.js';
 import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import { CALL_TARGET_TYPES } from '../../model/symbol-table.js';
+import {
+  sourceBindingForDefinition,
+  type SourceBindingRecorder,
+} from '../source-binding-resolution.js';
 
 /**
  * Keys registered by more than this many distinct functions are skipped —
@@ -151,10 +159,27 @@ export function resolveValueRefTarget(
   scopes: ScopeResolutionIndexes,
   model: SemanticModel,
   publishesImportedNames: boolean,
+  namespaceOptions?: NamespaceTargetOptions,
+  recordSourceBinding?: SourceBindingRecorder,
 ): SymbolDefinition | undefined {
   const receiverName = site.explicitReceiver?.name;
   if (receiverName === undefined) {
-    return findCallableBindingInScope(site.inScope, site.name, scopes);
+    const candidates = findAllCallableBindingCandidatesInScope(site.inScope, site.name, scopes, {
+      position: site.atRange,
+      purpose: 'value',
+    });
+    const first = candidates[0];
+    recordSourceBinding?.(
+      site,
+      candidates.length === 1 && first !== undefined
+        ? sourceBindingForDefinition(first.def, 'value-reference', first.bindings, site.inScope)
+        : {
+            status: candidates.length > 1 ? 'ambiguous' : 'unresolved',
+            targetDefIds: candidates.map((candidate) => candidate.def.nodeId),
+            basis: 'value-reference',
+          },
+    );
+    return first?.def;
   }
   // NAMESPACE FIRST, and the order is load-bearing. `findClassBindingInScope`
   // does not stop at the scope chain: when its `isClassLike` walk misses — and a
@@ -178,8 +203,15 @@ export function resolveValueRefTarget(
     receiverName,
     scopes,
     publishesImportedNames,
+    namespaceOptions,
   );
   if (viaNamespace !== undefined) {
+    recordSourceBinding?.(
+      site,
+      viaNamespace === 'owned'
+        ? { status: 'blocked', targetDefIds: [], basis: 'namespace-value-reference' }
+        : sourceBindingForDefinition(viaNamespace, 'namespace-value-reference'),
+    );
     // `'owned'` is NOT "no answer" — it is "this receiver is a namespace handle
     // this file wrote, and it names no callable member". The two must not be
     // conflated, because falling through from the second one reaches
@@ -199,7 +231,17 @@ export function resolveValueRefTarget(
     return viaNamespace === 'owned' ? undefined : viaNamespace;
   }
 
-  const owner = findClassBindingInScope(site.inScope, receiverName, scopes);
+  let groundedOwner = true;
+  const owner = findClassBindingInScope(site.inScope, receiverName, scopes, undefined, {
+    onNameFallback:
+      recordSourceBinding === undefined
+        ? undefined
+        : () => {
+            groundedOwner = false;
+          },
+    position: site.atRange,
+    purpose: 'value',
+  });
   if (owner !== undefined) {
     // The container lookup is a CLASS-ONLY walk: `walkScopeChain` filters by
     // `isClassLike`, so it steps over a nearer binding that is a value and keeps
@@ -222,6 +264,16 @@ export function resolveValueRefTarget(
       return undefined;
     const member = findOwnedMember(owner.nodeId, site.name, model);
     if (member === undefined || !CALL_TARGET_TYPES.has(member.type)) return undefined;
+    recordSourceBinding?.(
+      site,
+      groundedOwner
+        ? sourceBindingForDefinition(member, 'qualified-value-reference')
+        : {
+            status: 'unresolved',
+            targetDefIds: [member.nodeId],
+            basis: 'value-reference-name-fallback',
+          },
+    );
     return member;
   }
   return undefined;
@@ -271,17 +323,27 @@ function findNamespaceValueRefTarget(
   receiverName: string,
   scopes: ScopeResolutionIndexes,
   publishesImportedNames: boolean,
+  namespaceOptions?: NamespaceTargetOptions,
 ): SymbolDefinition | 'owned' | undefined {
   const moduleScopeId = scopes.moduleScopes.get(filePath);
   if (moduleScopeId === undefined) return undefined;
-  const targetFiles: string[] = [];
-  for (const edge of scopes.imports.get(moduleScopeId) ?? []) {
-    if (edge.kind !== 'namespace' || edge.localName !== receiverName) continue;
-    if (edge.targetFile === null) continue;
-    if (!targetFiles.includes(edge.targetFile)) targetFiles.push(edge.targetFile);
-  }
+  const targetFiles =
+    collectNamespaceTargets({ moduleScope: moduleScopeId }, scopes, {
+      ...namespaceOptions,
+      inScope: site.inScope,
+      position: site.atRange,
+    }).get(receiverName) ?? [];
   if (targetFiles.length === 0) return undefined;
-  if (isNamespaceNameShadowed(receiverName, site.inScope, scopes)) return undefined;
+  if (
+    isNamespaceNameShadowed(
+      receiverName,
+      site.inScope,
+      scopes,
+      namespaceOptions?.skipEnclosingClasses,
+      site.atRange,
+    )
+  )
+    return undefined;
 
   /** The unique callable `select` finds across every target file, or nothing. */
   const uniqueMember = (
@@ -320,12 +382,11 @@ function findNamespaceValueRefTarget(
   // imported names for a name the file declares. Same rule here, so `x.f` and
   // `x.f()` cannot disagree about which module owns the name.
   //
-  // Not reachable through valid Zig today — a container cannot declare a name
-  // twice, so one target file cannot hold both spellings, and Zig is the only
-  // provider that sets `namespaceExportsIncludeImportedNames`. It becomes
-  // reachable the moment a second provider opts in, or a receiver binds more
-  // than one target file; the guard is one `some` and the alternative failure
-  // is a confident edge into the wrong module.
+  // Providers that set `namespaceExportsIncludeImportedNames` can expose local
+  // and published bindings under one name; a receiver can also bind more than
+  // one target file. In either case, a local declaration owns the name even
+  // when it is not callable. The guard is one `some` and the alternative
+  // failure is a confident edge into the wrong module.
   const declaredLocally = targetFiles.some((targetFile) => {
     const targetScopeId = scopes.moduleScopes.get(targetFile);
     return targetScopeId !== undefined && localRefs(targetScopeId).length > 0;
@@ -339,7 +400,11 @@ function findNamespaceValueRefTarget(
   // does for the CALL form.
   const published = uniqueMember((scope) =>
     lookupBindingsAt(scope, site.name, scopes).filter(
-      (ref) => ref.origin === 'import' || ref.origin === 'namespace' || ref.origin === 'reexport',
+      (ref) =>
+        ref.origin === 'import' ||
+        ref.origin === 'namespace' ||
+        ref.origin === 'reexport' ||
+        ref.origin === 'wildcard',
     ),
   );
   return published === 'ambiguous' || published === undefined ? 'owned' : published;
@@ -359,6 +424,8 @@ export function emitPropertyDispatchCalls(
    * so the CALL and the REGISTRATION forms of `hub.fn` cannot disagree.
    */
   publishesImportedNames = false,
+  namespaceOptions?: NamespaceTargetOptions,
+  recordSourceBinding?: SourceBindingRecorder,
 ): {
   usesEmitted: number;
   callsEmitted: number;
@@ -380,6 +447,8 @@ export function emitPropertyDispatchCalls(
         scopes,
         model,
         publishesImportedNames,
+        namespaceOptions,
+        recordSourceBinding,
       );
       if (def === undefined) continue;
 

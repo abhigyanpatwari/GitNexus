@@ -18,6 +18,7 @@ import {
 } from './php/index.js';
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { phpRenameProvider } from './php/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { phpClassConfig } from '../class-extractors/configs/php.js';
 import { createPhpCfgVisitor } from '../cfg/visitors/php.js';
@@ -266,6 +267,7 @@ function isPhpRouteFile(filePath: string): boolean {
 }
 
 export const phpProvider = defineLanguage({
+  rename: phpRenameProvider,
   id: SupportedLanguages.PHP,
   extensions: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
   entryPointPatterns: [

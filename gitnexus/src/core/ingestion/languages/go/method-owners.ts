@@ -4,6 +4,7 @@ import { isClassLike, populateClassOwnedMembers } from '../../scope-resolution/s
 
 import { goPackageDir, inferGoPackageName } from './package-clause.js';
 import { stampGoInterfaceTypeParameters } from './generic-type-parameters.js';
+import { goFileBuildConstraint, goBuildConstraintsMayOverlap } from './build-constraints.js';
 
 /** Bound on the sample of no-package-clause paths named in the warning. */
 const SKIPPED_SAMPLE_CAP = 5;
@@ -71,22 +72,48 @@ export function populateGoWorkspaceOwners(
   }
 
   for (const bucket of filesByPackage.values()) {
-    populateGoOwnersInPackage(bucket);
+    populateGoOwnersInPackage(bucket, ctx.fileContents);
   }
 }
 
-function populateGoOwnersInPackage(parsedFiles: readonly ParsedFile[]): void {
-  // Build struct name → def map from ALL scopes' ownedDefs (struct defs
-  // live in Class scopes now, not Module scope).
-  const structByQualifiedName = new Map<string, { nodeId: string; qualifiedName: string }>();
+function populateGoOwnersInPackage(
+  parsedFiles: readonly ParsedFile[],
+  fileContents?: ReadonlyMap<string, string>,
+): void {
+  // Receiver base types must be declared at package scope. Struct defs live
+  // in their own Class scopes; local types below a Function or Block cannot
+  // own top-level methods or make a package-level candidate ambiguous.
+  // Keep candidates until each method's build constraints are known. Two
+  // declarations in disjoint build variants are not competing owners.
+  type Owner = { nodeId: string; qualifiedName: string; filePath: string };
+  const structByQualifiedName = new Map<string, Map<string, Owner>>();
+  const constraints = new Map(
+    parsedFiles.map((parsed) => [
+      parsed.filePath,
+      goFileBuildConstraint(parsed.filePath, fileContents?.get(parsed.filePath)),
+    ]),
+  );
   for (const parsed of parsedFiles) {
+    const moduleIds = new Set(
+      parsed.scopes.filter((scope) => scope.kind === 'Module').map((scope) => scope.id),
+    );
     for (const scope of parsed.scopes) {
+      if (
+        scope.kind !== 'Module' &&
+        !(scope.kind === 'Class' && scope.parent !== null && moduleIds.has(scope.parent))
+      ) {
+        continue;
+      }
       for (const def of scope.ownedDefs) {
         if (isClassLike(def.type) && def.qualifiedName) {
-          structByQualifiedName.set(def.qualifiedName, {
+          const candidates =
+            structByQualifiedName.get(def.qualifiedName) ?? new Map<string, Owner>();
+          candidates.set(def.nodeId, {
             nodeId: def.nodeId,
             qualifiedName: def.qualifiedName,
+            filePath: parsed.filePath,
           });
+          structByQualifiedName.set(def.qualifiedName, candidates);
         }
       }
     }
@@ -95,13 +122,13 @@ function populateGoOwnersInPackage(parsedFiles: readonly ParsedFile[]): void {
   // 2. Go-specific method owner: each Method def lives in a Function
   //    scope whose typeBindings carry the self entry (kept there by
   //    goBindingScopeFor). Match the self rawName against struct defs.
+  const candidatesByReceiver = new Map<string, readonly Owner[]>();
   if (structByQualifiedName.size > 0) {
     for (const parsed of parsedFiles) {
+      const compatibleFiles = new Map<string, boolean>();
       for (const scope of parsed.scopes) {
         if (scope.kind !== 'Function') continue;
-        const methodDefs = scope.ownedDefs.filter(
-          (d) => d.type === 'Method' && d.ownerId === undefined,
-        );
+        const methodDefs = scope.ownedDefs.filter((d) => d.type === 'Method');
         if (methodDefs.length === 0) continue;
 
         // Find the self typeBinding in this Function scope.
@@ -117,16 +144,42 @@ function populateGoOwnersInPackage(parsedFiles: readonly ParsedFile[]): void {
         if (receiverType === undefined) continue;
         receiverType = receiverType.replace(/^\*+/, '').trim();
 
-        let owner = structByQualifiedName.get(receiverType);
-        if (owner === undefined) {
-          for (const [qname, candidate] of structByQualifiedName) {
-            if (qname.endsWith('.' + receiverType)) {
-              owner = candidate;
-              break;
-            }
-          }
+        // The per-file pass may have found a local declaration before the
+        // workspace revealed a duplicate. Recompute receiver ownership from
+        // the complete package instead of retaining that premature choice.
+        for (const def of methodDefs) {
+          delete (def as { ownerId?: string }).ownerId;
+          delete (def as { goReceiverKind?: 'value' | 'pointer' }).goReceiverKind;
         }
-        if (owner !== undefined) {
+
+        let candidates = candidatesByReceiver.get(receiverType);
+        if (candidates === undefined) {
+          const exact = structByQualifiedName.get(receiverType);
+          candidates = exact
+            ? [...exact.values()]
+            : [...structByQualifiedName]
+                .filter(([qname]) => qname.endsWith('.' + receiverType))
+                .flatMap(([, defs]) => [...defs.values()]);
+          candidatesByReceiver.set(receiverType, candidates);
+        }
+        let owner: Owner | null | undefined;
+        for (const candidate of candidates) {
+          let compatible = compatibleFiles.get(candidate.filePath);
+          if (compatible === undefined) {
+            compatible = goBuildConstraintsMayOverlap(
+              constraints.get(parsed.filePath) ?? null,
+              constraints.get(candidate.filePath) ?? null,
+            );
+            compatibleFiles.set(candidate.filePath, compatible);
+          }
+          if (!compatible) continue;
+          if (owner !== undefined && owner.nodeId !== candidate.nodeId) {
+            owner = null;
+            break;
+          }
+          owner = candidate;
+        }
+        if (owner !== undefined && owner !== null) {
           for (const def of methodDefs) {
             (def as { ownerId?: string }).ownerId = owner.nodeId;
             (def as { goReceiverKind?: 'value' | 'pointer' }).goReceiverKind = receiverKind;

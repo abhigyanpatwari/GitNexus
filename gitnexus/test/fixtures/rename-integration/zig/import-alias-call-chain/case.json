@@ -1,0 +1,77 @@
+{
+  "language": "zig",
+  "description": "Rename a public function through a module alias while preserving the imported local name and three levels of callers. Zig has no nominal override family.",
+  "categories": ["call-graph", "import-alias", "call-chain"],
+  "target": {
+    "name": "process",
+    "kind": "Function",
+    "file": "service.zig"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "main",
+        "kind": "Function",
+        "file": "main.zig",
+        "startLine": 2
+      },
+      "to": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "service.zig",
+        "startLine": 2
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "main",
+        "kind": "Function",
+        "file": "main.zig",
+        "startLine": 2
+      },
+      "to": {
+        "name": "process",
+        "kind": "Function",
+        "file": "service.zig",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "service.zig",
+        "startLine": 1
+      },
+      "to": {
+        "name": "process",
+        "kind": "Function",
+        "file": "service.zig",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "service.zig",
+        "startLine": 2
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "service.zig",
+        "startLine": 1
+      }
+    }
+  ]
+}

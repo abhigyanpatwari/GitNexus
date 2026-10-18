@@ -1,0 +1,22 @@
+{
+  "language": "python",
+  "description": "Refuse a literal attribute access on a receiver that inherits the selected member.",
+  "categories": [
+    "dynamic-attribute",
+    "polymorphism",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  }
+}

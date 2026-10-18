@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { cleanupTempDir } from '../../helpers/test-db.js';
+import { tsxLoaderUrl } from '../../helpers/cli-entry.js';
 import {
   openBridgeDb,
   ensureBridgeSchema,
@@ -701,6 +703,41 @@ describe("writeBridge — the swap runs inside the caller's critical section (R9
     const meta = await readBridgeMeta(tmpDir);
     expect(meta.missingRepos).toEqual(['second']);
     expect(await bridgeMetaMatchesFile(tmpDir, meta)).toBe(true);
+  }, 30_000);
+
+  it('releases the native database before returning, while the writer process is still alive', async () => {
+    await writeBridge(tmpDir, payload('writer'));
+    const meta = await readBridgeMeta(tmpDir);
+    expect(await bridgeMetaMatchesFile(tmpDir, meta)).toBe(true);
+
+    // Block this process while a new writer opens the published bridge. This
+    // prevents parent-side GC from hiding QueryResults that still own the DB.
+    const reader = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        tsxLoaderUrl(),
+        '--input-type=module',
+        '-e',
+        `
+          const { openBridgeDb, queryBridge, closeBridgeDb } = await import(process.argv[1]);
+          const handle = await openBridgeDb(process.argv[2]);
+          try {
+            const rows = await queryBridge(handle, 'MATCH (c:Contract) RETURN c.repo AS repo');
+            console.log(JSON.stringify(rows));
+          } finally {
+            await closeBridgeDb(handle);
+          }
+        `,
+        new URL('../../../src/core/group/bridge-db.ts', import.meta.url).href,
+        path.join(tmpDir, 'bridge.lbug'),
+      ],
+      { encoding: 'utf8', timeout: 15_000 },
+    );
+
+    expect(reader.error).toBeUndefined();
+    expect(reader.status, reader.stderr).toBe(0);
+    expect(JSON.parse(reader.stdout)).toEqual([{ repo: 'writer' }]);
   }, 30_000);
 
   it('a writer that died mid-swap leaves state the next write recovers from', async () => {

@@ -42,7 +42,7 @@ import { typeApplicationArguments } from '../../utils/template-arguments.js';
 import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/generic-instantiation.js';
 import { expandDartWildcardNames } from './expand-wildcards.js';
 import { dartIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
-import { loadDartPackageConfig } from './package-config.js';
+import { captureDartPackageConfig, loadDartPackageConfig } from './package-config.js';
 import { emitDartPackageDependencies } from './package-dependencies.js';
 
 interface ClassDefRef {
@@ -202,12 +202,15 @@ export const dartScopeResolver: ScopeResolver = {
   importEdgeReason: 'dart-scope: import',
 
   loadResolutionConfig: loadDartPackageConfig,
+  captureResolutionConfig: captureDartPackageConfig,
   // Package dependencies use cached ParsedFile facts, never raw source text.
   postExtractSourceTextPolicy: 'uncached-files',
   emitPostResolutionEdges: (graph, parsedFiles, _nodeLookup, _indexes, ctx) =>
     emitDartPackageDependencies(graph, parsedFiles, ctx.resolutionConfig),
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveDartImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
+
+  isNamespaceImport: (parsedImport) => parsedImport.kind === 'namespace',
 
   // Dart `import` is whole-library: every public top-level symbol of the
   // target enters scope. Enumerating them lets `propagateImportedReturnTypes`

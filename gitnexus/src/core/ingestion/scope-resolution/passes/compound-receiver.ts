@@ -34,6 +34,8 @@ import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import type { DecorationStripper } from '../scope/walkers.js';
 import {
   findClassBindingInScope,
+  lookupNameClaim,
+  hasExplicitNameClaim,
   resolveClassBindingForName,
   findEnclosingClassDef,
   findExportedDef,
@@ -88,6 +90,12 @@ function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } 
 type ReceiverTypeRecorder = (spelling: string, defId: string) => void;
 
 interface ResolveCompoundReceiverOptions {
+  readonly onNameFallback?: () => void;
+  readonly lookupPosition?: TypeRef['lookupPosition'];
+  readonly namespaceTargetsAt?: (
+    scope: ScopeId,
+    position?: TypeRef['lookupPosition'],
+  ) => ReadonlyMap<string, readonly string[]>;
   /**
    * Optional sink for the DECLARED TYPE SPELLINGS this fold typed receiver
    * positions from (#2912). The fold returns a class, and a class has lost the
@@ -132,6 +140,10 @@ interface ResolveCompoundReceiverOptions {
   /** A namespace member may be a name the target module imported and
    *  publishes (hub modules). See `ScopeResolver.namespaceExportsIncludeImportedNames`. */
   readonly namespaceExportsIncludeImportedNames?: boolean;
+  /** `ScopeResolver.isNamespaceMemberVisible`, bound to the provider. Absent ⇒
+   *  every namespace member is visible, exactly as before. */
+  readonly namespaceMemberVisible?: (def: SymbolDefinition) => boolean;
+  readonly namespaceSkipsEnclosingClasses?: boolean;
   /** Resolve a qualified CLASS name (`opmod.Op`, `hub.sub.Thing`,
    *  `mod.Outer.Inner`) through the language's namespace chain walk
    *  (`ScopeResolver.resolveNamespaceChains`). Seeds the dotted-chain walk
@@ -142,6 +154,7 @@ interface ResolveCompoundReceiverOptions {
   readonly resolveQualifiedClass?: (
     qualifiedName: string,
     inScope: ScopeId,
+    position?: TypeRef['lookupPosition'],
   ) => SymbolDefinition | undefined;
   /** Compact receiver chain for THIS site (`ReferenceSite.receiverChain`), when
    *  the language's capture emitter produced one. Present ⇒ the structural fold
@@ -254,23 +267,46 @@ function resolveConstructionExpressionClass(
     // A verified namespace is authoritative: do not fall through to the
     // workspace-wide simple-name heuristics on either a miss or ambiguity.
     if (namespaceFiles.length > 0) {
-      if (isNamespaceNameShadowed(namespaceName, inScope, scopes)) return undefined;
+      if (
+        isNamespaceNameShadowed(
+          namespaceName,
+          inScope,
+          scopes,
+          options.namespaceSkipsEnclosingClasses,
+          options.lookupPosition,
+        )
+      )
+        return undefined;
       const namespaceMatches = namespaceFiles
         .map((targetFile) =>
           options.namespaceExportsIncludeImportedNames === true
-            ? findExportedDefIncludingImportedNames(targetFile, exportedName, index, scopes)
-            : findExportedDef(targetFile, exportedName, index),
+            ? findExportedDefIncludingImportedNames(
+                targetFile,
+                exportedName,
+                index,
+                scopes,
+                options.namespaceMemberVisible,
+              )
+            : findExportedDef(targetFile, exportedName, index, options.namespaceMemberVisible),
         )
         .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
       return namespaceMatches.length === 1 ? namespaceMatches[0] : undefined;
     }
   }
 
-  const direct = findClassBindingInScope(inScope, calleeName, scopes);
+  const direct = findClassBindingInScope(inScope, calleeName, scopes, undefined, {
+    onNameFallback: options.onNameFallback,
+    position: options.lookupPosition,
+    purpose: 'value',
+  });
   if (direct !== undefined && isClassLike(direct.type)) return direct;
 
   if (baseName.length > 0 && baseName !== calleeName) {
-    const viaBaseName = findClassBindingInScope(inScope, baseName, scopes);
+    const viaBaseName = findClassBindingInScope(inScope, baseName, scopes, undefined, {
+      onNameFallback: options.onNameFallback,
+      position: options.lookupPosition,
+      purpose: 'value',
+    });
     if (viaBaseName !== undefined && isClassLike(viaBaseName.type)) return viaBaseName;
   }
 
@@ -278,15 +314,28 @@ function resolveConstructionExpressionClass(
   // unambiguous qualified-name match, then fall back to the trailing simple
   // name the way receiver resolution does elsewhere (#2708).
   if (lastDot === -1) return undefined;
+  const root = baseName.slice(0, baseName.indexOf('.'));
+  const claim = lookupNameClaim(inScope, root, scopes, {
+    position: options.lookupPosition,
+    purpose: 'value',
+  });
+  if (hasExplicitNameClaim(claim, root)) return undefined;
 
   const qualifiedIds = scopes.qualifiedNames.get(baseName);
   if (qualifiedIds.length === 1) {
     const qualified = scopes.defs.get(qualifiedIds[0]!);
-    if (qualified !== undefined && isClassLike(qualified.type)) return qualified;
+    if (qualified !== undefined && isClassLike(qualified.type)) {
+      options.onNameFallback?.();
+      return qualified;
+    }
   }
   const simpleName = baseName.slice(lastDot + 1);
   if (simpleName.length === 0) return undefined;
-  const viaSimpleName = findClassBindingInScope(inScope, simpleName, scopes);
+  const viaSimpleName = findClassBindingInScope(inScope, simpleName, scopes, undefined, {
+    onNameFallback: options.onNameFallback,
+    position: options.lookupPosition,
+    purpose: 'value',
+  });
   return viaSimpleName !== undefined && isClassLike(viaSimpleName.type) ? viaSimpleName : undefined;
 }
 
@@ -330,6 +379,7 @@ interface FoldState {
    */
   readonly declaredType?: string;
   readonly declaredAtScope?: ScopeId;
+  readonly lookupPosition?: TypeRef['lookupPosition'];
 }
 
 /**
@@ -387,6 +437,7 @@ function classOfDeclaredType(
   scopes: ScopeResolutionIndexes,
   stripDecoration?: DecorationStripper,
   recordReceiverType?: ReceiverTypeRecorder,
+  onNameFallback?: () => void,
 ): SymbolDefinition | undefined {
   // `declaredAtScope`, never a scope the caller chose: all five sites passed
   // exactly this `TypeRef`'s own anchor, and taking it as a parameter is what
@@ -398,6 +449,7 @@ function classOfDeclaredType(
     spelling,
     scopes,
     stripDecoration,
+    { position: typeRef.lookupPosition, purpose: typeRef.lookupPurpose ?? 'type', onNameFallback },
   );
   return noteReceiverType(recordReceiverType, spelling, def);
 }
@@ -441,8 +493,13 @@ function classOfReturnType(
   retType: TypeRef,
   scopes: ScopeResolutionIndexes,
   record: ReceiverTypeRecorder | undefined,
+  onNameFallback?: () => void,
 ): SymbolDefinition | undefined {
-  const def = findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes);
+  const def = findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
+    position: retType.lookupPosition,
+    purpose: retType.lookupPurpose ?? 'type',
+    onNameFallback,
+  });
   if (def === undefined || record === undefined) return def;
   return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
 }
@@ -465,6 +522,7 @@ function typeOfMemberOnClass(
         scopes,
         options.stripTypePreservingDecoration,
         options.recordReceiverType,
+        options.onNameFallback,
       );
       // The declared type is reported even when it resolved to no class:
       // `Promise<User>` and `[]Repo` name nothing in the workspace, and an
@@ -476,6 +534,7 @@ function typeOfMemberOnClass(
         def,
         declaredType: memberType.declaredSpelling ?? memberType.rawName,
         declaredAtScope: memberType.declaredAtScope,
+        lookupPosition: memberType.lookupPosition,
       };
     }
     // Languages whose binding-scope hook hoists a method's return-type binding
@@ -500,6 +559,7 @@ function typeOfMemberOnClass(
             scopes,
             options.stripTypePreservingDecoration,
             options.recordReceiverType,
+            options.onNameFallback,
           );
           // Identical to the primary branch: a declared type that named no
           // class is still a usable position when the next step unwraps it.
@@ -571,7 +631,9 @@ export function foldReceiverChain(
   const needsBaseDeclaredType =
     baseDef === undefined || chain.steps.some((step) => step.kind === 'index');
   const baseBinding = needsBaseDeclaredType
-    ? findReceiverTypeBinding(inScope, chain.baseReceiverName, scopes)
+    ? findReceiverTypeBinding(inScope, chain.baseReceiverName, scopes, {
+        position: options.lookupPosition,
+      })
     : undefined;
 
   // A base whose declared type names no class is NOT automatically a dead end:
@@ -585,6 +647,7 @@ export function foldReceiverChain(
     def: baseDef,
     declaredType: baseBinding?.declaredSpelling ?? baseBinding?.rawName,
     declaredAtScope: baseBinding?.declaredAtScope,
+    lookupPosition: baseBinding?.lookupPosition ?? options.lookupPosition,
   };
 
   for (const step of chain.steps) {
@@ -630,12 +693,18 @@ export function foldReceiverChain(
         element,
         scopes,
         options.stripTypePreservingDecoration,
+        {
+          onNameFallback: options.onNameFallback,
+          position: current.lookupPosition,
+          purpose: 'type',
+        },
       );
       if (elementClass === undefined) return undefined;
       current = {
         def: elementClass,
         declaredType: element,
         declaredAtScope: scopeForLookup,
+        lookupPosition: current.lookupPosition,
       };
       continue;
     }
@@ -739,6 +808,12 @@ export function resolveCompoundReceiverClass(
   if (depth > COMPOUND_RECEIVER_MAX_DEPTH) return undefined;
   const text = receiverText.trim();
   if (text.length === 0) return undefined;
+  if (options.namespaceTargetsAt !== undefined) {
+    options = {
+      ...options,
+      namespaceTargets: options.namespaceTargetsAt(inScope, options.lookupPosition),
+    };
+  }
   const fieldFallback = options.fieldFallback ?? true;
 
   // ── Structural fold, ahead of the text cascade ───────────────────
@@ -782,7 +857,11 @@ export function resolveCompoundReceiverClass(
     // resolution — the cast narrows the receiver's declared type, so
     // resolve to the CAST type, not the underlying expression's type.
     if (stripped.castType !== undefined) {
-      const cls = findClassBindingInScope(inScope, stripped.castType, scopes);
+      const cls = findClassBindingInScope(inScope, stripped.castType, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
+        position: options.lookupPosition,
+        purpose: 'value',
+      });
       if (cls !== undefined) return cls;
     }
   }
@@ -796,11 +875,17 @@ export function resolveCompoundReceiverClass(
   if (!workingText.includes('.') && !workingText.includes('(')) {
     const mapTuple = parseMapTupleSentinel(workingText);
     if (mapTuple !== null) {
-      const rhsTb = findReceiverTypeBinding(inScope, mapTuple.rhs, scopes);
+      const rhsTb = findReceiverTypeBinding(inScope, mapTuple.rhs, scopes, {
+        position: options.lookupPosition,
+      });
       if (rhsTb === undefined) return undefined;
       const arg = extractShallowMapTypeArgByIndex(rhsTb.rawName, mapTuple.tupleIdx);
       if (arg === undefined) return undefined;
-      return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
+      return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
+        position: rhsTb.lookupPosition,
+        purpose: rhsTb.lookupPurpose ?? 'type',
+      });
     }
 
     // A language may declare that `this` IS the enclosing class rather than a
@@ -817,18 +902,26 @@ export function resolveCompoundReceiverClass(
       if (enclosing !== undefined) return enclosing;
     }
 
-    const tb = findReceiverTypeBinding(inScope, workingText, scopes);
+    const tb = findReceiverTypeBinding(inScope, workingText, scopes, {
+      position: options.lookupPosition,
+    });
     if (tb !== undefined) {
       // Map for-of: binding name is `user` but rawType is
       // `__MAP_TUPLE_i__:entries` (see captures.ts) — same extraction as
       // the literal-sentinel branch above.
       const boundMapTuple = parseMapTupleSentinel(tb.rawName);
       if (boundMapTuple !== null) {
-        const rhsTb = findReceiverTypeBinding(inScope, boundMapTuple.rhs, scopes);
+        const rhsTb = findReceiverTypeBinding(inScope, boundMapTuple.rhs, scopes, {
+          position: options.lookupPosition,
+        });
         if (rhsTb === undefined) return undefined;
         const arg = extractShallowMapTypeArgByIndex(rhsTb.rawName, boundMapTuple.tupleIdx);
         if (arg === undefined) return undefined;
-        return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
+        return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes, undefined, {
+          onNameFallback: options.onNameFallback,
+          position: rhsTb.lookupPosition,
+          purpose: rhsTb.lookupPurpose ?? 'type',
+        });
       }
 
       const viaTb = classOfDeclaredType(
@@ -836,6 +929,7 @@ export function resolveCompoundReceiverClass(
         scopes,
         options.stripTypePreservingDecoration,
         options.recordReceiverType,
+        options.onNameFallback,
       );
       if (viaTb !== undefined) return viaTb;
 
@@ -844,19 +938,19 @@ export function resolveCompoundReceiverClass(
       if (tb.rawName.includes('.') && !tb.rawName.includes('(')) {
         const dotted = resolveCompoundReceiverClass(
           tb.rawName,
-          inScope,
+          tb.declaredAtScope,
           scopes,
           index,
-          options,
+          { ...options, lookupPosition: tb.lookupPosition, receiverChain: undefined },
           depth + 1,
         );
         if (dotted !== undefined) return dotted;
         const dottedCall = resolveCompoundReceiverClass(
           `${tb.rawName}()`,
-          inScope,
+          tb.declaredAtScope,
           scopes,
           index,
-          options,
+          { ...options, lookupPosition: tb.lookupPosition, receiverChain: undefined },
           depth + 1,
         );
         if (dottedCall !== undefined) return dottedCall;
@@ -866,10 +960,10 @@ export function resolveCompoundReceiverClass(
       if (!tb.rawName.includes('.') && !tb.rawName.includes('(')) {
         const callAlias = resolveCompoundReceiverClass(
           `${tb.rawName}()`,
-          inScope,
+          tb.declaredAtScope,
           scopes,
           index,
-          options,
+          { ...options, lookupPosition: tb.lookupPosition, receiverChain: undefined },
           depth + 1,
         );
         if (callAlias !== undefined) return callAlias;
@@ -883,10 +977,10 @@ export function resolveCompoundReceiverClass(
       if (tb.rawName.includes('.') && tb.rawName.includes('(')) {
         const compound = resolveCompoundReceiverClass(
           tb.rawName,
-          inScope,
+          tb.declaredAtScope,
           scopes,
           index,
-          options,
+          { ...options, lookupPosition: tb.lookupPosition, receiverChain: undefined },
           depth + 1,
         );
         if (compound !== undefined) return compound;
@@ -897,7 +991,11 @@ export function resolveCompoundReceiverClass(
     // "try the class namespace instead". Only the structural fold opts in; the
     // cascade keeps its historical fallthrough so no existing edge moves.
     if (tb !== undefined && options.strictBaseBinding === true) return undefined;
-    return findClassBindingInScope(inScope, workingText, scopes);
+    return findClassBindingInScope(inScope, workingText, scopes, undefined, {
+      onNameFallback: options.onNameFallback,
+      position: options.lookupPosition,
+      purpose: 'value',
+    });
   }
 
   // Trailing `()` — call expression. Strip it and resolve the function
@@ -923,13 +1021,23 @@ export function resolveCompoundReceiverClass(
       // Free call `name()`. Look up function in scope, then its
       // return-type typeBinding (which lives in the function's
       // enclosing scope per the language's return-type hoist rule).
-      const fnDef = findExportedDefByName(fnExpr, inScope, scopes, index);
+      const fnDef = findExportedDefByName(fnExpr, inScope, scopes, index, {
+        position: options.lookupPosition,
+        purpose: 'value',
+      });
       if (fnDef !== undefined) {
-        const retType = findReceiverTypeBinding(inScope, fnExpr, scopes);
+        const retType = findReceiverTypeBinding(inScope, fnExpr, scopes, {
+          position: options.lookupPosition,
+        });
         const viaReturn =
           retType === undefined
             ? undefined
-            : classOfReturnType(retType, scopes, options.recordReceiverType);
+            : classOfReturnType(
+                retType,
+                scopes,
+                options.recordReceiverType,
+                options.onNameFallback,
+              );
         if (viaReturn !== undefined) return viaReturn;
       }
       // Inline construction — `Service(db).m()` / `new Service(db).m()`.
@@ -970,7 +1078,11 @@ export function resolveCompoundReceiverClass(
     const objIsClassConstant =
       !objExpr.includes('(') &&
       !objExpr.includes('.') &&
-      findClassBindingInScope(inScope, objExpr, scopes)?.nodeId === objClass.nodeId;
+      findClassBindingInScope(inScope, objExpr, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
+        position: options.lookupPosition,
+        purpose: 'value',
+      })?.nodeId === objClass.nodeId;
 
     // Selector-form construction — `Factory.new.do_work` (#2708). Gated on the
     // receiver naming the CLASS: `factory.new` is an ordinary call to a member
@@ -1024,6 +1136,8 @@ export function resolveCompoundReceiverClass(
             fieldType.declaredAtScope,
             fieldType.rawName,
             scopes,
+            undefined,
+            { onNameFallback: options.onNameFallback },
           );
           if (fieldClass === undefined) continue;
           const fcs = classScopeByDefId.get(fieldClass.nodeId);
@@ -1051,7 +1165,7 @@ export function resolveCompoundReceiverClass(
     }
 
     if (retType === undefined) return undefined;
-    return classOfReturnType(retType, scopes, options.recordReceiverType);
+    return classOfReturnType(retType, scopes, options.recordReceiverType, options.onNameFallback);
   }
 
   // Mixed dotted + call chain: `obj.field.method().field.method()…`.
@@ -1077,17 +1191,25 @@ export function resolveCompoundReceiverClass(
     const prefix = parts.slice(0, -1).join('.');
     let prefixType: TypeRef | undefined;
     if (parts.length === 2) {
-      prefixType = findReceiverTypeBinding(inScope, prefix, scopes);
+      prefixType = findReceiverTypeBinding(inScope, prefix, scopes, {
+        position: options.lookupPosition,
+      });
     } else {
       // Recursive resolution: walk the prefix as a dotted class chain
       // to find its typeRef. We need the TypeRef (not the class def)
       // because the hook inspects the raw generic args (e.g.
       // `Dictionary<string, User>`).
-      let cur = findReceiverTypeBinding(inScope, headInner, scopes);
+      let cur = findReceiverTypeBinding(inScope, headInner, scopes, {
+        position: options.lookupPosition,
+      });
       for (let i = 1; i < parts.length - 1 && cur !== undefined; i++) {
         const segment = parts[i];
         if (segment === undefined) break;
-        const cls = findClassBindingInScope(cur.declaredAtScope, cur.rawName, scopes);
+        const cls = findClassBindingInScope(cur.declaredAtScope, cur.rawName, scopes, undefined, {
+          onNameFallback: options.onNameFallback,
+          position: cur.lookupPosition,
+          purpose: cur.lookupPurpose ?? 'type',
+        });
         if (cls === undefined) {
           cur = undefined;
           break;
@@ -1105,7 +1227,11 @@ export function resolveCompoundReceiverClass(
       // to widen an unmeasured surface.
       const elemName = options.elementTypeOf(prefixType.rawName, { kind: 'accessor', name: last });
       if (elemName !== undefined) {
-        return findClassBindingInScope(prefixType.declaredAtScope, elemName, scopes);
+        return findClassBindingInScope(prefixType.declaredAtScope, elemName, scopes, undefined, {
+          onNameFallback: options.onNameFallback,
+          position: prefixType.lookupPosition,
+          purpose: prefixType.lookupPurpose ?? 'type',
+        });
       }
     }
   }
@@ -1113,7 +1239,9 @@ export function resolveCompoundReceiverClass(
   const head = parts[0];
   if (head === undefined) return undefined;
   const headMemberName = stripCallParens(head);
-  const headType = findReceiverTypeBinding(inScope, headMemberName, scopes);
+  const headType = findReceiverTypeBinding(inScope, headMemberName, scopes, {
+    position: options.lookupPosition,
+  });
   // The typed arm reads a DECLARED TYPE and so goes through the grounded lookup
   // (see {@link classOfDeclaredType}); the untyped arm resolves the head NAME as
   // the source WROTE it — a static class receiver — which was never erased and
@@ -1127,8 +1255,18 @@ export function resolveCompoundReceiverClass(
   // two had a fixture. See `classOfDeclaredType` for why this cannot change a
   // `TypeRef` that was never reduced.
   let currentClass: SymbolDefinition | undefined = headType
-    ? classOfDeclaredType(headType, scopes, undefined, options.recordReceiverType)
-    : findClassBindingInScope(inScope, headMemberName, scopes);
+    ? classOfDeclaredType(
+        headType,
+        scopes,
+        undefined,
+        options.recordReceiverType,
+        options.onNameFallback,
+      )
+    : findClassBindingInScope(inScope, headMemberName, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
+        position: options.lookupPosition,
+        purpose: 'value',
+      });
   // Whether the walk currently sits on the CLASS ITSELF rather than on a
   // value of that class. Seeded true only when the head resolved straight to
   // a class binding (`Factory.new…`); a head reached through a typeBinding
@@ -1212,7 +1350,7 @@ export function resolveCompoundReceiverClass(
     for (let k = parts.length; k >= 2; k--) {
       const prefix = parts.slice(0, k).join('.');
       if (prefix.includes('(')) continue;
-      const seeded = options.resolveQualifiedClass(prefix, inScope);
+      const seeded = options.resolveQualifiedClass(prefix, inScope, options.lookupPosition);
       if (seeded === undefined) continue;
       currentClass = seeded;
       currentIsClassConstant = true;
@@ -1279,9 +1417,15 @@ export function resolveCompoundReceiverClass(
     // grounds fell through here — a declined fold is documented as "no answer",
     // never a veto — and this walk re-minted `other.py:Mapped` from the
     // workspace index. Same rule, same lookup, so the two routes now agree.
-    let nextClass = classOfDeclaredType(memberType, scopes, undefined, options.recordReceiverType);
+    let nextClass = classOfDeclaredType(
+      memberType,
+      scopes,
+      undefined,
+      options.recordReceiverType,
+      options.onNameFallback,
+    );
     if (nextClass === undefined) {
-      const fromMap = unwrapMapValueToClass(memberType, scopes);
+      const fromMap = unwrapMapValueToClass(memberType, scopes, options.onNameFallback);
       if (fromMap !== undefined) nextClass = fromMap;
     }
     currentClass = nextClass;
@@ -1487,10 +1631,15 @@ function extractShallowMapTypeArgByIndex(mapText: string, wantIndex: number): st
 function unwrapMapValueToClass(
   memberType: TypeRef,
   scopes: ScopeResolutionIndexes,
+  onNameFallback?: () => void,
 ): SymbolDefinition | undefined {
   const v = extractShallowMapTypeArgByIndex(memberType.rawName, 1);
   if (v === undefined) return undefined;
-  return findClassBindingInScope(memberType.declaredAtScope, v, scopes);
+  return findClassBindingInScope(memberType.declaredAtScope, v, scopes, undefined, {
+    position: memberType.lookupPosition,
+    purpose: memberType.lookupPurpose ?? 'type',
+    onNameFallback,
+  });
 }
 
 /**
@@ -1510,10 +1659,20 @@ function resolveMapValueTypeNameFromPrefix(
   const head = parts[0];
   if (head === undefined) return undefined;
   const headMemberName = stripCallParens(head);
-  const headType = findReceiverTypeBinding(inScope, headMemberName, scopes);
+  const headType = findReceiverTypeBinding(inScope, headMemberName, scopes, {
+    position: options.lookupPosition,
+  });
   let currentClass: SymbolDefinition | undefined = headType
-    ? findClassBindingInScope(headType.declaredAtScope, headType.rawName, scopes)
-    : findClassBindingInScope(inScope, headMemberName, scopes);
+    ? findClassBindingInScope(headType.declaredAtScope, headType.rawName, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
+        position: headType.lookupPosition,
+        purpose: headType.lookupPurpose ?? 'type',
+      })
+    : findClassBindingInScope(inScope, headMemberName, scopes, undefined, {
+        onNameFallback: options.onNameFallback,
+        position: options.lookupPosition,
+        purpose: 'value',
+      });
   if (
     currentClass === undefined &&
     headType !== undefined &&
@@ -1552,9 +1711,19 @@ function resolveMapValueTypeNameFromPrefix(
     }
     if (memberType === undefined) return undefined;
     lastMemberType = memberType;
-    let nextClass = findClassBindingInScope(memberType.declaredAtScope, memberType.rawName, scopes);
+    let nextClass = findClassBindingInScope(
+      memberType.declaredAtScope,
+      memberType.rawName,
+      scopes,
+      undefined,
+      {
+        onNameFallback: options.onNameFallback,
+        position: memberType.lookupPosition,
+        purpose: memberType.lookupPurpose ?? 'type',
+      },
+    );
     if (nextClass === undefined) {
-      const fromMap = unwrapMapValueToClass(memberType, scopes);
+      const fromMap = unwrapMapValueToClass(memberType, scopes, options.onNameFallback);
       if (fromMap !== undefined) nextClass = fromMap;
     }
     currentClass = nextClass;

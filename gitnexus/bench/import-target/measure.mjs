@@ -479,7 +479,6 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { resolveGoImportTarget } from '../../src/core/ingestion/languages/go/import-target.ts';
 import { resolveDartImportTarget } from '../../src/core/ingestion/languages/dart/import-target.ts';
 import { resolveRubyImportTarget } from '../../src/core/ingestion/languages/ruby/import-target.ts';
-import { resolveCsharpImportTarget } from '../../src/core/ingestion/languages/csharp/import-target.ts';
 import { kotlinScopeResolver } from '../../src/core/ingestion/languages/kotlin/scope-resolver.ts';
 import { resolvePhpImportTargetInternal } from '../../src/core/ingestion/languages/php/import-target.ts';
 import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope-resolver.ts';
@@ -495,6 +494,7 @@ import { typescriptScopeResolver } from '../../src/core/ingestion/languages/type
 import { cScopeResolver } from '../../src/core/ingestion/languages/c/scope-resolver.ts';
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.ts';
 import { objectiveCScopeResolver } from '../../src/core/ingestion/languages/objective-c/scope-resolver.ts';
+import { csharpScopeResolver } from '../../src/core/ingestion/languages/csharp/scope-resolver.ts';
 // `SCOPE_RESOLVERS` is NOT imported here — see the inventory arm at the bottom,
 // which loads it dynamically. Statically it costs 6-10 s of module load
 // depending on the box (measured both ways there), because reaching the
@@ -604,6 +604,8 @@ const HEAP_BUDGETED = [
   'go',
   'cpp',
   'objc',
+  // Lexical module lookup retains a workspace index over parsed Rust files.
+  'rust',
 ];
 // javascript, typescript and vue were budgeted here until #2953 and are now
 // BOUNDED, which is a demotion in gate strength and a promotion in what the
@@ -632,7 +634,18 @@ const HEAP_BUDGETED = [
  * parameters cannot observe a context and are not listed, so their timed
  * numbers stay on the three-argument shape.
  */
-const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift', 'c', 'cpp'];
+const CONTEXT_LANGS = [
+  'php',
+  'java',
+  'kotlin',
+  'python',
+  'swift',
+  'rust',
+  'c',
+  'cpp',
+  'csharp',
+  'csharp_csproj',
+];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -1184,7 +1197,7 @@ function kotlinBenchmarkPackage(filePath) {
 }
 
 /**
- * The `ParsedFile[]` the orchestrator threads beside the path set, for the three
+ * The `ParsedFile[]` the orchestrator threads beside the path set, for the
  * languages whose hook declares a `context` — see `CONTEXT_LANGS`.
  *
  * Two defs per file, and both are real shapes rather than padding. PHP keeps
@@ -1778,7 +1791,12 @@ function newPass(lang, files, pad = 0) {
     restoreBenchmarkSideChannels(lang, parsedFiles);
     return {
       allFilePaths: new Set(parsedFiles.map((f) => f.filePath)),
-      config: lang === 'php' ? phpComposerConfigFor(pad) : undefined,
+      config:
+        lang === 'php'
+          ? phpComposerConfigFor(pad)
+          : lang === 'csharp_csproj'
+            ? { csharpConfigs: CSPROJ_CONFIGS }
+            : undefined,
       parsedFiles,
     };
   }
@@ -1890,7 +1908,15 @@ function resolveOne(lang, from, target, pass) {
       { fromFile: from, allFilePaths, parsedFiles: pass.parsedFiles },
     );
   }
-  if (lang === 'rust') return resolveRustImportTarget(target, from, allFilePaths, undefined);
+  if (lang === 'rust') {
+    return resolveRustImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target }),
+    );
+  }
   // Quotes already stripped — `configs/zig.ts` strips them before this call in
   // production too. `null` build config: this arm pins the path walk alone
   // (see the header); the config legs are gated by their own unit tests.
@@ -1957,15 +1983,12 @@ function resolveOne(lang, from, target, pass) {
     return objectiveCScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
   }
   if (lang === 'csharp' || lang === 'csharp_csproj') {
-    return resolveCsharpImportTarget(
-      { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target },
-      {
-        fromFile: from,
-        allFilePaths,
-        // The ONLY difference between the two C# arms. Present, the adapter
-        // takes the csproj branch and never falls through to the no-csproj legs.
-        ...(lang === 'csharp_csproj' ? { csharpConfigs: CSPROJ_CONFIGS } : {}),
-      },
+    return csharpScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target }),
     );
   }
   throw unwiredLanguage('resolveOne', lang);
@@ -2300,6 +2323,55 @@ function measureHeap(lang) {
  * argument at all.
  */
 const CONTEXT_PROBE = {
+  // Declaration identity wins even when no filename matches the using target.
+  // Both C# arms pass through the registered five-argument provider hook.
+  csharp: {
+    from: 'app/Main.cs',
+    target: 'App.Service',
+    parsedFiles: [
+      probeFile('app/Main.cs', []),
+      probeFile('src/odd/Bundle.cs', [['Class', 'App.Service']]),
+    ],
+  },
+  csharp_csproj: {
+    from: 'app/Main.cs',
+    target: 'App.Service',
+    parsedFiles: [
+      probeFile('app/Main.cs', []),
+      probeFile('src/odd/Bundle.cs', [['Class', 'App.Service']]),
+    ],
+  },
+  // A declared sibling module outranks a crate-root file with the same name.
+  // Empty module tables on the scaling corpora keep their existing target set;
+  // this probe witnesses the lexical branch that reads the workspace index.
+  rust: {
+    from: 'src/parent/mod.rs',
+    target: 'local::X',
+    parsedFiles: (() => {
+      const from = probeFile('src/parent/mod.rs', [['Namespace', 'local']]);
+      const def = from.localDefs[0];
+      return [
+        {
+          ...from,
+          scopes: [
+            {
+              id: from.moduleScope,
+              parent: null,
+              kind: 'Module',
+              filePath: from.filePath,
+              range: { startLine: 1, startCol: 0, endLine: 2, endCol: 0 },
+              bindings: new Map([['local', [{ def, origin: 'local' }]]]),
+              ownedDefs: [def],
+              imports: [],
+              typeBindings: new Map(),
+            },
+          ],
+        },
+        probeFile('src/parent/local.rs', [['Struct', 'X']]),
+        probeFile('src/local.rs', [['Struct', 'X']]),
+      ];
+    })(),
+  },
   /**
    * `use function App\Ns0\Dup;` where the CLASS `Dup` lives in `Dup.php` and
    * the FUNCTION `Dup` lives in `Helpers.php`. PHP keeps the two in separate
@@ -2414,7 +2486,12 @@ const CONTEXT_PROBE = {
 function measureContext(lang) {
   const { from, target, parsedFiles } = CONTEXT_PROBE[lang];
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
-  const config = lang === 'php' ? phpComposerConfigFor(0) : undefined;
+  const config =
+    lang === 'php'
+      ? phpComposerConfigFor(0)
+      : lang === 'csharp_csproj'
+        ? { csharpConfigs: CSPROJ_CONFIGS }
+        : undefined;
   const answer = (files) => {
     restoreBenchmarkSideChannels(lang, files ?? []);
     const pass = { allFilePaths, config, parsedFiles: files };

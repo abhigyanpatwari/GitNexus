@@ -1,203 +1,14 @@
 import Parser from 'tree-sitter';
-import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 import { logger } from '../logger.js';
-import { requireVendoredGrammar } from './vendored-grammars.js';
-const _require = createRequire(import.meta.url);
-
-/**
- * One row per (language, optional variant) describes how to obtain a
- * grammar object suitable for `Parser.setLanguage`.
- *
- *   - `load`             — returns the grammar object (lazy, called on
- *                          first use, then cached).
- *   - `unavailableNote`  — actionable message surfaced *whenever* the
- *                          grammar can't be loaded. Mandatory for every
- *                          row so failures are never silent and never
- *                          generic.
- *   - `optional`         — when true, a load failure does not throw:
- *                          we report the language as unavailable and
- *                          let callers skip files of this language.
- *                          When false (the default), a load failure
- *                          re-throws the original error so the
- *                          pipeline halts loudly.
- *   - `severity`         — log level for failure diagnostics. Defaults
- *                          to `error` for required grammars and `warn`
- *                          for optional ones. Set explicitly to `error`
- *                          on optional rows whose package is listed in
- *                          `dependencies` (not `optionalDependencies`):
- *                          those failures indicate a real install
- *                          problem and should never be hidden behind
- *                          a low-severity warning.
- *
- * Adding or removing a grammar is one entry in this table — there is
- * no second list, no conditional spread, and no per-grammar branch in
- * the resolver.
- */
-interface GrammarSource {
-  load: () => unknown;
-  unavailableNote: string;
-  optional?: boolean;
-  severity?: 'warn' | 'error';
-  /**
-   * When true, this grammar may be disabled at runtime via
-   * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`. Set ONLY on genuinely-optional grammars
-   * (optionalDependencies / vendored — swift/dart/kotlin/zig). Required dependencies
-   * routed through the optional machinery for ABI safety (e.g. C, which is
-   * `optional: true` + `severity: 'error'`) must NOT set this — opting out of a
-   * required parser is always an install/platform problem, never a user choice.
-   */
-  userSkippable?: boolean;
-}
-
-const ISSUES_URL = 'https://github.com/abhigyanpatwari/GitNexus/issues';
-
-const SOURCES: Record<string, GrammarSource> = {
-  [SupportedLanguages.JavaScript]: {
-    load: () => _require('tree-sitter-javascript'),
-    unavailableNote:
-      'JavaScript parsing requires `tree-sitter-javascript`. ' +
-      'Check that the package and its native binding installed cleanly (`npm ci`).',
-  },
-  [SupportedLanguages.TypeScript]: {
-    load: () => _require('tree-sitter-typescript').typescript,
-    unavailableNote:
-      'TypeScript parsing requires `tree-sitter-typescript`. ' +
-      'Check that the package and its native binding installed cleanly (`npm ci`).',
-  },
-  [`${SupportedLanguages.TypeScript}:tsx`]: {
-    load: () => _require('tree-sitter-typescript').tsx,
-    unavailableNote:
-      'TSX parsing requires `tree-sitter-typescript` (re-uses the same native binding as TS).',
-  },
-  [SupportedLanguages.Python]: {
-    load: () => _require('tree-sitter-python'),
-    unavailableNote:
-      'Python parsing requires `tree-sitter-python`. Check the install and native binding.',
-  },
-  [SupportedLanguages.Java]: {
-    load: () => _require('tree-sitter-java'),
-    unavailableNote:
-      'Java parsing requires `tree-sitter-java`. Check the install and native binding.',
-  },
-  // tree-sitter-c-sharp declares `type: "module"` with `main: "bindings/node"`
-  // (no extension) and no `exports` field, which triggers Node 22's DEP0151
-  // deprecation warning on the bare-package import. The explicit subpath
-  // bypasses the deprecated ESM main-field resolution. (#1013)
-  [SupportedLanguages.CSharp]: {
-    load: () => _require('tree-sitter-c-sharp/bindings/node/index.js'),
-    unavailableNote:
-      'C# parsing requires `tree-sitter-c-sharp/bindings/node/index.js`. ' +
-      `If the subpath is missing, see ${ISSUES_URL}/1013.`,
-  },
-  [SupportedLanguages.CPlusPlus]: {
-    load: () => _require('tree-sitter-cpp'),
-    unavailableNote:
-      'C++ parsing requires `tree-sitter-cpp`. Check the install and native binding.',
-  },
-  [SupportedLanguages.ObjectiveC]: {
-    load: () => requireVendoredGrammar('tree-sitter-objc'),
-    optional: true,
-    severity: 'error',
-    unavailableNote:
-      'Objective-C parsing disabled: vendored `tree-sitter-objc` (under ' +
-      '`gitnexus/vendor/tree-sitter-objc`) could not be loaded. GitNexus ships ' +
-      'prebuilt binaries for supported macOS/Linux runner architectures; this usually ' +
-      'indicates a corrupted install or native ABI mismatch with the bundled ' +
-      'tree-sitter@0.21.1 runtime.',
-  },
-  [SupportedLanguages.Go]: {
-    load: () => _require('tree-sitter-go'),
-    unavailableNote: 'Go parsing requires `tree-sitter-go`. Check the install and native binding.',
-  },
-  [SupportedLanguages.Rust]: {
-    load: () => _require('tree-sitter-rust'),
-    unavailableNote:
-      'Rust parsing requires `tree-sitter-rust`. Check the install and native binding.',
-  },
-  [SupportedLanguages.PHP]: {
-    load: () => _require('tree-sitter-php').php_only,
-    unavailableNote:
-      'PHP parsing requires `tree-sitter-php` (the `php_only` export). ' +
-      'Check the install and native binding.',
-  },
-  [SupportedLanguages.Ruby]: {
-    load: () => _require('tree-sitter-ruby'),
-    unavailableNote:
-      'Ruby parsing requires `tree-sitter-ruby`. Check the install and native binding.',
-  },
-  [SupportedLanguages.Vue]: {
-    load: () => _require('tree-sitter-typescript').typescript,
-    unavailableNote:
-      'Vue parsing piggybacks on `tree-sitter-typescript`. Check the install and native binding.',
-  },
-
-  // tree-sitter-c is a core grammar, vendored prebuild-only (under
-  // gitnexus/vendor/tree-sitter-c) with GitNexus-built prebuilds for every
-  // supported platform-arch — upstream ships only 4/6 (#2116) and C is a
-  // required grammar whose source build hard-fails install on a toolchain-less
-  // ARM host. Loading through the optional machinery turns a would-be ABI
-  // segfault (#1242, #858) into a clean degradation while preserving every
-  // other language's analysis. Severity stays `error` because C is not a
-  // user-opt-out grammar like Swift/Dart/Kotlin: a failure here is always an
-  // install/platform problem the user needs to see.
-  [SupportedLanguages.C]: {
-    load: () => requireVendoredGrammar('tree-sitter-c'),
-    optional: true,
-    severity: 'error',
-    unavailableNote:
-      'C parsing disabled: vendored `tree-sitter-c` (under ' +
-      '`gitnexus/vendor/tree-sitter-c`) could not be loaded. GitNexus ships ' +
-      'prebuilt binaries for all supported platforms (win32/darwin/linux ' +
-      'x64+arm64, N-API), so this usually indicates a corrupted install or a ' +
-      'native ABI mismatch with the bundled tree-sitter@0.21.1 runtime. ' +
-      'Try reinstalling, then re-run analyze. ' +
-      `If the failure persists, file details at ${ISSUES_URL}/1242.`,
-  },
-
-  // optionalDependencies — may be absent on platforms without prebuilds
-  // or when users skip optional installs.
-  [SupportedLanguages.Swift]: {
-    load: () => requireVendoredGrammar('tree-sitter-swift'),
-    optional: true,
-    userSkippable: true,
-    unavailableNote:
-      'Swift parsing disabled: vendored `tree-sitter-swift` (under ' +
-      '`gitnexus/vendor/tree-sitter-swift`) failed to load. ' +
-      'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
-      `See ${ISSUES_URL}/1130.`,
-  },
-  [SupportedLanguages.Dart]: {
-    load: () => requireVendoredGrammar('tree-sitter-dart'),
-    optional: true,
-    userSkippable: true,
-    unavailableNote:
-      'Dart parsing disabled: vendored `tree-sitter-dart` (under ' +
-      '`gitnexus/vendor/tree-sitter-dart`) failed to load. ' +
-      'Likely cause: native compile failed at install (missing python3/make/g++). ' +
-      `See ${ISSUES_URL}/1125.`,
-  },
-  [SupportedLanguages.Kotlin]: {
-    load: () => requireVendoredGrammar('tree-sitter-kotlin'),
-    optional: true,
-    userSkippable: true,
-    unavailableNote:
-      'Kotlin parsing disabled: vendored `tree-sitter-kotlin` (under ' +
-      '`gitnexus/vendor/tree-sitter-kotlin`) failed to load. ' +
-      'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
-      `See ${ISSUES_URL}/2107.`,
-  },
-  [SupportedLanguages.Zig]: {
-    load: () => requireVendoredGrammar('tree-sitter-zig'),
-    optional: true,
-    userSkippable: true,
-    unavailableNote:
-      'Zig parsing disabled: vendored `tree-sitter-zig` (under ' +
-      '`gitnexus/vendor/tree-sitter-zig`) failed to load. ' +
-      'Likely cause: no prebuilt `.node` for this platform/architecture.',
-  },
-};
+import {
+  GRAMMAR_SOURCES as SOURCES,
+  isGrammarSkipped,
+  parseGrammarSkipDirective,
+  type GrammarSkipDirective,
+  type GrammarSource,
+} from './grammar-sources.js';
 
 /**
  * Introspection over the grammar registry for the ABI load-smoke test
@@ -244,8 +55,6 @@ const logged = new Set<string>();
  * routed through the optional machinery for ABI safety (C) carry no
  * `userSkippable` and are never skippable here.
  */
-type SkipDirective = 'all' | Set<string> | null;
-
 // Parsed form of GITNEXUS_SKIP_OPTIONAL_GRAMMARS, resolved lazily ONCE per
 // process. The env is set before analyze runs, so re-reading + re-allocating a
 // Set on every call was wasted work (and a latent trap for any future per-file
@@ -253,19 +62,11 @@ type SkipDirective = 'all' | Set<string> | null;
 // fresh memo — per case, so this stays test-friendly.
 //   'all' → every userSkippable grammar; Set → only the named ids
 //   (and `tree-sitter-<id>` spellings); null → env unset/empty (nothing).
-let _skipDirective: SkipDirective | undefined;
-const skipDirective = (): SkipDirective => {
+let _skipDirective: GrammarSkipDirective | undefined;
+const skipDirective = (): GrammarSkipDirective => {
   if (_skipDirective !== undefined) return _skipDirective;
-  const raw = (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS ?? '').trim().toLowerCase();
-  if (raw === '') return (_skipDirective = null);
-  if (raw === '1' || raw === 'true' || raw === 'all' || raw === '*')
-    return (_skipDirective = 'all');
-  return (_skipDirective = new Set(
-    raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .flatMap((s) => [s, s.replace(/^tree-sitter-/, '')]),
+  return (_skipDirective = parseGrammarSkipDirective(
+    process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS ?? '',
   ));
 };
 
@@ -274,12 +75,7 @@ const isRuntimeSkippedGrammar = (key: string, source: GrammarSource): boolean =>
   // required deps that use the optional machinery for ABI safety (C carries no
   // `userSkippable`).
   if (source.userSkippable !== true) return false;
-  const directive = skipDirective();
-  if (directive === null) return false;
-  if (directive === 'all') return true;
-  // `key` is the SupportedLanguages value (e.g. `swift`); the directive Set
-  // already holds both the bare id and the `tree-sitter-<id>` spelling.
-  return directive.has(key) || directive.has(`tree-sitter-${key}`);
+  return isGrammarSkipped(key, source, skipDirective());
 };
 
 const logFailure = (key: string, result: LoadResult): void => {
@@ -376,10 +172,13 @@ export const isGrammarRuntimeSkipped = (
   return source !== undefined && isRuntimeSkippedGrammar(key, source);
 };
 
-export const getLanguageGrammar = (language: SupportedLanguages, filePath?: string): unknown => {
+export const getLanguageGrammar = (
+  language: SupportedLanguages,
+  filePath?: string,
+): Parser.Language => {
   const key = resolveLanguageKey(language, filePath);
   const result = loadGrammar(key);
-  if (result.ok === true) return result.grammar;
+  if (result.ok === true) return result.grammar as Parser.Language;
   // Fatal failures throw the original underlying error (preserving stack)
   // after the note has been logged. Optional failures fall through to the
   // standard "Unsupported language" message that callers already handle.

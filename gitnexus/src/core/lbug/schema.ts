@@ -339,6 +339,7 @@ CREATE NODE TABLE BasicBlock (
   text STRING,
   callees STRING,
   calleeIds STRING,
+  ownerId STRING,
   PRIMARY KEY (id)
 )`;
 

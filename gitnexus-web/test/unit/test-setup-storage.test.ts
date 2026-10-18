@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-describe.sequential('test setup storage isolation', () => {
+describe('test setup storage isolation', { concurrent: false }, () => {
   it('can seed a persisted i18n language inside one test', () => {
     localStorage.setItem('gitnexus.lng', 'zh-CN');
 

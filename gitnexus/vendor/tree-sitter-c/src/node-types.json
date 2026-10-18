@@ -156,6 +156,10 @@
         "named": true
       },
       {
+        "type": "extension_expression",
+        "named": true
+      },
+      {
         "type": "false",
         "named": true
       },
@@ -1529,6 +1533,21 @@
     }
   },
   {
+    "type": "extension_expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "field_declaration",
     "named": true,
     "fields": {
@@ -2068,7 +2087,7 @@
         "required": true,
         "types": [
           {
-            "type": "identifier",
+            "type": "expression",
             "named": true
           }
         ]
@@ -2262,6 +2281,10 @@
       "multiple": false,
       "required": true,
       "types": [
+        {
+          "type": "declaration",
+          "named": true
+        },
         {
           "type": "statement",
           "named": true
@@ -2492,6 +2515,10 @@
       "required": false,
       "types": [
         {
+          "type": "compound_statement",
+          "named": true
+        },
+        {
           "type": "identifier",
           "named": true
         },
@@ -2543,6 +2570,10 @@
       "types": [
         {
           "type": "comma_expression",
+          "named": true
+        },
+        {
+          "type": "compound_statement",
           "named": true
         },
         {
@@ -3395,6 +3426,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "type_qualifier",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -3583,6 +3624,7 @@
   {
     "type": "translation_unit",
     "named": true,
+    "root": true,
     "fields": {},
     "children": {
       "multiple": true,
@@ -4186,6 +4228,10 @@
     "named": false
   },
   {
+    "type": "_Nonnull",
+    "named": false
+  },
+  {
     "type": "_Noreturn",
     "named": false
   },
@@ -4198,7 +4244,15 @@
     "named": false
   },
   {
+    "type": "__asm",
+    "named": false
+  },
+  {
     "type": "__asm__",
+    "named": false
+  },
+  {
+    "type": "__attribute",
     "named": false
   },
   {
@@ -4282,6 +4336,10 @@
     "named": false
   },
   {
+    "type": "__volatile__",
+    "named": false
+  },
+  {
     "type": "_alignof",
     "named": false
   },
@@ -4319,7 +4377,8 @@
   },
   {
     "type": "comment",
-    "named": true
+    "named": true,
+    "extra": true
   },
   {
     "type": "const",

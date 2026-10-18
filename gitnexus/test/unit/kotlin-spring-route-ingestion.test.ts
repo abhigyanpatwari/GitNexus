@@ -16,7 +16,7 @@ import {
 import { joinPath } from '../../src/core/ingestion/route-extractors/spring-shared.js';
 import { KOTLIN_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/kotlin.js';
 
-let Kotlin: unknown;
+let Kotlin: Parser.Language | null = null;
 try {
   Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {

@@ -9,7 +9,24 @@ import {
   type LanguagePatterns,
   type PatternSpec,
 } from '../tree-sitter-scanner.js';
-import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js';
+import type {
+  HttpDetection,
+  HttpLanguagePlugin,
+  HttpScanInput,
+  HttpFileDetections,
+  RepoContext,
+} from './types.js';
+import { getProviderForFile } from '../../../ingestion/languages/index.js';
+import { extractParsedFile } from '../../../ingestion/scope-extractor-bridge.js';
+import { extractFrameworkRouteFacts } from '../../../ingestion/route-extractors/framework-route-facts.js';
+import { resolveFrameworkRoutePaths } from '../../../ingestion/route-extractors/framework-route-paths.js';
+import type {
+  FrameworkRoute,
+  FrameworkRouteFacts,
+} from '../../../ingestion/route-extractors/framework-route-types.js';
+import { typescriptScopeResolver } from '../../../ingestion/languages/typescript/scope-resolver.js';
+import { javascriptScopeResolver } from '../../../ingestion/languages/javascript/scope-resolver.js';
+import { getLanguageFromFilename, SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
 import { MAX_FOLD_LENGTH } from '../../../ingestion/route-extractors/constant-resolver.js';
 import {
   DATA_ROUTE_TABLE_SOURCE,
@@ -49,18 +66,6 @@ import {
 // NestJS providers are not queried here at all — see the `extractNestRoutes`
 // call in `scanBundle`.
 
-// ─── Provider: Express — router.get/app.post/... ─────────────────────
-const EXPRESS_SPEC: PatternSpec<Record<string, never>> = {
-  meta: {},
-  query: `
-    (call_expression
-      function: (member_expression
-        object: (identifier) @obj (#match? @obj "^(router|app)$")
-        property: (property_identifier) @http_method (#match? @http_method "^(get|post|put|delete|patch)$"))
-      arguments: (arguments . [(string) (template_string)] @path . (_)? @handler))
-  `,
-};
-
 // ─── Consumer: fetch(url) with NO options ─────────────────────────────
 const FETCH_NO_OPTIONS_SPEC: PatternSpec<Record<string, never>> = {
   meta: {},
@@ -96,8 +101,8 @@ const FETCH_WITH_OPTIONS_SPEC: PatternSpec<Record<string, never>> = {
 // `scanBundle` admits a match only after PROVING the receiver is an axios
 // instance and resolving the argument to a path.
 //
-// The proof gate is load-bearing, not belt-and-braces: EXPRESS_SPEC above
-// matches `router.get('/x', handler)` / `app.post(...)` as PROVIDERS. A
+// The proof gate is load-bearing: proven Express registrations such as
+// `router.get('/x', handler)` / `app.post(...)` are PROVIDERS. A
 // receiver admitted on spelling alone would re-emit every Express route in the
 // repo as a consumer of itself, on both sides of every cross-repo pair.
 const HTTP_CLIENT_SPEC: PatternSpec<Record<string, never>> = {
@@ -185,7 +190,6 @@ const REQUEST_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
 const WRAPPED_REQUEST_RECEIVERS = new Set(['httpClient', '$http']);
 
 interface NodePatternBundle {
-  express: CompiledPatterns<Record<string, never>>;
   fetchNoOptions: CompiledPatterns<Record<string, never>>;
   fetchWithOptions: CompiledPatterns<Record<string, never>>;
   httpClient: CompiledPatterns<Record<string, never>>;
@@ -195,7 +199,7 @@ interface NodePatternBundle {
   requestObject: CompiledPatterns<Record<string, never>>;
 }
 
-function compileBundle(language: unknown, name: string): NodePatternBundle {
+function compileBundle(language: Parser.Language, name: string): NodePatternBundle {
   const mk = (spec: PatternSpec<Record<string, never>>, suffix: string) =>
     compilePatterns({
       name: `${name}-${suffix}`,
@@ -203,7 +207,6 @@ function compileBundle(language: unknown, name: string): NodePatternBundle {
       patterns: [spec],
     } satisfies LanguagePatterns<Record<string, never>>);
   return {
-    express: mk(EXPRESS_SPEC, 'express'),
     fetchNoOptions: mk(FETCH_NO_OPTIONS_SPEC, 'fetch-no-options'),
     fetchWithOptions: mk(FETCH_WITH_OPTIONS_SPEC, 'fetch-with-options'),
     httpClient: mk(HTTP_CLIENT_SPEC, 'http-client'),
@@ -372,6 +375,9 @@ function buildImportMap(tree: Parser.Tree): Map<string, { name: string; module: 
 
 interface NodeRepoContext {
   readonly facts: JsRepoFacts;
+  readonly resolutionConfig: unknown;
+  readonly files: ReadonlySet<string>;
+  readonly configurationAvailable: boolean;
 }
 
 /**
@@ -408,11 +414,12 @@ function grammarForFile(rel: string): unknown | null {
   return null;
 }
 
-function buildNodeRepoContext(args: {
+async function buildNodeRepoContext(args: {
+  repoPath: string;
   files: string[];
   readFile: (rel: string) => string | null;
   parseSource: (parser: Parser, src: string) => Parser.Tree | null;
-}): NodeRepoContext {
+}): Promise<NodeRepoContext> {
   const cached = REPO_CONTEXT_BY_FILE_LIST.get(args.files);
   if (cached) return cached;
 
@@ -472,9 +479,98 @@ function buildNodeRepoContext(args: {
     }
   }
 
-  const ctx: NodeRepoContext = { facts: buildJsRepoFacts(byFile) };
+  // Both Node resolvers consume the same tsconfig/jsconfig/workspace inputs;
+  // their import-target hooks retain their own extension ordering below.
+  let resolutionConfig: unknown;
+  let configurationAvailable = true;
+  try {
+    resolutionConfig = await typescriptScopeResolver.loadResolutionConfig?.(args.repoPath);
+  } catch {
+    configurationAvailable = false;
+  }
+  const ctx: NodeRepoContext = {
+    facts: buildJsRepoFacts(byFile),
+    resolutionConfig,
+    files: new Set(args.files.map(normalizeRel)),
+    configurationAvailable,
+  };
   REPO_CONTEXT_BY_FILE_LIST.set(args.files, ctx);
   return ctx;
+}
+
+/** Adapt exact lexical handler evidence without guessing from a missing name. */
+function frameworkDetection(route: FrameworkRoute, facts: FrameworkRouteFacts): HttpDetection {
+  const call = route.frameworkCall;
+  const handler = call?.arguments.at(-1);
+  let name = route.handlerName ?? null;
+  let handlerImport: HttpDetection['handlerImport'];
+  if (!name && handler?.kind === 'binding' && !facts.invalidBindings.includes(handler.id)) {
+    const bindings = facts.bindings.filter((binding) => binding.id === handler.id);
+    const value = bindings.length === 1 ? bindings[0].value : undefined;
+    if (value?.kind === 'import' && !['default', '*', 'require'].includes(value.name)) {
+      name = value.name;
+      handlerImport = { name: value.name, module: value.source };
+    }
+  }
+  return {
+    role: 'provider',
+    framework: route.decoratorName?.startsWith('hono.') ? 'hono' : 'express',
+    method: route.httpMethod ?? '*',
+    path: route.routePath,
+    name,
+    ...(handlerImport ? { handlerImport } : { strictHandlerResolution: true }),
+    ...(!name && handler?.kind !== 'handler' ? { unresolvedHandler: true } : {}),
+    line: route.lineNumber + 1,
+    confidence: 0.8,
+  };
+}
+
+/** One project family for JS, TS and TSX, using the already parsed group trees. */
+function scanNodeProject(
+  files: readonly HttpScanInput[],
+  repoContext?: RepoContext,
+): HttpFileDetections[] {
+  const context = repoContext as NodeRepoContext | undefined;
+  if (context?.configurationAvailable === false) return [];
+  const parsedFiles: ParsedFile[] = [];
+  const facts = new Map<string, FrameworkRouteFacts>();
+  for (const { filePath: rawPath, tree } of files) {
+    const filePath = normalizeRel(rawPath);
+    const provider = getProviderForFile(filePath);
+    if (!provider) continue;
+    try {
+      const parsed = extractParsedFile(provider, tree.rootNode.text, filePath, undefined, tree);
+      if (!parsed) continue;
+      parsedFiles.push(parsed);
+      facts.set(filePath, extractFrameworkRouteFacts(tree, parsed));
+    } catch {
+      // A malformed file contributes no framework facts; other files survive.
+    }
+  }
+  const filePaths = context?.files ?? new Set(files.map((file) => normalizeRel(file.filePath)));
+  const routes = resolveFrameworkRoutePaths([...facts.values()], (fromFile, specifier) => {
+    const resolver =
+      getLanguageFromFilename(fromFile) === SupportedLanguages.JavaScript
+        ? javascriptScopeResolver
+        : typescriptScopeResolver;
+    const target = resolver.resolveImportTarget(
+      specifier,
+      fromFile,
+      filePaths,
+      context?.resolutionConfig,
+      { parsedFiles },
+    );
+    return typeof target === 'string' ? [target] : (target ?? []);
+  });
+  const detections = new Map<string, HttpDetection[]>();
+  for (const route of routes) {
+    const fileFacts = facts.get(route.filePath);
+    if (!fileFacts) continue;
+    const found = detections.get(route.filePath) ?? [];
+    found.push(frameworkDetection(route, fileFacts));
+    detections.set(route.filePath, found);
+  }
+  return [...detections].map(([filePath, found]) => ({ filePath, detections: found }));
 }
 
 /** The repo facts to resolve against, or null when there was no pre-pass. */
@@ -615,33 +711,16 @@ function scanBundle(
     });
   }
 
-  // Express: router/app.<verb>(...)
-  for (const match of runCompiledPatterns(bundle.express, tree)) {
-    const methodNode = match.captures.http_method;
-    const pathNode = match.captures.path;
-    if (!methodNode || !pathNode) continue;
-    const path = unquoteLiteral(pathNode.text);
-    if (path === null) continue;
-    // Capture the handler argument identifier (`router.get('/x', listUsers)`
-    // → `listUsers`) so a named handler resolves by name. For an inline/anonymous
-    // handler emit `name: null` (NOT the sentinel `'handler'`) so the resolver
-    // does NOT match an unrelated function that happens to be named `handler` —
-    // it uses the registration line for containment instead. When the handler is
-    // an imported (possibly aliased) symbol, carry the resolved import so the
-    // extractor can pin it to the source module rather than the local alias text.
-    const handlerNode = match.captures.handler;
-    const localHandler = handlerNode?.type === 'identifier' ? handlerNode.text : null;
-    const imported = localHandler !== null ? importMap.get(localHandler) : undefined;
-    out.push({
-      role: 'provider',
-      framework: 'express',
-      method: methodNode.text.toUpperCase(),
-      path,
-      name: imported ? imported.name : localHandler,
-      handlerImport: imported,
-      line: (handlerNode ?? pathNode).startPosition.row + 1,
-      confidence: 0.8,
-    });
+  // Bare single-tree callers retain local framework routes. Repository scans
+  // receive only the composed project providers, never a raw-path fallback.
+  if (fileRel === undefined) {
+    const filePath =
+      bundle === JAVASCRIPT_BUNDLE
+        ? 'routes.js'
+        : bundle === TSX_BUNDLE
+          ? 'routes.tsx'
+          : 'routes.ts';
+    out.push(...(scanNodeProject([{ filePath, tree }])[0]?.detections ?? []));
   }
 
   // Consumer: fetch with options { method: 'X' }
@@ -853,6 +932,7 @@ export const JAVASCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'javascript-http',
   language: JavaScript,
   prepareRepo: buildNodeRepoContext,
+  scanProject: scanNodeProject,
   scan: (tree, repoContext, fileRel) => scanBundle(JAVASCRIPT_BUNDLE, tree, repoContext, fileRel),
 };
 
@@ -860,6 +940,7 @@ export const TYPESCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'typescript-http',
   language: TypeScript.typescript,
   prepareRepo: buildNodeRepoContext,
+  scanProject: scanNodeProject,
   scan: (tree, repoContext, fileRel) => scanBundle(TYPESCRIPT_BUNDLE, tree, repoContext, fileRel),
 };
 
@@ -867,5 +948,6 @@ export const TSX_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'tsx-http',
   language: TypeScript.tsx,
   prepareRepo: buildNodeRepoContext,
+  scanProject: scanNodeProject,
   scan: (tree, repoContext, fileRel) => scanBundle(TSX_BUNDLE, tree, repoContext, fileRel),
 };

@@ -1,5 +1,30 @@
 # Receiver-resolution baseline
 
+## Semantic rename provider captures (#3486)
+
+A same-corpus A/B against `origin/main` (`191a954b`) reproduced the committed
+129 call / 167 all-kind drops. The final provider source and rebuilt workers
+measure 127 call / 189 all-kind drops, including 43 reads and 19 writes. The
+original runner and a separate one-worker diagnostic agree exactly on every
+gated count; all shape-arm states are unchanged.
+
+The two removed call drops are `user.address.save` in
+`ruby-field-type-disambig/service.rb:7` and `ruby-field-types/service.rb:6`.
+Preserving the `./` distinction for bare `require_relative` paths resolves the
+fixture imports. Both sites now emit `CALLS` to their own fixture's
+`Address.save`, with no edge to the same-named `User.save`. Ruby call drops fall
+from 2 to 0, `chain-call` from 32 to 30, and `in-program` from 56 to 54; every
+other call bucket is unchanged.
+
+The 24 added drops are newly captured Zig field reads, rather than lost call
+edges. The Zig `field_expression` query now records complete receivers for
+reads outside call/argument positions; its callee-position marker lets resolved
+method reads avoid phantom edges. Every added suppressed site has exactly one
+new `@reference.read` capture at the same written range and no corresponding
+capture on `origin/main`. Existing suppressed read sites retain their ranges
+and acquire receiver-chain metadata. These newly visible unresolved reads stay
+in the exact all-kind gate; no coverage or threshold is relaxed.
+
 ## Python mixin dispatch (#3390)
 
 The added mixin fixture deliberately calls an absent `missing_target` on a known

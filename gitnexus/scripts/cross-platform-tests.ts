@@ -144,6 +144,10 @@ const PLATFORM_LOGIC = [
   // #3073: cwd-based repository selection canonicalizes real paths, compares
   // platform separators/case, and rejects nested Git-boundary fallthrough.
   'test/unit/calltool-dispatch.test.ts',
+  // Preview capabilities use real file symlinks, canonical temp paths, atomic
+  // replacements and physical-target drift checks on each host filesystem.
+  'test/unit/rename-preview-plans.test.ts',
+  'test/unit/rename-plan.test.ts',
   // The index write-lock (#2658) selects its backend by process.platform — the
   // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
   // fallback — and its socket-backend describe block is gated to linux/win32.
@@ -157,8 +161,39 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  // Inline-handler findings must survive native persistence and cold explain
+  // readers on each OS; passing the Ubuntu-only taint suite is insufficient.
+  'test/integration/taint-explain.test.ts',
+  // Real indexing/MCP previews include tracked/untracked edits, file-symlink
+  // retargets and staging failures; the helper runs in a separate native process.
+  'test/integration/rename-preview-plan.test.ts',
+  'test/integration/rename-provider-matrix.test.ts',
+  'test/integration/rename-provider-c.test.ts',
+  'test/integration/rename-provider-cobol.test.ts',
+  'test/integration/rename-provider-cpp.test.ts',
+  'test/integration/rename-provider-csharp.test.ts',
+  'test/integration/rename-provider-dart.test.ts',
+  'test/integration/rename-provider-go.test.ts',
+  'test/integration/rename-provider-java.test.ts',
+  'test/integration/rename-provider-javascript.test.ts',
+  'test/integration/rename-provider-kotlin.test.ts',
+  'test/integration/rename-provider-objective-c.test.ts',
+  'test/integration/rename-provider-php.test.ts',
+  'test/integration/rename-provider-python.test.ts',
+  'test/integration/rename-provider-ruby.test.ts',
+  'test/integration/rename-provider-rust.test.ts',
+  'test/integration/rename-provider-swift.test.ts',
+  'test/integration/rename-provider-typescript.test.ts',
+  'test/integration/rename-provider-vue.test.ts',
+  'test/integration/rename-provider-zig.test.ts',
+  'test/integration/pdg-explicit-owner.test.ts',
   'test/integration/skip-fts.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
+  // Native COPY, cached vectors and cold shared-store readers vary by platform.
+  'test/integration/embedding-identity-integrity.test.ts',
+  'test/integration/shared-store-embedding-reuse.test.ts',
+  // Real endpoint retries include native index writes and cold database reads.
+  'test/integration/embedding-input-isolation.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
   'test/integration/lbug-pool-stability.test.ts',
@@ -168,6 +203,14 @@ const LBUG_NATIVE = [
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
   'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
   'test/integration/lbug-incremental-search.test.ts',
+  // Retained identities and reader metadata must agree on every native platform.
+  'test/integration/incremental-method-integrity.test.ts',
+  'test/integration/go-incremental-method-owners.test.ts',
+  'test/integration/query-symbol-integrity.test.ts',
+  'test/integration/mcp-index-generation.test.ts',
+  'test/integration/fts-repair-warm-session.test.ts',
+  'test/unit/lbug-pool-pinning.test.ts',
+  'test/unit/hybrid-search.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
   'test/integration/lbug-non-ascii-path.test.ts',
   // Cross-repo trace e2e: builds two real lbug indexes + a real bridge and
@@ -182,6 +225,10 @@ const LBUG_NATIVE = [
   'test/integration/fts-description-search.test.ts',
   'test/integration/staleness-and-stability.test.ts',
   'test/integration/analyze-wal-checkpoint-failure.test.ts',
+  // Publication, cold readers and sidecar handling depend on native filesystem behavior.
+  'test/integration/analyze-atomic-swap.test.ts',
+  'test/unit/incremental-write-integrity.test.ts',
+  'test/unit/lbug-publication.test.ts',
   'test/integration/fts-stemmer-sweep.test.ts',
   'test/integration/lbug-multiwriter-deadlock.test.ts',
   // #2409 batched incremental writeback: chunked IN-list DETACH DELETEs +
@@ -289,8 +336,16 @@ const SPAWN_CLI = [
 // Worker threads tests — exercise real worker_threads which have
 // platform-specific behavior (thread spawning, IPC, exit handling)
 const WORKER_THREADS = [
+  // Native callback parsing and exact caller/summary ownership (#3489).
+  'test/integration/cfg/interproc-taint.test.ts',
+  'test/integration/function-local-identity.test.ts',
+  'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
+  // Real parse workers and both on-disk parse stores must retain lexical
+  // local-import ownership on each platform's native grammar/runtime pair.
+  'test/integration/local-import-worker-parity.test.ts',
+  'test/integration/resolvers/local-import-persistence.test.ts',
 ];
 
 // Tree-sitter native addon smoke tests — verify that native grammars
@@ -310,7 +365,10 @@ const FILESYSTEM = [
   // The deletion-guard cases in this file require real Windows path semantics.
   'test/unit/canonicalize-path-long-path-prefix.test.ts',
   'test/unit/storage-resolver.test.ts',
+  // Dart package metadata is captured during the shared scan on every platform.
   'test/unit/dart-package-imports.test.ts',
+  // Verify the same capture is reused by native parsing and scope resolution.
+  'test/integration/resolvers/dart.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',
@@ -320,6 +378,7 @@ const FILESYSTEM = [
   // skips itself where chmod cannot block a delete, so run it everywhere.
   'test/unit/parsedfile-store.test.ts',
   'test/integration/filesystem-walker.test.ts',
+  'test/integration/analyze-directory-symlinks.test.ts',
   'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',

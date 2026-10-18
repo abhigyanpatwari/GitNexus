@@ -17,7 +17,10 @@ import { lookupCore, type CoreLookupParams } from './lookup-core.js';
 import type { OwnerScopedContributor, RegistryContext } from './context.js';
 import { FIELD_KINDS } from './context.js';
 
-export interface FieldLookupOptions {
+export interface FieldLookupOptions extends Pick<
+  CoreLookupParams,
+  'lookupPosition' | 'lookupPurpose'
+> {
   readonly explicitReceiver?: { readonly name: string };
   readonly ownerScopedContributor?: OwnerScopedContributor;
 }
@@ -30,6 +33,8 @@ export function buildFieldRegistry(ctx: RegistryContext): FieldRegistry {
   return {
     lookup(name: string, scope: ScopeId, options: FieldLookupOptions = {}) {
       const params: CoreLookupParams = {
+        lookupPosition: options.lookupPosition,
+        lookupPurpose: options.lookupPurpose,
         acceptedKinds: FIELD_KINDS,
         useReceiverTypeBinding: true,
         ownerScopedContributor: options.ownerScopedContributor ?? null,

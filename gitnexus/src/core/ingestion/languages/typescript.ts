@@ -7,6 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { unboundCallableName } from './typescript/unbound-callables.js';
 import type { CaptureMatch, NodeLabel } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
@@ -128,9 +129,13 @@ import {
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
 import { extractNestRoutes } from '../route-extractors/nest.js';
+import { extractFetchWrapperCalls } from '../route-extractors/fetch-wrapper.js';
+import { extractFrameworkRouteFacts } from '../route-extractors/framework-route-facts.js';
+import { resolveProjectFrameworkRouteFacts } from '../route-extractors/framework-route-paths.js';
 import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
 import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
 import { extractToolDefinitions } from './typescript/tool-definitions.js';
+import { typescriptRenameProvider } from './typescript/rename.js';
 
 const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes>) => [
   ...extractDispatchGuardRoutes(...args),
@@ -172,17 +177,25 @@ const pairKeyName = (keyNode: SyntaxNode | null | undefined): string | null => {
  *     applied to all `useCallback` / `useMemo` callbacks bound to a
  *     const — the sole way to give them a named caller anchor.
  *
- * Returns `null` for funcName when the arrow lives in a context that has
- * no static name — bare call arguments (not bound to a const), computed
- * keys, return-from-arrow positions. The parent walk in
+ * Bare expression-statement callbacks and returned function expressions get
+ * their own name or a position name. Other contexts without a static name
+ * (computed keys, return-from-arrow positions) return null. The parent walk in
  * findEnclosingFunctionId then continues up to the next named ancestor
  * (or to the file).
  */
 const tsExtractFunctionName = (
   node: SyntaxNode,
   filePath?: string,
-): { funcName: string | null; label: NodeLabel } | null => {
+): { funcName: string | null; label: NodeLabel; identityName?: string | null } | null => {
   if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
+
+  const unboundName = unboundCallableName(node);
+  if (unboundName !== undefined)
+    return {
+      funcName: unboundName,
+      label: 'Function',
+      ...(node.childForFieldName('name') === null ? { identityName: null } : {}),
+    };
 
   const parent = node.parent;
   if (!parent) return null;
@@ -402,6 +415,7 @@ const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefi
 
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
+  rename: typescriptRenameProvider,
   extensions: ['.ts', '.tsx', '.mts', '.cts'],
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
@@ -492,6 +506,9 @@ export const typescriptProvider = defineLanguage({
   // to a literal; nothing else in this pipeline can see that shape. TS and JS
   // share the grammar, so they share the extractor.
   extractDecoratorRoutes: extractJsTsRoutes,
+  extractRouteFacts: extractFrameworkRouteFacts,
+  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
+  extractFetchWrapperCalls,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   // Path-gate lives here (language provider), not in the shared parse worker.
   extractTextRoutes: extractJsTsTextRoutes,
@@ -500,6 +517,7 @@ export const typescriptProvider = defineLanguage({
 
 export const javascriptProvider = defineLanguage({
   id: SupportedLanguages.JavaScript,
+  rename: typescriptRenameProvider,
   extensions: ['.js', '.jsx', '.mjs', '.cjs'],
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
@@ -577,6 +595,9 @@ export const javascriptProvider = defineLanguage({
   arityCompatibility: jsArityCompatibility,
   // See the TypeScript provider above.
   extractDecoratorRoutes: extractJsTsRoutes,
+  extractRouteFacts: extractFrameworkRouteFacts,
+  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
+  extractFetchWrapperCalls,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   extractTextRoutes: extractJsTsTextRoutes,
   extractToolDefinitions,

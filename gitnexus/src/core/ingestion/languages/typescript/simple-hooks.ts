@@ -42,6 +42,9 @@ export function tsBindingScopeFor(
   innermost: Scope,
   tree: ScopeTree,
 ): ScopeId | null {
+  // A named function expression binds only inside itself. Anonymous callables
+  // explicitly suppress their binding through @declaration.binding-name.
+  if (decl['@callable.unbound'] !== undefined) return innermost.id;
   // Method return type: hoist to Module (mirrors csharpBindingScopeFor).
   if (decl['@type-binding.return'] !== undefined) {
     return walkToScope(innermost, tree, 'Module');
@@ -55,6 +58,26 @@ export function tsBindingScopeFor(
   if (decl['@type-binding.parameter-property'] !== undefined) {
     return walkToScope(innermost, tree, 'Class');
   }
+
+  // JSDoc parameters are anchored on the whole function, unlike inline
+  // parameter annotations. They still belong to its body, not its parent.
+  if (decl['@type-binding.parameter'] !== undefined) {
+    return walkToScope(innermost, tree, 'Function');
+  }
+
+  // A for-of alias covers the whole loop. When that loop introduces a lexical
+  // block, its element type belongs beside the loop variable's name claim.
+  // Returning the owner explicitly prevents equal-range auto-hoisting.
+  const alias = decl['@type-binding.alias'];
+  if (
+    alias !== undefined &&
+    innermost.kind === 'Block' &&
+    alias.range.startLine === innermost.range.startLine &&
+    alias.range.startCol === innermost.range.startCol &&
+    alias.range.endLine === innermost.range.endLine &&
+    alias.range.endCol === innermost.range.endCol
+  )
+    return innermost.id;
 
   // `this.p = new Outer()` binds the FIELD, not a method-local, so the binding
   // belongs on the class the way an annotated field's does — that is the only
@@ -107,18 +130,11 @@ function isVarDeclaration(captureText: string): boolean {
 // ─── importOwningScope ────────────────────────────────────────────────────
 
 /**
- * TypeScript imports are syntactically top-level: `import_statement` is
- * legal only inside `program` (the module root). `namespace X { … }`
- * bodies CAN contain imports (`internal_module`), in which case the
- * import scopes to the namespace. Dynamic `import()` calls appear
- * inside any scope but their runtime effect is still a module-level
- * resolution — we attach the `ParsedImport` to the innermost Module /
- * Namespace scope so the binding is visible through the full subtree.
- *
- * Returning `null` delegates to the central default, which walks to
- * the nearest enclosing `Module`/`Namespace`. That matches our rule,
- * so we only override when we explicitly need a non-default scope
- * (we don't).
+ * Static external imports belong to the module. Local require/await-import
+ * captures carry an explicit declaredAtScope from their binding declaration:
+ * var hoists to a function, while let/const remain in their lexical block.
+ * The extractor honors that explicit owner before consulting this hook.
+ * Returning null leaves other imports at their syntactic scope.
  */
 export function tsImportOwningScope(
   _imp: ParsedImport,

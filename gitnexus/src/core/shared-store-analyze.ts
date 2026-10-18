@@ -257,6 +257,7 @@ export const seedSharedSlot = async (
   layout: SharedStoreLayout,
   repoPath: string,
   log: Log,
+  canReuseGraph: (meta: RepoMeta) => boolean = () => true,
 ): Promise<void> => {
   if (await loadMeta(layout.checkoutSlot)) return;
   const picked = pickSeed(repoPath, await listCommitGraphs(layout));
@@ -264,7 +265,13 @@ export const seedSharedSlot = async (
   // A commit graph matches its commit exactly, so a checkout showing exactly
   // that commit is up to date. Any other checkout gets an empty lastCommit,
   // like seedFromLocalIndex, so its next run hash-diffs.
-  const upToDate = picked?.distance === 0 && isWorkingTreePristine(repoPath);
+  // Keep incompatible graphs as rebuild/embedding seeds, retaining their old
+  // provenance, but never authorize current adoption from another parser.
+  const upToDate =
+    seed !== undefined &&
+    picked?.distance === 0 &&
+    isWorkingTreePristine(repoPath) &&
+    canReuseGraph(seed.meta);
   // Record the pointer under the publish lock, where reclaim counts
   // references, so the graph cannot be deleted between the pick and the save.
   const pointed =
@@ -372,6 +379,7 @@ export const publishSharedGraph = async (
   repoPath: string,
   currentCommit: string,
   log: Log,
+  registryOptions: { name?: string; allowDuplicateName?: boolean } = {},
 ): Promise<void> => {
   const slot = layout.checkoutSlot;
   const meta = await loadMeta(slot);
@@ -384,6 +392,10 @@ export const publishSharedGraph = async (
   const shareable =
     currentCommit !== '' &&
     meta.lastCommit === currentCommit &&
+    // Unverifiable workers can still build a useful private graph, but its
+    // facts must never be replaced by (or published as) a shared generation.
+    // FTS-only repair preserves the graph's existing parser provenance.
+    meta.parseCacheIdentity !== undefined &&
     !meta.incrementalInProgress &&
     builtClean &&
     // Embeddings still owed stay with this checkout, which finishes them; a
@@ -493,7 +505,11 @@ export const publishSharedGraph = async (
   const moved =
     previous !== undefined &&
     !registryPathEquals(canonicalizePath(previous.storagePath), canonicalizePath(slot));
-  await registerRepo(repoPath, meta, { storagePath: slot, dropBranches: moved });
+  await registerRepo(repoPath, meta, {
+    ...registryOptions,
+    storagePath: slot,
+    dropBranches: moved,
+  });
   await writeSharedStorePointer(repoPath, layout);
 };
 

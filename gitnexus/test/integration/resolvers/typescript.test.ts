@@ -563,20 +563,22 @@ describe('TypeScript export type re-export chain resolution', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
   });
 
-  it('resolves new User() through export type re-export chain to base.ts', () => {
+  it('does not resolve runtime construction through a type-only re-export chain', () => {
     const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetLabel === 'Class');
-    expect(userCtor).toBeDefined();
-    expect(userCtor!.source).toBe('main');
-    expect(userCtor!.targetFilePath).toBe('src/base.ts');
+    expect(calls.filter((c) => c.source === 'main' && c.targetLabel === 'Class')).toEqual([]);
   });
 
-  it('resolves user.save() through export type re-export chain to base.ts', () => {
+  it('does not infer receiver types from invalid type-only construction', () => {
     const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save');
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.source).toBe('main');
-    expect(saveCall!.targetFilePath).toBe('src/base.ts');
+    expect(calls.filter((c) => c.source === 'main')).toEqual([]);
+  });
+
+  it('resolves annotated parameter receivers through the type-only re-export chain', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'typed');
+    expect(calls.map((c) => [c.target, c.targetFilePath]).sort()).toEqual([
+      ['persist', 'src/base.ts'],
+      ['save', 'src/base.ts'],
+    ]);
   });
 });
 
@@ -1845,6 +1847,13 @@ describe('TypeScript member access iterable for-loop', () => {
         c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo'),
     );
     expect(repoSave).toBeDefined();
+  });
+
+  it('does not borrow a parameter type for a nonexistent receiver field', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((c) => c.source === 'processMissingUsers' && c.target === 'save')).toEqual(
+      [],
+    );
   });
 });
 
@@ -3308,10 +3317,8 @@ describe('TypeScript inline constructor receiver resolution', () => {
 // method call. Anything measuring resolver gaps has to tell those apart, and
 // the site kind is the only authoritative signal for it.
 //
-// Both shapes below are empirically confirmed drops: `!` produces a reference
-// site that reaches Case 0. (`?.` and explicit type arguments do NOT record a
-// drop at all — they are invisible to this recorder, which is a property of the
-// capture layer, not of this field.)
+// Both negative cases use untyped receivers, so their drops do not depend on
+// an unsupported expression shape. A typed write is the positive control.
 // ---------------------------------------------------------------------------
 
 describe('TypeScript receiver-unresolved drops carry their site kind (#2744)', () => {
@@ -3350,9 +3357,13 @@ export async function droppedCall(svc): Promise<void> {
   svc.getUser().save();
 }
 
-export function droppedWrite(svc: Service | null): void {
-  // A write receiver mints no chain at all (the emitter gates on CALL_TAGS),
-  // so this keeps dropping and stays separable from the call above.
+export function droppedWrite(svc): void {
+  // The unannotated receiver has no type proof, even though writes now
+  // carry the same structural receiver chains as calls.
+  svc!.getUser().name = 'x';
+}
+
+export function resolvedWrite(svc: Service | null): void {
   svc!.getUser().name = 'x';
 }
 `,
@@ -3376,6 +3387,17 @@ export function droppedWrite(svc: Service | null): void {
       (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
     );
     expect(drops).toContainEqual(expect.objectContaining({ name: 'name', siteKind: 'write' }));
+  });
+
+  it('resolves the typed compound write while retaining the untyped write drop', () => {
+    const accesses = getRelationships(result, 'ACCESSES').filter((edge) => edge.target === 'name');
+    expect(accesses).toHaveLength(1);
+    expect(accesses[0]).toMatchObject({
+      source: 'resolvedWrite',
+      target: 'name',
+      targetFilePath: 'models.ts',
+      rel: { targetId: 'Property:models.ts:User.name' },
+    });
   });
 
   // The origin travels with the drop too, and its value here is the whole

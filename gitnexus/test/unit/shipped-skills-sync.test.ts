@@ -114,6 +114,17 @@ describe.each(STANDARD_SKILL_NAMES)('standard skill distribution for %s', (name)
 });
 
 describe('intended standard-skill improvements stay in every applicable copy', () => {
+  it('ships byte-identical refactoring guidance in every distribution', () => {
+    const canonical = fs.readFileSync(
+      path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus-refactoring', 'SKILL.md'),
+    );
+    const copies = standardSkillCopies('gitnexus-refactoring');
+    expect(copies).toHaveLength(4);
+    for (const file of copies) {
+      expect(fs.readFileSync(file).equals(canonical), file).toBe(true);
+    }
+  });
+
   it('documents the PDG analyze flag in every CLI copy', () => {
     for (const file of standardSkillCopies('gitnexus-cli')) {
       expect(fs.readFileSync(file, 'utf-8')).toContain('`--pdg`');
@@ -126,8 +137,8 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
-  // These copies are NOT byte-compared (only the engineering FAMILY above is),
-  // so a runner added to resolve-analyze-cmd.cjs can silently miss them. The
+  // These CLI copies are not byte-compared, so a runner added to
+  // resolve-analyze-cmd.cjs can silently miss them. The
   // audience that most needs bunx documented — a bun-only machine with no npm,
   // npx or pnpm — is exactly the one an npx/pnpm-only bootstrap line strands.
   it('documents the bunx runner and bootstrap in every CLI copy', () => {
@@ -158,9 +169,8 @@ describe('intended standard-skill improvements stay in every applicable copy', (
   // This assertion exists because its absence let real drift ship: the canonical
   // `.claude/` copy lost the UNKNOWN block while the plugin mirror kept it, and
   // this suite passed 54/54 with the two copies contradicting each other. The
-  // byte-identical check above covers only the plan/work/review/lfg family, and
-  // the fragment lists are the only guard the standard skills get — so a fragment
-  // that is not listed is a fragment nothing protects.
+  // byte-identical checks do not cover impact-analysis, so a fragment
+  // that is not listed here is a fragment nothing protects.
   it('keeps the UNKNOWN-risk guidance in every impact-analysis copy', () => {
     const required = [
       '| **Zero callers found**         | **UNKNOWN** |',
@@ -271,8 +281,8 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
-  // Same reasoning as the UNKNOWN guard above: these copies are not
-  // byte-compared, so an edit to one copy alone silently ships four
+  // Same reasoning as the UNKNOWN guard above: most of these skills are not
+  // byte-compared, so an edit to one copy alone can silently ship four
   // distributions that disagree about whether identity is required. The
   // fragments are matched against whitespace-normalized text because the
   // copies wrap the same sentences at different columns.
@@ -311,10 +321,64 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     },
   );
 
-  it("uses the rename API's text_search vocabulary in every refactoring copy", () => {
+  // Every `code` a failed rename can carry, as thrown in src/mcp/local/rename/*
+  // and gitnexus-shared/src/rename/*, plus the statuses an agent must recover from.
+  const RENAME_RECOVERY_KEYS = [
+    'stale_graph',
+    'source_changed',
+    'unsupported_*',
+    'ambiguous_reference',
+    'incomplete_semantics',
+    'name_collision',
+    'invalid_name',
+    'invalid_argument',
+    'no_locations',
+    'overlapping_edits',
+    'invalid_edit',
+    'duplicate_file',
+    'missing_snapshot',
+    'outside_repository',
+    'source-unavailable',
+    'rename_failed',
+    'write_failed',
+    'application_status: "partial"',
+  ];
+
+  it('documents a recovery step for every rename failure code in every refactoring copy', () => {
     for (const file of standardSkillCopies('gitnexus-refactoring')) {
       const content = fs.readFileSync(file, 'utf-8');
-      expect(content).toContain('text_search');
+      const table = content.slice(content.indexOf('| Result | Next step |'));
+      for (const key of RENAME_RECOVERY_KEYS) expect(table, `${file}: ${key}`).toContain(key);
+    }
+  });
+
+  it('teaches one rename tool with dry_run, not a separate rename_preview, in every copy', () => {
+    for (const name of ['gitnexus-refactoring', 'gitnexus-guide'] as const) {
+      for (const file of standardSkillCopies(name)) {
+        const content = fs.readFileSync(file, 'utf-8');
+        expect(content, file).not.toContain('rename_preview');
+        expect(content, file).toContain('dry_run');
+        expect(content, file).toContain('plan_token');
+      }
+    }
+    for (const file of standardSkillCopies('gitnexus-refactoring')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain(
+        'rename({symbol_name: "oldName", new_name: "newName", dry_run: true})',
+      );
+      expect(content).toContain(
+        'rename({..., dry_run: false, plan_token: "<token from preview>"})',
+      );
+    }
+  });
+
+  it('teaches graph-backed semantic preview in every refactoring copy', () => {
+    for (const file of standardSkillCopies('gitnexus-refactoring')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain('gitnexus-semantic');
+      expect(content).not.toContain('tsconfig_path');
+      expect(content).toContain('confidence: "semantic"');
+      expect(content).not.toContain('graph (safe)');
       expect(content).not.toContain('ast_search');
     }
   });
@@ -426,6 +490,18 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the degraded-detect_cha
   it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {
     const block = extractManagedBlock(file);
     for (const fragment of REQUIRED_FRAGMENTS) expect(block).toContain(fragment);
+  });
+});
+
+// The checked-in blocks must agree with what src/cli/ai-context.ts generates for the
+// one public rename tool: preview with dry_run:true first, then apply with dry_run:false.
+describe('root AGENTS.md / CLAUDE.md managed block teaches the single rename tool', () => {
+  it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block previews before applying', (file) => {
+    const block = extractManagedBlock(file);
+    expect(block).toContain(
+      'use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false`',
+    );
+    expect(block).not.toContain('rename_preview');
   });
 });
 

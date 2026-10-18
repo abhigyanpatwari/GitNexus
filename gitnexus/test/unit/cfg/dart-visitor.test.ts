@@ -412,6 +412,39 @@ describe('Dart CfgVisitor — try/on/catch/finally', () => {
 });
 
 describe('Dart CfgVisitor — labeled break/continue', () => {
+  it('keeps both labels on a loop and continues to that loop from a nested loop', () => {
+    const cfg = dart.cfgOf(`void f(List xs, List ys, bool c) {
+      outer: inner: for (var i in xs) {
+        for (var j in ys) { if (c) { continue outer; } else { continue inner; } }
+      }
+      done();
+    }`);
+    // Exact edges, not reachability: a jump retargeted to the nested loop still
+    // reaches the outer header through that loop's exit.
+    const header = block(cfg, 'for (var i in xs)');
+    for (const jump of ['continue outer;', 'continue inner;']) {
+      expect(cfg.edges, jump).toContainEqual({
+        from: block(cfg, jump),
+        to: header,
+        kind: 'continue',
+      });
+    }
+  });
+
+  it('breaks out of a labeled block without attaching its label to a nested loop', () => {
+    const cfg = dart.cfgOf(`void f(List xs) {
+      outer: {
+        for (var i in xs) { break outer; }
+        skipped();
+      }
+      done();
+    }`);
+    const jump = block(cfg, 'break outer;');
+    expect(edgeKinds(cfg).has('break')).toBe(true);
+    expect(reaches(cfg, jump, block(cfg, 'done();'))).toBe(true);
+    expect(reaches(cfg, jump, block(cfg, 'skipped();'))).toBe(false);
+  });
+
   it('labeled `break outer` escapes BOTH loops and reaches done()', () => {
     const cfg = dart.cfgOf(`void f(List xs, List ys) {
       outer: for (var i in xs) {

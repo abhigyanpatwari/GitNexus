@@ -7,6 +7,37 @@ permissions:
   contents: read
 
 jobs:
+  tool-accuracy:
+    name: release / deterministic tool accuracy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Check fixed answers against real tools
+        working-directory: gitnexus
+        run: node --import tsx bench/tool-accuracy/run.ts --check --out "$RUNNER_TEMP/tool-accuracy"
+      - name: Publish accuracy summary
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/tool-accuracy/accuracy.md" ]]; then
+            cat "$RUNNER_TEMP/tool-accuracy/accuracy.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload release accuracy evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-tool-accuracy
+          path: |
+            ${{ runner.temp }}/tool-accuracy/accuracy.json
+            ${{ runner.temp }}/tool-accuracy/accuracy.md
+          if-no-files-found: error
+          retention-days: 30
+
   # Ubuntu full-suite coverage, sharded. Each shard writes a vitest blob report
   # (carrying its slice of V8 coverage) with thresholds forced OFF — a single
   # shard's partial coverage can't meet the gate. The coverage-merge job below
@@ -77,11 +108,11 @@ jobs:
         working-directory: gitnexus
       - name: Upload coverage blob
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-blob-${{ matrix.shard }}
-          path: gitnexus/.vitest-reports/
-          # .vitest-reports is a dotdir; upload-artifact excludes hidden files by
+          path: gitnexus/.vitest/blob/
+          # .vitest is a dotdir; upload-artifact excludes hidden files by
           # default, which would upload an empty artifact and break the merge.
           include-hidden-files: true
           retention-days: 5
@@ -107,14 +138,14 @@ jobs:
         with:
           build: 'true'
       - name: Download coverage blobs
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: coverage-blob-*
-          path: gitnexus/.vitest-reports
+          path: gitnexus/.vitest/blob
           merge-multiple: true
       - name: Merge coverage + enforce thresholds
         run: >-
-          npx vitest --mergeReports
+          npx vitest --mergeReports=.vitest/blob
           --reporter=default
           --reporter=./scripts/execution-reporter.ts
           --outputFile=test-results.json
@@ -122,7 +153,7 @@ jobs:
           --coverage.reporter=json-summary
           --coverage.reporter=json
           --coverage.reporter=text
-          --coverage.thresholdAutoUpdate=false
+          --coverage.thresholds.autoUpdate=false
         working-directory: gitnexus
       # gitnexus-shared already built by setup-gitnexus above
       - name: Install gitnexus-web dependencies
@@ -140,7 +171,7 @@ jobs:
         run: node --test docker-server.test.mjs
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-reports
           path: |
@@ -164,8 +195,13 @@ jobs:
     steps:
       - id: gen
         run: |
-          TOTAL=4         # cross-platform (windows/macOS) shards per OS
-          COV_TOTAL=3     # ubuntu coverage shards (merged before thresholds)
+          # Refreshed Windows timings leave eight shards too close to the
+          # 20-minute watchdog. Ten preserve headroom for runner variation.
+          TOTAL=10        # cross-platform (windows/macOS) shards per OS
+          # Four coverage shards exceeded the 25-minute job limit while tests
+          # were still passing. Split the full suite further; keep the timeout
+          # and merged coverage thresholds unchanged.
+          COV_TOTAL=8     # ubuntu coverage shards (merged before thresholds)
           if [ "$TOTAL" -lt 1 ] || [ "$COV_TOTAL" -lt 1 ]; then
             echo "shard totals must be >= 1" >&2; exit 1
           fi
@@ -261,7 +297,7 @@ jobs:
         working-directory: gitnexus
       - name: Upload platform execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-${{ matrix.os }}-${{ matrix.shard }}
           path: gitnexus/${{ matrix.os }}-${{ matrix.shard }}.json
@@ -333,7 +369,7 @@ jobs:
       # exemption is revoked here and an ABI-broken Zig binding fails the
       # job instead of being accepted as a clean absence.
       - name: Run parser-loader ABI load-smoke (dynamic)
-        run: npx vitest run test/unit/parser-loader-abi.test.ts
+        run: npx vitest run test/unit/parser-loader-abi.test.ts test/unit/group/grpc-extractor.test.ts
         env:
           GITNEXUS_REQUIRE_ZIG: '1'
         working-directory: gitnexus
@@ -341,15 +377,16 @@ jobs:
   # End-to-end smoke test for the #1728 packaging fix: pack the published
   # tarball, install it globally into a temp prefix, and assert no junction
   # creation (the EPERM root cause) plus working CLI plus vendor cleanliness
-  # (#836). Runs on windows-latest because that is the platform the fix
+  # (#836) plus native grammar loading from the bundled runtime. Runs on windows-latest because that is the platform the fix
   # targets; the in-repo `npm ci` job above only exercises the dev-tree path
   # and skips the tarball reify step where the historical EPERM occurred.
+  # Native Linux ARM64 also verifies the corrected bundled prebuilds (#3599).
   packaged-install-smoke:
     name: packaged install smoke (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     # Windows pack + web install regularly exceeds 15 minutes when setup also
     # runs prepare/postinstall/build before prepack compiles the same tree again.
@@ -368,6 +405,18 @@ jobs:
         with:
           lifecycle-scripts: 'false'
 
+      # Reproduce #3599's runtime after the shared action selects Node 22.x.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: matrix.os == 'ubuntu-24.04-arm'
+        with:
+          node-version: '22.23.1'
+          package-manager-cache: false
+      - name: Assert native ARM64 runtime
+        if: matrix.os == 'ubuntu-24.04-arm'
+        shell: bash
+        run: |
+          node -e "const assert = require('node:assert/strict'); assert.equal(process.platform, 'linux'); assert.equal(process.arch, 'arm64'); assert.equal(process.version, 'v22.23.1'); console.log(process.platform, process.arch, process.version)"
+
       # `npm pack` runs prepack, which builds the web UI into gitnexus/web/
       # so the tarball matches what `npm publish` ships. Install those deps
       # here, in their own visible step, rather than letting build.js do it
@@ -380,6 +429,71 @@ jobs:
       - name: Pack gitnexus tarball
         shell: bash
         run: npm pack
+        working-directory: gitnexus
+
+      # Block native compilation only in the consumer phase. A correct bundle
+      # must install using prebuilds even when the runner has a toolchain.
+      - name: Reject ARM64 consumer compilation
+        if: matrix.os == 'ubuntu-24.04-arm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLS="$RUNNER_TEMP/gitnexus-no-compile"
+          mkdir -p "$TOOLS"
+          export GITNEXUS_COMPILER_SENTINEL_LOG="$RUNNER_TEMP/gitnexus-compile-attempts.log"
+          cat > "$TOOLS/cc" <<'EOF'
+          #!/usr/bin/env bash
+          echo "Unexpected native compilation: $0 $*" >&2
+          printf '%s\n' "$0 $*" >> "${GITNEXUS_COMPILER_SENTINEL_LOG:?}"
+          exit 97
+          EOF
+          chmod +x "$TOOLS/cc"
+          for tool in c++ gcc g++ clang clang++ make gmake; do
+            cp "$TOOLS/cc" "$TOOLS/$tool"
+          done
+          # Prove the guard fails before relying on it, then clear its probe.
+          if "$TOOLS/cc" --version; then
+            echo 'Compiler sentinel unexpectedly succeeded' >&2
+            exit 1
+          else
+            test "$?" -eq 97
+          fi
+          test -s "$GITNEXUS_COMPILER_SENTINEL_LOG"
+          : > "$GITNEXUS_COMPILER_SENTINEL_LOG"
+          echo "$TOOLS" >> "$GITHUB_PATH"
+          {
+            echo "GITNEXUS_COMPILER_SENTINEL_LOG=$GITNEXUS_COMPILER_SENTINEL_LOG"
+            echo "CC=$TOOLS/cc"
+            echo "CXX=$TOOLS/c++"
+            echo "MAKE=$TOOLS/make"
+          } >> "$GITHUB_ENV"
+
+      # Global installs do not exercise npm's bundled-dependency lockfile path
+      # (#3563). Keep npm 10 here: newer npm can mask unresolved override refs.
+      - name: Lock and install tarball in a fresh consumer project
+        shell: bash
+        env:
+          SCARF_ANALYTICS: 'false'
+        run: |
+          set -euo pipefail
+          TARBALL=$(find "$PWD" -maxdepth 1 -name 'gitnexus-*.tgz' -print -quit)
+          test -n "$TARBALL"
+          for NPM_VERSION in 10.9.4 11.9.0; do
+            CONSUMER=$(mktemp -d "$RUNNER_TEMP/gitnexus-consumer.XXXXXX")
+            cp "$TARBALL" "$CONSUMER/gitnexus.tgz"
+            (
+              cd "$CONSUMER"
+              echo '{"name":"gitnexus-consumer","version":"1.0.0","private":true,"devDependencies":{"gitnexus":"file:./gitnexus.tgz"}}' > package.json
+              npm exec --yes --package="npm@$NPM_VERSION" -- npm --version
+              npm exec --yes --package="npm@$NPM_VERSION" -- npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+              test ! -e node_modules
+              cp package-lock.json expected-lock.json
+              npm exec --yes --package="npm@$NPM_VERSION" -- npm ci --no-audit --no-fund
+              cmp package-lock.json expected-lock.json
+              node node_modules/gitnexus/dist/cli/index.js --version
+              node node_modules/gitnexus/scripts/assert-native-parsers.mjs node_modules/gitnexus
+            )
+          done
         working-directory: gitnexus
 
       - name: Install gitnexus tarball into isolated prefix
@@ -397,6 +511,23 @@ jobs:
           npm install -g --prefix "$PREFIX" "./$TARBALL" --no-audit --no-fund
           echo "PREFIX=$PREFIX" >> "$GITHUB_ENV"
         working-directory: gitnexus
+
+      # npm can ignore failed optional-dependency scripts, so also inspect the
+      # sentinel log after both installs rather than trusting exit status alone.
+      - name: Assert no consumer compilation attempts
+        if: always() && matrix.os == 'ubuntu-24.04-arm'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GITNEXUS_COMPILER_SENTINEL_LOG:-}" ] || [ ! -f "$GITNEXUS_COMPILER_SENTINEL_LOG" ]; then
+            echo 'Compiler sentinel was not initialized' >&2
+            exit 1
+          fi
+          if [ -s "$GITNEXUS_COMPILER_SENTINEL_LOG" ]; then
+            echo 'Unexpected native compilation during consumer installation:' >&2
+            cat "$GITNEXUS_COMPILER_SENTINEL_LOG" >&2
+            exit 1
+          fi
 
       - name: Assert no junctions or vendor build artifacts
         shell: bash
@@ -420,6 +551,10 @@ jobs:
           # The npm package contract includes the built web UI. Validate the
           # installed artifact, not just the source workflow that produced it.
           node "$INSTALLED/scripts/assert-web-assets.mjs" "$INSTALLED/web"
+
+          # Every bundled/vendored grammar must load and parse from the
+          # installed tree (main thread + worker), not just the dev checkout.
+          node "$INSTALLED/scripts/assert-native-parsers.mjs" "$INSTALLED"
 
           # #836 invariant: no node_modules/ or build/ under any vendor/*.
           BAD=$(find "$INSTALLED/vendor" \( -name node_modules -o -name build \) -print 2>/dev/null || true)
@@ -475,7 +610,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
           cache: npm
@@ -490,7 +625,7 @@ jobs:
       # Switch to the engines-floor Node AFTER building — native deps built on
       # 22.x load across the whole 22.x ABI line, and nothing installs after this
       # (so no package-manager cache is needed).
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.18.0'
           package-manager-cache: false
@@ -511,6 +646,24 @@ jobs:
             echo "import dist/$m.js"
             node --input-type=module -e "await import('./dist/$m.js')"
           done
+        working-directory: gitnexus
+
+  # Native embedding replacement measures real COPY, writes and cold reopens.
+  # Keep it outside the 25-minute language benchmark job: four trials at each
+  # size take several minutes even on the development baseline machine.
+  embedding-identity-benchmark:
+    name: embedding identity persistence benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Embedding identity persistence / scaling guards (#3569)
+        run: node --import tsx bench/embedding-identities/measure.cjs --check
         working-directory: gitnexus
 
   # ── Dedicated benchmark gate ─────────────────────────────────────
@@ -584,6 +737,16 @@ jobs:
         # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
         # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
         run: node --import tsx bench/scope-capture/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Rename output construction scaling guard
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/rename/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Generated embedding input budget / scaling guards (#3607)
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/embedding-inputs/measure.cjs --check
         working-directory: gitnexus
 
       - name: Callable-value-flow target-index guards (#2693)
@@ -893,6 +1056,18 @@ jobs:
         run: node --expose-gc --import tsx bench/cfg/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Inline handler capture / visibility guards (#3489)
+        if: ${{ !cancelled() }}
+        # Build-free: pins inline/returned definitions and private-name refusals,
+        # then guards capture and fallback-cache scaling.
+        run: node --import tsx bench/inline-taint/measure.cjs --check
+        working-directory: gitnexus
+
+      - name: Staged publication durability / scaling guards (#3591)
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/staged-publication/measure.cjs --check
+        working-directory: gitnexus
+
       - name: Emit-persistence throughput / byte-identity guards (#2203)
         if: ${{ !cancelled() }}
         # Build-free: asserts streamAllCSVsToDisk output is byte-identical
@@ -913,6 +1088,11 @@ jobs:
         run: node --import tsx bench/emit-persistence/measure-streaming.mjs --check
         working-directory: gitnexus
 
+      - name: Directory symlink coverage / scaling guards (#3608)
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/symlink-coverage/measure.cjs --check
+        working-directory: gitnexus
+
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         if: ${{ !cancelled() }}
         env:
@@ -921,7 +1101,7 @@ jobs:
         working-directory: gitnexus
       - name: Upload benchmark execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-benchmarks
           path: gitnexus/benchmarks.json
@@ -939,7 +1119,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -949,7 +1129,7 @@ jobs:
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-pytest-locked
           path: eval/pytest-locked.xml
@@ -966,7 +1146,7 @@ jobs:
         working-directory: gitnexus
       - name: Upload preflight execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-preflight
           path: gitnexus/preflight.json
@@ -994,12 +1174,12 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
       - name: Download coverage and web reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-reports
       - name: Download all execution receipts
         if: ${{ !cancelled() }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: execution-*
           path: execution-reports
@@ -1016,7 +1196,7 @@ jobs:
         run: python3 eval/check_test_execution.py execution-reports eval/pytest-results.json
       - name: Upload complete test reports
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-reports
           path: |
@@ -1046,14 +1226,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+          # Oracle controls replay the immutable historical task sources.
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.18.0'
           cache: npm
           cache-dependency-path: |
             gitnexus/package-lock.json
             gitnexus-shared/package-lock.json
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1091,9 +1273,23 @@ jobs:
           npm ci
           npm run build
         working-directory: gitnexus
+      # Release evaluation grades tasks with dependencies built at the pinned
+      # task commit; prove the hidden oracles against that same toolchain.
+      - name: Build the pinned task toolchain that grades release evaluation
+        working-directory: eval
+        run: |
+          set -euo pipefail
+          sha="$(uv run --locked --extra dev python -m workflow_bench.release_report task-sha)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          git -C .. worktree add --detach "${RUNNER_TEMP}/tasks-base" "$sha"
+          cd "${RUNNER_TEMP}/tasks-base"
+          npm ci --audit=false --fund=false
+          npm ci --prefix gitnexus --audit=false --fund=false
+          npm run build --prefix gitnexus
       - name: Prove process-tree and sandbox containment
         env:
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+          GITNEXUS_ORACLE_TASK_DEPENDENCIES: ${{ runner.temp }}/tasks-base
         run: >-
           uv run --locked --extra dev python -m pytest
           tests/test_process_control.py
@@ -1102,13 +1298,16 @@ jobs:
           tests/test_ce_plugin_runtime.py
           tests/test_offline_sweep_integration.py
           tests/test_mock_provider.py
+          tests/test_release_evaluation_smoke.py
           tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant
           tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
+          tests/test_oracle_assets.py::test_shipped_oracles_reject_task_base_and_accept_reference_fixes
+          tests/test_oracle_assets.py::test_in_flight_retry_oracle_rejects_startup_only_repairs
           -q --junitxml=pytest-ubuntu.xml
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-pytest-ubuntu
           path: eval/pytest-ubuntu.xml
@@ -1125,7 +1324,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1139,7 +1338,7 @@ jobs:
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: execution-pytest-windows
           path: eval/pytest-windows.xml

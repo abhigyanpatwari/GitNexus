@@ -24,7 +24,11 @@ export interface ClassRegistry {
    * `scope`. Returns a confidence-ranked `Resolution[]`; consume `[0]`
    * for the best answer.
    */
-  lookup(name: string, scope: ScopeId): readonly Resolution[];
+  lookup(
+    name: string,
+    scope: ScopeId,
+    options?: Pick<CoreLookupParams, 'lookupPosition' | 'lookupPurpose'>,
+  ): readonly Resolution[];
 }
 
 export function buildClassRegistry(ctx: RegistryContext): ClassRegistry {
@@ -34,8 +38,12 @@ export function buildClassRegistry(ctx: RegistryContext): ClassRegistry {
     ownerScopedContributor: null,
   };
   return {
-    lookup(name: string, scope: ScopeId) {
-      return lookupCore(name, scope, params, ctx);
+    lookup(
+      name: string,
+      scope: ScopeId,
+      options: Pick<CoreLookupParams, 'lookupPosition' | 'lookupPurpose'> = {},
+    ) {
+      return lookupCore(name, scope, { ...params, lookupPurpose: 'type', ...options }, ctx);
     },
   };
 }

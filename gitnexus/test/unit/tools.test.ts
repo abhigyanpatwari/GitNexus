@@ -27,6 +27,19 @@ describe('GITNEXUS_TOOLS', () => {
     expect(GITNEXUS_TOOLS).toHaveLength(19);
   });
 
+  it('exposes one rename tool; there is no separate rename_preview (use dry_run)', () => {
+    const names = GITNEXUS_TOOLS.map((t) => t.name);
+    expect(names.filter((name) => name === 'rename')).toHaveLength(1);
+    expect(names).not.toContain('rename_preview');
+    const rename = GITNEXUS_TOOLS.find((t) => t.name === 'rename')!;
+    expect(rename.inputSchema.properties.dry_run).toMatchObject({ type: 'boolean', default: true });
+    expect(rename.inputSchema.required).toEqual(['new_name']);
+    expect(rename.description).toMatch(/dry_run omitted or true never writes/);
+    expect(rename.description).toMatch(/dry_run:false requires the plan_token/);
+    expect(rename.inputSchema.properties.plan_token).toMatchObject({ type: 'string' });
+    expect(rename.description).not.toContain('rename_preview');
+  });
+
   it('contains all expected tool names', () => {
     const names = GITNEXUS_TOOLS.map((t) => t.name);
     expect(names).toEqual(
@@ -357,7 +370,7 @@ describe('GITNEXUS_TOOLS', () => {
   });
 
   it('per-repo tools have an optional branch scope param (#2106); group/list and checkout file tools do not', () => {
-    const noBranch = new Set(['list_repos', 'read_file', 'grep', ...GROUP_TOOLS]);
+    const noBranch = new Set(['list_repos', 'read_file', 'grep', 'rename', ...GROUP_TOOLS]);
     for (const tool of GITNEXUS_TOOLS) {
       if (noBranch.has(tool.name)) {
         expect(tool.inputSchema.properties.branch, tool.name).toBeUndefined();
@@ -471,7 +484,10 @@ describe('GITNEXUS_TOOLS', () => {
     expect(d).toContain('--pdg');
     expect(d).toContain('intra-procedural');
     // The named blind-spot classes (plan KTD10) must reach the consumer.
-    expect(d.toLowerCase()).toContain('closure/callback');
+    expect(d.toLowerCase()).toContain('captured closure-variable flows are not modeled');
+    expect(d.toLowerCase()).toContain(
+      'sources read inside inline callbacks and returned handlers can flow through helper functions',
+    );
     expect(d.toLowerCase()).toContain('property/field');
     expect(d.toLowerCase()).toContain('guard-style');
     expect(d.toLowerCase()).toContain('cross-function');

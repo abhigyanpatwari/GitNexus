@@ -57,6 +57,20 @@ version that writes the completeness receipt. An older index or unreadable compl
 `incompleteReasons: ["scope-extraction-unverified"]`; re-analyze it before treating
 empty impact results as exact.
 
+**Invalid symbol identity:** `query`, `context`, or `impact` can return
+`The index returned an invalid symbol identity` with recovery guidance instead
+of returning malformed results. Rebuild from the affected repository root with
+`npx gitnexus analyze --force`. If the error returns, retain the failing command,
+GitNexus/Node versions and `gitnexus doctor` output for investigation. This check
+detects blank IDs and NUL-containing identity fields; it does not prove that
+every otherwise plausible name, path or source range is correct.
+
+**MCP freshness after rebuilding:** a warm session refreshes its index reference
+when it opens the replacement graph, including a rebuild at the same commit.
+A busy reader keeps its old reference until it can reopen. During an observed
+graph/metadata publication gap, freshness is `unknown`; retry after analysis
+finishes rather than treating that response as current.
+
 ---
 
 ## Embeddings
@@ -184,6 +198,30 @@ Orchestrator: `.github/workflows/ci.yml`.
 ## Memory / analyze crashes
 
 Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`). If you still OOM on huge repos, close other processes, avoid `--embeddings` for a first pass, or analyze a smaller path if supported by your workflow.
+
+`Unable to allocate memory` / `The buffer pool is full` during graph writes
+refers to LadybugDB's native buffer pool. Increasing `NODE_OPTIONS`,
+`--memory-budget`, or worker heap limits does not resize that pool. Recognized
+pool exhaustion aborts analysis instead of retrying with row skipping.
+
+If the host has enough memory, set an explicit pool size in **bytes**, then
+rebuild. For example, 3 GiB is `3221225472` bytes:
+
+```bash
+GITNEXUS_LBUG_BUFFER_POOL_SIZE=3221225472 npx gitnexus analyze --force
+```
+
+The override bypasses automatic pool sizing. Budget for the Node heap, parse
+workers, other native allocations, and the OS alongside it; a larger pool can
+exhaust the host. `GITNEXUS_LBUG_BUFFER_POOL_SIZE=0` restores LadybugDB's native
+80%-of-RAM default, not an unlimited supply of memory. If memory is insufficient,
+exclude generated/vendor directories or use a larger host.
+
+A measured graph-write collapse aborts a staged build before publication,
+leaving the previous index, if any, intact. An in-place run cannot roll back:
+it records `graph-write-collapsed` and exits nonzero. Rebuild a previously
+collapsed index with `--force` after addressing memory, disk space, or the
+reported COPY error; do not rely on its incomplete query results.
 
 ---
 

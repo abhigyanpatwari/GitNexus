@@ -30,15 +30,13 @@
  *      and `@type {T}` on variable declarations are synthesized. `@typedef`
  *      is not yet synthesized (tracked in #1646).
  *   2. **CJS chained destructuring** — `const { X: { Y } } = require(...)`
- *      (nested destructuring) emits only the outer `X` binding; `Y` is not
+ *      (nested destructuring) creates no imported alias; `Y` is not
  *      resolved.
  *   3. **Dynamic require** — `require(computedPath)` is skipped (non-literal
  *      argument — cannot statically resolve the target).
- *   4. **CommonJS `require()` in TypeScript** — `require()` decomposition is a
- *      JavaScript-emitter concern, so a `.ts` file's `const m = require('./m')`
- *      is not decomposed into an import. The EXPORT side of a `.ts` CommonJS
- *      module is now declared (shared with the JS emitter), but an importer
- *      written in TypeScript still cannot resolve through it.
+ *   4. **Indirect loaders** — computed sources, unawaited import promises,
+ *      default/rest binding targets and indirect loader chains are not module
+ *      aliases. TS/TSX, JS/JSX and Vue share the static local-loader pass.
  *   5. **`.cjs` module-level `this`** — the CommonJS/ESM gate consults the file
  *      extension where it can, but `provider.labelOverride` receives no file
  *      path, so a `.cjs` file whose only export is a module-level `this.X = fn`

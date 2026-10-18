@@ -1,0 +1,40 @@
+{
+  "language": "zig",
+  "description": "Refuse a literal @hasField check of the destination name on the owner, which would flip from false to true.",
+  "categories": [
+    "reflection",
+    "has-field",
+    "destination-collision",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Property",
+    "file": "model.zig",
+    "startLine": 0
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 1
+      },
+      "to": {
+        "name": "target",
+        "kind": "Property",
+        "file": "model.zig",
+        "startLine": 0
+      }
+    }
+  ]
+}

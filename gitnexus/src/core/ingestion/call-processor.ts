@@ -25,12 +25,14 @@ import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 import type { LanguageProvider } from './language-provider.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import {
+  isTestRouteFile,
   normalizeExtractedRoutePath,
   normalizeRouteMethod,
   routeNodeKey,
 } from './route-extractors/route-path.js';
 import { extractReturnTypeName } from './type-extractors/shared.js';
 import { DATA_ROUTE_TABLE_SOURCE } from './route-extractors/data-route-table.js';
+import { reconcileDispatchGuardRoutes } from './route-extractors/dispatch-guard.js';
 import { toZeroBasedLine } from './utils/line-base.js';
 
 const MAX_EXPORTS_PER_FILE = 500;
@@ -356,12 +358,12 @@ export const processRoutesFromExtracted = async (
  *     `handlerName` (the decorated method, captured at extraction); resolve it
  *     directly in the route's own file.
  *
- * First-writer-wins per route identity, matching the routes phase's dedup (it
- * keeps the first route registered for a `(method, url)` key and counts the rest
- * as duplicates). The first route to claim a key reserves it **even when its
- * handler is unresolvable**, so a later same-key route can never stamp its
- * handler onto the first route's Route node (the routes phase made that first
- * route the node-winner). Keying is `routeNodeKey(method, url)` (#2289): a
+ * Production declarations take precedence over test declarations; equal-priority
+ * candidates remain first-writer-wins. The selected declaration reserves its key **even when its
+ * handler is unresolvable**, so a losing route can never donate its handler.
+ * When supplied, `selectedRoutes` receives the admitted winners for the routes
+ * phase, keeping node provenance and handler provenance identical.
+ * Keying is `routeNodeKey(method, url)` (#2289): a
  * same-URL multi-verb pair (`GET /x` + `POST /x`) resolves two handlers, one per
  * node; method-less / wildcard routes key by URL alone, byte-identical to the
  * pre-#2289 behavior. Routes whose handler cannot be *uniquely* resolved (no
@@ -374,12 +376,11 @@ export function resolveRouteHandlerSymbols(
   extractedRoutes: readonly ExtractedRoute[],
   decoratorRoutes: readonly ExtractedDecoratorRoute[],
   routeContext?: RouteHandlerResolutionContext,
+  selectedRoutes?: Set<ExtractedRoute | ExtractedDecoratorRoute>,
 ): Map<string, string> {
   const out = new Map<string, string>();
-  // Route identities already claimed by an earlier route (resolved or not).
-  // Mirrors the routes phase `addRoute` first-writer-wins so the handler we
-  // stamp always belongs to the route that actually won the Route node.
-  const claimed = new Set<string>();
+  const claimed = new Map<string, ExtractedRoute | ExtractedDecoratorRoute>();
+  const admittedDecoratorRoutes = reconcileDispatchGuardRoutes(decoratorRoutes);
 
   // Resolve a single same-file symbol by name. Exactly one match → its nodeId.
   // Zero or many matches → undefined (fail-open). tRPC same-name handlers
@@ -480,24 +481,26 @@ export function resolveRouteHandlerSymbols(
       : uniqueById(model.methods.lookupAllByOwner(owner.nodeId, member))?.nodeId;
   };
 
-  const claim = (
-    routePath: string | null,
-    prefix: string | null,
-    httpMethod: string | null | undefined,
-    symbolId: string | undefined,
-  ) => {
+  const claim = (route: ExtractedRoute | ExtractedDecoratorRoute, symbolId: string | undefined) => {
     // An empty path is a valid, pathless mapping and normalizes to either `/`
     // or its class/router prefix. Only null means the extractor had no route.
-    if (routePath === null) return;
-    const url = normalizeExtractedRoutePath(routePath, prefix);
-    const key = routeNodeKey(normalizeRouteMethod(httpMethod), url);
-    if (claimed.has(key)) return; // first-writer-wins: later same-key routes can't override
-    claimed.add(key);
+    if (route.routePath === null) return;
+    const url = normalizeExtractedRoutePath(route.routePath, route.prefix ?? null);
+    const key = routeNodeKey(normalizeRouteMethod(route.httpMethod), url);
+    const previous = claimed.get(key);
+    if (previous && (!isTestRouteFile(previous.filePath) || isTestRouteFile(route.filePath)))
+      return;
+    if (previous) selectedRoutes?.delete(previous);
+    claimed.set(key, route);
+    selectedRoutes?.add(route);
+    out.delete(key);
     if (symbolId) out.set(key, symbolId);
   };
 
   // Laravel framework routes — controller class + method name.
   for (const route of extractedRoutes) {
+    // Match the routes phase's admission rule for extracted declarations.
+    if (!route.routePath) continue;
     let methodId: string | undefined;
     if (route.controllerName && route.methodName) {
       let controllerDef: SymbolDefinition | undefined;
@@ -516,7 +519,7 @@ export function resolveRouteHandlerSymbols(
         routeContext?.nodeStartLine,
       )?.nodeId;
     }
-    claim(route.routePath, route.prefix ?? null, route.httpMethod, methodId);
+    claim(route, methodId);
   }
 
   const dataHandlerByRoute = new Map<ExtractedDecoratorRoute, string>();
@@ -524,11 +527,16 @@ export function resolveRouteHandlerSymbols(
     string,
     { handlers: Set<string>; hasUnresolved: boolean }
   >();
-  for (const dr of decoratorRoutes) {
+  const dataIdentity = (dr: ExtractedDecoratorRoute): string => {
+    const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
+    return `${Number(isTestRouteFile(dr.filePath))}:${routeNodeKey(normalizeRouteMethod(dr.httpMethod), url)}`;
+  };
+  for (const dr of admittedDecoratorRoutes) {
     if (dr.source !== DATA_ROUTE_TABLE_SOURCE || !dr.handlerName || !dr.routePath) continue;
     const handlerId = resolveDataRouteHandler(dr.filePath, dr.handlerName);
-    const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
-    const key = routeNodeKey(normalizeRouteMethod(dr.httpMethod), url);
+    // Conflicting test handlers must not invalidate a production table.
+    // Ambiguity is still rejected within each priority tier.
+    const key = dataIdentity(dr);
     const state = dataHandlersByIdentity.get(key) ?? {
       handlers: new Set<string>(),
       hasUnresolved: false,
@@ -563,18 +571,16 @@ export function resolveRouteHandlerSymbols(
   // handlers. Data tables additionally suppress an identity when duplicate
   // entries resolve to different handlers: recording either one would invent a
   // single-winner dispatch that the loop does not prove.
-  for (const dr of decoratorRoutes) {
+  for (const dr of admittedDecoratorRoutes) {
     const handlerId = decoratorHandlerId(dr);
     // An unproven data-table entry never becomes a Route node, so it must not
     // reserve the identity and suppress a later, valid framework declaration.
     if (dr.source === DATA_ROUTE_TABLE_SOURCE && handlerId === undefined) continue;
     if (dr.source === DATA_ROUTE_TABLE_SOURCE && dr.routePath) {
-      const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
-      const key = routeNodeKey(normalizeRouteMethod(dr.httpMethod), url);
-      const state = dataHandlersByIdentity.get(key);
+      const state = dataHandlersByIdentity.get(dataIdentity(dr));
       if (state === undefined || state.hasUnresolved || state.handlers.size !== 1) continue;
     }
-    claim(dr.routePath, dr.prefix ?? null, dr.httpMethod, handlerId);
+    claim(dr, handlerId);
   }
 
   return out;

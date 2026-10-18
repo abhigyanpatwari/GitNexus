@@ -8,6 +8,8 @@ export default defineConfig({
     hookTimeout: 120000,
     pool: 'forks',
     globals: true,
+    // Keep the Vitest 4 mock lifecycle while upgrading the runner to Vitest 5.
+    clearMocks: false,
     // Stable test identity across the Linux/macOS/Windows execution receipts.
     includeTaskLocation: true,
     teardownTimeout: 3000,
@@ -18,7 +20,11 @@ export default defineConfig({
     // respawn behavior itself delete GITNEXUS_MEMORY in their own setup.
     // Tests assert the English CLI contract unless a case opts into another
     // language explicitly. Do not inherit a developer shell's CLI locale.
-    env: { GITNEXUS_MEMORY: 'off', GITNEXUS_LANG: 'en' },
+    // GITNEXUS_ATOMIC_INCREMENTAL=0 is an operator off-switch that beats a
+    // caller's `atomicIncremental: true`, so an exported `=0` would silently
+    // turn off every staging test. Empty is neither '0' nor '1', i.e. unset;
+    // a test that needs a value stubs it.
+    env: { GITNEXUS_MEMORY: 'off', GITNEXUS_LANG: 'en', GITNEXUS_ATOMIC_INCREMENTAL: '' },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —
     // it's a vitest forks + native addon interaction where destructors run in
@@ -68,10 +74,17 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/rename-provider-*.test.ts',
+            'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',
             'test/integration/incremental-worktree-context.test.ts',
+            'test/integration/incremental-method-integrity.test.ts',
+            'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/query-symbol-integrity.test.ts',
+            'test/integration/mcp-index-generation.test.ts',
+            'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -106,6 +119,8 @@ export default defineConfig({
             // Shared sibling store (#3352): each file runs real analyses and opens
             // the resulting LadybugDB graphs.
             'test/integration/shared-store-analyze.test.ts',
+            'test/integration/parse-cache-identity-lifecycle.test.ts',
+            'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',
             'test/integration/shared-store-cache.test.ts',
             'test/integration/shared-store-clean.test.ts',
@@ -165,10 +180,17 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/rename-provider-*.test.ts',
+            'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',
             'test/integration/incremental-worktree-context.test.ts',
+            'test/integration/incremental-method-integrity.test.ts',
+            'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/query-symbol-integrity.test.ts',
+            'test/integration/mcp-index-generation.test.ts',
+            'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -224,6 +246,8 @@ export default defineConfig({
             // in two projects would be collected (and run) twice.
             'test/unit/incremental-index-extension-dml-gate.test.ts',
             'test/integration/shared-store-analyze.test.ts',
+            'test/integration/parse-cache-identity-lifecycle.test.ts',
+            'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',
             'test/integration/shared-store-cache.test.ts',
             'test/integration/shared-store-clean.test.ts',

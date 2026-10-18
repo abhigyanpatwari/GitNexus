@@ -491,7 +491,12 @@ export function emitUniqueNamePropertyAccesses(
 
       // Resolved BEFORE narrowing: the enclosing callable is evidence the
       // ranking needs, not just the edge's source.
-      const callerGraphId = resolveCallerGraphId(site.inScope, indexes, nodeLookup, site.atRange);
+      const callerGraphId = resolveCallerGraphId(
+        site.callerScope ?? site.inScope,
+        indexes,
+        nodeLookup,
+        site.atRange,
+      );
       if (callerGraphId === undefined) continue;
 
       const choice = narrowToSingleCandidate(
