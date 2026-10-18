@@ -739,3 +739,97 @@ describe('installSignalShutdown (#1132)', () => {
     }
   });
 });
+
+// Response filters are optional transport views. Backends and unfiltered bytes
+// retain their established contract, including hints and safety metadata.
+describe('MCP response filters', () => {
+  const payload = {
+    status: 'found',
+    symbol: { uid: 'Function:src/pay.ts:pay', name: 'pay' },
+    incoming: {
+      calls: [{ uid: 'Function:src/buy.ts:buy' }],
+      uses: [{ uid: 'Variable:src/ui.ts:handler' }],
+    },
+    outgoing: { calls: [{ uid: 'Function:src/db.ts:save' }] },
+    processes: [{ id: 'proc:checkout' }],
+    epistemic: 'lower-bound',
+    causes: { callableValueReferences: 1 },
+    warning: 'Dynamic dispatch unresolved',
+    staleness: { status: 'current', lastCommit: 'abc' },
+  };
+  it('preserves the exact default formatted response', async () => {
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
+    const args = { uid: payload.symbol.uid };
+    const { text, isError } = await callToolThroughServer(backend, 'context', args);
+    expect(isError).toBe(false);
+    expect(text).toBe(
+      JSON.stringify(payload, null, 2) + getNextStepHint('context', args, false, payload),
+    );
+    expect(backend.callTool).toHaveBeenCalledWith('context', args);
+  });
+  it.each(['context', 'explore'])(
+    'applies opt-in views for %s without sending filter options to the backend',
+    async (name) => {
+      const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
+      const { text, isError } = await callToolThroughServer(backend, name, {
+        uid: payload.symbol.uid,
+        response_sections: ['incoming'],
+        relationTypes: ['CALLS'],
+      });
+      expect(isError).toBe(false);
+      const result = JSON.parse(text.split('\n\n---')[0]);
+      expect(result.incoming).toEqual({ calls: payload.incoming.calls });
+      expect(result.symbol).toEqual(payload.symbol);
+      expect(result.epistemic).toBe('lower-bound');
+      expect(result.causes).toEqual(payload.causes);
+      expect(result.warning).toBe(payload.warning);
+      expect(result.staleness).toEqual(payload.staleness);
+      expect(result).not.toHaveProperty('outgoing');
+      expect(result).not.toHaveProperty('processes');
+      expect(result.response_filter.omitted_relations).toEqual({ incoming: ['uses'] });
+      expect(backend.callTool).toHaveBeenCalledWith(name, { uid: payload.symbol.uid });
+    },
+  );
+  it.each(['query', 'search'])('selects query result sections through %s', async (name) => {
+    const data = {
+      processes: [{ id: 'proc:checkout' }],
+      process_symbols: [{ id: payload.symbol.uid, process_id: 'proc:checkout' }],
+      definitions: [],
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(data) });
+    const { text, isError } = await callToolThroughServer(backend, name, {
+      search_query: 'pay',
+      response_sections: ['process_symbols', 'definitions'],
+    });
+    expect(isError).toBe(false);
+    const result = JSON.parse(text.split('\n\n---')[0]);
+    expect(result.process_symbols).toEqual(data.process_symbols);
+    expect(result.definitions).toEqual([]);
+    expect(result).not.toHaveProperty('processes');
+    expect(backend.callTool).toHaveBeenCalledWith(name, { search_query: 'pay' });
+  });
+  it.each([
+    { response_sections: ['risk'] },
+    { response_sections: [] },
+    { relationTypes: ['CALSL'] },
+    { response_sections: ['processes'], relationTypes: ['CALLS'] },
+    { response_sections: ['incoming'], repo: '@group' },
+  ])('rejects invalid filters before backend execution: %j', async (args) => {
+    const backend = createMockBackend();
+    const { isError } = await callToolThroughServer(backend, 'context', { name: 'pay', ...args });
+    expect(isError).toBe(true);
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+  it('applies the existing byte budget after filtering, without changing the cutoff contract', async () => {
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
+    const { text, isError } = await callToolThroughServer(backend, 'context', {
+      uid: payload.symbol.uid,
+      response_sections: ['incoming'],
+      maxTokens: 8,
+    });
+    expect(isError).toBe(false);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(32);
+    expect(text.endsWith('\n…')).toBe(true);
+    expect(backend.callTool).toHaveBeenCalledWith('context', { uid: payload.symbol.uid });
+  });
+});
