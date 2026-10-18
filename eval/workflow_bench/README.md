@@ -79,13 +79,15 @@ Add **`run-cost-evaluation`** to an open PR targeting `main`:
 gh pr edit 3621 --add-label run-cost-evaluation
 ```
 
-Only a repository writer's label event can request this paid comparison. The
+Only a repository **Maintain or Admin** role's label event can request this paid
+comparison; Write, Triage and Read roles cannot. The
 trusted dispatcher pins the labeled head and selects the newest successful main
 Release evaluation with a full release artifact (searching the latest 100 runs),
 using `gpt-5.6-sol` at `xhigh`. It skips previews and runner-only probes. An
 incompatible or expired baseline fails before paid sessions; it never starts a
-fresh paid baseline automatically. The workflow inputs are internal transport;
-manual PR dispatches also require the label. Ordinary pushes do not request runs.
+fresh paid baseline automatically. The authorized request calls the reusable
+evaluator; PR inputs are absent from manual dispatch. Ordinary pushes do not
+request runs.
 Remove and re-add the label to request another measurement; rerunning the label
 dispatcher itself is ignored. The evaluator checks the live label and head on
 resolution and immediately before paid sessions. Removing the label prevents

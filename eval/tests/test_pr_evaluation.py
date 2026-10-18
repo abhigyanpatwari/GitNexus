@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 
 import pytest
+import yaml
 
 from workflow_bench import pr_evaluation
 from workflow_bench.release_report import build_report, validate_report
@@ -195,7 +196,7 @@ def label_request(monkeypatch):
         "head_sha": OLD,
     }
     payloads = {
-        f"repos/{REPO}/collaborators/maintainer/permission": {"permission": "write"},
+        f"repos/{REPO}/collaborators/maintainer/permission": {"permission": "write", "role_name": "maintain"},
         f"repos/{REPO}/pulls/3621": pr_payload(),
         f"repos/{REPO}/actions/workflows/release-evaluation.yml/runs?branch=main&status=success&per_page=100": {
             "workflow_runs": [run],
@@ -214,35 +215,41 @@ def label_request(monkeypatch):
 def test_label_dispatch_pins_head_main_baseline_and_model(label_request):
     event, _, calls = label_request
     assert pr_evaluation.dispatch_labeled_pr(REPO, event) == 90
-    assert calls == [
-        [
-            "workflow",
-            "run",
-            "release-evaluation.yml",
-            "--repo",
-            REPO,
-            "--ref",
-            "main",
-            "-f",
-            "candidate_pr=3621",
-            "-f",
-            f"expected_pr_sha={NEW}",
-            "-f",
-            "comparison_run_id=90",
-            "-f",
-            "model=gpt-5.6-sol",
-            "-f",
-            "effort=xhigh",
-        ]
-    ]
+    assert not calls  # Requests emit outputs for a reusable job, never manual dispatch.
 
 
-@pytest.mark.parametrize("permission", ["read", "triage", "none", ""])
+@pytest.mark.parametrize("permission", ["write", "read", "triage", "none", "custom-role", ""])
 def test_label_requires_repository_write_permission(label_request, permission):
     event, payloads, calls = label_request
-    payloads[f"repos/{REPO}/collaborators/maintainer/permission"]["permission"] = permission
-    with pytest.raises(ValueError, match="repository writers"):
+    payloads[f"repos/{REPO}/collaborators/maintainer/permission"]["role_name"] = permission
+    with pytest.raises(ValueError, match="repository maintainers or administrators"):
         pr_evaluation.dispatch_labeled_pr(REPO, event)
+    assert not calls
+
+
+@pytest.mark.parametrize("role,permission", [("maintain", "write"), ("admin", "admin")])
+def test_maintain_and_admin_roles_may_request_comparison(label_request, role, permission):
+    event, payloads, calls = label_request
+    payloads[f"repos/{REPO}/collaborators/maintainer/permission"].update(role_name=role, permission=permission)
+    assert pr_evaluation.dispatch_labeled_pr(REPO, event) == 90
+    assert not calls
+
+
+def test_missing_role_does_not_grant_maintainer_authority(label_request):
+    event, payloads, calls = label_request
+    payloads[f"repos/{REPO}/collaborators/maintainer/permission"].pop("role_name")
+    with pytest.raises(ValueError, match="maintainers"):
+        pr_evaluation.dispatch_labeled_pr(REPO, event)
+    assert not calls
+
+
+def test_label_cli_emits_validated_reusable_workflow_outputs(label_request, monkeypatch, tmp_path, capsys):
+    event, _, calls = label_request
+    source = tmp_path / "event.json"
+    source.write_text(json.dumps(event))
+    monkeypatch.setattr("sys.argv", ["pr_evaluation", "dispatch-label", "--repo", REPO, "--event", str(source)])
+    pr_evaluation.main()
+    assert capsys.readouterr().out == f"pr=3621\nsha={NEW}\ncomparison_run_id=90\n"
     assert not calls
 
 
@@ -305,7 +312,7 @@ def test_label_skips_preview_expired_and_probe_runs(label_request, artifact):
         "artifacts": [] if artifact is None else [artifact],
     }
     assert pr_evaluation.dispatch_labeled_pr(REPO, event) == 90
-    assert len(calls) == 1
+    assert not calls
 
 
 def test_label_without_a_full_baseline_does_not_dispatch(label_request):
@@ -323,6 +330,115 @@ def test_previous_measurement_accepts_only_preview_orchestration_changes(monkeyp
         lambda endpoint: {"status": "ahead", "files": [{"filename": "eval/workflow_bench/pr_evaluation.py"}]},
     )
     pr_evaluation.require_comparable_harness(REPO, OLD, HARNESS)
+
+
+@pytest.fixture
+def workflow_protocol_pair():
+    old = {
+        "jobs": {
+            "evaluate": {
+                "runs-on": "self-hosted",
+                "environment": "gitnexus-evolution",
+                "timeout-minutes": 1260,
+                "env": {"MODEL": "gpt-5.6-sol", "EFFORT": "xhigh"},
+                "steps": [
+                    {"uses": "setup-node@abc", "with": {"node-version": "22"}},
+                    {"name": "Prepare", "run": "uv run prepare --runs 3\n"},
+                    {
+                        "name": "Run",
+                        "timeout-minutes": 1140,
+                        "run": (
+                            "set -euo pipefail\nfor runtime in stable candidate; do\n"
+                            "  uv run --locked --extra dev python -m workflow_bench.runner "
+                            "--arms baseline_nomcp baseline --runs 3 --include-expensive "
+                            "--workers 3 --timeout 3600\ndone\n"
+                        ),
+                    },
+                ],
+            }
+        },
+    }
+    new = deepcopy(old)
+    job = new["jobs"]["evaluate"]
+    job["env"].update(INPUT_PR="3621", INPUT_PR_SHA=NEW, COMPARISON_RUN_ID="42")
+    job["steps"][-1]["run"] = (
+        "set -euo pipefail\narms=(baseline_nomcp baseline)\n"
+        'if [[ -n "$INPUT_PR" ]]; then arms=(baseline); fi\n'
+        "for runtime in stable candidate; do\n"
+        '  if [[ -n "$INPUT_PR" && "$runtime" == stable ]]; then continue; fi\n'
+        "  uv run --locked --extra dev python -m workflow_bench.runner "
+        '--arms "${arms[@]}" --runs 3 --include-expensive '
+        "--workers 3 --timeout 3600\ndone\n"
+    )
+    return old, new
+
+
+def test_changed_workflow_requires_matching_measurement_protocol(monkeypatch, workflow_protocol_pair):
+    old, new = workflow_protocol_pair
+    monkeypatch.setattr(
+        pr_evaluation,
+        "_gh_json",
+        lambda endpoint: {
+            "status": "ahead",
+            "files": [{"filename": pr_evaluation.EVALUATION_WORKFLOW}],
+        },
+    )
+    calls = []
+
+    def api(args):
+        calls.append(args)
+        return yaml.safe_dump(old if f"ref={OLD}" in args[1] else new)
+
+    monkeypatch.setattr(pr_evaluation, "_gh", api)
+    pr_evaluation.require_comparable_harness(REPO, OLD, HARNESS)
+    assert len(calls) == 2 and all("Accept: application/vnd.github.raw+json" in call for call in calls)
+    new["jobs"]["evaluate"]["steps"][-1]["run"] += "echo changed measurement\n"
+    with pytest.raises(ValueError, match="measurement protocol changed"):
+        pr_evaluation.require_comparable_harness(REPO, OLD, HARNESS)
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("--workers 3", "--workers 1"),
+        ("--timeout 3600", "--timeout 60"),
+        ("--runs 3", "--runs 2"),
+        (" --include-expensive", ""),
+        ("arms=(baseline);", "arms=(baseline_nomcp);"),
+    ],
+)
+def test_workflow_protocol_rejects_changed_paid_settings(workflow_protocol_pair, before, after):
+    old, new = workflow_protocol_pair
+    step = new["jobs"]["evaluate"]["steps"][-1]
+    step["run"] = step["run"].replace(before, after)
+    assert pr_evaluation.measurement_protocol(yaml.safe_dump(old)) != pr_evaluation.measurement_protocol(
+        yaml.safe_dump(new)
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda job: job["steps"][0]["with"].update({"node-version": "24"}),
+        lambda job: job["steps"][-1].update({"timeout-minutes": 1200}),
+        lambda job: job["env"].update(MODEL="another-model"),
+        lambda job: job["env"].update(ANTHROPIC_BASE_URL="another-provider"),
+        lambda job: job["steps"][1].update(run="uv run prepare --runs 2\n"),
+    ],
+)
+def test_workflow_protocol_rejects_changed_setup_or_environment(workflow_protocol_pair, mutation):
+    old, new = workflow_protocol_pair
+    mutation(new["jobs"]["evaluate"])
+    assert pr_evaluation.measurement_protocol(yaml.safe_dump(old)) != pr_evaluation.measurement_protocol(
+        yaml.safe_dump(new)
+    )
+
+
+def test_workflow_protocol_rejects_extra_paid_invocations(workflow_protocol_pair):
+    _, new = workflow_protocol_pair
+    new["jobs"]["evaluate"]["steps"].append({"run": "python -m workflow_bench.runner"})
+    with pytest.raises(ValueError, match="one paid"):
+        pr_evaluation.measurement_protocol(yaml.safe_dump(new))
 
 
 @pytest.mark.parametrize(

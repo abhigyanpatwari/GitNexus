@@ -24,13 +24,13 @@ COST_LABEL = "run-cost-evaluation"
 # These additions orchestrate the preview; they do not change the measured
 # runner, task/oracle bytes, dependency lock or pinned agent CLI.
 PREVIEW_PATHS = {
-    ".github/workflows/release-evaluation.yml",
     "eval/workflow_bench/pr_evaluation.py",
     "eval/tests/test_pr_evaluation.py",
     "eval/tests/test_ec2_workflows.py",
     "eval/workflow_bench/README.md",
 }
-MEASUREMENT_PATHS = ("eval/", ".github/claude-canary-runtime/", ".github/workflows/release-evaluation.yml")
+EVALUATION_WORKFLOW = ".github/workflows/release-evaluation.yml"
+MEASUREMENT_PATHS = ("eval/", ".github/claude-canary-runtime/", EVALUATION_WORKFLOW)
 
 
 def _gh(arguments: list[str]) -> str:
@@ -61,7 +61,7 @@ def resolve_pr(repo: str, number: int, expected_sha: str) -> str:
 
 
 def dispatch_labeled_pr(repo: str, event: dict[str, Any]) -> int:
-    """Request one pinned comparison on main from a trusted label event."""
+    """Authorize a label request and select its baseline for the reusable evaluator."""
     if (
         not REPO.fullmatch(repo)
         or event.get("repository", {}).get("full_name") != repo
@@ -73,8 +73,8 @@ def dispatch_labeled_pr(repo: str, event: dict[str, Any]) -> int:
     if not re.fullmatch(r"[\w-]+(?:\[bot\])?", actor):
         raise ValueError("invalid label actor")
     permission = _gh_json(f"repos/{repo}/collaborators/{actor}/permission")
-    if permission.get("permission") not in ("admin", "maintain", "write"):
-        raise ValueError("only repository writers may request paid evaluations")
+    if permission.get("role_name") not in ("admin", "maintain"):
+        raise ValueError("only repository maintainers or administrators may request paid evaluations")
     pr = event.get("pull_request", {})
     number = event.get("number")
     sha = resolve_pr(repo, number, pr.get("head", {}).get("sha", ""))
@@ -107,29 +107,52 @@ def dispatch_labeled_pr(repo: str, event: dict[str, Any]) -> int:
         if len(matches) != 1:
             continue
         resolve_pr(repo, number, sha)
-        _gh(
-            [
-                "workflow",
-                "run",
-                "release-evaluation.yml",
-                "--repo",
-                repo,
-                "--ref",
-                "main",
-                "-f",
-                f"candidate_pr={number}",
-                "-f",
-                f"expected_pr_sha={sha}",
-                "-f",
-                f"comparison_run_id={run['id']}",
-                "-f",
-                "model=gpt-5.6-sol",
-                "-f",
-                "effort=xhigh",
-            ]
-        )
         return run["id"]
     raise ValueError("no full successful main Release evaluation found in the latest 100 runs")
+
+
+def measurement_protocol(source: str) -> dict[str, Any]:
+    """Keep setup and paid execution identical, allowing only the preview routing."""
+    import yaml
+
+    job = yaml.safe_load(source)["jobs"]["evaluate"]
+    protocol = {key: job[key] for key in ("runs-on", "environment", "timeout-minutes")}
+    protocol["env"] = {
+        key: value for key, value in job["env"].items() if key not in {"INPUT_PR", "INPUT_PR_SHA", "COMPARISON_RUN_ID"}
+    }
+    steps = []
+    if sum(step.get("run", "").count("-m workflow_bench.runner") for step in job["steps"]) != 1:
+        raise ValueError("expected one paid measurement step")
+    for step in job["steps"]:
+        if step.get("id") == "resolve":
+            continue  # Runtime selection is intentionally different for an unmerged PR.
+        if step.get("name") in {
+            "Authenticate historical PR comparison evidence",
+            "Require historical task dependencies before paid PR sessions",
+            "Recheck PR opt-in and pinned head immediately before paid sessions",
+        }:
+            if step.get("if") != "inputs.candidate_pr != ''":
+                raise ValueError("preview preflight must be conditional on the PR request")
+            continue
+        normalized = dict(step)
+        if step.get("with", {}).get("path") == "stable" and step.get("if") == "inputs.candidate_pr == ''":
+            normalized.pop("if")
+        script = step.get("run", "")
+        # Only the exact reviewed preview selectors may differ. Flags, setup
+        # actions, pins, environment, timeouts, ordering and other shell stay.
+        for variable in ("checkout", "runtime"):
+            script = script.replace(f'  if [[ -n "$INPUT_PR" && "${variable}" == stable ]]; then continue; fi\n', "")
+        script = script.replace(
+            'arms=(baseline_nomcp baseline)\nif [[ -n "$INPUT_PR" ]]; then arms=(baseline); fi\n', ""
+        )
+        script = script.replace('--arms "${arms[@]}"', "--arms baseline_nomcp baseline")
+        if "run" in step:
+            normalized["run"] = script
+        steps.append(normalized)
+        if "-m workflow_bench.runner" in script:
+            break
+    protocol["steps"] = steps
+    return protocol
 
 
 def require_comparable_harness(repo: str, previous_sha: str, harness_sha: str) -> None:
@@ -137,14 +160,36 @@ def require_comparable_harness(repo: str, previous_sha: str, harness_sha: str) -
     files = comparison.get("files")
     if comparison.get("status") not in ("identical", "ahead") or not isinstance(files, list) or len(files) >= 300:
         raise ValueError("cannot prove historical measurement inputs are comparable")
+    workflow_changed = False
     for entry in files:
         if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str):
             raise TypeError("malformed harness comparison")
         for name in (entry["filename"], entry.get("previous_filename")):
+            if name == EVALUATION_WORKFLOW:
+                if entry["filename"] != name or entry.get("previous_filename", name) != name:
+                    raise ValueError("evaluation workflow was renamed; measure a fresh baseline")
+                workflow_changed = True
+                continue
             if isinstance(name, str) and name.startswith(MEASUREMENT_PATHS) and name not in PREVIEW_PATHS:
                 raise ValueError(
                     "historical runner, tasks, dependencies or agent CLI changed; measure a fresh baseline"
                 )
+    if workflow_changed:
+        protocols = [
+            measurement_protocol(
+                _gh(
+                    [
+                        "api",
+                        f"repos/{repo}/contents/{EVALUATION_WORKFLOW}?ref={sha}",
+                        "-H",
+                        "Accept: application/vnd.github.raw+json",
+                    ]
+                )
+            )
+            for sha in (previous_sha, harness_sha)
+        ]
+        if protocols[0] != protocols[1]:
+            raise ValueError("historical workflow measurement protocol changed; measure a fresh baseline")
 
 
 def fetch_baseline(repo: str, run_id: int, harness_sha: str, model: str, effort: str) -> dict[str, Any]:
@@ -413,8 +458,11 @@ def main() -> None:
     summarize.add_argument("--run-id", type=int, required=True)
     args = parser.parse_args()
     if args.command == "dispatch-label":
-        run_id = dispatch_labeled_pr(args.repo, json.loads(args.event.read_text()))
-        print(f"Requested PR cost comparison on main against Release evaluation run {run_id}.")
+        event = json.loads(args.event.read_text())
+        run_id = dispatch_labeled_pr(args.repo, event)
+        print(f"pr={event['number']}")
+        print(f"sha={event['pull_request']['head']['sha']}")
+        print(f"comparison_run_id={run_id}")
     elif args.command == "resolve":
         print(f"sha={resolve_pr(args.repo, args.pr, args.sha)}")
     elif args.command == "baseline":

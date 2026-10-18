@@ -88,7 +88,7 @@ def test_pickup_watchdog_names_the_paid_job_it_bounds(name, paid, watch):
 def test_release_comparison_is_scheduled_or_manual_and_gates_outcomes():
     document = workflow("release-evaluation.yml")
     # PyYAML parses the bare `on` key as True.
-    assert set(document[True]) == {"schedule", "workflow_dispatch"}
+    assert set(document[True]) == {"schedule", "workflow_dispatch", "workflow_call"}
     steps = document["jobs"]["evaluate"]["steps"]
     scripts = "\n".join(step.get("run", "") for step in steps)
     assert "releases/latest" in scripts
@@ -99,7 +99,11 @@ def test_release_comparison_is_scheduled_or_manual_and_gates_outcomes():
 def test_pr_preview_uses_trusted_main_and_authenticates_history_before_paid_sessions():
     document = workflow("release-evaluation.yml")
     inputs = document[True]["workflow_dispatch"]["inputs"]
-    assert {"candidate_pr", "expected_pr_sha", "comparison_run_id"} <= inputs.keys()
+    preview_inputs = {"candidate_pr", "expected_pr_sha", "comparison_run_id"}
+    assert preview_inputs.isdisjoint(inputs)
+    call_inputs = document[True]["workflow_call"]["inputs"]
+    assert preview_inputs <= call_inputs.keys()
+    assert all(call_inputs[key]["required"] for key in preview_inputs)
     job = document["jobs"]["evaluate"]
     assert "refs/heads/main" in job["if"]
     assert job["environment"] == "gitnexus-evolution"
@@ -132,11 +136,27 @@ def test_cost_request_is_label_only_and_executes_trusted_base_code():
     assert "github.event.label.name == 'run-cost-evaluation'" in job["if"]
     assert "github.run_attempt == 1" in job["if"]
     assert job["runs-on"] == "ubuntu-latest" and "environment" not in job
-    assert job["permissions"] == {"contents": "read", "pull-requests": "read", "actions": "write"}
+    assert job["permissions"] == {"contents": "read", "pull-requests": "read", "actions": "read"}
     checkout, dispatch = job["steps"]
     assert checkout["with"] == {"ref": "${{ github.sha }}", "persist-credentials": False}
     assert "dispatch-label" in dispatch["run"] and '"$GITHUB_EVENT_PATH"' in dispatch["run"]
     assert "${{ github.event." not in dispatch["run"]
+    assert '"$GITHUB_OUTPUT"' in dispatch["run"]
+    evaluate = document["jobs"]["evaluate"]
+    assert evaluate["needs"] == ["request"]
+    assert evaluate["if"] == "needs.request.outputs.run_attempt == github.run_attempt"
+    assert evaluate["uses"] == "./.github/workflows/release-evaluation.yml"
+    expected_secrets = {
+        "GITNEXUS_EVOLUTION_AWS_ROLE_ARN", "GITNEXUS_EVOLUTION_EC2_INSTANCE_ID",
+        "GITNEXUS_BENCH_OPENAI_API_KEY", "GITNEXUS_BENCH_ANTHROPIC_API_KEY",
+    }
+    assert evaluate["secrets"] == {key: "${{ secrets." + key + " }}" for key in expected_secrets}
+    assert set(workflow("release-evaluation.yml")[True]["workflow_call"]["secrets"]) == expected_secrets
+    assert evaluate["with"] == {
+        "candidate_pr": "${{ needs.request.outputs.pr }}",
+        "expected_pr_sha": "${{ needs.request.outputs.sha }}",
+        "comparison_run_id": "${{ needs.request.outputs.comparison_run_id }}",
+    }
 
 
 def test_pr_preview_cannot_publish_release_approval_evidence():
@@ -296,6 +316,10 @@ def test_shared_lifecycle_jobs_stay_identical_across_both_ec2_workflows():
     renamed = {"watch-evaluate-pickup": "watch-evolve-pickup", "evaluate": "evolve"}
     for job in ("start-runner", "check-runner", "runner-ready", "stop-runner"):
         expected = {key: value for key, value in evaluation[job].items() if key != "name"}
+        if job != "stop-runner":
+            preview = "(github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||\n "
+            assert expected["if"].count(preview) == 1
+            expected["if"] = expected["if"].replace(preview, "", 1)
         expected["needs"] = [renamed.get(need, need) for need in expected.get("needs", [])]
         actual = {key: value for key, value in evolution[job].items() if key != "name"}
         actual["needs"] = actual.get("needs", [])

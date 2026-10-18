@@ -21,18 +21,6 @@ on:
         description: 'Full commit SHA or version tag to evaluate; latest-rc resolves the newest published RC'
         type: string
         default: latest-rc
-      candidate_pr:
-        description: 'Label dispatcher input: PR must have run-cost-evaluation; requires SHA and comparison run'
-        type: string
-        default: ''
-      expected_pr_sha:
-        description: 'Full PR head SHA to measure; fail if the PR has moved'
-        type: string
-        default: ''
-      comparison_run_id:
-        description: 'Successful main Release evaluation whose MCP measurements the PR should beat'
-        type: string
-        default: ''
       model:
         description: 'Named model for both arms'
         type: string
@@ -42,6 +30,34 @@ on:
         type: choice
         default: xhigh
         options: [low, medium, high, xhigh, max]
+  # PR preview inputs are available only to the maintainer-authorized label
+  # workflow. Manual dispatch cannot select an unmerged PR runtime.
+  workflow_call:
+    secrets:
+      GITNEXUS_EVOLUTION_AWS_ROLE_ARN:
+        required: true
+      GITNEXUS_EVOLUTION_EC2_INSTANCE_ID:
+        required: true
+      GITNEXUS_BENCH_OPENAI_API_KEY:
+        required: true
+      GITNEXUS_BENCH_ANTHROPIC_API_KEY:
+        required: false
+    inputs:
+      candidate_pr:
+        type: string
+        required: true
+      expected_pr_sha:
+        type: string
+        required: true
+      comparison_run_id:
+        type: string
+        required: true
+      model:
+        type: string
+        default: gpt-5.6-sol
+      effort:
+        type: string
+        default: xhigh
 
 concurrency:
   group: gitnexus-evolution-runner
@@ -56,6 +72,7 @@ jobs:
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ubuntu-latest
     environment: gitnexus-evolution
@@ -87,6 +104,7 @@ jobs:
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ubuntu-latest
     environment: gitnexus-evolution
@@ -118,6 +136,7 @@ jobs:
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     # Partial reruns reuse successful startup outputs after cleanup stopped EC2.
     runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
@@ -170,6 +189,7 @@ jobs:
       github.ref == 'refs/heads/main' &&
       inputs.runner_only != true &&
       (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
     # Reuse the main-only protected model-secret environment. No tag/fork code
