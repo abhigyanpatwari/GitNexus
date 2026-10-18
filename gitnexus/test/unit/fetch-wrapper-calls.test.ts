@@ -161,6 +161,19 @@ for (const [name, grammar] of [
         },
       },
       {
+        shape: 'an alias shadowed by a nested function parameter',
+        source: `function track(event) {
+          const fetchImpl = globalThis.fetch;
+          function send(fetchImpl) { return fetchImpl(event); }
+          return send(log);
+        }`,
+        facts: {
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [{ callee: 'fetchImpl', module: null }],
+        },
+      },
+      {
         shape: 'a parameter shadowed by a local',
         source: `function fixed(url) { { const url = '/health'; return fetch(url); } }`,
         facts: { seed: true, forwardsUrl: false, forwardsTo: [] },

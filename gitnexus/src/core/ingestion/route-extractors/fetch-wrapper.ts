@@ -232,13 +232,29 @@ export function fetchWrapperFacts(
   const aliases = definition
     .descendantsOfType('variable_declarator')
     .filter((d) => namesFetch(d.childForFieldName('value')));
+  const declaresParameter = (fn: Parser.SyntaxNode, name: string) =>
+    [fn.childForFieldName('parameter'), fn.childForFieldName('parameters')].some((params) =>
+      params?.type === 'identifier'
+        ? params.text === name
+        : params?.descendantsOfType('identifier').some((id) => id.text === name),
+    );
   const isAlias = (name: string, call: Parser.SyntaxNode) =>
     aliases.some((d) => {
       const scope = enclosingFunction(d);
-      return (
-        d.childForFieldName('name')?.text === name &&
-        (!scope || (scope.startIndex <= call.startIndex && call.endIndex <= scope.endIndex))
-      );
+      if (d.childForFieldName('name')?.text !== name) return false;
+      if (scope && !(scope.startIndex <= call.startIndex && call.endIndex <= scope.endIndex)) {
+        return false;
+      }
+      // A function between the alias and the call whose parameter has the
+      // same name shadows the alias there.
+      for (
+        let fn = enclosingFunction(call);
+        fn && fn.id !== scope?.id;
+        fn = enclosingFunction(fn)
+      ) {
+        if (declaresParameter(fn, name)) return false;
+      }
+      return true;
     });
   const parameter = firstParameterName(definedFunction(definition));
   const carries = (argument: Parser.SyntaxNode | undefined): boolean =>

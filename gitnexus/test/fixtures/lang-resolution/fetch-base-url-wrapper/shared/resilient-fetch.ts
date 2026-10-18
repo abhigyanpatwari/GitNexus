@@ -20,6 +20,7 @@ export async function resilientFetch(
       if (err instanceof DOMException && ['AbortError', 'TimeoutError'].includes(err.name))
         throw err;
       lastError = err;
+      lastResponse = undefined;
     }
   }
   if (lastResponse) return lastResponse;
