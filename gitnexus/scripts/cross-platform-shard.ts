@@ -68,7 +68,11 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/rename-provider-objective-c.test.ts': 285,
   'test/integration/rename-provider-php.test.ts': 100,
   'test/integration/rename-provider-python.test.ts': 375,
-  'test/integration/rename-provider-r.test.ts': 100,
+  // Windows runs 39077218566 (attempt 1: 749.5 s, rerun: 599.5 s), 2026-10-17:
+  // 49 persisted fixtures plus a pin test, each running a native analyze. The
+  // old 100 s entry let this file share shard 5/10 with go and dml-gate and
+  // exhaust the 20-minute watchdog. Weighted at the faster measurement.
+  'test/integration/rename-provider-r.test.ts': 620,
   'test/integration/rename-provider-ruby.test.ts': 100,
   'test/integration/rename-provider-rust.test.ts': 75,
   'test/integration/rename-provider-swift.test.ts': 300,
