@@ -15,7 +15,6 @@ import CPP from 'tree-sitter-cpp';
 import { getLanguageGrammar } from '../../tree-sitter/parser-loader.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
-import R from '@eagleoutice/tree-sitter-r';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
@@ -65,7 +64,7 @@ const CSharp = getLanguageGrammar(SupportedLanguages.CSharp);
 // `isLanguageAvailable` must re-introduce the gate here. (The cleaner end-state
 // — routing this table through `parser-loader.getLanguageGrammar` so there is
 // one loader — is the deferred Tier-1 consolidation.)
-// Swift/Dart/Kotlin/C/Zig are vendored grammars loaded from `vendor/` by absolute
+// Swift/Dart/Kotlin/C/Zig/ObjC are vendored grammars loaded from `vendor/` by absolute
 // path (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Each
 // may be absent on a platform without a prebuild or a toolchain-less /
 // `--ignore-scripts` install, so every load is guarded so a missing binding
@@ -93,6 +92,16 @@ try {
 let Zig: TreeSitterLanguage | null = null;
 try {
   Zig = requireVendoredGrammar('tree-sitter-zig') as TreeSitterLanguage;
+} catch {}
+
+// R is an npm dependency, not a vendored grammar, but its native binding can fail to load in the
+// same ways (no prebuild for the platform, a corrupt or ABI-mismatched install). A static import
+// would take the whole worker down at module load and with it the parse of every language, so it
+// goes through the shared loader behind the same guard: a failure leaves R out of `languageMap`
+// and the main thread's `isLanguageAvailable` filter skips R files.
+let R: TreeSitterLanguage | null = null;
+try {
+  R = getLanguageGrammar(SupportedLanguages.R) as TreeSitterLanguage;
 } catch {}
 
 let ObjectiveC: TreeSitterLanguage | null = null;
@@ -609,7 +618,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
-  [SupportedLanguages.R]: R,
+  ...(R ? { [SupportedLanguages.R]: R } : {}),
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),

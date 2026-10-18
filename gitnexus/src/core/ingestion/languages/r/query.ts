@@ -80,7 +80,8 @@
  */
 
 import Parser from 'tree-sitter';
-import R from '@eagleoutice/tree-sitter-r';
+import { SupportedLanguages } from 'gitnexus-shared';
+import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 
 /**
  * Exported for `value-ref-dispatchability.test.ts`-style whole-query readers.
@@ -346,17 +347,25 @@ export const R_SCOPE_QUERY = `
 let _parser: Parser | null = null;
 let _query: Parser.Query | null = null;
 
+/**
+ * The R grammar, loaded on first use through the shared loader rather than by a static import:
+ * a native binding that fails to load must disable R parsing, not every language that shares
+ * this module graph.
+ */
+const getRGrammar = (): Parameters<Parser['setLanguage']>[0] =>
+  getLanguageGrammar(SupportedLanguages.R) as Parameters<Parser['setLanguage']>[0];
+
 export function getRParser(): Parser {
   if (_parser === null) {
     _parser = new Parser();
-    _parser.setLanguage(R as Parameters<Parser['setLanguage']>[0]);
+    _parser.setLanguage(getRGrammar());
   }
   return _parser;
 }
 
 export function getRScopeQuery(): Parser.Query {
   if (_query === null) {
-    _query = new Parser.Query(R as Parameters<Parser['setLanguage']>[0], R_SCOPE_QUERY);
+    _query = new Parser.Query(getRGrammar(), R_SCOPE_QUERY);
   }
   return _query;
 }
