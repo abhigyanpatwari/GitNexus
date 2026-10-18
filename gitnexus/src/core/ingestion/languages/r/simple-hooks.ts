@@ -42,7 +42,10 @@ export function rMergeBindings(
   const byNode = new Map<string, BindingRef>();
   for (const b of all) {
     if ((TIER[b.origin] ?? 99) !== bestTier) continue;
-    if (!byNode.has(b.def.nodeId)) byNode.set(b.def.nodeId, b);
+    const seen = byNode.get(b.def.nodeId);
+    // One node bound more than once (a package named by several `library()` calls): the later
+    // call position wins, whichever way round the bindings arrive.
+    if (seen === undefined || attachedLater(b, seen)) byNode.set(b.def.nodeId, b);
   }
   let tier = [...byNode.values()];
   if (bestTier === TIER.wildcard && tier.length > 1) tier = lastAttached(tier);
@@ -51,6 +54,13 @@ export function rMergeBindings(
     a.def.nodeId < b.def.nodeId ? -1 : a.def.nodeId > b.def.nodeId ? 1 : 0,
   );
 }
+
+/** `a` was attached at a call that starts after the one `b` was attached at (both need a position). */
+const attachedLater = (a: BindingRef, b: BindingRef): boolean => {
+  const ra = a.via?.atRange;
+  const rb = b.via?.atRange;
+  return ra !== undefined && rb !== undefined && startsBefore(rb, ra);
+};
 
 /** The bindings that the last of the `library()` calls behind `bindings` brought in. */
 function lastAttached(bindings: BindingRef[]): BindingRef[] {

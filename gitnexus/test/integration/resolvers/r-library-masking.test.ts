@@ -31,6 +31,12 @@ describe('R library() masking', () => {
     expect(targets('run_b')).toEqual(['lp/R/f.R']);
   });
 
+  it('counts a package named by several calls at its last one', () => {
+    // library(lp); library(lp2); library(lp) -> lp. library(lp2); library(lp); library(lp2) -> lp2.
+    expect(targets('run_c')).toEqual(['lp/R/f.R']);
+    expect(targets('run_d')).toEqual(['lp2/R/f.R']);
+  });
+
   it('still binds a name that only one attached package defines', () => {
     expect(targets('keep_a')).toEqual(['lp/R/f.R']);
     expect(targets('keep_b')).toEqual(['lp2/R/f.R']);

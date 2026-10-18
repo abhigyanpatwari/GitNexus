@@ -70,6 +70,21 @@ describe('rMergeBindings: library() masking in the wildcard tier', () => {
     expect(ids(rMergeBindings([first, second], [], 's'))).toEqual(['Function:a/R/f.R:dup']);
   });
 
+  it('counts a package named by several calls at its last one, however the bindings are batched', () => {
+    const a1 = attached('Function:pa/R/f.R:dup', at(1));
+    const b2 = attached('Function:pb/R/f.R:dup', at(2));
+    const a3 = attached('Function:pa/R/f.R:dup', at(3));
+    // library(pa); library(pb); library(pa): pa was attached last.
+    expect(ids(rMergeBindings([a1, b2], [a3], 's'))).toEqual(['Function:pa/R/f.R:dup']);
+    expect(ids(rMergeBindings([a3], [a1, b2], 's'))).toEqual(['Function:pa/R/f.R:dup']);
+    expect(ids(rMergeBindings([a1, b2, a3], [], 's'))).toEqual(['Function:pa/R/f.R:dup']);
+    // library(pb); library(pa); library(pb): pb was attached last.
+    const a2 = attached('Function:pa/R/f.R:dup', at(2));
+    const b1 = attached('Function:pb/R/f.R:dup', at(1));
+    const b3 = attached('Function:pb/R/f.R:dup', at(3));
+    expect(ids(rMergeBindings([b1, a2], [b3], 's'))).toEqual(['Function:pb/R/f.R:dup']);
+  });
+
   it('keeps every file of the one package the last call attaches: that ambiguity stays', () => {
     const old = attached('Function:lp/R/f.R:dup', at(1));
     const x = attached('Function:lp2/R/x.R:dup', at(2));
