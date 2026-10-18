@@ -106,13 +106,18 @@ describe('the per-pattern state cap sits exactly at MAX_STATES', () => {
 });
 
 describe('the pattern length cap sits exactly at MAX_PATTERN_LENGTH', () => {
-  it('accepts a pattern of exactly that many characters', () => {
-    const pattern = `^${'a'.repeat(MAX_PATTERN_LENGTH - 2)}$`;
+  it('accepts a pattern of exactly that many characters, and it matches', () => {
+    // Empty groups add no states, so only the length rule is in play: 1 + 4 * 4095 + 2 + 1.
+    const pattern = `^${'(?:)'.repeat(4095)}aa$`;
     expect(pattern.length).toBe(MAX_PATTERN_LENGTH);
-    // Longer than the state cap would allow if it were expanded, so look at the reason only
-    // when it is refused: the length rule must not be the one that refuses it.
     const result = compileLinearRegexDetailed(pattern);
-    expect('reason' in result ? result.reason : '').not.toMatch(/longer than/);
+    expect(result.regex).not.toBeNull();
+    expect(result.regex?.test('aa')).toBe(true);
+    expect(result.regex?.test('a')).toBe(false);
+    // The same shape one character longer is refused for its length.
+    const over = compileLinearRegexDetailed(`^${'(?:)'.repeat(4095)}aaa$`);
+    expect(over.regex).toBeNull();
+    expect('reason' in over ? over.reason : '').toMatch(/longer than 16384 characters/);
   });
 
   it('refuses a pattern one character longer', () => {
