@@ -79,6 +79,24 @@ describe('mergeResult', () => {
     expect(target.fetchCalls).toEqual([]);
   });
 
+  it('retains barrel re-export facts across sub-batches', () => {
+    const target = emptyResult();
+    const named = {
+      filePath: 'index.ts',
+      exportedName: 'request',
+      from: { specifier: './request', importedName: 'request' },
+    };
+    const star = {
+      filePath: 'index.ts',
+      exportedName: '*',
+      from: { specifier: './star', importedName: '*' },
+    };
+    mergeResult(target, { ...emptyResult(), fetchWrapperReexports: [named] });
+    mergeResult(target, emptyResult());
+    mergeResult(target, { ...emptyResult(), fetchWrapperReexports: [star] });
+    expect(target.fetchWrapperReexports).toEqual([named, star]);
+  });
+
   it('sums every CFG skip bucket by language across worker sub-batches', () => {
     const target = emptyResult();
     const first = {

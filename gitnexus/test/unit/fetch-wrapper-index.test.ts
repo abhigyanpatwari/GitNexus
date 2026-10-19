@@ -179,18 +179,17 @@ describe('fetch wrapper forwarding propagation', () => {
     expect(index.isWrapperCall(call({ kind: 'binding', bindingId: 'outer' }))).toBe(false);
   });
 
-  it.each([false, true])(
-    'uses the same unique fallback for forwarding, duplicate=%s',
-    (duplicate) => {
-      const defs = [
-        definition('carrier', { functionName: 'send', forwardsUrl: true }),
-        definition('outer', { forwardsTo: [{ callee: 'send', target: { kind: 'unresolved' } }] }),
-      ];
-      if (duplicate) defs.push(definition('other', { functionName: 'send' }));
-      const index = buildFetchWrapperIndex(defs);
-      expect(index.isWrapperCall(call({ kind: 'binding', bindingId: 'outer' }))).toBe(!duplicate);
-    },
-  );
+  it.each([
+    ['a unique carrier', [], true],
+    ['a same-named collision', [definition('other', { functionName: 'send' })], false],
+  ])('uses the same unique fallback for forwarding with %s', (_shape, collisions, expected) => {
+    const index = buildFetchWrapperIndex([
+      definition('carrier', { functionName: 'send', forwardsUrl: true }),
+      definition('outer', { forwardsTo: [{ callee: 'send', target: { kind: 'unresolved' } }] }),
+      ...collisions,
+    ]);
+    expect(index.isWrapperCall(call({ kind: 'binding', bindingId: 'outer' }))).toBe(expected);
+  });
 
   it('propagates imported identity and configured overrides through forwarding', () => {
     const index = buildFetchWrapperIndex(
