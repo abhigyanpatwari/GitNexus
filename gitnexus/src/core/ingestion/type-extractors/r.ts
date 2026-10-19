@@ -120,7 +120,8 @@ const declaredClassName = (node: SyntaxNode): string | undefined => {
     const fn = rhs.childForFieldName('function');
     const calleeName =
       fn?.type === 'namespace_operator' ? fn.childForFieldName('rhs')?.text : fn?.text;
-    return calleeName === 'R6Class' ? lhs.text : undefined;
+    // A backticked name is the same class, as for a formal (see extractParameter).
+    return calleeName === 'R6Class' ? rBareName(lhs.text) : undefined;
   }
   if (node.type !== 'call') return undefined;
   const fn = node.childForFieldName('function');

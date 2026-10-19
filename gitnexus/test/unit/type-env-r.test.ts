@@ -475,6 +475,18 @@ ${definition}
         expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
       });
 
+      it('binds a backticked R6 class name, as it does a backticked formal', () => {
+        const tree = parse(`
+#' @param repo UserRepo
+save <- function(repo) {
+  repo
+}
+
+\`UserRepo\` <- R6::R6Class("UserRepo", public = list(save = function() 1))
+`);
+        expect(flatGet(buildTypeEnv(tree, SupportedLanguages.R), 'repo')).toBe('UserRepo');
+      });
+
       it.each([
         ['setClass', 'setClass(contains = "Base", Class = "Derived")'],
         ['setRefClass', 'setRefClass(fields = list(n = "numeric"), Class = "Derived")'],
