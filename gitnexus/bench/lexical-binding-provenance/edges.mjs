@@ -201,12 +201,28 @@ if (prepare) {
     'candidate export does not come from the current checkout',
   );
   const difference = multisetDifference(before.edges, after.edges);
+  const unchanged = (type) =>
+    before.counts[type] - difference.removed.filter((edge) => edge.type === type).length;
+  const exportSummary = ({ revision, dirty, corpusFingerprint, fingerprint }) => ({
+    revision,
+    dirty,
+    corpusFingerprint,
+    fingerprint,
+  });
+  const note = option('--note');
   const report = {
     baselineRevision: before.revision,
     candidateRevision: after.revision,
     corpusFingerprint: before.corpusFingerprint,
     counts: { baseline: before.counts, candidate: after.counts },
     ...difference,
+    review: {
+      ...(note ? { expectedCallTargetChange: note } : {}),
+      unchangedCalls: unchanged('CALLS'),
+      unchangedMethodOverrides: unchanged('METHOD_OVERRIDES'),
+    },
+    baselineExport: exportSummary(before),
+    candidateExport: exportSummary(after),
   };
   const text = `${JSON.stringify(report, null, 2)}\n`;
   if (output) fs.writeFileSync(output, text);
@@ -225,7 +241,7 @@ if (prepare) {
   const corpus = option('--corpus');
   assert.ok(
     corpus && output,
-    'use --prepare-corpus DIR, --corpus DIR --output FILE, or --compare BASELINE --candidate CANDIDATE [--output FILE] [--check]',
+    'use --prepare-corpus DIR, --corpus DIR --output FILE, or --compare BASELINE --candidate CANDIDATE [--output FILE] [--note TEXT] [--check]',
   );
   await exportEdges(path.resolve(corpus), path.resolve(output));
 }

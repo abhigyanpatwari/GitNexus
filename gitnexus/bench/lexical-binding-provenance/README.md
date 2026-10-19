@@ -109,6 +109,7 @@ node --import tsx bench/lexical-binding-provenance/edges.mjs \
   --corpus /tmp/binding-corpus --output /tmp/candidate-edges.json
 node --import tsx bench/lexical-binding-provenance/edges.mjs \
   --compare /tmp/baseline-edges.json --candidate /tmp/candidate-edges.json \
+  --note 'why the reviewed call-target changes are expected' \
   --output /tmp/edge-diff.json
 ```
 
@@ -121,6 +122,8 @@ file's hash, corpus fingerprint, and sorted `CALLS` and `METHOD_OVERRIDES` edge
 arrays. Edge records retain `id`, `sourceId`, `targetId`, and readable source and
 target names, paths, and lines. Arrays preserve graph-edge multiplicity.
 
+The report also records both exports' revisions, dirty flags and fingerprints,
+the unchanged edge counts, and the `--note` review explanation.
 Comparison refuses different corpus manifests, exports from dirty checkouts, and
 a candidate export whose revision is not the checkout running the comparison. It
 always fails if an override
