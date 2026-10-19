@@ -1,8 +1,13 @@
 import type Parser from 'tree-sitter';
-import { buildPositionIndex, buildScopeTree, lookupLexicalName } from 'gitnexus-shared';
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import { plainString } from './data-route-table.js';
 import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route-types.js';
+import {
+  createLexicalBindings,
+  LEXICAL_FUNCTION_TYPES,
+  patternBindingNames,
+  type LexicalBindings,
+} from './lexical-bindings.js';
 
 type Node = Parser.SyntaxNode;
 const UNKNOWN: FrameworkExpression = { kind: 'unknown' };
@@ -45,6 +50,7 @@ export function extractFrameworkRouteFacts(
   tree: Parser.Tree,
   parsedFile: ParsedFile,
   lineOffset = 0,
+  lexical: LexicalBindings = createLexicalBindings(parsedFile, lineOffset, tree.rootNode),
 ): FrameworkRouteFacts {
   const filePath = parsedFile.filePath;
   const facts: FrameworkRouteFacts = {
@@ -57,8 +63,7 @@ export function extractFrameworkRouteFacts(
     calls: [],
     invocations: [],
   };
-  const scopes = buildScopeTree(parsedFile.scopes);
-  const positions = buildPositionIndex(parsedFile.scopes);
+  const { bindingId, isGlobal, ambiguous } = lexical;
   const invalid = new Set<string>();
   const importsAtPosition = new Map<string, ParsedImport[]>();
   for (const imported of parsedFile.parsedImports) {
@@ -74,103 +79,25 @@ export function extractFrameworkRouteFacts(
     ),
   );
   const bindingKey = (scope: string, name: string): string => `${scope}\0${name}`;
-  const ownership = (node: Node, name = node.text, atUse = false) => {
-    const scope = positions.atPosition(
-      filePath,
-      node.startPosition.row + 1 + lineOffset,
-      node.startPosition.column,
-    );
-    return scope === undefined
-      ? undefined
-      : lookupLexicalName(
-          scope,
-          name,
-          { scopes },
-          {
-            purpose: 'value',
-            ...(atUse
-              ? {
-                  position: {
-                    startLine: node.startPosition.row + 1 + lineOffset,
-                    startCol: node.startPosition.column,
-                  },
-                }
-              : {}),
-          },
-        );
-  };
-  const bindingId = (node: Node, name = node.text, atUse = false): string | undefined => {
-    const owner = ownership(node, name, atUse);
-    // Pre-finalization imports and untyped parameters deliberately have no
-    // BindingRef. A future binding claim, however, is a real TDZ barrier.
-    if (
-      atUse &&
-      owner?.status === 'blocked' &&
-      owner.claims.some(
-        (claim) =>
-          claim.kind === 'blocked' ||
-          (claim.kind === 'binding' &&
-            claim.availableFrom &&
-            (claim.availableFrom.startLine > node.startPosition.row + 1 + lineOffset ||
-              (claim.availableFrom.startLine === node.startPosition.row + 1 + lineOffset &&
-                claim.availableFrom.startCol > node.startPosition.column))),
-      )
-    )
-      return undefined;
-    return owner?.scope ? bindingKey(owner.scope.id, name) : undefined;
-  };
-  const isGlobal = (node: Node, name: string) => ownership(node, name)?.status === 'absent';
-  /** Whether a scope between `target` and `fn` declares the name `target` writes. */
-  const shadowedBetween = (target: Node, fn: Node): boolean => {
-    const declares = (node: Node | null | undefined) =>
-      !!node &&
-      (node.type === 'identifier'
-        ? node.text === target.text
-        : node.descendantsOfType('identifier').some((id) => id.text === target.text));
-    for (let scope = target.parent; scope && scope.id !== fn.id; scope = scope.parent) {
-      const ownsVar = FUNCTION_TYPES.includes(scope.parent?.type ?? '');
-      if (
-        children(scope).some(
-          (statement) =>
-            (statement.type === 'lexical_declaration' ||
-              (ownsVar && statement.type === 'variable_declaration')) &&
-            children(statement).some((d) => declares(d.childForFieldName('name'))),
-        ) ||
-        (FUNCTION_TYPES.includes(scope.type) &&
-          (declares(scope.childForFieldName('parameter')) ||
-            declares(scope.childForFieldName('parameters')))) ||
-        (scope.type === 'catch_clause' && declares(scope.childForFieldName('parameter')))
-      )
-        return true;
+  const parameterIds = new Map<number, ReadonlySet<string>>();
+  const parametersOf = (fn: Node): ReadonlySet<string> => {
+    let ids = parameterIds.get(fn.id);
+    if (!ids) {
+      ids = new Set(
+        patternBindingNames(
+          fn.childForFieldName('parameters') ?? fn.childForFieldName('parameter'),
+        ).flatMap((name) => {
+          const id = bindingId(name);
+          return id ? [id] : [];
+        }),
+      );
+      parameterIds.set(fn.id, ids);
     }
-    return false;
+    return ids;
   };
   const functionValue = (fn: Node): FrameworkExpression => {
     const single = fn.childForFieldName('parameter');
     const params = single ? [single] : children(fn.childForFieldName('parameters'));
-    // A parameter written anywhere in the body, nested closures included, is
-    // not the argument any more; fail closed rather than track which write runs.
-    // A write to a same-named binding a nested scope declares is not to it.
-    const written = new Set(
-      fn
-        .descendantsOfType([
-          'assignment_expression',
-          'augmented_assignment_expression',
-          'update_expression',
-        ])
-        .map((write) => write.childForFieldName('left') ?? write.childForFieldName('argument'))
-        // A destructuring target (`[app] = [other]`) writes each name it binds;
-        // a member target (`app.locals = …`) writes a property, not the binding.
-        .flatMap((target) =>
-          !target || ['member_expression', 'subscript_expression'].includes(target.type)
-            ? []
-            : target.type === 'identifier'
-              ? [target]
-              : target.descendantsOfType(['identifier', 'shorthand_property_identifier_pattern']),
-        )
-        .filter((target) => !shadowedBetween(target, fn))
-        .map((target) => target.text),
-    );
     return {
       kind: 'handler',
       fn: `${filePath}:${fn.startIndex}`,
@@ -182,9 +109,8 @@ export function extractFrameworkRouteFacts(
           if (param.type === 'required_parameter' || param.type === 'optional_parameter')
             name = param.childForFieldName('pattern');
           if (name?.type === 'assignment_pattern') name = name.childForFieldName('left');
-          return (
-            (name?.type === 'identifier' && !written.has(name.text) && bindingId(name)) || null
-          );
+          const id = name?.type === 'identifier' ? bindingId(name) : undefined;
+          return id && !ambiguous(id) ? id : null;
         }),
     };
   };
@@ -196,7 +122,7 @@ export function extractFrameworkRouteFacts(
     let value: FrameworkExpression = UNKNOWN;
     if (node.type === 'identifier' || node.type === 'shorthand_property_identifier') {
       const id = bindingId(node, node.text, true);
-      if (id) value = { kind: 'binding', id };
+      if (id && !ambiguous(id)) value = { kind: 'binding', id };
     } else if (node.type === 'array') {
       value = {
         kind: 'array',
@@ -253,7 +179,7 @@ export function extractFrameworkRouteFacts(
   const bind = (node: Node, value: FrameworkExpression): void => {
     if (node.type === 'identifier' || node.type === 'shorthand_property_identifier_pattern') {
       const id = bindingId(node);
-      if (id) facts.bindings.push({ id, value });
+      if (id && !ambiguous(id)) facts.bindings.push({ id, value });
     } else if (node.type === 'object_pattern') {
       for (const part of children(node)) {
         const key = part.type === 'pair_pattern' ? part.childForFieldName('key') : part;
@@ -277,11 +203,13 @@ export function extractFrameworkRouteFacts(
   let cjsUnknownWrite = false;
   const cjsShortcutExports: { name: string; value: FrameworkExpression }[] = [];
   const cjsExports: { name: string; value: FrameworkExpression }[] = [];
-  const nodes: Node[] = [tree.rootNode];
+  const nodes: { node: Node; enclosingFunction?: Node }[] = [{ node: tree.rootNode }];
   while (nodes.length) {
-    const node = nodes.pop()!;
+    const { node, enclosingFunction } = nodes.pop()!;
     if (node.type === 'ERROR') continue;
-    nodes.push(...children(node).reverse());
+    const childFunction = LEXICAL_FUNCTION_TYPES.has(node.type) ? node : enclosingFunction;
+    for (const child of children(node).reverse())
+      nodes.push({ node: child, enclosingFunction: childFunction });
     if (node.type === 'import_statement') {
       // ESM decomposition already carries precise aliases/type-only flags. CJS
       // imports are intentionally handled at their AST calls to guard require.
@@ -307,6 +235,13 @@ export function extractFrameworkRouteFacts(
     } else if (node.type === 'variable_declarator') {
       const name = node.childForFieldName('name');
       const value = node.childForFieldName('value');
+      if (value && enclosingFunction) {
+        const parameters = parametersOf(enclosingFunction);
+        for (const target of patternBindingNames(name)) {
+          const id = bindingId(target);
+          if (id && parameters.has(id)) invalid.add(id);
+        }
+      }
       // Only a named function can be called by name, so only it carries the
       // identity and parameters call-site forwarding needs.
       if (name)
@@ -319,6 +254,10 @@ export function extractFrameworkRouteFacts(
       node.type === 'generator_function_declaration'
     ) {
       const name = node.childForFieldName('name');
+      if (name && enclosingFunction) {
+        const id = bindingId(name);
+        if (id && parametersOf(enclosingFunction).has(id)) invalid.add(id);
+      }
       if (name) bind(name, functionValue(node));
     } else if (node.type === 'export_statement') {
       const sourceNode = node.childForFieldName('source');
@@ -454,7 +393,18 @@ export function extractFrameworkRouteFacts(
                 break;
               receiver = receiver.childForFieldName('object');
             }
-          } else for (const child of children(target)) invalidate(child);
+          } else if (target.type === 'pair_pattern') {
+            const value = target.childForFieldName('value');
+            if (value) invalidate(value);
+          } else if (
+            target.type === 'assignment_pattern' ||
+            target.type === 'object_assignment_pattern'
+          ) {
+            const value = target.childForFieldName('left');
+            if (value) invalidate(value);
+          } else if (['object_pattern', 'array_pattern', 'rest_pattern'].includes(target.type)) {
+            for (const child of children(target)) invalidate(child);
+          }
         };
         invalidate(left);
       }

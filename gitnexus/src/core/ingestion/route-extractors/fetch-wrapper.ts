@@ -1,17 +1,50 @@
-/** Collect URL-bearing calls while the provider's existing AST is available. */
-import path from 'node:path';
+/** Binding-aware HTTP evidence collected from the provider's existing AST. */
 import type Parser from 'tree-sitter';
+import type { ParsedFile } from 'gitnexus-shared';
 import type { ExtractedFetchCall } from '../workers/parse-worker.js';
 import { stripLeadingTemplatePrefix } from './route-path.js';
+import {
+  createLexicalBindings,
+  LEXICAL_FUNCTION_TYPES,
+  patternBindingNames,
+  type LexicalBindings,
+} from './lexical-bindings.js';
 
-/** A candidate is not an HTTP sink until its name matches a known wrapper. */
+type Node = Parser.SyntaxNode;
+export type CalleeTarget =
+  | { kind: 'binding'; bindingId: string }
+  | { kind: 'import'; specifier: string; importedName: string }
+  | { kind: 'resolved-import'; filePath: string; importedName: string }
+  | { kind: 'unresolved' }
+  | { kind: 'blocked' }
+  | { kind: 'member' };
+
 export interface FetchWrapperCall extends ExtractedFetchCall {
-  /** The callee as written at the call site (`send` for `import { request as send }`). */
   functionName: string;
-  /** Module stem declaring a bare callee, when this file declares or imports it relatively. */
-  module?: string;
-  /** The name the callee is declared under in `module`, when it differs from `functionName`. */
-  declaredName?: string;
+  target: CalleeTarget;
+}
+export interface ForwardedCallee {
+  callee: string;
+  target: CalleeTarget;
+}
+export interface FetchWrapperFacts {
+  definitionId: string;
+  bindingId?: string;
+  moduleScope: boolean;
+  exportedNames: string[];
+  seed: boolean;
+  forwardsUrl: boolean;
+  forwardsTo: ForwardedCallee[];
+}
+export interface FetchWrapperContext {
+  bindings: LexicalBindings;
+  facts(definition: Node, nameNode?: Node): FetchWrapperFacts | undefined;
+  calls(): FetchWrapperCall[];
+}
+
+/** A repo-relative module path without its extension or `/index`. */
+export function moduleStem(filePath: string): string {
+  return filePath.replace(/\.[cm]?[jt]sx?$/, '').replace(/\/index$/, '');
 }
 
 function calleeName(node: Parser.SyntaxNode | null): string | undefined {
@@ -32,313 +65,522 @@ function calleeName(node: Parser.SyntaxNode | null): string | undefined {
   return parts.reverse().join('.');
 }
 
-export function extractFetchWrapperCalls(
-  tree: Parser.Tree,
-  filePath: string,
-  lineOffset: number,
-): FetchWrapperCall[] {
-  const calls: FetchWrapperCall[] = [];
-  for (const call of tree.rootNode.descendantsOfType('call_expression')) {
-    if (call.hasError) continue;
-    const argument = call
-      .childForFieldName('arguments')
-      ?.namedChildren.find((child) => child.type !== 'comment');
-    if (argument?.type !== 'string' && argument?.type !== 'template_string') continue;
-    // Keep template substitutions for the existing route URL normalizer.
-    // Requiring the whole argument to be a literal excludes concatenation.
-    const fetchURL = argument.text.slice(1, -1);
-    // `${backendUrl}/api/x` keeps its base for normalizeFetchURL to strip (#3488).
-    if (!stripLeadingTemplatePrefix(fetchURL)?.startsWith('/')) continue;
-    const functionName = calleeName(call.childForFieldName('function'));
-    if (!functionName) continue;
-    const declared = calleeDeclarations(tree.rootNode, filePath).get(functionName);
-    calls.push({
-      filePath,
-      functionName,
-      fetchURL,
-      lineNumber: call.startPosition.row + lineOffset + 1,
-      ...(declared?.module ? { module: declared.module } : {}),
-      ...(declared && declared.callee !== functionName ? { declaredName: declared.callee } : {}),
-    });
-  }
-  return calls;
-}
-
-const FUNCTION_TYPES = [
-  'function_declaration',
-  'generator_function_declaration',
-  'function_expression',
-  'function',
-  'arrow_function',
-];
-const FETCH_CALLEES = new Set(['fetch', 'globalThis.fetch', 'window.fetch', 'self.fetch']);
-
-/** The function node a definition declares. */
-function definedFunction(definition: Parser.SyntaxNode): Parser.SyntaxNode | undefined {
-  return FUNCTION_TYPES.includes(definition.type)
-    ? definition
-    : definition.descendantsOfType(FUNCTION_TYPES)[0];
-}
-
-/**
- * The name bound by a function's first parameter, when it is a plain identifier
- * that nothing inside the function redeclares; a shadowed name could be read
- * where the parameter is not, so it is not followed at all.
- */
-function firstParameterName(fn: Parser.SyntaxNode | undefined): string | undefined {
-  if (!fn) return undefined;
-  let param =
-    fn.childForFieldName('parameter') ??
-    fn.childForFieldName('parameters')?.namedChildren.find((child) => child.type !== 'comment');
-  if (param?.type === 'required_parameter' || param?.type === 'optional_parameter') {
-    param = param.childForFieldName('pattern');
-  }
-  if (param?.type === 'assignment_pattern') param = param.childForFieldName('left');
-  if (param?.type !== 'identifier') return undefined;
-  const name = param.text;
-  const redeclared =
-    fn
-      .descendantsOfType('variable_declarator')
-      .some((d) => d.childForFieldName('name')?.text === name) ||
-    fn
-      .descendantsOfType(FUNCTION_TYPES)
-      .some(
-        (nested) =>
-          nested.id !== fn.id &&
-          [nested.childForFieldName('parameter'), nested.childForFieldName('parameters')].some(
-            (params) =>
-              params?.type === 'identifier'
-                ? params.text === name
-                : params?.descendantsOfType('identifier').some((id) => id.text === name),
-          ),
-      );
-  return redeclared ? undefined : name;
-}
-
-/** The nearest function enclosing `node`. */
-function enclosingFunction(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  for (let parent = node.parent; parent; parent = parent.parent) {
-    if (FUNCTION_TYPES.includes(parent.type)) return parent;
-  }
-  return null;
-}
-
-/** A value naming fetch, through `??`/`||`, `?:`, parentheses, `as` or `await`. */
-function namesFetch(node: Parser.SyntaxNode | null | undefined): boolean {
-  if (!node) return false;
-  if (node.type === 'binary_expression') {
-    return (
-      namesFetch(node.childForFieldName('left')) || namesFetch(node.childForFieldName('right'))
-    );
-  }
-  if (node.type === 'ternary_expression') {
-    return (
-      namesFetch(node.childForFieldName('consequence')) ||
-      namesFetch(node.childForFieldName('alternative'))
-    );
-  }
-  if (
+function unwrap(node: Node | null): Node | null {
+  while (
+    node &&
     [
       'parenthesized_expression',
       'as_expression',
       'satisfies_expression',
       'non_null_expression',
+      'await_expression',
     ].includes(node.type)
   ) {
-    return namesFetch(node.namedChildren.find((child) => child.type !== 'comment'));
+    node = node.namedChildren.find((child) => child.type !== 'comment') ?? null;
   }
-  const name = calleeName(node);
-  return !!name && FETCH_CALLEES.has(name);
+  return node;
 }
-
-/** A repo-relative module path without its extension or `/index`. */
-export function moduleStem(filePath: string): string {
-  return filePath.replace(/\.[cm]?[jt]sx?$/, '').replace(/\/index$/, '');
+function parameterPattern(node: Node | null): Node | null {
+  if (node?.type === 'required_parameter' || node?.type === 'optional_parameter')
+    node = node.childForFieldName('pattern');
+  if (node?.type === 'assignment_pattern') node = node.childForFieldName('left');
+  return node;
 }
-
-/** A callee a function forwards its first parameter to, and the module declaring it when known. */
-export interface ForwardedCallee {
-  callee: string;
-  /** Module stem of a same-file declaration or a relative named import; null when unknown. */
-  module: string | null;
-}
-
-/**
- * Bare names a file declares at top level or imports by name from a relative
- * module, mapped to the declaring module and the name it is declared under.
- */
-const declaredCallees = new WeakMap<Parser.Tree, Map<string, ForwardedCallee>>();
-function calleeDeclarations(
-  root: Parser.SyntaxNode,
-  filePath: string,
-): Map<string, ForwardedCallee> {
-  const cached = declaredCallees.get(root.tree);
-  if (cached) return cached;
-  const own = moduleStem(filePath);
-  const declared = new Map<string, ForwardedCallee>();
-  for (const statement of root.namedChildren) {
-    const node =
-      statement.type === 'export_statement'
-        ? (statement.childForFieldName('declaration') ?? statement)
-        : statement;
-    if (node.type === 'function_declaration' || node.type === 'generator_function_declaration') {
-      const name = node.childForFieldName('name')?.text;
-      if (name) declared.set(name, { callee: name, module: own });
-    } else if (node.type === 'lexical_declaration' || node.type === 'variable_declaration') {
-      for (const declarator of node.namedChildren) {
-        const name = declarator.childForFieldName('name');
-        if (name?.type === 'identifier')
-          declared.set(name.text, { callee: name.text, module: own });
-      }
-    } else if (node.type === 'import_statement') {
-      const spec = node.childForFieldName('source')?.text.slice(1, -1) ?? '';
-      if (!spec.startsWith('.')) continue;
-      const module = moduleStem(
-        path.posix.normalize(path.posix.join(path.posix.dirname(filePath), spec)),
-      );
-      for (const named of node.descendantsOfType('import_specifier')) {
-        const name = named.childForFieldName('name')?.text;
-        const local = named.childForFieldName('alias')?.text ?? name;
-        if (name && local) declared.set(local, { callee: name, module });
-      }
-    }
+function storedName(node: Node, parents: ReadonlyMap<number, Node>): Node | null {
+  let parent = parents.get(node.id);
+  while (parent && unwrap(parent)?.id === unwrap(node)?.id) {
+    node = parent;
+    parent = parents.get(node.id);
   }
-  declaredCallees.set(root.tree, declared);
-  return declared;
+  if (parent?.type === 'variable_declarator' && parent.childForFieldName('value')?.id === node.id)
+    return parent.childForFieldName('name');
+  if (parent?.type === 'assignment_pattern' && parent.childForFieldName('right')?.id === node.id)
+    return parent.childForFieldName('left');
+  if (
+    (parent?.type === 'required_parameter' || parent?.type === 'optional_parameter') &&
+    parent.childForFieldName('value')?.id === node.id
+  )
+    return parameterPattern(parent);
+  return null;
+}
+interface Region {
+  node: Node;
+  references: Set<string>;
+  edges: Set<Region>;
+  calls: Node[];
 }
 
-/**
- * What a function definition proves about wrapping fetch (#1852, #3488). It is
- * a `seed` when it calls fetch itself, through `globalThis`/`window`/`self`, or
- * through a local alias (`const f = opts.fetchImpl ?? globalThis.fetch`).
- * `forwardsUrl` holds when its first parameter reaches that call's URL
- * argument, alone or inside a template or concatenation. `forwardsTo` lists the
- * callees that receive its own first parameter as their first argument, with
- * the module declaring each when the file shows it, so a function forwarding
- * its URL to a URL-carrying wrapper is one too.
- */
-export function fetchWrapperFacts(
-  definition: Parser.SyntaxNode,
-  filePath: string,
-): {
-  seed: boolean;
-  forwardsUrl: boolean;
-  forwardsTo: ForwardedCallee[];
-} {
-  const declared = calleeDeclarations(definition.tree.rootNode, filePath);
-  // An alias counts only where its declaring function encloses the call: a
-  // nested helper's `const fetchImpl = globalThis.fetch` says nothing about an
-  // outer `fetchImpl` parameter.
-  // A name redeclared with any other value anywhere in the function (a block
-  // that shadows it) is not an alias at all: which declaration a call reads
-  // would need lexical scoping this pass does not do.
-  const declarators = definition.descendantsOfType('variable_declarator');
-  const conflicting = new Set(
-    declarators
-      .filter((d) => !namesFetch(d.childForFieldName('value')))
-      .map((d) => d.childForFieldName('name')?.text),
-  );
-  const aliases = declarators.filter(
-    (d) =>
-      namesFetch(d.childForFieldName('value')) &&
-      !conflicting.has(d.childForFieldName('name')?.text),
-  );
-  const declaresParameter = (fn: Parser.SyntaxNode, name: string) =>
-    [fn.childForFieldName('parameter'), fn.childForFieldName('parameters')].some((params) =>
-      params?.type === 'identifier'
-        ? params.text === name
-        : params?.descendantsOfType('identifier').some((id) => id.text === name),
+/** Fresh construction is intentional: callers may cache only at the per-file provider boundary. */
+export function createFetchWrapperContext(
+  tree: Parser.Tree,
+  parsedFile: ParsedFile,
+  lineOffset = 0,
+): FetchWrapperContext {
+  const bindings = createLexicalBindings(parsedFile, lineOffset, tree.rootNode);
+  const filePath = parsedFile.filePath;
+  const imports = new Map<string, CalleeTarget>();
+  for (const imported of parsedFile.parsedImports) {
+    if (!('localName' in imported) || !('importedName' in imported)) continue;
+    const id = `${imported.declaredAtScope ?? parsedFile.moduleScope}\0${imported.localName}`;
+    const target: CalleeTarget =
+      'typeOnly' in imported && imported.typeOnly
+        ? { kind: 'blocked' }
+        : {
+            kind: 'import',
+            specifier: imported.targetRaw,
+            importedName: imported.importedName,
+          };
+    if (imports.has(id)) imports.set(id, { kind: 'blocked' });
+    else imports.set(id, target);
+  }
+  const stableBinding = (node: Node, atUse = true): string | undefined => {
+    const id = bindings.bindingId(node, node.text, atUse);
+    return id && !bindings.ambiguous(id) ? id : undefined;
+  };
+  const targetOf = (callee: Node | null): CalleeTarget => {
+    const node = unwrap(callee);
+    if (!node) return { kind: 'blocked' };
+    if (node.type === 'member_expression') return { kind: 'member' };
+    if (node.type !== 'identifier') return { kind: 'blocked' };
+    const owner = bindings.ownership(node, node.text, true);
+    if (owner?.status === 'absent') return { kind: 'unresolved' };
+    const id = stableBinding(node);
+    return id && !invalid.has(id)
+      ? (imports.get(id) ?? { kind: 'binding', bindingId: id })
+      : { kind: 'blocked' };
+  };
+  const platformFetch = (expression: Node | null): boolean => {
+    const node = unwrap(expression);
+    if (!node) return false;
+    if (node.type === 'identifier')
+      return node.text === 'fetch' && bindings.isGlobal(node, 'fetch');
+    if (node.type !== 'member_expression' || node.childForFieldName('property')?.text !== 'fetch')
+      return false;
+    const root = node.childForFieldName('object');
+    return (
+      !!root &&
+      root.type === 'identifier' &&
+      ['globalThis', 'window', 'self'].includes(root.text) &&
+      bindings.isGlobal(root, root.text)
     );
-  const isAlias = (name: string, call: Parser.SyntaxNode) =>
-    aliases.some((d) => {
-      const scope = enclosingFunction(d);
-      if (d.childForFieldName('name')?.text !== name) return false;
-      if (scope && !(scope.startIndex <= call.startIndex && call.endIndex <= scope.endIndex)) {
-        return false;
-      }
-      // A function between the alias and the call whose parameter has the
-      // same name shadows the alias there.
-      for (
-        let fn = enclosingFunction(call);
-        fn && fn.id !== scope?.id;
-        fn = enclosingFunction(fn)
-      ) {
-        if (declaresParameter(fn, name)) return false;
-      }
-      return true;
-    });
-  const parameter = firstParameterName(definedFunction(definition));
-  const carries = (argument: Parser.SyntaxNode | undefined): boolean =>
-    !!parameter &&
-    !!argument &&
-    (argument.type === 'identifier'
-      ? argument.text === parameter
-      : ['template_string', 'binary_expression'].includes(argument.type) &&
-        argument.descendantsOfType('identifier').some((id) => id.text === parameter));
-  // A nested helper bound to a local that is never referenced again never
-  // runs (`const later = () => resilientFetch(url)`), so its calls prove
-  // nothing; a helper that is called or passed on (a retry callback) counts.
-  const body = definedFunction(definition);
-  const referenced = (name: Parser.SyntaxNode) =>
-    definition
-      .descendantsOfType('identifier')
-      .some((id) => id.text === name.text && id.id !== name.id);
-  const unused = definition
-    .descendantsOfType([
-      'variable_declarator',
-      'function_declaration',
-      'generator_function_declaration',
-    ])
-    .filter((d) => {
-      const name = d.childForFieldName('name');
+  };
+  const namesFetch = (expression: Node | null): boolean => {
+    const node = unwrap(expression);
+    if (!node) return false;
+    if (node.type === 'binary_expression') {
+      const operator = node.childForFieldName('operator')?.text;
       return (
-        // Not the definition itself or its own `const load = (url) => …` declarator.
-        !!body &&
-        d.id !== body.id &&
-        body.startIndex <= d.startIndex &&
-        d.endIndex <= body.endIndex &&
-        (d.type !== 'variable_declarator' ||
-          FUNCTION_TYPES.includes(d.childForFieldName('value')?.type ?? '')) &&
-        name?.type === 'identifier' &&
-        !referenced(name)
+        (operator === '??' || operator === '||') &&
+        (namesFetch(node.childForFieldName('left')) || namesFetch(node.childForFieldName('right')))
       );
-    });
-  // `window.fetch` through a parameter or local named `window` is that value's
-  // method, not the platform fetch.
-  const localNames = new Set([
-    ...definition
-      .descendantsOfType('variable_declarator')
-      .map((d) => d.childForFieldName('name')?.text),
-    ...definition
-      .descendantsOfType(FUNCTION_TYPES)
-      .flatMap((fn) =>
-        [fn.childForFieldName('parameter'), fn.childForFieldName('parameters')].flatMap((params) =>
-          params?.type === 'identifier'
-            ? [params.text]
-            : (params?.descendantsOfType('identifier').map((id) => id.text) ?? []),
-        ),
-      ),
-  ]);
-  const platformFetch = (name: string) =>
-    FETCH_CALLEES.has(name) && (name === 'fetch' || !localNames.has(name.split('.')[0]));
-  const runs = (call: Parser.SyntaxNode) =>
-    !unused.some((d) => d.startIndex <= call.startIndex && call.endIndex <= d.endIndex);
-  let seed = false;
-  let forwardsUrl = false;
-  const forwardsTo = new Map<string, ForwardedCallee>();
-  for (const call of definition.descendantsOfType('call_expression').filter(runs)) {
-    const name = calleeName(call.childForFieldName('function'));
-    if (!name) continue;
-    const argument = call
-      .childForFieldName('arguments')
-      ?.namedChildren.find((child) => child.type !== 'comment');
-    if (platformFetch(name) || isAlias(name, call)) {
-      seed = true;
-      if (carries(argument)) forwardsUrl = true;
     }
-    if (parameter && argument?.type === 'identifier' && argument.text === parameter) {
-      forwardsTo.set(name, declared.get(name) ?? { callee: name, module: null });
+    if (node.type === 'ternary_expression')
+      return (
+        namesFetch(node.childForFieldName('consequence')) ||
+        namesFetch(node.childForFieldName('alternative'))
+      );
+    return platformFetch(node);
+  };
+  const regions: Region[] = [];
+  const callableRegions = new Map<number, Region>();
+  const boundRegions = new Map<string, Region[]>();
+  const declarationNodes = new Set<number>();
+  const aliases = new Set<string>();
+  const invalid = new Set<string>();
+  const initialized = new Map<string, number>();
+  const parameters = new Set<string>();
+  const exports = new Map<string, Set<string>>();
+  const allCalls: Node[] = [];
+  // Native parent lookup descends from the tree root; retain traversal edges once.
+  const parents = new Map<number, Node>();
+  const region = (node: Node): Region => {
+    const result = {
+      node,
+      references: new Set<string>(),
+      edges: new Set<Region>(),
+      calls: [] as Node[],
+    };
+    regions.push(result);
+    return result;
+  };
+  const bindRegion = (name: Node | null, value: Region) => {
+    if (!name || !['identifier', 'type_identifier'].includes(name.type)) return;
+    declarationNodes.add(name.id);
+    const id = stableBinding(name, false);
+    if (!id) return;
+    const bucket = boundRegions.get(id);
+    if (bucket) bucket.push(value);
+    else boundRegions.set(id, [value]);
+  };
+  const markPattern = (pattern: Node | null) => {
+    const names = patternBindingNames(pattern);
+    for (const name of names) declarationNodes.add(name.id);
+    return names;
+  };
+  const invalidate = (pattern: Node | null) => {
+    for (const name of patternBindingNames(pattern)) {
+      declarationNodes.add(name.id);
+      const id = bindings.bindingId(name);
+      if (id) invalid.add(id);
     }
+  };
+  const initialize = (pattern: Node | null, value: Node | null, parameter = false) => {
+    for (const name of markPattern(pattern)) {
+      const id = stableBinding(name, false);
+      if (!id) continue;
+      if (parameter) parameters.add(id);
+      if (!value) continue;
+      initialized.set(id, (initialized.get(id) ?? 0) + 1);
+      if (!parameter && parameters.has(id)) invalid.add(id);
+      if (pattern?.type === 'identifier' && namesFetch(value)) aliases.add(id);
+    }
+  };
+  const exported = (local: Node, name: string) => {
+    const id = stableBinding(local, false);
+    if (!id) return;
+    let names = exports.get(id);
+    if (!names) exports.set(id, (names = new Set()));
+    names.add(name);
+  };
+  const pending: { node: Node; parent?: Node; region: Region; classRegion?: Region }[] = [
+    { node: tree.rootNode, region: region(tree.rootNode) },
+  ];
+  while (pending.length) {
+    const entry = pending.pop()!;
+    const node = entry.node;
+    const parent = entry.parent;
+    if (parent) parents.set(node.id, parent);
+    const active = entry.region;
+    if (
+      node.type === 'comment' ||
+      node.type === 'ERROR' ||
+      ['type_annotation', 'type_parameters', 'type_arguments', 'import_statement'].includes(
+        node.type,
+      )
+    )
+      continue;
+    const children = node.namedChildren;
+    if (LEXICAL_FUNCTION_TYPES.has(node.type)) {
+      const callable = region(node);
+      callableRegions.set(node.id, callable);
+      const name = node.childForFieldName('name');
+      const stored = storedName(node, parents);
+      const declaration =
+        node.type === 'function_declaration' || node.type === 'generator_function_declaration';
+      bindRegion(declaration ? name : stored, callable);
+      if (!declaration && name?.type === 'identifier') bindRegion(name, callable);
+      if (name) declarationNodes.add(name.id);
+      if (node.type === 'method_definition') (entry.classRegion ?? active).edges.add(callable);
+      else if (!declaration && !stored) active.edges.add(callable);
+      if (declaration && name) {
+        const id = stableBinding(name, false);
+        if (id && parameters.has(id)) invalid.add(id);
+      }
+      const formals = node.childForFieldName('parameters') ?? node.childForFieldName('parameter');
+      for (const name of markPattern(formals)) {
+        const id = stableBinding(name, false);
+        if (id) parameters.add(id);
+      }
+      for (let i = children.length - 1; i >= 0; i--) {
+        const child = children[i];
+        // Computed names and decorators are evaluated when the method is created.
+        pending.push({
+          node: child,
+          parent: node,
+          region:
+            child.type === 'computed_property_name' || child.type === 'decorator'
+              ? active
+              : callable,
+        });
+      }
+      continue;
+    }
+    if (node.type === 'class_declaration' || node.type === 'class') {
+      const deferred = region(node);
+      const name = node.childForFieldName('name');
+      const stored = storedName(node, parents);
+      bindRegion(stored ?? name, deferred);
+      if (stored && name) bindRegion(name, deferred);
+      if (!stored && !name) active.edges.add(deferred);
+      for (let i = children.length - 1; i >= 0; i--)
+        pending.push({ node: children[i], parent: node, region: active, classRegion: deferred });
+      continue;
+    }
+    if (node.type === 'field_definition' || node.type === 'public_field_definition') {
+      const isStatic = node.children.some((child) => child.type === 'static');
+      for (let i = children.length - 1; i >= 0; i--) {
+        const child = children[i];
+        const evaluated =
+          child.type === 'computed_property_name' || child.type === 'decorator' || isStatic;
+        pending.push({
+          node: child,
+          parent: node,
+          region: evaluated ? active : (entry.classRegion ?? active),
+        });
+      }
+      continue;
+    }
+    if (node.type === 'variable_declarator')
+      initialize(node.childForFieldName('name'), node.childForFieldName('value'));
+    else if (node.type === 'required_parameter' || node.type === 'optional_parameter')
+      initialize(parameterPattern(node), node.childForFieldName('value'), true);
+    else if (node.type === 'assignment_pattern')
+      initialize(node.childForFieldName('left'), node.childForFieldName('right'), true);
+    else if (node.type === 'catch_clause') markPattern(node.childForFieldName('parameter'));
+    else if (
+      node.type === 'assignment_expression' ||
+      node.type === 'augmented_assignment_expression'
+    )
+      invalidate(node.childForFieldName('left'));
+    else if (node.type === 'update_expression') invalidate(node.childForFieldName('argument'));
+    else if (node.type === 'for_in_statement') {
+      const left = node.childForFieldName('left');
+      if (node.childForFieldName('kind')) markPattern(left);
+      invalidate(left);
+    }
+    if (node.type === 'export_statement') {
+      const declaration = node.childForFieldName('declaration');
+      const value = node.childForFieldName('value');
+      const isDefault = node.children.some((child) => child.type === 'default');
+      if (declaration) {
+        const name = declaration.childForFieldName('name');
+        if (name?.type === 'identifier') exported(name, isDefault ? 'default' : name.text);
+        else
+          for (const declarator of declaration.namedChildren) {
+            for (const local of patternBindingNames(declarator.childForFieldName('name')))
+              exported(local, isDefault ? 'default' : local.text);
+          }
+      } else if (isDefault && value?.type === 'identifier') exported(value, 'default');
+    } else if (
+      node.type === 'export_specifier' &&
+      !(parent && parents.get(parent.id))?.childForFieldName('source')
+    ) {
+      const name = node.childForFieldName('name');
+      if (name) exported(name, node.childForFieldName('alias')?.text ?? name.text);
+    }
+    if (
+      (node.type === 'identifier' || node.type === 'shorthand_property_identifier') &&
+      !declarationNodes.has(node.id)
+    ) {
+      const id = stableBinding(node);
+      if (id) active.references.add(id);
+    }
+    if (node.type === 'call_expression' && !node.hasError) {
+      active.calls.push(node);
+      allCalls.push(node);
+    }
+    for (let i = children.length - 1; i >= 0; i--)
+      pending.push({
+        node: children[i],
+        parent: node,
+        region: active,
+        classRegion: entry.classRegion,
+      });
   }
-  return { seed, forwardsUrl, forwardsTo: [...forwardsTo.values()] };
+  for (const [id, count] of initialized) if (count > 1) invalid.add(id);
+  for (const id of invalid) aliases.delete(id);
+  for (const value of regions)
+    for (const reference of value.references) {
+      if (invalid.has(reference)) continue;
+      const targets = boundRegions.get(reference);
+      if (targets?.length === 1) value.edges.add(targets[0]);
+    }
+  const firstParameter = (fn: Node): string | undefined => {
+    const first =
+      fn.childForFieldName('parameter') ??
+      fn.childForFieldName('parameters')?.namedChildren.find((child) => child.type !== 'comment') ??
+      null;
+    const name = parameterPattern(first);
+    if (name?.type !== 'identifier') return undefined;
+    const id = stableBinding(name, false);
+    return id && !invalid.has(id) ? id : undefined;
+  };
+  const argumentBindings = new Map<number, ReadonlySet<string>>();
+  const carried = (argument: Node | undefined): ReadonlySet<string> => {
+    if (!argument) return new Set();
+    const cached = argumentBindings.get(argument.id);
+    if (cached) return cached;
+    const result = new Set<string>();
+    const pending = ['identifier', 'template_string', 'binary_expression'].includes(argument.type)
+      ? [argument]
+      : [];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (node.type === 'identifier') {
+        const id = stableBinding(node);
+        if (id && !invalid.has(id)) result.add(id);
+      } else if (!LEXICAL_FUNCTION_TYPES.has(node.type)) pending.push(...node.namedChildren);
+    }
+    argumentBindings.set(argument.id, result);
+    return result;
+  };
+  const findFunction = (definition: Node): Node | undefined => {
+    let node: Node | null = definition;
+    while (node && !callableRegions.has(node.id)) {
+      node = unwrap(
+        node.childForFieldName('declaration') ??
+          node.childForFieldName('value') ??
+          node.namedChildren.find((child) => child.type === 'variable_declarator') ??
+          null,
+      );
+    }
+    return node ?? undefined;
+  };
+  const contains = (outer: Node, inner: Node) =>
+    outer.startIndex <= inner.startIndex && inner.endIndex <= outer.endIndex;
+  interface CallEvidence {
+    region: Region;
+    argument?: Node;
+    callee: Node | null;
+    name: string;
+    seed: boolean;
+  }
+  const directSeeds = new Set<Region>();
+  const parameterCalls = new Map<string, CallEvidence[]>();
+  for (const region of regions)
+    for (const call of region.calls) {
+      const callee = unwrap(call.childForFieldName('function'));
+      const name = calleeName(callee);
+      if (!name) continue;
+      const argument = call
+        .childForFieldName('arguments')
+        ?.namedChildren.find((child) => child.type !== 'comment');
+      const alias = callee?.type === 'identifier' ? stableBinding(callee) : undefined;
+      const seed = platformFetch(callee) || !!(alias && aliases.has(alias));
+      if (seed) directSeeds.add(region);
+      const evidence = { region, argument, callee, name, seed };
+      for (const id of carried(argument)) {
+        const bucket = parameterCalls.get(id);
+        if (bucket) bucket.push(evidence);
+        else parameterCalls.set(id, [evidence]);
+      }
+    }
+  // A nested region's seed and outward references are reusable for every
+  // enclosing definition. Sibling references escape a helper summary and are
+  // followed only when analyzing a region that actually contains both helpers.
+  interface Summary {
+    seed: boolean;
+    external: Set<Region>;
+  }
+  const summaries = new Map<Region, Summary>();
+  const summarize = (root: Region): Summary => {
+    const cached = summaries.get(root);
+    if (cached) return cached;
+    const result: Summary = { seed: directSeeds.has(root), external: new Set() };
+    const seen = new Set<Region>([root]);
+    const queue = [...root.edges];
+    for (let i = 0; i < queue.length; i++) {
+      const next = queue[i];
+      if (seen.has(next)) continue;
+      seen.add(next);
+      if (!contains(root.node, next.node)) {
+        result.external.add(next);
+        continue;
+      }
+      const child = summarize(next);
+      result.seed ||= child.seed;
+      queue.push(...child.external);
+    }
+    summaries.set(root, result);
+    return result;
+  };
+  const factsCache = new Map<number, FetchWrapperFacts>();
+  const facts: FetchWrapperContext['facts'] = (definition, nameNode) => {
+    const fn = findFunction(definition);
+    if (!fn) return undefined;
+    const cached = factsCache.get(fn.id);
+    if (cached) return cached;
+    const name = nameNode ?? storedName(fn, parents) ?? fn.childForFieldName('name');
+    const id = name ? stableBinding(name, false) : undefined;
+    const url = firstParameter(fn);
+    const root = callableRegions.get(fn.id)!;
+    const seed = summarize(root).seed;
+    let forwardsUrl = false;
+    const forwardsTo = new Map<string, ForwardedCallee>();
+    let reachable: Set<Region> | undefined;
+    const reaches = (target: Region): boolean => {
+      if (target === root) return true;
+      if (!contains(fn, target.node)) return false;
+      if (!reachable) {
+        reachable = new Set([root]);
+        const queue = [root];
+        for (let i = 0; i < queue.length; i++)
+          for (const next of queue[i].edges) {
+            if (contains(fn, next.node) && !reachable.has(next)) {
+              reachable.add(next);
+              queue.push(next);
+            }
+          }
+      }
+      return reachable.has(target);
+    };
+    for (const call of url ? (parameterCalls.get(url) ?? []) : []) {
+      if (!reaches(call.region)) continue;
+      if (call.seed) forwardsUrl = true;
+      if (call.argument?.type === 'identifier') {
+        const target = targetOf(call.callee);
+        const forwarded = { callee: call.name, target };
+        forwardsTo.set(JSON.stringify(forwarded), forwarded);
+      }
+    }
+    const parent = parents.get(fn.id);
+    const defaultExport =
+      parent?.type === 'export_statement' &&
+      parent.children.some((child) => child.type === 'default');
+    const result: FetchWrapperFacts = {
+      definitionId: `${filePath}:${fn.startPosition.row + lineOffset + 1}:${fn.startPosition.column}:${fn.endPosition.row + lineOffset + 1}:${fn.endPosition.column}`,
+      ...(id ? { bindingId: id } : {}),
+      moduleScope: defaultExport || (!!id && id.startsWith(`${parsedFile.moduleScope}\0`)),
+      exportedNames: [
+        ...new Set([...(id ? (exports.get(id) ?? []) : []), ...(defaultExport ? ['default'] : [])]),
+      ],
+      seed,
+      forwardsUrl,
+      forwardsTo: [...forwardsTo.values()],
+    };
+    factsCache.set(fn.id, result);
+    return result;
+  };
+  return {
+    bindings,
+    facts,
+    calls: () => {
+      const calls: FetchWrapperCall[] = [];
+      for (const call of allCalls) {
+        const argument = call
+          .childForFieldName('arguments')
+          ?.namedChildren.find((child) => child.type !== 'comment');
+        if (argument?.type !== 'string' && argument?.type !== 'template_string') continue;
+        const fetchURL = argument.text.slice(1, -1);
+        if (!stripLeadingTemplatePrefix(fetchURL)?.startsWith('/')) continue;
+        const callee = call.childForFieldName('function');
+        const functionName = calleeName(callee);
+        if (!functionName) continue;
+        const target = targetOf(callee);
+        calls.push({
+          filePath,
+          functionName,
+          fetchURL,
+          lineNumber: call.startPosition.row + lineOffset + 1,
+          target,
+        });
+      }
+      return calls;
+    },
+  };
+}
+
+export function extractFetchWrapperCalls(
+  tree: Parser.Tree,
+  parsedFile: ParsedFile,
+  lineOffset: number,
+): FetchWrapperCall[] {
+  return createFetchWrapperContext(tree, parsedFile, lineOffset).calls();
+}
+export function fetchWrapperFacts(
+  definition: Node,
+  parsedFile: ParsedFile,
+  lineOffset = 0,
+): FetchWrapperFacts | undefined {
+  return createFetchWrapperContext(definition.tree, parsedFile, lineOffset).facts(definition);
 }
