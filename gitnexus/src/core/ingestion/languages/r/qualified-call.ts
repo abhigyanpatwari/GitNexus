@@ -17,7 +17,11 @@
  *  - `local` with exactly one top-level definition of the name in the
  *    package's `R/` files: that definition is recorded per call site and
  *    returned by {@link resolveRQualifiedFreeCall}, which the free-call
- *    fallback consults before every lexical tier (a precise 0.85 edge);
+ *    fallback consults before the lexical tiers (a precise 0.85 edge). The
+ *    fallback's earlier same-name check still wins when the caller has a
+ *    non-callable binding of that name (a parameter or `for` variable named
+ *    like the target): that site gets no edge (see the limits in
+ *    docs/languages/r-provider.md);
  *  - `local` with two or more such definitions (same file or across files):
  *    the site is dropped (every valid target is inside the named package, so
  *    any edge would be provably wrong);
