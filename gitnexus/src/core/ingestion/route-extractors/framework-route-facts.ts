@@ -404,6 +404,16 @@ export function extractFrameworkRouteFacts(
             if (value) invalidate(value);
           } else if (['object_pattern', 'array_pattern', 'rest_pattern'].includes(target.type)) {
             for (const child of children(target)) invalidate(child);
+          } else if (
+            [
+              'parenthesized_expression',
+              'as_expression',
+              'satisfies_expression',
+              'non_null_expression',
+            ].includes(target.type)
+          ) {
+            const inner = children(target)[0];
+            if (inner) invalidate(inner);
           }
         };
         invalidate(left);

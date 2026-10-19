@@ -264,6 +264,17 @@ function handler() {} function other() {}`);
   });
 
   it.each([
+    ['parenthesized', '(app) = new Map();'],
+    ['asserted', '(app as unknown) = new Map();'],
+    ['non-null asserted', 'app! = new Map();'],
+  ])('invalidates a wrapped assignment target: %s', (_shape, write) => {
+    expect(
+      urls(`import express from 'express'; let app = express();
+      ${write} app.get('/not-http', handler);`),
+    ).toEqual([]);
+  });
+
+  it.each([
     ['initialized var', 'app', 'var app = storage;', []],
     ['initialized var with another default', 'app, other = 1', 'var app = storage;', []],
     ['uninitialized var', 'app', 'var app;', ['GET /forwarded']],

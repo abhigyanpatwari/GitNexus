@@ -44,6 +44,14 @@ export function patternBindingNames(node: Node | null): Node[] {
     case 'array_pattern':
     case 'formal_parameters':
       return node.namedChildren.flatMap(patternBindingNames);
+    // Assignment targets may be wrapped: `(app) = x`, `(app as T) = x`, `app! = x`.
+    case 'parenthesized_expression':
+    case 'as_expression':
+    case 'satisfies_expression':
+    case 'non_null_expression':
+      return patternBindingNames(
+        node.namedChildren.find((child) => child.type !== 'comment') ?? null,
+      );
     default:
       return [];
   }
