@@ -365,40 +365,49 @@ export function extractFrameworkRouteFacts(
           cjsExports.push(record);
         }
       } else if (left) {
-        const invalidate = (target: Node) => {
-          if (
-            target.type === 'identifier' ||
-            target.type === 'shorthand_property_identifier_pattern'
-          ) {
-            const id = bindingId(target);
-            if (id) invalid.add(id);
-          } else if (
-            target.type === 'member_expression' ||
-            target.type === 'subscript_expression'
-          ) {
-            let receiver = target.childForFieldName('object');
-            while (receiver) {
-              // A namespace member can resolve to an exported allocation even
-              // when the namespace itself is only a module value.
-              facts.mutations.push(expression(receiver));
-              if (receiver.type !== 'member_expression' && receiver.type !== 'subscript_expression')
-                break;
-              receiver = receiver.childForFieldName('object');
+        const invalidate = (root: Node) => {
+          const pending = [root];
+          while (pending.length > 0) {
+            const target = pending.pop()!;
+            if (
+              target.type === 'identifier' ||
+              target.type === 'shorthand_property_identifier_pattern'
+            ) {
+              const id = bindingId(target);
+              if (id) invalid.add(id);
+            } else if (
+              target.type === 'member_expression' ||
+              target.type === 'subscript_expression'
+            ) {
+              let receiver = target.childForFieldName('object');
+              while (receiver) {
+                // A namespace member can resolve to an exported allocation even
+                // when the namespace itself is only a module value.
+                facts.mutations.push(expression(receiver));
+                if (
+                  receiver.type !== 'member_expression' &&
+                  receiver.type !== 'subscript_expression'
+                )
+                  break;
+                receiver = receiver.childForFieldName('object');
+              }
+            } else if (target.type === 'pair_pattern') {
+              const value = target.childForFieldName('value');
+              if (value) pending.push(value);
+            } else if (
+              target.type === 'assignment_pattern' ||
+              target.type === 'object_assignment_pattern'
+            ) {
+              const value = target.childForFieldName('left');
+              if (value) pending.push(value);
+            } else if (['object_pattern', 'array_pattern', 'rest_pattern'].includes(target.type)) {
+              // Reverse pushes keep source order for recorded mutations.
+              const items = children(target);
+              for (let i = items.length - 1; i >= 0; i--) pending.push(items[i]);
+            } else if (TRANSPARENT_EXPRESSION_TYPES.has(target.type)) {
+              const inner = children(target)[0];
+              if (inner) pending.push(inner);
             }
-          } else if (target.type === 'pair_pattern') {
-            const value = target.childForFieldName('value');
-            if (value) invalidate(value);
-          } else if (
-            target.type === 'assignment_pattern' ||
-            target.type === 'object_assignment_pattern'
-          ) {
-            const value = target.childForFieldName('left');
-            if (value) invalidate(value);
-          } else if (['object_pattern', 'array_pattern', 'rest_pattern'].includes(target.type)) {
-            for (const child of children(target)) invalidate(child);
-          } else if (TRANSPARENT_EXPRESSION_TYPES.has(target.type)) {
-            const inner = children(target)[0];
-            if (inner) invalidate(inner);
           }
         };
         invalidate(left);

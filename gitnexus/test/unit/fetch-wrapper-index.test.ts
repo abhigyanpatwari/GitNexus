@@ -409,3 +409,25 @@ describe('fetch wrapper barrel resolution', () => {
     );
   });
 });
+
+describe('fetch wrapper barrel resolution depth', () => {
+  it('resolves a 50,000-module re-export chain without recursion', () => {
+    const length = 50_000;
+    const reexports: FetchWrapperReexport[] = Array.from({ length }, (_, i) => ({
+      filePath: `b${i}.ts`,
+      exportedName: '*',
+      from: { specifier: `./b${i + 1}`, importedName: '*' },
+    }));
+    const resolved = resolveFetchWrapperTargets(
+      [definition('end', { filePath: `b${length}.ts`, seed: true })],
+      [call({ kind: 'import', specifier: '@pkg', importedName: 'request' })],
+      (_fromFile, specifier) => [specifier === '@pkg' ? 'b0.ts' : `${specifier.slice(2)}.ts`],
+      reexports,
+    );
+    expect(resolved.calls[0].target).toEqual({
+      kind: 'resolved-import',
+      filePath: `b${length}.ts`,
+      importedName: 'request',
+    });
+  });
+});

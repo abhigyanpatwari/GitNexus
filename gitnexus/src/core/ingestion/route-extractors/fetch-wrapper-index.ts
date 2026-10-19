@@ -159,29 +159,69 @@ export function resolveFetchWrapperTargets(
   // Follow a barrel to the module declaring the export. Local and named exports
   // shadow `export *`; star exports never carry `default`, and conflicting star
   // exports leave the name unexported (ECMAScript ResolveExport).
-  const exporter = (
-    filePath: string,
-    name: string,
-    seen: Set<string>,
-  ): CalleeTarget | undefined => {
-    const key = `${filePath}\0${name}`;
-    if (declared.has(key)) return { kind: 'resolved-import', filePath, importedName: name };
-    if (seen.has(key)) return undefined;
-    seen.add(key);
-    const candidates =
-      named.get(key) ?? (name === 'default' ? undefined : stars.get(filePath)) ?? [];
-    const found = new Map<string, CalleeTarget>();
-    for (const { from } of candidates) {
-      // A local export that declares no wrapper shadows every forwarded name.
-      if (!from) return undefined;
-      const targets = moduleTargets(filePath, from.specifier);
-      if (targets.length !== 1) continue;
-      const importedName = from.importedName === '*' ? name : from.importedName;
-      const target = exporter(targets[0], importedName, seen);
-      if (target) found.set(JSON.stringify(target), target);
+  interface ExportFrame {
+    filePath: string;
+    name: string;
+    candidates: readonly FetchWrapperReexport[];
+    cursor: number;
+    found: Map<string, CalleeTarget>;
+  }
+  type ExportStep = { frame: ExportFrame } | { value: CalleeTarget | undefined };
+  // Explicit frames instead of recursion, so long re-export chains cannot
+  // exhaust the call stack. One walk shares `seen` across all of its branches.
+  const exporter = (startFile: string, startName: string): CalleeTarget | undefined => {
+    const seen = new Set<string>();
+    const open = (filePath: string, name: string): ExportStep => {
+      const key = `${filePath}\0${name}`;
+      if (declared.has(key))
+        return { value: { kind: 'resolved-import', filePath, importedName: name } };
+      if (seen.has(key)) return { value: undefined };
+      seen.add(key);
+      const candidates =
+        named.get(key) ?? (name === 'default' ? undefined : stars.get(filePath)) ?? [];
+      return { frame: { filePath, name, candidates, cursor: 0, found: new Map() } };
+    };
+    const record = (frame: ExportFrame, target: CalleeTarget | undefined) => {
+      if (target) frame.found.set(JSON.stringify(target), target);
+    };
+    const first = open(startFile, startName);
+    if ('value' in first) return first.value;
+    const frames = [first.frame];
+    let finished: CalleeTarget | undefined;
+    while (frames.length > 0) {
+      const frame = frames[frames.length - 1];
+      let nested: ExportFrame | undefined;
+      let shadowed = false;
+      while (frame.cursor < frame.candidates.length) {
+        const { from } = frame.candidates[frame.cursor++];
+        // A local export that declares no wrapper shadows every forwarded name.
+        if (!from) {
+          shadowed = true;
+          break;
+        }
+        const targets = moduleTargets(frame.filePath, from.specifier);
+        if (targets.length !== 1) continue;
+        const step = open(targets[0], from.importedName === '*' ? frame.name : from.importedName);
+        if ('value' in step) record(frame, step.value);
+        else {
+          nested = step.frame;
+          break;
+        }
+      }
+      if (nested) {
+        frames.push(nested);
+        continue;
+      }
+      frames.pop();
+      finished = shadowed
+        ? undefined
+        : frame.found.size > 1
+          ? { kind: 'blocked' }
+          : frame.found.values().next().value;
+      const parent = frames[frames.length - 1];
+      if (parent) record(parent, finished);
     }
-    if (found.size > 1) return { kind: 'blocked' };
-    return found.values().next().value;
+    return finished;
   };
   // A barrel walk depends only on its starting export; many calls share one.
   const exported = new Map<string, CalleeTarget>();
@@ -193,7 +233,7 @@ export function resolveFetchWrapperTargets(
     const key = `${targets[0]}\0${target.importedName}`;
     let result = exported.get(key);
     if (!result) {
-      result = exporter(targets[0], target.importedName, new Set()) ?? {
+      result = exporter(targets[0], target.importedName) ?? {
         kind: 'resolved-import',
         filePath: targets[0],
         importedName: target.importedName,

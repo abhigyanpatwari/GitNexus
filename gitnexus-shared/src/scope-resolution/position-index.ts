@@ -98,14 +98,29 @@ interface FileIndex {
 /** Each tree node stores the latest end in its contiguous entry interval. */
 function buildEndIndex(entries: readonly Entry[]): Range[] {
   const maximumEnds: Range[] = [];
-  const build = (node: number, first: number, last: number): Range => {
-    if (first === last) return (maximumEnds[node] = entries[first]!.range);
-    const middle = (first + last) >>> 1;
-    const left = build(node * 2, first, middle);
-    const right = build(node * 2 + 1, middle + 1, last);
-    return (maximumEnds[node] = endIsAtOrAfter(left, right.endLine, right.endCol) ? left : right);
-  };
-  build(1, 0, entries.length - 1);
+  // Post-order without recursion: a node combines its children once both exist.
+  const stack: [node: number, first: number, last: number, combine: boolean][] = [
+    [1, 0, entries.length - 1, false],
+  ];
+  while (stack.length > 0) {
+    const [node, first, last, combine] = stack.pop()!;
+    if (first === last) {
+      maximumEnds[node] = entries[first]!.range;
+      continue;
+    }
+    if (!combine) {
+      const middle = (first + last) >>> 1;
+      stack.push(
+        [node, first, last, true],
+        [node * 2 + 1, middle + 1, last, false],
+        [node * 2, first, middle, false],
+      );
+      continue;
+    }
+    const left = maximumEnds[node * 2]!;
+    const right = maximumEnds[node * 2 + 1]!;
+    maximumEnds[node] = endIsAtOrAfter(left, right.endLine, right.endCol) ? left : right;
+  }
   return maximumEnds;
 }
 
@@ -157,23 +172,24 @@ function findLastStartLteIndex(arr: readonly Entry[], line: number, col: number)
   return lo - 1;
 }
 
+/** Rightmost entry at or before `upper` whose range still contains the point. */
 function findLastContainingEntry(
   file: FileIndex,
   upper: number,
   line: number,
   col: number,
-  node = 1,
-  first = 0,
-  last = file.entries.length - 1,
 ): number {
-  if (first > upper || !endIsAtOrAfter(file.maximumEnds[node]!, line, col)) return -1;
-  if (first === last) return first;
-  const middle = (first + last) >>> 1;
-  if (upper > middle) {
-    const right = findLastContainingEntry(file, upper, line, col, node * 2 + 1, middle + 1, last);
-    if (right >= 0) return right;
+  // Depth-first, right subtree before left, so the first leaf reached is the rightmost.
+  const stack: [node: number, first: number, last: number][] = [[1, 0, file.entries.length - 1]];
+  while (stack.length > 0) {
+    const [node, first, last] = stack.pop()!;
+    if (first > upper || !endIsAtOrAfter(file.maximumEnds[node]!, line, col)) continue;
+    if (first === last) return first;
+    const middle = (first + last) >>> 1;
+    stack.push([node * 2, first, middle]);
+    if (upper > middle) stack.push([node * 2 + 1, middle + 1, last]);
   }
-  return findLastContainingEntry(file, upper, line, col, node * 2, first, middle);
+  return -1;
 }
 
 function wrapIndex(files: ReadonlyMap<string, FileIndex>, size: number): PositionIndex {

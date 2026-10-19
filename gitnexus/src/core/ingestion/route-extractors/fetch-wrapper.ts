@@ -536,26 +536,58 @@ export function createFetchWrapperContext(
     external: Set<Region>;
   }
   const summaries = new Map<Region, Summary>();
-  const summarize = (root: Region): Summary => {
-    const cached = summaries.get(root);
+  interface SummaryFrame {
+    root: Region;
+    result: Summary;
+    seen: Set<Region>;
+    queue: Region[];
+    cursor: number;
+  }
+  const openSummary = (root: Region): SummaryFrame => ({
+    root,
+    result: { seed: directSeeds.has(root), external: new Set() },
+    seen: new Set([root]),
+    queue: [...root.edges],
+    cursor: 0,
+  });
+  const absorb = (frame: SummaryFrame, child: Summary) => {
+    frame.result.seed ||= child.seed;
+    for (const next of child.external) frame.queue.push(next);
+  };
+  // Explicit frames instead of recursion: nested regions are summarized first,
+  // so nesting depth cannot exhaust the call stack.
+  const summarize = (start: Region): Summary => {
+    const cached = summaries.get(start);
     if (cached) return cached;
-    const result: Summary = { seed: directSeeds.has(root), external: new Set() };
-    const seen = new Set<Region>([root]);
-    const queue = [...root.edges];
-    for (let i = 0; i < queue.length; i++) {
-      const next = queue[i];
-      if (seen.has(next)) continue;
-      seen.add(next);
-      if (!contains(root.node, next.node)) {
-        result.external.add(next);
+    const frames = [openSummary(start)];
+    while (frames.length > 0) {
+      const frame = frames[frames.length - 1];
+      let nested: Region | undefined;
+      while (frame.cursor < frame.queue.length) {
+        const next = frame.queue[frame.cursor++];
+        if (frame.seen.has(next)) continue;
+        frame.seen.add(next);
+        if (!contains(frame.root.node, next.node)) {
+          frame.result.external.add(next);
+          continue;
+        }
+        const child = summaries.get(next);
+        if (child) absorb(frame, child);
+        else {
+          nested = next;
+          break;
+        }
+      }
+      if (nested) {
+        frames.push(openSummary(nested));
         continue;
       }
-      const child = summarize(next);
-      result.seed ||= child.seed;
-      queue.push(...child.external);
+      summaries.set(frame.root, frame.result);
+      frames.pop();
+      const parent = frames[frames.length - 1];
+      if (parent) absorb(parent, frame.result);
     }
-    summaries.set(root, result);
-    return result;
+    return summaries.get(start)!;
   };
   const factsCache = new Map<number, FetchWrapperFacts>();
   const facts: FetchWrapperContext['facts'] = (definition, nameNode) => {

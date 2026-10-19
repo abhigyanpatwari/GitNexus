@@ -43,34 +43,48 @@ export function parameterPattern(node: Node | null): Node | null {
 }
 
 /** Visit binding positions only: property keys and default RHSs are expressions. */
-export function patternBindingNames(node: Node | null): Node[] {
-  if (node && TRANSPARENT_EXPRESSION_TYPES.has(node.type))
-    // Assignment targets may be wrapped: `(app) = x`, `(app as T) = x`, `app! = x`.
-    return patternBindingNames(
-      node.namedChildren.find((child) => child.type !== 'comment') ?? null,
-    );
-  if (!node) return [];
-  switch (node.type) {
-    case 'identifier':
-    case 'shorthand_property_identifier_pattern':
-      return [node];
-    case 'required_parameter':
-    case 'optional_parameter':
-      return patternBindingNames(node.childForFieldName('pattern'));
-    case 'pair_pattern':
-      return patternBindingNames(node.childForFieldName('value'));
-    case 'assignment_pattern':
-    case 'object_assignment_pattern':
-      return patternBindingNames(node.childForFieldName('left'));
-    case 'rest_pattern':
-      return patternBindingNames(node.firstNamedChild);
-    case 'object_pattern':
-    case 'array_pattern':
-    case 'formal_parameters':
-      return node.namedChildren.flatMap(patternBindingNames);
-    default:
-      return [];
+export function patternBindingNames(root: Node | null): Node[] {
+  const names: Node[] = [];
+  const stack = root ? [root] : [];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    let next: readonly (Node | null)[] = [];
+    if (TRANSPARENT_EXPRESSION_TYPES.has(node.type))
+      // Assignment targets may be wrapped: `(app) = x`, `(app as T) = x`, `app! = x`.
+      next = [node.namedChildren.find((child) => child.type !== 'comment') ?? null];
+    else
+      switch (node.type) {
+        case 'identifier':
+        case 'shorthand_property_identifier_pattern':
+          names.push(node);
+          break;
+        case 'required_parameter':
+        case 'optional_parameter':
+          next = [node.childForFieldName('pattern')];
+          break;
+        case 'pair_pattern':
+          next = [node.childForFieldName('value')];
+          break;
+        case 'assignment_pattern':
+        case 'object_assignment_pattern':
+          next = [node.childForFieldName('left')];
+          break;
+        case 'rest_pattern':
+          next = [node.firstNamedChild];
+          break;
+        case 'object_pattern':
+        case 'array_pattern':
+        case 'formal_parameters':
+          next = node.namedChildren;
+          break;
+      }
+    // Reverse pushes keep source order.
+    for (let i = next.length - 1; i >= 0; i--) {
+      const child = next[i];
+      if (child) stack.push(child);
+    }
   }
+  return names;
 }
 
 interface FunctionEnvironment {
