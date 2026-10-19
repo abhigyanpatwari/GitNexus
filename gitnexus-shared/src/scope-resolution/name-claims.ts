@@ -185,6 +185,7 @@ export function lookupLexicalName(
   let id: ScopeId | null = startScope;
   let position = options.position;
   let forcedClaims: readonly NameClaim[] | undefined;
+  let carriedConstructor: TypeRef | undefined;
   const visited = new Set<ScopeId>();
   while (id !== null && !visited.has(id)) {
     visited.add(id);
@@ -225,7 +226,8 @@ export function lookupLexicalName(
       const skippedIds = new Set<ScopeId>();
       while (skipped !== undefined && skipped.id !== target.id && !skippedIds.has(skipped.id)) {
         skippedIds.add(skipped.id);
-        if (skipped.lookupPolicy?.deferParentActivation) position = undefined;
+        if (skipped.lookupPolicy?.deferParentActivation && !options.preservePosition)
+          position = undefined;
         skipped = skipped.parent === null ? undefined : sources.scopes.getScope(skipped.parent);
       }
       id = target.id;
@@ -271,7 +273,10 @@ export function lookupLexicalName(
     const ownType = scope.typeBindings.get(name);
     const typeFactOwnsName =
       ownType !== undefined &&
-      !(scope.lookupPolicy?.nameClaimsComplete && ownType.source === 'assignment-inferred');
+      !(
+        scope.lookupPolicy?.nameClaimsComplete &&
+        (ownType.source === 'assignment-inferred' || ownType.source === 'constructor-inferred')
+      );
     const owns =
       selected.status === 'selected' ||
       bindings.length > 0 ||
@@ -312,6 +317,16 @@ export function lookupLexicalName(
         )
           typeBinding = undefined;
       }
+      // Inferred writes do not declare bindings. Preserve the nearest write's
+      // complete lookup anchor, but never replace the owner's declared type.
+      if (
+        carriedConstructor !== undefined &&
+        (typeBinding === undefined ||
+          typeBinding.source === 'assignment-inferred' ||
+          typeBinding.source === 'constructor-inferred' ||
+          typeBinding.source === 'receiver-propagated')
+      )
+        typeBinding = carriedConstructor;
       const usable = bindings.filter(
         (b) => (options.purpose ?? 'value') !== 'value' || b.via?.typeOnly !== true,
       );
@@ -330,7 +345,14 @@ export function lookupLexicalName(
         claims: selected.claims,
       };
     }
-    if (scope.lookupPolicy?.deferParentActivation) position = undefined;
+    if (
+      scope.lookupPolicy?.nameClaimsComplete &&
+      !hasClaimsForName &&
+      ownType?.source === 'constructor-inferred'
+    )
+      carriedConstructor ??= ownType;
+    if (scope.lookupPolicy?.deferParentActivation && !options.preservePosition)
+      position = undefined;
     id = scope.lookupPolicy?.parentScope ?? scope.parent;
   }
   return id === null ? ABSENT : { ...ABSENT, status: 'blocked' };

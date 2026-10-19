@@ -5,21 +5,19 @@
  * Per-file sorted array of `(range, scopeId)` entries, sorted by start
  * position ASC (`startLine`, then `startCol`). `atPosition(filePath, line,
  * col)` binary-searches for the last entry whose start ≤ (line, col), then
- * scans backward through the sorted prefix and returns the first entry
- * whose range contains the query position.
+ * searches a range-maximum tree for the rightmost entry that has not ended.
  *
  * **Why this works.** `ScopeTree`'s invariants (parent strictly contains
  * child; siblings don't overlap) guarantee that the scopes containing a
- * given point form an **ancestor chain**. When scanning backward through
- * entries sorted by start position ASC, the first scope we find that
- * contains the query is the innermost one — any deeper-starting scope
- * that also contained the query would appear *later* in the sorted array,
- * but we're only scanning entries with start ≤ query, so anything later
- * necessarily starts after the query and can't contain it.
+ * given point form an **ancestor chain**. Among entries whose start is at or
+ * before the query, the last containing entry is innermost: a deeper-starting
+ * scope would appear later in the sorted array. The maximum-end tree finds
+ * that last match without visiting completed scopes individually.
  *
- * Expected complexity: `O(log N_file + D)` where `D` is the lexical depth
- * at the query position (typically ≤ 10). Worst-case degrades to `O(N_file)`
- * only under pathological inputs (many scopes starting at the same line).
+ * The maximum end position lets a query skip an entire interval of completed
+ * scopes at once, including completed nested scopes. Queries take
+ * `O(log N_file)`; the auxiliary tree takes linear space and construction time
+ * after sorting. Repeated outer reads never rescan all preceding siblings.
  *
  * **Line/column conventions.** Matches `Range` in `types.ts`: lines are
  * 1-based, columns are 0-based. Ranges are **inclusive on both ends** —
@@ -45,9 +43,8 @@ export interface PositionIndex {
    * contained by **both**. The innermost-wins tie-break rule applies as
    * usual: since neither is nested inside the other, the one that
    * **starts latest** wins, i.e. the **right** sibling. The mechanism
-   * is the backward scan through the start-position-sorted array (see
-   * `findLastStartLteIndex` below) — both siblings land before the
-   * upper-bound cursor, and the right sibling is scanned first. Queries at non-boundary positions between them naturally
+   * is the rightmost match in the start-position-sorted array — both siblings
+   * land before the upper-bound cursor, and the right sibling wins. Queries at non-boundary positions between them naturally
    * fall to the unique containing scope.
    */
   atPosition(filePath: string, line: number, col: number): ScopeId | undefined;
@@ -77,11 +74,13 @@ export function buildPositionIndex(scopes: readonly Scope[]): PositionIndex {
     bucket.push({ id: scope.id, range: scope.range });
   }
 
-  for (const bucket of entriesByFile.values()) {
+  const files = new Map<string, FileIndex>();
+  for (const [filePath, bucket] of entriesByFile) {
     bucket.sort(compareEntry);
+    files.set(filePath, { entries: bucket, maximumEnds: buildEndIndex(bucket) });
   }
 
-  return wrapIndex(entriesByFile, seen.size);
+  return wrapIndex(files, seen.size);
 }
 
 // ─── Internals ──────────────────────────────────────────────────────────────
@@ -91,11 +90,29 @@ interface Entry {
   readonly range: Range;
 }
 
+interface FileIndex {
+  readonly entries: readonly Entry[];
+  readonly maximumEnds: readonly Range[];
+}
+
+/** Each tree node stores the latest end in its contiguous entry interval. */
+function buildEndIndex(entries: readonly Entry[]): Range[] {
+  const maximumEnds: Range[] = [];
+  const build = (node: number, first: number, last: number): Range => {
+    if (first === last) return (maximumEnds[node] = entries[first]!.range);
+    const middle = (first + last) >>> 1;
+    const left = build(node * 2, first, middle);
+    const right = build(node * 2 + 1, middle + 1, last);
+    return (maximumEnds[node] = endIsAtOrAfter(left, right.endLine, right.endCol) ? left : right);
+  };
+  build(1, 0, entries.length - 1);
+  return maximumEnds;
+}
+
 /**
  * Sort by start position ASC, breaking ties by end position DESC so that
  * larger (outer) scopes appear before their smaller (inner) co-starting
- * siblings in the array. Makes the backward-scan contract crisp: the
- * first containing hit from the end of the scanned prefix is the
+ * siblings in the array. The rightmost containing entry is the
  * innermost scope.
  */
 function compareEntry(a: Entry, b: Entry): number {
@@ -140,27 +157,39 @@ function findLastStartLteIndex(arr: readonly Entry[], line: number, col: number)
   return lo - 1;
 }
 
-function wrapIndex(entriesByFile: Map<string, Entry[]>, size: number): PositionIndex {
+function findLastContainingEntry(
+  file: FileIndex,
+  upper: number,
+  line: number,
+  col: number,
+  node = 1,
+  first = 0,
+  last = file.entries.length - 1,
+): number {
+  if (first > upper || !endIsAtOrAfter(file.maximumEnds[node]!, line, col)) return -1;
+  if (first === last) return first;
+  const middle = (first + last) >>> 1;
+  if (upper > middle) {
+    const right = findLastContainingEntry(file, upper, line, col, node * 2 + 1, middle + 1, last);
+    if (right >= 0) return right;
+  }
+  return findLastContainingEntry(file, upper, line, col, node * 2, first, middle);
+}
+
+function wrapIndex(files: ReadonlyMap<string, FileIndex>, size: number): PositionIndex {
   return {
     get size() {
       return size;
     },
     atPosition(filePath: string, line: number, col: number): ScopeId | undefined {
-      const bucket = entriesByFile.get(filePath);
-      if (bucket === undefined || bucket.length === 0) return undefined;
+      const file = files.get(filePath);
+      if (file === undefined) return undefined;
 
-      const endIdx = findLastStartLteIndex(bucket, line, col);
+      const endIdx = findLastStartLteIndex(file.entries, line, col);
       if (endIdx < 0) return undefined;
 
-      // Scan backward; first containing hit is innermost (see file header).
-      for (let i = endIdx; i >= 0; i--) {
-        const entry = bucket[i]!;
-        if (endIsAtOrAfter(entry.range, line, col)) {
-          // `startIsAtOrBefore` is guaranteed true by the binary search.
-          return entry.id;
-        }
-      }
-      return undefined;
+      const match = findLastContainingEntry(file, endIdx, line, col);
+      return match < 0 ? undefined : file.entries[match]!.id;
     },
   };
 }
