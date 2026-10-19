@@ -356,5 +356,8 @@ export function lookupLexicalName(
       position = undefined;
     id = scope.lookupPolicy?.parentScope ?? scope.parent;
   }
-  return id === null ? ABSENT : { ...ABSENT, status: 'blocked' };
+  // A write to an undeclared name declares nothing, but it still carries the
+  // value's type to reads inside the writing scope.
+  const carried = carriedConstructor === undefined ? {} : { typeBinding: carriedConstructor };
+  return id === null ? { ...ABSENT, ...carried } : { ...ABSENT, ...carried, status: 'blocked' };
 }

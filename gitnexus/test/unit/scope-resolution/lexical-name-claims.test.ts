@@ -120,9 +120,12 @@ describe('lexical name ownership', () => {
     const inner = scope('fn', 'module', { lexicalNames: new Set(['helper']) });
     expect(findCallableBindingInScope('fn', 'helper', indexes(inner))).toBeUndefined();
   });
-  it.each(['assignment-inferred', 'constructor-inferred'] as const)(
+  it.each([
+    ['assignment-inferred', undefined],
+    ['constructor-inferred', 'other'],
+  ] as const)(
     'treats %s reassignment as a read of the outer binding only with complete claims',
-    (source) => {
+    (source, carried) => {
       const outer = scope('module', null, { bindings: new Map([['helper', [binding]]]) });
       const inner = scope('fn', outer.id, {
         nameClaims: [],
@@ -131,6 +134,8 @@ describe('lexical name ownership', () => {
       expect(lexical(inner, outer, 5).scope?.id).toBe(inner.id);
       const complete = { ...inner, lookupPolicy: { nameClaimsComplete: true } };
       expect(lexical(complete, outer, 5).bindings).toEqual([binding]);
+      // Only a constructor fact describes the value the write stores.
+      expect(lexical(complete, outer, 5).typeBinding?.rawName).toBe(carried);
       const parameter = {
         ...complete,
         typeBindings: new Map<string, TypeRef>([
@@ -296,16 +301,23 @@ describe('lexical name ownership', () => {
     expect(selected.bindings).toEqual([binding]);
     expect(selected.typeBinding).toBeUndefined();
   });
-  it('does not invent a binding when a complete scope only writes an absent name', () => {
+  it('does not invent a binding for a write to an absent name, but keeps its type', () => {
     const inner = scope('fn', 'module', {
       lookupPolicy: { nameClaimsComplete: true },
       typeBindings: new Map([
         ['helper', { rawName: 'User', source: 'constructor-inferred', declaredAtScope: 'fn' }],
       ]),
     });
-    const selected = lexical(inner, scope('module', null), 6);
+    const outer = scope('module', null);
+    const selected = lexical(inner, outer, 6);
     expect(selected.status).toBe('absent');
-    expect(selected.typeBinding).toBeUndefined();
+    expect(selected.bindings).toEqual([]);
+    expect(selected.typeBinding?.rawName).toBe('User');
+    // `function init() { client = new ApiClient(); client.connect(); }` keeps
+    // its receiver type although no scope declares `client`.
+    expect(findReceiverTypeBinding(inner.id, 'helper', indexes(inner, outer))?.rawName).toBe(
+      'User',
+    );
   });
   it('preserves source-position write identity only when explicitly requested', () => {
     const imported: ImportEdge = {
@@ -342,6 +354,30 @@ describe('lexical name ownership', () => {
     });
     expect(write.scope).toBe(outer);
     expect(write.bindings).toEqual([importedBinding]);
+  });
+  it('keeps the write position across a module redirect only when requested', () => {
+    const declared: BindingRef = { def: target, origin: 'local', declarationRange: at(6) };
+    const outer = scope('module', null, {
+      bindings: new Map([['helper', [declared]]]),
+      nameClaims: [{ name: 'helper', kind: 'binding', range: at(6), availableFrom: at(7) }],
+    });
+    const inner = scope('fn', outer.id, {
+      lookupPolicy: { deferParentActivation: true },
+      nameClaims: [
+        { name: 'helper', kind: 'binding', range: at(8), availableFrom: at(9), inactive: 'module' },
+      ],
+    });
+    const sources = {
+      scopes: { getScope: (id: string) => [inner, outer].find((entry) => entry.id === id) },
+    };
+    const deferred = lookupLexicalName(inner.id, 'helper', sources, { position: at(5) });
+    expect(deferred.status).toBe('resolved');
+    expect(deferred.bindings).toEqual([declared]);
+    const write = lookupLexicalName(inner.id, 'helper', sources, {
+      position: at(5),
+      preservePosition: true,
+    });
+    expect(write.status).toBe('blocked');
   });
   it('joins a hoisted return annotation to the selected declaration anchor', () => {
     const method: SymbolDefinition = {
