@@ -1,1 +1,4 @@
-{"name":"@repo/http","exports":"./src/index.ts"}
+{
+  "name": "@repo/http",
+  "exports": "./src/index.ts"
+}

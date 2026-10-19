@@ -70,7 +70,7 @@ describe('Base-URL wrapper consumer FETCHES edge extraction', () => {
 });
 
 describe('Fetch wrapper lexical and project target identity', () => {
-  it('resolves relative, alias, workspace, barrel, overload and multi-declarator targets while rejecting shadowed and ambiguous names', async () => {
+  it('resolves relative, alias, workspace, barrel, overload, multi-declarator, HOC, CommonJS and package-fetch targets while rejecting shadowed and ambiguous names', async () => {
     const result = await runPipelineFromRepo(
       path.join(FIXTURES, 'fetch-wrapper-target-identity'),
       () => {},
@@ -80,14 +80,18 @@ describe('Fetch wrapper lexical and project target identity', () => {
       .map((edge) => `${edge.sourceFilePath} -> ${edge.target}`)
       .sort();
     expect(edges).toEqual([
+      'lib/keys.ts -> /api/key',
       'lib/overloaded.ts -> /api/overload-local',
       'web/alias.ts -> /api/alias',
       'web/alias.ts -> /api/forwarded',
       'web/barrel.ts -> /api/barrel',
       'web/barrel.ts -> /api/barrel-imported',
       'web/barrel.ts -> /api/barrel-star',
+      'web/cjs.js -> /api/cjs',
+      'web/hoc.ts -> /api/hoc',
       'web/multi.ts -> /api/multi',
       'web/nested.ts -> /api/nested',
+      'web/node.ts -> /api/node',
       'web/overloaded.ts -> /api/overload-import',
       'web/relative.ts -> /api/relative',
       'web/unresolved.ts -> /api/unique',

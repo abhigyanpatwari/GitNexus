@@ -7,6 +7,7 @@ import {
   fetchWrapperFacts,
 } from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
 
+import { buildFetchWrapperIndex } from '../../src/core/ingestion/route-extractors/fetch-wrapper-index.js';
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
 import {
   typescriptProvider,
@@ -288,6 +289,103 @@ for (const [language, grammar] of [
       expect(facts).toMatchObject({ seed: wraps, forwardsUrl: wraps });
       expect(facts?.bindingId).toBe(context.bindings.bindingId(nameNode));
     });
+
+    it.each([
+      ['a hook callback', 'const load = useCallback((url) => fetch(url), []); load("/api/x");'],
+      ['a curried wrapper', 'const load = wrap(other((url) => fetch(url))); load("/api/x");'],
+    ])('follows the callable inside %s', (_shape, source) => {
+      const { tree, context } = analyze(source);
+      const declaration = tree.rootNode.firstNamedChild!;
+      const nameNode = declaration.descendantsOfType('identifier')[0];
+      const facts = context.facts(declaration, nameNode);
+      expect(facts).toMatchObject({ seed: true, forwardsUrl: true });
+      expect(facts?.bindingId).toBe(context.bindings.bindingId(nameNode));
+      expect(context.calls()).toMatchObject([
+        { target: { kind: 'binding', bindingId: facts?.bindingId } },
+      ]);
+    });
+
+    it.each([
+      ['an object-literal key', 'const api = { request: (url) => request(url) };', 'pair'],
+      ['a class method name', 'class Api { request(url) { return url; } }', 'method_definition'],
+    ])('keeps %s out of lexical binding identity', (_shape, other, nodeType) => {
+      const { tree, parsedFile, context } = analyze(
+        `export function request(url) { return fetch(url); }\n${other}\nrequest("/api/x");`,
+      );
+      const wrapper = tree.rootNode.descendantsOfType('function_declaration')[0];
+      const owner = tree.rootNode.descendantsOfType(nodeType)[0];
+      const key = owner.childForFieldName('key') ?? owner.childForFieldName('name')!;
+      const facts = [context.facts(wrapper)!, context.facts(owner, key)!];
+      expect(facts[1]).toMatchObject({ moduleScope: false, exportedNames: [] });
+      expect(facts[1].bindingId).toBeUndefined();
+      const index = buildFetchWrapperIndex(
+        facts.map((fact) => ({ filePath: parsedFile.filePath, functionName: 'request', ...fact })),
+      );
+      expect(context.calls().map((call) => index.isWrapperCall(call))).toEqual([true]);
+    });
+
+    it.each([
+      [
+        'object, member and nested member forms',
+        'function request(url) { return fetch(url); }\nmodule.exports = { request, send: request };\nexports.other = request;\nmodule.exports.third = request;',
+        ['request', 'send', 'other', 'third'],
+      ],
+      [
+        'a whole-module export',
+        'function request(url) { return fetch(url); }\nmodule.exports = request;',
+        ['default'],
+      ],
+      [
+        'a shadowed module object',
+        'function request(url) { return fetch(url); }\nfunction install(module) { module.exports = { request }; }',
+        [],
+      ],
+    ])('records CommonJS exports of a declaration: %s', (_shape, source, names) => {
+      const { tree, context } = analyze(source);
+      expect(context.facts(tree.rootNode.firstNamedChild!)?.exportedNames.sort()).toEqual(
+        [...names].sort(),
+      );
+    });
+
+    it('records a function defined inline in a CommonJS export object', () => {
+      const { tree, context } = analyze('module.exports = { inline: (url) => fetch(url) };');
+      const pair = tree.rootNode.descendantsOfType('pair')[0];
+      expect(context.facts(pair, pair.childForFieldName('key')!)).toMatchObject({
+        moduleScope: true,
+        exportedNames: ['inline'],
+        seed: true,
+      });
+    });
+
+    it.each([
+      ['a default node-fetch import', 'import fetch from "node-fetch";', 'fetch', true],
+      ['a named undici fetch', 'import { fetch as get } from "undici";', 'get', true],
+      ['a required cross-fetch module', 'const nf = require("cross-fetch");', 'nf', true],
+      [
+        'a whatwg-fetch member',
+        'import { fetch as polyfill } from "whatwg-fetch";',
+        'polyfill',
+        true,
+      ],
+      ['a local module named fetch', 'import fetch from "./local-fetch";', 'fetch', false],
+      [
+        'another member of a fetch package',
+        'import { Headers as fetch } from "node-fetch";',
+        'fetch',
+        false,
+      ],
+    ])(
+      'treats %s as fetch evidence only for known fetch exports',
+      (_shape, header, local, wraps) => {
+        const { tree, context } = analyze(
+          `${header}\nfunction load(url) { return ${local}(url); }`,
+        );
+        expect(context.facts(tree.rootNode.lastNamedChild!)).toMatchObject({
+          seed: wraps,
+          forwardsUrl: wraps,
+        });
+      },
+    );
 
     it('keeps distinct declarations even when a binding is shared', () => {
       const { tree, context } = analyze(

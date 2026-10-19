@@ -1,1 +1,1 @@
-{"compilerOptions":{"baseUrl":".","paths":{"@http":["lib/http.ts"]}}}
+{ "compilerOptions": { "baseUrl": ".", "paths": { "@http": ["lib/http.ts"] } } }

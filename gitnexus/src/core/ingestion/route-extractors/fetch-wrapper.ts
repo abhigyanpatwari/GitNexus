@@ -96,9 +96,18 @@ function storedName(node: Node, parents: ReadonlyMap<number, Node>): Node | null
     return parameterPattern(parent);
   return null;
 }
+/** Fetch implementations imported from packages, by module specifier and export name.
+ * A namespace or `require` value is recorded under the specifier itself. */
+const FETCH_EXPORTS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['node-fetch', new Set(['default', 'node-fetch'])],
+  ['cross-fetch', new Set(['default', 'fetch', 'cross-fetch'])],
+  ['isomorphic-fetch', new Set(['default', 'isomorphic-fetch'])],
+  ['whatwg-fetch', new Set(['fetch'])],
+  ['undici', new Set(['fetch'])],
+]);
+
 interface Region {
   node: Node;
-  references: Set<string>;
   edges: Set<Region>;
   calls: Node[];
 }
@@ -113,7 +122,9 @@ export function createFetchWrapperContext(
   const filePath = parsedFile.filePath;
   const imports = new Map<string, CalleeTarget>();
   for (const imported of parsedFile.parsedImports) {
-    if (!('localName' in imported) || !('importedName' in imported)) continue;
+    // `export { x } from` declares no local binding; reexports() reads it directly.
+    if (!('localName' in imported) || !('importedName' in imported) || imported.kind === 'reexport')
+      continue;
     const id = bindingKey(imported.declaredAtScope ?? parsedFile.moduleScope, imported.localName);
     const target: CalleeTarget =
       'typeOnly' in imported && imported.typeOnly
@@ -145,8 +156,15 @@ export function createFetchWrapperContext(
   const platformFetch = (expression: Node | null): boolean => {
     const node = unwrap(expression);
     if (!node) return false;
-    if (node.type === 'identifier')
-      return node.text === 'fetch' && bindings.isGlobal(node, 'fetch');
+    if (node.type === 'identifier') {
+      if (node.text === 'fetch' && bindings.isGlobal(node, 'fetch')) return true;
+      const id = stableBinding(node);
+      const imported = id && !invalid.has(id) ? imports.get(id) : undefined;
+      return (
+        imported?.kind === 'import' &&
+        (FETCH_EXPORTS.get(imported.specifier)?.has(imported.importedName) ?? false)
+      );
+    }
     if (node.type !== 'member_expression' || node.childForFieldName('property')?.text !== 'fetch')
       return false;
     const root = node.childForFieldName('object');
@@ -183,13 +201,14 @@ export function createFetchWrapperContext(
   const initialized = new Map<string, number>();
   const parameters = new Set<string>();
   const exports = new Map<string, Set<string>>();
+  const boundNames = new Set<string>();
+  const references: { node: Node; region: Region }[] = [];
   const allCalls: Node[] = [];
   // Native parent lookup descends from the tree root; retain traversal edges once.
   const parents = new Map<number, Node>();
   const region = (node: Node): Region => {
     const result = {
       node,
-      references: new Set<string>(),
       edges: new Set<Region>(),
       calls: [] as Node[],
     };
@@ -199,6 +218,7 @@ export function createFetchWrapperContext(
   const bindRegion = (name: Node | null, value: Region) => {
     if (!name || !['identifier', 'type_identifier'].includes(name.type)) return;
     declarationNodes.add(name.id);
+    boundNames.add(name.text);
     const id = stableBinding(name, false);
     if (!id) return;
     const bucket = boundRegions.get(id);
@@ -234,6 +254,49 @@ export function createFetchWrapperContext(
     let names = exports.get(id);
     if (!names) exports.set(id, (names = new Set()));
     names.add(name);
+  };
+  // Values exported inline by CommonJS assignments; resolved to callables after the walk.
+  const exportedValues: { value: Node; name: string }[] = [];
+  const exportValue = (value: Node | null, name: string) => {
+    const node = unwrap(value);
+    if (node?.type === 'identifier' || node?.type === 'shorthand_property_identifier')
+      exported(node, name);
+    else if (node) exportedValues.push({ value: node, name });
+  };
+  const commonJsGlobal = (node: Node | null, name: string) =>
+    node?.type === 'identifier' && node.text === name && bindings.isGlobal(node, name);
+  const moduleExports = (node: Node | null) =>
+    node?.type === 'member_expression' &&
+    node.childForFieldName('property')?.text === 'exports' &&
+    commonJsGlobal(node.childForFieldName('object'), 'module');
+  // `module.exports = …`, `module.exports.name = …` and `exports.name = …`.
+  const commonJsExport = (left: Node | null, right: Node | null) => {
+    if (left?.type !== 'member_expression') return;
+    if (moduleExports(left)) {
+      const value = unwrap(right);
+      if (value?.type !== 'object') return exportValue(value, 'default');
+      for (const member of value.namedChildren) {
+        if (member.type === 'shorthand_property_identifier') exported(member, member.text);
+        else if (member.type === 'pair') {
+          const key = member.childForFieldName('key');
+          const name =
+            key?.type === 'property_identifier'
+              ? key.text
+              : key?.type === 'string'
+                ? key.namedChildren.find((child) => child.type === 'string_fragment')?.text
+                : undefined;
+          if (name) exportValue(member.childForFieldName('value'), name);
+        }
+      }
+      return;
+    }
+    const object = left.childForFieldName('object');
+    const property = left.childForFieldName('property');
+    if (
+      property?.type === 'property_identifier' &&
+      (commonJsGlobal(object, 'exports') || moduleExports(object))
+    )
+      exportValue(right, property.text);
   };
   const pending: { node: Node; parent?: Node; region: Region; classRegion?: Region }[] = [
     { node: tree.rootNode, region: region(tree.rootNode) },
@@ -323,10 +386,10 @@ export function createFetchWrapperContext(
     else if (node.type === 'assignment_pattern')
       initialize(node.childForFieldName('left'), node.childForFieldName('right'), true);
     else if (node.type === 'catch_clause') markPattern(node.childForFieldName('parameter'));
-    else if (
-      node.type === 'assignment_expression' ||
-      node.type === 'augmented_assignment_expression'
-    )
+    else if (node.type === 'assignment_expression') {
+      invalidate(node.childForFieldName('left'));
+      commonJsExport(node.childForFieldName('left'), node.childForFieldName('right'));
+    } else if (node.type === 'augmented_assignment_expression')
       invalidate(node.childForFieldName('left'));
     else if (node.type === 'update_expression') invalidate(node.childForFieldName('argument'));
     else if (node.type === 'for_in_statement') {
@@ -357,10 +420,8 @@ export function createFetchWrapperContext(
     if (
       (node.type === 'identifier' || node.type === 'shorthand_property_identifier') &&
       !declarationNodes.has(node.id)
-    ) {
-      const id = stableBinding(node);
-      if (id) active.references.add(id);
-    }
+    )
+      references.push({ node, region: active });
     if (node.type === 'call_expression' && !node.hasError) {
       active.calls.push(node);
       allCalls.push(node);
@@ -375,12 +436,15 @@ export function createFetchWrapperContext(
   }
   for (const [id, count] of initialized) if (count > 1) invalid.add(id);
   for (const id of invalid) aliases.delete(id);
-  for (const value of regions)
-    for (const reference of value.references) {
-      if (invalid.has(reference)) continue;
-      const targets = boundRegions.get(reference);
-      if (targets?.length === 1) value.edges.add(targets[0]);
-    }
+  // Only references naming a bound callable or class can add an edge, so other
+  // identifiers skip the lexical lookup.
+  for (const { node, region: owner } of references) {
+    if (!boundNames.has(node.text)) continue;
+    const id = stableBinding(node);
+    if (!id || invalid.has(id)) continue;
+    const targets = boundRegions.get(id);
+    if (targets?.length === 1) owner.edges.add(targets[0]);
+  }
   const firstParameter = (fn: Node): string | undefined => {
     const first =
       fn.childForFieldName('parameter') ?? firstNamed(fn.childForFieldName('parameters'));
@@ -418,14 +482,25 @@ export function createFetchWrapperContext(
         : definition;
     while (node && !callableRegions.has(node.id)) {
       node = unwrap(
-        node.childForFieldName('declaration') ??
-          node.childForFieldName('value') ??
-          node.namedChildren.find((child) => child.type === 'variable_declarator') ??
-          null,
+        node.type === 'call_expression'
+          ? // A higher-order wrapper (`useCallback((url) => …)`) defines its callable argument.
+            (node.childForFieldName('arguments')?.namedChildren.find((child) => {
+              const value = unwrap(child);
+              return !!value && (callableRegions.has(value.id) || value.type === 'call_expression');
+            }) ?? null)
+          : (node.childForFieldName('declaration') ??
+              node.childForFieldName('value') ??
+              node.namedChildren.find((child) => child.type === 'variable_declarator') ??
+              null),
       );
     }
     return node ?? undefined;
   };
+  const inlineExports = new Map<number, string[]>();
+  for (const { value, name } of exportedValues) {
+    const fn = findFunction(value);
+    if (fn) inlineExports.set(fn.id, [...(inlineExports.get(fn.id) ?? []), name]);
+  }
   const contains = (outer: Node, inner: Node) =>
     outer.startIndex <= inner.startIndex && inner.endIndex <= outer.endIndex;
   interface CallEvidence {
@@ -488,8 +563,12 @@ export function createFetchWrapperContext(
     if (!fn) return undefined;
     const cached = factsCache.get(fn.id);
     if (cached) return cached;
-    const name = nameNode ?? storedName(fn, parents) ?? fn.childForFieldName('name');
+    // Only a binding identifier names a lexical binding; object keys and
+    // method names are properties.
+    const candidate = nameNode ?? storedName(fn, parents) ?? fn.childForFieldName('name');
+    const name = candidate?.type === 'identifier' ? candidate : undefined;
     const id = name ? stableBinding(name, false) : undefined;
+    const inline = inlineExports.get(fn.id) ?? [];
     const url = firstParameter(fn);
     const root = callableRegions.get(fn.id)!;
     const seed = summarize(root).seed;
@@ -529,9 +608,15 @@ export function createFetchWrapperContext(
       definitionId: `${filePath}:${fn.startPosition.row + lineOffset + 1}:${fn.startPosition.column}:${fn.endPosition.row + lineOffset + 1}:${fn.endPosition.column}`,
       ...(id ? { bindingId: id } : {}),
       moduleScope:
-        defaultExport || (!!name && id === bindingKey(parsedFile.moduleScope, name.text)),
+        defaultExport ||
+        inline.length > 0 ||
+        (!!name && id === bindingKey(parsedFile.moduleScope, name.text)),
       exportedNames: [
-        ...new Set([...(id ? (exports.get(id) ?? []) : []), ...(defaultExport ? ['default'] : [])]),
+        ...new Set([
+          ...(id ? (exports.get(id) ?? []) : []),
+          ...inline,
+          ...(defaultExport ? ['default'] : []),
+        ]),
       ],
       seed,
       forwardsUrl,
