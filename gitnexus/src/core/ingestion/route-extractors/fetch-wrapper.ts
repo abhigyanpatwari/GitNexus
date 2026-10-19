@@ -36,10 +36,20 @@ export interface FetchWrapperFacts {
   forwardsUrl: boolean;
   forwardsTo: ForwardedCallee[];
 }
+/** A module export relevant to barrel resolution. */
+export interface FetchWrapperReexport {
+  filePath: string;
+  /** Exported name, or `*` for `export * from`. */
+  exportedName: string;
+  /** The forwarded export. Absent for a local export, recorded only beside an
+   * `export *` because only there can it shadow a forwarded name. */
+  from?: { specifier: string; importedName: string };
+}
 export interface FetchWrapperContext {
   bindings: LexicalBindings;
   facts(definition: Node, nameNode?: Node): FetchWrapperFacts | undefined;
   calls(): FetchWrapperCall[];
+  reexports(): FetchWrapperReexport[];
 }
 
 /** A repo-relative module path without its extension or `/index`. */
@@ -260,6 +270,9 @@ export function createFetchWrapperContext(
     )
       continue;
     const children = node.namedChildren;
+    // A bodyless overload or ambient signature declares no separate callable:
+    // its implementation alone owns the binding.
+    if (LEXICAL_FUNCTION_TYPES.has(node.type) && !node.childForFieldName('body')) continue;
     if (LEXICAL_FUNCTION_TYPES.has(node.type)) {
       const callable = region(node);
       callableRegions.set(node.id, callable);
@@ -414,8 +427,14 @@ export function createFetchWrapperContext(
     argumentBindings.set(argument.id, result);
     return result;
   };
-  const findFunction = (definition: Node): Node | undefined => {
-    let node: Node | null = definition;
+  const findFunction = (definition: Node, nameNode?: Node): Node | undefined => {
+    // A declaration list can hold several declarators; follow the captured one.
+    const declarator = nameNode && parents.get(nameNode.id);
+    let node: Node | null =
+      declarator?.type === 'variable_declarator' &&
+      declarator.childForFieldName('name')?.id === nameNode!.id
+        ? declarator
+        : definition;
     while (node && !callableRegions.has(node.id)) {
       node = unwrap(
         node.childForFieldName('declaration') ??
@@ -486,7 +505,7 @@ export function createFetchWrapperContext(
   };
   const factsCache = new Map<number, FetchWrapperFacts>();
   const facts: FetchWrapperContext['facts'] = (definition, nameNode) => {
-    const fn = findFunction(definition);
+    const fn = findFunction(definition, nameNode);
     if (!fn) return undefined;
     const cached = factsCache.get(fn.id);
     if (cached) return cached;
@@ -544,6 +563,39 @@ export function createFetchWrapperContext(
   return {
     bindings,
     facts,
+    reexports: () => {
+      const result: FetchWrapperReexport[] = [];
+      for (const imported of parsedFile.parsedImports) {
+        if ('typeOnly' in imported && imported.typeOnly) continue;
+        if (imported.kind === 'reexport')
+          result.push({
+            filePath,
+            exportedName: imported.localName,
+            from: { specifier: imported.targetRaw, importedName: imported.importedName },
+          });
+        else if (imported.kind === 'wildcard')
+          result.push({
+            filePath,
+            exportedName: '*',
+            from: { specifier: imported.targetRaw, importedName: '*' },
+          });
+      }
+      const star = result.some((reexport) => reexport.exportedName === '*');
+      for (const [id, names] of exports) {
+        const target = imports.get(id);
+        for (const exportedName of names) {
+          // `import { x } from './y'; export { x };` forwards the imported binding.
+          if (target?.kind === 'import')
+            result.push({
+              filePath,
+              exportedName,
+              from: { specifier: target.specifier, importedName: target.importedName },
+            });
+          else if (star) result.push({ filePath, exportedName });
+        }
+      }
+      return result;
+    },
     calls: () => {
       const calls: FetchWrapperCall[] = [];
       for (const call of allCalls) {

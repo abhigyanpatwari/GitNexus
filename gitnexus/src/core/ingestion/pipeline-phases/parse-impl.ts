@@ -16,7 +16,7 @@
  */
 
 import type { LanguageProvider } from '../language-provider.js';
-import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
+import type { FetchWrapperCall, FetchWrapperReexport } from '../route-extractors/fetch-wrapper.js';
 import { resolveFetchWrapperTargets } from '../route-extractors/fetch-wrapper-index.js';
 import {
   BindingAccumulator,
@@ -756,6 +756,7 @@ export async function runChunkedParseAndResolve(
   const allFetchCalls: ExtractedFetchCall[] = [];
   let allFetchWrapperDefs: FetchWrapperDef[] = [];
   let allFetchWrapperCalls: FetchWrapperCall[] = [];
+  const allFetchWrapperReexports: FetchWrapperReexport[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allRouteFacts: { filePath: string; facts: unknown; routePosition: number }[] = [];
@@ -985,6 +986,8 @@ export async function runChunkedParseAndResolve(
           for (const item of chunkWorkerData.fetchCalls) allFetchCalls.push(item);
         }
         for (const item of chunkWorkerData.fetchWrapperCalls ?? []) allFetchWrapperCalls.push(item);
+        for (const item of chunkWorkerData.fetchWrapperReexports ?? [])
+          allFetchWrapperReexports.push(item);
         if (chunkWorkerData.fetchWrapperDefs?.length) {
           for (const item of chunkWorkerData.fetchWrapperDefs) allFetchWrapperDefs.push(item);
         }
@@ -1567,6 +1570,7 @@ export async function runChunkedParseAndResolve(
     ...allRouteFacts.map((file) => file.filePath),
     ...allFetchWrapperDefs.map((definition) => definition.filePath),
     ...allFetchWrapperCalls.map((call) => call.filePath),
+    ...allFetchWrapperReexports.map((reexport) => reexport.filePath),
   ]);
   for (const filePath of resolutionFilePaths) {
     const language = getLanguageFromFilename(filePath);
@@ -1609,6 +1613,7 @@ export async function runChunkedParseAndResolve(
     allFetchWrapperDefs,
     allFetchWrapperCalls,
     resolveRouteModuleTargets,
+    allFetchWrapperReexports,
   );
   allFetchWrapperDefs = resolvedFetchWrappers.definitions;
   allFetchWrapperCalls = resolvedFetchWrappers.calls;

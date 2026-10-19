@@ -1,6 +1,7 @@
 import {
   type FetchWrapperCall,
   type FetchWrapperFacts,
+  type FetchWrapperReexport,
 } from '../route-extractors/fetch-wrapper.js';
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
@@ -506,6 +507,7 @@ export interface ParseWorkerResult {
   fetchWrapperDefs: FetchWrapperDef[];
   /** URL-bearing candidates, kept separate from confirmed outward-call sinks. */
   fetchWrapperCalls?: FetchWrapperCall[];
+  fetchWrapperReexports?: FetchWrapperReexport[];
   decoratorRoutes: ExtractedDecoratorRoute[];
   /** JSON-safe per-file provider facts; relationships are resolved on every run. */
   routeFacts?: { filePath: string; facts: unknown; routePosition: number }[];
@@ -3238,6 +3240,10 @@ const processFileGroup = (
     if (parsedFile && provider.extractFetchWrapperCalls) {
       const candidates = provider.extractFetchWrapperCalls(tree, parsedFile, lineOffset);
       for (const candidate of candidates) (result.fetchWrapperCalls ??= []).push(candidate);
+    }
+    if (parsedFile && provider.extractFetchWrapperReexports) {
+      for (const reexport of provider.extractFetchWrapperReexports(tree, parsedFile, lineOffset))
+        (result.fetchWrapperReexports ??= []).push(reexport);
     }
 
     if (parsedFile && provider.extractRouteFacts) {

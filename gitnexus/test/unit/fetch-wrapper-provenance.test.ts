@@ -74,6 +74,18 @@ for (const [language, grammar] of [
       ],
       ['URL reassignment', 'function load(url) { url = "fixed"; fetch(url); }', true, false],
       [
+        'parenthesized alias reassignment',
+        'function load(url) { let send = globalThis.fetch; (send) = other; send(url); }',
+        false,
+        false,
+      ],
+      [
+        'parenthesized URL reassignment',
+        'function load(url) { (url) = "fixed"; fetch(url); }',
+        true,
+        false,
+      ],
+      [
         'unused recursive helper',
         'function load(url) { function helper() { fetch(url); helper(); } }',
         false,
@@ -247,6 +259,36 @@ for (const [language, grammar] of [
       expect(JSON.parse(JSON.stringify(facts))).toEqual(facts);
     });
 
+    it.each([
+      [
+        'after a non-callable initializer',
+        'const base = 0, request = (url) => fetch(url);',
+        'request',
+        true,
+      ],
+      [
+        'after another callable',
+        'const first = (value) => value, request = (url) => fetch(url);',
+        'request',
+        true,
+      ],
+      [
+        'for the first of several callables',
+        'const first = (value) => value, request = (url) => fetch(url);',
+        'first',
+        false,
+      ],
+    ])('selects the captured declarator %s', (_shape, source, name, wraps) => {
+      const { tree, context } = analyze(source);
+      const declaration = tree.rootNode.firstNamedChild!;
+      const nameNode = declaration
+        .descendantsOfType('identifier')
+        .find((node) => node.text === name)!;
+      const facts = context.facts(declaration, nameNode);
+      expect(facts).toMatchObject({ seed: wraps, forwardsUrl: wraps });
+      expect(facts?.bindingId).toBe(context.bindings.bindingId(nameNode));
+    });
+
     it('keeps distinct declarations even when a binding is shared', () => {
       const { tree, context } = analyze(
         'function request(url) { return fetch(url); } function request(url) { return custom(url); }',
@@ -378,3 +420,58 @@ it.each(['deep', 'deep-arrow', 'wide'] as const)(
     }
   },
 );
+
+describe.each([
+  ['TypeScript', TypeScript.typescript, 'source.ts'],
+  ['TSX', TypeScript.tsx, 'source.tsx'],
+] as const)('%s overload signatures and asserted writes', (_language, grammar, filePath) => {
+  const analyze = (source: string) => {
+    const parser = new Parser();
+    parser.setLanguage(grammar);
+    const tree = parser.parse(source);
+    const parsedFile = extractParsedFile(typescriptProvider, source, filePath, undefined, tree)!;
+    return { tree, context: createFetchWrapperContext(tree, parsedFile) };
+  };
+
+  it('associates bodyless overload signatures with their implementation', () => {
+    const { tree, context } = analyze(
+      'export function request(url: string): Promise<Response>;\nexport function request(url: URL): Promise<Response>;\nexport function request(url: any) { return fetch(url); }\nrequest("/api/x");',
+    );
+    const signatures = tree.rootNode.descendantsOfType('function_signature');
+    const implementation = tree.rootNode.descendantsOfType('function_declaration')[0];
+    expect(signatures.map((signature) => context.facts(signature))).toEqual([undefined, undefined]);
+    const facts = context.facts(implementation)!;
+    expect(facts).toMatchObject({ seed: true, forwardsUrl: true, exportedNames: ['request'] });
+    expect(context.calls()).toMatchObject([
+      { target: { kind: 'binding', bindingId: facts.bindingId } },
+    ]);
+  });
+
+  it('keeps a nested overloaded helper reachable through its one implementation', () => {
+    const { tree, context } = analyze(
+      'function load(url: string) { function helper(u: string): void; function helper(u: any) { fetch(u); } helper(url); }',
+    );
+    const facts = context.facts(tree.rootNode.firstNamedChild!)!;
+    expect(facts.seed).toBe(true);
+    expect(facts.forwardsTo).toMatchObject([{ callee: 'helper', target: { kind: 'binding' } }]);
+  });
+
+  it.each([
+    [
+      'an asserted alias write invalidates the alias',
+      'function load(url: string) { let send = globalThis.fetch; (send as unknown) = other; send(url); }',
+      false,
+    ],
+    [
+      'a non-null asserted alias write invalidates the alias',
+      'function load(url: string) { let send = globalThis.fetch; send! = other; send(url); }',
+      false,
+    ],
+  ])('%s', (_shape, source, wraps) => {
+    const { tree, context } = analyze(source);
+    expect(context.facts(tree.rootNode.firstNamedChild!)).toMatchObject({
+      seed: wraps,
+      forwardsUrl: wraps,
+    });
+  });
+});

@@ -1,5 +1,5 @@
 import type { FetchWrapperDef } from '../workers/parse-worker.js';
-import type { CalleeTarget, FetchWrapperCall } from './fetch-wrapper.js';
+import type { CalleeTarget, FetchWrapperCall, FetchWrapperReexport } from './fetch-wrapper.js';
 
 interface NameGroup {
   /** null means more than one distinct definition has this name. */
@@ -129,19 +129,73 @@ export function resolveFetchWrapperTargets(
   definitions: readonly FetchWrapperDef[],
   calls: readonly FetchWrapperCall[],
   resolveModuleTargets: (fromFile: string, specifier: string) => readonly string[],
+  reexports: readonly FetchWrapperReexport[] = [],
 ): { definitions: FetchWrapperDef[]; calls: FetchWrapperCall[] } {
   const modules = new Map<string, readonly string[]>();
-  const resolve = (filePath: string, target: CalleeTarget): CalleeTarget => {
-    if (target.kind !== 'import') return target;
-    const key = `${filePath}\0${target.specifier}`;
+  const moduleTargets = (filePath: string, specifier: string): readonly string[] => {
+    const key = `${filePath}\0${specifier}`;
     let targets = modules.get(key);
     if (targets === undefined) {
-      targets = resolveModuleTargets(filePath, target.specifier);
+      targets = resolveModuleTargets(filePath, specifier);
       modules.set(key, targets);
     }
+    return targets;
+  };
+  const declared = new Set<string>();
+  for (const definition of definitions)
+    if (definition.moduleScope)
+      for (const name of definition.exportedNames) declared.add(`${definition.filePath}\0${name}`);
+  const forwarders = new Map<string, FetchWrapperReexport[]>();
+  for (const reexport of reexports) {
+    const bucket = forwarders.get(reexport.filePath);
+    if (bucket) bucket.push(reexport);
+    else forwarders.set(reexport.filePath, [reexport]);
+  }
+  // Follow a barrel to the module declaring the export. Local and named exports
+  // shadow `export *`; star exports never carry `default`, and conflicting star
+  // exports leave the name unexported (ECMAScript ResolveExport).
+  const exporter = (
+    filePath: string,
+    name: string,
+    seen: Set<string>,
+  ): CalleeTarget | undefined => {
+    const key = `${filePath}\0${name}`;
+    if (declared.has(key)) return { kind: 'resolved-import', filePath, importedName: name };
+    if (seen.has(key)) return undefined;
+    seen.add(key);
+    const local = forwarders.get(filePath) ?? [];
+    const named = local.filter((reexport) => reexport.exportedName === name);
+    const candidates =
+      named.length > 0
+        ? named
+        : name === 'default'
+          ? []
+          : local.filter((r) => r.exportedName === '*');
+    const found = new Map<string, CalleeTarget>();
+    for (const { from } of candidates) {
+      // A local export that declares no wrapper shadows every forwarded name.
+      if (!from) return undefined;
+      const targets = moduleTargets(filePath, from.specifier);
+      if (targets.length !== 1) continue;
+      const importedName = from.importedName === '*' ? name : from.importedName;
+      const target = exporter(targets[0], importedName, seen);
+      if (target) found.set(JSON.stringify(target), target);
+    }
+    if (found.size > 1) return { kind: 'blocked' };
+    return found.values().next().value;
+  };
+  const resolve = (filePath: string, target: CalleeTarget): CalleeTarget => {
+    if (target.kind !== 'import') return target;
+    const targets = moduleTargets(filePath, target.specifier);
     if (targets.length === 0) return target;
     if (targets.length !== 1) return { kind: 'blocked' };
-    return { kind: 'resolved-import', filePath: targets[0], importedName: target.importedName };
+    return (
+      exporter(targets[0], target.importedName, new Set()) ?? {
+        kind: 'resolved-import',
+        filePath: targets[0],
+        importedName: target.importedName,
+      }
+    );
   };
   // Aggregates share facts with the parse cache. Keep its raw specifiers intact
   // so a warm parse resolves imports against the current project configuration.

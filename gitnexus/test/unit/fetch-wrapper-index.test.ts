@@ -6,6 +6,7 @@ import {
 import type {
   CalleeTarget,
   FetchWrapperCall,
+  FetchWrapperReexport,
 } from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
 import type { FetchWrapperDef } from '../../src/core/ingestion/workers/parse-worker.js';
 
@@ -302,5 +303,110 @@ describe('fetch wrapper import target resolution', () => {
       { kind: 'blocked' },
       { kind: 'binding', bindingId: 'local' },
     ]);
+  });
+});
+
+describe('fetch wrapper barrel resolution', () => {
+  const declares = (filePath: string, name: string) =>
+    definition(`${filePath}:${name}`, {
+      filePath,
+      functionName: name,
+      exportedNames: [name],
+      seed: true,
+    });
+  const forward = (
+    filePath: string,
+    exportedName: string,
+    specifier?: string,
+    importedName = exportedName,
+  ): FetchWrapperReexport => ({
+    filePath,
+    exportedName,
+    ...(specifier ? { from: { specifier, importedName } } : {}),
+  });
+  const resolveIn = (
+    reexports: FetchWrapperReexport[],
+    name = 'request',
+    defs = [declares('request.ts', 'request'), declares('other.ts', 'request')],
+  ) =>
+    resolveFetchWrapperTargets(
+      defs,
+      [call({ kind: 'import', specifier: '@pkg', importedName: name }, name)],
+      (fromFile, specifier) =>
+        specifier === '@pkg' ? ['index.ts'] : [specifier.replace(/^\.\//, '') + '.ts'],
+      reexports,
+    ).calls[0].target;
+  const at = (filePath: string, importedName = 'request') => ({
+    kind: 'resolved-import',
+    filePath,
+    importedName,
+  });
+
+  it.each([
+    ['a named re-export', [forward('index.ts', 'request', './request')], at('request.ts')],
+    [
+      'a renamed re-export',
+      [forward('index.ts', 'request', './request', 'request')],
+      at('request.ts'),
+    ],
+    ['a star re-export', [forward('index.ts', '*', './request', '*')], at('request.ts')],
+    [
+      'a chain of barrels',
+      [forward('index.ts', '*', './mid', '*'), forward('mid.ts', 'request', './request')],
+      at('request.ts'),
+    ],
+    [
+      'a named re-export shadowing a star export',
+      [forward('index.ts', 'request', './request'), forward('index.ts', '*', './other', '*')],
+      at('request.ts'),
+    ],
+    [
+      'two star exports reaching one declaration',
+      [
+        forward('index.ts', '*', './left', '*'),
+        forward('index.ts', '*', './right', '*'),
+        forward('left.ts', '*', './request', '*'),
+        forward('right.ts', '*', './request', '*'),
+      ],
+      at('request.ts'),
+    ],
+    [
+      'conflicting star exports',
+      [forward('index.ts', '*', './request', '*'), forward('index.ts', '*', './other', '*')],
+      { kind: 'blocked' },
+    ],
+    [
+      'a local export shadowing a star export',
+      [forward('index.ts', 'request'), forward('index.ts', '*', './request', '*')],
+      at('index.ts'),
+    ],
+    [
+      'a re-export cycle',
+      [forward('index.ts', '*', './loop', '*'), forward('loop.ts', '*', './index', '*')],
+      at('index.ts'),
+    ],
+  ])('resolves %s', (_shape, reexports, expected) => {
+    expect(resolveIn(reexports)).toEqual(expected);
+  });
+
+  it('never forwards default through a star export', () => {
+    expect(
+      resolveIn([forward('index.ts', '*', './request', '*')], 'default', [
+        declares('request.ts', 'default'),
+      ]),
+    ).toEqual(at('index.ts', 'default'));
+  });
+
+  it('classifies a call through a barrel as the declaring wrapper', () => {
+    const defs = [declares('request.ts', 'request')];
+    const resolved = resolveFetchWrapperTargets(
+      defs,
+      [call({ kind: 'import', specifier: '@pkg', importedName: 'request' })],
+      (_fromFile, specifier) => (specifier === '@pkg' ? ['index.ts'] : ['request.ts']),
+      [forward('index.ts', 'request', './request')],
+    );
+    expect(buildFetchWrapperIndex(resolved.definitions).isWrapperCall(resolved.calls[0])).toBe(
+      true,
+    );
   });
 });

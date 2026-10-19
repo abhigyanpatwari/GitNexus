@@ -441,6 +441,8 @@ const httpExtraction = {
     ),
   extractFetchWrapperCalls: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
     httpContext(tree, parsedFile, lineOffset).calls(),
+  extractFetchWrapperReexports: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    httpContext(tree, parsedFile, lineOffset).reexports(),
   extractFetchWrapperFacts: (
     definition: Parser.SyntaxNode,
     name: Parser.SyntaxNode | undefined,
