@@ -47,7 +47,6 @@ import {
   dartArityCompatibility,
 } from './dart/index.js';
 import { DART_BUILT_INS } from './dart/built-ins.js';
-import { preprocessDartExtensionTypes } from './dart/extension-type-preprocess.js';
 
 /**
  * Resolve the enclosing function from a `function_body` node by looking at its
@@ -123,7 +122,6 @@ export const dartProvider = defineLanguage({
     },
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: DART_QUERIES,
-  preprocessSource: preprocessDartExtensionTypes,
   typeConfig: dartConfig,
   exportChecker: dartExportChecker,
   importResolver: createImportResolver(dartImportConfig),
