@@ -192,6 +192,14 @@ if (prepare) {
     'corpora differ; comparison is invalid',
   );
   assert.deepEqual(after.manifest, before.manifest, 'corpus file identities differ');
+  // Parity evidence holds only for clean exports and for the checkout under review.
+  assert.equal(before.dirty, false, 'baseline export came from a dirty checkout');
+  assert.equal(after.dirty, false, 'candidate export came from a dirty checkout');
+  assert.equal(
+    after.revision,
+    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: SOURCE, encoding: 'utf8' }).trim(),
+    'candidate export does not come from the current checkout',
+  );
   const difference = multisetDifference(before.edges, after.edges);
   const report = {
     baselineRevision: before.revision,

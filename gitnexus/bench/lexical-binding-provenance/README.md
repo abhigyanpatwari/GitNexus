@@ -68,17 +68,17 @@ the historical module WeakMap from hiding index construction in the baseline.
 Correctness checks run before timing and on the final result. They and the
 fingerprints remain outside timing. Returning no facts cannot pass.
 
-| Arm | Sizes | Measured operation | Exact semantic guard |
-| --- | --- | --- | --- |
-| `position-index` | 2,000 / 4,000 / 8,000 | Build index, then N outer reads after N completed siblings | Every read returns root |
-| `position-deep-completed` | 2,000 / 4,000 / 8,000 | Build index, then N reads after N completed nested scopes | Every read returns root |
-| `spread-aliases` | 128 / 256 / 512 | Fresh framework extraction across N functions | N exact GET paths |
-| `completed-scopes` | 128 / 256 / 512 | Fresh extraction of N outer reads after N completed functions | N exact GET paths |
-| `wrapper-aliases` | 128 / 256 / 512 | Fresh wrapper context, all definition facts and call candidates | N seeds, URL carriers, exact call/path identities |
-| `nested-helpers` | 128 / 256 / 512 | All facts for N reachable sibling helpers and their outer function | N+1 seeds, one URL carrier |
-| `nested-helper-chain` | 32 / 64 / 128 | All facts for deeply nested reachable helpers | N+1 seeds, one URL carrier |
-| `reverse-chain` | 1,000 / 2,000 / 4,000 | Fresh classifier with seed last, then N decisions | Every chain node matches |
-| `name-collisions` | 1,000 / 2,000 / 4,000 | Fresh classifier with N same-name definitions, half negative | Exact bound decisions, unresolved name rejected, unique positive retained |
+| Arm                       | Sizes                 | Measured operation                                                 | Exact semantic guard                                                      |
+| ------------------------- | --------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------- |
+| `position-index`          | 2,000 / 4,000 / 8,000 | Build index, then N outer reads after N completed siblings         | Every read returns root                                                   |
+| `position-deep-completed` | 2,000 / 4,000 / 8,000 | Build index, then N reads after N completed nested scopes          | Every read returns root                                                   |
+| `spread-aliases`          | 128 / 256 / 512       | Fresh framework extraction across N functions                      | N exact GET paths                                                         |
+| `completed-scopes`        | 128 / 256 / 512       | Fresh extraction of N outer reads after N completed functions      | N exact GET paths                                                         |
+| `wrapper-aliases`         | 128 / 256 / 512       | Fresh wrapper context, all definition facts and call candidates    | N seeds, URL carriers, exact call/path identities                         |
+| `nested-helpers`          | 128 / 256 / 512       | All facts for N reachable sibling helpers and their outer function | N+1 seeds, one URL carrier                                                |
+| `nested-helper-chain`     | 32 / 64 / 128         | All facts for deeply nested reachable helpers                      | N+1 seeds, one URL carrier                                                |
+| `reverse-chain`           | 1,000 / 2,000 / 4,000 | Fresh classifier with seed last, then N decisions                  | Every chain node matches                                                  |
+| `name-collisions`         | 1,000 / 2,000 / 4,000 | Fresh classifier with N same-name definitions, half negative       | Exact bound decisions, unresolved name rejected, unique positive retained |
 
 The deep helper sizes keep parser/model setup practical while still exposing
 repeated descendant work. Parsing costs are not included in these measurements.
@@ -121,7 +121,9 @@ file's hash, corpus fingerprint, and sorted `CALLS` and `METHOD_OVERRIDES` edge
 arrays. Edge records retain `id`, `sourceId`, `targetId`, and readable source and
 target names, paths, and lines. Arrays preserve graph-edge multiplicity.
 
-Comparison refuses different corpus manifests and always fails if an override
+Comparison refuses different corpus manifests, exports from dirty checkouts, and
+a candidate export whose revision is not the checkout running the comparison. It
+always fails if an override
 edge changes. Every added/removed call edge is written in full for review. Add
 `--check` when zero call changes are expected; the ownership fix intentionally
 changes the annotated closure probe's target, so its first comparison requires
