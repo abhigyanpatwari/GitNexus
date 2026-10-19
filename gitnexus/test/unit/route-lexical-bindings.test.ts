@@ -103,7 +103,12 @@ describe.each([false, true])('HTTP lexical bindings (JavaScript: %s)', (javascri
     const fetches = root.descendantsOfType('identifier').filter((node) => node.text === 'fetch');
     expect(bindings.isGlobal(fetches[0], 'fetch')).toBe(true);
     expect(bindings.isGlobal(fetches.at(-1)!, 'fetch')).toBe(false);
-    expect(bindings.ownership(apps[2], 'app', true)).toBe(bindings.ownership(apps[2], 'app', true));
+    const closureWrite = bindings.ownership(apps[2], 'app', true);
+    expect(closureWrite?.scope).toBeDefined();
+    expect(closureWrite?.scope).toBe(bindings.ownership(apps[0])?.scope);
+    expect(bindings.ownership(apps[3])?.scope).not.toBe(closureWrite?.scope);
+    // Repeated lookups are memoized per node, name and position mode.
+    expect(bindings.ownership(apps[2], 'app', true)).toBe(closureWrite);
   });
 
   it('preserves TDZ barriers and offset-adjusted lookups', () => {
