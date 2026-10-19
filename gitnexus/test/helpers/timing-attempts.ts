@@ -19,8 +19,9 @@ export function timeWork<T>(prepare: () => () => T): TimedAttempt<T> {
 }
 
 /**
- * Run `attempt` up to `tries` times, stopping at the first one within `budgetMs`. Returns the
- * fastest attempt (the passing one, else the least slow), whose `ms` the caller asserts on.
+ * Run `attempt` at least once (a `tries` below 1 still runs one) and up to `tries` times, stopping
+ * at the first one within `budgetMs`. Returns the fastest attempt (the passing one, else the least
+ * slow), whose `ms` the caller asserts on.
  */
 export function fastestWithin<T>(
   budgetMs: number,

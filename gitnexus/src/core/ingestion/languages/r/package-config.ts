@@ -126,7 +126,9 @@ const matchedWhileBudgetLasted = new WeakMap<object, Set<string>>();
  * package's work budget (or the load's) is spent it stops asking the matchers, so the cost no
  * longer grows as patterns x names. A name it matched while the budget lasted keeps that
  * answer (one set lookup, so a duplicate-named definition does not flip from exported to
- * private); a name it had not decided answers false, and the patterns it did not get to run are
+ * private), but only for the first {@link MAX_REMEMBERED_MATCHES} (100,000) distinct matched
+ * names per package: a name matched after that is not remembered and answers false once the
+ * budget is spent. A name it had not decided answers false, and the patterns it did not get to run are
  * then reported by {@link reportRExportPatternProblems}.
  */
 export function rExportPatternMatches(
