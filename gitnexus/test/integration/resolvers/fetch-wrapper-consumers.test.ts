@@ -68,3 +68,38 @@ describe('Base-URL wrapper consumer FETCHES edge extraction', () => {
     ]);
   });
 });
+
+describe('Fetch wrapper lexical and project target identity', () => {
+  it('resolves relative, alias and workspace targets while rejecting shadowed and ambiguous names', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'fetch-wrapper-target-identity'),
+      () => {},
+      { skipGraphPhases: true },
+    );
+    const edges = getRelationships(result, 'FETCHES')
+      .map((edge) => `${edge.sourceFilePath} -> ${edge.target}`)
+      .sort();
+    expect(edges).toEqual([
+      'web/alias.ts -> /api/alias',
+      'web/alias.ts -> /api/forwarded',
+      'web/nested.ts -> /api/nested',
+      'web/relative.ts -> /api/relative',
+      'web/unresolved.ts -> /api/unique',
+      'web/workspace.ts -> /api/workspace',
+    ]);
+  }, 60000);
+
+  it('honors explicit wrapper names through local parameter bindings', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'fetch-wrapper-target-identity'),
+      () => {},
+      { skipGraphPhases: true, fetchWrappers: ['request'] },
+    );
+    const edges = getRelationships(result, 'FETCHES');
+    expect(
+      edges.some(
+        (edge) => edge.sourceFilePath === 'web/shadow.ts' && edge.target === '/api/parameter',
+      ),
+    ).toBe(true);
+  }, 60000);
+});
