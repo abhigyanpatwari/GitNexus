@@ -17,6 +17,7 @@
 
 import type { LanguageProvider } from '../language-provider.js';
 import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
+import { resolveFetchWrapperTargets } from '../route-extractors/fetch-wrapper-index.js';
 import {
   BindingAccumulator,
   enrichExportedTypeMap,
@@ -753,8 +754,8 @@ export async function runChunkedParseAndResolve(
   const exportedTypeMap: ExportedTypeMap = new Map();
   const bindingAccumulator = new BindingAccumulator();
   const allFetchCalls: ExtractedFetchCall[] = [];
-  const allFetchWrapperDefs: FetchWrapperDef[] = [];
-  const allFetchWrapperCalls: FetchWrapperCall[] = [];
+  let allFetchWrapperDefs: FetchWrapperDef[] = [];
+  let allFetchWrapperCalls: FetchWrapperCall[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allRouteFacts: { filePath: string; facts: unknown; routePosition: number }[] = [];
@@ -1562,7 +1563,12 @@ export async function runChunkedParseAndResolve(
 
   const routeFilePaths = new Set(allPaths);
   const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
-  for (const filePath of new Set(allRouteFacts.map((file) => file.filePath))) {
+  const resolutionFilePaths = new Set([
+    ...allRouteFacts.map((file) => file.filePath),
+    ...allFetchWrapperDefs.map((definition) => definition.filePath),
+    ...allFetchWrapperCalls.map((call) => call.filePath),
+  ]);
+  for (const filePath of resolutionFilePaths) {
     const language = getLanguageFromFilename(filePath);
     if (language === null || routeResolutionConfigs.has(language)) continue;
     const resolver = SCOPE_RESOLVERS.get(language);
@@ -1598,6 +1604,14 @@ export async function runChunkedParseAndResolve(
     fromFile: string,
   ): readonly string[] =>
     resolveRouteModuleTargets(fromFile, parsedImport.targetRaw ?? '', parsedImport);
+
+  const resolvedFetchWrappers = resolveFetchWrapperTargets(
+    allFetchWrapperDefs,
+    allFetchWrapperCalls,
+    resolveRouteModuleTargets,
+  );
+  allFetchWrapperDefs = resolvedFetchWrappers.definitions;
+  allFetchWrapperCalls = resolvedFetchWrappers.calls;
 
   // A resolver's identity defines a fact family, including providers sharing
   // one language implementation. Shared ingestion never inspects the payload.
