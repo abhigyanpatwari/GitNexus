@@ -7,6 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import type Parser from 'tree-sitter';
 import { unboundCallableName } from './typescript/unbound-callables.js';
 import type { CaptureMatch, NodeLabel } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
@@ -129,7 +130,11 @@ import {
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
 import { extractNestRoutes } from '../route-extractors/nest.js';
-import { extractFetchWrapperCalls } from '../route-extractors/fetch-wrapper.js';
+import {
+  createFetchWrapperContext,
+  type FetchWrapperContext,
+} from '../route-extractors/fetch-wrapper.js';
+import type { ParsedFile } from 'gitnexus-shared';
 import { extractFrameworkRouteFacts } from '../route-extractors/framework-route-facts.js';
 import { resolveProjectFrameworkRouteFacts } from '../route-extractors/framework-route-paths.js';
 import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
@@ -413,6 +418,37 @@ const TS_OWNED_RECEIVERS: ReadonlySet<string> = new Set(['this']);
 const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefined =>
   match['@receiver-owner.this'] === undefined ? undefined : TS_OWNED_RECEIVERS;
 
+const httpContexts = new WeakMap<ParsedFile, FetchWrapperContext>();
+function httpContext(
+  tree: Parser.Tree,
+  parsedFile: ParsedFile,
+  lineOffset: number,
+): FetchWrapperContext {
+  let context = httpContexts.get(parsedFile);
+  if (!context) {
+    context = createFetchWrapperContext(tree, parsedFile, lineOffset);
+    httpContexts.set(parsedFile, context);
+  }
+  return context;
+}
+const httpExtraction = {
+  extractRouteFacts: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    extractFrameworkRouteFacts(
+      tree,
+      parsedFile,
+      lineOffset,
+      httpContext(tree, parsedFile, lineOffset).bindings,
+    ),
+  extractFetchWrapperCalls: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    httpContext(tree, parsedFile, lineOffset).calls(),
+  extractFetchWrapperFacts: (
+    definition: Parser.SyntaxNode,
+    name: Parser.SyntaxNode | undefined,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => httpContext(definition.tree, parsedFile, lineOffset).facts(definition, name),
+};
+
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   rename: typescriptRenameProvider,
@@ -506,9 +542,8 @@ export const typescriptProvider = defineLanguage({
   // to a literal; nothing else in this pipeline can see that shape. TS and JS
   // share the grammar, so they share the extractor.
   extractDecoratorRoutes: extractJsTsRoutes,
-  extractRouteFacts: extractFrameworkRouteFacts,
+  ...httpExtraction,
   resolveRouteFacts: resolveProjectFrameworkRouteFacts,
-  extractFetchWrapperCalls,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   // Path-gate lives here (language provider), not in the shared parse worker.
   extractTextRoutes: extractJsTsTextRoutes,
@@ -595,9 +630,8 @@ export const javascriptProvider = defineLanguage({
   arityCompatibility: jsArityCompatibility,
   // See the TypeScript provider above.
   extractDecoratorRoutes: extractJsTsRoutes,
-  extractRouteFacts: extractFrameworkRouteFacts,
+  ...httpExtraction,
   resolveRouteFacts: resolveProjectFrameworkRouteFacts,
-  extractFetchWrapperCalls,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   extractTextRoutes: extractJsTsTextRoutes,
   extractToolDefinitions,
