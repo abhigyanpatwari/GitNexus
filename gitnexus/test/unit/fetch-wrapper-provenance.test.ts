@@ -323,28 +323,6 @@ for (const [language, grammar] of [
         forwardsUrl: true,
       });
     });
-
-    if (language !== 'JavaScript')
-      it('keeps stored asserted callbacks deferred', () => {
-        const { tree, context } = analyze(
-          'function load(url) { const later = (() => fetch(url)) as () => unknown; }',
-        );
-        expect(context.facts(tree.rootNode.firstNamedChild!)).toMatchObject({
-          seed: false,
-          forwardsUrl: false,
-        });
-      });
-
-    if (language !== 'JavaScript')
-      it('evaluates supported decorator expressions while deferring methods', () => {
-        const { tree, context } = analyze(
-          'function load(url) { @decorate(fetch(url)) class C { @decorate(fetch(url)) method() { return custom(url); } } }',
-        );
-        expect(context.facts(tree.rootNode.firstNamedChild!)).toMatchObject({
-          seed: true,
-          forwardsUrl: true,
-        });
-      });
   });
 }
 
@@ -424,7 +402,7 @@ it.each(['deep', 'deep-arrow', 'wide'] as const)(
 describe.each([
   ['TypeScript', TypeScript.typescript, 'source.ts'],
   ['TSX', TypeScript.tsx, 'source.tsx'],
-] as const)('%s overload signatures and asserted writes', (_language, grammar, filePath) => {
+] as const)('%s-only wrapper syntax', (_language, grammar, filePath) => {
   const analyze = (source: string) => {
     const parser = new Parser();
     parser.setLanguage(grammar);
@@ -445,6 +423,25 @@ describe.each([
     expect(context.calls()).toMatchObject([
       { target: { kind: 'binding', bindingId: facts.bindingId } },
     ]);
+  });
+
+  it.each([
+    [
+      'keeps stored asserted callbacks deferred',
+      'function load(url) { const later = (() => fetch(url)) as () => unknown; }',
+      false,
+    ],
+    [
+      'evaluates supported decorator expressions while deferring methods',
+      'function load(url) { @decorate(fetch(url)) class C { @decorate(fetch(url)) method() { return custom(url); } } }',
+      true,
+    ],
+  ])('%s', (_shape, source, wraps) => {
+    const { tree, context } = analyze(source);
+    expect(context.facts(tree.rootNode.firstNamedChild!)).toMatchObject({
+      seed: wraps,
+      forwardsUrl: wraps,
+    });
   });
 
   it('keeps a nested overloaded helper reachable through its one implementation', () => {

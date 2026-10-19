@@ -9,7 +9,7 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type Parser from 'tree-sitter';
 import { unboundCallableName } from './typescript/unbound-callables.js';
-import type { CaptureMatch, NodeLabel } from 'gitnexus-shared';
+import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
@@ -134,7 +134,6 @@ import {
   createFetchWrapperContext,
   type FetchWrapperContext,
 } from '../route-extractors/fetch-wrapper.js';
-import type { ParsedFile } from 'gitnexus-shared';
 import { extractFrameworkRouteFacts } from '../route-extractors/framework-route-facts.js';
 import { resolveProjectFrameworkRouteFacts } from '../route-extractors/framework-route-paths.js';
 import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
@@ -418,16 +417,18 @@ const TS_OWNED_RECEIVERS: ReadonlySet<string> = new Set(['this']);
 const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefined =>
   match['@receiver-owner.this'] === undefined ? undefined : TS_OWNED_RECEIVERS;
 
-const httpContexts = new WeakMap<ParsedFile, FetchWrapperContext>();
+// Keyed by tree, not ParsedFile: workers retain ParsedFiles for the whole chunk,
+// while a file's tree, and with it this AST-holding context, is released per file.
+const httpContexts = new WeakMap<Parser.Tree, FetchWrapperContext>();
 function httpContext(
   tree: Parser.Tree,
   parsedFile: ParsedFile,
   lineOffset: number,
 ): FetchWrapperContext {
-  let context = httpContexts.get(parsedFile);
+  let context = httpContexts.get(tree);
   if (!context) {
     context = createFetchWrapperContext(tree, parsedFile, lineOffset);
-    httpContexts.set(parsedFile, context);
+    httpContexts.set(tree, context);
   }
   return context;
 }

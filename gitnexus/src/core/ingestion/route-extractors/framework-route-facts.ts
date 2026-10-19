@@ -3,9 +3,12 @@ import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import { plainString } from './data-route-table.js';
 import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route-types.js';
 import {
+  bindingKey,
   createLexicalBindings,
   LEXICAL_FUNCTION_TYPES,
+  parameterPattern,
   patternBindingNames,
+  TRANSPARENT_EXPRESSION_TYPES,
   type LexicalBindings,
 } from './lexical-bindings.js';
 
@@ -78,7 +81,6 @@ export function extractFrameworkRouteFacts(
       'localName' in imported ? [imported.localName] : [],
     ),
   );
-  const bindingKey = (scope: string, name: string): string => `${scope}\0${name}`;
   const parameterIds = new Map<number, ReadonlySet<string>>();
   const parametersOf = (fn: Node): ReadonlySet<string> => {
     let ids = parameterIds.get(fn.id);
@@ -105,10 +107,7 @@ export function extractFrameworkRouteFacts(
         // TypeScript's `this: T` declares the receiver, not an argument position.
         .filter((param) => param.childForFieldName('pattern')?.type !== 'this')
         .map((param) => {
-          let name: Node | null = param;
-          if (param.type === 'required_parameter' || param.type === 'optional_parameter')
-            name = param.childForFieldName('pattern');
-          if (name?.type === 'assignment_pattern') name = name.childForFieldName('left');
+          const name = parameterPattern(param);
           const id = name?.type === 'identifier' ? bindingId(name) : undefined;
           return id && !ambiguous(id) ? id : null;
         }),
@@ -128,14 +127,7 @@ export function extractFrameworkRouteFacts(
         kind: 'array',
         elements: children(node).map((child) => expression(child, depth + 1)),
       };
-    } else if (
-      [
-        'parenthesized_expression',
-        'as_expression',
-        'satisfies_expression',
-        'non_null_expression',
-      ].includes(node.type)
-    ) {
+    } else if (TRANSPARENT_EXPRESSION_TYPES.has(node.type)) {
       value = expression(children(node)[0], depth + 1);
     } else if (FUNCTION_TYPES.includes(node.type)) {
       value = HANDLER;
@@ -404,14 +396,7 @@ export function extractFrameworkRouteFacts(
             if (value) invalidate(value);
           } else if (['object_pattern', 'array_pattern', 'rest_pattern'].includes(target.type)) {
             for (const child of children(target)) invalidate(child);
-          } else if (
-            [
-              'parenthesized_expression',
-              'as_expression',
-              'satisfies_expression',
-              'non_null_expression',
-            ].includes(target.type)
-          ) {
+          } else if (TRANSPARENT_EXPRESSION_TYPES.has(target.type)) {
             const inner = children(target)[0];
             if (inner) invalidate(inner);
           }

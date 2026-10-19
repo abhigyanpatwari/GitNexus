@@ -23,8 +23,32 @@ export const LEXICAL_FUNCTION_TYPES: ReadonlySet<string> = new Set([
   'abstract_method_signature',
 ]);
 
+/** Expressions that wrap a value or an assignment target without changing it. */
+export const TRANSPARENT_EXPRESSION_TYPES: ReadonlySet<string> = new Set([
+  'parenthesized_expression',
+  'as_expression',
+  'satisfies_expression',
+  'non_null_expression',
+]);
+
+/** Lexical binding identity: the declaring scope and the declared name. */
+export const bindingKey = (scopeId: string, name: string): string => `${scopeId}\0${name}`;
+
+/** The pattern a formal parameter declares, without its type or default value. */
+export function parameterPattern(node: Node | null): Node | null {
+  if (node?.type === 'required_parameter' || node?.type === 'optional_parameter')
+    node = node.childForFieldName('pattern');
+  if (node?.type === 'assignment_pattern') node = node.childForFieldName('left');
+  return node;
+}
+
 /** Visit binding positions only: property keys and default RHSs are expressions. */
 export function patternBindingNames(node: Node | null): Node[] {
+  if (node && TRANSPARENT_EXPRESSION_TYPES.has(node.type))
+    // Assignment targets may be wrapped: `(app) = x`, `(app as T) = x`, `app! = x`.
+    return patternBindingNames(
+      node.namedChildren.find((child) => child.type !== 'comment') ?? null,
+    );
   if (!node) return [];
   switch (node.type) {
     case 'identifier':
@@ -44,14 +68,6 @@ export function patternBindingNames(node: Node | null): Node[] {
     case 'array_pattern':
     case 'formal_parameters':
       return node.namedChildren.flatMap(patternBindingNames);
-    // Assignment targets may be wrapped: `(app) = x`, `(app as T) = x`, `app! = x`.
-    case 'parenthesized_expression':
-    case 'as_expression':
-    case 'satisfies_expression':
-    case 'non_null_expression':
-      return patternBindingNames(
-        node.namedChildren.find((child) => child.type !== 'comment') ?? null,
-      );
     default:
       return [];
   }
@@ -130,7 +146,7 @@ export function createLexicalBindings(
       )
     )
       return undefined;
-    return owner?.scope ? `${owner.scope.id}\0${name}` : undefined;
+    return owner?.scope ? bindingKey(owner.scope.id, name) : undefined;
   };
 
   const environments: FunctionEnvironment[] = [];

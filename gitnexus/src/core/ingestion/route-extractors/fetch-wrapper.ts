@@ -4,9 +4,12 @@ import type { ParsedFile } from 'gitnexus-shared';
 import type { ExtractedFetchCall } from '../workers/parse-worker.js';
 import { stripLeadingTemplatePrefix } from './route-path.js';
 import {
+  bindingKey,
   createLexicalBindings,
   LEXICAL_FUNCTION_TYPES,
+  parameterPattern,
   patternBindingNames,
+  TRANSPARENT_EXPRESSION_TYPES,
   type LexicalBindings,
 } from './lexical-bindings.js';
 
@@ -52,16 +55,12 @@ export interface FetchWrapperContext {
   reexports(): FetchWrapperReexport[];
 }
 
-/** A repo-relative module path without its extension or `/index`. */
-export function moduleStem(filePath: string): string {
-  return filePath.replace(/\.[cm]?[jt]sx?$/, '').replace(/\/index$/, '');
-}
+const firstNamed = (node: Node | null | undefined): Node | null =>
+  node?.namedChildren.find((child) => child.type !== 'comment') ?? null;
 
 function calleeName(node: Parser.SyntaxNode | null): string | undefined {
   // The TS grammar puts `await f<T>(...)` inside the call's function field.
-  while (node?.type === 'await_expression') {
-    node = node.namedChildren.find((child) => child.type !== 'comment') ?? null;
-  }
+  while (node?.type === 'await_expression') node = firstNamed(node);
   // Unlike constant names, configured wrapper names may start with this/super.
   const parts: string[] = [];
   while (node?.type === 'member_expression') {
@@ -76,24 +75,8 @@ function calleeName(node: Parser.SyntaxNode | null): string | undefined {
 }
 
 function unwrap(node: Node | null): Node | null {
-  while (
-    node &&
-    [
-      'parenthesized_expression',
-      'as_expression',
-      'satisfies_expression',
-      'non_null_expression',
-      'await_expression',
-    ].includes(node.type)
-  ) {
-    node = node.namedChildren.find((child) => child.type !== 'comment') ?? null;
-  }
-  return node;
-}
-function parameterPattern(node: Node | null): Node | null {
-  if (node?.type === 'required_parameter' || node?.type === 'optional_parameter')
-    node = node.childForFieldName('pattern');
-  if (node?.type === 'assignment_pattern') node = node.childForFieldName('left');
+  while (node && (TRANSPARENT_EXPRESSION_TYPES.has(node.type) || node.type === 'await_expression'))
+    node = firstNamed(node);
   return node;
 }
 function storedName(node: Node, parents: ReadonlyMap<number, Node>): Node | null {
@@ -131,7 +114,7 @@ export function createFetchWrapperContext(
   const imports = new Map<string, CalleeTarget>();
   for (const imported of parsedFile.parsedImports) {
     if (!('localName' in imported) || !('importedName' in imported)) continue;
-    const id = `${imported.declaredAtScope ?? parsedFile.moduleScope}\0${imported.localName}`;
+    const id = bindingKey(imported.declaredAtScope ?? parsedFile.moduleScope, imported.localName);
     const target: CalleeTarget =
       'typeOnly' in imported && imported.typeOnly
         ? { kind: 'blocked' }
@@ -400,9 +383,7 @@ export function createFetchWrapperContext(
     }
   const firstParameter = (fn: Node): string | undefined => {
     const first =
-      fn.childForFieldName('parameter') ??
-      fn.childForFieldName('parameters')?.namedChildren.find((child) => child.type !== 'comment') ??
-      null;
+      fn.childForFieldName('parameter') ?? firstNamed(fn.childForFieldName('parameters'));
     const name = parameterPattern(first);
     if (name?.type !== 'identifier') return undefined;
     const id = stableBinding(name, false);
@@ -414,15 +395,15 @@ export function createFetchWrapperContext(
     const cached = argumentBindings.get(argument.id);
     if (cached) return cached;
     const result = new Set<string>();
-    const pending = ['identifier', 'template_string', 'binary_expression'].includes(argument.type)
+    const stack = ['identifier', 'template_string', 'binary_expression'].includes(argument.type)
       ? [argument]
       : [];
-    while (pending.length) {
-      const node = pending.pop()!;
+    while (stack.length) {
+      const node = stack.pop()!;
       if (node.type === 'identifier') {
         const id = stableBinding(node);
         if (id && !invalid.has(id)) result.add(id);
-      } else if (!LEXICAL_FUNCTION_TYPES.has(node.type)) pending.push(...node.namedChildren);
+      } else if (!LEXICAL_FUNCTION_TYPES.has(node.type)) stack.push(...node.namedChildren);
     }
     argumentBindings.set(argument.id, result);
     return result;
@@ -456,18 +437,16 @@ export function createFetchWrapperContext(
   }
   const directSeeds = new Set<Region>();
   const parameterCalls = new Map<string, CallEvidence[]>();
-  for (const region of regions)
-    for (const call of region.calls) {
+  for (const owner of regions)
+    for (const call of owner.calls) {
       const callee = unwrap(call.childForFieldName('function'));
       const name = calleeName(callee);
       if (!name) continue;
-      const argument = call
-        .childForFieldName('arguments')
-        ?.namedChildren.find((child) => child.type !== 'comment');
+      const argument = firstNamed(call.childForFieldName('arguments')) ?? undefined;
       const alias = callee?.type === 'identifier' ? stableBinding(callee) : undefined;
       const seed = platformFetch(callee) || !!(alias && aliases.has(alias));
-      if (seed) directSeeds.add(region);
-      const evidence = { region, argument, callee, name, seed };
+      if (seed) directSeeds.add(owner);
+      const evidence = { region: owner, argument, callee, name, seed };
       for (const id of carried(argument)) {
         const bucket = parameterCalls.get(id);
         if (bucket) bucket.push(evidence);
@@ -549,7 +528,8 @@ export function createFetchWrapperContext(
     const result: FetchWrapperFacts = {
       definitionId: `${filePath}:${fn.startPosition.row + lineOffset + 1}:${fn.startPosition.column}:${fn.endPosition.row + lineOffset + 1}:${fn.endPosition.column}`,
       ...(id ? { bindingId: id } : {}),
-      moduleScope: defaultExport || (!!id && id.startsWith(`${parsedFile.moduleScope}\0`)),
+      moduleScope:
+        defaultExport || (!!name && id === bindingKey(parsedFile.moduleScope, name.text)),
       exportedNames: [
         ...new Set([...(id ? (exports.get(id) ?? []) : []), ...(defaultExport ? ['default'] : [])]),
       ],
@@ -599,9 +579,7 @@ export function createFetchWrapperContext(
     calls: () => {
       const calls: FetchWrapperCall[] = [];
       for (const call of allCalls) {
-        const argument = call
-          .childForFieldName('arguments')
-          ?.namedChildren.find((child) => child.type !== 'comment');
+        const argument = firstNamed(call.childForFieldName('arguments'));
         if (argument?.type !== 'string' && argument?.type !== 'template_string') continue;
         const fetchURL = argument.text.slice(1, -1);
         if (!stripLeadingTemplatePrefix(fetchURL)?.startsWith('/')) continue;

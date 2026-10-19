@@ -176,6 +176,14 @@ function matchesBindingClaim(range: Range | undefined, claim: NameClaim): boolea
   );
 }
 
+/** A fact inferred from an assigned value; it describes a value, never a declaration. */
+const isInferredWrite = (source: TypeRef['source']): boolean =>
+  source === 'assignment-inferred' || source === 'constructor-inferred';
+
+/** Any inferred fact, including types propagated from a receiver. */
+const isInferredFact = (source: TypeRef['source']): boolean =>
+  isInferredWrite(source) || source === 'receiver-propagated';
+
 export function lookupLexicalName(
   startScope: ScopeId,
   name: string,
@@ -273,10 +281,7 @@ export function lookupLexicalName(
     const ownType = scope.typeBindings.get(name);
     const typeFactOwnsName =
       ownType !== undefined &&
-      !(
-        scope.lookupPolicy?.nameClaimsComplete &&
-        (ownType.source === 'assignment-inferred' || ownType.source === 'constructor-inferred')
-      );
+      !(scope.lookupPolicy?.nameClaimsComplete && isInferredWrite(ownType.source));
     const owns =
       selected.status === 'selected' ||
       bindings.length > 0 ||
@@ -298,16 +303,15 @@ export function lookupLexicalName(
         // Check ownership after that fact binds its value, not at the producer's
         // lookup position: a later shadowing let still reads the earlier binding
         // in its initializer, but must not lend that binding its inferred type.
-        const factClaims =
-          ownType.source === 'constructor-inferred' || ownType.source === 'assignment-inferred'
-            ? selectClaimsAtScope(scope, name, {
-                ...options,
-                position: {
-                  startLine: ownType.bindingRange.endLine,
-                  startCol: ownType.bindingRange.endCol,
-                },
-              })
-            : undefined;
+        const factClaims = isInferredWrite(ownType.source)
+          ? selectClaimsAtScope(scope, name, {
+              ...options,
+              position: {
+                startLine: ownType.bindingRange.endLine,
+                startCol: ownType.bindingRange.endCol,
+              },
+            })
+          : undefined;
         if (
           factClaims?.status !== 'selected' ||
           factClaims.claims.length !== selected.claims.length ||
@@ -321,10 +325,7 @@ export function lookupLexicalName(
       // complete lookup anchor, but never replace the owner's declared type.
       if (
         carriedConstructor !== undefined &&
-        (typeBinding === undefined ||
-          typeBinding.source === 'assignment-inferred' ||
-          typeBinding.source === 'constructor-inferred' ||
-          typeBinding.source === 'receiver-propagated')
+        (typeBinding === undefined || isInferredFact(typeBinding.source))
       )
         typeBinding = carriedConstructor;
       const usable = bindings.filter(
