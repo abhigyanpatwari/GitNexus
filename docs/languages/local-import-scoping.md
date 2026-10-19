@@ -154,10 +154,15 @@ Bare wrapper calls and forwarded calls resolve declaration or import identity
 before using name fallback. Relative imports, renamed imports, tsconfig aliases,
 and workspace imports use the project module resolver. A known local
 non-wrapper, a different resolved target, or an ambiguous target blocks fallback.
-An unresolved name can fall back only when exactly one distinct definition has
-that name across all candidates, including non-wrappers, and that definition is
-a proven wrapper. This fallback is an analyzer recovery heuristic; it does not
-prove lexical identity. Explicit `fetchWrappers` configuration takes precedence
+An unresolved name can fall back only when exactly one distinct definition can
+be the target, including non-wrappers, and that definition is a proven wrapper.
+For an import the resolver cannot follow, the candidates are module-level
+functions exported under the imported name; for an undeclared global, they are
+top-level functions of that name. Nested and unexported helpers are never
+candidates. This fallback is an analyzer recovery heuristic; it does not prove
+lexical identity. A function whose binding is reassigned in its file, including
+through `export { request as send }; request = other;` or a later
+`var request = …` initializer, proves no wrapper in importing files either. Explicit `fetchWrappers` configuration takes precedence
 over automatic inference, including for names shadowed by local parameters; member
 calls retain their existing matching rules. See the
 [wrapper consumer integration tests](../../gitnexus/test/integration/resolvers/fetch-wrapper-consumers.test.ts)
@@ -172,7 +177,22 @@ body declarations; a rest parameter alone is not a parameter expression. The
 [lexical binding tests](../../gitnexus/test/unit/route-lexical-bindings.test.ts)
 pin this conservative boundary. If scope extraction fails, scope-dependent HTTP
 facts are omitted and the existing scope-extraction failure remains visible;
-unrelated structural extraction continues.
+unrelated structural extraction continues. A failing HTTP hook drops only that
+file's HTTP facts. Either way the file's function names are still recorded, so
+name fallback elsewhere declines instead of treating another definition as
+unique.
+
+Barrels follow ECMAScript `ResolveExport`. A local or named export shadows
+`export *`, star exports never carry `default`, and a name that two star-exported
+modules export as different bindings is ambiguous, whether or not either is a
+wrapper. Two export names of one declaration are one binding.
+
+Some recall is given up deliberately. A helper that conditionally rebinds its
+parameter, as in `if (!app) { var app = express(); }`, loses that parameter's
+provenance: the initialized `var` is a write. A dynamic-import shim such as
+`(...args) => import('node-fetch').then(...)` is not platform fetch evidence. A
+write to the URL parameter clears URL forwarding. Calls inside recovered syntax
+are still resolved, but nothing else inside an `ERROR` node is trusted.
 
 Vue's explicit JS/JSX script requires an additional bounded semantic parse because
 the worker's structural tree uses TypeScript. That parse runs inside the real

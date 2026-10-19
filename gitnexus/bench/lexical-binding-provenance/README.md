@@ -140,3 +140,13 @@ Corpus SHA-256:
 The final corpus differs from the first capture only in formatting of the
 standalone ownership probe. Both final exports use this identical corpus and
 the baseline remains the untouched revision above.
+
+## Committed results
+
+`results/baseline-scaling.json`, `results/candidate-scaling.json` and
+`results/semantic-diff.json` are point-in-time reports. Each records the revision
+it measured (`source.revision`, or the export revisions in the comparison), so a
+later commit that changes no measured file keeps them valid. Regenerate all three
+with the commands above after changing a measured file. Host load during a run is
+described only by the report's environment note; any sampled load log stays with
+the operator.
