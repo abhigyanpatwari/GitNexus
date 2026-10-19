@@ -1,12 +1,12 @@
 {
   "name": "tree-sitter-dart",
-  "version": "1.0.0-gbe07cf7",
+  "version": "1.0.0-g0038280",
   "description": "Dart grammar attempt for tree-sitter",
   "repository": "https://github.com/UserNobody14/tree-sitter-dart",
   "license": "ISC",
   "main": "bindings/node",
   "types": "bindings/node",
-  "_vendoredBy": "gitnexus — upstream generated src/ and bindings/node/binding.cc copied byte-for-byte from https://github.com/UserNobody14/tree-sitter-dart@be07cf7118d3dba06236a3f19541685a68209934. GitNexus keeps its synchronous CommonJS loader and hardened binding.gyp. Prebuilds are rebuilt from these sources by build-tree-sitter-prebuilds.yml. Do not edit generated C by hand.",
+  "_vendoredBy": "gitnexus - re-vendored from UserNobody14/tree-sitter-dart@0038280b774b65c1b89ba7fec50624d8baed9fe1 by grammar-update-monitor on ABI 15. Source-build inputs (parser.c/scanner.c/src/) refreshed; the GitNexus-hardened binding.gyp + synchronous loader + vendor README + prebuilds are preserved (prebuilds are rebuilt by build-tree-sitter-prebuilds.yml on this version change). No scripts/dependencies here (#836/#1728).",
   "peerDependencies": {
     "tree-sitter": "0.25.1"
   },
@@ -15,5 +15,5 @@
       "optional": true
     }
   },
-  "_upstreamCommit": "be07cf7118d3dba06236a3f19541685a68209934"
+  "_upstreamCommit": "0038280b774b65c1b89ba7fec50624d8baed9fe1"
 }
