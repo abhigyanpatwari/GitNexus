@@ -23,6 +23,7 @@ const TYPE_DECL_TYPES = new Set([
   'class_definition',
   'mixin_declaration',
   'extension_declaration',
+  'extension_type_declaration',
   'enum_declaration',
 ]);
 
