@@ -81,7 +81,7 @@ Generates repository documentation from the knowledge graph using an LLM. HTTP p
 | ------------------- | ----------------------------------------- |
 | `--force`           | Force full regeneration, also required to re-generate an existing wiki in a different language |
 | `--provider <name>` | LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax). Local CLIs (`cursor`, `claude`, `codex`, `opencode`, `grok`) use your existing CLI login and skip `--api-key`. |
-| `--model <model>`   | LLM model (default: MiniMax-M3)           |
+| `--model <model>`   | LLM model (default: MiniMax-M3.1-Flash)           |
 | `--base-url <url>`  | LLM API base URL                          |
 | `--api-key <key>`   | LLM API key                               |
 | `--concurrency <n>` | Parallel LLM calls (default: 3)           |
