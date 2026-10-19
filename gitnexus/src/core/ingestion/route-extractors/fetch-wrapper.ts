@@ -79,23 +79,33 @@ function unwrap(node: Node | null): Node | null {
     node = firstNamed(node);
   return node;
 }
-function storedName(node: Node, parents: ReadonlyMap<number, Node>): Node | null {
-  let parent = parents.get(node.id);
-  while (parent && unwrap(parent)?.id === unwrap(node)?.id) {
-    node = parent;
-    parent = parents.get(node.id);
-  }
-  if (parent?.type === 'variable_declarator' && parent.childForFieldName('value')?.id === node.id)
-    return parent.childForFieldName('name');
-  if (parent?.type === 'assignment_pattern' && parent.childForFieldName('right')?.id === node.id)
-    return parent.childForFieldName('left');
-  if (
-    (parent?.type === 'required_parameter' || parent?.type === 'optional_parameter') &&
-    parent.childForFieldName('value')?.id === node.id
-  )
-    return parameterPattern(parent);
-  return null;
-}
+const UNWRAPPED_TYPES: ReadonlySet<string> = new Set([
+  ...TRANSPARENT_EXPRESSION_TYPES,
+  'await_expression',
+]);
+const SKIPPED_TYPES: ReadonlySet<string> = new Set([
+  'comment',
+  'ERROR',
+  'type_annotation',
+  'type_parameters',
+  'type_arguments',
+  'import_statement',
+]);
+/** Node types whose handlers need the node itself; the walk reads others from the cursor. */
+const INSPECTED_TYPES: ReadonlySet<string> = new Set([
+  'variable_declarator',
+  'required_parameter',
+  'optional_parameter',
+  'assignment_pattern',
+  'catch_clause',
+  'assignment_expression',
+  'augmented_assignment_expression',
+  'update_expression',
+  'for_in_statement',
+  'export_statement',
+  'export_specifier',
+  'call_expression',
+]);
 /** Fetch implementations imported from packages, by module specifier and export name.
  * A namespace or `require` value is recorded under the specifier itself. */
 const FETCH_EXPORTS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
@@ -110,6 +120,25 @@ interface Region {
   node: Node;
   edges: Set<Region>;
   calls: Node[];
+}
+/** A visited ancestor of the cursor. */
+interface Frame {
+  type: string;
+  /** Whether it is its parent's first non-comment named child, which `unwrap` follows. */
+  first: boolean;
+  /** Its field in the parent; read only for nodes a stored binding may be found through. */
+  field?: string;
+  /** Present only for node types whose handlers inspect the node. */
+  node?: Node;
+  region: Region;
+  classRegion?: Region;
+  /** How children are assigned regions: `inner` is the callable or the deferred class body. */
+  children: 'plain' | 'callable' | 'class' | 'field';
+  inner: Region;
+  isStatic?: boolean;
+  defaultExport?: boolean;
+  /** Whether a non-comment named child has been visited. */
+  named: boolean;
 }
 
 /** Fresh construction is intentional: callers may cache only at the per-file provider boundary. */
@@ -195,7 +224,9 @@ export function createFetchWrapperContext(
   const regions: Region[] = [];
   const callableRegions = new Map<number, Region>();
   const boundRegions = new Map<string, Region[]>();
-  const declarationNodes = new Set<number>();
+  // Declared identifiers by start offset: leaves never share one, and the
+  // walk can test an offset without materializing the node.
+  const declarations = new Set<number>();
   const aliases = new Set<string>();
   const invalid = new Set<string>();
   const initialized = new Map<string, number>();
@@ -204,8 +235,11 @@ export function createFetchWrapperContext(
   const boundNames = new Set<string>();
   const references: { node: Node; region: Region }[] = [];
   const allCalls: Node[] = [];
-  // Native parent lookup descends from the tree root; retain traversal edges once.
-  const parents = new Map<number, Node>();
+  // Native parent lookup descends from the tree root, so the walk records the
+  // ancestor facts that later queries need.
+  const storedNames = new Map<number, Node | null>();
+  const defaultExports = new Set<number>();
+  const declarators = new Map<number, Node>();
   const region = (node: Node): Region => {
     const result = {
       node,
@@ -217,7 +251,7 @@ export function createFetchWrapperContext(
   };
   const bindRegion = (name: Node | null, value: Region) => {
     if (!name || !['identifier', 'type_identifier'].includes(name.type)) return;
-    declarationNodes.add(name.id);
+    declarations.add(name.startIndex);
     boundNames.add(name.text);
     const id = stableBinding(name, false);
     if (!id) return;
@@ -227,12 +261,12 @@ export function createFetchWrapperContext(
   };
   const markPattern = (pattern: Node | null) => {
     const names = patternBindingNames(pattern);
-    for (const name of names) declarationNodes.add(name.id);
+    for (const name of names) declarations.add(name.startIndex);
     return names;
   };
   const invalidate = (pattern: Node | null) => {
     for (const name of patternBindingNames(pattern)) {
-      declarationNodes.add(name.id);
+      declarations.add(name.startIndex);
       const id = bindings.bindingId(name);
       if (id) invalid.add(id);
     }
@@ -298,109 +332,146 @@ export function createFetchWrapperContext(
     )
       exportValue(right, property.text);
   };
-  const pending: { node: Node; parent?: Node; region: Region; classRegion?: Region }[] = [
-    { node: tree.rootNode, region: region(tree.rootNode) },
+  // The binding a callable or class value is stored into. Ancestors that only
+  // wrap the value (`(fn)`, `fn as T`, `await fn`) are climbed first.
+  const storedAt = (frames: readonly Frame[], first: boolean, field?: string): Node | null => {
+    let i = frames.length - 1;
+    while (first && UNWRAPPED_TYPES.has(frames[i].type)) {
+      ({ first, field } = frames[i]);
+      i--;
+    }
+    const { type, node } = frames[i];
+    if (!node) return null;
+    if (type === 'variable_declarator' && field === 'value') return node.childForFieldName('name');
+    if (type === 'assignment_pattern' && field === 'right') return node.childForFieldName('left');
+    if ((type === 'required_parameter' || type === 'optional_parameter') && field === 'value')
+      return parameterPattern(node);
+    return null;
+  };
+  // A cursor walk reads types and offsets without materializing every node;
+  // only the node types the handlers inspect become SyntaxNodes.
+  const rootNode = tree.rootNode;
+  const rootRegion = region(rootNode);
+  const frames: Frame[] = [
+    {
+      type: rootNode.type,
+      first: false,
+      node: rootNode,
+      region: rootRegion,
+      children: 'plain',
+      inner: rootRegion,
+      named: false,
+    },
   ];
-  while (pending.length) {
-    const entry = pending.pop()!;
-    const node = entry.node;
-    const parent = entry.parent;
-    if (parent) parents.set(node.id, parent);
-    const active = entry.region;
-    if (
-      node.type === 'comment' ||
-      node.type === 'ERROR' ||
-      ['type_annotation', 'type_parameters', 'type_arguments', 'import_statement'].includes(
-        node.type,
-      )
-    )
-      continue;
-    const children = node.namedChildren;
-    // A bodyless overload or ambient signature declares no separate callable:
-    // its implementation alone owns the binding.
-    if (LEXICAL_FUNCTION_TYPES.has(node.type) && !node.childForFieldName('body')) continue;
-    if (LEXICAL_FUNCTION_TYPES.has(node.type)) {
+  const cursor = tree.walk();
+  const enter = (): Frame | undefined => {
+    if (!cursor.nodeIsNamed) return undefined;
+    const type = cursor.nodeType;
+    const parent = frames[frames.length - 1];
+    const first = type !== 'comment' && !parent.named;
+    if (type !== 'comment') parent.named = true;
+    if (SKIPPED_TYPES.has(type)) return undefined;
+    // Computed names and decorators are evaluated where the member is created;
+    // other method and instance-field code runs later, in its own region.
+    const evaluated = type === 'computed_property_name' || type === 'decorator';
+    const active =
+      parent.children === 'callable' && !evaluated
+        ? parent.inner
+        : parent.children === 'field' && !evaluated && !parent.isStatic
+          ? (parent.classRegion ?? parent.region)
+          : parent.region;
+    const classRegion =
+      parent.children === 'class'
+        ? parent.inner
+        : parent.children === 'plain'
+          ? parent.classRegion
+          : undefined;
+    if (type === 'identifier' || type === 'shorthand_property_identifier') {
+      if (!declarations.has(cursor.startIndex))
+        references.push({ node: cursor.currentNode, region: active });
+      return undefined;
+    }
+    const frame: Frame = {
+      type,
+      first,
+      region: active,
+      classRegion,
+      children: 'plain',
+      inner: active,
+      named: false,
+    };
+    if (LEXICAL_FUNCTION_TYPES.has(type)) {
+      const node = cursor.currentNode;
+      // A bodyless overload or ambient signature declares no separate callable:
+      // its implementation alone owns the binding.
+      if (!node.childForFieldName('body')) return undefined;
+      const id = node.id;
       const callable = region(node);
-      callableRegions.set(node.id, callable);
+      callableRegions.set(id, callable);
       const name = node.childForFieldName('name');
-      const stored = storedName(node, parents);
+      const stored = storedAt(frames, first, cursor.currentFieldName);
+      storedNames.set(id, stored);
+      if (parent.defaultExport) defaultExports.add(id);
       const declaration =
-        node.type === 'function_declaration' || node.type === 'generator_function_declaration';
+        type === 'function_declaration' || type === 'generator_function_declaration';
       bindRegion(declaration ? name : stored, callable);
       if (!declaration && name?.type === 'identifier') bindRegion(name, callable);
-      if (name) declarationNodes.add(name.id);
-      if (node.type === 'method_definition') (entry.classRegion ?? active).edges.add(callable);
+      if (name) declarations.add(name.startIndex);
+      if (type === 'method_definition') (classRegion ?? active).edges.add(callable);
       else if (!declaration && !stored) active.edges.add(callable);
       if (declaration && name) {
-        const id = stableBinding(name, false);
-        if (id && parameters.has(id)) invalid.add(id);
+        const nameId = stableBinding(name, false);
+        if (nameId && parameters.has(nameId)) invalid.add(nameId);
       }
       const formals = node.childForFieldName('parameters') ?? node.childForFieldName('parameter');
-      for (const name of markPattern(formals)) {
-        const id = stableBinding(name, false);
-        if (id) parameters.add(id);
+      for (const formal of markPattern(formals)) {
+        const formalId = stableBinding(formal, false);
+        if (formalId) parameters.add(formalId);
       }
-      for (let i = children.length - 1; i >= 0; i--) {
-        const child = children[i];
-        // Computed names and decorators are evaluated when the method is created.
-        pending.push({
-          node: child,
-          parent: node,
-          region:
-            child.type === 'computed_property_name' || child.type === 'decorator'
-              ? active
-              : callable,
-        });
-      }
-      continue;
+      return { ...frame, children: 'callable', inner: callable };
     }
-    if (node.type === 'class_declaration' || node.type === 'class') {
+    if (type === 'class_declaration' || type === 'class') {
+      const node = cursor.currentNode;
       const deferred = region(node);
       const name = node.childForFieldName('name');
-      const stored = storedName(node, parents);
+      const stored = storedAt(frames, first, cursor.currentFieldName);
       bindRegion(stored ?? name, deferred);
       if (stored && name) bindRegion(name, deferred);
       if (!stored && !name) active.edges.add(deferred);
-      for (let i = children.length - 1; i >= 0; i--)
-        pending.push({ node: children[i], parent: node, region: active, classRegion: deferred });
-      continue;
+      return { ...frame, children: 'class', inner: deferred };
     }
-    if (node.type === 'field_definition' || node.type === 'public_field_definition') {
-      const isStatic = node.children.some((child) => child.type === 'static');
-      for (let i = children.length - 1; i >= 0; i--) {
-        const child = children[i];
-        const evaluated =
-          child.type === 'computed_property_name' || child.type === 'decorator' || isStatic;
-        pending.push({
-          node: child,
-          parent: node,
-          region: evaluated ? active : (entry.classRegion ?? active),
-        });
-      }
-      continue;
+    if (type === 'field_definition' || type === 'public_field_definition') {
+      const isStatic = cursor.currentNode.children.some((child) => child.type === 'static');
+      return { ...frame, children: 'field', isStatic };
     }
-    if (node.type === 'variable_declarator')
-      initialize(node.childForFieldName('name'), node.childForFieldName('value'));
-    else if (node.type === 'required_parameter' || node.type === 'optional_parameter')
+    if (UNWRAPPED_TYPES.has(type)) frame.field = cursor.currentFieldName;
+    if (!INSPECTED_TYPES.has(type)) return frame;
+    const node = cursor.currentNode;
+    frame.node = node;
+    if (type === 'variable_declarator') {
+      const name = node.childForFieldName('name');
+      if (name) declarators.set(name.id, node);
+      initialize(name, node.childForFieldName('value'));
+    } else if (type === 'required_parameter' || type === 'optional_parameter')
       initialize(parameterPattern(node), node.childForFieldName('value'), true);
-    else if (node.type === 'assignment_pattern')
+    else if (type === 'assignment_pattern')
       initialize(node.childForFieldName('left'), node.childForFieldName('right'), true);
-    else if (node.type === 'catch_clause') markPattern(node.childForFieldName('parameter'));
-    else if (node.type === 'assignment_expression') {
+    else if (type === 'catch_clause') markPattern(node.childForFieldName('parameter'));
+    else if (type === 'assignment_expression') {
       invalidate(node.childForFieldName('left'));
       commonJsExport(node.childForFieldName('left'), node.childForFieldName('right'));
-    } else if (node.type === 'augmented_assignment_expression')
+    } else if (type === 'augmented_assignment_expression')
       invalidate(node.childForFieldName('left'));
-    else if (node.type === 'update_expression') invalidate(node.childForFieldName('argument'));
-    else if (node.type === 'for_in_statement') {
+    else if (type === 'update_expression') invalidate(node.childForFieldName('argument'));
+    else if (type === 'for_in_statement') {
       const left = node.childForFieldName('left');
       if (node.childForFieldName('kind')) markPattern(left);
       invalidate(left);
-    }
-    if (node.type === 'export_statement') {
+    } else if (type === 'export_statement') {
       const declaration = node.childForFieldName('declaration');
       const value = node.childForFieldName('value');
       const isDefault = node.children.some((child) => child.type === 'default');
+      frame.defaultExport = isDefault;
       if (declaration) {
         const name = declaration.childForFieldName('name');
         if (name?.type === 'identifier') exported(name, isDefault ? 'default' : name.text);
@@ -411,28 +482,30 @@ export function createFetchWrapperContext(
           }
       } else if (isDefault && value?.type === 'identifier') exported(value, 'default');
     } else if (
-      node.type === 'export_specifier' &&
-      !(parent && parents.get(parent.id))?.childForFieldName('source')
+      type === 'export_specifier' &&
+      // `export { x } from './y'` declares no local export.
+      !frames[frames.length - 2]?.node?.childForFieldName('source')
     ) {
       const name = node.childForFieldName('name');
       if (name) exported(name, node.childForFieldName('alias')?.text ?? name.text);
-    }
-    if (
-      (node.type === 'identifier' || node.type === 'shorthand_property_identifier') &&
-      !declarationNodes.has(node.id)
-    )
-      references.push({ node, region: active });
-    if (node.type === 'call_expression' && !node.hasError) {
+    } else if (type === 'call_expression' && !node.hasError) {
       active.calls.push(node);
       allCalls.push(node);
     }
-    for (let i = children.length - 1; i >= 0; i--)
-      pending.push({
-        node: children[i],
-        parent: node,
-        region: active,
-        classRegion: entry.classRegion,
-      });
+    return frame;
+  };
+  for (let more = !SKIPPED_TYPES.has(rootNode.type) && cursor.gotoFirstChild(); more; ) {
+    const frame = enter();
+    if (frame) {
+      frames.push(frame);
+      if (cursor.gotoFirstChild()) continue;
+      frames.pop();
+    }
+    while (more && !cursor.gotoNextSibling()) {
+      cursor.gotoParent();
+      frames.pop();
+      more = frames.length > 0;
+    }
   }
   for (const [id, count] of initialized) if (count > 1) invalid.add(id);
   for (const id of invalid) aliases.delete(id);
@@ -474,12 +547,7 @@ export function createFetchWrapperContext(
   };
   const findFunction = (definition: Node, nameNode?: Node): Node | undefined => {
     // A declaration list can hold several declarators; follow the captured one.
-    const declarator = nameNode && parents.get(nameNode.id);
-    let node: Node | null =
-      declarator?.type === 'variable_declarator' &&
-      declarator.childForFieldName('name')?.id === nameNode!.id
-        ? declarator
-        : definition;
+    let node: Node | null = (nameNode && declarators.get(nameNode.id)) ?? definition;
     while (node && !callableRegions.has(node.id)) {
       node = unwrap(
         node.type === 'call_expression'
@@ -597,7 +665,7 @@ export function createFetchWrapperContext(
     if (cached) return cached;
     // Only a binding identifier names a lexical binding; object keys and
     // method names are properties.
-    const candidate = nameNode ?? storedName(fn, parents) ?? fn.childForFieldName('name');
+    const candidate = nameNode ?? storedNames.get(fn.id) ?? fn.childForFieldName('name');
     const name = candidate?.type === 'identifier' ? candidate : undefined;
     const id = name ? stableBinding(name, false) : undefined;
     const inline = inlineExports.get(fn.id) ?? [];
@@ -632,10 +700,7 @@ export function createFetchWrapperContext(
         forwardsTo.set(JSON.stringify(forwarded), forwarded);
       }
     }
-    const parent = parents.get(fn.id);
-    const defaultExport =
-      parent?.type === 'export_statement' &&
-      parent.children.some((child) => child.type === 'default');
+    const defaultExport = defaultExports.has(fn.id);
     const result: FetchWrapperFacts = {
       definitionId: `${filePath}:${fn.startPosition.row + lineOffset + 1}:${fn.startPosition.column}:${fn.endPosition.row + lineOffset + 1}:${fn.endPosition.column}`,
       ...(id ? { bindingId: id } : {}),
