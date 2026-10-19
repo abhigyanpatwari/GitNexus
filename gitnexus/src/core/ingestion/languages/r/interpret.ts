@@ -16,7 +16,8 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding } from 'gitnexus-sha
  */
 export function interpretRImport(captures: CaptureMatch): ParsedImport | null {
   const source = captures['@import.source']?.text;
-  if (source === undefined || source.length === 0) return null;
+  // The capture keeps its quotes, so `source("")` is two characters long: test the bare text.
+  if (source === undefined || source.replace(/^["']|["']$/g, '').length === 0) return null;
 
   if (captures['@import.wildcard'] !== undefined) {
     return { kind: 'wildcard', targetRaw: source };
