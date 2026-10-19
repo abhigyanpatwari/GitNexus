@@ -39,7 +39,6 @@ import { computeDartArityMetadata } from './arity-metadata.js';
 import { synthesizeDartReceiverBinding } from './receiver-binding.js';
 import { synthesizeDartSignatureBindings } from './signature-bindings.js';
 import { getDartParser, getDartScopeQuery } from './query.js';
-import { preprocessDartExtensionTypes } from './extension-type-preprocess.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -156,17 +155,13 @@ export function emitDartScopeCaptures(
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
-  // Idempotent re-application: `extractParsedFile` already preprocesses, but
-  // direct emitter callers (benchmarks, capture goldens) must see the same
-  // program the pipeline does.
-  const parseText = preprocessDartExtensionTypes(sourceText);
   let tree: Parser.Tree;
   if (cachedTree !== undefined && cachedTree !== null) {
     tree = cachedTree as Parser.Tree;
     recordCacheHit();
   } else {
-    tree = parseSourceSafe(getDartParser(), parseText, undefined, {
-      bufferSize: getTreeSitterBufferSize(parseText),
+    tree = parseSourceSafe(getDartParser(), sourceText, undefined, {
+      bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
   }
@@ -311,7 +306,7 @@ export function emitDartScopeCaptures(
       emitDartFieldAssignmentBindings(node, out, memo);
       return;
     }
-    if (node.type === 'extension_declaration') {
+    if (node.type === 'extension_declaration' || node.type === 'extension_type_declaration') {
       emitExtensionImplementsHeritage(node, out);
       return;
     }
@@ -1129,8 +1124,11 @@ function emitExtensionImplementsHeritage(extensionNode: SyntaxNode, out: Capture
   const nameNode = extensionNode.childForFieldName('name');
   if (nameNode === null) return;
 
-  const bodyStart = extensionNode.text.indexOf('{');
-  const header = bodyStart === -1 ? extensionNode.text : extensionNode.text.slice(0, bodyStart);
+  const body = extensionNode.childForFieldName('body');
+  const header =
+    body === null
+      ? extensionNode.text
+      : extensionNode.text.slice(0, body.startIndex - extensionNode.startIndex);
   const implementsIndex = header.indexOf('implements');
   if (implementsIndex === -1) return;
 
