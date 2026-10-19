@@ -363,6 +363,7 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Dart
   'mixin_declaration',
   'extension_declaration',
+  'extension_type_declaration',
   // Ruby
   'class',
   'module',
@@ -430,6 +431,7 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   protocol_declaration: 'Interface',
   mixin_declaration: 'Mixin',
   extension_declaration: 'Class',
+  extension_type_declaration: 'Class',
   class: 'Class',
   // Ruby `module` declarations map to `Trait` so they participate in the
   // class-like type registry used by `lookupClassByName` / inheritance
