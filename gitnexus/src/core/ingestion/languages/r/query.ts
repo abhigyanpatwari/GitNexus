@@ -357,8 +357,11 @@ const getRGrammar = (): Parameters<Parser['setLanguage']>[0] =>
 
 export function getRParser(): Parser {
   if (_parser === null) {
-    _parser = new Parser();
-    _parser.setLanguage(getRGrammar());
+    // Cache the parser only once its language is set: a failed grammar load must leave nothing
+    // behind, so the next call retries (or throws again) instead of returning a language-less parser.
+    const parser = new Parser();
+    parser.setLanguage(getRGrammar());
+    _parser = parser;
   }
   return _parser;
 }

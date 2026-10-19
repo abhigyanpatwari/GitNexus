@@ -54,6 +54,14 @@ describe('R grammar load failure', () => {
     expect(() => getRScopeQuery()).toThrow(/No native build/);
   });
 
+  it('does not cache a parser whose language failed to load', async () => {
+    const { getRParser } = await import('../../src/core/ingestion/languages/r/query.js');
+    // The first call fails; a later call must fail the same way (or retry), never return a
+    // parser that has no language set.
+    expect(() => getRParser()).toThrow(/No native build/);
+    expect(() => getRParser()).toThrow(/No native build/);
+  });
+
   it('keeps the parse worker from importing the grammar statically', () => {
     const source = fs.readFileSync(
       path.resolve(__dirname, '../../src/core/ingestion/workers/parse-worker.ts'),
