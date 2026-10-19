@@ -141,10 +141,17 @@ export function resolveFetchWrapperTargets(
     }
     return targets;
   };
-  const declared = new Set<string>();
+  // Each export name maps to the declaration it names; a name two declarations
+  // claim keeps a name-only identity, so it never merges with another export.
+  const declared = new Map<string, string>();
   for (const definition of definitions)
     if (definition.moduleScope)
-      for (const name of definition.exportedNames) declared.add(`${definition.filePath}\0${name}`);
+      for (const name of definition.exportedNames) {
+        const key = `${definition.filePath}\0${name}`;
+        const identity = `${definition.filePath}\0${definition.definitionId}`;
+        const existing = declared.get(key);
+        declared.set(key, existing === undefined || existing === identity ? identity : `${key}\0`);
+      }
   const named = new Map<string, FetchWrapperReexport[]>();
   const stars = new Map<string, FetchWrapperReexport[]>();
   for (const reexport of reexports) {
@@ -181,8 +188,16 @@ export function resolveFetchWrapperTargets(
         named.get(key) ?? (name === 'default' ? undefined : stars.get(filePath)) ?? [];
       return { frame: { filePath, name, candidates, cursor: 0, found: new Map() } };
     };
+    // Star exports conflict only when they reach different bindings, so two
+    // export names of one declaration are one candidate.
     const record = (frame: ExportFrame, target: CalleeTarget | undefined) => {
-      if (target) frame.found.set(JSON.stringify(target), target);
+      if (!target) return;
+      const identity =
+        target.kind === 'resolved-import'
+          ? declared.get(`${target.filePath}\0${target.importedName}`)
+          : undefined;
+      const key = identity ?? JSON.stringify(target);
+      if (!frame.found.has(key)) frame.found.set(key, target);
     };
     const first = open(startFile, startName);
     if ('value' in first) return first.value;

@@ -70,7 +70,7 @@ describe('Base-URL wrapper consumer FETCHES edge extraction', () => {
 });
 
 describe('Fetch wrapper lexical and project target identity', () => {
-  it('resolves relative, alias, workspace, barrel, overload, multi-declarator, HOC, CommonJS and package-fetch targets while rejecting shadowed and ambiguous names', async () => {
+  it('resolves relative, alias, workspace, barrel, export-alias diamond, overload, multi-declarator, HOC, CommonJS and package-fetch targets while rejecting shadowed and ambiguous names', async () => {
     const result = await runPipelineFromRepo(
       path.join(FIXTURES, 'fetch-wrapper-target-identity'),
       () => {},
@@ -88,6 +88,7 @@ describe('Fetch wrapper lexical and project target identity', () => {
       'web/barrel.ts -> /api/barrel-imported',
       'web/barrel.ts -> /api/barrel-star',
       'web/cjs.js -> /api/cjs',
+      'web/diamond.ts -> /api/diamond',
       'web/hoc.ts -> /api/hoc',
       'web/multi.ts -> /api/multi',
       'web/nested.ts -> /api/nested',

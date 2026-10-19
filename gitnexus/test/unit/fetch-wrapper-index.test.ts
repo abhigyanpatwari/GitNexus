@@ -388,6 +388,29 @@ describe('fetch wrapper barrel resolution', () => {
     expect(resolveIn(reexports)).toEqual(expected);
   });
 
+  // `export * from './left'; export * from './right'`, where left re-exports
+  // `request` and right re-exports `send as request` from the same module.
+  const diamond = [
+    forward('index.ts', '*', './left', '*'),
+    forward('index.ts', '*', './right', '*'),
+    forward('left.ts', 'request', './http'),
+    forward('right.ts', 'request', './http', 'send'),
+  ];
+  it.each([
+    [
+      'two export names of one declaration',
+      [{ ...declares('http.ts', 'request'), exportedNames: ['request', 'send'] }],
+      at('http.ts'),
+    ],
+    [
+      'two declarations',
+      [declares('http.ts', 'request'), declares('http.ts', 'send')],
+      { kind: 'blocked' },
+    ],
+  ])('resolves a star-export diamond over %s by binding identity', (_shape, defs, expected) => {
+    expect(resolveIn(diamond, 'request', defs)).toEqual(expected);
+  });
+
   it('never forwards default through a star export', () => {
     expect(
       resolveIn([forward('index.ts', '*', './request', '*')], 'default', [
