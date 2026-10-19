@@ -1,6 +1,6 @@
-7736bf3946506585c15ce2d981356c350df834b468283b603d8f7a4c97cf0bf6  ./darwin-arm64/tree-sitter-dart.node
-2a2da7627520d32f816bdd210f9d29ec022c6aaea8ee8fd29f39fe8975b55ed8  ./darwin-x64/tree-sitter-dart.node
+27da0743f90e98bd2117164fffb89d30975d665c6c8c09f0646964e2b5842331  ./darwin-arm64/tree-sitter-dart.node
+8c22efae548b85fa3569af4917eb35165436968abbd0007b2ee32e7afaeca85d  ./darwin-x64/tree-sitter-dart.node
 6126179aa1a164e940b9d960a1b767a4d7a56b0ea00baaf59bca03044463f691  ./linux-arm64/tree-sitter-dart.node
 88e0af5d4f65e48ac57922168504b2a7604e2b19dad5272c4d8a611e0f8db62f  ./linux-x64/tree-sitter-dart.node
-df2cf3c1e958aa8fd2920fee7b41d44c1b650ca5a24992eedfb6d5f99f3fee00  ./win32-arm64/tree-sitter-dart.node
-494f0ec4bf13fe56daaada6d3c9dcf020116a5f5f90adf9ef95c0fbea7b62329  ./win32-x64/tree-sitter-dart.node
+cb4d1a0d1eceec1632f1333bbe5358319f6fdcfe1b3b8098166c2c6dab93e035  ./win32-arm64/tree-sitter-dart.node
+3b7aba0e431ceef9ecbb8ce0b467efd5958d5e150862ea7fdd385684959d9fae  ./win32-x64/tree-sitter-dart.node
