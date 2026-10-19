@@ -58,8 +58,20 @@ describe('mergeResult', () => {
 
   it('retains wrapper candidates across sub-batches without treating them as HTTP sinks', () => {
     const target = emptyResult();
-    const first = { filePath: 'a.ts', functionName: 'request', fetchURL: '/a', lineNumber: 1 };
-    const second = { filePath: 'b.ts', functionName: 'client.get', fetchURL: '/b', lineNumber: 2 };
+    const first = {
+      filePath: 'a.ts',
+      functionName: 'request',
+      fetchURL: '/a',
+      lineNumber: 1,
+      target: { kind: 'unresolved' as const },
+    };
+    const second = {
+      filePath: 'b.ts',
+      functionName: 'client.get',
+      fetchURL: '/b',
+      lineNumber: 2,
+      target: { kind: 'member' as const },
+    };
     mergeResult(target, { ...emptyResult(), fetchWrapperCalls: [first] });
     mergeResult(target, emptyResult());
     mergeResult(target, { ...emptyResult(), fetchWrapperCalls: [second] });

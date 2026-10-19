@@ -1,0 +1,380 @@
+import { describe, expect, it } from 'vitest';
+import Parser from 'tree-sitter';
+import JavaScript from 'tree-sitter-javascript';
+import TypeScript from 'tree-sitter-typescript';
+import {
+  createFetchWrapperContext,
+  fetchWrapperFacts,
+} from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
+
+import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
+import {
+  typescriptProvider,
+  javascriptProvider,
+} from '../../src/core/ingestion/languages/typescript.js';
+
+for (const [language, grammar] of [
+  ['JavaScript', JavaScript],
+  ['TypeScript', TypeScript.typescript],
+  ['TSX', TypeScript.tsx],
+] as const) {
+  describe(`${language} wrapper provenance`, () => {
+    const parser = new Parser();
+    parser.setLanguage(grammar);
+    const analyze = (source: string, lineOffset = 0) => {
+      const tree = parser.parse(source);
+      const fullSource = '\n'.repeat(lineOffset) + source;
+      const parsedFile = extractParsedFile(
+        language === 'JavaScript' ? javascriptProvider : typescriptProvider,
+        fullSource,
+        language === 'TSX' ? 'source.tsx' : 'source.ts',
+        undefined,
+        parser.parse(fullSource),
+      )!;
+      return { tree, parsedFile, context: createFetchWrapperContext(tree, parsedFile, lineOffset) };
+    };
+    it.each([
+      ['injected fetch', 'function load(url, fetch) { fetch(url); }', false, false],
+      [
+        'platform default',
+        'function load(url, fetch = globalThis.fetch) { fetch(url); }',
+        true,
+        true,
+      ],
+      ['self default', 'function load(url, fetch = fetch) { fetch(url); }', false, false],
+      [
+        'shadowed default root',
+        'function load(url, globalThis, fetch = globalThis.fetch) { fetch(url); }',
+        false,
+        false,
+      ],
+      [
+        'sibling URL shadow',
+        'function load(url) { { const url = "fixed"; } fetch(url); }',
+        true,
+        true,
+      ],
+      [
+        'sibling platform shadow',
+        'function load(url) { { const globalThis = {}; } globalThis.fetch(url); }',
+        true,
+        true,
+      ],
+      [
+        'sibling alias shadow',
+        'function load(url) { const send = globalThis.fetch; { const send = other; } send(url); }',
+        true,
+        true,
+      ],
+      [
+        'alias reassignment',
+        'function load(url) { let send = globalThis.fetch; send = other; send(url); }',
+        false,
+        false,
+      ],
+      ['URL reassignment', 'function load(url) { url = "fixed"; fetch(url); }', true, false],
+      [
+        'unused recursive helper',
+        'function load(url) { function helper() { fetch(url); helper(); } }',
+        false,
+        false,
+      ],
+      [
+        'unused mutual recursion',
+        'function load(url) { function a() { b(); } function b() { fetch(url); a(); } }',
+        false,
+        false,
+      ],
+      [
+        'rooted recursion',
+        'function load(url) { function a() { b(); } function b() { fetch(url); a(); } a(); }',
+        true,
+        true,
+      ],
+      ['IIFE', 'function load(url) { (() => fetch(url))(); }', true, true],
+      ['inline callback', 'function load(url) { retry(() => fetch(url)); }', true, true],
+      ['escaping anonymous', 'function load(url) { return () => fetch(url); }', true, true],
+      [
+        'stored anonymous property',
+        'function load(url) { object.callback = () => fetch(url); }',
+        true,
+        true,
+      ],
+      ['unused arrow', 'function load(url) { const later = () => fetch(url); }', false, false],
+      [
+        'unused wrapped arrow',
+        'function load(url) { const later = (() => fetch(url)); }',
+        false,
+        false,
+      ],
+      [
+        'referenced arrow',
+        'function load(url) { const later = () => fetch(url); return later; }',
+        true,
+        true,
+      ],
+      [
+        'class static block',
+        'function load(url) { class C { static { fetch(url); } } }',
+        true,
+        true,
+      ],
+      [
+        'class static field',
+        'function load(url) { class C { static x = fetch(url); } }',
+        true,
+        true,
+      ],
+      ['class computed key', 'function load(url) { class C { [fetch(url)]() {} } }', true, true],
+      [
+        'class heritage',
+        'function load(url) { class C extends factory(fetch(url)) {} }',
+        true,
+        true,
+      ],
+      [
+        'deferred method',
+        'function load(url) { class C { method() { fetch(url); } } }',
+        false,
+        false,
+      ],
+      [
+        'deferred instance field',
+        'function load(url) { class C { x = fetch(url); } }',
+        false,
+        false,
+      ],
+      [
+        'referenced class',
+        'function load(url) { class C { method() { fetch(url); } } return new C(); }',
+        true,
+        true,
+      ],
+      [
+        'class expression static',
+        'function load(url) { const C = class { static x = fetch(url); }; }',
+        true,
+        true,
+      ],
+      [
+        'class expression deferred',
+        'function load(url) { const C = class { x = fetch(url); }; }',
+        false,
+        false,
+      ],
+      [
+        'referenced class expression',
+        'function load(url) { const C = class { x = fetch(url); }; return C; }',
+        true,
+        true,
+      ],
+      [
+        'collapsed parameter environments',
+        'function load(url, send = () => fetch(url)) { var fetch = () => 0; return send(); }',
+        false,
+        false,
+      ],
+    ])('%s', (_shape, source, seed, forwardsUrl) => {
+      const tree = parser.parse(source);
+      const parsedFile = extractParsedFile(
+        language === 'JavaScript' ? javascriptProvider : typescriptProvider,
+        source,
+        language === 'TSX' ? 'source.tsx' : 'source.ts',
+        undefined,
+        tree,
+      )!;
+      expect(fetchWrapperFacts(tree.rootNode.firstNamedChild!, parsedFile)).toMatchObject({
+        seed,
+        forwardsUrl,
+      });
+    });
+
+    it.each([
+      ['parameter', 'function load(request) { request("/api/x"); }', 'binding'],
+      ['local nonwrapper', 'const request = custom; request("/api/x");', 'binding'],
+      ['future local', 'request("/api/x"); const request = custom;', 'blocked'],
+      [
+        'mutated wrapper',
+        'function request(url) { return fetch(url); } request = custom; request("/api/x");',
+        'blocked',
+      ],
+      [
+        'mutated import',
+        'import { request } from "./api"; request = custom; request("/api/x");',
+        'blocked',
+      ],
+      [
+        'namespace member behavior',
+        'import * as api from "./api"; api.request = custom; api.request("/api/x");',
+        'member',
+      ],
+    ])('retains contradictory target evidence: %s', (_shape, source, kind) => {
+      const { context } = analyze(source);
+      expect(context.calls()).toMatchObject([{ target: { kind } }]);
+    });
+
+    it('records bare import targets while preserving member-call behavior', () => {
+      const { context } = analyze(
+        'import request from "@workspace/api"; import { load as send } from "@/service"; import * as api from "./client.js"; request("/a"); send("/b"); api.load("/c");',
+      );
+      expect(context.calls().map((call) => call.target)).toEqual([
+        { kind: 'import', specifier: '@workspace/api', importedName: 'default' },
+        { kind: 'import', specifier: '@/service', importedName: 'load' },
+        { kind: 'member' },
+      ]);
+    });
+
+    it('keeps negative definitions, exports and declaration identities across serialization', () => {
+      const { tree, context } = analyze(
+        'export function request(url) { return fetch(url); } export { request as send }; export default request; function outer() { function request(value) { return value; } }',
+      );
+      const functions = tree.rootNode.descendantsOfType('function_declaration');
+      const facts = functions.map((fn) => context.facts(fn)!);
+      expect(facts).toHaveLength(3);
+      expect(facts[0]).toMatchObject({
+        moduleScope: true,
+        exportedNames: ['request', 'send', 'default'],
+        seed: true,
+      });
+      expect(facts[2]).toMatchObject({
+        moduleScope: false,
+        exportedNames: [],
+        seed: false,
+        forwardsUrl: false,
+      });
+      expect(facts[0].bindingId).not.toBe(facts[2].bindingId);
+      expect(new Set(facts.map((fact) => fact.definitionId)).size).toBe(3);
+      expect(JSON.parse(JSON.stringify(facts))).toEqual(facts);
+    });
+
+    it('keeps distinct declarations even when a binding is shared', () => {
+      const { tree, context } = analyze(
+        'function request(url) { return fetch(url); } function request(url) { return custom(url); }',
+      );
+      const facts = tree.rootNode.namedChildren.map((fn) => context.facts(fn)!);
+      expect(facts[0].bindingId).toBe(facts[1].bindingId);
+      expect(facts[0].definitionId).not.toBe(facts[1].definitionId);
+    });
+
+    it('retains source offsets and provider context identity', () => {
+      const { tree, parsedFile, context } = analyze(
+        'export function request(url) { return fetch(url); }\nrequest("/api/x");',
+        12,
+      );
+      const definition = tree.rootNode.firstNamedChild!;
+      const provider = language === 'JavaScript' ? javascriptProvider : typescriptProvider;
+      const first = provider.extractFetchWrapperFacts!(definition, undefined, parsedFile, 12);
+      expect(provider.extractFetchWrapperFacts!(definition, undefined, parsedFile, 12)).toBe(first);
+      expect(context.facts(definition)).toEqual(first);
+      expect(first!.definitionId).toContain(':13:');
+      expect(context.calls()).toMatchObject([
+        { lineNumber: 14, target: { kind: 'binding', bindingId: first!.bindingId } },
+      ]);
+    });
+
+    it('recognizes an anonymous default export', () => {
+      const { tree, context } = analyze('export default function (url) { return fetch(url); }');
+      expect(context.facts(tree.rootNode.firstNamedChild!)).toMatchObject({
+        moduleScope: true,
+        exportedNames: ['default'],
+        seed: true,
+        forwardsUrl: true,
+      });
+    });
+
+    if (language !== 'JavaScript')
+      it('keeps stored asserted callbacks deferred', () => {
+        const { tree, context } = analyze(
+          'function load(url) { const later = (() => fetch(url)) as () => unknown; }',
+        );
+        expect(context.facts(tree.rootNode.firstNamedChild!)).toMatchObject({
+          seed: false,
+          forwardsUrl: false,
+        });
+      });
+
+    if (language !== 'JavaScript')
+      it('evaluates supported decorator expressions while deferring methods', () => {
+        const { tree, context } = analyze(
+          'function load(url) { @decorate(fetch(url)) class C { @decorate(fetch(url)) method() { return custom(url); } } }',
+        );
+        expect(context.facts(tree.rootNode.firstNamedChild!)).toMatchObject({
+          seed: true,
+          forwardsUrl: true,
+        });
+      });
+  });
+}
+
+it.each(['deep', 'deep-arrow', 'wide'] as const)(
+  'keeps native AST traversal bounded for %s helpers',
+  (shape) => {
+    const count = 128;
+    const source = (
+      shape !== 'wide'
+        ? [
+            'function load(url) {',
+            ...Array.from({ length: count }, (_, i) =>
+              shape === 'deep' ? `function helper${i}() {` : `const helper${i} = () => {`,
+            ),
+            'return fetch(url);',
+            ...Array.from({ length: count }, (_, i) => `}; return helper${count - i - 1}();`),
+            '}',
+          ]
+        : [
+            'function load(url) {',
+            ...Array.from({ length: count }, (_, i) => `function helper${i}() { fetch(url); }`),
+            ...Array.from({ length: count }, (_, i) => `helper${i}();`),
+            '}',
+          ]
+    ).join('\n');
+    const parser = new Parser();
+    parser.setLanguage(TypeScript.typescript);
+    const tree = parser.parse(source);
+    const parsedFile = extractParsedFile(typescriptProvider, source, 'nested.ts', undefined, tree)!;
+    const functions = tree.rootNode.descendantsOfType(['function_declaration', 'arrow_function']);
+    const depths = new Map<number, number>();
+    const pending = [{ node: tree.rootNode, depth: 0 }];
+    while (pending.length) {
+      const { node, depth } = pending.pop()!;
+      depths.set(node.id, depth);
+      for (const child of node.namedChildren) pending.push({ node: child, depth: depth + 1 });
+    }
+    let prototype = Object.getPrototypeOf(tree.rootNode);
+    while (!Object.hasOwn(prototype, 'parent')) prototype = Object.getPrototypeOf(prototype);
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'parent')!;
+    const childDescriptor = Object.getOwnPropertyDescriptor(prototype, 'namedChild')!;
+    let parentTraversalSteps = 0;
+    let childTraversalSteps = 0;
+    // tree-sitter's native ts_node_parent descends from the root on every call.
+    // Count that depth-weighted work only after parsing and scope extraction.
+    Object.defineProperty(prototype, 'parent', {
+      ...descriptor,
+      get(this: Parser.SyntaxNode) {
+        parentTraversalSteps += depths.get(this.id) ?? 0;
+        return descriptor.get!.call(this);
+      },
+    });
+    // ts_node__child starts its sibling iterator at zero for every indexed read.
+    Object.defineProperty(prototype, 'namedChild', {
+      ...childDescriptor,
+      value(this: Parser.SyntaxNode, index: number) {
+        childTraversalSteps += index + 1;
+        return childDescriptor.value.call(this, index);
+      },
+    });
+    try {
+      const context = createFetchWrapperContext(tree, parsedFile);
+      const facts = functions.map((fn) =>
+        context.facts(fn, fn.childForFieldName('name') ?? undefined),
+      );
+      expect(facts.every((fact) => fact?.seed)).toBe(true);
+      expect(facts[0]?.forwardsUrl).toBe(true);
+      expect(parentTraversalSteps).toBeLessThanOrEqual(32 * count);
+      expect(childTraversalSteps).toBeLessThanOrEqual(64 * count);
+    } finally {
+      Object.defineProperty(prototype, 'parent', descriptor);
+      Object.defineProperty(prototype, 'namedChild', childDescriptor);
+    }
+  },
+);
