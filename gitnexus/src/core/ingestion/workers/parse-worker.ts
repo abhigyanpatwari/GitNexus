@@ -1,7 +1,6 @@
 import {
-  fetchWrapperFacts,
   type FetchWrapperCall,
-  type ForwardedCallee,
+  type FetchWrapperFacts,
 } from '../route-extractors/fetch-wrapper.js';
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
@@ -348,15 +347,9 @@ export interface ExtractedFetchCall {
   lineNumber: number;
 }
 
-export interface FetchWrapperDef {
+export interface FetchWrapperDef extends FetchWrapperFacts {
   filePath: string;
   functionName: string;
-  /** Calls fetch itself; otherwise a wrapper only through `forwardsTo`. */
-  seed: boolean;
-  /** Its first parameter reaches the URL argument of that fetch call. */
-  forwardsUrl: boolean;
-  /** Callees given this function's own first parameter as their first argument. */
-  forwardsTo: ForwardedCallee[];
 }
 
 /** See {@link ExtractedDecoratorRoute.handlerReceiver}. */
@@ -3150,14 +3143,19 @@ const processFileGroup = (
       if (
         nodeLabel === 'Function' &&
         definitionNode &&
-        nameNode &&
-        (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript)
+        parsedFile &&
+        provider.extractFetchWrapperFacts
       ) {
-        const facts = fetchWrapperFacts(definitionNode, file.path);
-        if (facts.seed || facts.forwardsTo.length > 0) {
+        const facts = provider.extractFetchWrapperFacts(
+          definitionNode,
+          nameNode,
+          parsedFile,
+          lineOffset,
+        );
+        if (facts) {
           result.fetchWrapperDefs.push({
             filePath: file.path,
-            functionName: nameNode.text,
+            functionName: nodeName,
             ...facts,
           });
         }
@@ -3237,8 +3235,8 @@ const processFileGroup = (
       }
     }
 
-    if (provider.extractFetchWrapperCalls) {
-      const candidates = provider.extractFetchWrapperCalls(tree, file.path, lineOffset);
+    if (parsedFile && provider.extractFetchWrapperCalls) {
+      const candidates = provider.extractFetchWrapperCalls(tree, parsedFile, lineOffset);
       for (const candidate of candidates) (result.fetchWrapperCalls ??= []).push(candidate);
     }
 
