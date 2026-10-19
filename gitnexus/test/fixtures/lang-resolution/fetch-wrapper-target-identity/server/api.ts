@@ -1,0 +1,14 @@
+import express from 'express';
+const app = express();
+app.get('/api/relative', (_req, res) => res.json({}));
+app.get('/api/alias', (_req, res) => res.json({}));
+app.get('/api/workspace', (_req, res) => res.json({}));
+app.get('/api/forwarded', (_req, res) => res.json({}));
+app.get('/api/plain', (_req, res) => res.json({}));
+app.get('/api/plain-forwarded', (_req, res) => res.json({}));
+app.get('/api/parameter', (_req, res) => res.json({}));
+app.get('/api/local', (_req, res) => res.json({}));
+app.get('/api/nested', (_req, res) => res.json({}));
+app.get('/api/sibling', (_req, res) => res.json({}));
+app.get('/api/ambiguous', (_req, res) => res.json({}));
+app.get('/api/unique', (_req, res) => res.json({}));
