@@ -87,12 +87,62 @@ export function patternBindingNames(root: Node | null): Node[] {
   return names;
 }
 
-interface FunctionEnvironment {
-  readonly parameters: Node;
-  readonly parameterNames: ReadonlySet<string>;
-  readonly scopeId?: string;
-  readonly declarations: Node[];
-  containsExpression: boolean;
+const TYPE_SUBTREES: ReadonlySet<string> = new Set([
+  'type_annotation',
+  'type_parameters',
+  'type_arguments',
+]);
+
+/** Whether formals contain a default value or computed key (ECMAScript ContainsExpression). */
+function containsParameterExpression(parameters: Node): boolean {
+  // Plain identifier parameters, the common case, need no subtree search.
+  if (parameters.type === 'identifier') return false;
+  const plain = parameters.namedChildren.every(
+    (parameter) =>
+      parameter.type === 'comment' ||
+      parameter.type === 'identifier' ||
+      ((parameter.type === 'required_parameter' || parameter.type === 'optional_parameter') &&
+        parameter.childForFieldName('value') === null &&
+        ['identifier', 'this'].includes(parameter.childForFieldName('pattern')?.type ?? '')),
+  );
+  if (plain) return false;
+  return (
+    parameters.descendantsOfType([
+      'assignment_pattern',
+      'object_assignment_pattern',
+      'computed_property_name',
+    ]).length > 0 ||
+    parameters
+      .descendantsOfType(['required_parameter', 'optional_parameter'])
+      .some((parameter) => parameter.childForFieldName('value') !== null)
+  );
+}
+
+/** `var` and function declarations of one function body, excluding nested callables. */
+function bodyDeclarations(body: Node | null): Node[] {
+  const declarations: Node[] = [];
+  const pending = body ? [body] : [];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (node.type === 'comment' || node.type === 'ERROR') continue;
+    if (LEXICAL_FUNCTION_TYPES.has(node.type)) {
+      const name = node.childForFieldName('name');
+      if (
+        name &&
+        (node.type === 'function_declaration' || node.type === 'generator_function_declaration')
+      )
+        declarations.push(name);
+      continue;
+    }
+    if (node.type === 'variable_declaration') {
+      for (const declarator of node.namedChildren)
+        if (declarator.type === 'variable_declarator')
+          declarations.push(...patternBindingNames(declarator.childForFieldName('name')));
+    } else if (node.type === 'for_in_statement' && node.childForFieldName('kind')?.text === 'var')
+      declarations.push(...patternBindingNames(node.childForFieldName('left')));
+    for (const child of node.namedChildren) pending.push(child);
+  }
+  return declarations;
 }
 
 /**
@@ -107,29 +157,26 @@ export function createLexicalBindings(
   const scopes = buildScopeTree(parsedFile.scopes);
   const positions = buildPositionIndex(parsedFile.scopes);
   const nodeScopes = new Map<number, ReturnType<typeof positions.atPosition>>();
-  const scopeAt = (node: Node) => {
-    if (!nodeScopes.has(node.id))
-      nodeScopes.set(
-        node.id,
-        positions.atPosition(
-          parsedFile.filePath,
-          node.startPosition.row + 1 + lineOffset,
-          node.startPosition.column,
-        ),
-      );
-    return nodeScopes.get(node.id);
+  // Native node getters are costly; each lookup reads `id` and `startPosition` once.
+  const scopeAt = (node: Node, id = node.id, start = node.startPosition) => {
+    if (nodeScopes.has(id)) return nodeScopes.get(id);
+    const scope = positions.atPosition(
+      parsedFile.filePath,
+      start.row + 1 + lineOffset,
+      start.column,
+    );
+    nodeScopes.set(id, scope);
+    return scope;
   };
   const owners = new Map<number, Map<string, NameClaimResult | undefined>>();
   const ownership: LexicalBindings['ownership'] = (node, name = node.text, atUse = false) => {
+    const id = node.id;
     const key = `${atUse ? 'use' : 'owner'}\0${name}`;
-    let cached = owners.get(node.id);
+    let cached = owners.get(id);
     if (cached?.has(key)) return cached.get(key);
-    if (!cached) owners.set(node.id, (cached = new Map()));
-    const position = {
-      startLine: node.startPosition.row + 1 + lineOffset,
-      startCol: node.startPosition.column,
-    };
-    const scope = scopeAt(node);
+    if (!cached) owners.set(id, (cached = new Map()));
+    const start = node.startPosition;
+    const scope = scopeAt(node, id, start);
     const owner =
       scope === undefined
         ? undefined
@@ -137,158 +184,67 @@ export function createLexicalBindings(
             scope,
             name,
             { scopes },
-            { purpose: 'value', ...(atUse ? { position } : {}) },
+            atUse
+              ? {
+                  purpose: 'value',
+                  position: { startLine: start.row + 1 + lineOffset, startCol: start.column },
+                }
+              : { purpose: 'value' },
           );
     cached.set(key, owner);
     return owner;
   };
+  // A future claim or an explicit blocked claim is a TDZ/availability barrier.
+  const blockedBefore = (claims: NameClaimResult['claims'], start: Parser.Point) =>
+    claims.some(
+      (claim) =>
+        claim.kind === 'blocked' ||
+        (claim.kind === 'binding' &&
+          claim.availableFrom &&
+          (claim.availableFrom.startLine > start.row + 1 + lineOffset ||
+            (claim.availableFrom.startLine === start.row + 1 + lineOffset &&
+              claim.availableFrom.startCol > start.column))),
+    );
   const bindingId: LexicalBindings['bindingId'] = (node, name = node.text, atUse = false) => {
     const owner = ownership(node, name, atUse);
     // Imports and untyped parameters can have no BindingRef. A future claim or
     // explicit blocked claim is different: it remains a TDZ/availability barrier.
-    if (
-      atUse &&
-      owner?.status === 'blocked' &&
-      owner.claims.some(
-        (claim) =>
-          claim.kind === 'blocked' ||
-          (claim.kind === 'binding' &&
-            claim.availableFrom &&
-            (claim.availableFrom.startLine > node.startPosition.row + 1 + lineOffset ||
-              (claim.availableFrom.startLine === node.startPosition.row + 1 + lineOffset &&
-                claim.availableFrom.startCol > node.startPosition.column))),
-      )
-    )
+    if (atUse && owner?.status === 'blocked' && blockedBefore(owner.claims, node.startPosition))
       return undefined;
     return owner?.scope ? bindingKey(owner.scope.id, name) : undefined;
   };
 
-  const environments: FunctionEnvironment[] = [];
-  const declarationNodes = new Set<number>();
-  const references = new Map<string, number[]>();
-  const visitPattern = (pattern: Node | null): Node[] => {
-    const names = patternBindingNames(pattern);
-    for (const name of names) declarationNodes.add(name.id);
-    return names;
-  };
-  const pending: {
-    node: Node;
-    parent?: Node;
-    body?: FunctionEnvironment;
-    formals?: FunctionEnvironment;
-    typeOnly?: boolean;
-    inParameters?: boolean;
-  }[] = [{ node: rootNode }];
-  while (pending.length) {
-    const { node, parent, body, formals, typeOnly, inParameters } = pending.pop()!;
-    if (node.type === 'comment' || node.type === 'ERROR') continue;
-    const isFunction = LEXICAL_FUNCTION_TYPES.has(node.type);
-    let environment: FunctionEnvironment | undefined;
-    if (isFunction) {
-      const name = node.childForFieldName('name');
-      if (name) {
-        declarationNodes.add(name.id);
-        if (node.type === 'function_declaration' || node.type === 'generator_function_declaration')
-          body?.declarations.push(name);
-      }
-      const parameters =
-        node.childForFieldName('parameters') ?? node.childForFieldName('parameter');
-      if (parameters) {
-        const names = visitPattern(parameters);
-        const scopeId = scopeAt(parameters);
-        let functionScope = scopeId === undefined ? undefined : scopes.getScope(scopeId);
-        while (functionScope && functionScope.kind !== 'Function')
-          functionScope =
-            functionScope.parent === null ? undefined : scopes.getScope(functionScope.parent);
-        environment = {
-          parameters,
-          parameterNames: new Set(names.map((name) => name.text)),
-          scopeId: functionScope?.id,
-          declarations: [],
-          containsExpression: false,
-        };
-        environments.push(environment);
-      }
-    } else if (node.type === 'variable_declarator') {
-      const names = visitPattern(node.childForFieldName('name'));
-      if (parent?.type === 'variable_declaration') body?.declarations.push(...names);
-    } else if (node.type === 'catch_clause') {
-      visitPattern(node.childForFieldName('parameter'));
-    } else if (node.type === 'for_in_statement' && node.childForFieldName('kind')) {
-      const names = visitPattern(node.childForFieldName('left'));
-      if (node.childForFieldName('kind')?.text === 'var') body?.declarations.push(...names);
-    } else if (node.type === 'class' || node.type === 'class_declaration') {
-      const name = node.childForFieldName('name');
-      if (name) declarationNodes.add(name.id);
-    }
-    if (
-      formals &&
-      (node.type === 'assignment_pattern' ||
-        node.type === 'object_assignment_pattern' ||
-        node.type === 'computed_property_name' ||
-        ((node.type === 'required_parameter' || node.type === 'optional_parameter') &&
-          node.childForFieldName('value')))
-    )
-      formals.containsExpression = true;
-    const inType =
-      typeOnly || ['type_annotation', 'type_parameters', 'type_arguments'].includes(node.type);
-    if (
-      inParameters &&
-      !inType &&
-      !declarationNodes.has(node.id) &&
-      (node.type === 'identifier' || node.type === 'shorthand_property_identifier')
-    ) {
-      const id = bindingId(node);
-      if (id) {
-        const existing = references.get(id);
-        if (existing) existing.push(node.startIndex);
-        else references.set(id, [node.startIndex]);
-      }
-    }
-    const functionBody = isFunction ? node.childForFieldName('body') : null;
-    const children = node.namedChildren;
-    for (let i = children.length - 1; i >= 0; i--) {
-      const child = children[i];
-      pending.push({
-        node: child,
-        parent: node,
-        body: isFunction ? (child.id === functionBody?.id ? environment : undefined) : body,
-        formals: isFunction
-          ? child.id === environment?.parameters.id
-            ? environment
-            : undefined
-          : formals,
-        typeOnly: inType,
-        inParameters: inParameters || child.id === environment?.parameters.id,
-      });
-    }
-  }
-
+  // Parameter defaults or computed keys give the body its own variable
+  // environment, which the ParsedFile collapses into one function scope. Most
+  // functions have neither, so a native type search finds the few that do and
+  // only their formals and bodies are walked.
   const ambiguous = new Set<string>();
-  for (const environment of environments) {
-    if (!environment.containsExpression) continue;
-    for (const declaration of environment.declarations) {
+  for (const fn of rootNode.descendantsOfType([...LEXICAL_FUNCTION_TYPES])) {
+    const parameters = fn.childForFieldName('parameters') ?? fn.childForFieldName('parameter');
+    if (!parameters || !containsParameterExpression(parameters)) continue;
+    let functionScope = scopes.getScope(scopeAt(parameters) ?? '');
+    while (functionScope && functionScope.kind !== 'Function')
+      functionScope =
+        functionScope.parent === null ? undefined : scopes.getScope(functionScope.parent);
+    const parameterNames = new Set(patternBindingNames(parameters).map((name) => name.text));
+    const uses = new Set<string>();
+    const formals = [parameters];
+    while (formals.length > 0) {
+      const node = formals.pop()!;
+      if (node.type === 'comment' || node.type === 'ERROR' || TYPE_SUBTREES.has(node.type))
+        continue;
+      if (node.type === 'identifier' || node.type === 'shorthand_property_identifier') {
+        const id = bindingId(node);
+        if (id) uses.add(id);
+      }
+      for (const child of node.namedChildren) formals.push(child);
+    }
+    for (const declaration of bodyDeclarations(fn.childForFieldName('body'))) {
       // A var in a class static block, or a block-owned function declaration,
       // does not share this function's collapsed variable environment.
-      const owner = ownership(declaration);
-      if (owner?.scope?.id !== environment.scopeId) continue;
-      const name = declaration.text;
+      if (ownership(declaration)?.scope?.id !== functionScope?.id) continue;
       const id = bindingId(declaration);
-      if (!id) continue;
-      const uses = references.get(id) ?? [];
-      let lo = 0;
-      let hi = uses.length;
-      while (lo < hi) {
-        const mid = (lo + hi) >>> 1;
-        if (uses[mid] < environment.parameters.startIndex) lo = mid + 1;
-        else hi = mid;
-      }
-      if (
-        environment.parameterNames.has(name) ||
-        (lo < uses.length && uses[lo] < environment.parameters.endIndex)
-      ) {
-        ambiguous.add(id);
-      }
+      if (id && (parameterNames.has(declaration.text) || uses.has(id))) ambiguous.add(id);
     }
   }
   return {
