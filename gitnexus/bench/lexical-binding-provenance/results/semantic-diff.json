@@ -1,6 +1,6 @@
 {
   "baselineRevision": "565e50276dc9aa4e3b6e36dfabe8a92571b0d699",
-  "candidateRevision": "4d62bd04513f70c365c713ca3640f36bb5a5a85a",
+  "candidateRevision": "528ea1478ba4bf03e5f4dd02054519fcd9d6f109",
   "corpusFingerprint": "88be1faf45e9aec145f9d168b8959d67f31ec3b09b5455e9c8d8b2b1681ade5a",
   "counts": {
     "baseline": {
@@ -64,7 +64,7 @@
     "fingerprint": "3e00ca5b1d6e0c5d84eb33531bb8148aba3598a8b987dd526b8f9ddab2e12fed"
   },
   "candidateExport": {
-    "revision": "4d62bd04513f70c365c713ca3640f36bb5a5a85a",
+    "revision": "528ea1478ba4bf03e5f4dd02054519fcd9d6f109",
     "dirty": false,
     "corpusFingerprint": "88be1faf45e9aec145f9d168b8959d67f31ec3b09b5455e9c8d8b2b1681ade5a",
     "fingerprint": "4db24f57b329263d31a8c9d55e1148c9cd7bde552c3dcbcba7d256f1c8a4e37c"
