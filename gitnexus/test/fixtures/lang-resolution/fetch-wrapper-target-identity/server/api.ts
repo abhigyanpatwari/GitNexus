@@ -24,3 +24,5 @@ app.get('/api/key', (_req, res) => res.json({}));
 app.get('/api/node', (_req, res) => res.json({}));
 app.get('/api/diamond', (_req, res) => res.json({}));
 app.get('/api/diamond-distinct', (_req, res) => res.json({}));
+app.get('/api/cjs-member', (_req, res) => res.json({}));
+app.get('/api/cjs-arrow', (_req, res) => res.json({}));

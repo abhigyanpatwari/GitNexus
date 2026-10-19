@@ -2,8 +2,6 @@ import type { FetchWrapperDef } from '../workers/parse-worker.js';
 import type { CalleeTarget, FetchWrapperCall, FetchWrapperReexport } from './fetch-wrapper.js';
 
 interface NameGroup {
-  /** null means more than one distinct definition has this name. */
-  unique: number | null;
   remainingCarriers: number;
   hasWrapper: boolean;
   dependents: number[];
@@ -27,6 +25,11 @@ export function buildFetchWrapperIndex(
   const defs: FetchWrapperDef[] = [];
   const bindings = new Map<string, number | null>();
   const exports = new Map<string, number | null>();
+  // Name-only fallbacks consider only definitions that can be the target: an
+  // unresolvable import names some module's export, an undeclared global a
+  // top-level function. Nested and unexported helpers never collide with them.
+  const exportedAnywhere = new Map<string, number | null>();
+  const topLevel = new Map<string, number | null>();
   const names = new Map<string, NameGroup>();
 
   for (const definition of definitions) {
@@ -41,16 +44,16 @@ export function buildFetchWrapperIndex(
     if (definition.moduleScope) {
       for (const name of definition.exportedNames) {
         addUnique(exports, `${definition.filePath}\0${name}`, index);
+        addUnique(exportedAnywhere, name, index);
       }
+      addUnique(topLevel, definition.functionName, index);
     }
     const group = names.get(definition.functionName);
     if (group) {
-      group.unique = null;
       group.remainingCarriers++;
       group.hasWrapper ||= definition.seed;
     } else {
       names.set(definition.functionName, {
-        unique: index,
         remainingCarriers: 1,
         hasWrapper: definition.seed,
         dependents: [],
@@ -69,9 +72,9 @@ export function buildFetchWrapperIndex(
       case 'resolved-import':
         return exports.get(`${target.filePath}\0${target.importedName}`);
       case 'import':
-        return names.get(target.importedName)?.unique;
+        return exportedAnywhere.get(target.importedName);
       case 'unresolved':
-        return names.get(name)?.unique;
+        return topLevel.get(name);
       case 'blocked':
       case 'member':
         return undefined;
@@ -124,7 +127,12 @@ export function buildFetchWrapperIndex(
   };
 }
 
-/** Resolve serialized import facts with the pipeline's existing project resolver. */
+/**
+ * Resolve serialized import facts with the pipeline's existing project resolver.
+ * Only providers whose modules link by ECMAScript rules emit re-export facts, so
+ * the barrel walk applies ResolveExport; it names no language and consults no
+ * provider.
+ */
 export function resolveFetchWrapperTargets(
   definitions: readonly FetchWrapperDef[],
   calls: readonly FetchWrapperCall[],
@@ -172,8 +180,13 @@ export function resolveFetchWrapperTargets(
     candidates: readonly FetchWrapperReexport[];
     cursor: number;
     found: Map<string, CalleeTarget>;
+    /** A branch stopped at an export already on this walk, so the result is not reusable. */
+    partial: boolean;
   }
-  type ExportStep = { frame: ExportFrame } | { value: CalleeTarget | undefined };
+  type ExportStep = { frame: ExportFrame } | { value: CalleeTarget | undefined; partial?: true };
+  // Fully explored exports, shared by every walk: calls that enter a chain at
+  // different hops reuse the hops below, keeping the work linear in the chain.
+  const resolvedExports = new Map<string, CalleeTarget | undefined>();
   // Explicit frames instead of recursion, so long re-export chains cannot
   // exhaust the call stack. One walk shares `seen` across all of its branches.
   const exporter = (startFile: string, startName: string): CalleeTarget | undefined => {
@@ -182,11 +195,12 @@ export function resolveFetchWrapperTargets(
       const key = `${filePath}\0${name}`;
       if (declared.has(key))
         return { value: { kind: 'resolved-import', filePath, importedName: name } };
-      if (seen.has(key)) return { value: undefined };
+      if (resolvedExports.has(key)) return { value: resolvedExports.get(key) };
+      if (seen.has(key)) return { value: undefined, partial: true };
       seen.add(key);
       const candidates =
         named.get(key) ?? (name === 'default' ? undefined : stars.get(filePath)) ?? [];
-      return { frame: { filePath, name, candidates, cursor: 0, found: new Map() } };
+      return { frame: { filePath, name, candidates, cursor: 0, found: new Map(), partial: false } };
     };
     // Star exports conflict only when they reach different bindings, so two
     // export names of one declaration are one candidate.
@@ -206,19 +220,21 @@ export function resolveFetchWrapperTargets(
     while (frames.length > 0) {
       const frame = frames[frames.length - 1];
       let nested: ExportFrame | undefined;
-      let shadowed = false;
+      let local = false;
       while (frame.cursor < frame.candidates.length) {
         const { from } = frame.candidates[frame.cursor++];
         // A local export that declares no wrapper shadows every forwarded name.
         if (!from) {
-          shadowed = true;
+          local = true;
           break;
         }
         const targets = moduleTargets(frame.filePath, from.specifier);
         if (targets.length !== 1) continue;
         const step = open(targets[0], from.importedName === '*' ? frame.name : from.importedName);
-        if ('value' in step) record(frame, step.value);
-        else {
+        if ('value' in step) {
+          record(frame, step.value);
+          if (step.partial) frame.partial = true;
+        } else {
           nested = step.frame;
           break;
         }
@@ -228,34 +244,34 @@ export function resolveFetchWrapperTargets(
         continue;
       }
       frames.pop();
-      finished = shadowed
-        ? undefined
+      // A local non-wrapper export is still an export: it shadows star exports
+      // here and conflicts with a wrapper another star export reaches.
+      finished = local
+        ? { kind: 'resolved-import', filePath: frame.filePath, importedName: frame.name }
         : frame.found.size > 1
           ? { kind: 'blocked' }
           : frame.found.values().next().value;
+      if (!frame.partial) resolvedExports.set(`${frame.filePath}\0${frame.name}`, finished);
       const parent = frames[frames.length - 1];
-      if (parent) record(parent, finished);
+      if (parent) {
+        record(parent, finished);
+        if (frame.partial) parent.partial = true;
+      }
     }
     return finished;
   };
-  // A barrel walk depends only on its starting export; many calls share one.
-  const exported = new Map<string, CalleeTarget>();
   const resolve = (filePath: string, target: CalleeTarget): CalleeTarget => {
     if (target.kind !== 'import') return target;
     const targets = moduleTargets(filePath, target.specifier);
     if (targets.length === 0) return target;
     if (targets.length !== 1) return { kind: 'blocked' };
-    const key = `${targets[0]}\0${target.importedName}`;
-    let result = exported.get(key);
-    if (!result) {
-      result = exporter(targets[0], target.importedName) ?? {
+    return (
+      exporter(targets[0], target.importedName) ?? {
         kind: 'resolved-import',
         filePath: targets[0],
         importedName: target.importedName,
-      };
-      exported.set(key, result);
-    }
-    return result;
+      }
+    );
   };
   // Aggregates share facts with the parse cache. Keep its raw specifiers intact
   // so a warm parse resolves imports against the current project configuration.

@@ -264,9 +264,29 @@ describe('fetch wrapper forwarding propagation', () => {
       buildFetchWrapperIndex(defs).isWrapperCall(call({ kind: 'binding', bindingId: 'outer' })),
     ).toBe(true);
     defs[2] = { ...defs[2], forwardsUrl: false, seed: true };
+    const index = buildFetchWrapperIndex(defs);
+    expect(index.isWrapperCall(call({ kind: 'binding', bindingId: 'outer' }))).toBe(false);
+    // A member call still matches by name: one definition of `api.send` is a wrapper.
+    expect(index.isWrapperCall(call({ kind: 'member' }, 'api.send'))).toBe(true);
+  });
+
+  // An unresolvable import can only name some module's export, and an undeclared
+  // global only a top-level function; other same-named functions cannot be it.
+  it.each<[string, Partial<FetchWrapperDef>, boolean, boolean]>([
+    ['a nested helper', { moduleScope: false, exportedNames: [] }, true, true],
+    ['an unexported top-level helper', { exportedNames: [] }, true, false],
+    ['another exported function', {}, false, false],
+  ])('limits name-only fallbacks beside %s', (_shape, twin, importMatches, globalMatches) => {
+    const index = buildFetchWrapperIndex([
+      definition('http.ts:request', { filePath: 'http.ts', seed: true }),
+      definition('twin.ts:request', { filePath: 'twin.ts', ...twin }),
+    ]);
     expect(
-      buildFetchWrapperIndex(defs).isWrapperCall(call({ kind: 'binding', bindingId: 'outer' })),
-    ).toBe(false);
+      index.isWrapperCall(
+        call({ kind: 'import', specifier: '~/lib/http', importedName: 'request' }),
+      ),
+    ).toBe(importMatches);
+    expect(index.isWrapperCall(call({ kind: 'unresolved' }))).toBe(globalMatches);
   });
 });
 
@@ -326,7 +346,11 @@ describe('fetch wrapper barrel resolution', () => {
   const resolveIn = (
     reexports: FetchWrapperReexport[],
     name = 'request',
-    defs = [declares('request.ts', 'request'), declares('other.ts', 'request')],
+    defs = [
+      declares('request.ts', 'request'),
+      declares('other.ts', 'request'),
+      declares('send.ts', 'send'),
+    ],
   ) =>
     resolveFetchWrapperTargets(
       defs,
@@ -345,8 +369,8 @@ describe('fetch wrapper barrel resolution', () => {
     ['a named re-export', [forward('index.ts', 'request', './request')], at('request.ts')],
     [
       'a renamed re-export',
-      [forward('index.ts', 'request', './request', 'request')],
-      at('request.ts'),
+      [forward('index.ts', 'request', './send', 'send')],
+      at('send.ts', 'send'),
     ],
     ['a star re-export', [forward('index.ts', '*', './request', '*')], at('request.ts')],
     [
@@ -372,6 +396,15 @@ describe('fetch wrapper barrel resolution', () => {
     [
       'conflicting star exports',
       [forward('index.ts', '*', './request', '*'), forward('index.ts', '*', './other', '*')],
+      { kind: 'blocked' },
+    ],
+    [
+      'a star export conflicting with a non-callable export',
+      [
+        forward('index.ts', '*', './request', '*'),
+        forward('index.ts', '*', './constants', '*'),
+        forward('constants.ts', 'request'),
+      ],
       { kind: 'blocked' },
     ],
     [
@@ -434,6 +467,33 @@ describe('fetch wrapper barrel resolution', () => {
 });
 
 describe('fetch wrapper barrel resolution depth', () => {
+  it('resolves calls entering one re-export chain at every hop to the same declaration', () => {
+    const length = 200;
+    const reexports: FetchWrapperReexport[] = Array.from({ length }, (_, i) => ({
+      filePath: `b${i}.ts`,
+      exportedName: '*',
+      from: { specifier: `./b${i + 1}`, importedName: '*' },
+    }));
+    const calls = Array.from({ length }, (_, i) =>
+      call({ kind: 'import', specifier: `@b${i}`, importedName: 'request' }),
+    );
+    const resolved = resolveFetchWrapperTargets(
+      [definition('end', { filePath: `b${length}.ts`, seed: true })],
+      calls,
+      (_fromFile, specifier) => [`${specifier.replace(/^[@.]\/?/, '')}.ts`],
+      reexports,
+    );
+    expect(new Set(resolved.calls.map((candidate) => JSON.stringify(candidate.target)))).toEqual(
+      new Set([
+        JSON.stringify({
+          kind: 'resolved-import',
+          filePath: `b${length}.ts`,
+          importedName: 'request',
+        }),
+      ]),
+    );
+  });
+
   it('resolves a 50,000-module re-export chain without recursion', () => {
     const length = 50_000;
     const reexports: FetchWrapperReexport[] = Array.from({ length }, (_, i) => ({

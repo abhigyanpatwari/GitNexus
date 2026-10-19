@@ -2,10 +2,7 @@ import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
-import {
-  createFetchWrapperContext,
-  fetchWrapperFacts,
-} from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
+import { createFetchWrapperContext } from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
 
 import { buildFetchWrapperIndex } from '../../src/core/ingestion/route-extractors/fetch-wrapper-index.js';
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
@@ -196,10 +193,9 @@ for (const [language, grammar] of [
         undefined,
         tree,
       )!;
-      expect(fetchWrapperFacts(tree.rootNode.firstNamedChild!, parsedFile)).toMatchObject({
-        seed,
-        forwardsUrl,
-      });
+      expect(
+        createFetchWrapperContext(tree, parsedFile).facts(tree.rootNode.firstNamedChild!),
+      ).toMatchObject({ seed, forwardsUrl });
     });
 
     it.each([
@@ -347,6 +343,92 @@ for (const [language, grammar] of [
       );
     });
 
+    // The query captures these wrappers as their assignment, not as the function.
+    it.each([
+      [
+        'an exports member',
+        'exports.request = function (url) { return fetch(url); };',
+        ['request'],
+      ],
+      ['a module.exports member', 'module.exports.request = (url) => fetch(url);', ['request']],
+      [
+        'the whole module',
+        'module.exports = async function (url) { return fetch(url); };',
+        ['default'],
+      ],
+    ])('records a wrapper captured as its CommonJS assignment: %s', (_shape, source, names) => {
+      const { tree, context } = analyze(source);
+      const assignment = tree.rootNode.descendantsOfType('assignment_expression')[0];
+      const property = assignment.childForFieldName('left')?.childForFieldName('property');
+      expect(context.facts(assignment, property ?? undefined)).toMatchObject({
+        moduleScope: true,
+        exportedNames: names,
+        seed: true,
+        forwardsUrl: true,
+      });
+    });
+
+    it.each([
+      [
+        'an aliased export reassigned later',
+        'function request(url) { return fetch(url); } export { request as send }; request = JSON.stringify;',
+        ['send'],
+      ],
+      [
+        'a reassigned let export',
+        'export let request = (url) => fetch(url); request = String;',
+        ['request'],
+      ],
+      [
+        'a declaration rebound by a var initializer',
+        'function request(url) { return fetch(url); } var request = ipc.send;',
+        [],
+      ],
+    ])('keeps a rebound binding from proving a wrapper: %s', (_shape, source, names) => {
+      const { tree, context } = analyze(source);
+      const [callable] = tree.rootNode.descendantsOfType([
+        'function_declaration',
+        'arrow_function',
+      ]);
+      expect(context.facts(callable)).toMatchObject({
+        exportedNames: names,
+        seed: false,
+        forwardsUrl: false,
+        forwardsTo: [],
+      });
+    });
+
+    it.each([
+      [
+        'inside recovered syntax',
+        'import { request } from "./http";\nfoo(() => { request("/api/a"); }, ',
+        { kind: 'import', specifier: './http', importedName: 'request' },
+      ],
+      [
+        'in an instance field initializer before the declaration',
+        'export class Store { data = request("/api/a"); }\nconst request = (url) => fetch(url);',
+        { kind: 'binding' },
+      ],
+      [
+        'in a static field initializer before the declaration',
+        'export class Store { static data = request("/api/a"); }\nconst request = (url) => fetch(url);',
+        { kind: 'blocked' },
+      ],
+    ])('resolves a call %s', (_shape, source, target) => {
+      const { context } = analyze(source);
+      expect(context.calls()).toMatchObject([{ fetchURL: '/api/a', target }]);
+    });
+
+    it('keys cached facts by the name node as well as the callable', () => {
+      const { tree, context } = analyze('function request(url) { return fetch(url); }');
+      const fn = tree.rootNode.descendantsOfType('function_declaration')[0];
+      const [parameter] = fn.descendantsOfType('identifier').filter((node) => node.text === 'url');
+      const byName = context.facts(fn);
+      expect(byName?.bindingId).toBeDefined();
+      expect(context.facts(fn, parameter)?.bindingId).not.toBe(byName?.bindingId);
+      expect(context.facts(fn)).toBe(byName);
+    });
+
     it('records a function defined inline in a CommonJS export object', () => {
       const { tree, context } = analyze('module.exports = { inline: (url) => fetch(url) };');
       const pair = tree.rootNode.descendantsOfType('pair')[0];
@@ -482,6 +564,13 @@ it.each(['deep', 'deep-arrow', 'wide'] as const)(
       },
     });
     try {
+      // The instruments must fire before a zero count can mean anything.
+      void functions[0].parent;
+      void functions[0].namedChild(0);
+      expect(parentTraversalSteps).toBeGreaterThan(0);
+      expect(childTraversalSteps).toBeGreaterThan(0);
+      parentTraversalSteps = 0;
+      childTraversalSteps = 0;
       const context = createFetchWrapperContext(tree, parsedFile);
       const facts = functions.map((fn) =>
         context.facts(fn, fn.childForFieldName('name') ?? undefined),
@@ -568,5 +657,19 @@ describe.each([
       seed: wraps,
       forwardsUrl: wraps,
     });
+  });
+});
+
+it('invalidates an alias written through an angle-bracket assertion', () => {
+  const source =
+    'function load(url: string) { let send = globalThis.fetch; (<any>send) = other; send(url); }';
+  const parser = new Parser();
+  parser.setLanguage(TypeScript.typescript);
+  const tree = parser.parse(source);
+  const parsedFile = extractParsedFile(typescriptProvider, source, 'source.ts', undefined, tree);
+  const load = tree.rootNode.descendantsOfType('function_declaration')[0];
+  expect(parsedFile && createFetchWrapperContext(tree, parsedFile).facts(load)).toMatchObject({
+    seed: false,
+    forwardsUrl: false,
   });
 });

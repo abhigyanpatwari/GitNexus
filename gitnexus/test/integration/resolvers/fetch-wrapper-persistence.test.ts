@@ -84,7 +84,11 @@ await import(${JSON.stringify(realWorker.href)});
         "import { request as send } from '@http'; export function forward(url) { return send(url); }",
       'pages/client.ts':
         "import { forward as send } from '../lib/forward'; send('/api/items'); export function blocked(send) { return send('/api/blocked'); }",
+      // A barrel on the warm path: its re-export facts come back from the cache.
+      'lib/index.ts': "export * from './forward';",
+      'pages/barrel.ts': "import { forward } from '../lib'; forward('/api/barrel');",
       'app/api/items/route.ts': 'export function GET() { return new Response(); }',
+      'app/api/barrel/route.ts': 'export function GET() { return new Response(); }',
       'app/api/blocked/route.ts': 'export function GET() { return new Response(); }',
     };
     writeFixtureRepo(repo, files);
@@ -110,7 +114,10 @@ await import(${JSON.stringify(realWorker.href)});
     const cold = await run(coldCache);
     expect(cold.usedWorkerPool).toBe(true);
     expect(cold.reparsedFileCount).toBe(parsedCount);
-    expect(fetchEdges(cold)).toEqual(['pages/client.ts -> Route:/api/items']);
+    expect(fetchEdges(cold)).toEqual([
+      'pages/barrel.ts -> Route:/api/barrel',
+      'pages/client.ts -> Route:/api/items',
+    ]);
     const observed = fs
       .readFileSync(marker, 'utf8')
       .trim()
@@ -203,7 +210,19 @@ await import(${JSON.stringify(realWorker.href)});
           properties: expect.objectContaining({ name: 'request' }),
         }),
       );
-      expect(results.flatMap((result) => result.fetchWrapperDefs)).toEqual([]);
+      // Without facts the function still names its export, so a name-only
+      // match elsewhere declines instead of becoming unique.
+      expect(results.flatMap((result) => result.fetchWrapperDefs)).toEqual([
+        expect.objectContaining({
+          filePath: 'failed.ts',
+          functionName: 'request',
+          moduleScope: true,
+          exportedNames: ['request'],
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [],
+        }),
+      ]);
       expect(results.flatMap((result) => result.fetchWrapperCalls ?? [])).toEqual([]);
     } finally {
       await pool.terminate();

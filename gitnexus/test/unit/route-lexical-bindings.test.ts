@@ -11,6 +11,7 @@ import {
   createLexicalBindings,
   patternBindingNames,
 } from '../../src/core/ingestion/route-extractors/lexical-bindings.js';
+import { getTreeSitterBufferSize } from '../../src/core/ingestion/constants.js';
 
 function analyze(source: string, javascript = false, lineOffset = 0) {
   const parser = new Parser();
@@ -132,16 +133,24 @@ describe.each([false, true])('HTTP lexical bindings (JavaScript: %s)', (javascri
       'rest',
     ]);
   });
+});
 
-  it('walks a 20,000-deep destructuring pattern without recursion', () => {
-    const depth = 20_000;
-    const source = `const ${'['.repeat(depth)}x${']'.repeat(depth)} = v;`;
-    const parser = new Parser();
-    parser.setLanguage(JavaScript);
-    const tree = parser.parse(source, undefined, { bufferSize: source.length * 4 + 1024 });
-    const pattern = tree.rootNode
-      .descendantsOfType('variable_declarator')[0]
-      .childForFieldName('name');
-    expect(patternBindingNames(pattern).map((node) => node.text)).toEqual(['x']);
-  });
+it('walks a 20,000-deep destructuring pattern without recursion', () => {
+  const depth = 20_000;
+  const source = `const ${'['.repeat(depth)}x${']'.repeat(depth)} = v;`;
+  const parser = new Parser();
+  parser.setLanguage(JavaScript);
+  const tree = parser.parse(source, undefined, { bufferSize: getTreeSitterBufferSize(source) });
+  const pattern = tree.rootNode
+    .descendantsOfType('variable_declarator')[0]
+    .childForFieldName('name');
+  expect(patternBindingNames(pattern).map((node) => node.text)).toEqual(['x']);
+});
+
+it('reads the target of an angle-bracket assertion, not its type arguments', () => {
+  const { root } = analyze('let app = 1; (<any>app) = 2;');
+  const assignment = root.descendantsOfType('assignment_expression')[0];
+  expect(
+    patternBindingNames(assignment.childForFieldName('left')).map((node) => node.text),
+  ).toEqual(['app']);
 });

@@ -266,6 +266,7 @@ function handler() {} function other() {}`);
   it.each([
     ['parenthesized', '(app) = new Map();'],
     ['asserted', '(app as unknown) = new Map();'],
+    ['angle-bracket asserted', '(<any>app) = new Map();'],
     ['non-null asserted', 'app! = new Map();'],
   ])('invalidates a wrapped assignment target: %s', (_shape, write) => {
     expect(
@@ -287,6 +288,7 @@ function handler() {} function other() {}`);
     ['nested destructuring default', 'app, { value = 1 }', 'var app;', []],
     ['computed pattern key', 'app, { [key]: value }', 'var app;', []],
     ['rest parameter alone', 'app, ...rest', 'var app;', ['GET /forwarded']],
+    ['loop var over the parameter', 'app', 'for (var app of values) {}', []],
     ['body function overwrites parameter', 'app', 'function app() {}', []],
     ['body function with default', 'app, other = 1', 'function app() {}', []],
     [

@@ -419,17 +419,19 @@ const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefi
 
 // Keyed by tree, not ParsedFile: workers retain ParsedFiles for the whole chunk,
 // while a file's tree, and with it this AST-holding context, is released per file.
-const httpContexts = new WeakMap<Parser.Tree, FetchWrapperContext>();
+const httpContexts = new WeakMap<
+  Parser.Tree,
+  { parsedFile: ParsedFile; lineOffset: number; context: FetchWrapperContext }
+>();
 function httpContext(
   tree: Parser.Tree,
   parsedFile: ParsedFile,
   lineOffset: number,
 ): FetchWrapperContext {
-  let context = httpContexts.get(tree);
-  if (!context) {
-    context = createFetchWrapperContext(tree, parsedFile, lineOffset);
-    httpContexts.set(tree, context);
-  }
+  const cached = httpContexts.get(tree);
+  if (cached?.parsedFile === parsedFile && cached.lineOffset === lineOffset) return cached.context;
+  const context = createFetchWrapperContext(tree, parsedFile, lineOffset);
+  httpContexts.set(tree, { parsedFile, lineOffset, context });
   return context;
 }
 const httpExtraction = {

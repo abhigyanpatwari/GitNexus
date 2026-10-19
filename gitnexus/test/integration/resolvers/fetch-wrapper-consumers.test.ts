@@ -87,6 +87,8 @@ describe('Fetch wrapper lexical and project target identity', () => {
       'web/barrel.ts -> /api/barrel',
       'web/barrel.ts -> /api/barrel-imported',
       'web/barrel.ts -> /api/barrel-star',
+      'web/cjs-member.js -> /api/cjs-arrow',
+      'web/cjs-member.js -> /api/cjs-member',
       'web/cjs.js -> /api/cjs',
       'web/diamond.ts -> /api/diamond',
       'web/hoc.ts -> /api/hoc',

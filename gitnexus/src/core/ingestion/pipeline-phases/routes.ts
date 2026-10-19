@@ -506,8 +506,9 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     const configuredWrappers = (ctx.options?.fetchWrappers ?? []).filter(
       (n): n is string => typeof n === 'string' && n.trim().length > 0,
     );
-    const wrappers = buildFetchWrapperIndex(allFetchWrapperDefs ?? [], configuredWrappers);
-    if (routeRegistry.size > 0) {
+    // The index is only worth building when a candidate call can match a route.
+    if (routeRegistry.size > 0 && (allFetchWrapperCalls?.length ?? 0) > 0) {
+      const wrappers = buildFetchWrapperIndex(allFetchWrapperDefs ?? [], configuredWrappers);
       for (const call of allFetchWrapperCalls ?? []) {
         if (wrappers.isWrapperCall(call)) allFetchCalls.push(call);
       }

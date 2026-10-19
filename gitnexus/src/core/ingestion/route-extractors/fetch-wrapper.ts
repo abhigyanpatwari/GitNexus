@@ -6,10 +6,12 @@ import { stripLeadingTemplatePrefix } from './route-path.js';
 import {
   bindingKey,
   createLexicalBindings,
+  importBindingKey,
   LEXICAL_FUNCTION_TYPES,
   parameterPattern,
   patternBindingNames,
   TRANSPARENT_EXPRESSION_TYPES,
+  transparentInner,
   type LexicalBindings,
 } from './lexical-bindings.js';
 
@@ -44,8 +46,8 @@ export interface FetchWrapperReexport {
   filePath: string;
   /** Exported name, or `*` for `export * from`. */
   exportedName: string;
-  /** The forwarded export. Absent for a local export, recorded only beside an
-   * `export *` because only there can it shadow a forwarded name. */
+  /** The forwarded export; absent for a local export, which shadows `export *`
+   * and makes a star-exported name ambiguous when another module exports it too. */
   from?: { specifier: string; importedName: string };
 }
 export interface FetchWrapperContext {
@@ -56,7 +58,7 @@ export interface FetchWrapperContext {
 }
 
 const firstNamed = (node: Node | null | undefined): Node | null =>
-  node?.namedChildren.find((child) => child.type !== 'comment') ?? null;
+  node ? transparentInner(node) : null;
 
 function calleeName(node: Parser.SyntaxNode | null): string | undefined {
   // The TS grammar puts `await f<T>(...)` inside the call's function field.
@@ -85,7 +87,6 @@ const UNWRAPPED_TYPES: ReadonlySet<string> = new Set([
 ]);
 const SKIPPED_TYPES: ReadonlySet<string> = new Set([
   'comment',
-  'ERROR',
   'type_annotation',
   'type_parameters',
   'type_arguments',
@@ -139,6 +140,10 @@ interface Frame {
   defaultExport?: boolean;
   /** Whether a non-comment named child has been visited. */
   named: boolean;
+  /** Inside an instance-field initializer, which runs at construction, after the module body. */
+  deferred?: boolean;
+  /** Inside recovered syntax: only complete calls are trusted there. */
+  error?: boolean;
 }
 
 /** Fresh construction is intentional: callers may cache only at the per-file provider boundary. */
@@ -154,7 +159,7 @@ export function createFetchWrapperContext(
     // `export { x } from` declares no local binding; reexports() reads it directly.
     if (!('localName' in imported) || !('importedName' in imported) || imported.kind === 'reexport')
       continue;
-    const id = bindingKey(imported.declaredAtScope ?? parsedFile.moduleScope, imported.localName);
+    const id = importBindingKey(parsedFile, imported);
     const target: CalleeTarget =
       'typeOnly' in imported && imported.typeOnly
         ? { kind: 'blocked' }
@@ -170,14 +175,16 @@ export function createFetchWrapperContext(
     const id = bindings.bindingId(node, node.text, atUse);
     return id && !bindings.ambiguous(id) ? id : undefined;
   };
-  const targetOf = (callee: Node | null): CalleeTarget => {
+  // `atUse` is false for code that runs after the module body, where a later
+  // declaration is already initialized.
+  const targetOf = (callee: Node | null, atUse = true): CalleeTarget => {
     const node = unwrap(callee);
     if (!node) return { kind: 'blocked' };
     if (node.type === 'member_expression') return { kind: 'member' };
     if (node.type !== 'identifier') return { kind: 'blocked' };
-    const owner = bindings.ownership(node, node.text, true);
+    const owner = bindings.ownership(node, node.text, atUse);
     if (owner?.status === 'absent') return { kind: 'unresolved' };
-    const id = stableBinding(node);
+    const id = stableBinding(node, atUse);
     return id && !invalid.has(id)
       ? (imports.get(id) ?? { kind: 'binding', bindingId: id })
       : { kind: 'blocked' };
@@ -205,21 +212,20 @@ export function createFetchWrapperContext(
     );
   };
   const namesFetch = (expression: Node | null): boolean => {
-    const node = unwrap(expression);
-    if (!node) return false;
-    if (node.type === 'binary_expression') {
-      const operator = node.childForFieldName('operator')?.text;
-      return (
-        (operator === '??' || operator === '||') &&
-        (namesFetch(node.childForFieldName('left')) || namesFetch(node.childForFieldName('right')))
-      );
+    // An explicit stack: generated `a ?? b ?? …` chains can be thousands deep.
+    const pending = [expression];
+    while (pending.length > 0) {
+      const node = unwrap(pending.pop() ?? null);
+      if (!node) continue;
+      if (node.type === 'binary_expression') {
+        const operator = node.childForFieldName('operator')?.text;
+        if (operator === '??' || operator === '||')
+          pending.push(node.childForFieldName('right'), node.childForFieldName('left'));
+      } else if (node.type === 'ternary_expression')
+        pending.push(node.childForFieldName('alternative'), node.childForFieldName('consequence'));
+      else if (platformFetch(node)) return true;
     }
-    if (node.type === 'ternary_expression')
-      return (
-        namesFetch(node.childForFieldName('consequence')) ||
-        namesFetch(node.childForFieldName('alternative'))
-      );
-    return platformFetch(node);
+    return false;
   };
   const regions: Region[] = [];
   const callableRegions = new Map<number, Region>();
@@ -233,8 +239,17 @@ export function createFetchWrapperContext(
   const parameters = new Set<string>();
   const exports = new Map<string, Set<string>>();
   const boundNames = new Set<string>();
-  const references: { node: Node; region: Region }[] = [];
+  // Identifier text and offsets only: most references never name a bound
+  // callable, so their nodes are never materialized.
+  const references: {
+    text: string;
+    start: number;
+    end: number;
+    region: Region;
+    deferred?: boolean;
+  }[] = [];
   const allCalls: Node[] = [];
+  const deferredCalls = new Set<Node>();
   // Native parent lookup descends from the tree root, so the walk records the
   // ancestor facts that later queries need.
   const storedNames = new Map<number, Node | null>();
@@ -361,6 +376,7 @@ export function createFetchWrapperContext(
       children: 'plain',
       inner: rootRegion,
       named: false,
+      error: rootNode.type === 'ERROR',
     },
   ];
   const cursor = tree.walk();
@@ -368,9 +384,27 @@ export function createFetchWrapperContext(
     if (!cursor.nodeIsNamed) return undefined;
     const type = cursor.nodeType;
     const parent = frames[frames.length - 1];
-    const first = type !== 'comment' && !parent.named;
-    if (type !== 'comment') parent.named = true;
+    // `unwrap` skips comments and the type arguments of `<T>value`.
+    const counted = type !== 'comment' && type !== 'type_arguments';
+    const first = counted && !parent.named;
+    if (counted) parent.named = true;
     if (SKIPPED_TYPES.has(type)) return undefined;
+    if (parent.error || type === 'ERROR') {
+      // Recovered syntax can still hold complete calls; nothing else in it is trusted.
+      if (type === 'call_expression') {
+        const node = cursor.currentNode;
+        if (!node.hasError) allCalls.push(node);
+      }
+      return {
+        type,
+        first,
+        region: parent.region,
+        children: 'plain',
+        inner: parent.region,
+        named: false,
+        error: true,
+      };
+    }
     // Computed names and decorators are evaluated where the member is created;
     // other method and instance-field code runs later, in its own region.
     const evaluated = type === 'computed_property_name' || type === 'decorator';
@@ -386,9 +420,17 @@ export function createFetchWrapperContext(
         : parent.children === 'plain'
           ? parent.classRegion
           : undefined;
+    const deferred =
+      parent.deferred || (parent.children === 'field' && !parent.isStatic && !evaluated);
     if (type === 'identifier' || type === 'shorthand_property_identifier') {
       if (!declarations.has(cursor.startIndex))
-        references.push({ node: cursor.currentNode, region: active });
+        references.push({
+          text: cursor.nodeText,
+          start: cursor.startIndex,
+          end: cursor.endIndex,
+          region: active,
+          deferred,
+        });
       return undefined;
     }
     const frame: Frame = {
@@ -399,6 +441,7 @@ export function createFetchWrapperContext(
       children: 'plain',
       inner: active,
       named: false,
+      deferred,
     };
     if (LEXICAL_FUNCTION_TYPES.has(type)) {
       const node = cursor.currentNode;
@@ -421,7 +464,11 @@ export function createFetchWrapperContext(
       else if (!declaration && !stored) active.edges.add(callable);
       if (declaration && name) {
         const nameId = stableBinding(name, false);
-        if (nameId && parameters.has(nameId)) invalid.add(nameId);
+        if (nameId) {
+          // A declaration initializes its binding, so a `var` initializer rebinds it.
+          initialized.set(nameId, (initialized.get(nameId) ?? 0) + 1);
+          if (parameters.has(nameId)) invalid.add(nameId);
+        }
       }
       const formals = node.childForFieldName('parameters') ?? node.childForFieldName('parameter');
       for (const formal of markPattern(formals)) {
@@ -491,6 +538,7 @@ export function createFetchWrapperContext(
     } else if (type === 'call_expression' && !node.hasError) {
       active.calls.push(node);
       allCalls.push(node);
+      if (deferred) deferredCalls.add(node);
     }
     return frame;
   };
@@ -511,9 +559,9 @@ export function createFetchWrapperContext(
   for (const id of invalid) aliases.delete(id);
   // Only references naming a bound callable or class can add an edge, so other
   // identifiers skip the lexical lookup.
-  for (const { node, region: owner } of references) {
-    if (!boundNames.has(node.text)) continue;
-    const id = stableBinding(node);
+  for (const { text, start, end, region: owner, deferred } of references) {
+    if (!boundNames.has(text)) continue;
+    const id = stableBinding(rootNode.descendantForIndex(start, end), !deferred);
     if (!id || invalid.has(id)) continue;
     const targets = boundRegions.get(id);
     if (targets?.length === 1) owner.edges.add(targets[0]);
@@ -540,7 +588,8 @@ export function createFetchWrapperContext(
       if (node.type === 'identifier') {
         const id = stableBinding(node);
         if (id && !invalid.has(id)) result.add(id);
-      } else if (!LEXICAL_FUNCTION_TYPES.has(node.type)) stack.push(...node.namedChildren);
+      } else if (!LEXICAL_FUNCTION_TYPES.has(node.type))
+        for (const child of node.namedChildren) stack.push(child);
     }
     argumentBindings.set(argument.id, result);
     return result;
@@ -558,6 +607,8 @@ export function createFetchWrapperContext(
             }) ?? null)
           : (node.childForFieldName('declaration') ??
               node.childForFieldName('value') ??
+              // `exports.x = function …` is captured as its assignment.
+              node.childForFieldName('right') ??
               node.namedChildren.find((child) => child.type === 'variable_declarator') ??
               null),
       );
@@ -657,11 +708,13 @@ export function createFetchWrapperContext(
     }
     return summaries.get(start)!;
   };
-  const factsCache = new Map<number, FetchWrapperFacts>();
+  const factsCache = new Map<string, FetchWrapperFacts>();
   const facts: FetchWrapperContext['facts'] = (definition, nameNode) => {
     const fn = findFunction(definition, nameNode);
     if (!fn) return undefined;
-    const cached = factsCache.get(fn.id);
+    // The name node picks the binding, so it is part of the key.
+    const key = `${fn.id}\0${nameNode?.id ?? ''}`;
+    const cached = factsCache.get(key);
     if (cached) return cached;
     // Only a binding identifier names a lexical binding; object keys and
     // method names are properties.
@@ -701,6 +754,9 @@ export function createFetchWrapperContext(
       }
     }
     const defaultExport = defaultExports.has(fn.id);
+    // A rebound binding no longer names this function, so it proves no wrapper
+    // across files either; its names are kept so they still collide.
+    const rebound = !!id && invalid.has(id);
     const result: FetchWrapperFacts = {
       definitionId: `${filePath}:${fn.startPosition.row + lineOffset + 1}:${fn.startPosition.column}:${fn.endPosition.row + lineOffset + 1}:${fn.endPosition.column}`,
       ...(id ? { bindingId: id } : {}),
@@ -715,11 +771,11 @@ export function createFetchWrapperContext(
           ...(defaultExport ? ['default'] : []),
         ]),
       ],
-      seed,
-      forwardsUrl,
-      forwardsTo: [...forwardsTo.values()],
+      seed: seed && !rebound,
+      forwardsUrl: forwardsUrl && !rebound,
+      forwardsTo: rebound ? [] : [...forwardsTo.values()],
     };
-    factsCache.set(fn.id, result);
+    factsCache.set(key, result);
     return result;
   };
   return {
@@ -742,19 +798,19 @@ export function createFetchWrapperContext(
             from: { specifier: imported.targetRaw, importedName: '*' },
           });
       }
-      const star = result.some((reexport) => reexport.exportedName === '*');
       for (const [id, names] of exports) {
         const target = imports.get(id);
-        for (const exportedName of names) {
-          // `import { x } from './y'; export { x };` forwards the imported binding.
-          if (target?.kind === 'import')
-            result.push({
-              filePath,
-              exportedName,
-              from: { specifier: target.specifier, importedName: target.importedName },
-            });
-          else if (star) result.push({ filePath, exportedName });
-        }
+        for (const exportedName of names)
+          result.push(
+            // `import { x } from './y'; export { x };` forwards the imported binding.
+            target?.kind === 'import'
+              ? {
+                  filePath,
+                  exportedName,
+                  from: { specifier: target.specifier, importedName: target.importedName },
+                }
+              : { filePath, exportedName },
+          );
       }
       return result;
     },
@@ -768,7 +824,7 @@ export function createFetchWrapperContext(
         const callee = call.childForFieldName('function');
         const functionName = calleeName(callee);
         if (!functionName) continue;
-        const target = targetOf(callee);
+        const target = targetOf(callee, !deferredCalls.has(call));
         calls.push({
           filePath,
           functionName,
@@ -780,19 +836,4 @@ export function createFetchWrapperContext(
       return calls;
     },
   };
-}
-
-export function extractFetchWrapperCalls(
-  tree: Parser.Tree,
-  parsedFile: ParsedFile,
-  lineOffset: number,
-): FetchWrapperCall[] {
-  return createFetchWrapperContext(tree, parsedFile, lineOffset).calls();
-}
-export function fetchWrapperFacts(
-  definition: Node,
-  parsedFile: ParsedFile,
-  lineOffset = 0,
-): FetchWrapperFacts | undefined {
-  return createFetchWrapperContext(definition.tree, parsedFile, lineOffset).facts(definition);
 }

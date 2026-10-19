@@ -1,6 +1,6 @@
 import type Parser from 'tree-sitter';
 import { buildPositionIndex, buildScopeTree, lookupLexicalName } from 'gitnexus-shared';
-import type { NameClaimResult, ParsedFile } from 'gitnexus-shared';
+import type { NameClaimResult, ParsedFile, ParsedImport } from 'gitnexus-shared';
 
 type Node = Parser.SyntaxNode;
 export interface LexicalBindings {
@@ -29,10 +29,22 @@ export const TRANSPARENT_EXPRESSION_TYPES: ReadonlySet<string> = new Set([
   'as_expression',
   'satisfies_expression',
   'non_null_expression',
+  'type_assertion',
 ]);
+
+/** The expression a transparent wrapper holds; `<T>x` keeps it after its type arguments. */
+export const transparentInner = (node: Node): Node | null =>
+  node.namedChildren.find((child) => child.type !== 'comment' && child.type !== 'type_arguments') ??
+  null;
 
 /** Lexical binding identity: the declaring scope and the declared name. */
 export const bindingKey = (scopeId: string, name: string): string => `${scopeId}\0${name}`;
+
+/** The binding an import declares in its file. */
+export const importBindingKey = (
+  parsedFile: ParsedFile,
+  imported: Extract<ParsedImport, { localName: string }>,
+): string => bindingKey(imported.declaredAtScope ?? parsedFile.moduleScope, imported.localName);
 
 /** The pattern a formal parameter declares, without its type or default value. */
 export function parameterPattern(node: Node | null): Node | null {
@@ -50,8 +62,8 @@ export function patternBindingNames(root: Node | null): Node[] {
     const node = stack.pop()!;
     let next: readonly (Node | null)[] = [];
     if (TRANSPARENT_EXPRESSION_TYPES.has(node.type))
-      // Assignment targets may be wrapped: `(app) = x`, `(app as T) = x`, `app! = x`.
-      next = [node.namedChildren.find((child) => child.type !== 'comment') ?? null];
+      // Assignment targets may be wrapped: `(app) = x`, `(app as T) = x`, `(<T>app) = x`, `app! = x`.
+      next = [transparentInner(node)];
     else
       switch (node.type) {
         case 'identifier':
@@ -137,9 +149,12 @@ function bodyDeclarations(body: Node | null): Node[] {
     if (node.type === 'variable_declaration') {
       for (const declarator of node.namedChildren)
         if (declarator.type === 'variable_declarator')
-          declarations.push(...patternBindingNames(declarator.childForFieldName('name')));
+          // Loops, not spread arguments: a huge pattern exceeds the argument limit.
+          for (const name of patternBindingNames(declarator.childForFieldName('name')))
+            declarations.push(name);
     } else if (node.type === 'for_in_statement' && node.childForFieldName('kind')?.text === 'var')
-      declarations.push(...patternBindingNames(node.childForFieldName('left')));
+      for (const name of patternBindingNames(node.childForFieldName('left')))
+        declarations.push(name);
     for (const child of node.namedChildren) pending.push(child);
   }
   return declarations;

@@ -3,12 +3,13 @@ import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import { plainString } from './data-route-table.js';
 import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route-types.js';
 import {
-  bindingKey,
   createLexicalBindings,
+  importBindingKey,
   LEXICAL_FUNCTION_TYPES,
   parameterPattern,
   patternBindingNames,
   TRANSPARENT_EXPRESSION_TYPES,
+  transparentInner,
   type LexicalBindings,
 } from './lexical-bindings.js';
 
@@ -23,10 +24,12 @@ const CARRIER_KINDS = new Set<FrameworkExpression['kind']>([
   'import',
   'array',
 ]);
+/** Function values and declarations; methods and signatures are not values here. */
 const FUNCTION_TYPES = [
   'arrow_function',
   'function_expression',
   'function_declaration',
+  'generator_function',
   'generator_function_declaration',
 ];
 const METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'all', 'route', 'use']);
@@ -128,7 +131,7 @@ export function extractFrameworkRouteFacts(
         elements: children(node).map((child) => expression(child, depth + 1)),
       };
     } else if (TRANSPARENT_EXPRESSION_TYPES.has(node.type)) {
-      value = expression(children(node)[0], depth + 1);
+      value = expression(transparentInner(node), depth + 1);
     } else if (FUNCTION_TYPES.includes(node.type)) {
       value = HANDLER;
     } else if (node.type === 'member_expression') {
@@ -208,10 +211,7 @@ export function extractFrameworkRouteFacts(
       const position = `${node.startPosition.row + 1 + lineOffset}:${node.startPosition.column}`;
       for (const imported of importsAtPosition.get(position) ?? []) {
         if (!('localName' in imported) || !('importedName' in imported)) continue;
-        const id = bindingKey(
-          imported.declaredAtScope ?? parsedFile.moduleScope,
-          imported.localName,
-        );
+        const id = importBindingKey(parsedFile, imported);
         facts.bindings.push({
           id,
           value:
@@ -405,7 +405,7 @@ export function extractFrameworkRouteFacts(
               const items = children(target);
               for (let i = items.length - 1; i >= 0; i--) pending.push(items[i]);
             } else if (TRANSPARENT_EXPRESSION_TYPES.has(target.type)) {
-              const inner = children(target)[0];
+              const inner = transparentInner(target);
               if (inner) pending.push(inner);
             }
           }
