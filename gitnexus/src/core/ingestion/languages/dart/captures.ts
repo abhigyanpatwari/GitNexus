@@ -1124,8 +1124,11 @@ function emitExtensionImplementsHeritage(extensionNode: SyntaxNode, out: Capture
   const nameNode = extensionNode.childForFieldName('name');
   if (nameNode === null) return;
 
-  const bodyStart = extensionNode.text.indexOf('{');
-  const header = bodyStart === -1 ? extensionNode.text : extensionNode.text.slice(0, bodyStart);
+  const body = extensionNode.childForFieldName('body');
+  const header =
+    body === null
+      ? extensionNode.text
+      : extensionNode.text.slice(0, body.startIndex - extensionNode.startIndex);
   const implementsIndex = header.indexOf('implements');
   if (implementsIndex === -1) return;
 

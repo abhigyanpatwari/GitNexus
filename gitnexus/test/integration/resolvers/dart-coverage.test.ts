@@ -195,6 +195,16 @@ describe.skipIf(!dartAvailable)('Dart extension type declarations (scope layer)'
     );
     expect(imports).not.toContain('__heritage__:implements:int:Pair');
   });
+
+  it('captures implements clauses after named-record representation types', () => {
+    const imports = heritageImports(
+      'extension type RecordId(({String id}) value) implements Identifiable, Comparator<String, int> {}',
+    );
+    expect(imports).toEqual([
+      '__heritage__:implements:Identifiable:RecordId',
+      '__heritage__:implements:Comparator:RecordId',
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
