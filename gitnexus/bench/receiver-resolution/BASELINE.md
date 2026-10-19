@@ -1,5 +1,13 @@
 # Receiver-resolution baseline
 
+## CommonJS member-assigned wrapper fixture (#3630)
+
+The `fetch-wrapper-target-identity` fixture gained `lib/cjs-member.js`, which
+exports `module.exports.arrowRequest = (url) => fetch(url);`. That
+`module.exports` member write is one new `receiver-unresolved` write site, so
+all-kind drops move from 190 to 191 and writes from 19 to 20. Call drops and
+every shape-arm state are unchanged; no existing site changed state.
+
 ## Semantic rename provider captures (#3486)
 
 A same-corpus A/B against `origin/main` (`191a954b`) reproduced the committed
