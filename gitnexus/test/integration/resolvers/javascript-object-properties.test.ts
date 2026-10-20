@@ -31,7 +31,15 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
-import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
+import {
+  FIXTURES,
+  getRelationships,
+  hasAccessesAtSite,
+  runPipelineFromRepo,
+  suppressionReasonsAt,
+  type OutcomeSite,
+  type PipelineResult,
+} from './helpers.js';
 
 describe('JavaScript plain-object property access (A1/A5)', () => {
   let result: PipelineResult;
@@ -165,6 +173,76 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     it('leaves an inline call-argument prop bag alone', () => {
       expect(propertyNames()).not.toContain('notAConstructedField');
       expect(writersOf('notAConstructedField')).toEqual([]);
+    });
+
+    // The capture makes the ENCLOSING LITERAL the receiver, and the
+    // receiver-bound pass treats any receiver text holding a `.` or `(` as a
+    // compound expression to fold — which `{ x: row.a }`, `{ r: 0.5 }` and
+    // `{ ...seed, extra }` all do. The fold cannot type a literal, so each of
+    // these keys was recorded as a `receiver-unresolved` drop, and the drop
+    // stayed after the unique-name pass answered the same site with an edge.
+    // Each row pins both halves: the edge exists at THIS site, and no drop does.
+    it.each<readonly [OutcomeSite, string, string]>([
+      [
+        ['destructured.js', 26, 4, 'exitContract'],
+        'Function:destructured.js:buildPlan',
+        'Property:destructured.js:buildPlan.exitContract@25:4',
+      ],
+      [
+        ['destructured.js', 27, 6, 'destructuredOnlyField'],
+        'Function:destructured.js:buildPlan',
+        'Property:destructured.js:destructuredDefaults.destructuredOnlyField',
+      ],
+      [
+        ['destructured.js', 34, 4, 'destructuredOnlyField'],
+        'Function:destructured.js:buildFlat',
+        'Property:destructured.js:buildFlat.destructuredOnlyField@33:4',
+      ],
+      [
+        ['frozen.js', 26, 20, 'extra'],
+        'Function:frozen.js:buildRules',
+        'Property:frozen.js:buildRules.extra@25:20',
+      ],
+      [
+        ['return-shape-typed.js', 6, 4, 'ambiguousProducedField'],
+        'Function:return-shape-typed.js:producerAlpha',
+        'Property:return-shape-typed.js:producerAlpha.ambiguousProducedField@5:4',
+      ],
+      [
+        ['return-shape-typed.js', 12, 4, 'ambiguousProducedField'],
+        'Function:return-shape-typed.js:producerBeta',
+        'Property:return-shape-typed.js:producerBeta.ambiguousProducedField@11:4',
+      ],
+      [
+        ['return-shape.js', 8, 4, 'returnShapeOnlyField'],
+        'Function:return-shape.js:formatAlert',
+        'Property:return-shape.js:formatAlert.returnShapeOnlyField@7:4',
+      ],
+      [
+        ['return-shape.js', 9, 4, 'sharedWithDeclared'],
+        'Function:return-shape.js:formatAlert',
+        'Property:return-shape.js:formatAlert.sharedWithDeclared@8:4',
+      ],
+      [
+        ['return-shape.js', 20, 4, 'summaryOnlyField'],
+        'Function:return-shape.js:formatSummary',
+        'Property:return-shape.js:formatSummary.summaryOnlyField@19:4',
+      ],
+      [
+        ['return-shape.js', 45, 13, 'anonReturnKey'],
+        'File:return-shape.js',
+        'Property:return-shape.js:fn@43:2.anonReturnKey@44:13',
+      ],
+      [
+        ['return-shape.js', 53, 4, 'productionAndTestField'],
+        'Function:return-shape.js:buildProductionShape',
+        'Property:return-shape.js:buildProductionShape.productionAndTestField@52:4',
+      ],
+    ])('answers %j with an edge and records no drop for it', (site, sourceId, targetId) => {
+      expect({
+        edge: hasAccessesAtSite(result, sourceId, targetId, site[1], site[2]),
+        suppressions: suppressionReasonsAt(result, site),
+      }).toEqual({ edge: true, suppressions: [] });
     });
   });
 

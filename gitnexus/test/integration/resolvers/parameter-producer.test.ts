@@ -17,7 +17,15 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
-import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
+import {
+  FIXTURES,
+  getRelationships,
+  hasAccessesAtSite,
+  runPipelineFromRepo,
+  suppressionReasonsAt,
+  type OutcomeSite,
+  type PipelineResult,
+} from './helpers.js';
 
 describe('caller-derived parameter types (W2-2)', () => {
   let result: PipelineResult;
@@ -141,5 +149,37 @@ describe('caller-derived parameter types (W2-2)', () => {
     const targets = preciseTargetsInFile('nested-block.js');
     expect(targets).toHaveLength(1);
     expect(targets[0]).toContain('makeSpike.wickRatio');
+  });
+
+  // Each producer WRITES the keys of its own returned literal, and the
+  // unique-name pass answers that write with the key it defines. The literal
+  // holds a decimal, so the receiver-bound pass had already filed the same site
+  // as a `receiver-unresolved` drop — and kept it after the edge was emitted.
+  it.each<readonly [OutcomeSite, string, string]>([
+    [
+      ['src/producer.js', 4, 11, 'wickRatio'],
+      'Function:src/producer.js:makeSpike',
+      'Property:src/producer.js:makeSpike.wickRatio@3:11',
+    ],
+    [
+      ['src/producer.js', 4, 27, 'source'],
+      'Function:src/producer.js:makeSpike',
+      'Property:src/producer.js:makeSpike.source@3:27',
+    ],
+    [
+      ['src/producer.js', 8, 11, 'wickRatio'],
+      'Function:src/producer.js:makeCandle',
+      'Property:src/producer.js:makeCandle.wickRatio@7:11',
+    ],
+    [
+      ['src/producer.js', 8, 27, 'source'],
+      'Function:src/producer.js:makeCandle',
+      'Property:src/producer.js:makeCandle.source@7:27',
+    ],
+  ])('answers the producer write %j with its own key and no drop', (site, sourceId, targetId) => {
+    expect({
+      edge: hasAccessesAtSite(result, sourceId, targetId, site[1], site[2]),
+      suppressions: suppressionReasonsAt(result, site),
+    }).toEqual({ edge: true, suppressions: [] });
   });
 });

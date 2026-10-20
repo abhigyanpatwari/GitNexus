@@ -70,6 +70,7 @@ import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
 import { callableFlowSiteKey } from './callable-value-flow.js';
 import { isTestFile } from '../../entry-point-scoring.js';
+import { answeredSiteKey } from '../resolution-outcome.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
 
 /** Language a definition lives in, for reporting which anchor a reader cannot reach. */
@@ -307,11 +308,31 @@ function idOwnedBy(id: string, owner: string): boolean {
   return !rest.includes('.') || rest.indexOf('@') < rest.indexOf('.');
 }
 
-/** Trailing symbol name of a graph id (`Function:a/b.js:buildB` -> `buildB`). */
-function simpleNameOfGraphId(graphId: string): string {
-  const tail = graphId.slice(graphId.lastIndexOf(':') + 1);
-  const at = tail.indexOf('@');
-  return at === -1 ? tail : tail.slice(0, at);
+/**
+ * The owner qualifier R3-4 writes into the ids of the return-shape keys a
+ * callable owns, read off that callable's graph id: the qualified name after
+ * `<Label>:<file>:`, without the overload suffix.
+ *
+ *   `Function:a/b.js:buildB`            -> `buildB`
+ *   `Method:a/b.js:SignalService.make#0` -> `SignalService.make`
+ *   `Function:a/b.js:outer.parse@25:2`  -> `outer.parse@25:2`
+ *
+ * The `#<arity>` (and any `~<types>`) suffix is identity for an overload, not
+ * part of the qualifier its keys carry (`SignalService.make.secretFlag@4:13`),
+ * so leaving it on meant a method never matched its own keys. A position is
+ * kept: R3-4 qualifies a positioned owner's keys with it
+ * (`fn@43:2.anonReturnKey@44:13`). Reading only the text after the LAST `:`
+ * instead cut a positioned id down to its column (`2`), which `idOwnedBy` then
+ * matched against any owner ending in `:2`. `undefined` for an id outside
+ * `filePath` — a File node, which owns no return shape.
+ */
+function ownerQualifierOfGraphId(graphId: string, filePath: string): string | undefined {
+  const fileSegment = `:${filePath}:`;
+  const at = graphId.indexOf(fileSegment);
+  if (at === -1) return undefined;
+  const qualified = graphId.slice(at + fileSegment.length);
+  const overload = qualified.indexOf('#');
+  return overload === -1 ? qualified : qualified.slice(0, overload);
 }
 
 /**
@@ -427,6 +448,13 @@ export function emitUniqueNamePropertyAccesses(
    * asserts nothing about what it means.
    */
   reportOnly = false,
+  /**
+   * Receives the {@link answeredSiteKey} of every site this pass emitted an edge
+   * for, so the caller can withdraw a `receiver-unresolved` drop the
+   * receiver-bound pass recorded for it earlier. Never written in `reportOnly`
+   * mode: a site that was only counted still has no edge.
+   */
+  answeredSink?: Set<string>,
 ): UniqueNamePropertyStats {
   const byName = prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
   const ownFilePaths = new Set(parsedFiles.map((p) => p.filePath));
@@ -503,7 +531,7 @@ export function emitUniqueNamePropertyAccesses(
         candidates,
         parsed.filePath,
         directImports.get(parsed.filePath),
-        simpleNameOfGraphId(callerGraphId),
+        ownerQualifierOfGraphId(callerGraphId, parsed.filePath),
       );
       if (choice === null) {
         ambiguous++;
@@ -532,6 +560,7 @@ export function emitUniqueNamePropertyAccesses(
         reason: `${EDGE_REASON} (${choice.tier}): ${site.kind}`,
         evidence: [],
       });
+      answeredSink?.add(answeredSiteKey(parsed.filePath, site.atRange, site.kind, site.name));
       emitted++;
     }
   }

@@ -20,7 +20,15 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
-import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
+import {
+  FIXTURES,
+  getRelationships,
+  hasAccessesAtSite,
+  runPipelineFromRepo,
+  suppressionReasonsAt,
+  type OutcomeSite,
+  type PipelineResult,
+} from './helpers.js';
 
 describe('member-call producers (W2-1)', () => {
   let result: PipelineResult;
@@ -74,5 +82,45 @@ describe('member-call producers (W2-1)', () => {
     // disproof, not an absence of evidence — it must not fall through to the
     // 0.5 name tier and get answered by an unrelated same-named key.
     expect(shapeTargetsOf('readAbsent')).toEqual([]);
+  });
+
+  // The WRITE side of the same shapes: each producer writes the keys of the
+  // literal it returns. A METHOD's graph id carries its overload suffix
+  // (`SignalService.make#0`) while its keys are qualified `SignalService.make.`,
+  // so the own-return-shape match missed every method, three same-named
+  // candidates were left, and the write got no edge at all. Every row is also
+  // free of a `receiver-unresolved` drop: the literal's decimals made the
+  // receiver-bound pass file the site as one before the edge existed.
+  it.each<readonly [OutcomeSite, string, string]>([
+    [
+      ['src/producer.js', 5, 13, 'secretFlag'],
+      'Method:src/producer.js:SignalService.make#0',
+      'Property:src/producer.js:SignalService.make.secretFlag@4:13',
+    ],
+    [
+      ['src/producer.js', 5, 38, 'wickRatio'],
+      'Method:src/producer.js:SignalService.make#0',
+      'Property:src/producer.js:SignalService.make.wickRatio@4:38',
+    ],
+    [
+      ['src/producer.js', 9, 13, 'secretFlag'],
+      'Method:src/producer.js:SignalService.other#0',
+      'Property:src/producer.js:SignalService.other.secretFlag@8:13',
+    ],
+    [
+      ['src/producer.js', 15, 11, 'secretFlag'],
+      'Function:src/producer.js:makeSignal',
+      'Property:src/producer.js:makeSignal.secretFlag@14:11',
+    ],
+    [
+      ['src/producer.js', 15, 36, 'wickRatio'],
+      'Function:src/producer.js:makeSignal',
+      'Property:src/producer.js:makeSignal.wickRatio@14:36',
+    ],
+  ])('binds the producer write %j to its own key with no drop', (site, sourceId, targetId) => {
+    expect({
+      edge: hasAccessesAtSite(result, sourceId, targetId, site[1], site[2]),
+      suppressions: suppressionReasonsAt(result, site),
+    }).toEqual({ edge: true, suppressions: [] });
   });
 });

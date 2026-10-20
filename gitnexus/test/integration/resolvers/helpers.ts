@@ -68,6 +68,53 @@ export function getResolutionOutcomes(result: PipelineResult) {
   return result.resolutionOutcomes ?? [];
 }
 
+/** One reference site: file, 1-based start line and column, and member name. */
+export type OutcomeSite = readonly [filePath: string, line: number, col: number, name: string];
+
+/**
+ * Reasons of the suppressed outcomes recorded at exactly `site`, sorted.
+ *
+ * Matched on the member name as well as the position: `a.b` and `a.b.c()`
+ * start at the same column, so position alone names two sites.
+ */
+export function suppressionReasonsAt(
+  result: PipelineResult,
+  [filePath, line, col, name]: OutcomeSite,
+): string[] {
+  return getResolutionOutcomes(result)
+    .flatMap((outcome) =>
+      outcome.kind === 'suppressed' &&
+      outcome.filePath === filePath &&
+      outcome.range.startLine === line &&
+      outcome.range.startCol === col &&
+      outcome.name === name
+        ? [outcome.reason]
+        : [],
+    )
+    .sort();
+}
+
+/**
+ * True when an `ACCESSES` edge `sourceId -> targetId` was emitted for the site
+ * at `line:col`. The name-inference and return-shape passes key each edge id by
+ * the site position, which is what ties the edge to one site rather than to any
+ * access between the same two nodes.
+ */
+export function hasAccessesAtSite(
+  result: PipelineResult,
+  sourceId: string,
+  targetId: string,
+  line: number,
+  col: number,
+): boolean {
+  return getRelationships(result, 'ACCESSES').some(
+    (edge) =>
+      edge.rel.sourceId === sourceId &&
+      edge.rel.targetId === targetId &&
+      edge.rel.id.endsWith(`:${line}:${col}`),
+  );
+}
+
 /**
  * Relationships whose source or target id does not resolve to a live graph node.
  * A non-empty result means the graph has dangling edges (an endpoint that was
