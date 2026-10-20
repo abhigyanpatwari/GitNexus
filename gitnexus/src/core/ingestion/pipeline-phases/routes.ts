@@ -14,6 +14,7 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
+import type { ExtractedFetchCall } from '../workers/parse-worker.js';
 import { isTemplateRouteCandidate } from '../utils/template-file.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
 import { buildFetchWrapperIndex } from '../route-extractors/fetch-wrapper-index.js';
@@ -29,7 +30,7 @@ import {
   compileMatcher,
   compiledMatcherMatchesRoute,
 } from '../route-extractors/middleware.js';
-import { processNextjsFetchRoutes } from '../call-processor.js';
+import { matchFetchRouteKeys, processNextjsFetchRoutes } from '../call-processor.js';
 import { reconcileDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import {
@@ -78,6 +79,45 @@ export interface TemplateFetchCall {
   filePath: string;
   fetchURL: string;
   lineNumber: number;
+}
+
+/** Route node key → files whose calls pass a URL that links to that route. */
+function filesByRouteKey(
+  calls: readonly ExtractedFetchCall[],
+  routeUrlToKeys: Map<string, string[]>,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const call of calls) {
+    const normalized = normalizeFetchURL(call.fetchURL);
+    for (const routeKey of (normalized && matchFetchRouteKeys(normalized, routeUrlToKeys)) || []) {
+      const files = out.get(routeKey) ?? new Set<string>();
+      files.add(call.filePath);
+      out.set(routeKey, files);
+    }
+  }
+  return out;
+}
+
+/**
+ * A file that passes a route's URL to a function not proven to send requests
+ * may still consume it, so `api_impact` reports its consumer count as a lower
+ * bound (#3488). Proven consumers and the route's own file are not counted.
+ */
+function markUnverifiedConsumers(
+  graph: PipelineContext['graph'],
+  routeUrlToKeys: Map<string, string[]>,
+  provenCalls: readonly ExtractedFetchCall[],
+  unprovenCalls: readonly ExtractedFetchCall[],
+): void {
+  const proven = filesByRouteKey(provenCalls, routeUrlToKeys);
+  for (const [routeKey, files] of filesByRouteKey(unprovenCalls, routeUrlToKeys)) {
+    const route = graph.getNode(generateId('Route', routeKey));
+    if (!route) continue;
+    const count = [...files].filter(
+      (file) => file !== route.properties.filePath && !proven.get(routeKey)?.has(file),
+    ).length;
+    if (count > 0) route.properties.unverifiedConsumers = count;
+  }
 }
 
 function handlerSymbolContent(
@@ -347,6 +387,9 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         ctx.repoPath,
         routes.map(({ handlerPath }) => handlerPath),
       );
+      const routeCountByPath = new Map<string, number>();
+      for (const { handlerPath } of routes)
+        routeCountByPath.set(handlerPath, (routeCountByPath.get(handlerPath) ?? 0) + 1);
 
       for (const { routeKey, entry, handlerSymbol, handlerPath } of routes) {
         const { source: routeSource, method: routeMethod, url } = entry;
@@ -357,10 +400,18 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
             ? handlerSymbolContent(content, handlerSymbol?.node)
             : content;
 
-        const { responseKeys, errorKeys } = analysisContent
+        // A file-wide scan gives every route in a multi-route file the union of
+        // its handlers' keys (#3488). Middleware stays file-level.
+        const shapeContent =
+          content &&
+          handlerSymbol?.node.properties.filePath === handlerPath &&
+          (routeCountByPath.get(handlerPath) ?? 0) > 1
+            ? (handlerSymbolContent(content, handlerSymbol.node) ?? analysisContent)
+            : analysisContent;
+        const { responseKeys, errorKeys } = shapeContent
           ? handlerPath.endsWith('.php')
-            ? extractPHPResponseShapes(analysisContent)
-            : extractResponseShapes(analysisContent)
+            ? extractPHPResponseShapes(shapeContent)
+            : extractResponseShapes(shapeContent)
           : { responseKeys: undefined, errorKeys: undefined };
 
         const mwResult = analysisContent ? extractMiddlewareChain(analysisContent) : undefined;
@@ -508,23 +559,28 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     );
     // The index is only worth building when a candidate call can match a route.
     const wrapperCalls = allFetchWrapperCalls ?? [];
+    const unprovenCalls: ExtractedFetchCall[] = [];
     if (routeRegistry.size > 0 && wrapperCalls.length > 0) {
       const wrappers = buildFetchWrapperIndex(allFetchWrapperDefs ?? [], configuredWrappers);
       for (const call of wrapperCalls) {
         if (wrappers.isWrapperCall(call)) allFetchCalls.push(call);
+        else unprovenCalls.push(call);
       }
     }
 
-    if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
-      // url → [route node keys at that url] (one per verb). A verb-less fetch()
-      // consumer matches by URL and connects to every Route node at that URL.
-      const routeUrlToKeys = new Map<string, string[]>();
-      for (const [routeKey, entry] of routeRegistry) {
-        const existing = routeUrlToKeys.get(entry.url);
-        if (existing) existing.push(routeKey);
-        else routeUrlToKeys.set(entry.url, [routeKey]);
-      }
+    // url → [route node keys at that url] (one per verb). A verb-less fetch()
+    // consumer matches by URL and connects to every Route node at that URL.
+    const routeUrlToKeys = new Map<string, string[]>();
+    for (const [routeKey, entry] of routeRegistry) {
+      const existing = routeUrlToKeys.get(entry.url);
+      if (existing) existing.push(routeKey);
+      else routeUrlToKeys.set(entry.url, [routeKey]);
+    }
+    if (unprovenCalls.length > 0) {
+      markUnverifiedConsumers(ctx.graph, routeUrlToKeys, allFetchCalls, unprovenCalls);
+    }
 
+    if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
       const consumerPaths = [...new Set(allFetchCalls.map((c) => c.filePath))];
       const consumerContents = await readFileContents(ctx.repoPath, consumerPaths);
 
