@@ -15,7 +15,7 @@ import { attachToolStaleness } from '../../src/mcp/local/local-backend.js';
 const STALE: StalenessInfo = {
   isStale: true,
   commitsBehind: 3,
-  hint: '⚠️ Index is 3 commits behind HEAD. Run analyze tool to update.',
+  hint: '⚠️ Index is 3 commits behind HEAD. Run the CLI command `gitnexus analyze` from the repository directory to update.',
 };
 const FRESH: StalenessInfo = { isStale: false, commitsBehind: 0 };
 

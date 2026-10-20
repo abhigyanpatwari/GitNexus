@@ -29,7 +29,7 @@ const FRESH: StalenessInfo = { isStale: false, commitsBehind: 0 };
 const BEHIND: StalenessInfo = {
   isStale: true,
   commitsBehind: 3,
-  hint: '⚠️ Index is 3 commits behind HEAD. Run analyze tool to update.',
+  hint: '⚠️ Index is 3 commits behind HEAD. Run the CLI command `gitnexus analyze` from the repository directory to update.',
 };
 
 const meta = (over: Partial<RepoMeta> = {}): RepoMeta =>
