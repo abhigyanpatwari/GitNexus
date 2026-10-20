@@ -87,9 +87,17 @@ function filesByRouteKey(
   routeUrlToKeys: Map<string, string[]>,
 ): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();
+  // The match depends only on the URL, and one URL recurs across call sites.
+  const routeKeysByUrl = new Map<string, string[] | undefined>();
   for (const call of calls) {
-    const normalized = normalizeFetchURL(call.fetchURL);
-    for (const routeKey of (normalized && matchFetchRouteKeys(normalized, routeUrlToKeys)) || []) {
+    if (!routeKeysByUrl.has(call.fetchURL)) {
+      const normalized = normalizeFetchURL(call.fetchURL);
+      routeKeysByUrl.set(
+        call.fetchURL,
+        normalized ? matchFetchRouteKeys(normalized, routeUrlToKeys) : undefined,
+      );
+    }
+    for (const routeKey of routeKeysByUrl.get(call.fetchURL) ?? []) {
       const files = out.get(routeKey) ?? new Set<string>();
       files.add(call.filePath);
       out.set(routeKey, files);
@@ -109,13 +117,16 @@ function markUnverifiedConsumers(
   provenCalls: readonly ExtractedFetchCall[],
   unprovenCalls: readonly ExtractedFetchCall[],
 ): void {
+  const unproven = filesByRouteKey(unprovenCalls, routeUrlToKeys);
+  if (unproven.size === 0) return;
   const proven = filesByRouteKey(provenCalls, routeUrlToKeys);
-  for (const [routeKey, files] of filesByRouteKey(unprovenCalls, routeUrlToKeys)) {
+  for (const [routeKey, files] of unproven) {
     const route = graph.getNode(generateId('Route', routeKey));
     if (!route) continue;
-    const count = [...files].filter(
-      (file) => file !== route.properties.filePath && !proven.get(routeKey)?.has(file),
-    ).length;
+    let count = 0;
+    for (const file of files) {
+      if (file !== route.properties.filePath && !proven.get(routeKey)?.has(file)) count++;
+    }
     if (count > 0) route.properties.unverifiedConsumers = count;
   }
 }
