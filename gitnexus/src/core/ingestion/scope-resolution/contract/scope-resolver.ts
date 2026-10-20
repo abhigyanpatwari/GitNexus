@@ -1136,6 +1136,30 @@ export interface ScopeResolver {
   readonly resolveNamespaceChains?: boolean;
 
   /**
+   * When true, a receiver's declared type written as a QUALIFIED name
+   * (`rp::C x`, `void f(a::Config c)`, a factory returning `rp::C`) that binds
+   * nothing through the scope chain is resolved through the same precise route
+   * a qualified inheritance base and a qualified type reference take
+   * (`resolveQualifiedInheritanceBase`): the qualifier must match the
+   * candidate's namespace, and a tie resolves nothing.
+   *
+   * The shared receiver lookups read a qualifier only as a `.` namespace-import
+   * handle, so a language whose qualifier is a namespace PATH with no import
+   * handle behind it typed none of these receivers. C++ opts in: `#include`
+   * binds no handle and its index keys `rp::C` under `C`. The alternative —
+   * reducing the spelling to its tail at capture — binds the nearest
+   * same-named class, which is the class the qualifier was written to exclude.
+   *
+   * Per-language rather than universal because PHP also keeps qualified
+   * (`\`-separated) declared types and resolves them through its own import
+   * channel; it was not measured under this route. Off ⇒ every receiver
+   * lookup is unchanged. It runs only after every existing lookup missed, and
+   * after the template-argument match, so it can add an edge but never
+   * retarget one.
+   */
+  readonly resolveQualifiedTypeSpellings?: boolean;
+
+  /**
    * How this language spells a construction expression, so the compound
    * receiver resolver can type an INLINE constructor receiver — the
    * `Service(db).do_work()` shape, where the receiver is the constructed

@@ -414,13 +414,18 @@ const CPP_SCOPE_QUERY = `
 ;; ─── Type bindings — auto + scoped brace-init (qualified) ───────────
 ;; Covers: auto client = ns::HttpClient{}
 ;; AST: compound_literal_expression > qualified_identifier > type_identifier
+;; The WHOLE qualified spelling is captured, not its tail: \`ns::HttpClient\` is
+;; resolved by the qualifier-aware route (\`resolveQualifiedTypeSpellings\`),
+;; while the tail \`HttpClient\` bound whichever same-named class was nearer — a
+;; global one through another include, or the enclosing namespace's own
+;; (\`auto x = a::Config{}\` inside a \`namespace b\` declaring Config). Matching
+;; the outer node is also depth-agnostic (\`a::b::T{}\`).
 (declaration
   type: (placeholder_type_specifier)
   declarator: (init_declarator
     declarator: (identifier) @type-binding.name
     value: (compound_literal_expression
-      type: (qualified_identifier
-        name: (type_identifier) @type-binding.type)))) @type-binding.constructor
+      type: (qualified_identifier) @type-binding.type))) @type-binding.constructor
 
 ;; ─── Type bindings — auto + new expression ──────────────────────────
 ;; Covers: auto user = new User(name)
@@ -599,18 +604,16 @@ const CPP_SCOPE_QUERY = `
 ;; a single node type in the field position, not an alternation — the
 ;; tree-sitter 0.21 hazard this repo has been bitten by before.
 ;;
-;; The QUALIFIER IS THEN DROPPED, by cppQualifiedTail in interpret.ts, not
-;; here — and dropping it was measured rather than assumed. Recording
-;; ns::Repo<User> resolves to NOTHING: findClassBindingInScope's dotted-tail
-;; fallback splits on "." and C++ writes "::", and resolveClassBindingForName's
-;; generic branch then looks up the base ns::Repo, which is not a key either
-;; because C++ emits no @declaration.qualified_name and indexes ns::Repo under
-;; Repo. Reducing to the tail lands on exactly the path the BARE spelling
-;; already takes — one class-like match or decline — so a qualified member field
-;; behaves like the bare one instead of like nothing. A tail that names no
-;; workspace class (std::string with no "class string" in the repo) binds
-;; nothing and emits nothing, which is why this is a miss-closing change rather
-;; than an edge-fabricating one.
+;; For a GENERIC member the QUALIFIER IS THEN DROPPED, by cppQualifiedTail in
+;; interpret.ts, not here. resolveClassBindingForName's template-argument match
+;; (the one that prefers a Repo<User> specialization over the primary Repo<T>)
+;; looks up the BASE name, and C++ indexes ns::Repo under Repo, so only the tail
+;; reaches it. A NON-GENERIC member keeps its qualifier and resolves through the
+;; qualifier-aware route (ScopeResolver.resolveQualifiedTypeSpellings): its tail
+;; bound the NEAREST same-named class, which inside a namespace declaring its
+;; own Config made a::Config cfg; type cfg as that one. A qualified spelling
+;; that names no workspace class (std::string with no namespace std in the
+;; repo) binds nothing and emits nothing.
 ;;
 ;; Like the six above, each requires the declarator to reach the field_identifier
 ;; DIRECTLY, so a method whose return type is qualified (ns::Thing method();)

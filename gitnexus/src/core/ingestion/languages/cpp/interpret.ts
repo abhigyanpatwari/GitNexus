@@ -85,17 +85,24 @@ export function interpretCppTypeBinding(captures: CaptureMatch): ParsedTypeBindi
   // A member field's type is captured AS WRITTEN, qualifier and all
   // (`ns::Repo<User>`), because the query matches the outer
   // `qualified_identifier` — one depth-agnostic pattern per declarator shape
-  // instead of one per qualifier depth. The qualifier is dropped HERE; see the
-  // "Field type, QUALIFIED" block in query.ts for why the qualified spelling
-  // resolves to nothing and the tail resolves like the bare one.
+  // instead of one per qualifier depth.
   //
-  // FIELDS ONLY. `@type-binding.parameter` and `@type-binding.assignment` also
-  // capture qualified spellings (their patterns use `type: (_)`), and reducing
-  // THOSE would newly bind every qualified local and parameter in the workspace
-  // — a far wider change than the member-field miss this closes, and not one
-  // anything here has measured.
+  // A NON-GENERIC qualified member (`a::Config cfg;`) keeps its qualifier, like
+  // a qualified local or parameter: the resolver matches the qualifier against
+  // the candidate's namespace (`ScopeResolver.resolveQualifiedTypeSpellings`).
+  // Its tail bound the NEAREST `Config` — inside a `namespace b` that declares
+  // one, `cfg.m()` reached `b::Config::m`, a confident wrong edge.
+  //
+  // A GENERIC qualified member is still reduced to its tail, here, because the
+  // template-argument match that picks a specialization (`Repo<User>` over the
+  // primary `Repo<T>`) keys on the bare base name; the qualified route is
+  // argument-blind and would refuse wherever a specialization exists. See the
+  // "Field type, QUALIFIED" block in query.ts. That keeps the tail hazard for
+  // generic members, and only for them.
   const effectiveType =
-    captures['@type-binding.field'] === undefined ? type : cppQualifiedTail(type);
+    captures['@type-binding.field'] !== undefined && type.includes('<')
+      ? cppQualifiedTail(type)
+      : type;
   // The reduced spelling is also the AS-WRITTEN one, and saying so is load
   // bearing. `collectTypeBindings` derives `TypeRef.declaredSpelling` from
   // `@type-binding.type` whenever that text differs from `rawTypeName`, and it

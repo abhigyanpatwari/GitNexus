@@ -209,6 +209,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isNamespaceMemberVisible'
   | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
+  | 'resolveQualifiedTypeSpellings'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
@@ -269,6 +270,10 @@ export function classifyReceiverOrigin(
      *  external. Same hook the three receiver-chain lookups in
      *  `compound-receiver.ts` already receive. */
     readonly stripTypePreservingDecoration?: DecorationStripper;
+    /** `ScopeResolver.resolveQualifiedTypeSpellings`, so a base declared with a
+     *  qualified type (`rp::C x`) is classified by the same lookup that typed
+     *  (or failed to type) it. */
+    readonly qualifiedTypeSpellings?: boolean;
     /** `LanguageProvider.isBuiltInName`, threaded through the pass options the
      *  same way `emitFreeCallFallback` receives it. THE only source of positive
      *  external evidence available here; languages that declare no built-in set
@@ -292,8 +297,9 @@ export function classifyReceiverOrigin(
     // arguments, so an in-program generic base (`Box<String> b; b.open()`)
     // resolves instead of being mislabelled and dropped from the hedge.
     if (
-      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip) !==
-      undefined
+      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip, {
+        qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+      }) !== undefined
     ) {
       return 'in-program';
     }
@@ -625,12 +631,14 @@ export function emitReceiverBoundCalls(
     constructionSyntax: provider.constructionSyntax,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
+    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
   };
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.
   const receiverOriginOpts = {
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     isBuiltInName: options.isBuiltInName,
+    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
   };
 
   // Maps class-like graph ids back to ALL scope definitions that resolved to
@@ -2330,6 +2338,7 @@ export function emitReceiverBoundCalls(
             position: typeRef.lookupPosition,
             purpose: typeRef.lookupPurpose ?? 'type',
             onNameFallback,
+            qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
           },
         );
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
@@ -3052,7 +3061,10 @@ export function emitReceiverBoundCalls(
                   fieldDeclaredType,
                   scopes,
                   provider.stripTypePreservingDecoration,
-                  { onNameFallback },
+                  {
+                    onNameFallback,
+                    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+                  },
                 );
           if (receiverClass !== undefined) {
             const chain = [

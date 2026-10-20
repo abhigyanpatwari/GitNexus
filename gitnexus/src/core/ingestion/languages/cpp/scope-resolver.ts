@@ -327,6 +327,13 @@ export const cppScopeResolver: ScopeResolver = {
   hoistTypeBindingsToModule: true,
   // Enable receiver-bound explicit-`this` fallback only for C++.
   resolveThisViaEnclosingClass: true,
+  // `rp::C x`, `void f(a::Config c)`: the capture keeps the qualifier, and
+  // neither `#include` (no namespace handle) nor the index (`rp::C` keyed as
+  // `C`) lets the shared receiver lookups read it. Resolve it the way a
+  // qualified base class already resolves — qualifier matched against the
+  // candidate's namespace, refuse on a tie — rather than by its tail, which
+  // binds the nearer same-named class the qualifier was written to exclude.
+  resolveQualifiedTypeSpellings: true,
   resolveReceiverMember: resolveCppReceiverMember,
   // The `isFileLocalDef` hook on the global free-call fallback names
   // file-local linkage historically, but semantically gates "logically

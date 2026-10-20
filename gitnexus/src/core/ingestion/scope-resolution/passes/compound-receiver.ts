@@ -37,6 +37,7 @@ import {
   lookupNameClaim,
   hasExplicitNameClaim,
   resolveClassBindingForName,
+  resolveQualifiedClassSpelling,
   findEnclosingClassDef,
   findExportedDef,
   findExportedDefByName,
@@ -181,7 +182,17 @@ interface ResolveCompoundReceiverOptions {
    *  by the shared lookup's other callers — see the contract's own note on why
    *  this is opt-in rather than global. */
   readonly stripTypePreservingDecoration?: DecorationStripper;
+  /** `ScopeResolver.resolveQualifiedTypeSpellings`: a qualified declared or
+   *  return type (`rp::C`) that binds nothing is resolved through the precise
+   *  qualified route. Absent ⇒ both lookups are exactly as before. */
+  readonly qualifiedTypeSpellings?: boolean;
 }
+
+/** The options the two declared-type lookups below read. */
+type TypeLookupOptions = Pick<
+  ResolveCompoundReceiverOptions,
+  'recordReceiverType' | 'onNameFallback' | 'qualifiedTypeSpellings'
+>;
 
 /** Is this hop the language's construction selector applied to the class
  *  itself — `Factory.new` — rather than an ordinary member named `new` on a
@@ -435,9 +446,8 @@ interface FoldState {
 function classOfDeclaredType(
   typeRef: TypeRef,
   scopes: ScopeResolutionIndexes,
-  stripDecoration?: DecorationStripper,
-  recordReceiverType?: ReceiverTypeRecorder,
-  onNameFallback?: () => void,
+  stripDecoration: DecorationStripper | undefined,
+  options: TypeLookupOptions,
 ): SymbolDefinition | undefined {
   // `declaredAtScope`, never a scope the caller chose: all five sites passed
   // exactly this `TypeRef`'s own anchor, and taking it as a parameter is what
@@ -449,9 +459,14 @@ function classOfDeclaredType(
     spelling,
     scopes,
     stripDecoration,
-    { position: typeRef.lookupPosition, purpose: typeRef.lookupPurpose ?? 'type', onNameFallback },
+    {
+      position: typeRef.lookupPosition,
+      purpose: typeRef.lookupPurpose ?? 'type',
+      onNameFallback: options.onNameFallback,
+      qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+    },
   );
-  return noteReceiverType(recordReceiverType, spelling, def);
+  return noteReceiverType(options.recordReceiverType, spelling, def);
 }
 
 /**
@@ -488,18 +503,27 @@ function noteReceiverType(
  * arguments intact. The spelling is built only once the lookup has actually
  * found a class, because it is discarded otherwise — and every fold hop
  * through a call reaches this, generic or not.
+ *
+ * A qualified return type (`rp::C make();`) binds nothing through the bare
+ * lookup for the same reason a qualified declared type does not, so it takes
+ * the same opt-in qualified route as a last resort (see
+ * `ScopeResolver.resolveQualifiedTypeSpellings`).
  */
 function classOfReturnType(
   retType: TypeRef,
   scopes: ScopeResolutionIndexes,
-  record: ReceiverTypeRecorder | undefined,
-  onNameFallback?: () => void,
+  options: TypeLookupOptions,
 ): SymbolDefinition | undefined {
-  const def = findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
-    position: retType.lookupPosition,
-    purpose: retType.lookupPurpose ?? 'type',
-    onNameFallback,
-  });
+  const def =
+    findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
+      position: retType.lookupPosition,
+      purpose: retType.lookupPurpose ?? 'type',
+      onNameFallback: options.onNameFallback,
+    }) ??
+    (options.qualifiedTypeSpellings === true
+      ? resolveQualifiedClassSpelling(retType.declaredAtScope, retType.rawName, scopes)
+      : undefined);
+  const record = options.recordReceiverType;
   if (def === undefined || record === undefined) return def;
   return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
 }
@@ -521,8 +545,7 @@ function typeOfMemberOnClass(
         memberType,
         scopes,
         options.stripTypePreservingDecoration,
-        options.recordReceiverType,
-        options.onNameFallback,
+        options,
       );
       // The declared type is reported even when it resolved to no class:
       // `Promise<User>` and `[]Repo` name nothing in the workspace, and an
@@ -558,8 +581,7 @@ function typeOfMemberOnClass(
             hoisted,
             scopes,
             options.stripTypePreservingDecoration,
-            options.recordReceiverType,
-            options.onNameFallback,
+            options,
           );
           // Identical to the primary branch: a declared type that named no
           // class is still a usable position when the next step unwraps it.
@@ -924,13 +946,7 @@ export function resolveCompoundReceiverClass(
         });
       }
 
-      const viaTb = classOfDeclaredType(
-        tb,
-        scopes,
-        options.stripTypePreservingDecoration,
-        options.recordReceiverType,
-        options.onNameFallback,
-      );
+      const viaTb = classOfDeclaredType(tb, scopes, options.stripTypePreservingDecoration, options);
       if (viaTb !== undefined) return viaTb;
 
       // Member-alias / call-result shapes store the RHS path on rawName
@@ -1030,14 +1046,7 @@ export function resolveCompoundReceiverClass(
           position: options.lookupPosition,
         });
         const viaReturn =
-          retType === undefined
-            ? undefined
-            : classOfReturnType(
-                retType,
-                scopes,
-                options.recordReceiverType,
-                options.onNameFallback,
-              );
+          retType === undefined ? undefined : classOfReturnType(retType, scopes, options);
         if (viaReturn !== undefined) return viaReturn;
       }
       // Inline construction — `Service(db).m()` / `new Service(db).m()`.
@@ -1165,7 +1174,7 @@ export function resolveCompoundReceiverClass(
     }
 
     if (retType === undefined) return undefined;
-    return classOfReturnType(retType, scopes, options.recordReceiverType, options.onNameFallback);
+    return classOfReturnType(retType, scopes, options);
   }
 
   // Mixed dotted + call chain: `obj.field.method().field.method()…`.
@@ -1255,13 +1264,7 @@ export function resolveCompoundReceiverClass(
   // two had a fixture. See `classOfDeclaredType` for why this cannot change a
   // `TypeRef` that was never reduced.
   let currentClass: SymbolDefinition | undefined = headType
-    ? classOfDeclaredType(
-        headType,
-        scopes,
-        undefined,
-        options.recordReceiverType,
-        options.onNameFallback,
-      )
+    ? classOfDeclaredType(headType, scopes, undefined, options)
     : findClassBindingInScope(inScope, headMemberName, scopes, undefined, {
         onNameFallback: options.onNameFallback,
         position: options.lookupPosition,
@@ -1417,13 +1420,7 @@ export function resolveCompoundReceiverClass(
     // grounds fell through here — a declined fold is documented as "no answer",
     // never a veto — and this walk re-minted `other.py:Mapped` from the
     // workspace index. Same rule, same lookup, so the two routes now agree.
-    let nextClass = classOfDeclaredType(
-      memberType,
-      scopes,
-      undefined,
-      options.recordReceiverType,
-      options.onNameFallback,
-    );
+    let nextClass = classOfDeclaredType(memberType, scopes, undefined, options);
     if (nextClass === undefined) {
       const fromMap = unwrapMapValueToClass(memberType, scopes, options.onNameFallback);
       if (fromMap !== undefined) nextClass = fromMap;
