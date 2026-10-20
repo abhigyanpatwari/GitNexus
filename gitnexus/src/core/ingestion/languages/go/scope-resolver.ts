@@ -15,7 +15,7 @@ import {
 import { detectGoInterfaceImplementations } from './interface-impls.js';
 import { populateGoRangeBindings } from './range-binding.js';
 import { expandGoWildcardNames } from './expand-wildcards.js';
-import { goMapValueType } from './interpret.js';
+import { goMapValueType, goQualifiedTypeLookupSpelling } from './interpret.js';
 import { goIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { goIsNamespaceMemberVisible } from './namespace-member-visibility.js';
 import { resolveGoImportBinding } from './import-binding.js';
@@ -54,6 +54,11 @@ export const goScopeResolver: ScopeResolver = {
   // purpose for `method-owners.ts`.)
   stripTypePreservingDecoration: (typeName) =>
     typeName.startsWith('*') ? typeName.slice(1).trim() : undefined,
+
+  // `normalizeGoTypeName` drops the package qualifier from every binding but a
+  // return type, so `models.User` and `api.User` both arrive as `User`. This
+  // recovers `models.User` from the written spelling for receiver typing.
+  qualifiedTypeLookupSpelling: goQualifiedTypeLookupSpelling,
 
   // The subscript counterpart of the stripper above, and the reason the two are
   // separate hooks: `*` is safe to strip at any class lookup, `[]` / `map[K]`

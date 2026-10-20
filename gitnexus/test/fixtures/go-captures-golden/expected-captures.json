@@ -363,6 +363,42 @@
     "captureGroups": 14,
     "digest": "9b1882cd492a04c605a5e6d32f2e264970eb8d4f359511d76b0ede6d8bff60c9"
   },
+  "go-qualified-declared-types/api/bridge.go": {
+    "captureGroups": 10,
+    "digest": "7e5074af5bf2f058f35809b603efa6835035b923803937d326f27d69693bd33b"
+  },
+  "go-qualified-declared-types/api/local.go": {
+    "captureGroups": 9,
+    "digest": "367ccdc55cca06a463d176678675eb58a0191b619442b7e647baed2d9403acd4"
+  },
+  "go-qualified-declared-types/api/user.go": {
+    "captureGroups": 23,
+    "digest": "cf7aeb0e27271337a7c8ee64f5dcc58d9168711448ab38bd6c05705092613551"
+  },
+  "go-qualified-declared-types/gadgets/gizmo.go": {
+    "captureGroups": 21,
+    "digest": "8229ee21ee3f3b22c4df1de78500ad22463d8cc52c80794bfa47b91842f024cb"
+  },
+  "go-qualified-declared-types/models/user.go": {
+    "captureGroups": 23,
+    "digest": "ec29a949d55c6c32cb5209d4aa231b5ac63fc56f0edbb3076b698522e89ec775"
+  },
+  "go-qualified-declared-types/services/aliased.go": {
+    "captureGroups": 10,
+    "digest": "e367811aaf0208b92e3d0b72697f960d4672801d1004a3ccfb8ec949bcfb8ff2"
+  },
+  "go-qualified-declared-types/services/foreign.go": {
+    "captureGroups": 41,
+    "digest": "675bcf769ef59c71f47c6f94ebd54e2540200516622bad49534ce70b5e573dc8"
+  },
+  "go-qualified-declared-types/services/locals.go": {
+    "captureGroups": 19,
+    "digest": "938bd4d0fd7d7eea69f24ff0d64c1dee5a2296fcbaf44d041716f151d2088dc9"
+  },
+  "go-qualified-declared-types/services/service.go": {
+    "captureGroups": 60,
+    "digest": "ab0fac055b7a055140d1d99d21bafebc47f0d932b6ea6080c20f2d0deb3a16fb"
+  },
   "go-receiver-method-free-call/example.go": {
     "captureGroups": 8,
     "digest": "ec13b52723d8078edbf36d3f85abd6d58fc6e2bfec781b978ff57659c7f0676a"

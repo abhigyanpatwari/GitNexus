@@ -2291,3 +2291,72 @@ func shadowedByMethod() {
     ).toEqual(targets);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Package-qualified declared types (root cause A of the #3498 corpus triage)
+// ---------------------------------------------------------------------------
+
+describe('Go package-qualified field and parameter types', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-qualified-declared-types'),
+      () => {},
+    );
+  }, 60000);
+
+  /** Every CALLS target of `caller`, qualified by package dir and file — the
+   *  two `User` types share their method names, so only the file tells which
+   *  one a call bound to. Exact lists, so a wrong target fails the same row a
+   *  missing one does. */
+  const targetsOf = (caller: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((e) => e.source === caller)
+      .map((e) => `${e.target}@${e.targetFilePath.split('/').slice(-2).join('/')}`)
+      .sort();
+
+  // Capture normalizes `models.User` to `User`, and both `models` and `api`
+  // declare one. Before the qualified spelling was consulted, every qualified
+  // row lost its member call, and `Forward` bound to its own package's
+  // `api.User`. The bare same-package row is the control.
+  it.each([
+    ['a value parameter', 'ArchiveByValue', ['Archive@models/user.go']],
+    ['a pointer parameter', 'ArchiveByPointer', ['Archive@models/user.go']],
+    ['a parameter through an import alias', 'ArchiveAliased', ['Archive@models/user.go']],
+    ['a struct field', 'ArchiveMember', ['Archive@models/user.go']],
+    ['a pointer struct field', 'ArchivePointer', ['Archive@models/user.go']],
+    ['a struct field of the other package', 'ArchiveRemote', ['Archive@api/user.go']],
+    ['a field chain off a parameter', 'PurgeInbox', ['Purge@models/user.go']],
+    ['a declared local variable', 'ArchiveDeclared', ['Archive@models/user.go']],
+    // The composite literal's own constructor edge already resolved through
+    // the namespace; only the call on the value it produces did not.
+    [
+      'a pointer composite literal',
+      'ArchiveConstructed',
+      ['Archive@models/user.go', 'User@models/user.go'],
+    ],
+    [
+      'a qualifier naming another package than its own namesake',
+      'Forward',
+      ['Archive@models/user.go'],
+    ],
+    ['a bare same-package type', 'ArchiveLocal', ['Archive@api/user.go']],
+  ])('resolves %s to the type it names (%s)', (_shape, caller, expected) => {
+    expect(targetsOf(caller)).toEqual(expected);
+  });
+
+  // The qualified spelling is tried FIRST, not instead: when its import names
+  // no file in the workspace, the bare-name lookup still answers — and still
+  // refuses when the bare name is ambiguous. The field rows are the ones that
+  // need the declared-type lookup's own fallback; a parameter also has the
+  // simple-typeBinding case's unique-name fallback behind it.
+  it.each([
+    ['refuses a bare name two packages declare', 'ArchiveForeign', []],
+    ['refuses a bare name two packages declare', 'ArchiveForeignField', []],
+    ['keeps the unique-name fallback', 'SpinGadget', ['Spin@gadgets/gizmo.go']],
+    ['keeps the unique-name fallback', 'SpinGadgetField', ['Spin@gadgets/gizmo.go']],
+  ])('behind an unresolved import, %s (%s)', (_behaviour, caller, expected) => {
+    expect(targetsOf(caller)).toEqual(expected);
+  });
+});

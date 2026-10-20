@@ -88,6 +88,7 @@ import {
   findValueBindingInScope,
   isClassLike,
   isNamespaceNameShadowed,
+  type ClassBindingLookup,
   type DecorationStripper,
   resolveClassBindingForName,
 } from '../scope/walkers.js';
@@ -99,6 +100,7 @@ import {
 import { constructionSiteReason } from './free-call-fallback.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
+  classOfQualifiedTypeSpelling,
   resolveCompoundReceiverClass,
   resolveCompoundReceiverTyped,
 } from '../passes/compound-receiver.js';
@@ -188,6 +190,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'stripReceiverCastExpressions'
   | 'constructionSyntax'
   | 'stripTypePreservingDecoration'
+  | 'qualifiedTypeLookupSpelling'
   | 'resolveQualifiedReceiverMember'
   | 'namespaceReceiverPaths'
   | 'namespaceBindingIdentity'
@@ -643,6 +646,7 @@ export function emitReceiverBoundCalls(
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+    qualifiedTypeLookupSpelling: provider.qualifiedTypeLookupSpelling,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
   };
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
@@ -2352,17 +2356,26 @@ export function emitReceiverBoundCalls(
         // takes the GROUNDED route rather than binding whatever the workspace
         // declares under that base name — see {@link erasedTypeApplication}.
         const typeApplication = erasedTypeApplication(typeRef);
-        let ownerDef = resolveClassBindingForName(
-          typeRef.declaredAtScope,
-          typeApplication ?? typeRef.rawName,
-          scopes,
-          undefined,
-          {
-            position: typeRef.lookupPosition,
-            purpose: typeRef.lookupPurpose ?? 'type',
-            onNameFallback,
-          },
-        );
+        const typeLookup: ClassBindingLookup = {
+          position: typeRef.lookupPosition,
+          purpose: typeRef.lookupPurpose ?? 'type',
+          onNameFallback,
+        };
+        // A namespace qualifier capture cut from `rawName` (`models.User` →
+        // `User`) is asked first, through the helper the compound resolver's
+        // declared-type lookup uses — a miss lands on the lookup below unchanged.
+        let ownerDef =
+          classOfQualifiedTypeSpelling(typeRef, scopes, provider.qualifiedTypeLookupSpelling, {
+            ...typeLookup,
+            namespaceMemberVisible,
+          }) ??
+          resolveClassBindingForName(
+            typeRef.declaredAtScope,
+            typeApplication ?? typeRef.rawName,
+            scopes,
+            undefined,
+            typeLookup,
+          );
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
         // rawName is itself a class symbol reachable through scope bindings.
         // For languages with namespace-style imports (Go), imported types
