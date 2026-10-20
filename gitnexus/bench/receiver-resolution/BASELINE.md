@@ -1,5 +1,28 @@
 # Receiver-resolution baseline
 
+## Zig receiver gaps from the #3498 drop triage
+
+Four Zig fixes clear 14 `receiver-unresolved` sites: all-kind drops move from
+192 to 178, reads from 44 to 31 and calls from 128 to 127. Writes and every
+shape-arm state are unchanged, and no site was added.
+
+- 9 reads of `const X = @import("f.zig").X;` (zig-hub `stdx.zig:2-4`,
+  zig-receivers `stdx.zig:2`, zig-idioms `holder.zig:6`, `main.zig:6`,
+  `Element.zig:35`, `hub.zig:9-10`): the `@import(…)` receiver is now bound as a
+  namespace, so the read resolves through the written module (`import-resolved`).
+- 3 reads off an anonymous container (`Sorter.zig:16`, `:23`, `:28`):
+  the receiver names the container's minted identity. The site is now anchored
+  on the member, so it moves off the reported `struct` position and resolves
+  from the scope that evaluates it.
+- 1 call and its callee-position read at zig-idioms `main.zig:42`
+  (`Stack(u8).init()`): the new `isTypeApplicationCall` hook types the receiver
+  as `Stack`. This is the call drop; Zig call drops fall from 11 to 10,
+  `no-chain` from 27 to 26 and `in-program` from 55 to 54.
+
+The forwarding type constructor fix (`Bridge ↦ Builder`) moves no counted site.
+Its `aliases.zig` rows are not recorded as drops on `main`, and the new `b12`
+fixture case resolves.
+
 ## Express inline-handler fixture (#3488)
 
 The new `express-inline-handlers` fixture reads `req.query.path` inside an
