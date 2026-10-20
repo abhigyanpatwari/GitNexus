@@ -1,8 +1,10 @@
 /**
  * JavaScript: self/this resolution, parent resolution, super resolution
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -11,6 +13,9 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  suppressionReasonsAt,
+  writeFixtureRepo,
+  type OutcomeSite,
   type PipelineResult,
 } from './helpers.js';
 
@@ -706,5 +711,63 @@ describe('JavaScript inline constructor receiver resolution', () => {
     );
     expect(call).toMatchObject({ target: 'doWork', targetFilePath: 'svc.js' });
     expect(call!.rel.targetId).toContain('Legacy');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CommonJS export assignments are declarations, not dropped member writes
+// ---------------------------------------------------------------------------
+
+describe('CommonJS export assignment receivers (JavaScript)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-js-cjs-export-receiver-'));
+    writeFixtureRepo(repoDir, {
+      'lib.js': `exports.memberRequest = function (url) {
+  return url;
+};
+module.exports.arrowRequest = (url) => url;
+function wrap(module) {
+  module.exports.wrapped = 1;
+}
+module.exports.api.nested = 1;
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  // `module.exports.arrowRequest = …` DECLARES this module's `arrowRequest`
+  // export, exactly as `exports.memberRequest = …` on line 1 does. Its receiver
+  // merely has a dot in it, so the receiver-bound pass tried to fold
+  // `module.exports` as a value, failed, and filed the declaration as a dropped
+  // member write. The bare `exports` spelling never reached that path at all.
+  //
+  // Inside `wrap`, `module` is a PARAMETER: that write goes through a local
+  // value the resolver cannot type, so it is a real drop and must stay one. So
+  // is the last line, which writes INTO a value hanging off the export object
+  // rather than declaring an export.
+  it.each<readonly [OutcomeSite, readonly string[]]>([
+    [['lib.js', 1, 0, 'memberRequest'], []],
+    [['lib.js', 4, 0, 'arrowRequest'], []],
+    [['lib.js', 6, 2, 'wrapped'], ['receiver-unresolved']],
+    [['lib.js', 8, 0, 'nested'], ['receiver-unresolved']],
+  ])('records %j as %j', (site, reasons) => {
+    expect(suppressionReasonsAt(result, site)).toEqual(reasons);
+  });
+
+  // Instrumentation only: the declaration keeps the write edge it already had,
+  // and gains nothing.
+  it('keeps the module-level write edge to each exported function', () => {
+    const writes = getRelationships(result, 'ACCESSES')
+      .filter((e) => e.sourceLabel === 'File' && e.rel.reason === 'scope-resolution: write')
+      .map((e) => e.target)
+      .sort();
+    expect(writes).toEqual(['arrowRequest', 'memberRequest']);
   });
 });

@@ -24,6 +24,7 @@ import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { typescriptProvider } from '../typescript.js';
 import { typescriptModuleExports } from './module-exports.js';
+import { isCommonJsExportAssignment } from './cjs-export-receiver.js';
 import { loadTsconfigIndex, type TsconfigIndex } from './tsconfig.js';
 import {
   loadNodeWorkspacePackages,
@@ -136,6 +137,9 @@ const typescriptScopeResolver: ScopeResolver = {
   // chain). This also correctly rejects identifiers that merely
   // contain the substring `super` (e.g. `superman`).
   isSuperReceiver: (text) => /^super(\s*\(|\s*\.|\s*\[|\s*$)/.test(text.trim()),
+
+  // `module.exports.x = …` declares an export; it is not a dropped member write.
+  isModuleExportAssignment: isCommonJsExportAssignment,
 
   // TypeScript is statically typed — field-fallback heuristic off
   // (the type-binding layer produces precise owner types). Return-

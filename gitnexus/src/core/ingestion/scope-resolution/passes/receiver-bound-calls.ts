@@ -198,6 +198,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'createReceiverNamespaceResolver'
   | 'resolveReceiverMember'
   | 'suppressReceiverLookup'
+  | 'isModuleExportAssignment'
   | 'resolveThisViaEnclosingClass'
   | 'resolveMissingReceiverMembersFromSubtypes'
   | 'missingReceiverSubtypeCandidateCompatibility'
@@ -3205,7 +3206,8 @@ export function emitReceiverBoundCalls(
           // could not type (`x = ns.untyped()`) is a drop too, not an exact miss.
           (typeRef !== undefined &&
             BARE_TYPE_NAME_RE.test(receiverName) &&
-            bindsNamespaceCallable(typeRef, namespaceTargets)))
+            bindsNamespaceCallable(typeRef, namespaceTargets))) &&
+        provider.isModuleExportAssignment?.(site, scopes) !== true
       ) {
         // Decoded once: both the shape census and the origin classifier read the
         // same chain, and this is inside the drop guard so a resolved site pays
