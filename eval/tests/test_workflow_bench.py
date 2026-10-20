@@ -164,6 +164,31 @@ def test_runner_requires_a_named_model_and_supports_expensive_opt_in():
         normalized_model_identifier("   ")
 
 
+def test_default_sweep_includes_no_gitnexus_comparison_and_repeated_measurements():
+    args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "pinned-model"])
+    assert args.runs == 3
+    assert args.arms == ["workflow", "workflow_direct", "baseline", "baseline_nomcp"]
+    assert args.include_expensive is False
+
+
+def test_explicit_smoke_sweep_can_limit_the_model_budget():
+    args = build_parser().parse_args(
+        [
+            "--tasks",
+            "tasks.yaml",
+            "--model",
+            "pinned-model",
+            "--runs",
+            "1",
+            "--arms",
+            "baseline_nomcp",
+            "baseline",
+        ]
+    )
+    assert args.runs == 1
+    assert args.arms == ["baseline_nomcp", "baseline"]
+
+
 @pytest.mark.parametrize(
     "alias",
     ["Auto", "AUTO", "latest", "provider/latest", "provider:Latest", "provider@LATEST"],
