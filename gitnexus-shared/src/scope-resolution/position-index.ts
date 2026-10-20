@@ -203,6 +203,9 @@ function wrapIndex(files: ReadonlyMap<string, FileIndex>, size: number): Positio
 
       const endIdx = findLastStartLteIndex(file.entries, line, col);
       if (endIdx < 0) return undefined;
+      // The innermost scope usually starts last; it is then the rightmost match.
+      const latest = file.entries[endIdx];
+      if (latest && endIsAtOrAfter(latest.range, line, col)) return latest.id;
 
       const match = findLastContainingEntry(file, endIdx, line, col);
       return match < 0 ? undefined : file.entries[match]!.id;

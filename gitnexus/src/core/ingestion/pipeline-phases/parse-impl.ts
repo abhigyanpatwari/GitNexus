@@ -1566,12 +1566,14 @@ export async function runChunkedParseAndResolve(
 
   const routeFilePaths = new Set(allPaths);
   const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
-  const resolutionFilePaths = new Set([
-    ...allRouteFacts.map((file) => file.filePath),
-    ...allFetchWrapperDefs.map((definition) => definition.filePath),
-    ...allFetchWrapperCalls.map((call) => call.filePath),
-    ...allFetchWrapperReexports.map((reexport) => reexport.filePath),
-  ]);
+  const resolutionFilePaths = new Set<string>();
+  for (const facts of [
+    allRouteFacts,
+    allFetchWrapperDefs,
+    allFetchWrapperCalls,
+    allFetchWrapperReexports,
+  ] as const)
+    for (const { filePath } of facts) resolutionFilePaths.add(filePath);
   for (const filePath of resolutionFilePaths) {
     const language = getLanguageFromFilename(filePath);
     if (language === null || routeResolutionConfigs.has(language)) continue;

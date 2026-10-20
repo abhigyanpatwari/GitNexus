@@ -5,6 +5,8 @@ import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route
 import {
   createLexicalBindings,
   importBindingKey,
+  isCommonJsGlobal,
+  isModuleExports,
   LEXICAL_FUNCTION_TYPES,
   parameterPattern,
   patternBindingNames,
@@ -201,11 +203,12 @@ export function extractFrameworkRouteFacts(
   const nodes: { node: Node; enclosingFunction?: Node }[] = [{ node: tree.rootNode }];
   while (nodes.length) {
     const { node, enclosingFunction } = nodes.pop()!;
-    if (node.type === 'ERROR') continue;
-    const childFunction = LEXICAL_FUNCTION_TYPES.has(node.type) ? node : enclosingFunction;
+    const type = node.type;
+    if (type === 'ERROR') continue;
+    const childFunction = LEXICAL_FUNCTION_TYPES.has(type) ? node : enclosingFunction;
     for (const child of children(node).reverse())
       nodes.push({ node: child, enclosingFunction: childFunction });
-    if (node.type === 'import_statement') {
+    if (type === 'import_statement') {
       // ESM decomposition already carries precise aliases/type-only flags. CJS
       // imports are intentionally handled at their AST calls to guard require.
       const position = `${node.startPosition.row + 1 + lineOffset}:${node.startPosition.column}`;
@@ -224,7 +227,7 @@ export function extractFrameworkRouteFacts(
                 },
         });
       }
-    } else if (node.type === 'variable_declarator') {
+    } else if (type === 'variable_declarator') {
       const name = node.childForFieldName('name');
       const value = node.childForFieldName('value');
       if (value && enclosingFunction) {
@@ -241,17 +244,14 @@ export function extractFrameworkRouteFacts(
           name,
           value && FUNCTION_TYPES.includes(value.type) ? functionValue(value) : expression(value),
         );
-    } else if (
-      node.type === 'function_declaration' ||
-      node.type === 'generator_function_declaration'
-    ) {
+    } else if (type === 'function_declaration' || type === 'generator_function_declaration') {
       const name = node.childForFieldName('name');
       if (name && enclosingFunction) {
         const id = bindingId(name);
         if (id && parametersOf(enclosingFunction).has(id)) invalid.add(id);
       }
       if (name) bind(name, functionValue(node));
-    } else if (node.type === 'export_statement') {
+    } else if (type === 'export_statement') {
       const sourceNode = node.childForFieldName('source');
       const source = sourceNode && plainString(sourceNode);
       if (node.children.some((child) => child.type === 'type')) continue;
@@ -302,31 +302,26 @@ export function extractFrameworkRouteFacts(
         }
       }
     } else if (
-      node.type === 'assignment_expression' ||
-      node.type === 'augmented_assignment_expression' ||
-      node.type === 'update_expression' ||
-      node.type === 'for_in_statement' ||
-      (node.type === 'unary_expression' && node.children.some((child) => child.type === 'delete'))
+      type === 'assignment_expression' ||
+      type === 'augmented_assignment_expression' ||
+      type === 'update_expression' ||
+      type === 'for_in_statement' ||
+      (type === 'unary_expression' && node.children.some((child) => child.type === 'delete'))
     ) {
       const left = node.childForFieldName('left') ?? node.childForFieldName('argument');
       const right = node.childForFieldName('right');
       const object = left?.childForFieldName('object');
       const property = left?.childForFieldName('property');
-      if (left?.type === 'identifier' && left.text === 'exports' && isGlobal(left, 'exports'))
-        cjsShortcutDetached = true;
-      const moduleExports = (candidate: Node | null | undefined): boolean =>
-        candidate?.type === 'member_expression' &&
-        candidate.childForFieldName('object')?.text === 'module' &&
-        candidate.childForFieldName('property')?.text === 'exports' &&
-        isGlobal(candidate, 'module');
+      if (isCommonJsGlobal(lexical, left, 'exports')) cjsShortcutDetached = true;
       const writesExportProperty =
-        moduleExports(object) || (object?.text === 'exports' && isGlobal(object, 'exports'));
+        isModuleExports(lexical, object) || isCommonJsGlobal(lexical, object, 'exports');
       if (
         (left?.type === 'subscript_expression' && writesExportProperty) ||
-        (node.type !== 'assignment_expression' && (moduleExports(left) || writesExportProperty))
+        (type !== 'assignment_expression' &&
+          (isModuleExports(lexical, left) || writesExportProperty))
       )
         cjsUnknownWrite = true;
-      if (node.type === 'assignment_expression' && moduleExports(left)) {
+      if (type === 'assignment_expression' && isModuleExports(lexical, left)) {
         cjsDefaultAssignments++;
         cjsExports.length = 0;
         if (right?.type === 'object') {
@@ -349,7 +344,7 @@ export function extractFrameworkRouteFacts(
           }
         } else cjsExports.push({ name: 'default', value: expression(right) });
       } else if (
-        node.type === 'assignment_expression' &&
+        type === 'assignment_expression' &&
         left?.type === 'member_expression' &&
         property?.type === 'property_identifier' &&
         writesExportProperty
@@ -412,7 +407,7 @@ export function extractFrameworkRouteFacts(
         };
         invalidate(left);
       }
-    } else if (node.type === 'call_expression') {
+    } else if (type === 'call_expression') {
       const callee = node.childForFieldName('function');
       const method = callee?.childForFieldName('property')?.text;
       if (callee?.type === 'member_expression' && method && METHODS.has(method)) {

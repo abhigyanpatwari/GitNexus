@@ -7,6 +7,8 @@ import {
   bindingKey,
   createLexicalBindings,
   importBindingKey,
+  isCommonJsGlobal,
+  isModuleExports,
   LEXICAL_FUNCTION_TYPES,
   parameterPattern,
   patternBindingNames,
@@ -76,15 +78,21 @@ function calleeName(node: Parser.SyntaxNode | null): string | undefined {
   return parts.reverse().join('.');
 }
 
-function unwrap(node: Node | null): Node | null {
-  while (node && (TRANSPARENT_EXPRESSION_TYPES.has(node.type) || node.type === 'await_expression'))
-    node = firstNamed(node);
-  return node;
-}
 const UNWRAPPED_TYPES: ReadonlySet<string> = new Set([
   ...TRANSPARENT_EXPRESSION_TYPES,
   'await_expression',
 ]);
+function unwrap(node: Node | null): Node | null {
+  while (node && UNWRAPPED_TYPES.has(node.type)) node = firstNamed(node);
+  return node;
+}
+/** Argument forms that can carry a parameter's value into a call. */
+const CARRYING_TYPES: ReadonlySet<string> = new Set([
+  'identifier',
+  'template_string',
+  'binary_expression',
+]);
+const NO_BINDINGS: ReadonlySet<string> = new Set();
 const SKIPPED_TYPES: ReadonlySet<string> = new Set([
   'comment',
   'type_annotation',
@@ -312,16 +320,10 @@ export function createFetchWrapperContext(
       exported(node, name);
     else if (node) exportedValues.push({ value: node, name });
   };
-  const commonJsGlobal = (node: Node | null, name: string) =>
-    node?.type === 'identifier' && node.text === name && bindings.isGlobal(node, name);
-  const moduleExports = (node: Node | null) =>
-    node?.type === 'member_expression' &&
-    node.childForFieldName('property')?.text === 'exports' &&
-    commonJsGlobal(node.childForFieldName('object'), 'module');
   // `module.exports = …`, `module.exports.name = …` and `exports.name = …`.
   const commonJsExport = (left: Node | null, right: Node | null) => {
     if (left?.type !== 'member_expression') return;
-    if (moduleExports(left)) {
+    if (isModuleExports(bindings, left)) {
       const value = unwrap(right);
       if (value?.type !== 'object') return exportValue(value, 'default');
       for (const member of value.namedChildren) {
@@ -343,7 +345,7 @@ export function createFetchWrapperContext(
     const property = left.childForFieldName('property');
     if (
       property?.type === 'property_identifier' &&
-      (commonJsGlobal(object, 'exports') || moduleExports(object))
+      (isCommonJsGlobal(bindings, object, 'exports') || isModuleExports(bindings, object))
     )
       exportValue(right, property.text);
   };
@@ -479,13 +481,13 @@ export function createFetchWrapperContext(
     }
     if (type === 'class_declaration' || type === 'class') {
       const node = cursor.currentNode;
-      const deferred = region(node);
+      const classBody = region(node);
       const name = node.childForFieldName('name');
       const stored = storedAt(frames, first, cursor.currentFieldName);
-      bindRegion(stored ?? name, deferred);
-      if (stored && name) bindRegion(name, deferred);
-      if (!stored && !name) active.edges.add(deferred);
-      return { ...frame, children: 'class', inner: deferred };
+      bindRegion(stored ?? name, classBody);
+      if (stored && name) bindRegion(name, classBody);
+      if (!stored && !name) active.edges.add(classBody);
+      return { ...frame, children: 'class', inner: classBody };
     }
     if (type === 'field_definition' || type === 'public_field_definition') {
       const isStatic = cursor.currentNode.children.some((child) => child.type === 'static');
@@ -576,13 +578,11 @@ export function createFetchWrapperContext(
   };
   const argumentBindings = new Map<number, ReadonlySet<string>>();
   const carried = (argument: Node | undefined): ReadonlySet<string> => {
-    if (!argument) return new Set();
+    if (!argument || !CARRYING_TYPES.has(argument.type)) return NO_BINDINGS;
     const cached = argumentBindings.get(argument.id);
     if (cached) return cached;
     const result = new Set<string>();
-    const stack = ['identifier', 'template_string', 'binary_expression'].includes(argument.type)
-      ? [argument]
-      : [];
+    const stack = [argument];
     while (stack.length) {
       const node = stack.pop()!;
       if (node.type === 'identifier') {

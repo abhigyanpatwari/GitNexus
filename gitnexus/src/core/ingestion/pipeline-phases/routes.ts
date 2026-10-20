@@ -507,9 +507,10 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       (n): n is string => typeof n === 'string' && n.trim().length > 0,
     );
     // The index is only worth building when a candidate call can match a route.
-    if (routeRegistry.size > 0 && (allFetchWrapperCalls?.length ?? 0) > 0) {
+    const wrapperCalls = allFetchWrapperCalls ?? [];
+    if (routeRegistry.size > 0 && wrapperCalls.length > 0) {
       const wrappers = buildFetchWrapperIndex(allFetchWrapperDefs ?? [], configuredWrappers);
-      for (const call of allFetchWrapperCalls ?? []) {
+      for (const call of wrapperCalls) {
         if (wrappers.isWrapperCall(call)) allFetchCalls.push(call);
       }
     }

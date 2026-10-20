@@ -1,6 +1,7 @@
 import type Parser from 'tree-sitter';
 import { buildPositionIndex, buildScopeTree, lookupLexicalName } from 'gitnexus-shared';
 import type { NameClaimResult, ParsedFile, ParsedImport } from 'gitnexus-shared';
+import { FUNCTION_NODE_TYPES } from '../languages/typescript/captures.js';
 
 type Node = Parser.SyntaxNode;
 export interface LexicalBindings {
@@ -10,18 +11,9 @@ export interface LexicalBindings {
   ambiguous(bindingId: string): boolean;
 }
 
-/** Callable boundaries, including methods that can contain their own var declarations. */
-export const LEXICAL_FUNCTION_TYPES: ReadonlySet<string> = new Set([
-  'arrow_function',
-  'function_expression',
-  'function_declaration',
-  'generator_function',
-  'generator_function_declaration',
-  'method_definition',
-  'function_signature',
-  'method_signature',
-  'abstract_method_signature',
-]);
+/** Callable boundaries: the TypeScript function scopes, which cover JavaScript's. */
+export const LEXICAL_FUNCTION_TYPES: ReadonlySet<string> = new Set(FUNCTION_NODE_TYPES);
+const LEXICAL_FUNCTION_TYPE_LIST: string[] = [...FUNCTION_NODE_TYPES];
 
 /** Expressions that wrap a value or an assignment target without changing it. */
 export const TRANSPARENT_EXPRESSION_TYPES: ReadonlySet<string> = new Set([
@@ -45,6 +37,22 @@ export const importBindingKey = (
   parsedFile: ParsedFile,
   imported: Extract<ParsedImport, { localName: string }>,
 ): string => bindingKey(imported.declaredAtScope ?? parsedFile.moduleScope, imported.localName);
+
+/** An unshadowed CommonJS `module` or `exports` reference. */
+export const isCommonJsGlobal = (
+  bindings: LexicalBindings,
+  node: Node | null | undefined,
+  name: 'module' | 'exports',
+): boolean => node?.type === 'identifier' && node.text === name && bindings.isGlobal(node, name);
+
+/** `module.exports` through an unshadowed `module`. */
+export const isModuleExports = (
+  bindings: LexicalBindings,
+  node: Node | null | undefined,
+): boolean =>
+  node?.type === 'member_expression' &&
+  node.childForFieldName('property')?.text === 'exports' &&
+  isCommonJsGlobal(bindings, node.childForFieldName('object'), 'module');
 
 /** The pattern a formal parameter declares, without its type or default value. */
 export function parameterPattern(node: Node | null): Node | null {
@@ -234,7 +242,7 @@ export function createLexicalBindings(
   // functions have neither, so a native type search finds the few that do and
   // only their formals and bodies are walked.
   const ambiguous = new Set<string>();
-  for (const fn of rootNode.descendantsOfType([...LEXICAL_FUNCTION_TYPES])) {
+  for (const fn of rootNode.descendantsOfType(LEXICAL_FUNCTION_TYPE_LIST)) {
     const parameters = fn.childForFieldName('parameters') ?? fn.childForFieldName('parameter');
     if (!parameters || !containsParameterExpression(parameters)) continue;
     let functionScope = scopes.getScope(scopeAt(parameters) ?? '');
