@@ -445,6 +445,13 @@ describe('DEFAULT_BACKEND_URL resolution', () => {
     // A hand-entered endpoint URL still loses its /api suffix.
     expect(client.normalizeServerUrl('http://localhost:4747/api')).toBe('http://localhost:4747');
   });
+
+  it('still cleans an absolute configured URL: a trailing /api and credentials', async () => {
+    window.__GITNEXUS_CONFIG__ = { backendUrl: 'http://user:secret@10.0.0.1:4747/api' };
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    const client = await import('../../src/services/backend-client');
+    expect(client.normalizeServerUrl(DEFAULT_BACKEND_URL)).toBe('http://10.0.0.1:4747');
+  });
 });
 
 describe('LARGE_GRAPH_NODE_THRESHOLD resolution', () => {
