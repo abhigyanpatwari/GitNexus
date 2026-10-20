@@ -9,10 +9,12 @@ import {
   getNodesByLabel,
   getNodesByLabelFull,
   getRelationships,
+  getResolutionOutcomes,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
+import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 import { describeGrammarPresence, optionalGrammarGate } from '../../helpers/optional-grammar.js';
 
 // Vendored `tree-sitter-zig`: on a platform without a prebuild the grammar
@@ -24,6 +26,38 @@ const zig = optionalGrammarGate(SupportedLanguages.Zig);
 const zigAvailable = zig.available;
 
 describeGrammarPresence(zig);
+
+/** The CALLS / ACCESSES / USES edges the reference site at `file:line:col`
+ *  produced, as `<TYPE> <source id> -> <target id> | <reason>`. A site edge's
+ *  id ends with the site's `:<line>:<col>` (see `tryEmitEdge`). */
+function edgesAtSite(result: PipelineResult, file: string, line: number, col: number): string[] {
+  return ['CALLS', 'ACCESSES', 'USES']
+    .flatMap((type) => getRelationships(result, type))
+    .filter((e) => e.sourceFilePath === file && e.rel.id.endsWith(`:${line}:${col}`))
+    .map((e) => `${e.rel.type} ${e.rel.sourceId} -> ${e.rel.targetId} | ${e.rel.reason}`)
+    .sort();
+}
+
+/** The `receiver-unresolved` drops recorded at `file:line:col`, as
+ *  `<site kind> <member>` — the rows of the #3498 drop triage. */
+function receiverDropsAt(
+  result: PipelineResult,
+  file: string,
+  line: number,
+  col: number,
+): string[] {
+  return getResolutionOutcomes(result)
+    .filter(
+      (o): o is Extract<ResolutionOutcome, { kind: 'suppressed' }> =>
+        o.kind === 'suppressed' &&
+        o.reason === 'receiver-unresolved' &&
+        o.filePath === file &&
+        o.range.startLine === line &&
+        o.range.startCol === col,
+    )
+    .map((o) => `${o.siteKind} ${o.name}`)
+    .sort();
+}
 
 describe.skipIf(!zigAvailable)('Zig basic resolution', () => {
   let result: PipelineResult;
@@ -675,6 +709,46 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     expect(calls).toContain('viaAlias → get');
     expect(calls).toContain('viaAlias → twice');
   });
+
+  // #3498 drop triage, F-A: `const X = @import("f.zig").X;` reads `X` off the
+  // module it names. The `@import(…)` receiver had no namespace binding (the
+  // named-import rule claims the builtin), so every such read was recorded as
+  // a receiver drop, and a renaming alias (`const Gauge = ….DEFAULT_NS;`)
+  // emitted nothing at all. `Element.zig:35` is the `Gauge` shadow case above:
+  // `Gauge` stays an import binding, only the `.DEFAULT_NS` read resolves.
+  it.each([
+    ['src/holder.zig', 6, 16, 'File:src/holder.zig', 'Struct:src/counter.zig:Counter'],
+    ['src/main.zig', 6, 14, 'File:src/main.zig', 'Struct:src/counter.zig:Stack'],
+    [
+      'src/webapi/Element.zig',
+      35,
+      14,
+      'Struct:src/webapi/Element.zig:Element',
+      'Const:src/webapi/dom_utils.zig:DEFAULT_NS',
+    ],
+    [
+      'src/webapi/hub.zig',
+      9,
+      18,
+      'File:src/webapi/hub.zig',
+      'Function:src/webapi/dom_utils.zig:scale',
+    ],
+    [
+      'src/webapi/hub.zig',
+      10,
+      23,
+      'File:src/webapi/hub.zig',
+      'Const:src/webapi/dom_utils.zig:DEFAULT_NS',
+    ],
+  ])(
+    'reads the member of a one-member `@import(…).X` alias at %s:%i:%i through the module',
+    (file, line, col, source, target) => {
+      expect(receiverDropsAt(result, file, line, col)).toEqual([]);
+      expect(edgesAtSite(result, file, line, col)).toEqual([
+        `ACCESSES ${source} -> ${target} | import-resolved`,
+      ]);
+    },
+  );
 });
 
 /**
@@ -1227,6 +1301,23 @@ describe.skipIf(!zigAvailable)('Zig hub modules (`pub const X = @import(…)` re
     const intoUtil = calls.filter((c) => c.endsWith('@ src/stdx/util.zig'));
     expect(intoUtil).toEqual(['c11_hub_reexported_fn → helper @ src/stdx/util.zig']);
   });
+
+  // #3498 drop triage, F-A: the hub's own `pub const X = @import("x.zig").X;`
+  // reads `X` off the module it names, through that module — not by the
+  // lexical accident that the alias happens to share the member's name.
+  it.each([
+    [2, 18, 'Struct:src/stdx/thing.zig:Thing'],
+    [3, 29, 'Struct:src/stdx/bounded_array.zig:BoundedArrayType'],
+    [4, 19, 'Function:src/stdx/util.zig:helper'],
+  ])(
+    'reads the re-exported member at src/stdx/stdx.zig:%i:%i through its module',
+    (line, col, target) => {
+      expect(receiverDropsAt(result, 'src/stdx/stdx.zig', line, col)).toEqual([]);
+      expect(edgesAtSite(result, 'src/stdx/stdx.zig', line, col)).toEqual([
+        `ACCESSES File:src/stdx/stdx.zig -> ${target} | import-resolved`,
+      ]);
+    },
+  );
 });
 
 describe.skipIf(!zigAvailable)(
@@ -1330,6 +1421,13 @@ describe.skipIf(!zigAvailable)(
           'use_this_receiver → release',
         ]),
       );
+    });
+
+    it('reads the member of `pub const X = @import("x.zig").X;` through its module (#3498 F-A)', () => {
+      expect(receiverDropsAt(result, 'src/stdx/stdx.zig', 2, 29)).toEqual([]);
+      expect(edgesAtSite(result, 'src/stdx/stdx.zig', 2, 29)).toEqual([
+        'ACCESSES File:src/stdx/stdx.zig -> Struct:src/stdx/bounded_array.zig:BoundedArrayType | import-resolved',
+      ]);
     });
   },
 );

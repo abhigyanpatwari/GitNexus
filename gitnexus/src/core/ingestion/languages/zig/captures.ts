@@ -83,15 +83,30 @@ export function zigImportRootOf(value: SyntaxNode | null): SyntaxNode | null {
  *  `@import("dump.zig").root(...)` — or of a qualified construction —
  *  `@import("a.zig").Thing{…}` — i.e. the `object` of a `field_expression`
  *  that is the `function` of a `call_expression` or the type of a
- *  `struct_initializer`? A deeper chain (`@import("x.zig").Foo.init()`) is
- *  not: its receiver is `….Foo`, and the builtin is only the module the chain
- *  starts from (the namespace chain walk resolves it from there). */
+ *  `struct_initializer`? Or of the member READ a one-member import
+ *  declaration makes — `const X = @import("f.zig").X;` — which the deep form
+ *  (`@import("lib.zig").B.work`, `collectZigDeepAliases`) already binds: the
+ *  named import records `X`, but the `.X` read beside it had a receiver
+ *  nothing was bound to, so it was a receiver drop, and a renaming alias
+ *  (`const Gauge = @import("u.zig").DEFAULT_NS;`) reached nothing at all
+ *  (#3498 triage, F-A). Any other deeper chain (`@import("x.zig").Foo.init()`)
+ *  is not: its receiver is `….Foo`, and the builtin is only the module the
+ *  chain starts from (the namespace chain walk resolves it from there). */
 export function isZigInlineImportReceiver(importNode: SyntaxNode): boolean {
   const field = importNode.parent;
   if (field?.type !== 'field_expression') return false;
   if (field.childForFieldName('object')?.id !== importNode.id) return false;
   const use = field.parent;
   if (use === null || use === undefined) return false;
+  if (use.type === 'variable_declaration') {
+    // The VALUE only: `var x: @import("m.zig").T = undefined;` types a
+    // variable and imports nothing (`isZigTypePositionImport`).
+    return (
+      isZigKeywordDeclaration(use) &&
+      use.childForFieldName('type')?.id !== field.id &&
+      zigMemberChainOf(use)?.root.id === importNode.id
+    );
+  }
   if (use.type === 'call_expression') return use.childForFieldName('function')?.id === field.id;
   // `@import("a.zig").Thing{…}` — the module is the receiver of a qualified
   // CONSTRUCTION (the `@reference.call.constructor` rule with a receiver, see
@@ -1328,12 +1343,17 @@ export function emitZigScopeCaptures(
     // `root` in dump.zig exactly as it would for `const dump =
     // @import("dump.zig"); dump.root(...)`. Anything else is a side-effect
     // import (file edge only), emitted once per distinct source per file.
+    // A one-member import declaration's builtin is claimed by its binding
+    // rule (the named import owns the file edge) and is still a receiver: it
+    // gets the namespace binding and nothing else.
     const inlineImport = nodeMap['@import.inline'];
     if (inlineImport !== undefined) {
       const source = nodeMap['@import.source']!;
-      if (claimedImportSourceIds.has(source.id)) continue;
+      const isReceiver =
+        isZigInlineImportReceiver(inlineImport) || deepAliases.inlineRoots.has(inlineImport.id);
+      if (claimedImportSourceIds.has(source.id) && !isReceiver) continue;
       const sourceCapture = grouped['@import.source']!;
-      if (isZigInlineImportReceiver(inlineImport) || deepAliases.inlineRoots.has(inlineImport.id)) {
+      if (isReceiver) {
         const key = `receiver:${zigLexicalHost(inlineImport)?.id}:${source.text}`;
         if (importedSourceTexts.has(key)) continue;
         importedSourceTexts.add(key);

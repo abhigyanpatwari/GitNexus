@@ -372,7 +372,9 @@ describeZig('Zig scope captures — `@import` in TYPE position is not an import 
     const importNames = matches
       .filter((m) => m['@import.name'] !== undefined)
       .map((m) => `${m['@import.name']!.text}<-${m['@import.imported']?.text ?? '*'}`);
-    expect(importNames).toEqual(['z<-T']);
+    // `z`'s value reads `T` off `@import("n.zig")`, so that module is bound
+    // under its own text too (#3498 F-A); the type-position one is not.
+    expect(importNames).toEqual(['@import("n.zig")<-*', 'z<-T']);
     const variables = matches
       .filter((m) => m['@declaration.variable'] !== undefined)
       .map((m) => m['@declaration.name']!.text);
@@ -831,6 +833,15 @@ test {
         importedName: 'Counter',
         targetRaw: 'net/counter.zig',
       },
+      // The module a one-member import reads its member off, bound under the
+      // builtin's own text so the `.Counter` / `.Same` reads resolve through
+      // it (#3498 F-A) — once per distinct source per scope.
+      {
+        kind: 'namespace',
+        localName: '@import("counter.zig")',
+        importedName: 'counter',
+        targetRaw: 'counter.zig',
+      },
       {
         kind: 'alias',
         localName: 'Renamed',
@@ -963,6 +974,49 @@ pub fn f() !void {
       '@import("x.zig").Foo',
     ]);
   });
+
+  it.each([
+    [
+      'a file-level re-export',
+      'pub const Thing = @import("thing.zig").Thing;\n',
+      'Thing',
+      'thing.zig',
+      'Thing',
+    ],
+    [
+      'a renaming alias',
+      'const Gauge = @import("dom_utils.zig").DEFAULT_NS;\n',
+      'Gauge',
+      'dom_utils.zig',
+      'DEFAULT_NS',
+    ],
+    [
+      'a fn-local alias',
+      'fn f() void {\n    const Counter = @import("counter.zig").Counter;\n    _ = Counter;\n}\n',
+      'Counter',
+      'counter.zig',
+      'Counter',
+    ],
+  ])(
+    'binds the module of a one-member import (%s) under its own text, as the deep form already is',
+    (_shape, src, alias, file, member) => {
+      // `const X = @import("f.zig").X;` reads `X` off an `@import(…)` receiver.
+      // The named-import rule claims that builtin, so the receiver binding the
+      // deep form (`@import("lib.zig").B.work`) gets was never emitted and the
+      // read was a receiver drop (#3498 triage, F-A). The named import itself
+      // is unchanged; the module handle is added beside it.
+      const groups = emitZigScopeCaptures(src, 'x.zig');
+      const handle = `@import("${file}")`;
+      const imports = groups
+        .filter((m) => m['@import.source'] !== undefined)
+        .map((m) => `${m['@import.name']?.text}<-${m['@import.imported']?.text ?? '*'}`);
+      expect(imports.sort()).toEqual([`${handle}<-*`, `${alias}<-${member}`]);
+      const reads = groups
+        .filter((m) => m['@reference.read'] !== undefined && m['@reference.name']?.text === member)
+        .map((m) => m['@reference.receiver']?.text);
+      expect(reads).toEqual([handle]);
+    },
+  );
 
   it('a function-scoped @import is not deferred: Zig imports are compile-time (importsExecuteWhereWritten: false)', () => {
     // C `#include` and Rust `use` answer the same. Without the flag the scope
