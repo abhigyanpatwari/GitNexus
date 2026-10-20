@@ -947,6 +947,24 @@ describe.skipIf(!zigAvailable)('Zig type aliases (zig-filestruct fixture, aliase
     expect(calls).toContain('b11 → go');
   });
 
+  it('types through a FORWARDING type constructor, in the scope that declared it (`Bridge(T)` is `Builder(T)`, #3498 F-B)', () => {
+    // `fn Bridge(comptime T: type) type { return Builder(T); }` names no
+    // container, and a `type` return binds nothing, so `Bridge(Local)` typed a
+    // Function that owns no members. The forwarding binding `Bridge ↦ Builder`
+    // is declared in generic.zig, which is where `Builder` is visible — not in
+    // aliases.zig. Bound (`const bound = Bridge(Local)`) and inline
+    // (`Bridge(Local).prototypeChain()`) spellings both reach Builder.
+    const fromB12 = getRelationships(result, 'CALLS')
+      .filter((e) => e.source === 'b12')
+      .map((e) => e.rel.targetId);
+    expect(fromB12).toEqual(
+      expect.arrayContaining([
+        'Method:src/generic.zig:Builder.accessor#1',
+        'Method:src/generic.zig:Builder.prototypeChain#0',
+      ]),
+    );
+  });
+
   it('a value const / value call is not a type alias and gains no edge', () => {
     // `const helperResult = generic.Thing.make();` is a call, not an alias;
     // `const max = 5;` is a literal. Neither may bind a phantom type that

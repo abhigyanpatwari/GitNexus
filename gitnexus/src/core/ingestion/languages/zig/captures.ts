@@ -616,6 +616,37 @@ export function zigTypeConstructorOf(containerNode: SyntaxNode): SyntaxNode | nu
   return fn.childForFieldName('type')?.text === 'type' ? fn : null;
 }
 
+/** For a type constructor that FORWARDS to another — `fn Bridge(comptime T:
+ *  type) type { return Builder(T); }`, Lightpanda's `js.Bridge(T)` — the
+ *  callee as written (`Builder`, `other.Builder`); undefined for any other
+ *  fn. `Bridge(X)` IS `Builder(X)`, but neither `zigReturnTypeIsNominal` (a
+ *  `type` return) nor `zigTypeConstructorOf` (no container in the body) gives
+ *  `Bridge` a type, so a receiver typed `Bridge(X)` reached a Function that
+ *  owns no members (#3498 triage, F-B). Only the literal shape counts: a body
+ *  that is ONE `return <TitleCase call>` (comments aside), whose callee is not
+ *  a parameter of the fn (`return F(u8)` applies the caller's choice). */
+export function zigForwardedTypeConstructor(fn: SyntaxNode): string | undefined {
+  if (fn.type !== 'function_declaration' || fn.childForFieldName('type')?.text !== 'type') {
+    return undefined;
+  }
+  const statements = (fn.childForFieldName('body')?.namedChildren ?? []).filter(
+    (c): c is SyntaxNode => c !== null && c.type !== 'comment',
+  );
+  const [only] = statements;
+  if (statements.length !== 1 || only?.type !== 'expression_statement') return undefined;
+  const ret = only.namedChild(0);
+  const value = ret?.type === 'return_expression' ? ret.namedChild(0) : null;
+  if (value === null || value === undefined || !isZigTypeConstructorCall(value)) return undefined;
+  const callee = value.childForFieldName('function');
+  const head = callee === null ? null : zigChainHead(callee);
+  if (callee === null || head === null) return undefined;
+  const params = fn.namedChildren.find((c): c is SyntaxNode => c?.type === 'parameters');
+  const appliesParameter = (params?.namedChildren ?? []).some(
+    (p) => p?.type === 'parameter' && p.childForFieldName('name')?.text === head.text,
+  );
+  return appliesParameter ? undefined : callee.text;
+}
+
 /** F7 — is `call` an instantiation of a generic type constructor —
  *  `List(u8)`, `util.List(u8)`, `js.Bridge(T)`, `std.AutoHashMapUnmanaged(K, V)`?
  *  Zig spells a generic type as a CALL, and the grammar cannot separate it
@@ -1541,8 +1572,20 @@ export function emitZigScopeCaptures(
     // Only nominal returns bind (see `zigReturnTypeIsNominal`); a bare
     // `@This()` return names the enclosing container by name (the alias
     // rewrite below handles the `Self` spelling of the same thing).
+    // A forwarding type constructor (`fn Bridge(…) type { return Builder(T);
+    // }`) binds `Bridge ↦ Builder` instead of its `type` return — declared in
+    // Bridge's own scope, so a chain followed from another file still looks
+    // `Builder` up where it is visible (see `zigForwardedTypeConstructor`).
     const returnAnchor = nodeMap['@type-binding.return'];
-    if (returnAnchor !== undefined) {
+    const forwardedType =
+      returnAnchor === undefined ? undefined : zigForwardedTypeConstructor(returnAnchor);
+    if (returnAnchor !== undefined && forwardedType !== undefined) {
+      grouped['@type-binding.type'] = syntheticCapture(
+        '@type-binding.type',
+        nodeMap['@type-binding.type'] ?? returnAnchor,
+        forwardedType,
+      );
+    } else if (returnAnchor !== undefined) {
       const retType = nodeMap['@type-binding.type'];
       if (retType === undefined || !zigReturnTypeIsNominal(retType)) continue;
       if (retType.text.includes('@This()')) {

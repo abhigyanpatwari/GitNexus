@@ -1762,6 +1762,45 @@ pub fn make3() !List(u8) {}
     ]);
   });
 
+  it.each([
+    [
+      'a same-file constructor',
+      'pub fn Bridge(comptime T: type) type {\n    return Builder(T);\n}\n',
+      [ret('Bridge', 'Builder')],
+    ],
+    [
+      'a qualified constructor, past a comment',
+      'pub fn Bridge(comptime T: type) type {\n    // forwards\n    return other.Builder(T);\n}\n',
+      [ret('Bridge', 'other.Builder')],
+    ],
+    [
+      'a body that is more than the return',
+      'pub fn Bridge(comptime T: type) type {\n    const U = T;\n    return Builder(U);\n}\n',
+      [],
+    ],
+    [
+      'a value call (camelCase callee)',
+      'pub fn Bridge(comptime T: type) type {\n    return make(T);\n}\n',
+      [],
+    ],
+    [
+      'a call of a parameter',
+      'pub fn Apply(comptime F: fn (type) type) type {\n    return F(u8);\n}\n',
+      [],
+    ],
+    ['a container return', 'pub fn List(comptime T: type) type {\n    return struct {};\n}\n', []],
+  ])(
+    'binds a FORWARDING type constructor to the type it forwards to — %s',
+    (_shape, src, expected) => {
+      // `fn Bridge(comptime T: type) type { return Builder(T); }` (Lightpanda's
+      // `js.Bridge(T)`) names no container of its own: `type` returns bind
+      // nothing, so a receiver typed `Bridge(X)` reached a Function that owns
+      // no members (#3498 triage, F-B). `Bridge(X)` IS `Builder(X)`, so the
+      // return binding names the callee, declared in Bridge's own scope.
+      expect(bindingsOf(src)).toEqual(expected);
+    },
+  );
+
   it('a file-struct’s `@This()` return names the file stem', () => {
     const src = `
 count: u32 = 0,
