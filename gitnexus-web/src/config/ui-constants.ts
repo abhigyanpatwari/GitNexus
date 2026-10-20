@@ -5,14 +5,15 @@ export const BACKEND_URL_DEBOUNCE_MS = 500;
 /**
  * The backend the deployment injected, if any. A root-relative path (`/`, or
  * `/prefix`) is resolved against the page's own origin, so the API is reached
- * on whichever hostname served the UI (#3593); `//host` is an origin change,
- * not a path, and is passed through for the URL validation to reject.
+ * on whichever hostname served the UI (#3593); `//host` and `/\host` (the URL
+ * parser reads a backslash as a slash) are origin changes, not paths, and are
+ * passed through for the URL validation to reject.
  */
 function injectedBackendUrl(): string | undefined {
   if (typeof window === 'undefined') return undefined;
   const configured = window.__GITNEXUS_CONFIG__?.backendUrl;
   if (!configured) return undefined;
-  if (!configured.startsWith('/') || configured.startsWith('//')) return configured;
+  if (!/^\/(?![/\\])/.test(configured)) return configured;
   return new URL(configured, window.location.origin).href.replace(/\/+$/, '');
 }
 

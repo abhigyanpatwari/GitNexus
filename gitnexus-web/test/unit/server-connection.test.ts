@@ -393,6 +393,12 @@ describe('DEFAULT_BACKEND_URL resolution', () => {
     const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
     expect(DEFAULT_BACKEND_URL).toBe('//evil.example');
   });
+
+  it('does not resolve a backslash-prefixed backendUrl, which the URL parser reads as a host', async () => {
+    window.__GITNEXUS_CONFIG__ = { backendUrl: '/\\evil.example' };
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    expect(DEFAULT_BACKEND_URL).toBe('/\\evil.example');
+  });
 });
 
 describe('LARGE_GRAPH_NODE_THRESHOLD resolution', () => {

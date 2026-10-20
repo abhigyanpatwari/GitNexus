@@ -82,11 +82,13 @@ function numberFromEnv(label, fallback, min = 0) {
 // path — names no host at all: the browser resolves it against the origin that
 // served the page, so one deployment answers on every hostname a reverse proxy
 // gives it (#3593). Not a URL, so it is read before validHttpUrl would warn.
-// `//host` is protocol-relative, an origin change, and is left to the URL check.
+// `//host` is protocol-relative, an origin change, and is left to the URL check;
+// so is `/\host`, since the URL parser reads a backslash as a slash.
 function sameOriginPath(value) {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//')) return null;
-  // A base for `${base}/api/...`: no query, fragment, whitespace or control char.
-  if (/[?#\s\x00-\x1f\x7f]/.test(value)) return null;
+  if (typeof value !== 'string' || !/^\/(?![/\\])/.test(value)) return null;
+  // A base for `${base}/api/...`: no query, fragment, backslash, whitespace or
+  // control char.
+  if (/[?#\\\s\x00-\x1f\x7f]/.test(value)) return null;
   return value.replace(/\/+$/, '') || '/';
 }
 
