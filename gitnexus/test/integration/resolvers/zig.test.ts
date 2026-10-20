@@ -759,6 +759,19 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
       ]);
     },
   );
+
+  it('types a type-constructor call used as a receiver (`Stack(u8).init()`) as the type it instantiates (#3498 F-D)', () => {
+    // `Stack` is a function returning `type`, so the inline call has no
+    // return-type binding to read and Zig declares no construction syntax:
+    // the receiver typed nothing and the call was dropped, while the bound
+    // form (`var t = Stack(u8).init(); t.top()`) resolved. Zig's
+    // `isTypeApplicationCall` hook says a TitleCase callee applies a type
+    // constructor, so the receiver is the class `Stack` names.
+    expect(receiverDropsAt(result, 'src/main.zig', 42, 12)).toEqual([]);
+    expect(edgesAtSite(result, 'src/main.zig', 42, 12)).toEqual([
+      'CALLS Function:src/main.zig:main -> Method:src/counter.zig:Stack.init#0 | import-resolved',
+    ]);
+  });
 });
 
 /**

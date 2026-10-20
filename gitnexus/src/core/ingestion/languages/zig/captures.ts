@@ -668,6 +668,14 @@ export function isZigTypeConstructorCall(call: SyntaxNode): boolean {
   return /^[A-Z]/.test(callee.text);
 }
 
+/** The text twin of `isZigTypeConstructorCall`, for the resolver's
+ *  `isTypeApplicationCall` hook, which sees a receiver call's callee as
+ *  written (`Stack`, `util.List`) rather than as a node: its last
+ *  identifier is TitleCase. Same heuristic, same caveat. */
+export function isZigTypeConstructorCallee(callee: string): boolean {
+  return /^[A-Z]\w*$/.test(callee.slice(callee.lastIndexOf('.') + 1));
+}
+
 /** A `fn` nested in a struct/enum/union/opaque container is a method. Single
  *  predicate shared between the provider's `labelOverride` (worker
  *  structure phase) and the scope-capture relabel below, so the graph

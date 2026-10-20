@@ -51,6 +51,7 @@ import {
 import { createFieldExtractor } from '../../src/core/ingestion/field-extractors/generic.js';
 import { zigFieldConfig } from '../../src/core/ingestion/field-extractors/configs/zig.js';
 import { zigProvider } from '../../src/core/ingestion/languages/zig.js';
+import { zigScopeResolver } from '../../src/core/ingestion/languages/zig/scope-resolver.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import { extract as extractScopes } from '../../src/core/ingestion/scope-extractor.js';
 import { populateClassOwnedMembers } from '../../src/core/ingestion/scope-resolution/scope/walkers.js';
@@ -1719,6 +1720,22 @@ const R = struct { pub fn go(self: *R) void { const q = self.current(); } };
       cr('q', 'self.current()'),
     ]);
   });
+
+  it.each([
+    ['Stack', true],
+    ['util.List', true],
+    ['@import("x.zig").Foo', true],
+    ['makeThing', false],
+    ['std.mem.eql', false],
+    ['self.items', false],
+  ])(
+    'the resolver reads a receiver call of `%s` as a type application: %s (#3498 F-D)',
+    (callee, expected) => {
+      // The text twin of `isZigTypeConstructorCall`, for the compound
+      // resolver: `Stack(u8).init()` calls `init` on the TYPE `Stack(u8)`.
+      expect(zigScopeResolver.isTypeApplicationCall?.(callee)).toBe(expected);
+    },
+  );
 
   it('emits nothing for a TitleCase callee (type constructor), a decl literal, an identifier or a field chain', () => {
     const src = `
