@@ -244,6 +244,70 @@ function handler() {} function other() {}`);
     ).toEqual(['POST /direct']);
   });
 
+  it('invalidates a module binding written by a constructor assignment in a closure', () => {
+    expect(
+      urls(`import express from 'express';
+      let app = express(); function replace() { app = new Map(); }
+      app.get('/let-closure', handler);`),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['a default expression', '[target = app] = values;', ['GET /retained']],
+    ['a computed key', '({ [app]: target } = values);', ['GET /retained']],
+    ['a destructured property write', '({ get: app.get } = values);', []],
+  ])('invalidates only assignment targets in %s', (_shape, write, expected) => {
+    expect(
+      urls(`import express from 'express'; const app = express(); let target;
+      ${write} app.get('/retained', handler);`),
+    ).toEqual(expected);
+  });
+
+  it.each([
+    ['parenthesized', '(app) = new Map();'],
+    ['asserted', '(app as unknown) = new Map();'],
+    ['angle-bracket asserted', '(<any>app) = new Map();'],
+    ['non-null asserted', 'app! = new Map();'],
+  ])('invalidates a wrapped assignment target: %s', (_shape, write) => {
+    expect(
+      urls(`import express from 'express'; let app = express();
+      ${write} app.get('/not-http', handler);`),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ['initialized var', 'app', 'var app = storage;', []],
+    ['initialized var with another default', 'app, other = 1', 'var app = storage;', []],
+    ['uninitialized var', 'app', 'var app;', ['GET /forwarded']],
+    [
+      'nested parameter write',
+      'app',
+      'function inner(app) { app = new Map(); }',
+      ['GET /forwarded'],
+    ],
+    // A parameter expression gives the body its own variable environment, which
+    // the scope model collapses, so inference declines a parameter that a body
+    // `var` redeclares (the documented boundary); runtime would keep its value.
+    ['nested destructuring default', 'app, { value = 1 }', 'var app;', []],
+    ['computed pattern key', 'app, { [key]: value }', 'var app;', []],
+    ['rest parameter alone', 'app, ...rest', 'var app;', ['GET /forwarded']],
+    ['loop var over the parameter', 'app', 'for (var app of values) {}', []],
+    ['body function overwrites parameter', 'app', 'function app() {}', []],
+    ['body function with default', 'app, other = 1', 'function app() {}', []],
+    [
+      'nested body declaration',
+      'app, other = 1',
+      'function inner() { var app = storage; }',
+      ['GET /forwarded'],
+    ],
+  ])('uses binding identity for helper forwarding: %s', (_shape, parameters, body, expected) => {
+    expect(
+      urls(`import express from 'express';
+      function mount(${parameters}) { ${body} app.get('/forwarded', handler); }
+      mount(express());`),
+    ).toEqual(expected);
+  });
+
   it.each([
     {
       shape: 'a literal mount path forwarded to a helper',

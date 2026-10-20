@@ -199,6 +199,36 @@ describe('buildPositionIndex', () => {
   });
 
   describe('robustness', () => {
+    it.each(['siblings', 'nested'] as const)(
+      'bounds range checks for outer reads after completed %s',
+      (shape) => {
+        const count = 256;
+        let endChecks = 0;
+        const scopes = [mkScope('module', 'a.ts', 'Module', r(1, 0, count * 4, 0))];
+        for (let i = 0; i < count; i++) {
+          const endLine = shape === 'nested' ? count * 2 - i : i + 2;
+          scopes.push(
+            mkScope(`scope:${i}`, 'a.ts', 'Function', {
+              startLine: i + 2,
+              startCol: 0,
+              get endLine() {
+                endChecks++;
+                return endLine;
+              },
+              endCol: 0,
+            }),
+          );
+        }
+        const index = buildPositionIndex(scopes);
+        endChecks = 0;
+        for (let i = 0; i < count; i++)
+          expect(index.atPosition('a.ts', count * 2 + i + 1, 0)).toBe('module');
+        // Count comparisons rather than elapsed time: expired scopes must not
+        // all be visited again for every outer read, even with deep nesting.
+        expect(endChecks).toBeLessThan(count * 8 * Math.ceil(Math.log2(scopes.length)));
+      },
+    );
+
     it('deduplicates scopes with the same id', () => {
       const s = mkScope('scope:dup', 'a.ts', 'Module', r(1, 0, 10, 0));
       const idx = buildPositionIndex([s, s, s]);

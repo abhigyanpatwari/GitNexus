@@ -1,7 +1,7 @@
 import {
-  fetchWrapperFacts,
   type FetchWrapperCall,
-  type ForwardedCallee,
+  type FetchWrapperFacts,
+  type FetchWrapperReexport,
 } from '../route-extractors/fetch-wrapper.js';
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
@@ -358,15 +358,9 @@ export interface ExtractedFetchCall {
   lineNumber: number;
 }
 
-export interface FetchWrapperDef {
+export interface FetchWrapperDef extends FetchWrapperFacts {
   filePath: string;
   functionName: string;
-  /** Calls fetch itself; otherwise a wrapper only through `forwardsTo`. */
-  seed: boolean;
-  /** Its first parameter reaches the URL argument of that fetch call. */
-  forwardsUrl: boolean;
-  /** Callees given this function's own first parameter as their first argument. */
-  forwardsTo: ForwardedCallee[];
 }
 
 /** See {@link ExtractedDecoratorRoute.handlerReceiver}. */
@@ -523,6 +517,7 @@ export interface ParseWorkerResult {
   fetchWrapperDefs: FetchWrapperDef[];
   /** URL-bearing candidates, kept separate from confirmed outward-call sinks. */
   fetchWrapperCalls?: FetchWrapperCall[];
+  fetchWrapperReexports?: FetchWrapperReexport[];
   decoratorRoutes: ExtractedDecoratorRoute[];
   /** JSON-safe per-file provider facts; relationships are resolved on every run. */
   routeFacts?: { filePath: string; facts: unknown; routePosition: number }[];
@@ -1877,6 +1872,19 @@ const processFileGroup = (
     // patterns overlap with the same source range.
     const processedDefinitionNodes = new Set<string>();
     const variableInfoCache = new Map<number, Map<string, VariableInfo>>();
+    // HTTP facts are all or nothing per file. A throwing hook must not escape to
+    // the language-group catch, which would drop every remaining file of the
+    // group; it drops only this file's HTTP facts.
+    const wrapperDefs: FetchWrapperDef[] = [];
+    const wrapperFunctions: { name: string; node: SyntaxNode }[] = [];
+    let httpFailed = false;
+    const httpFailure = (err: unknown) => {
+      if (!httpFailed)
+        reportWarning(
+          `HTTP fact extraction failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      httpFailed = true;
+    };
 
     for (const match of matches) {
       const captureMap: Record<string, SyntaxNode> = {};
@@ -3162,19 +3170,26 @@ const processFileGroup = (
       }
 
       // ── Fetch wrapper detection: functions that call fetch() or forward their URL ──
-      if (
-        nodeLabel === 'Function' &&
-        definitionNode &&
-        nameNode &&
-        (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript)
-      ) {
-        const facts = fetchWrapperFacts(definitionNode, file.path);
-        if (facts.seed || facts.forwardsTo.length > 0) {
-          result.fetchWrapperDefs.push({
-            filePath: file.path,
-            functionName: nameNode.text,
-            ...facts,
-          });
+      if (nodeLabel === 'Function' && definitionNode && provider.extractFetchWrapperFacts) {
+        wrapperFunctions.push({ name: nodeName, node: definitionNode });
+        if (parsedFile && !httpFailed) {
+          try {
+            const facts = provider.extractFetchWrapperFacts(
+              definitionNode,
+              nameNode,
+              parsedFile,
+              lineOffset,
+            );
+            // Keep possible wrappers and the functions other files can name; a
+            // nested non-wrapper can neither be imported nor carry a URL.
+            if (
+              facts &&
+              (facts.seed || facts.forwardsUrl || facts.forwardsTo.length > 0 || facts.moduleScope)
+            )
+              wrapperDefs.push({ filePath: file.path, functionName: nodeName, ...facts });
+          } catch (err) {
+            httpFailure(err);
+          }
         }
       }
     }
@@ -3252,18 +3267,40 @@ const processFileGroup = (
       }
     }
 
-    if (provider.extractFetchWrapperCalls) {
-      const candidates = provider.extractFetchWrapperCalls(tree, file.path, lineOffset);
-      for (const candidate of candidates) (result.fetchWrapperCalls ??= []).push(candidate);
+    if (parsedFile && !httpFailed) {
+      try {
+        const calls = provider.extractFetchWrapperCalls?.(tree, parsedFile, lineOffset);
+        const reexports = provider.extractFetchWrapperReexports?.(tree, parsedFile, lineOffset);
+        const routeFacts = provider.extractRouteFacts?.(tree, parsedFile, lineOffset);
+        for (const call of calls ?? []) (result.fetchWrapperCalls ??= []).push(call);
+        for (const reexport of reexports ?? [])
+          (result.fetchWrapperReexports ??= []).push(reexport);
+        if (routeFacts)
+          (result.routeFacts ??= []).push({
+            filePath: file.path,
+            facts: routeFacts,
+            routePosition,
+          });
+      } catch (err) {
+        httpFailure(err);
+      }
     }
-
-    if (parsedFile && provider.extractRouteFacts) {
-      (result.routeFacts ??= []).push({
-        filePath: file.path,
-        facts: provider.extractRouteFacts(tree, parsedFile, lineOffset),
-        routePosition,
-      });
-    }
+    if (parsedFile && !httpFailed) for (const def of wrapperDefs) result.fetchWrapperDefs.push(def);
+    else
+      // These records stand for unknown facts. With `seed` false and nothing
+      // forwarded they never prove a wrapper; they only make a name-only
+      // match, a barrel or an import that may reach this file decline.
+      for (const { name, node } of wrapperFunctions)
+        result.fetchWrapperDefs.push({
+          filePath: file.path,
+          functionName: name,
+          definitionId: `${file.path}:${node.startPosition.row + lineOffset + 1}:${node.startPosition.column}`,
+          moduleScope: true,
+          exportedNames: [name],
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [],
+        });
 
     // Language-specific decorator route extraction via provider hook.
     // The provider's extractDecoratorRoutes walks the AST for framework-specific

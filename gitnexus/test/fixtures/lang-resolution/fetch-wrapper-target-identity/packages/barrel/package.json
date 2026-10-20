@@ -1,0 +1,4 @@
+{
+  "name": "@repo/barrel",
+  "exports": "./src/index.ts"
+}

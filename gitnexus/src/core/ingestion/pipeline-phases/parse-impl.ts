@@ -16,7 +16,8 @@
  */
 
 import type { LanguageProvider } from '../language-provider.js';
-import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
+import type { FetchWrapperCall, FetchWrapperReexport } from '../route-extractors/fetch-wrapper.js';
+import { resolveFetchWrapperTargets } from '../route-extractors/fetch-wrapper-index.js';
 import {
   BindingAccumulator,
   enrichExportedTypeMap,
@@ -754,8 +755,9 @@ export async function runChunkedParseAndResolve(
   const exportedTypeMap: ExportedTypeMap = new Map();
   const bindingAccumulator = new BindingAccumulator();
   const allFetchCalls: ExtractedFetchCall[] = [];
-  const allFetchWrapperDefs: FetchWrapperDef[] = [];
-  const allFetchWrapperCalls: FetchWrapperCall[] = [];
+  let allFetchWrapperDefs: FetchWrapperDef[] = [];
+  let allFetchWrapperCalls: FetchWrapperCall[] = [];
+  const allFetchWrapperReexports: FetchWrapperReexport[] = [];
   const allExtractedRoutes: ExtractedRoute[] = [];
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allRouteFacts: { filePath: string; facts: unknown; routePosition: number }[] = [];
@@ -985,6 +987,8 @@ export async function runChunkedParseAndResolve(
           for (const item of chunkWorkerData.fetchCalls) allFetchCalls.push(item);
         }
         for (const item of chunkWorkerData.fetchWrapperCalls ?? []) allFetchWrapperCalls.push(item);
+        for (const item of chunkWorkerData.fetchWrapperReexports ?? [])
+          allFetchWrapperReexports.push(item);
         if (chunkWorkerData.fetchWrapperDefs?.length) {
           for (const item of chunkWorkerData.fetchWrapperDefs) allFetchWrapperDefs.push(item);
         }
@@ -1572,7 +1576,15 @@ export async function runChunkedParseAndResolve(
 
   const routeFilePaths = new Set(allPaths);
   const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
-  for (const filePath of new Set(allRouteFacts.map((file) => file.filePath))) {
+  const resolutionFilePaths = new Set<string>();
+  for (const facts of [
+    allRouteFacts,
+    allFetchWrapperDefs,
+    allFetchWrapperCalls,
+    allFetchWrapperReexports,
+  ] as const)
+    for (const { filePath } of facts) resolutionFilePaths.add(filePath);
+  for (const filePath of resolutionFilePaths) {
     const language = getLanguageFromFilename(filePath);
     if (language === null || routeResolutionConfigs.has(language)) continue;
     const resolver = SCOPE_RESOLVERS.get(language);
@@ -1608,6 +1620,15 @@ export async function runChunkedParseAndResolve(
     fromFile: string,
   ): readonly string[] =>
     resolveRouteModuleTargets(fromFile, parsedImport.targetRaw ?? '', parsedImport);
+
+  const resolvedFetchWrappers = resolveFetchWrapperTargets(
+    allFetchWrapperDefs,
+    allFetchWrapperCalls,
+    resolveRouteModuleTargets,
+    allFetchWrapperReexports,
+  );
+  allFetchWrapperDefs = resolvedFetchWrappers.definitions;
+  allFetchWrapperCalls = resolvedFetchWrappers.calls;
 
   // A resolver's identity defines a fact family, including providers sharing
   // one language implementation. Shared ingestion never inspects the payload.

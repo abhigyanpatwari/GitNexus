@@ -220,6 +220,11 @@ an unproven argument, or a reassigned parameter establishes nothing, and a helpe
 with no recorded call site is read as written, so an unknown mount path still
 suppresses its router's standalone paths.
 
+Fetch-wrapper facts use the same lexical identities. The shared resolver in
+`route-extractors/fetch-wrapper-index.ts` names no language, but it applies
+ECMAScript `ResolveExport` rules to the re-export facts it receives: only
+providers whose modules link that way implement the re-export hook.
+
 A standalone router retains its local paths. A known dynamic mount suppresses
 that fallback, while independently proven static mounts remain available. Cycles
 terminate, and exceeding the expansion budget omits the affected mount component

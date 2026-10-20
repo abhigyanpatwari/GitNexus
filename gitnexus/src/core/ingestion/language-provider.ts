@@ -51,7 +51,11 @@ import type {
   RepoConstants,
 } from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
-import type { FetchWrapperCall } from './route-extractors/fetch-wrapper.js';
+import type {
+  FetchWrapperCall,
+  FetchWrapperFacts,
+  FetchWrapperReexport,
+} from './route-extractors/fetch-wrapper.js';
 import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
@@ -649,9 +653,24 @@ interface LanguageProviderConfig {
    * are known across files. Routes selects known wrappers after parsing. */
   readonly extractFetchWrapperCalls?: (
     tree: Parser.Tree,
-    filePath: string,
+    parsedFile: ParsedFile,
     lineOffset: number,
   ) => FetchWrapperCall[];
+
+  /** Module exports that forward another module's export, so barrels resolve to definitions. */
+  readonly extractFetchWrapperReexports?: (
+    tree: Parser.Tree,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => FetchWrapperReexport[];
+
+  /** Scope-aware evidence for every callable declaration, including non-wrappers. */
+  readonly extractFetchWrapperFacts?: (
+    definition: Parser.SyntaxNode,
+    nameNode: Parser.SyntaxNode | undefined,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => FetchWrapperFacts | undefined;
 
   /**
    * Name of the function a route decorator captured by the worker's generic

@@ -7,8 +7,9 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import type Parser from 'tree-sitter';
 import { unboundCallableName } from './typescript/unbound-callables.js';
-import type { CaptureMatch, NodeLabel } from 'gitnexus-shared';
+import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
@@ -129,7 +130,10 @@ import {
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
 import { extractNestRoutes } from '../route-extractors/nest.js';
-import { extractFetchWrapperCalls } from '../route-extractors/fetch-wrapper.js';
+import {
+  createFetchWrapperContext,
+  type FetchWrapperContext,
+} from '../route-extractors/fetch-wrapper.js';
 import { extractFrameworkRouteFacts } from '../route-extractors/framework-route-facts.js';
 import { resolveProjectFrameworkRouteFacts } from '../route-extractors/framework-route-paths.js';
 import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
@@ -413,6 +417,43 @@ const TS_OWNED_RECEIVERS: ReadonlySet<string> = new Set(['this']);
 const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefined =>
   match['@receiver-owner.this'] === undefined ? undefined : TS_OWNED_RECEIVERS;
 
+// Keyed by tree, not ParsedFile: workers retain ParsedFiles for the whole chunk,
+// while a file's tree, and with it this AST-holding context, is released per file.
+const httpContexts = new WeakMap<
+  Parser.Tree,
+  { parsedFile: ParsedFile; lineOffset: number; context: FetchWrapperContext }
+>();
+function httpContext(
+  tree: Parser.Tree,
+  parsedFile: ParsedFile,
+  lineOffset: number,
+): FetchWrapperContext {
+  const cached = httpContexts.get(tree);
+  if (cached?.parsedFile === parsedFile && cached.lineOffset === lineOffset) return cached.context;
+  const context = createFetchWrapperContext(tree, parsedFile, lineOffset);
+  httpContexts.set(tree, { parsedFile, lineOffset, context });
+  return context;
+}
+const httpExtraction = {
+  extractRouteFacts: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    extractFrameworkRouteFacts(
+      tree,
+      parsedFile,
+      lineOffset,
+      httpContext(tree, parsedFile, lineOffset).bindings,
+    ),
+  extractFetchWrapperCalls: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    httpContext(tree, parsedFile, lineOffset).calls(),
+  extractFetchWrapperReexports: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    httpContext(tree, parsedFile, lineOffset).reexports(),
+  extractFetchWrapperFacts: (
+    definition: Parser.SyntaxNode,
+    name: Parser.SyntaxNode | undefined,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => httpContext(definition.tree, parsedFile, lineOffset).facts(definition, name),
+};
+
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
   rename: typescriptRenameProvider,
@@ -506,9 +547,8 @@ export const typescriptProvider = defineLanguage({
   // to a literal; nothing else in this pipeline can see that shape. TS and JS
   // share the grammar, so they share the extractor.
   extractDecoratorRoutes: extractJsTsRoutes,
-  extractRouteFacts: extractFrameworkRouteFacts,
+  ...httpExtraction,
   resolveRouteFacts: resolveProjectFrameworkRouteFacts,
-  extractFetchWrapperCalls,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   // Path-gate lives here (language provider), not in the shared parse worker.
   extractTextRoutes: extractJsTsTextRoutes,
@@ -595,9 +635,8 @@ export const javascriptProvider = defineLanguage({
   arityCompatibility: jsArityCompatibility,
   // See the TypeScript provider above.
   extractDecoratorRoutes: extractJsTsRoutes,
-  extractRouteFacts: extractFrameworkRouteFacts,
+  ...httpExtraction,
   resolveRouteFacts: resolveProjectFrameworkRouteFacts,
-  extractFetchWrapperCalls,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   extractTextRoutes: extractJsTsTextRoutes,
   extractToolDefinitions,

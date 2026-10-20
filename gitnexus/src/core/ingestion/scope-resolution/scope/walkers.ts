@@ -540,7 +540,8 @@ export function findReceiverTypeBinding(
   options?: NameLookupOptions,
 ): TypeRef | undefined {
   const claim = lookupNameClaim(startScope, receiverName, scopes, options);
-  if (claim.status !== 'absent') return claim.typeBinding;
+  // An absent name keeps the type an undeclared write gave it in this scope.
+  if (claim.status !== 'absent' || claim.typeBinding !== undefined) return claim.typeBinding;
   const moduleScopeId = moduleScopeIdOf(startScope, scopes);
   // Fallback 1 — named namespaces accessible from this file (own + `using`d),
   // gated by `accessibleNamespacesByScope`. Consulted BEFORE the global channel
