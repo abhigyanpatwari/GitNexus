@@ -1101,6 +1101,31 @@ cp .env.example .env
 docker compose --env-file .env up -d
 ```
 
+<details>
+<summary><strong>Same-origin API behind a reverse proxy</strong></summary>
+
+`GITNEXUS_BACKEND_URL` is normally an absolute URL, which ties the UI to one API hostname. Set it to `/` instead and the browser calls the API on the origin that served the page — so one `gitnexus-web` container can be reached on several hostnames (an internal `*.localhost` name and a public one, say) as long as the proxy routes `/api/*` next to the UI on each of them. A path such as `/gitnexus` works the same way for an API mounted under a prefix.
+
+Two ways to route `/api/*`:
+
+- **Through the web container's own proxy** (recommended for several hostnames). Give `gitnexus-web` `GITNEXUS_UPSTREAM_URL=http://gitnexus-server:4747` and a `GITNEXUS_SERVE_AUTH_TOKEN`; it forwards `/api/*` to the server and ends the browser origin there, so the server's CORS allowlist never sees the public hostnames. The UI asks for the token once. With Traefik, one router for the whole UI is enough:
+
+  ```yaml
+  services:
+    gitnexus-web:
+      environment:
+        - GITNEXUS_BACKEND_URL=/
+        - GITNEXUS_UPSTREAM_URL=http://gitnexus-server:4747
+        - GITNEXUS_SERVE_AUTH_TOKEN=${GITNEXUS_SERVE_AUTH_TOKEN}
+      labels:
+        - traefik.http.routers.gitnexus.rule=Host(`gitnexus.example.com`) || Host(`gitnexus.localhost`)
+        - traefik.http.services.gitnexus.loadbalancer.server.port=4173
+  ```
+
+- **Straight to the server**, with a second router matching ``PathPrefix(`/api`)`` on port `4747`. The browser's `Origin` then reaches `gitnexus serve`, whose allowlist admits one public origin (`GITNEXUS_PUBLIC_ORIGIN`) besides loopback and private addresses, so this fits a single public hostname.
+
+</details>
+
 Files:
 
 - [Dockerfile.web](Dockerfile.web) — builds `gitnexus-shared` and `gitnexus-web`, then serves the production frontend.

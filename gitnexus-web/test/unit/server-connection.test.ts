@@ -375,6 +375,24 @@ describe('DEFAULT_BACKEND_URL resolution', () => {
     const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
     expect(DEFAULT_BACKEND_URL).toBe('http://localhost:4747');
   });
+
+  it('resolves a root-relative backendUrl against the origin that served the page', async () => {
+    window.__GITNEXUS_CONFIG__ = { backendUrl: '/' };
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    expect(DEFAULT_BACKEND_URL).toBe(window.location.origin);
+  });
+
+  it('keeps a same-origin prefix under the page origin', async () => {
+    window.__GITNEXUS_CONFIG__ = { backendUrl: '/gitnexus' };
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    expect(DEFAULT_BACKEND_URL).toBe(`${window.location.origin}/gitnexus`);
+  });
+
+  it('does not resolve a protocol-relative backendUrl as a path', async () => {
+    window.__GITNEXUS_CONFIG__ = { backendUrl: '//evil.example' };
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    expect(DEFAULT_BACKEND_URL).toBe('//evil.example');
+  });
 });
 
 describe('LARGE_GRAPH_NODE_THRESHOLD resolution', () => {

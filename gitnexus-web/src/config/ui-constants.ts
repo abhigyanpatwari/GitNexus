@@ -2,9 +2,21 @@
 export const ERROR_RESET_DELAY_MS = 3000;
 export const BACKEND_URL_DEBOUNCE_MS = 500;
 
-export const DEFAULT_BACKEND_URL =
-  (typeof window !== 'undefined' && window.__GITNEXUS_CONFIG__?.backendUrl) ||
-  'http://localhost:4747';
+/**
+ * The backend the deployment injected, if any. A root-relative path (`/`, or
+ * `/prefix`) is resolved against the page's own origin, so the API is reached
+ * on whichever hostname served the UI (#3593); `//host` is an origin change,
+ * not a path, and is passed through for the URL validation to reject.
+ */
+function injectedBackendUrl(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const configured = window.__GITNEXUS_CONFIG__?.backendUrl;
+  if (!configured) return undefined;
+  if (!configured.startsWith('/') || configured.startsWith('//')) return configured;
+  return new URL(configured, window.location.origin).href.replace(/\/+$/, '');
+}
+
+export const DEFAULT_BACKEND_URL = injectedBackendUrl() || 'http://localhost:4747';
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
 export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
