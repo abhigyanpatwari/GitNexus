@@ -1590,3 +1590,29 @@ describe.skipIf(!zigAvailable)('Zig monorepo package resolution', () => {
     expect(fromTool.map((e) => e.targetFilePath).join('\n')).not.toContain('packages/core/');
   });
 });
+
+// #3498: `const x = rp.make();` on a namespace module handle takes `make`'s
+// return type; a file-struct handle keeps naming the struct.
+describe.skipIf(!zigAvailable)('Zig namespace factory result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'zig-namespace-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  it.each([
+    { source: 'aliasCall', target: 'Method:mod.zig:C.m#0' },
+    { source: 'inlineCall', target: 'Method:mod.zig:C.m#0' },
+    { source: 'fileStructCall', target: 'Method:Page.zig:Page.m#0' },
+    { source: 'lowercaseFileStructCall', target: 'Method:Page.zig:Page.m#0' },
+  ])('resolves $source to $target', ({ source, target }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === 'm')
+        .map((edge) => edge.rel.targetId),
+    ).toEqual([target]);
+  });
+});

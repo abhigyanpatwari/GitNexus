@@ -79,6 +79,28 @@ export function zigImportRootOf(value: SyntaxNode | null): SyntaxNode | null {
   return isZigImportBuiltin(cur) ? cur : null;
 }
 
+/** Module-level `const ns = @import("ns.zig")` handles on a lowercase file: a
+ *  namespace module, not a file-struct (`@import("Page.zig")`) whose methods
+ *  live in its struct scope. Cached per tree. */
+const zigNamespaceHandlesByTree = new WeakMap<object, ReadonlySet<string>>();
+function zigNamespaceHandles(node: SyntaxNode): ReadonlySet<string> {
+  const cached = zigNamespaceHandlesByTree.get(node.tree);
+  if (cached !== undefined) return cached;
+  const handles = new Set<string>();
+  for (const decl of node.tree.rootNode.namedChildren) {
+    if (decl?.type !== 'variable_declaration') continue;
+    const named = decl.namedChildren.filter((c): c is SyntaxNode => c !== null);
+    const name = named[0];
+    const value = named[named.length - 1];
+    if (name?.type !== 'identifier' || value === undefined || !isZigImportBuiltin(value)) continue;
+    const file = /"([^"]+)"/.exec(value.text)?.[1]?.split('/').pop();
+    if (file !== undefined && file.endsWith('.zig') && !isZigTitleCase(file))
+      handles.add(name.text);
+  }
+  zigNamespaceHandlesByTree.set(node.tree, handles);
+  return handles;
+}
+
 /** Is this `@import(…)` builtin the receiver of a member call —
  *  `@import("dump.zig").root(...)` — or of a qualified construction —
  *  `@import("a.zig").Thing{…}` — i.e. the `object` of a `field_expression`
@@ -1053,6 +1075,12 @@ export function zigCallReturnTypeOf(
     ) {
       return { type: `${object.text}.${member.text}()`, memberCall: true };
     }
+  }
+  // `rp.make()` on a namespace module handle: the dotted callee, which the
+  // shared chain follow types from `make`'s return annotation (#3498). A
+  // file-struct handle keeps naming the type (`Page.init()`).
+  if (object.type === 'identifier' && zigNamespaceHandles(value).has(object.text)) {
+    return { type: `${object.text}.${member.text}` };
   }
   return { type: object.text };
 }
