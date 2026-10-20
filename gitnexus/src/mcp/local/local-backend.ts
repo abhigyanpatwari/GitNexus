@@ -6139,15 +6139,27 @@ export class LocalBackend {
       const total = Number((ipCountRows[0] as any)?.total ?? (ipCountRows[0] as any)?.[0] ?? 0);
       const findings = ipRows.map((r: any) => {
         const decoded = decodeTaintPath(r.reason ?? r[5]);
+        // Cross-function lines are the endpoints' and hops' 0-based symbol
+        // `startLine` (the Function node property, and what interproc-emit
+        // encodes into the path codec), unlike the intra-procedural rows
+        // above, whose PDG statement lines are already 1-based. Convert at
+        // the response boundary like `context`/`query`/`impact` (#2377), so
+        // both layers of one response agree with the editor (#3491).
         const hops = decoded.ok
-          ? decoded.hops.map((h) => ({ function: h.variable, line: h.line }))
+          ? decoded.hops.map((h) => ({ function: h.variable, line: toDisplayLine(h.line) }))
           : [];
         return {
           interprocedural: true,
           file: String(r.file ?? r[0] ?? ''),
           sinkKind: decoded.ok ? (decoded.kind ?? 'unknown') : 'unknown',
-          source: { function: String(r.sourceFn ?? r[1] ?? ''), line: r.sourceLine ?? r[2] },
-          sink: { function: String(r.sinkFn ?? r[3] ?? ''), line: r.sinkLine ?? r[4] },
+          source: {
+            function: String(r.sourceFn ?? r[1] ?? ''),
+            line: toDisplayLine(r.sourceLine ?? r[2]),
+          },
+          sink: {
+            function: String(r.sinkFn ?? r[3] ?? ''),
+            line: toDisplayLine(r.sinkLine ?? r[4]),
+          },
           hops,
           ...(decoded.ok && decoded.truncated ? { pathIncomplete: true } : {}),
         };
@@ -6262,7 +6274,7 @@ export class LocalBackend {
       findings: pageFindings,
       totalFindings: totalFindings + interprocTotal,
       ...(truncated ? { truncated: true } : {}),
-      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled, including sources read inside inline callbacks and returned handlers. Captured closure-variable, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. SANITIZES (kill) edges are queryable via cypher.',
+      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled, including sources read inside inline callbacks and returned handlers. Captured closure-variable, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. All line numbers are 1-based; for cross-function findings, `source.line`, `sink.line` and `hops[].line` are the declaration lines of the functions, not statement lines. SANITIZES (kill) edges are queryable via cypher.',
     };
   }
 
