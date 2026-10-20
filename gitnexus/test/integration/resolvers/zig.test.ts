@@ -38,6 +38,16 @@ function edgesAtSite(result: PipelineResult, file: string, line: number, col: nu
     .sort();
 }
 
+/** Every CALLS / ACCESSES / USES edge into `targetId`, as
+ *  `<TYPE> <source id> | <reason>`. */
+function referencesInto(result: PipelineResult, targetId: string): string[] {
+  return ['CALLS', 'ACCESSES', 'USES']
+    .flatMap((type) => getRelationships(result, type))
+    .filter((e) => e.rel.targetId === targetId)
+    .map((e) => `${e.rel.type} ${e.rel.sourceId} | ${e.rel.reason}`)
+    .sort();
+}
+
 /** The `receiver-unresolved` drops recorded at `file:line:col`, as
  *  `<site kind> <member>` — the rows of the #3498 drop triage. */
 function receiverDropsAt(
@@ -1187,6 +1197,47 @@ describe.skipIf(!zigAvailable)('Zig function-local and anonymous containers (F8)
       'Function:src/Sorter.zig:Sorter."Sorter: local state" → Method:src/Sorter.zig:Sorter.test@L41$State.kill#0',
     );
   });
+
+  // #3498 drop triage, F-C: `struct { fn lessThan … }.lessThan` (the comparator
+  // handed to `std.sort.pdq`) and `const byteSize = struct { fn it … }.it;`
+  // read a fn VALUE off an anonymous container. Its receiver text was the
+  // container's whole body, which names nothing, so each read was a receiver
+  // drop — and the only edge came from the read's position, which lies inside
+  // the container, so the container "accessed" its own fn. The receiver is the
+  // identity the container is minted under, and the read is attributed to the
+  // scope it is evaluated in. A value, so a reference: never CALLS.
+  it.each([
+    [
+      16,
+      17,
+      'Method:src/Sorter.zig:Sorter$2.it#1',
+      ['ACCESSES Struct:src/Sorter.zig:Sorter | read'],
+    ],
+    [
+      23,
+      38,
+      'Method:src/Sorter.zig:Sorter.sortBoth$1.lessThan#3',
+      [
+        'ACCESSES Method:src/Sorter.zig:Sorter.sortBoth#0 | read',
+        'USES Method:src/Sorter.zig:Sorter.sortBoth#0 | scope-resolution: value-ref',
+      ],
+    ],
+    [
+      28,
+      38,
+      'Method:src/Sorter.zig:Sorter.sortBoth$2.lessThan#3',
+      [
+        'ACCESSES Method:src/Sorter.zig:Sorter.sortBoth#0 | read',
+        'USES Method:src/Sorter.zig:Sorter.sortBoth#0 | scope-resolution: value-ref',
+      ],
+    ],
+  ])(
+    'reads the fn value of an anonymous container (Sorter.zig:%i:%i) from where it is evaluated',
+    (line, col, target, expected) => {
+      expect(receiverDropsAt(result, 'src/Sorter.zig', line, col)).toEqual([]);
+      expect(referencesInto(result, target)).toEqual(expected);
+    },
+  );
 });
 
 describe.skipIf(!zigAvailable)(

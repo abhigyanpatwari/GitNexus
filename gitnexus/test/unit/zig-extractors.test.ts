@@ -1999,6 +1999,34 @@ test "Page: local state" {
     expect(lts.every((d) => d.ownerId !== undefined)).toBe(true);
   });
 
+  it('a member read off an anonymous container names it by its identity and sits at the member (#3498 F-C)', () => {
+    // `struct { fn lessThan … }.lessThan`: the receiver capture was the whole
+    // container body, which names nothing, and the site's anchor started at
+    // `struct` — INSIDE the container's own Class scope, so the read was
+    // attributed to the container itself. The receiver is the identity the
+    // container is minted under, and the site is anchored on the member, which
+    // is evaluated in the enclosing scope.
+    const sites = emitZigScopeCaptures(src, 'src/Page.zig')
+      .map((m) => ({ m, kind: ['@reference.read', '@reference.value-ref'].find((k) => k in m) }))
+      .filter(
+        ({ m, kind }) =>
+          kind !== undefined && ['lessThan', 'it'].includes(m['@reference.name']?.text ?? ''),
+      )
+      .map(({ m, kind }) => ({
+        site: `${kind} ${m['@reference.receiver']?.text} . ${m['@reference.name']?.text}`,
+        atMember:
+          JSON.stringify(m[kind ?? '']?.range) === JSON.stringify(m['@reference.name']?.range),
+      }));
+    expect(sites.map((s) => s.site).sort()).toEqual([
+      '@reference.read Page$1 . it',
+      '@reference.read Page.sortBoth$1 . lessThan',
+      '@reference.read Page.sortBoth$2 . lessThan',
+      '@reference.value-ref Page.sortBoth$1 . lessThan',
+      '@reference.value-ref Page.sortBoth$2 . lessThan',
+    ]);
+    expect(sites.every((s) => s.atMember)).toBe(true);
+  });
+
   it('a `@This()` alias inside a local container rewrites to the BINDING name (`R`), which is what the scope binds', () => {
     const localAliasSrc = `
 pub fn string() void {

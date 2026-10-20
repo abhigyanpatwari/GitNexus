@@ -28,6 +28,13 @@ const STATIC_GATED_MARKER: Capture = Object.freeze({
   text: '',
 });
 const NO_IMPORT_ALIASES: ZigImportAliasMap = new Map();
+/** The site anchors of the query's receiver-bearing reference rules. */
+const ZIG_RECEIVER_SITE_ANCHORS = [
+  '@reference.read',
+  '@reference.value-ref',
+  '@reference.call.member',
+  '@reference.call.constructor',
+] as const;
 
 /** Stamp `@reference.static-gated` onto every call capture whose anchor sits
  *  in a statically dead range. File-local constants only for now (v1): the
@@ -1700,6 +1707,37 @@ export function emitZigScopeCaptures(
       isZigPublishingImport(nodeMap['@import.statement'])
     ) {
       Object.assign(grouped, republishMarker(nodeMap['@import.statement']));
+    }
+
+    // F8 — a member of an ANONYMOUS container used in place: `std.sort.pdq(…,
+    // struct { fn lessThan … }.lessThan)`, `const byteSize = struct { fn it …
+    // }.it;`. The receiver text is the container's whole body, which names
+    // nothing, so every such site was a receiver drop (#3498 triage, F-C).
+    // Name the receiver by the identity the container is minted under
+    // (`Sorter.sortBoth$1`, see `zigContainerName`), and anchor the site on the
+    // member: from `struct` on it lies inside the container's own Class scope,
+    // which made the container the "caller" of its own fn, while the member is
+    // evaluated in the enclosing scope (the fn that hands the comparator on).
+    const receiverNode = nodeMap['@reference.receiver'];
+    const memberNode = nodeMap['@reference.name'];
+    if (
+      receiverNode !== undefined &&
+      memberNode !== undefined &&
+      ZIG_CONTAINER_TYPES.has(receiverNode.type)
+    ) {
+      const identity = zigContainerName(receiverNode, _filePath);
+      if (identity !== undefined) {
+        grouped['@reference.receiver'] = syntheticCapture(
+          '@reference.receiver',
+          receiverNode,
+          identity,
+        );
+        const memberRange = zigNodeRange(memberNode);
+        for (const tag of ZIG_RECEIVER_SITE_ANCHORS) {
+          const anchor = grouped[tag];
+          if (anchor !== undefined) grouped[tag] = { ...anchor, range: memberRange };
+        }
+      }
     }
     out.push(grouped);
 
