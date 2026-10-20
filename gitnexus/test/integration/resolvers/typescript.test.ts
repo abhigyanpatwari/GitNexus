@@ -13,7 +13,9 @@ import {
   edgeSet,
   getResolutionOutcomes,
   runPipelineFromRepo,
+  suppressionReasonsAt,
   writeFixtureRepo,
+  type OutcomeSite,
   type PipelineResult,
 } from './helpers.js';
 
@@ -3212,6 +3214,20 @@ describe('TS dynamic-this receiver seeding guard', () => {
   it('emits no CALLS edge from the object-literal method to Router.go', () => {
     const calls = getRelationships(result, 'CALLS');
     expect(calls.some((c) => c.target === 'go' && c.source === 'onClick')).toBe(false);
+  });
+
+  // Both sites on `this.route.go()` are lost for ONE reason: the object-literal
+  // method owns `this` and gives it no type. The call's receiver is the chain
+  // `this.route`, and the owned-receiver check was asked about that whole text
+  // — which no scope owns — instead of its base `this`. So the call went on to
+  // the compound fold and was filed as a generic `receiver-unresolved` drop,
+  // or, when the read beside it (same start column) was handled first, as
+  // nothing at all.
+  it.each<readonly [OutcomeSite, readonly string[]]>([
+    [['app.ts', 17, 6, 'route'], ['receiver-owned-but-unbound']],
+    [['app.ts', 17, 6, 'go'], ['receiver-owned-but-unbound']],
+  ])('records %j under its real reason', (site, reasons) => {
+    expect(suppressionReasonsAt(result, site)).toEqual(reasons);
   });
 });
 

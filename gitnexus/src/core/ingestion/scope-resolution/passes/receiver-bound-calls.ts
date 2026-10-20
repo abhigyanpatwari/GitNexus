@@ -1231,10 +1231,15 @@ export function emitReceiverBoundCalls(
         `${receiverName}.${memberName}`,
       );
 
+      // The identifier the receiver starts from — `this` for `this.route` —
+      // read off the minted chain when there is one. The two checks below ask
+      // about the BASE, never the whole expression: a scope owns or types a
+      // name, not a chain.
+      const baseName =
+        decodeReceiverChain(site.receiverChain)?.baseReceiverName ??
+        receiverName.split(/[.([\s]/, 1)[0];
+
       if (provider.suppressReceiverLookup !== undefined) {
-        const baseName =
-          decodeReceiverChain(site.receiverChain)?.baseReceiverName ??
-          receiverName.split(/[.([\s]/, 1)[0];
         const baseTypeRef =
           baseName === undefined
             ? undefined
@@ -1263,7 +1268,12 @@ export function emitReceiverBoundCalls(
       // instead of letting the receiver-blind lexical fallback in
       // `lookupCore` match the enclosing class's member by name.
       // No-op for every language that leaves `Scope.ownsReceivers` unset.
-      if (isReceiverOwnedButUnbound(site.inScope, receiverName, scopes)) {
+      //
+      // Asked of the BASE: `this.route.go()` in such a scope is lost for the
+      // same reason as `this.go()`. Asking about the text `this.route`, which
+      // no scope owns, sent the call on to Case 0, whose fold cannot type an
+      // owned `this` either, and the site was filed as `receiver-unresolved`.
+      if (isReceiverOwnedButUnbound(site.inScope, baseName, scopes)) {
         options.recordSourceBinding?.(site, {
           status: 'blocked',
           targetDefIds: [],
