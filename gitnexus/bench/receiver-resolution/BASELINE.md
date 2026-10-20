@@ -1,5 +1,34 @@
 # Receiver-resolution baseline
 
+## Namespace factory results and shared-position drops (#3498)
+
+Two changes move this baseline; neither moves an edge. A same-corpus A/B
+against `origin/main` (`7090ac80f`) emits the identical 2,838 `CALLS` and
+`ACCESSES` edges on both sides.
+
+- **Namespace factory results.** `x = ns.make()` and inline `ns.make().m()`
+  now take `make`'s return annotation, as a named import of `make` already
+  did. A receiver bound to a namespace function with no usable return type
+  (`x = ns.untyped()`) is recorded as dropped rather than read as an exact
+  miss. The new `python-module-factory-return` fixture adds four call drops:
+  `x = rp.untyped()`, inline `rp.untyped().m()`, `x = untyped()`, and
+  `rp.make()` on a local `rp = Other()` that shadows the module alias. The
+  Zig `bridge.prototypeChain()` and `bridge.accessor("value")` namespace calls
+  in `zig-filestruct` are recorded as both a call and a read: +2 calls, +2
+  reads.
+- **Shared start positions.** Sites are keyed by `file:line:col`, and an outer
+  call starts where its inner receiver does (`s.orderRepo.DeleteItem(id)`
+  starts at `s.orderRepo`). A resolved inner site used to hide the outer
+  site's drop. Only a duplicate capture of the same member now hides one.
+  This adds 18 call drops (Go 14, TypeScript 1, Rust 1, JavaScript 1) and 2
+  TypeScript reads. Each was checked against the corpus graph: none has a
+  `CALLS` edge to that member from its enclosing function. The Go sites
+  resolve when their fixture is analyzed alone, and are unresolved only in
+  the combined corpus, where several fixtures declare the same packages. The
+  same fix turns ten shape-arm cells from `INVISIBLE-GAP` to `VISIBLE-GAP`.
+
+Totals: call drops 128 -> 151, reads 44 -> 48, all kinds 192 -> 219.
+
 ## Express inline-handler fixture (#3488)
 
 The new `express-inline-handlers` fixture reads `req.query.path` inside an

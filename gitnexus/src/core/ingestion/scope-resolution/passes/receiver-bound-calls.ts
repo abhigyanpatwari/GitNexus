@@ -213,6 +213,7 @@ type ReceiverBoundProviderSubset = Pick<
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
 const BARE_TYPE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+const CALLABLE_TYPES: ReadonlySet<string> = new Set(['Function', 'Method']);
 
 /**
  * A type name a built-in test may be asked about: a bare, undecorated
@@ -477,6 +478,20 @@ export function emitReceiverBoundCalls(
       picked = def;
     }
     return picked;
+  };
+
+  // #3498: whether a receiver's binding is a namespace function call
+  // (`x = ns.f()`): `f` is in the program, so the result type it failed to
+  // provide is a loss, not completeness.
+  const bindsNamespaceCallable = (
+    typeRef: TypeRef,
+    namespaceTargets: ReadonlyMap<string, readonly string[]>,
+  ): boolean => {
+    const [head, member, ...rest] = typeRef.rawName.split('.');
+    if (head === undefined || member === undefined || rest.length > 0) return false;
+    return (namespaceTargets.get(head) ?? []).some((file) =>
+      CALLABLE_TYPES.has(lookupNamespaceMember(file, member)?.type ?? ''),
+    );
   };
   // A class-like def NESTED in `owner` (`A.Item` inside `A`): its qualified
   // name is the owner's plus the segment — the identity the structure phase
@@ -1144,6 +1159,11 @@ export function emitReceiverBoundCalls(
         ? { sink: options.calleeIdSink, filePath: parsed.filePath }
         : undefined;
 
+    // Duplicate captures of one site share a key and a member name. Distinct
+    // calls can share only the key (`ns.make().m()` starts where `ns.make()`
+    // does), so one's resolution must not hide the other's drop (#3498).
+    const keysSeen = new Set<string>();
+    const sitesSeen = new Set<string>();
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
       if (site.explicitReceiver === undefined) continue;
@@ -1186,6 +1206,10 @@ export function emitReceiverBoundCalls(
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      const sameKeyEarlier = keysSeen.has(siteKey);
+      const siteSeenEarlier = sitesSeen.has(`${siteKey}\0${memberName}`);
+      keysSeen.add(siteKey);
+      sitesSeen.add(`${siteKey}\0${memberName}`);
 
       if (provider.suppressReceiverLookup !== undefined) {
         const baseName =
@@ -3151,9 +3175,21 @@ export function emitReceiverBoundCalls(
       // keyed by the MEMBER name, which is the only thing still known about a
       // dropped site (its callee is unknown by definition, so the drop cannot
       // be attributed to any target symbol).
+      // #3498: a plain receiver bound to a namespace call the analyzer could
+      // not type (`x = ns.untyped()`) is a drop too, not an exact miss.
+      const typedReceiverUnresolved =
+        typeRef !== undefined &&
+        BARE_TYPE_NAME_RE.test(receiverName) &&
+        bindsNamespaceCallable(typeRef, namespaceTargets);
+      // Every resolving case `continue`s, so a handled key here came from an
+      // earlier site or pre-seeding; it hides this drop only when that site
+      // was a duplicate capture of this one.
+      const hiddenByEarlierSite = handledSites.has(siteKey) && (siteSeenEarlier || !sameKeyEarlier);
       if (
-        (compoundReceiverUnresolved || receiverNamespace !== undefined) &&
-        !handledSites.has(siteKey)
+        (compoundReceiverUnresolved ||
+          receiverNamespace !== undefined ||
+          typedReceiverUnresolved) &&
+        !hiddenByEarlierSite
       ) {
         // Decoded once: both the shape census and the origin classifier read the
         // same chain, and this is inside the drop guard so a resolved site pays

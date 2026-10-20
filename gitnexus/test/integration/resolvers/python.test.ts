@@ -2537,6 +2537,49 @@ describe('Python nullable assignment result types (#3498)', () => {
   );
 });
 
+describe('Python module-qualified factory result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-module-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  const methodCalls = (source: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === source && edge.target === 'm')
+      .map((edge) => edge.rel.targetId);
+
+  it.each(['alias_call', 'module_call', 'inline_alias', 'class_through_alias'])(
+    'resolves %s to C.m',
+    (source) => {
+      expect(methodCalls(source)).toEqual(['Method:mod.py:C.m#0']);
+    },
+  );
+
+  it.each(['shadowed_namespace', 'untyped_alias', 'untyped_inline', 'untyped_named'])(
+    'does not guess a receiver type for %s',
+    (source) => {
+      expect(methodCalls(source)).toEqual([]);
+    },
+  );
+
+  it('records the untyped receivers as dropped sites instead of an exact miss', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.filePath === 'callers.py',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(dropped).toEqual(['27:make', '33:m', '37:m', '42:m']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Issue #289: static/classmethod classes must have HAS_METHOD edges
 // ---------------------------------------------------------------------------
