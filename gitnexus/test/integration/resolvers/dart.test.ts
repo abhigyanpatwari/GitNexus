@@ -13,6 +13,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -146,6 +147,45 @@ describe.skipIf(!dartAvailable)('Dart field-type resolution', () => {
     expect(addressReads.length).toBe(1);
     expect(addressReads[0]!.source).toBe('processUser');
     expect(addressReads[0]!.targetLabel).toBe('Property');
+  });
+});
+
+// ── Prefixed-import factory results (#3498) ─────────────────────────────
+
+describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'dart-prefixed-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  const methodCalls = (source: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === source && edge.target === 'm')
+      .map((edge) => edge.rel.targetId);
+
+  it.each(['finalCall', 'varCall', 'inlineCall'])('resolves %s to C.m', (source) => {
+    expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+  });
+
+  it('does not guess a receiver type for an untyped factory result', () => {
+    expect(methodCalls('untypedCall')).toEqual([]);
+  });
+
+  it('records the untyped factory result as a dropped site', () => {
+    expect(
+      getResolutionOutcomes(result)
+        .filter(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.filePath === 'lib/callers.dart',
+        )
+        .map((outcome) => `${outcome.range.startLine}:${outcome.name}`),
+    ).toEqual(['17:m']);
   });
 });
 
