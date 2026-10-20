@@ -502,7 +502,9 @@ async function buildNodeRepoContext(args: {
 function frameworkDetection(route: FrameworkRoute, facts: FrameworkRouteFacts): HttpDetection {
   const call = route.frameworkCall;
   const handler = call?.arguments.at(-1);
-  let name = route.handlerName ?? null;
+  // An inline handler's positional name is a graph identity, not a symbol
+  // name; the contract attributes it to the enclosing registrar instead.
+  let name = handler?.kind === 'handler' ? null : (route.handlerName ?? null);
   let handlerImport: HttpDetection['handlerImport'];
   if (!name && handler?.kind === 'binding' && !facts.invalidBindings.includes(handler.id)) {
     const bindings = facts.bindings.filter((binding) => binding.id === handler.id);
