@@ -465,16 +465,18 @@ export function resolveFrameworkRouteFacts(
     // The shared symbol model resolves a bare name only within this file.
     // Retain that evidence only for the exact lexical callable declaration;
     // parameters, imported aliases and unknown values must not borrow a
-    // same-named function elsewhere in the file.
+    // same-named function elsewhere in the file. An inline handler names
+    // itself.
     const handler = call.arguments.at(-1);
     const handlerBinding = handler?.kind === 'binding' ? bindings.get(handler.id) : undefined;
     const handlerName =
       call.handlerName &&
-      handlerBinding?.filePath === filePath &&
-      handlerBinding.values.length === 1 &&
-      handlerBinding.values[0].kind === 'handler' &&
-      handler?.kind === 'binding' &&
-      evaluate(handler, filePath)?.kind === 'handler'
+      (handler?.kind === 'handler' ||
+        (handlerBinding?.filePath === filePath &&
+          handlerBinding.values.length === 1 &&
+          handlerBinding.values[0].kind === 'handler' &&
+          handler?.kind === 'binding' &&
+          evaluate(handler, filePath)?.kind === 'handler'))
         ? call.handlerName
         : undefined;
     for (const routePath of paths)

@@ -223,7 +223,16 @@ suppresses its router's standalone paths.
 Fetch-wrapper facts use the same lexical identities. The shared resolver in
 `route-extractors/fetch-wrapper-index.ts` names no language, but it applies
 ECMAScript `ResolveExport` rules to the re-export facts it receives: only
-providers whose modules link that way implement the re-export hook.
+providers whose modules link that way implement the re-export hook. A file that
+passes a route's URL to a callee not proven to be a wrapper is counted on the
+Route as `unverifiedConsumers` (proven consumers and the route's own file
+excluded), and `api_impact` then reports its consumer count as a lower bound.
+
+An inline Express handler resolves to the anonymous Function node the capture
+layer names by position, so its Route carries a `handlerSymbolId`. In a file
+with several routes, response keys come from that handler's lines rather than
+the whole file (middleware stays file-level), and flows link only where they
+start at that handler.
 
 A standalone router retains its local paths. A known dynamic mount suppresses
 that fallback, while independently proven static mounts remain available. Cycles

@@ -1,6 +1,7 @@
 import type Parser from 'tree-sitter';
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import { plainString } from './data-route-table.js';
+import { unboundCallableName } from '../languages/typescript/unbound-callables.js';
 import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route-types.js';
 import {
   createLexicalBindings,
@@ -413,13 +414,17 @@ export function extractFrameworkRouteFacts(
       if (callee?.type === 'member_expression' && method && METHODS.has(method)) {
         const arguments_ = args(node);
         const handler = arguments_.at(-1);
+        // An inline handler has no binding; its Function node carries the
+        // positional name the capture layer gives it (#3488).
+        const handlerName =
+          handler?.type === 'identifier' ? handler.text : handler && unboundCallableName(handler);
         facts.calls.push({
           receiver: expression(callee.childForFieldName('object')),
           method,
           arguments: arguments_.map((argument) => expression(argument)),
           paths: literalPaths(arguments_[0]),
           lineNumber: node.startPosition.row + lineOffset,
-          ...(handler?.type === 'identifier' ? { handlerName: handler.text } : {}),
+          ...(handlerName ? { handlerName } : {}),
         });
       } else if (
         callee?.type === 'identifier' ||

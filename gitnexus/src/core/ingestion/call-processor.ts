@@ -738,6 +738,29 @@ const matchSpecificity = (fetchURL: string, routeURL: string): number => {
 };
 
 /**
+ * The route node keys a normalized fetch URL links to. `[param]` matches any
+ * route segment, so `/api/analyze/[param]` matches both `/api/analyze/upload`
+ * and `/api/analyze/:jobId`: take the route whose segments match by kind most
+ * often. A tie (`/api/[param]` against `/api/foo` and `/api/bar`) has no
+ * evidence for either, so it links none.
+ */
+export const matchFetchRouteKeys = (
+  normalized: string,
+  routeUrlToKeys: Map<string, string[]>,
+): string[] | undefined => {
+  let best: string[] | undefined;
+  let bestScore = -1;
+  let tied = false;
+  for (const [routeURL, routeKeys] of routeUrlToKeys) {
+    if (!routeMatches(normalized, routeURL)) continue;
+    const score = matchSpecificity(normalized, routeURL);
+    tied = score === bestScore || (tied && score < bestScore);
+    if (score > bestScore) [best, bestScore] = [routeKeys, score];
+  }
+  return tied ? undefined : best;
+};
+
+/**
  * Create FETCHES edges from extracted fetch() calls to matching Route nodes.
  * When consumerContents is provided, extracts property access patterns from
  * consumer files and encodes them in the edge reason field.
@@ -775,21 +798,8 @@ export const processNextjsFetchRoutes = (
     const normalized = normalizeFetchURL(call.fetchURL);
     if (!normalized) continue;
 
-    // `[param]` matches any route segment, so `/api/analyze/[param]` matches
-    // both `/api/analyze/upload` and `/api/analyze/:jobId`: take the route
-    // whose segments match by kind most often. A tie (`/api/[param]` against
-    // `/api/foo` and `/api/bar`) has no evidence for either, so it links none.
-    let best: [string, string[]] | undefined;
-    let bestScore = -1;
-    let tied = false;
-    for (const entry of routeUrlToKeys) {
-      if (!routeMatches(normalized, entry[0])) continue;
-      const score = matchSpecificity(normalized, entry[0]);
-      tied = score === bestScore || (tied && score < bestScore);
-      if (score > bestScore) [best, bestScore] = [entry, score];
-    }
-    if (!best || tied) continue;
-    const [, routeKeys] = best;
+    const routeKeys = matchFetchRouteKeys(normalized, routeUrlToKeys);
+    if (!routeKeys) continue;
     const sourceId = generateId('File', call.filePath);
 
     // Extract consumer accessed keys if file content is available
