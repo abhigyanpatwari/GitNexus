@@ -1096,6 +1096,14 @@ export function emitReceiverBoundCalls(
    * denote. A def that resolves to no node, or a node with no captured type,
    * answers `undefined` — the declining direction, matching how the rest of
    * this pass treats an unresolvable lookup.
+   *
+   * A field that declares no type falls back to `initializerType`, the type its
+   * initializer constructs, which the field extractor records on the node for a
+   * language that can read it (`static DEFAULT = new Config()`). For such a field
+   * that node is the only place the type can live: a language whose class scope
+   * holds static and instance members in one binding map keeps the static
+   * field's binding out of it, where it would retype an instance field of the
+   * same name. A declared type, when there is one, always wins.
    */
   const declaredTypeOfClassLevelField = (
     ownerId: string,
@@ -1106,11 +1114,11 @@ export function emitReceiverBoundCalls(
       if (graphId === undefined) continue;
       const properties = graph.getNode(graphId)?.properties;
       if (properties?.isStatic !== true) continue;
-      const declaredType = properties.declaredType;
-      if (typeof declaredType !== 'string') continue;
-      const trimmed = declaredType.trim();
-      if (trimmed.length === 0) continue;
-      return trimmed;
+      for (const fieldType of [properties.declaredType, properties.initializerType]) {
+        if (typeof fieldType !== 'string') continue;
+        const trimmed = fieldType.trim();
+        if (trimmed.length > 0) return trimmed;
+      }
     }
     return undefined;
   };

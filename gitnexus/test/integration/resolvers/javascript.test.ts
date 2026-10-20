@@ -321,6 +321,23 @@ describe('Field type resolution (JavaScript)', () => {
     expect(def!.properties.isStatic).toBe(true);
     expect(def!.properties.visibility).toBe('public');
   });
+
+  // `static DEFAULT = new Config()` declares no type, and a static field's
+  // initializer binding is kept out of the class scope on purpose (it would
+  // retype an instance field of the same name). So `Config.DEFAULT` had no
+  // type anywhere and the call was dropped. The Property node now records the
+  // type its initializer constructs, and the class-level receiver route reads it.
+  it('records the type a static field initializer constructs on its Property node', () => {
+    const def = getNodesByLabelFull(result, 'Property').find((p) => p.name === 'DEFAULT');
+    expect(def?.properties.initializerType).toBe('Config');
+  });
+
+  it('resolves Config.DEFAULT.validate() through the static field initializer type', () => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((c) => c.source === 'validateConfig')
+      .map((c) => c.rel.targetId);
+    expect(targets).toEqual(['Method:models.js:Config.validate#0']);
+  });
 });
 
 // ACCESSES write edges from assignment expressions

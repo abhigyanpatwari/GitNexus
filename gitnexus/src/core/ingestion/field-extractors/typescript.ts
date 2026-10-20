@@ -3,6 +3,7 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { BaseFieldExtractor } from '../field-extractor.js';
+import { constructedTypeOfFieldInitializer } from './configs/typescript-javascript.js';
 import type {
   FieldExtractorContext,
   ExtractedFields,
@@ -177,9 +178,13 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
       type = resolvedType ?? type;
     }
 
+    // Only a field with no declared type is typed by its initializer.
+    const initializerType = type === null ? constructedTypeOfFieldInitializer(node) : undefined;
+
     return {
       name,
       type,
+      ...(initializerType !== undefined ? { initializerType } : {}),
       visibility: this.extractVisibility(node),
       isStatic: this.isStatic(node),
       isReadonly: this.isReadonly(node),

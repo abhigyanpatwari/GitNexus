@@ -2964,6 +2964,12 @@ const processFileGroup = (
               if (info.rawDeclaredType !== undefined) {
                 methodProps.rawDeclaredType = info.rawDeclaredType;
               }
+              // The type an untyped field's initializer constructs — the only
+              // type a static field has when the language keeps its binding out
+              // of the shared class scope. Read by the class-level receiver route.
+              if (info.initializerType !== undefined) {
+                methodProps.initializerType = info.initializerType;
+              }
               // Field annotations ('@Name' strings, U2 PR #2200) — omit when empty.
               if (info.annotations !== undefined && info.annotations.length > 0) {
                 methodProps.annotations = info.annotations;
