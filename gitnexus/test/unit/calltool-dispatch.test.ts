@@ -2856,17 +2856,23 @@ describe('LocalBackend.callTool', () => {
     expect(result.routes[0].method).toBeNull();
   });
 
-  it('route_map falls back for legacy Route schemas and reports unconfirmed evidence', async () => {
-    vi.mocked(executeParameterized)
-      .mockRejectedValueOnce(
-        new Error('Binder exception: Cannot find property runtimeConfirmed for n.'),
-      )
-      .mockResolvedValueOnce([verbRow('GET', '/legacy', 'LegacyController.java')]);
+  it.each([
+    { missing: ['unverifiedConsumers'], calls: 3 },
+    { missing: ['unverifiedConsumers', 'runtimeConfirmed'], calls: 4 },
+  ])('route_map falls back for Route schemas without $missing', async ({ missing, calls }) => {
+    for (const property of missing) {
+      vi.mocked(executeParameterized).mockRejectedValueOnce(
+        new Error(`Binder exception: Cannot find property ${property} for n.`),
+      );
+    }
+    vi.mocked(executeParameterized).mockResolvedValueOnce([
+      verbRow('GET', '/legacy', 'LegacyController.java'),
+    ]);
 
     const result = await backend.callTool('route_map', { route: '/legacy' });
 
-    // Modern Route query, legacy retry, then the linked-flow batch.
-    expect(executeParameterized).toHaveBeenCalledTimes(3);
+    // One Route query per older schema, then the linked-flow batch.
+    expect(executeParameterized).toHaveBeenCalledTimes(calls);
     expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
   });
 

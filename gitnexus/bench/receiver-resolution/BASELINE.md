@@ -1,5 +1,13 @@
 # Receiver-resolution baseline
 
+## Express inline-handler fixture (#3488)
+
+The new `express-inline-handlers` fixture reads `req.query.path` inside an
+inline handler whose `req` parameter is untyped. That chained field read is one
+new `receiver-unresolved` read site (`src/server.ts:22`), so all-kind drops move
+from 191 to 192 and reads from 43 to 44. Call drops and every shape-arm state
+are unchanged; no existing site changed state.
+
 ## CommonJS member-assigned wrapper fixture (#3630)
 
 The `fetch-wrapper-target-identity` fixture gained `lib/cjs-member.js`, which
