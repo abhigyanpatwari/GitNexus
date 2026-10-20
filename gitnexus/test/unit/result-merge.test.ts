@@ -58,13 +58,43 @@ describe('mergeResult', () => {
 
   it('retains wrapper candidates across sub-batches without treating them as HTTP sinks', () => {
     const target = emptyResult();
-    const first = { filePath: 'a.ts', functionName: 'request', fetchURL: '/a', lineNumber: 1 };
-    const second = { filePath: 'b.ts', functionName: 'client.get', fetchURL: '/b', lineNumber: 2 };
+    const first = {
+      filePath: 'a.ts',
+      functionName: 'request',
+      fetchURL: '/a',
+      lineNumber: 1,
+      target: { kind: 'unresolved' as const },
+    };
+    const second = {
+      filePath: 'b.ts',
+      functionName: 'client.get',
+      fetchURL: '/b',
+      lineNumber: 2,
+      target: { kind: 'member' as const },
+    };
     mergeResult(target, { ...emptyResult(), fetchWrapperCalls: [first] });
     mergeResult(target, emptyResult());
     mergeResult(target, { ...emptyResult(), fetchWrapperCalls: [second] });
     expect(target.fetchWrapperCalls).toEqual([first, second]);
     expect(target.fetchCalls).toEqual([]);
+  });
+
+  it('retains barrel re-export facts across sub-batches', () => {
+    const target = emptyResult();
+    const named = {
+      filePath: 'index.ts',
+      exportedName: 'request',
+      from: { specifier: './request', importedName: 'request' },
+    };
+    const star = {
+      filePath: 'index.ts',
+      exportedName: '*',
+      from: { specifier: './star', importedName: '*' },
+    };
+    mergeResult(target, { ...emptyResult(), fetchWrapperReexports: [named] });
+    mergeResult(target, emptyResult());
+    mergeResult(target, { ...emptyResult(), fetchWrapperReexports: [star] });
+    expect(target.fetchWrapperReexports).toEqual([named, star]);
   });
 
   it('sums every CFG skip bucket by language across worker sub-batches', () => {

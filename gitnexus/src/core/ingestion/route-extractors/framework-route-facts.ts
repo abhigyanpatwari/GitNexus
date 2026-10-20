@@ -1,8 +1,19 @@
 import type Parser from 'tree-sitter';
-import { buildPositionIndex, buildScopeTree, lookupLexicalName } from 'gitnexus-shared';
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import { plainString } from './data-route-table.js';
 import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route-types.js';
+import {
+  createLexicalBindings,
+  importBindingKey,
+  isCommonJsGlobal,
+  isModuleExports,
+  LEXICAL_FUNCTION_TYPES,
+  parameterPattern,
+  patternBindingNames,
+  TRANSPARENT_EXPRESSION_TYPES,
+  transparentInner,
+  type LexicalBindings,
+} from './lexical-bindings.js';
 
 type Node = Parser.SyntaxNode;
 const UNKNOWN: FrameworkExpression = { kind: 'unknown' };
@@ -15,10 +26,12 @@ const CARRIER_KINDS = new Set<FrameworkExpression['kind']>([
   'import',
   'array',
 ]);
+/** Function values and declarations; methods and signatures are not values here. */
 const FUNCTION_TYPES = [
   'arrow_function',
   'function_expression',
   'function_declaration',
+  'generator_function',
   'generator_function_declaration',
 ];
 const METHODS = new Set(['get', 'post', 'put', 'delete', 'patch', 'all', 'route', 'use']);
@@ -45,6 +58,7 @@ export function extractFrameworkRouteFacts(
   tree: Parser.Tree,
   parsedFile: ParsedFile,
   lineOffset = 0,
+  lexical: LexicalBindings = createLexicalBindings(parsedFile, lineOffset, tree.rootNode),
 ): FrameworkRouteFacts {
   const filePath = parsedFile.filePath;
   const facts: FrameworkRouteFacts = {
@@ -57,8 +71,7 @@ export function extractFrameworkRouteFacts(
     calls: [],
     invocations: [],
   };
-  const scopes = buildScopeTree(parsedFile.scopes);
-  const positions = buildPositionIndex(parsedFile.scopes);
+  const { bindingId, isGlobal, ambiguous } = lexical;
   const invalid = new Set<string>();
   const importsAtPosition = new Map<string, ParsedImport[]>();
   for (const imported of parsedFile.parsedImports) {
@@ -73,104 +86,25 @@ export function extractFrameworkRouteFacts(
       'localName' in imported ? [imported.localName] : [],
     ),
   );
-  const bindingKey = (scope: string, name: string): string => `${scope}\0${name}`;
-  const ownership = (node: Node, name = node.text, atUse = false) => {
-    const scope = positions.atPosition(
-      filePath,
-      node.startPosition.row + 1 + lineOffset,
-      node.startPosition.column,
-    );
-    return scope === undefined
-      ? undefined
-      : lookupLexicalName(
-          scope,
-          name,
-          { scopes },
-          {
-            purpose: 'value',
-            ...(atUse
-              ? {
-                  position: {
-                    startLine: node.startPosition.row + 1 + lineOffset,
-                    startCol: node.startPosition.column,
-                  },
-                }
-              : {}),
-          },
-        );
-  };
-  const bindingId = (node: Node, name = node.text, atUse = false): string | undefined => {
-    const owner = ownership(node, name, atUse);
-    // Pre-finalization imports and untyped parameters deliberately have no
-    // BindingRef. A future binding claim, however, is a real TDZ barrier.
-    if (
-      atUse &&
-      owner?.status === 'blocked' &&
-      owner.claims.some(
-        (claim) =>
-          claim.kind === 'blocked' ||
-          (claim.kind === 'binding' &&
-            claim.availableFrom &&
-            (claim.availableFrom.startLine > node.startPosition.row + 1 + lineOffset ||
-              (claim.availableFrom.startLine === node.startPosition.row + 1 + lineOffset &&
-                claim.availableFrom.startCol > node.startPosition.column))),
-      )
-    )
-      return undefined;
-    return owner?.scope ? bindingKey(owner.scope.id, name) : undefined;
-  };
-  const isGlobal = (node: Node, name: string) => ownership(node, name)?.status === 'absent';
-  /** Whether a scope between `target` and `fn` declares the name `target` writes. */
-  const shadowedBetween = (target: Node, fn: Node): boolean => {
-    const declares = (node: Node | null | undefined) =>
-      !!node &&
-      (node.type === 'identifier'
-        ? node.text === target.text
-        : node.descendantsOfType('identifier').some((id) => id.text === target.text));
-    for (let scope = target.parent; scope && scope.id !== fn.id; scope = scope.parent) {
-      const ownsVar = FUNCTION_TYPES.includes(scope.parent?.type ?? '');
-      if (
-        children(scope).some(
-          (statement) =>
-            (statement.type === 'lexical_declaration' ||
-              (ownsVar && statement.type === 'variable_declaration')) &&
-            children(statement).some((d) => declares(d.childForFieldName('name'))),
-        ) ||
-        (FUNCTION_TYPES.includes(scope.type) &&
-          (declares(scope.childForFieldName('parameter')) ||
-            declares(scope.childForFieldName('parameters')))) ||
-        (scope.type === 'catch_clause' && declares(scope.childForFieldName('parameter')))
-      )
-        return true;
+  const parameterIds = new Map<number, ReadonlySet<string>>();
+  const parametersOf = (fn: Node): ReadonlySet<string> => {
+    let ids = parameterIds.get(fn.id);
+    if (!ids) {
+      ids = new Set(
+        patternBindingNames(
+          fn.childForFieldName('parameters') ?? fn.childForFieldName('parameter'),
+        ).flatMap((name) => {
+          const id = bindingId(name);
+          return id ? [id] : [];
+        }),
+      );
+      parameterIds.set(fn.id, ids);
     }
-    return false;
+    return ids;
   };
   const functionValue = (fn: Node): FrameworkExpression => {
     const single = fn.childForFieldName('parameter');
     const params = single ? [single] : children(fn.childForFieldName('parameters'));
-    // A parameter written anywhere in the body, nested closures included, is
-    // not the argument any more; fail closed rather than track which write runs.
-    // A write to a same-named binding a nested scope declares is not to it.
-    const written = new Set(
-      fn
-        .descendantsOfType([
-          'assignment_expression',
-          'augmented_assignment_expression',
-          'update_expression',
-        ])
-        .map((write) => write.childForFieldName('left') ?? write.childForFieldName('argument'))
-        // A destructuring target (`[app] = [other]`) writes each name it binds;
-        // a member target (`app.locals = …`) writes a property, not the binding.
-        .flatMap((target) =>
-          !target || ['member_expression', 'subscript_expression'].includes(target.type)
-            ? []
-            : target.type === 'identifier'
-              ? [target]
-              : target.descendantsOfType(['identifier', 'shorthand_property_identifier_pattern']),
-        )
-        .filter((target) => !shadowedBetween(target, fn))
-        .map((target) => target.text),
-    );
     return {
       kind: 'handler',
       fn: `${filePath}:${fn.startIndex}`,
@@ -178,13 +112,9 @@ export function extractFrameworkRouteFacts(
         // TypeScript's `this: T` declares the receiver, not an argument position.
         .filter((param) => param.childForFieldName('pattern')?.type !== 'this')
         .map((param) => {
-          let name: Node | null = param;
-          if (param.type === 'required_parameter' || param.type === 'optional_parameter')
-            name = param.childForFieldName('pattern');
-          if (name?.type === 'assignment_pattern') name = name.childForFieldName('left');
-          return (
-            (name?.type === 'identifier' && !written.has(name.text) && bindingId(name)) || null
-          );
+          const name = parameterPattern(param);
+          const id = name?.type === 'identifier' ? bindingId(name) : undefined;
+          return id && !ambiguous(id) ? id : null;
         }),
     };
   };
@@ -196,21 +126,14 @@ export function extractFrameworkRouteFacts(
     let value: FrameworkExpression = UNKNOWN;
     if (node.type === 'identifier' || node.type === 'shorthand_property_identifier') {
       const id = bindingId(node, node.text, true);
-      if (id) value = { kind: 'binding', id };
+      if (id && !ambiguous(id)) value = { kind: 'binding', id };
     } else if (node.type === 'array') {
       value = {
         kind: 'array',
         elements: children(node).map((child) => expression(child, depth + 1)),
       };
-    } else if (
-      [
-        'parenthesized_expression',
-        'as_expression',
-        'satisfies_expression',
-        'non_null_expression',
-      ].includes(node.type)
-    ) {
-      value = expression(children(node)[0], depth + 1);
+    } else if (TRANSPARENT_EXPRESSION_TYPES.has(node.type)) {
+      value = expression(transparentInner(node), depth + 1);
     } else if (FUNCTION_TYPES.includes(node.type)) {
       value = HANDLER;
     } else if (node.type === 'member_expression') {
@@ -253,7 +176,7 @@ export function extractFrameworkRouteFacts(
   const bind = (node: Node, value: FrameworkExpression): void => {
     if (node.type === 'identifier' || node.type === 'shorthand_property_identifier_pattern') {
       const id = bindingId(node);
-      if (id) facts.bindings.push({ id, value });
+      if (id && !ambiguous(id)) facts.bindings.push({ id, value });
     } else if (node.type === 'object_pattern') {
       for (const part of children(node)) {
         const key = part.type === 'pair_pattern' ? part.childForFieldName('key') : part;
@@ -277,21 +200,21 @@ export function extractFrameworkRouteFacts(
   let cjsUnknownWrite = false;
   const cjsShortcutExports: { name: string; value: FrameworkExpression }[] = [];
   const cjsExports: { name: string; value: FrameworkExpression }[] = [];
-  const nodes: Node[] = [tree.rootNode];
+  const nodes: { node: Node; enclosingFunction?: Node }[] = [{ node: tree.rootNode }];
   while (nodes.length) {
-    const node = nodes.pop()!;
-    if (node.type === 'ERROR') continue;
-    nodes.push(...children(node).reverse());
-    if (node.type === 'import_statement') {
+    const { node, enclosingFunction } = nodes.pop()!;
+    const type = node.type;
+    if (type === 'ERROR') continue;
+    const childFunction = LEXICAL_FUNCTION_TYPES.has(type) ? node : enclosingFunction;
+    for (const child of children(node).reverse())
+      nodes.push({ node: child, enclosingFunction: childFunction });
+    if (type === 'import_statement') {
       // ESM decomposition already carries precise aliases/type-only flags. CJS
       // imports are intentionally handled at their AST calls to guard require.
       const position = `${node.startPosition.row + 1 + lineOffset}:${node.startPosition.column}`;
       for (const imported of importsAtPosition.get(position) ?? []) {
         if (!('localName' in imported) || !('importedName' in imported)) continue;
-        const id = bindingKey(
-          imported.declaredAtScope ?? parsedFile.moduleScope,
-          imported.localName,
-        );
+        const id = importBindingKey(parsedFile, imported);
         facts.bindings.push({
           id,
           value:
@@ -304,9 +227,16 @@ export function extractFrameworkRouteFacts(
                 },
         });
       }
-    } else if (node.type === 'variable_declarator') {
+    } else if (type === 'variable_declarator') {
       const name = node.childForFieldName('name');
       const value = node.childForFieldName('value');
+      if (value && enclosingFunction) {
+        const parameters = parametersOf(enclosingFunction);
+        for (const target of patternBindingNames(name)) {
+          const id = bindingId(target);
+          if (id && parameters.has(id)) invalid.add(id);
+        }
+      }
       // Only a named function can be called by name, so only it carries the
       // identity and parameters call-site forwarding needs.
       if (name)
@@ -314,13 +244,14 @@ export function extractFrameworkRouteFacts(
           name,
           value && FUNCTION_TYPES.includes(value.type) ? functionValue(value) : expression(value),
         );
-    } else if (
-      node.type === 'function_declaration' ||
-      node.type === 'generator_function_declaration'
-    ) {
+    } else if (type === 'function_declaration' || type === 'generator_function_declaration') {
       const name = node.childForFieldName('name');
+      if (name && enclosingFunction) {
+        const id = bindingId(name);
+        if (id && parametersOf(enclosingFunction).has(id)) invalid.add(id);
+      }
       if (name) bind(name, functionValue(node));
-    } else if (node.type === 'export_statement') {
+    } else if (type === 'export_statement') {
       const sourceNode = node.childForFieldName('source');
       const source = sourceNode && plainString(sourceNode);
       if (node.children.some((child) => child.type === 'type')) continue;
@@ -371,31 +302,26 @@ export function extractFrameworkRouteFacts(
         }
       }
     } else if (
-      node.type === 'assignment_expression' ||
-      node.type === 'augmented_assignment_expression' ||
-      node.type === 'update_expression' ||
-      node.type === 'for_in_statement' ||
-      (node.type === 'unary_expression' && node.children.some((child) => child.type === 'delete'))
+      type === 'assignment_expression' ||
+      type === 'augmented_assignment_expression' ||
+      type === 'update_expression' ||
+      type === 'for_in_statement' ||
+      (type === 'unary_expression' && node.children.some((child) => child.type === 'delete'))
     ) {
       const left = node.childForFieldName('left') ?? node.childForFieldName('argument');
       const right = node.childForFieldName('right');
       const object = left?.childForFieldName('object');
       const property = left?.childForFieldName('property');
-      if (left?.type === 'identifier' && left.text === 'exports' && isGlobal(left, 'exports'))
-        cjsShortcutDetached = true;
-      const moduleExports = (candidate: Node | null | undefined): boolean =>
-        candidate?.type === 'member_expression' &&
-        candidate.childForFieldName('object')?.text === 'module' &&
-        candidate.childForFieldName('property')?.text === 'exports' &&
-        isGlobal(candidate, 'module');
+      if (isCommonJsGlobal(lexical, left, 'exports')) cjsShortcutDetached = true;
       const writesExportProperty =
-        moduleExports(object) || (object?.text === 'exports' && isGlobal(object, 'exports'));
+        isModuleExports(lexical, object) || isCommonJsGlobal(lexical, object, 'exports');
       if (
         (left?.type === 'subscript_expression' && writesExportProperty) ||
-        (node.type !== 'assignment_expression' && (moduleExports(left) || writesExportProperty))
+        (type !== 'assignment_expression' &&
+          (isModuleExports(lexical, left) || writesExportProperty))
       )
         cjsUnknownWrite = true;
-      if (node.type === 'assignment_expression' && moduleExports(left)) {
+      if (type === 'assignment_expression' && isModuleExports(lexical, left)) {
         cjsDefaultAssignments++;
         cjsExports.length = 0;
         if (right?.type === 'object') {
@@ -418,7 +344,7 @@ export function extractFrameworkRouteFacts(
           }
         } else cjsExports.push({ name: 'default', value: expression(right) });
       } else if (
-        node.type === 'assignment_expression' &&
+        type === 'assignment_expression' &&
         left?.type === 'member_expression' &&
         property?.type === 'property_identifier' &&
         writesExportProperty
@@ -434,31 +360,54 @@ export function extractFrameworkRouteFacts(
           cjsExports.push(record);
         }
       } else if (left) {
-        const invalidate = (target: Node) => {
-          if (
-            target.type === 'identifier' ||
-            target.type === 'shorthand_property_identifier_pattern'
-          ) {
-            const id = bindingId(target);
-            if (id) invalid.add(id);
-          } else if (
-            target.type === 'member_expression' ||
-            target.type === 'subscript_expression'
-          ) {
-            let receiver = target.childForFieldName('object');
-            while (receiver) {
-              // A namespace member can resolve to an exported allocation even
-              // when the namespace itself is only a module value.
-              facts.mutations.push(expression(receiver));
-              if (receiver.type !== 'member_expression' && receiver.type !== 'subscript_expression')
-                break;
-              receiver = receiver.childForFieldName('object');
+        const invalidate = (root: Node) => {
+          const pending = [root];
+          while (pending.length > 0) {
+            const target = pending.pop()!;
+            if (
+              target.type === 'identifier' ||
+              target.type === 'shorthand_property_identifier_pattern'
+            ) {
+              const id = bindingId(target);
+              if (id) invalid.add(id);
+            } else if (
+              target.type === 'member_expression' ||
+              target.type === 'subscript_expression'
+            ) {
+              let receiver = target.childForFieldName('object');
+              while (receiver) {
+                // A namespace member can resolve to an exported allocation even
+                // when the namespace itself is only a module value.
+                facts.mutations.push(expression(receiver));
+                if (
+                  receiver.type !== 'member_expression' &&
+                  receiver.type !== 'subscript_expression'
+                )
+                  break;
+                receiver = receiver.childForFieldName('object');
+              }
+            } else if (target.type === 'pair_pattern') {
+              const value = target.childForFieldName('value');
+              if (value) pending.push(value);
+            } else if (
+              target.type === 'assignment_pattern' ||
+              target.type === 'object_assignment_pattern'
+            ) {
+              const value = target.childForFieldName('left');
+              if (value) pending.push(value);
+            } else if (['object_pattern', 'array_pattern', 'rest_pattern'].includes(target.type)) {
+              // Reverse pushes keep source order for recorded mutations.
+              const items = children(target);
+              for (let i = items.length - 1; i >= 0; i--) pending.push(items[i]);
+            } else if (TRANSPARENT_EXPRESSION_TYPES.has(target.type)) {
+              const inner = transparentInner(target);
+              if (inner) pending.push(inner);
             }
-          } else for (const child of children(target)) invalidate(child);
+          }
         };
         invalidate(left);
       }
-    } else if (node.type === 'call_expression') {
+    } else if (type === 'call_expression') {
       const callee = node.childForFieldName('function');
       const method = callee?.childForFieldName('property')?.text;
       if (callee?.type === 'member_expression' && method && METHODS.has(method)) {
