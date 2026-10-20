@@ -39,6 +39,37 @@ for (const [language, grammar] of [
         true,
         true,
       ],
+      // A destructuring default is alias evidence for its leaf binding, counted once.
+      [
+        'destructured platform default',
+        'function load(url, { fetch = globalThis.fetch } = {}) { fetch(url); }',
+        true,
+        true,
+      ],
+      [
+        'renamed destructured platform default',
+        'function load(url, { fetch: send = globalThis.fetch } = {}) { send(url); }',
+        true,
+        true,
+      ],
+      [
+        'array destructured platform default',
+        'function load(url, [send = globalThis.fetch] = []) { send(url); }',
+        true,
+        true,
+      ],
+      [
+        'destructured local default',
+        'function load(url, options) { const { fetch = globalThis.fetch } = options; fetch(url); }',
+        true,
+        true,
+      ],
+      [
+        'destructured unknown default',
+        'function load(url, { fetch = other } = {}) { fetch(url); }',
+        false,
+        false,
+      ],
       ['self default', 'function load(url, fetch = fetch) { fetch(url); }', false, false],
       [
         'shadowed default root',
@@ -492,6 +523,18 @@ for (const [language, grammar] of [
       expect(context.calls()).toMatchObject([
         { lineNumber: 14, target: { kind: 'binding', bindingId: first!.bindingId } },
       ]);
+    });
+
+    it.each([
+      ['a plain', 'function request(url) { return fetch(url); }\nexport default request;'],
+      [
+        'a parenthesized',
+        'function request(url) { return fetch(url); }\nexport default (request);',
+      ],
+    ])('records %s default export of a declaration', (_shape, source) => {
+      const { tree, context } = analyze(source);
+      const request = tree.rootNode.descendantsOfType('function_declaration')[0];
+      expect(context.facts(request)).toMatchObject({ exportedNames: ['default'], seed: true });
     });
 
     it('recognizes an anonymous default export', () => {

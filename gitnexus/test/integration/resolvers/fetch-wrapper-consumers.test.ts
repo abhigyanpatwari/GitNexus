@@ -90,6 +90,8 @@ describe('Fetch wrapper lexical and project target identity', () => {
       'web/cjs-member.js -> /api/cjs-arrow',
       'web/cjs-member.js -> /api/cjs-member',
       'web/cjs.js -> /api/cjs',
+      'web/default-paren.ts -> /api/default-paren',
+      'web/destructured.ts -> /api/destructured',
       'web/diamond.ts -> /api/diamond',
       'web/hoc.ts -> /api/hoc',
       'web/multi.ts -> /api/multi',

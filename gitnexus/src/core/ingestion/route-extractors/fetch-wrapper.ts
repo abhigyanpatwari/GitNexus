@@ -106,6 +106,7 @@ const INSPECTED_TYPES: ReadonlySet<string> = new Set([
   'required_parameter',
   'optional_parameter',
   'assignment_pattern',
+  'object_assignment_pattern',
   'catch_clause',
   'assignment_expression',
   'augmented_assignment_expression',
@@ -303,6 +304,17 @@ export function createFetchWrapperContext(
       initialized.set(id, (initialized.get(id) ?? 0) + 1);
       if (!parameter && parameters.has(id)) invalid.add(id);
       if (pattern?.type === 'identifier' && namesFetch(value)) aliases.add(id);
+    }
+  };
+  // A destructuring default supplies a value for its leaf binding only; the
+  // enclosing declaration or parameter has already counted the initialization.
+  const destructuringDefault = (target: Node | null, value: Node | null) => {
+    if (
+      (target?.type === 'identifier' || target?.type === 'shorthand_property_identifier_pattern') &&
+      namesFetch(value)
+    ) {
+      const id = stableBinding(target, false);
+      if (id) aliases.add(id);
     }
   };
   const exported = (local: Node, name: string) => {
@@ -503,8 +515,10 @@ export function createFetchWrapperContext(
       initialize(name, node.childForFieldName('value'));
     } else if (type === 'required_parameter' || type === 'optional_parameter')
       initialize(parameterPattern(node), node.childForFieldName('value'), true);
-    else if (type === 'assignment_pattern')
+    else if (type === 'assignment_pattern' && parent.type === 'formal_parameters')
       initialize(node.childForFieldName('left'), node.childForFieldName('right'), true);
+    else if (type === 'assignment_pattern' || type === 'object_assignment_pattern')
+      destructuringDefault(node.childForFieldName('left'), node.childForFieldName('right'));
     else if (type === 'catch_clause') markPattern(node.childForFieldName('parameter'));
     else if (type === 'assignment_expression') {
       invalidate(node.childForFieldName('left'));
@@ -529,7 +543,11 @@ export function createFetchWrapperContext(
             for (const local of patternBindingNames(declarator.childForFieldName('name')))
               exported(local, isDefault ? 'default' : local.text);
           }
-      } else if (isDefault && value?.type === 'identifier') exported(value, 'default');
+      } else if (isDefault) {
+        // `export default (request)` exports the binding the parentheses wrap.
+        const target = unwrap(value);
+        if (target?.type === 'identifier') exported(target, 'default');
+      }
     } else if (
       type === 'export_specifier' &&
       // `export { x } from './y'` declares no local export.

@@ -285,6 +285,9 @@ function handler() {} function other() {}`);
       'function inner(app) { app = new Map(); }',
       ['GET /forwarded'],
     ],
+    // A parameter expression gives the body its own variable environment, which
+    // the scope model collapses, so inference declines a parameter that a body
+    // `var` redeclares (the documented boundary); runtime would keep its value.
     ['nested destructuring default', 'app, { value = 1 }', 'var app;', []],
     ['computed pattern key', 'app, { [key]: value }', 'var app;', []],
     ['rest parameter alone', 'app, ...rest', 'var app;', ['GET /forwarded']],

@@ -26,3 +26,5 @@ app.get('/api/diamond', (_req, res) => res.json({}));
 app.get('/api/diamond-distinct', (_req, res) => res.json({}));
 app.get('/api/cjs-member', (_req, res) => res.json({}));
 app.get('/api/cjs-arrow', (_req, res) => res.json({}));
+app.get('/api/destructured', (_req, res) => res.json({}));
+app.get('/api/default-paren', (_req, res) => res.json({}));

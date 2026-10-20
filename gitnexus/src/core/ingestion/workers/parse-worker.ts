@@ -3272,8 +3272,9 @@ const processFileGroup = (
     }
     if (parsedFile && !httpFailed) for (const def of wrapperDefs) result.fetchWrapperDefs.push(def);
     else
-      // Without this file's facts its functions still name exports, so a
-      // name-only match elsewhere declines instead of turning unique.
+      // These records stand for unknown facts. With `seed` false and nothing
+      // forwarded they never prove a wrapper; they only make a name-only
+      // match, a barrel or an import that may reach this file decline.
       for (const { name, node } of wrapperFunctions)
         result.fetchWrapperDefs.push({
           filePath: file.path,
