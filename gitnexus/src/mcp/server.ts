@@ -284,7 +284,8 @@ export function createMCPServer(
         await scopedBackend.callTool(name, backendArgs),
         responseFilter,
       );
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      // Formatting whitespace costs model input tokens; keep every value and hint.
+      const resultText = typeof result === 'string' ? result : JSON.stringify(result);
       const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly, result);
 
       return {

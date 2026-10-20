@@ -1915,7 +1915,12 @@ def worker_count(value: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", required=True, type=Path)
-    parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=3,
+        help="repetitions per task and arm (default 3); use 1 only for smoke checks",
+    )
     parser.add_argument(
         "--workers",
         type=worker_count,
@@ -1938,7 +1943,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--arms",
         nargs="+",
-        default=["workflow", "workflow_direct", "baseline"],
+        default=["workflow", "workflow_direct", "baseline", "baseline_nomcp"],
         choices=[
             "workflow",
             "candidate_workflow",
@@ -1952,6 +1957,7 @@ def build_parser() -> argparse.ArgumentParser:
             "baseline",
             "baseline_nomcp",
         ],
+        help="arms to compare (default: workflow, workflow_direct, baseline, baseline_nomcp)",
     )
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument(

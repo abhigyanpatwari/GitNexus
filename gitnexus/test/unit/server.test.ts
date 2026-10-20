@@ -395,7 +395,7 @@ describe('MCP output budgets', () => {
         search_query: 'auth',
       });
       expect(isError).toBe(false);
-      expect(text).toContain('"payload": "complete"');
+      expect(text).toContain('"payload":"complete"');
       expect(text).toContain('**Next:**');
       expect(text.endsWith('\n…')).toBe(false);
     } finally {
@@ -449,7 +449,7 @@ describe('MCP output budgets', () => {
         direction: 'upstream',
         maxTokens: 200,
       });
-      expect(text).toContain('"payload": "complete"');
+      expect(text).toContain('"payload":"complete"');
       expect(text).toContain('**Next:**');
       expect(text.endsWith('\n…')).toBe(false);
     } finally {
@@ -757,15 +757,54 @@ describe('MCP response filters', () => {
     warning: 'Dynamic dispatch unresolved',
     staleness: { status: 'current', lastCommit: 'abc' },
   };
-  it('preserves the exact default formatted response', async () => {
+  it('returns compact JSON with all default evidence and hints', async () => {
     const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
     const args = { uid: payload.symbol.uid };
     const { text, isError } = await callToolThroughServer(backend, 'context', args);
     expect(isError).toBe(false);
-    expect(text).toBe(
-      JSON.stringify(payload, null, 2) + getNextStepHint('context', args, false, payload),
-    );
+    expect(text).toBe(JSON.stringify(payload) + getNextStepHint('context', args, false, payload));
     expect(backend.callTool).toHaveBeenCalledWith('context', args);
+  });
+  it('preserves source whitespace, Unicode, nested values and incomplete-evidence diagnostics', async () => {
+    const result = {
+      ...payload,
+      content: 'function café() {\n  return "雪 😀 \\"quoted\\"";\n}\n',
+      nested: [null, false, 0, '', { lines: ['  leading', 'trailing  ', '\tindent'] }],
+      partial: true,
+      truncated: true,
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const args = { uid: payload.symbol.uid, include_content: true };
+    const { text, isError } = await callToolThroughServer(backend, 'context', args);
+    const hint = getNextStepHint('context', args, false, result);
+    expect(isError).toBe(false);
+    expect(text.endsWith(hint)).toBe(true);
+    expect(JSON.parse(text.slice(0, -hint.length))).toEqual(result);
+  });
+  it('keeps complete evidence when compact JSON and its hint fit the requested budget', async () => {
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
+    const args = { uid: payload.symbol.uid };
+    const hint = getNextStepHint('context', args, false, payload);
+    const complete = JSON.stringify(payload) + hint;
+    const maxTokens = Math.ceil(Buffer.byteLength(complete) / 4);
+    expect(Buffer.byteLength(JSON.stringify(payload, null, 2) + hint)).toBeGreaterThan(
+      maxTokens * 4,
+    );
+    const { text, isError } = await callToolThroughServer(backend, 'context', {
+      ...args,
+      maxTokens,
+    });
+    expect(isError).toBe(false);
+    expect(text).toBe(complete);
+    expect(JSON.parse(text.slice(0, -hint.length))).toEqual(payload);
+  });
+  it('passes plain-text backend results through byte-for-byte before the hint', async () => {
+    const result = 'name | count\n  雪 😀 | 1\t\n';
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const args = { statement: 'RETURN 1' };
+    const { text, isError } = await callToolThroughServer(backend, 'cypher', args);
+    expect(isError).toBe(false);
+    expect(text).toBe(result + getNextStepHint('cypher', args, false, result));
   });
   it.each(['context', 'explore'])(
     'applies opt-in views for %s without sending filter options to the backend',
