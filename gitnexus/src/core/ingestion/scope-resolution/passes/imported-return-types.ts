@@ -115,6 +115,36 @@ function producerTypeRef(defId: string, scopes: ScopeResolutionIndexes): TypeRef
  */
 const RECHAIN_MAX_DEPTH = 8;
 
+const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * `ns.f` where `ns` is a namespace import and `f` has a return annotation in
+ * the target module: that return type, as a named import of `f` gets through
+ * `propagateImportedReturnTypes` (#3498). A class member (`ns.C`) has no
+ * return annotation and keeps resolving as a construction.
+ */
+export function namespaceCallReturnType(
+  rawName: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  position?: TypeRef['lookupPosition'],
+): TypeRef | undefined {
+  const parts = rawName.split('.');
+  if (parts.length !== 2 || !parts.every((part) => IDENTIFIER.test(part))) return undefined;
+  const [head, member] = parts as [string, string];
+  const claim = lookupNameClaim(inScope, head, scopes, { position, purpose: 'value' });
+  if (claim.bindings.some((binding) => binding.origin === 'local')) return undefined;
+  const targets = new Set<ScopeId>();
+  for (const edge of claim.imports) {
+    if (edge.kind !== 'namespace' || edge.linkStatus === 'unresolved') continue;
+    if (edge.targetModuleScope !== undefined) targets.add(edge.targetModuleScope);
+  }
+  const [target] = targets;
+  if (targets.size !== 1 || target === undefined) return undefined;
+  const returned = scopes.scopeTree.getScope(target)?.typeBindings.get(member);
+  return returned?.source === 'return-annotation' ? returned : undefined;
+}
+
 /** Walk `ref.rawName` through the scope chain's typeBindings looking
  *  for a terminal class-like rawName. Mirrors the in-extractor
  *  `followChainedRef` but operates on post-finalize Scope objects so
@@ -131,8 +161,19 @@ export function followChainPostFinalize(
   // accessibility-gated per-namespace fallback below can be consulted cheaply.
   const moduleScopeId = moduleScopeIdOf(fromScopeId, scopes);
   for (let depth = 0; depth < RECHAIN_MAX_DEPTH; depth++) {
-    if (current.rawName.includes('.')) return current;
     const lookupScope = current.declaredAtScope ?? fromScopeId;
+    if (current.rawName.includes('.')) {
+      const returned = namespaceCallReturnType(
+        current.rawName,
+        lookupScope,
+        scopes,
+        current.lookupPosition,
+      );
+      if (returned === undefined || visited.has(returned.rawName)) return current;
+      visited.add(returned.rawName);
+      current = { ...returned, bindingRange: start.bindingRange };
+      continue;
+    }
     const claim = lookupNameClaim(lookupScope, current.rawName, scopes, {
       position: current.lookupPosition,
       purpose: current.lookupPurpose,
