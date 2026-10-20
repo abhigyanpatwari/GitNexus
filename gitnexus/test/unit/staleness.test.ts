@@ -225,7 +225,7 @@ describe('staleness status (#3256)', () => {
           commitsBehind: testCase.commitsBehind,
           hint:
             `⚠️ Index is ${testCase.commitsBehind} ${testCase.noun} behind HEAD. ` +
-            'Run the CLI command `gitnexus analyze` from the repository directory to update.',
+            'Run the CLI command `npx gitnexus analyze` from the repository directory to update.',
         });
       });
 
@@ -236,7 +236,7 @@ describe('staleness status (#3256)', () => {
         // history — every other `rev-list` failure reaches the same branch.
         expect(result.hint).toContain('could not be counted');
         expect(result.hint).toContain(
-          'Run the CLI command `gitnexus analyze` from the repository directory to update.',
+          'Run the CLI command `npx gitnexus analyze` from the repository directory to update.',
         );
         // The fail-open values the tests above pin are unchanged.
         expect(result).toMatchObject({ isStale: false, commitsBehind: 0 });
@@ -382,7 +382,7 @@ describe('staleness when the checkout has regressed behind the indexed commit (#
         expect(result.commitsBehind).toBe(0);
         expect(result.hint).toContain('not reachable from the checked-out commit');
         expect(result.hint).toContain(
-          'Run the CLI command `gitnexus analyze` from the repository directory to update.',
+          'Run the CLI command `npx gitnexus analyze` from the repository directory to update.',
         );
       });
 
