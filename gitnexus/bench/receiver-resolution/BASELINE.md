@@ -15,7 +15,10 @@ against `origin/main` (`7090ac80f`) emits the identical 2,838 `CALLS` and
   `rp.make()` on a local `rp = Other()` that shadows the module alias. The
   Zig `bridge.prototypeChain()` and `bridge.accessor("value")` namespace calls
   in `zig-filestruct` are recorded as both a call and a read: +2 calls, +2
-  reads.
+  reads. Dart (`final x = rp.make()`) and Zig (`const x = rp.make()` on a
+  lowercase module) now bind the dotted callee so the same lookup applies;
+  their new fixtures resolve every typed form, and the Dart fixture's untyped
+  factory adds one call drop.
 - **Shared start positions.** Sites are keyed by `file:line:col`, and an outer
   call starts where its inner receiver does (`s.orderRepo.DeleteItem(id)`
   starts at `s.orderRepo`). A resolved inner site used to hide the outer
@@ -27,7 +30,7 @@ against `origin/main` (`7090ac80f`) emits the identical 2,838 `CALLS` and
   the combined corpus, where several fixtures declare the same packages. The
   same fix turns ten shape-arm cells from `INVISIBLE-GAP` to `VISIBLE-GAP`.
 
-Totals: call drops 128 -> 151, reads 44 -> 48, all kinds 192 -> 219.
+Totals: call drops 128 -> 152, reads 44 -> 48, all kinds 192 -> 220.
 
 ## Express inline-handler fixture (#3488)
 
