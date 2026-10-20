@@ -9,6 +9,7 @@
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
 import {
+  DEFAULT_BACKEND_URL,
   AUTH_TOKEN_STORAGE_KEY,
   LARGE_GRAPH_NODE_THRESHOLD,
   LARGE_GRAPH_EDGE_THRESHOLD,
@@ -450,6 +451,11 @@ function stripBackendUrlCredentials(url: string): string {
  */
 export function normalizeServerUrl(input: string): string {
   let url = input.trim().replace(/\/+$/, '');
+
+  // The deployment's own base is kept as configured: a prefix such as
+  // `/proxy/api` names where the API is mounted, not a pasted endpoint, so the
+  // `/api` cleanup below is for hand-entered URLs only (#3593).
+  if (url === DEFAULT_BACKEND_URL) return url;
 
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     if (url.startsWith('localhost') || url.startsWith('127.0.0.1')) {

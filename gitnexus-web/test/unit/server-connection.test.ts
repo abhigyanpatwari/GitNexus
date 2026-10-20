@@ -399,6 +399,52 @@ describe('DEFAULT_BACKEND_URL resolution', () => {
     const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
     expect(DEFAULT_BACKEND_URL).toBe('/\\evil.example');
   });
+
+  it('keeps a configured prefix ending in /api through health, discovery and repository selection', async () => {
+    window.__GITNEXUS_CONFIG__ = { backendUrl: '/proxy/api' };
+    const { DEFAULT_BACKEND_URL } = await import('../../src/config/ui-constants');
+    const client = await import('../../src/services/backend-client');
+    const base = `${window.location.origin}/proxy/api`;
+    expect(DEFAULT_BACKEND_URL).toBe(base);
+
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo?')) {
+        return Promise.resolve(
+          json({ name: 'big-repo', path: '/repos/big-repo', indexedAt: '2026-06-13T00:00:00Z' }),
+        );
+      }
+      return Promise.resolve(json([]));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    client.setBackendUrl(DEFAULT_BACKEND_URL);
+    expect(await client.probeBackendStatus()).toBe('ok');
+    expect(await client.fetchRepos()).toEqual([]);
+    const result = await client.connectToServer(
+      DEFAULT_BACKEND_URL,
+      undefined,
+      undefined,
+      'big-repo',
+      {
+        skipGraph: true,
+      },
+    );
+    expect(result.repoInfo.name).toBe('big-repo');
+
+    const requested = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(requested).toEqual([
+      `${base}/api/health`,
+      `${base}/api/repos`,
+      `${base}/api/repo?repo=big-repo`,
+    ]);
+    // A hand-entered endpoint URL still loses its /api suffix.
+    expect(client.normalizeServerUrl('http://localhost:4747/api')).toBe('http://localhost:4747');
+  });
 });
 
 describe('LARGE_GRAPH_NODE_THRESHOLD resolution', () => {
