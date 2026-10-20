@@ -1,11 +1,12 @@
-import type { GoModuleConfig } from '../../language-config.js';
 import {
   buildPackageDirIndex,
   filesDirectlyInPkgDir,
+  filesInDir,
   sortedRootFiles,
   type PackageDirIndex,
 } from '../../import-resolvers/package-dir-index.js';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { isGoWorkspaceConfig, locateGoImport } from './workspace-config.js';
 
 /**
  * Resolve a Go import path to ALL .go files in the matching package directory.
@@ -16,39 +17,38 @@ import { perFileSet } from '../../import-resolvers/per-file-set.js';
  * IMPORTS edge fanout AND binding materialization for every exported symbol in
  * the package.
  *
- * Strategy:
- *   1. With go.mod: resolve only imports owned by that module
- *   2. Without go.mod / GOPATH: progressively shorter directory suffixes
+ * Strategy (`resolutionConfig` is every go.mod / go.work in the repo, see
+ * `workspace-config.ts`):
+ *   1. An in-repo module owns the path: the package is the exact directory
+ *      under that module's root, longest module path first. Never a suffix
+ *      match — `…/internal/repository` names one module's directory, not every
+ *      directory ending in `internal/repository`.
+ *   2. The importer is inside a module and nothing owns the path (standard
+ *      library, dependencies): unresolved.
+ *   3. The importer is outside every module: progressively shorter directory
+ *      suffixes, GOPATH style.
  */
 export function resolveGoImportTarget(
   targetRaw: string,
-  _fromFile: string,
+  fromFile: string,
   allFilePaths: ReadonlySet<string>,
   resolutionConfig?: unknown,
 ): string | readonly string[] | null {
   if (!targetRaw) return null;
 
-  const goModule = resolutionConfig as GoModuleConfig | undefined;
-
-  // 1) go.mod is authoritative: only this module's exact path or subpackages
-  //    can name files in the workspace. Standard-library and third-party
-  //    imports must not fall through to the suffix matcher below.
-  if (goModule != null) {
-    const ownedByModule =
-      targetRaw === goModule.modulePath || targetRaw.startsWith(`${goModule.modulePath}/`);
-    if (!ownedByModule) return null;
-
-    const relativePkg =
-      targetRaw === goModule.modulePath ? '' : targetRaw.slice(goModule.modulePath.length + 1); // e.g. "internal/models"
-    const files =
-      relativePkg === ''
-        ? findRootPackageFiles(allFilePaths)
-        : findAllFilesInPkgDir(allFilePaths, relativePkg);
-    if (files.length > 0) return files;
-    return null;
+  if (isGoWorkspaceConfig(resolutionConfig)) {
+    const location = locateGoImport(resolutionConfig, targetRaw, fromFile);
+    if (location.kind === 'external') return null;
+    if (location.kind === 'module') {
+      for (const dir of location.dirs) {
+        const files = findFilesInPkgDir(allFilePaths, dir);
+        if (files.length > 0) return files;
+      }
+      return null;
+    }
   }
 
-  // 2) Non-go.mod / GOPATH: progressively shorter directory suffixes.
+  // GOPATH: progressively shorter directory suffixes.
   //    "github.com/xxx/yyy/pkg" → try "github.com/xxx/yyy/pkg/" → "xxx/yyy/pkg/" → "yyy/pkg/"
   // Stop at ≥2 segments to avoid matching a single-segment suffix (e.g.
   // "pkg", "util", "internal") to a local directory with the same name.
@@ -83,8 +83,11 @@ const getGoPackageIndex = perFileSet(
     buildPackageDirIndex(allFilePaths, isGoPackageFile),
 );
 
-function findRootPackageFiles(allFilePaths: ReadonlySet<string>): string[] {
-  return sortedRootFiles(getGoPackageIndex(allFilePaths));
+/** The package in exactly `dir`. The repository root keeps the sorted order
+ *  its leg always had; any other directory keeps Set order. */
+function findFilesInPkgDir(allFilePaths: ReadonlySet<string>, dir: string): string[] {
+  const index = getGoPackageIndex(allFilePaths);
+  return dir === '' ? sortedRootFiles(index) : filesInDir(index, dir);
 }
 
 function findAllFilesInPkgDir(allFilePaths: ReadonlySet<string>, pkgPath: string): string[] {
