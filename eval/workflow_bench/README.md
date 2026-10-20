@@ -2,9 +2,9 @@
 
 Measures whether the `gitnexus-plan` → `gitnexus-work` engineering workflow
 actually saves tokens versus a baseline agent on the same tasks, using real
-headless Claude Code sessions. Nothing is estimated: every number comes from
-the CLI's own final event in its parent-captured `--output-format stream-json`
-report.
+headless Claude Code sessions. Usage and reported model cost come from
+parent-captured CLI events; model cost is not a provider invoice or a measure
+of indexing, infrastructure, or subscription costs.
 
 ## What it compares
 
@@ -20,10 +20,17 @@ report.
 | `candidate_review`          | the same review with a `gitnexus-review` candidate overlay              | Paired with `review` on the same case/ref/model/runtime                                             |
 | `ce_review`                 | one pinned `ce-code-review` session over the same changes               | External comparator paired with both review arms                                                    |
 | `baseline`                  | one session with the identical task text                                | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools               |
-| `baseline_nomcp`            | one session without installed GitNexus tools, graph, or workflow skills | Separates the workflow-discipline question from the GitNexus-tools question (off by default)        |
+| `baseline_nomcp`            | one session without installed GitNexus tools, graph, or workflow skills | Measures the no-GitNexus comparator; included by default                                            |
+
+The default sweep runs `workflow`, `workflow_direct`, `baseline`, and
+`baseline_nomcp`, each three times (`--runs 3`). That is 12 cells per selected
+task; the `workflow` arm has separate planning and execution sessions.
+Budget for the complete sweep before running it. For an inexpensive smoke
+check, explicitly select `--runs 1 --arms baseline_nomcp baseline`; a smoke
+check is not evidence of savings.
 
 Every arm runs in a fresh detached git worktree of the task's `ref`, once per
-`--runs`. The model-visible `verify` command is recorded as
+repetition. The model-visible `verify` command is recorded as
 `authored_tests_passed`, but cannot certify its own solution: `resolved` also
 requires the task's harness-owned hidden behavioral oracle to pass. Token
 savings on a failed task are flagged, not celebrated, and diff churn
@@ -32,6 +39,14 @@ over-engineering proxy. Task `class` labels (trivial → investigation →
 cross-module) make the report readable as a routing table: the boundary where
 `workflow` starts beating `workflow_direct` and `baseline` is the boundary
 lfg's gate and work's direct-mode triage should encode.
+
+Compare GitNexus-enabled arms with `baseline_nomcp` to measure tool benefit.
+Compare `workflow` or `workflow_direct` with MCP-enabled `baseline` to measure
+workflow overhead. A lower model bill is only useful alongside at least the
+same solve rate: retain failed runs, report each task and repetition, and pin
+the model, source, runtime, and grader. Three repetitions are a starting point,
+not statistical proof. Smaller tool responses measure one input-cost component;
+they do not establish lower total session cost or better task accuracy.
 
 ## Quick start
 
@@ -743,11 +758,10 @@ What the ground base says, honestly:
   predate the intent-to-add/exclude-plans churn fix, so they are not
   comparable across arms and are omitted above.
 
-Routing implication (to revisit as cells fill in): for tasks up to this
-size, `gitnexus-work` direct mode or a plain agent is the cost-optimal
-route; reserve full `gitnexus-plan` → `gitnexus-work` for cross-module work,
-multi-session execution, or when the plan document itself is a deliverable.
-If a future run shows the workflow flattering itself here, distrust the run.
+These historical cells suggest measuring direct execution before adding a
+planning session for small tasks. They do not establish an optimal routing
+policy. A plan may be useful for multi-session execution or as a deliverable;
+its extra cost must be included in the comparison.
 
 ### Cross-module cell (same day, optimized skills, n=1)
 
@@ -763,17 +777,15 @@ seams, transient-vs-deterministic classification:
 (The workflow_direct row is the clean re-run under clone isolation — the
 original was contaminated, see the integrity note below.)
 
-**This is the cell where the discipline pays.** `workflow_direct` — the
-execution skill without a planning pass — beat a plain agent by **47% cost
-and 56% wall time** on the hardest class while resolving: impact-first
-navigation and gated commits prevented the flailing that baseline's 98
-turns represent. The full workflow's premium vanished (−1.6% vs baseline;
-−211%..−333% on smaller classes) — fixed costs amortize here, with a less
-destructive diff and a durable plan artifact — but it didn't beat direct
-mode on any measured axis with the plan consumed only once. Resolve rate
-stayed tied across all cells; the savings story belongs to the execution
-discipline, and the planning pass is bought for its artifact (multi-session
-reuse, review, handoff), not for same-session token savings.
+**Historical observation only: unnamed model, n=1 per arm.** In this cell,
+`workflow_direct` recorded **47% lower model cost and 56% less wall time**
+than the **MCP-enabled `baseline`**. Both agents already had GitNexus; this
+does not measure GitNexus versus no GitNexus. All three arms solved this one
+task. The measurements cannot attribute the difference to workflow discipline
+or predict savings for other users, tasks, or models. The full workflow cost
+slightly more than baseline ($18.32 versus $18.03). A current named-model
+comparison with repeated runs and `baseline_nomcp` is needed before making a
+current savings claim.
 
 **Benchmark integrity note (why churn earns its keep):** the original
 `workflow_direct` cell reported an impossible 28-turn/$4.71 solve with churn

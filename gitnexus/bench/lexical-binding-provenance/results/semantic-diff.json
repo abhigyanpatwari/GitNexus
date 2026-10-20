@@ -1,0 +1,72 @@
+{
+  "baselineRevision": "565e50276dc9aa4e3b6e36dfabe8a92571b0d699",
+  "candidateRevision": "c263c4f72089cb07ce1de9033f7aa6b564c914ce",
+  "corpusFingerprint": "88be1faf45e9aec145f9d168b8959d67f31ec3b09b5455e9c8d8b2b1681ade5a",
+  "counts": {
+    "baseline": {
+      "CALLS": 432,
+      "METHOD_OVERRIDES": 11
+    },
+    "candidate": {
+      "CALLS": 432,
+      "METHOD_OVERRIDES": 11
+    }
+  },
+  "removed": [
+    {
+      "type": "CALLS",
+      "id": "rel:CALLS:Function:binding-provenance/ownership.ts:declaredOwner.writeAndRead@11:2->Method:binding-provenance/ownership.ts:Foo.m#0:14:4",
+      "sourceId": "Function:binding-provenance/ownership.ts:declaredOwner.writeAndRead@11:2",
+      "targetId": "Method:binding-provenance/ownership.ts:Foo.m#0",
+      "source": {
+        "label": "Function",
+        "filePath": "binding-provenance/ownership.ts",
+        "name": "writeAndRead",
+        "startLine": 11
+      },
+      "target": {
+        "label": "Method",
+        "filePath": "binding-provenance/ownership.ts",
+        "name": "m",
+        "startLine": 6
+      }
+    }
+  ],
+  "added": [
+    {
+      "type": "CALLS",
+      "id": "rel:CALLS:Function:binding-provenance/ownership.ts:declaredOwner.writeAndRead@11:2->Method:binding-provenance/ownership.ts:Base.m#0:14:4",
+      "sourceId": "Function:binding-provenance/ownership.ts:declaredOwner.writeAndRead@11:2",
+      "targetId": "Method:binding-provenance/ownership.ts:Base.m#0",
+      "source": {
+        "label": "Function",
+        "filePath": "binding-provenance/ownership.ts",
+        "name": "writeAndRead",
+        "startLine": 11
+      },
+      "target": {
+        "label": "Method",
+        "filePath": "binding-provenance/ownership.ts",
+        "name": "m",
+        "startLine": 1
+      }
+    }
+  ],
+  "review": {
+    "expectedCallTargetChange": "The declared Base annotation owns the closure receiver; a constructor assignment must not retarget it to Foo.",
+    "unchangedCalls": 431,
+    "unchangedMethodOverrides": 11
+  },
+  "baselineExport": {
+    "revision": "565e50276dc9aa4e3b6e36dfabe8a92571b0d699",
+    "dirty": false,
+    "corpusFingerprint": "88be1faf45e9aec145f9d168b8959d67f31ec3b09b5455e9c8d8b2b1681ade5a",
+    "fingerprint": "3e00ca5b1d6e0c5d84eb33531bb8148aba3598a8b987dd526b8f9ddab2e12fed"
+  },
+  "candidateExport": {
+    "revision": "c263c4f72089cb07ce1de9033f7aa6b564c914ce",
+    "dirty": false,
+    "corpusFingerprint": "88be1faf45e9aec145f9d168b8959d67f31ec3b09b5455e9c8d8b2b1681ade5a",
+    "fingerprint": "4db24f57b329263d31a8c9d55e1148c9cd7bde552c3dcbcba7d256f1c8a4e37c"
+  }
+}

@@ -68,3 +68,53 @@ describe('Base-URL wrapper consumer FETCHES edge extraction', () => {
     ]);
   });
 });
+
+describe('Fetch wrapper lexical and project target identity', () => {
+  it('resolves relative, alias, workspace, barrel, export-alias diamond, overload, multi-declarator, HOC, CommonJS and package-fetch targets while rejecting shadowed and ambiguous names', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'fetch-wrapper-target-identity'),
+      () => {},
+      { skipGraphPhases: true },
+    );
+    const edges = getRelationships(result, 'FETCHES')
+      .map((edge) => `${edge.sourceFilePath} -> ${edge.target}`)
+      .sort();
+    expect(edges).toEqual([
+      'lib/keys.ts -> /api/key',
+      'lib/overloaded.ts -> /api/overload-local',
+      'web/alias.ts -> /api/alias',
+      'web/alias.ts -> /api/forwarded',
+      'web/barrel.ts -> /api/barrel',
+      'web/barrel.ts -> /api/barrel-imported',
+      'web/barrel.ts -> /api/barrel-star',
+      'web/cjs-member.js -> /api/cjs-arrow',
+      'web/cjs-member.js -> /api/cjs-member',
+      'web/cjs.js -> /api/cjs',
+      'web/default-paren.ts -> /api/default-paren',
+      'web/destructured.ts -> /api/destructured',
+      'web/diamond.ts -> /api/diamond',
+      'web/hoc.ts -> /api/hoc',
+      'web/multi.ts -> /api/multi',
+      'web/nested.ts -> /api/nested',
+      'web/node.ts -> /api/node',
+      'web/overloaded.ts -> /api/overload-import',
+      'web/relative.ts -> /api/relative',
+      'web/unresolved.ts -> /api/unique',
+      'web/workspace.ts -> /api/workspace',
+    ]);
+  }, 60000);
+
+  it('honors explicit wrapper names through local parameter bindings', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'fetch-wrapper-target-identity'),
+      () => {},
+      { skipGraphPhases: true, fetchWrappers: ['request'] },
+    );
+    const edges = getRelationships(result, 'FETCHES');
+    expect(
+      edges.some(
+        (edge) => edge.sourceFilePath === 'web/shadow.ts' && edge.target === '/api/parameter',
+      ),
+    ).toBe(true);
+  }, 60000);
+});
