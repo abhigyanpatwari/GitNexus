@@ -9,18 +9,6 @@
       "baselineActual": ["handleGuarded -> runGit command-injection"]
     },
     {
-      "id": "explain.cross-lines",
-      "issue": 3491,
-      "reason": "Cross-function declarations and hops are displayed 0-based (#3491).",
-      "baselineActual": [
-        "hop 0 handleUnsafe@13",
-        "hop 1 blameSummary@6",
-        "hop 2 runGit@3",
-        "sink runGit@3",
-        "source handleUnsafe@13"
-      ]
-    },
-    {
       "id": "python.factory-qualified",
       "issue": 3498,
       "reason": "Module-qualified factory return type is not followed (#3498).",
