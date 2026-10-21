@@ -2283,7 +2283,7 @@ func shadowedByMethod() {
   it.each([
     { source: 'fresh', member: 'Do', targets: ['Method:pkg/pkg.go:Thing.Do#0'] },
     { source: 'shadowedByMethod', member: 'Spin', targets: [] },
-  ])('resolves $source.$member to $targets', ({ source, member, targets }) => {
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
     expect(
       getRelationships(result, 'CALLS')
         .filter((edge) => edge.source === source && edge.target === member)

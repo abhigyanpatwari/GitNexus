@@ -1615,7 +1615,7 @@ describe.skipIf(!zigAvailable)('Zig namespace factory result types (#3498)', () 
       member: 'listen',
       targets: ['Method:config.zig:config.listen#0'],
     },
-  ])('resolves $source.$member to $targets', ({ source, member, targets }) => {
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
     expect(
       getRelationships(result, 'CALLS')
         .filter((edge) => edge.source === source && edge.target === member)

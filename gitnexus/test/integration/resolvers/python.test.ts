@@ -2663,7 +2663,7 @@ def local_order():
       member: 'save',
       targets: ['Method:billing/models.py:Order.save#0'],
     },
-  ])('resolves $source.$member to $targets', ({ source, member, targets }) => {
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
     expect(
       getRelationships(result, 'CALLS')
         .filter((edge) => edge.source === source && edge.target === member)

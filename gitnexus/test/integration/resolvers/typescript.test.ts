@@ -3756,7 +3756,7 @@ export function hoistedInline() {
     { source: 'inlineCall', targets: ['Method:src/mod.ts:C.m#0'] },
     { source: 'hoistedCall', targets: [] },
     { source: 'hoistedInline', targets: [] },
-  ])('resolves $source.m to $targets', ({ source, targets }) => {
+  ])('resolves m called from $source to $targets', ({ source, targets }) => {
     expect(
       getRelationships(result, 'CALLS')
         .filter((edge) => edge.source === source && edge.target === 'm')
