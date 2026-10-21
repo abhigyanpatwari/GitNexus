@@ -1104,7 +1104,17 @@ export function resolveCompoundReceiverClass(
         if (viaReturn !== undefined) return viaReturn;
         return resolveConstructionExpressionClass(fnExpr, inScope, scopes, index, options);
       }
-      return undefined;
+      // A dotted callee path only the provider can read (`com.acme.mod.make()`,
+      // #3498): `objExpr` resolved to no class because it names no value.
+      const returned = qualifiedCalleeReturnType(
+        fnExpr,
+        inScope,
+        scopes,
+        options.resolveQualifiedCallee,
+      );
+      return returned === undefined
+        ? undefined
+        : classOfReturnType(returned, scopes, options.recordReceiverType, options.onNameFallback);
     }
 
     // Does `objExpr` name the CLASS ITSELF (`Factory.new`) rather than a

@@ -1415,13 +1415,18 @@ export interface ScopeResolver {
    * Optional resolver for a qualified CALLEE TEXT whose path syntax only the
    * language can read — Rust `rp::make` in `let x = rp::make(); x.m()` and in
    * the inline receiver `rp::make().m()`, where `rp` names a module rather than
-   * a value or a type (#3498).
+   * a value or a type (#3498); Kotlin `com.acme.mod.make` in
+   * `val x = com.acme.mod.make()`, where the head names a package that no import
+   * binds.
    *
    * The shared walkers never split this text. They hand it over verbatim, with
    * the scope the call sits in, and only after their own lookups found nothing:
-   *   - `followChainPostFinalize`, for a typeBinding rawName no scope binds (so
-   *     the provider's call-return binding must keep the whole callee path);
-   *   - the compound-receiver call branch, for an undotted callee no scope binds;
+   *   - `followChainPostFinalize`, for an undotted typeBinding rawName no scope
+   *     binds, and for a dotted one no namespace import types (so the
+   *     provider's call-return binding must keep the whole callee path);
+   *   - the compound-receiver call branch, for an undotted callee no scope
+   *     binds, and for a dotted callee (`a.b.f()`) whose object part resolves to
+   *     no class and is no namespace import;
    *   - the receiver-bound drop recorder, so a receiver bound to an in-program
    *     callable with no return annotation records a `receiver-unresolved` drop
    *     instead of passing as an exact miss.
@@ -1432,6 +1437,10 @@ export interface ScopeResolver {
    * fact by definition identity, so a callable without one types nothing.
    * Refusal must be cheap: the hook is asked about every name these sites fail
    * to resolve.
+   *
+   * A dotted text is asked about only after the receiver walk failed, so a
+   * provider must refuse a path whose head the call site can see as a value or
+   * a type: that call is a member call, and refusing leaves it to the walk.
    *
    * Languages whose qualified callees are dotted member expressions covered by
    * namespace imports (`ns.make()`) leave this undefined.
