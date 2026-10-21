@@ -1,5 +1,26 @@
 # Receiver-resolution baseline
 
+## C# global-namespace precedence
+
+C# global-namespace types lived in the scope-independent `workspaceFqnBindings`
+channel, which answers at every scope. A type name looked up inside a method
+stopped at the first global type with that name. The walk never reached the
+module scope, where the file's own and same-namespace types are bound. Global
+types now share the per-namespace channel under the global key. Each file's
+accessible-namespace list follows C# name lookup: the declared namespace, that
+declaration's `using` targets, the enclosing namespaces, the global namespace,
+then the compilation unit's `using` targets.
+
+Call drops move from 128 to 125, reads from 44 to 43, and all-kind drops from
+192 to 188. The four removed drops are `user.Address.Save()` in
+`csharp-field-types/Service.cs:8` and `csharp-deep-field-chain/Service.cs:8`,
+plus the call and the `City` read in `user.Address.City.GetName()` at
+`csharp-deep-field-chain/Service.cs:11`. Each now emits `CALLS` and `ACCESSES`
+into its own fixture's `Models.cs`. `.cs` call drops fall from 8 to 5,
+`chain-field` from 57 to 54 and `in-program` from 55 to 52. The new
+`csharp-global-namespace-precedence` fixture adds no drop. Every shape-arm state
+is unchanged.
+
 ## Express inline-handler fixture (#3488)
 
 The new `express-inline-handlers` fixture reads `req.query.path` inside an
@@ -131,10 +152,14 @@ sites to the correct bucket.
 
 Mostly **not** product defects. `user.Address.Save()` resolves cleanly in
 isolation — the `csharp-deep-field-chain` fixture alone emits both expected
-edges with **zero** drops. It drops in the count arm only because the corpus is
-~200 independent mini-projects in one directory and **55 files define
-`Address`**, so the resolver correctly declines on ambiguity rather than picking
-one. That is right behaviour measured on an unrepresentative corpus.
+edges with **zero** drops. It also dropped in the count arm, and the reason first
+given here was wrong: the resolver did not decline on ambiguity. A global `User`
+from another fixture answered the lookup inside the method, before the walk
+reached the fixture's own `DeepFieldChain.User`. That `User` has no `Address`,
+so the chain failed. The C# global-namespace precedence fix (top of this file)
+removed those drops. The corpus is still ~200 independent mini-projects in one
+directory, so some drops still come from same-named types across fixtures. They
+say little about real repositories.
 
 The genuinely untypeable population is the `unknown` bucket — and those are the real
 targets for type resolution, because a cast _gives_ you the type

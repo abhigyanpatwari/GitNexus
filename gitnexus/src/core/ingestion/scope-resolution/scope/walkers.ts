@@ -182,11 +182,11 @@ export function lookupBindingsAt(
   if (fLen === 0 && aLen === 0 && nLen === 0) return workspace!;
   if (fLen === 0 && aLen === 0 && wLen === 0) return namespaceRefs!;
   // Merge in precedence order, deduped by `def.nodeId` so the strongest source
-  // wins duplicate metadata. Named-namespace refs come BEFORE the flat global
-  // `workspace` channel: pre-#1871 these lived in `bindingAugmentations` (which
-  // `lookupBindingsAt` already ranks above `workspaceFqnBindings`), so a name in
-  // both an accessible named namespace and the global namespace must still
-  // resolve named-first. Order: finalized > augmented > namespace > workspace.
+  // wins duplicate metadata. Namespace refs come BEFORE the flat `workspace`
+  // channel: pre-#1871 they lived in `bindingAugmentations` (which
+  // `lookupBindingsAt` already ranks above `workspaceFqnBindings`), and their
+  // relative order is the accessibility list's, which the provider sets.
+  // Order: finalized > augmented > namespace > workspace.
   const seen = new Set<string>();
   const out: BindingRef[] = [];
   for (const src of [finalized, augmented, namespaceRefs, workspace]) {
@@ -241,11 +241,11 @@ const EMPTY_NAMES: Iterable<string> = Object.freeze([]) as readonly string[];
  *
  * Scope: enumerates only the per-scope `bindings` and `bindingAugmentations`
  * channels. It deliberately EXCLUDES the scope-independent
- * `workspaceFqnBindings` channel (PHP FQN keys, C# global-namespace simple
- * names). `lookupBindingsAt` consults that third channel when resolving a
- * specific name, but name *enumeration* here does not — those names apply at
- * every scope and would flood per-scope callers. Callers that need
- * workspace-level names must read `workspaceFqnBindings` directly.
+ * `workspaceFqnBindings` channel (FQN keys). `lookupBindingsAt` consults that
+ * third channel when resolving a specific name, but name *enumeration* here
+ * does not — those names apply at every scope and would flood per-scope
+ * callers. Callers that need workspace-level names must read
+ * `workspaceFqnBindings` directly.
  */
 export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): Iterable<string> {
   const finalized = scopes.bindings.get(scopeId);

@@ -81,12 +81,14 @@ export interface ScopeResolutionIndexes {
   /** Workspace-level binding lookup, shared instead of per-scope
    *  duplication. Consulted by `lookupBindingsAt` as a third source after
    *  finalized and per-scope augmented bindings. Language-specific
-   *  namespace-sibling hooks populate it with disjoint key formats that
-   *  never collide — e.g. backslash-separated FQNs (`App\Models\User`) for
-   *  backslash-namespace languages, and bare simple names (`User`) for
-   *  global-/default-namespace types that are visible from every file. The
-   *  shared map gives those workspace-wide names one entry each instead of
-   *  O(scopes × defs) per-scope augmentation. */
+   *  namespace-sibling hooks populate it with keys that mean the same thing
+   *  from every scope — e.g. backslash-separated FQNs (`App\Models\User`) for
+   *  backslash-namespace languages. The shared map gives those workspace-wide
+   *  names one entry each instead of O(scopes × defs) per-scope augmentation.
+   *  It answers at EVERY scope, ahead of anything an enclosing scope binds, so
+   *  a bare simple name belongs here only if no nearer declaration can hide
+   *  it. A default namespace whose simple names rank below the file's own
+   *  namespaces goes through `namespaceFqnBindings` under its own key instead. */
   readonly workspaceFqnBindings: ReadonlyMap<string, readonly BindingRef[]>;
   /** Workspace-level *type* binding lookup — the typeBindings analogue of
    *  `workspaceFqnBindings`. Holds names that are type-visible from every file
@@ -126,12 +128,13 @@ export interface ScopeResolutionIndexes {
   /** Accessibility gate for the per-namespace channels: maps a module ScopeId to
    *  the namespace names type-visible from that file — its own declared
    *  namespace(s) plus every imported/`using`d namespace (and dotted prefixes).
-   *  This is the same per-file accessible-namespace set the C# hook already
-   *  derives (`expandedNamespaces`), materialized so the language-neutral walkers
-   *  can consult `namespaceFqnBindings` / `namespaceTypeBindings` for exactly the
+   *  Materialized by the language hook so the language-neutral walkers can
+   *  consult `namespaceFqnBindings` / `namespaceTypeBindings` for exactly the
    *  namespaces a file can see — preserving namespace visibility semantics
-   *  without the per-file binding copy. Empty when no language populates the
-   *  namespace channels. */
+   *  without the per-file binding copy. The walkers collect candidates in list
+   *  order, so a first-match lookup takes the earliest namespace's; the hook
+   *  lists namespaces in its language's lookup precedence. Empty when no
+   *  language populates the namespace channels. */
   readonly accessibleNamespacesByScope: ReadonlyMap<ScopeId, readonly string[]>;
   /** Pre-resolution usage facts; consumed by the resolution phase. */
   readonly referenceSites: readonly ReferenceSite[];

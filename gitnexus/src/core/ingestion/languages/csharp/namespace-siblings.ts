@@ -26,8 +26,9 @@
  * / `Scope.typeBindings`. That per-file copy was O(files²) for a
  * concentrated namespace and OOM'd large solutions (#1871; the global
  * twin was fixed in #1905/#1954). The walkers consult these channels
- * gated by `accessibleNamespacesByScope` (a file's own namespace +
- * `using` targets), so visibility is unchanged — only the storage is
+ * gated by `accessibleNamespacesByScope` (a file's own and enclosing
+ * namespaces, the global namespace, and `using` targets, in C# lookup
+ * order), so visibility is unchanged — only the storage is
  * shared. Finalized bindings remain first in `lookupBindingsAt`, and
  * local lexical `Scope.bindings` remains the first-tier shadowing
  * channel. (`using static` member exposure still uses the per-scope
@@ -478,9 +479,9 @@ export function populateCsharpNamespaceSiblings(
   // both time and memory and OOM'd large no-namespace solutions (tens of
   // thousands of files in the global bucket → billions of Map entries). This
   // mirrors how Roslyn resolves against a single `Compilation.GlobalNamespace`
-  // symbol instead of per-file copies, and is the typeBindings analogue of the
-  // `workspaceFqnBindings` fast-path (#1905). `findReceiverTypeBinding` /
-  // `followChainPostFinalize` consult this channel as a final fallback.
+  // symbol instead of per-file copies (#1905). `findReceiverTypeBinding` /
+  // `followChainPostFinalize` consult this channel as a final fallback. Global
+  // class bindings go through the per-namespace channel instead (see below).
   const workspaceTypeBindings = indexes.workspaceTypeBindings as Map<string, TypeRef>;
   const globalBucket = buckets.get('');
   if (globalBucket !== undefined) {
@@ -523,38 +524,36 @@ export function populateCsharpNamespaceSiblings(
     }
   }
 
-  // Materialize each file's accessible namespaces (its own declared namespaces +
-  // every `using namespace X;` target, plus dotted-path prefixes), keyed by the
-  // file's Module scope id. This is the SAME accessibility set the per-file copy
-  // above used to derive — now stored so the language-neutral walkers can gate
-  // their `namespaceFqnBindings` / `namespaceTypeBindings` lookups to exactly the
-  // namespaces a file can see. The global ('') namespace is excluded: it is
-  // type-visible everywhere and handled by the flat workspace channels.
+  // Materialize each file's accessible namespaces, keyed by the file's Module
+  // scope id, so the language-neutral walkers can gate their
+  // `namespaceFqnBindings` / `namespaceTypeBindings` lookups to exactly the
+  // namespaces a file can see. The walkers collect candidates in list order and
+  // a first-match lookup takes the earliest, so the order is C# name lookup's:
+  // each declared namespace, then the `using` targets of that declaration, then
+  // its enclosing namespaces innermost outward. The global ('') namespace is the
+  // outermost namespace, and the compilation unit's `using` targets come after
+  // its own types. A global type therefore never hides a same-named type in the
+  // file's own or an enclosing namespace. Dotted prefixes of `using` targets
+  // (kept so a `using static X.Y.Z;` class path reaches `X.Y`) are not C#
+  // lookup scopes, so they rank last.
   const accessibleNamespacesByScope = indexes.accessibleNamespacesByScope as Map<ScopeId, string[]>;
   for (const parsed of parsedFiles) {
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
-    const accessibleNamespaces = new Set<string>();
-    const struct = structureByFile.get(parsed.filePath);
-    if (struct !== undefined) {
-      for (const n of struct.namespaces) accessibleNamespaces.add(n);
+    const declared = structureByFile.get(parsed.filePath)?.namespaces ?? [];
+    const usings = usingTargetsByDeclaration(parsed, declared);
+    const ordered = new Set<string>();
+    for (const ns of declared) {
+      ordered.add(ns);
+      for (const target of usings.byNamespace.get(ns) ?? []) ordered.add(target);
+      for (const enclosing of enclosingNamespaces(ns)) ordered.add(enclosing);
     }
-    for (const imp of parsed.parsedImports) {
-      if (imp.kind === 'namespace' && imp.targetRaw !== null) {
-        accessibleNamespaces.add(imp.targetRaw);
-      }
+    ordered.add('');
+    for (const target of usings.compilationUnit) ordered.add(target);
+    for (const target of usings.all) {
+      for (const prefix of enclosingNamespaces(target)) ordered.add(prefix);
     }
-    const expandedNamespaces = new Set<string>(accessibleNamespaces);
-    for (const ns of accessibleNamespaces) {
-      const segments = ns.split('.');
-      for (let i = segments.length - 1; i > 0; i--) {
-        expandedNamespaces.add(segments.slice(0, i).join('.'));
-      }
-    }
-    expandedNamespaces.delete(''); // global handled by the flat workspace channels
-    if (expandedNamespaces.size > 0) {
-      accessibleNamespacesByScope.set(moduleScope.id, [...expandedNamespaces]);
-    }
+    accessibleNamespacesByScope.set(moduleScope.id, [...ordered]);
   }
 
   // `using static X.Y.Z;` — expose every public static method of
@@ -633,20 +632,14 @@ export function populateCsharpNamespaceSiblings(
   // augmentation removes an O(importers × bucket-size) fanout on popular
   // namespaces — the cross-namespace twin of the same-namespace blow-up.
 
-  // Workspace-level binding channel for global-namespace types (see the
-  // global fast-path below). `lookupBindingsAt` consults this as a third
-  // source after finalized + per-scope augmented bindings. Its inner arrays
-  // are mutable by contract (append-only, like `bindingAugmentations` — see
-  // the ScopeResolutionIndexes doc + validateBindingsImmutability), so the
-  // ReadonlyMap→Map cast is localized to this one line and all writes go
-  // through `getWorkspaceBucket`.
-  const workspace = indexes.workspaceFqnBindings as Map<string, BindingRef[]>;
-  // Per-namespace binding channel for NAMED-namespace class visibility — the
-  // namespace-scoped analogue of `workspace`, populated once per named bucket
-  // (#1871). Replaces the per-scope `bindingAugmentations` fanout (O(scopes ×
-  // defs)) for same-namespace siblings AND the per-file cross-namespace-`using`
-  // injection above. `lookupBindingsAt` consults it gated by
-  // `accessibleNamespacesByScope`.
+  // Per-namespace binding channel for class visibility, populated once per
+  // bucket (#1871), the global ('') bucket included. Replaces the per-scope
+  // `bindingAugmentations` fanout (O(scopes × defs)) for same-namespace
+  // siblings AND the per-file cross-namespace-`using` injection above.
+  // `lookupBindingsAt` consults it gated by `accessibleNamespacesByScope`.
+  // Its inner arrays are mutable by contract (append-only, like
+  // `bindingAugmentations`; see the ScopeResolutionIndexes doc and
+  // validateBindingsImmutability).
   const namespaceFqn = indexes.namespaceFqnBindings as Map<string, Map<string, BindingRef[]>>;
 
   for (const [nsName, bucket] of buckets) {
@@ -670,42 +663,20 @@ export function populateCsharpNamespaceSiblings(
       arr.push(def);
     }
 
-    // Global-namespace fast path (Unity OOM guard). Types declared in the
-    // default (global) namespace are visible from EVERY file in C# — the
-    // global namespace is always implicitly in scope — so one workspace-
-    // level entry per simple name is both semantically correct and O(D)
-    // instead of the O(S·D) per-scope augmentation that materialized
-    // billions of BindingRefs on large Unity solutions (tens of thousands
-    // of global types × tens of thousands of scopes). `walkScopeChain`
-    // checks local `scope.bindings` first, so local declarations still
-    // shadow these workspace entries; a file resolving its own global type
-    // hits the local binding before this map. Dedup by `def.nodeId` keeps
-    // partial-class / duplicate declarations from double-emitting.
-    if (nsName === '') {
-      for (const [name, defs] of defsByName) {
-        const bucket = getWorkspaceBucket(workspace, name);
-        const seen = new Set<string>();
-        for (const b of bucket) seen.add(b.def.nodeId);
-        for (const def of defs) {
-          if (seen.has(def.nodeId)) continue; // dedup by nodeId (keeps partials, drops re-emits)
-          seen.add(def.nodeId);
-          bucket.push({ def, origin: 'namespace' });
-        }
-      }
-      continue;
-    }
-
-    // Named-namespace fast path (#1871) — the namespace-scoped mirror of the
-    // global path above. One `namespaceFqnBindings[nsName]` entry per simple
-    // name, O(D) per bucket, instead of the prior O(scopes × defs) per-scope
-    // augmentation that materialized O(files²) BindingRefs for a concentrated
-    // named namespace. `lookupBindingsAt` consults this gated by
-    // `accessibleNamespacesByScope` and ranks finalized `scope.bindings`
-    // (local declarations) ABOVE it, so local types still shadow — exactly as
-    // `walkScopeChain` shadows the global workspace entries. Dedup by
+    // One `namespaceFqnBindings[nsName]` entry per simple name, O(D) per
+    // bucket, instead of the prior O(scopes × defs) per-scope augmentation
+    // that materialized O(files²) BindingRefs for a concentrated namespace
+    // (#1871), and billions for the global bucket of a large Unity solution
+    // (tens of thousands of global types × tens of thousands of scopes).
+    // Global types share this channel rather than a scope-independent one:
+    // the walkers consult it only at a module scope, through the file's
+    // ordered accessibility list, so a global type no longer answers from a
+    // method scope before the walk reaches the file's own namespace.
+    // `lookupBindingsAt` ranks finalized `scope.bindings` (local declarations)
+    // ABOVE this channel, so local types still shadow it. Dedup by
     // `def.nodeId` keeps partial-class / duplicate declarations from
-    // double-emitting. (The prior local-shadow and self-reference skips are now
-    // handled by lookup precedence, identical to the global path.)
+    // double-emitting. (The prior local-shadow and self-reference skips are
+    // handled by lookup precedence.)
     let nsMap = namespaceFqn.get(nsName);
     for (const [name, defs] of defsByName) {
       let bucketArr = nsMap?.get(name);
@@ -755,20 +726,86 @@ function getAugmentationBucket(
   return bucketArr;
 }
 
-/** Get-or-create a mutable inner bucket inside the `workspaceFqnBindings`
- *  channel (the scope-independent third channel; see
- *  `ScopeResolutionIndexes.workspaceFqnBindings`). Like
- *  `getAugmentationBucket`, the inner arrays are mutable by contract —
- *  callers `push` directly. Keeping the get-or-create here means the one
- *  ReadonlyMap→Map cast at the call site is the only place the mutable
- *  view is taken. */
-function getWorkspaceBucket(workspace: Map<string, BindingRef[]>, name: string): BindingRef[] {
-  let bucketArr = workspace.get(name);
-  if (bucketArr === undefined) {
-    bucketArr = [];
-    workspace.set(name, bucketArr);
+/** `using` targets of one file, grouped by the declaration that owns them. */
+interface UsingTargetsByDeclaration {
+  /** Directives inside a namespace declaration, keyed by its declared name. */
+  readonly byNamespace: ReadonlyMap<string, readonly string[]>;
+  /** Directives at compilation-unit level. */
+  readonly compilationUnit: readonly string[];
+  /** Every target, in source order. */
+  readonly all: readonly string[];
+}
+
+/**
+ * Group a file's `using` targets by the declaration that owns them, which is
+ * the level C# name lookup consults them at.
+ *
+ * A directive belongs to the last namespace declaration that starts before it.
+ * For a block namespace, that declaration contains it. A file-scoped
+ * `namespace X;` scope covers only its own line, and the directives after it
+ * still belong to `X`. Directives cannot follow a closed block namespace
+ * (CS1529), so the rule needs no other case. Namespace scopes pair with
+ * `declared` by source order. When the counts disagree, as with an incomplete
+ * line scan, every namespace-level directive goes to the first declared
+ * namespace, matching how top-level classes are attributed above.
+ */
+function usingTargetsByDeclaration(
+  parsed: ParsedFile,
+  declared: readonly string[],
+): UsingTargetsByDeclaration {
+  const namespaceScopes = parsed.scopes
+    .filter((s) => s.kind === 'Namespace')
+    .sort((a, b) => comparePositions(a.range.startLine, a.range.startCol, b.range));
+  const byNamespace = new Map<string, string[]>();
+  const compilationUnit: string[] = [];
+  const all: string[] = [];
+  for (const imp of parsed.parsedImports) {
+    if (imp.kind !== 'namespace' || imp.targetRaw === null) continue;
+    all.push(imp.targetRaw);
+    const at = imp.atRange;
+    let owner = -1;
+    if (at !== undefined) {
+      for (const [i, scope] of namespaceScopes.entries()) {
+        if (comparePositions(at.startLine, at.startCol, scope.range) > 0) owner = i;
+      }
+    }
+    const name = owner === -1 ? undefined : declaredNameAt(declared, namespaceScopes.length, owner);
+    if (name === undefined) {
+      compilationUnit.push(imp.targetRaw);
+      continue;
+    }
+    let targets = byNamespace.get(name);
+    if (targets === undefined) {
+      targets = [];
+      byNamespace.set(name, targets);
+    }
+    targets.push(imp.targetRaw);
   }
-  return bucketArr;
+  return { byNamespace, compilationUnit, all };
+}
+
+/** The declared namespace name for the `index`-th Namespace scope, or the first
+ *  declared name when scopes and declarations do not pair one-to-one. */
+function declaredNameAt(
+  declared: readonly string[],
+  scopeCount: number,
+  index: number,
+): string | undefined {
+  return declared.length === scopeCount ? declared[index] : declared[0];
+}
+
+/** Sign of position (`line`, `col`) relative to the start of `range`. */
+function comparePositions(line: number, col: number, range: Scope['range']): number {
+  return line !== range.startLine ? line - range.startLine : col - range.startCol;
+}
+
+/** The namespaces enclosing a dotted namespace name, innermost first:
+ *  `A.B.C` → `A.B`, `A`. The global namespace is not included. */
+function enclosingNamespaces(ns: string): string[] {
+  const segments = ns.split('.');
+  const out: string[] = [];
+  for (let i = segments.length - 1; i > 0; i--) out.push(segments.slice(0, i).join('.'));
+  return out;
 }
 
 function isTypeDef(def: SymbolDefinition): boolean {
