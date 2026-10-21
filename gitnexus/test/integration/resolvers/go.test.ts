@@ -1,8 +1,10 @@
 /**
  * Go: package imports + cross-package calls + ambiguous struct disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -11,6 +13,7 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
 
@@ -2221,5 +2224,70 @@ describe('Go undecided interface satisfaction', () => {
       (edge.rel.reason ?? '').startsWith('go-structural-implements'),
     );
     expect(edgeSet(implementsEdges)).toEqual(['Label → Named']);
+  });
+});
+
+// #3498: `pkg.New().Do()` takes `New`'s return type from the package. Go binds
+// receiver methods at package scope too, so a method sharing a function's name
+// (`(*WidgetFactory).Create`) must not type `pkg.Create()`.
+describe('Go package factory result types in inline chains (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-go-package-factory-'));
+    writeFixtureRepo(repoDir, {
+      'go.mod': 'module example.com/factory\n\ngo 1.21\n',
+      'pkg/pkg.go': `package pkg
+
+type Thing struct{}
+
+func (t *Thing) Do() int { return 1 }
+
+func New() *Thing { return &Thing{} }
+
+type Gadget struct{}
+
+func (g *Gadget) Spin() {}
+
+type Widget struct{}
+
+func (w *Widget) Spin() {}
+
+func Create() *Gadget { return &Gadget{} }
+
+type WidgetFactory struct{}
+
+func (f *WidgetFactory) Create() *Widget { return &Widget{} }
+`,
+      'main.go': `package main
+
+import "example.com/factory/pkg"
+
+func fresh() {
+\tpkg.New().Do()
+}
+
+func shadowedByMethod() {
+\tpkg.Create().Spin()
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { source: 'fresh', member: 'Do', targets: ['Method:pkg/pkg.go:Thing.Do#0'] },
+    { source: 'shadowedByMethod', member: 'Spin', targets: [] },
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(targets);
   });
 });

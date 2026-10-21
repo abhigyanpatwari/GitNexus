@@ -38,11 +38,11 @@
       "decoratedFieldType": "RESOLVES"
     },
     "php": {
-      "arrowCallChain": "INVISIBLE-GAP",
+      "arrowCallChain": "VISIBLE-GAP",
       "arrowPropertyPath": "RESOLVES",
       "plainChain": "RESOLVES",
-      "plainDeepChain": "INVISIBLE-GAP",
-      "optionalChain": "INVISIBLE-GAP",
+      "plainDeepChain": "VISIBLE-GAP",
+      "optionalChain": "VISIBLE-GAP",
       "nonNullAssert": "N/A",
       "awaitParen": "N/A",
       "explicitTypeArgs": "N/A",
@@ -116,7 +116,7 @@
     "csharp": {
       "plainChain": "RESOLVES",
       "plainDeepChain": "RESOLVES",
-      "optionalChain": "INVISIBLE-GAP",
+      "optionalChain": "VISIBLE-GAP",
       "nonNullAssert": "VISIBLE-GAP",
       "awaitParen": "RESOLVES",
       "explicitTypeArgs": "VISIBLE-GAP",
@@ -143,11 +143,11 @@
       "optionalChain": "N/A",
       "nonNullAssert": "N/A",
       "awaitParen": "N/A",
-      "explicitTypeArgs": "INVISIBLE-GAP",
+      "explicitTypeArgs": "VISIBLE-GAP",
       "indexElement": "RESOLVES",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "RESOLVES",
-      "decoratedFieldType": "INVISIBLE-GAP"
+      "decoratedFieldType": "VISIBLE-GAP"
     },
     "c": {
       "plainChain": "N/A",
@@ -174,10 +174,10 @@
       "decoratedFieldType": "RESOLVES"
     },
     "swift": {
-      "plainChain": "INVISIBLE-GAP",
-      "plainDeepChain": "INVISIBLE-GAP",
-      "optionalChain": "INVISIBLE-GAP",
-      "nonNullAssert": "INVISIBLE-GAP",
+      "plainChain": "VISIBLE-GAP",
+      "plainDeepChain": "VISIBLE-GAP",
+      "optionalChain": "VISIBLE-GAP",
+      "nonNullAssert": "VISIBLE-GAP",
       "awaitParen": "VISIBLE-GAP",
       "explicitTypeArgs": "N/A",
       "indexElement": "INVISIBLE-GAP",
@@ -199,39 +199,40 @@
     }
   },
   "countArm": {
-    "callDrops": 128,
-    "totalDropsAllKinds": 192,
+    "callDrops": 153,
+    "totalDropsAllKinds": 221,
     "bySiteKind": {
-      "call": 128,
-      "read": 44,
+      "call": 153,
+      "read": 48,
       "write": 20
     },
     "callDropsByExtension": {
       ".java": 49,
-      ".py": 20,
-      ".ts": 16,
-      ".zig": 11,
+      ".py": 24,
+      ".go": 19,
+      ".ts": 17,
+      ".zig": 13,
       ".cs": 8,
       ".tsx": 6,
-      ".go": 5,
       ".php": 4,
+      ".rs": 4,
       ".kt": 4,
-      ".rs": 3,
-      ".js": 1,
+      ".js": 2,
+      ".dart": 2,
       ".swift": 1
     },
     "callDropsByShape": {
-      "chain-field": 57,
-      "chain-call": 30,
-      "no-chain": 27,
+      "chain-field": 73,
+      "no-chain": 34,
+      "chain-call": 32,
       "<<unclassified>>": 11,
       "chain-mixed": 2,
       "chain-unwrap": 1
     },
     "callDropsByOrigin": {
-      "in-program": 55,
+      "in-program": 77,
       "external": 44,
-      "unknown": 29
+      "unknown": 32
     }
   }
 }

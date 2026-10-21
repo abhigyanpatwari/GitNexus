@@ -31,6 +31,7 @@ import {
 } from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
+import { namespaceCallReturnType } from './imported-return-types.js';
 import type { DecorationStripper } from '../scope/walkers.js';
 import {
   findClassBindingInScope,
@@ -1065,6 +1066,19 @@ export function resolveCompoundReceiverClass(
       // indistinguishable from an untyped member call here. Only the namespace
       // map makes the constructor interpretation safe.
       if (options.namespaceTargets?.has(objExpr) === true) {
+        // A namespace function with a return annotation types the call like a
+        // named import of that function (#3498).
+        const returned = namespaceCallReturnType(fnExpr, inScope, scopes, options.lookupPosition);
+        const viaReturn =
+          returned === undefined
+            ? undefined
+            : classOfReturnType(
+                returned,
+                scopes,
+                options.recordReceiverType,
+                options.onNameFallback,
+              );
+        if (viaReturn !== undefined) return viaReturn;
         return resolveConstructionExpressionClass(fnExpr, inScope, scopes, index, options);
       }
       return undefined;

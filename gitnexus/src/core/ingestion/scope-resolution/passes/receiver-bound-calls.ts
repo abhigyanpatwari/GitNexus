@@ -213,6 +213,10 @@ type ReceiverBoundProviderSubset = Pick<
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
 const BARE_TYPE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
+const CALLABLE_TYPES: ReadonlySet<SymbolDefinition['type']> = new Set<SymbolDefinition['type']>([
+  'Function',
+  'Method',
+]);
 
 /**
  * A type name a built-in test may be asked about: a bare, undecorated
@@ -477,6 +481,21 @@ export function emitReceiverBoundCalls(
       picked = def;
     }
     return picked;
+  };
+
+  // #3498: whether a receiver's binding is a namespace function call
+  // (`x = ns.f()`): `f` is in the program, so the result type it failed to
+  // provide is a loss, not completeness.
+  const bindsNamespaceCallable = (
+    typeRef: TypeRef,
+    namespaceTargets: ReadonlyMap<string, readonly string[]>,
+  ): boolean => {
+    const [, head, member] = TWO_PART_RECEIVER_RE.exec(typeRef.rawName) ?? [];
+    if (head === undefined || member === undefined) return false;
+    return (namespaceTargets.get(head) ?? []).some((file) => {
+      const def = lookupNamespaceMember(file, member);
+      return def !== undefined && CALLABLE_TYPES.has(def.type);
+    });
   };
   // A class-like def NESTED in `owner` (`A.Item` inside `A`): its qualified
   // name is the owner's plus the segment — the identity the structure phase
@@ -1144,6 +1163,10 @@ export function emitReceiverBoundCalls(
         ? { sink: options.calleeIdSink, filePath: parsed.filePath }
         : undefined;
 
+    // Duplicate captures of one site share a key and a member name. Distinct
+    // calls can share only the key (`ns.make().m()` starts where `ns.make()`
+    // does), so one's resolution must not hide the other's drop (#3498).
+    const siteIdentitiesByKey = new Map<string, string | Set<string>>();
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
       if (site.explicitReceiver === undefined) continue;
@@ -1186,6 +1209,14 @@ export function emitReceiverBoundCalls(
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      // A duplicate capture (or a call's own callee read) repeats the member
+      // on the same receiver; an outer call that starts where its inner one
+      // does (`a.f().f()`) has the inner call as its receiver.
+      const earlierAtKey = recordSiteMember(
+        siteIdentitiesByKey,
+        siteKey,
+        `${receiverName}.${memberName}`,
+      );
 
       if (provider.suppressReceiverLookup !== undefined) {
         const baseName =
@@ -3151,9 +3182,19 @@ export function emitReceiverBoundCalls(
       // keyed by the MEMBER name, which is the only thing still known about a
       // dropped site (its callee is unknown by definition, so the drop cannot
       // be attributed to any target symbol).
+      // Every resolving case `continue`s, so a handled key here came from an
+      // earlier site or pre-seeding; it hides this drop only when that site
+      // was a duplicate capture of this one.
+      const hiddenByEarlierSite = handledSites.has(siteKey) && earlierAtKey !== 'shared-key';
       if (
-        (compoundReceiverUnresolved || receiverNamespace !== undefined) &&
-        !handledSites.has(siteKey)
+        !hiddenByEarlierSite &&
+        (compoundReceiverUnresolved ||
+          receiverNamespace !== undefined ||
+          // #3498: a plain receiver bound to a namespace call the analyzer
+          // could not type (`x = ns.untyped()`) is a drop too, not an exact miss.
+          (typeRef !== undefined &&
+            BARE_TYPE_NAME_RE.test(receiverName) &&
+            bindsNamespaceCallable(typeRef, namespaceTargets)))
       ) {
         // Decoded once: both the shape census and the origin classifier read the
         // same chain, and this is inside the drop guard so a resolved site pays
@@ -3242,6 +3283,33 @@ function splitClassLevelMemberReceiver(
 
 /** `Holder.repo` and nothing looser — see {@link splitClassLevelMemberReceiver}. */
 const TWO_PART_RECEIVER_RE = /^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/;
+
+/** How an earlier site in the same file relates to this one's position key. */
+export type EarlierSiteAtKey = 'new-key' | 'shared-key' | 'repeated-site';
+
+/** Record a site's identity (receiver and member) at its start `siteKey` and say
+ *  what was there before: nothing, a different call starting at the same
+ *  position, or this same site (a duplicate capture). One map entry per key;
+ *  a Set only on a collision. */
+export function recordSiteMember(
+  identitiesByKey: Map<string, string | Set<string>>,
+  siteKey: string,
+  identity: string,
+): EarlierSiteAtKey {
+  const seen = identitiesByKey.get(siteKey);
+  if (seen === undefined) {
+    identitiesByKey.set(siteKey, identity);
+    return 'new-key';
+  }
+  if (typeof seen === 'string') {
+    if (seen === identity) return 'repeated-site';
+    identitiesByKey.set(siteKey, new Set([seen, identity]));
+    return 'shared-key';
+  }
+  if (seen.has(identity)) return 'repeated-site';
+  seen.add(identity);
+  return 'shared-key';
+}
 
 /** Resolve a member by name on a class def, narrowing by argument
  *  types when multiple overloads share the name. Falls back to the

@@ -1,5 +1,44 @@
 # Receiver-resolution baseline
 
+## Namespace factory results and shared-position drops (#3498)
+
+Two changes move this baseline; neither moves an edge outside the new
+fixtures. A same-corpus A/B against `origin/main` (`7090ac80f`, 2,838 `CALLS`
+and `ACCESSES` edges) emits the identical edges on both sides; the full
+corpus with this PR's fixtures is 2,871.
+
+- **Namespace factory results.** `x = ns.make()` and inline `ns.make().m()`
+  now take `make`'s return annotation, as a named import of `make` already
+  did. The annotation must belong to the module's own `make` function (a
+  method of the same name never qualifies), the namespace must bind that
+  module (`import pkg.sub` binds `pkg`, not `pkg/sub.py`), and a dotted
+  annotation (`-> models.Order`) is not followed further; each of those
+  fails closed. A receiver bound to a namespace function with no usable
+  return type (`x = ns.untyped()`) is recorded as dropped rather than read
+  as an exact miss. The new `python-module-factory-return` fixture adds four
+  call drops: `x = rp.untyped()`, inline `rp.untyped().m()`, `x = untyped()`,
+  and `rp.make()` on a local `rp = Other()` that shadows the module alias.
+  The Zig `bridge.prototypeChain()` and `bridge.accessor("value")` namespace
+  calls in `zig-filestruct` are recorded as both a call and a read: +2
+  calls, +2 reads. Dart (`final x = rp.make()`) binds the dotted callee so
+  the same lookup applies; its fixture's untyped and awaited (`Future<C>`,
+  not unwrapped yet) factories add two call drops. Zig resolves the inline
+  form only: a file that imports a module cannot tell a namespace from a
+  file-struct, so `const x = rp.make()` keeps main's binding.
+- **Shared start positions.** Sites are keyed by `file:line:col`, and an outer
+  call starts where its inner receiver does (`s.orderRepo.DeleteItem(id)`
+  starts at `s.orderRepo`). A resolved inner site used to hide the outer
+  site's drop. Now only a duplicate capture of the same site (same receiver
+  and member, which also covers a call's own callee read) hides one. This
+  adds 18 call drops (Go 14, TypeScript 1, Rust 1, JavaScript 1) and 2
+  TypeScript reads. Each was checked against the corpus graph: none has a
+  `CALLS` edge to that member from its enclosing function. The Go sites
+  resolve when their fixture is analyzed alone, and are unresolved only in
+  the combined corpus, where several fixtures declare the same packages. The
+  same fix turns ten shape-arm cells from `INVISIBLE-GAP` to `VISIBLE-GAP`.
+
+Totals: call drops 128 -> 153, reads 44 -> 48, all kinds 192 -> 221.
+
 ## Express inline-handler fixture (#3488)
 
 The new `express-inline-handlers` fixture reads `req.query.path` inside an
