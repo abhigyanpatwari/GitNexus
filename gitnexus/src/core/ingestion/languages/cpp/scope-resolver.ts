@@ -57,7 +57,7 @@ import {
   resolveCppReceiverMember,
 } from './member-lookup.js';
 import { stripCppSpecifiers } from './interpret.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import {
   clearCppUsingDeclarations,
   populateCppIncludedUsingClaims,
@@ -85,8 +85,8 @@ const CPP_SIMPLE_POINTEE_RE = /^[A-Za-z_]\w*$/;
  * (Twin of the C resolver's `augmentedFilePathsFor`.) The two memos stay
  * SEPARATE deliberately. C++ delegates to `resolveCImportTarget`, whose
  * `suffixIndex` memo is keyed on the augmented set, so a single memo shared
- * with C would hand each language the other's index — same
- * builder-shared/memo-separate rule as `import-resolvers/pass-cache.ts`.
+ * with C would hand each language the other's index. Sharing a builder must
+ * not share its memo.
  */
 const augmentedFilePathsFor = perFileSet((allFilePaths: ReadonlySet<string>) =>
   perFileSet((headerPaths: ReadonlySet<string>): ReadonlySet<string> => {

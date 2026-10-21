@@ -5,9 +5,10 @@
  * This file contains the shared helper for PSR-4 resolution via composer.json.
  */
 
-import type { SuffixIndex } from './utils.js';
-import { suffixResolve } from './utils.js';
-import type { ComposerConfig } from '../language-config.js';
+import type { SuffixIndex } from '../../utils/suffix-index.js';
+import { suffixResolve } from '../../utils/suffix-index.js';
+import type { ComposerConfig } from '../../language-config.js';
+import { EXTENSIONS } from '../import-candidates.js';
 
 /** Get or compute the sorted PSR-4 entries (cached after first call). */
 function getSortedPsr4(config: ComposerConfig): readonly [string, string][] {
@@ -142,5 +143,5 @@ export function resolvePhpImportInternal(
 
   // Fallback: suffix matching (works without composer.json)
   const pathParts = normalized.split('/').filter(Boolean);
-  return suffixResolve(pathParts, normalizedFileList, allFileList, index);
+  return suffixResolve(pathParts, normalizedFileList, allFileList, EXTENSIONS, index);
 }

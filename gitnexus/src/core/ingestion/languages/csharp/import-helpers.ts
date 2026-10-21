@@ -5,12 +5,13 @@
  * This file contains shared helpers for namespace-based resolution.
  */
 
-import { perFileSet } from './per-file-set.js';
-import { getWorkspaceFileIndex } from './workspace-file-index.js';
-import type { SuffixIndex } from './utils.js';
-import { suffixResolve } from './utils.js';
-import type { CSharpProjectConfig, CSharpNamespaceEvidence } from '../language-config.js';
-import { csharpSuffixFallbackAllowed } from '../csharp-namespace-gate.js';
+import { perFileSet } from '../../utils/per-file-set.js';
+import { getWorkspaceFileIndex } from '../../utils/workspace-file-index.js';
+import type { SuffixIndex } from '../../utils/suffix-index.js';
+import { suffixResolve } from '../../utils/suffix-index.js';
+import type { CSharpProjectConfig, CSharpNamespaceEvidence } from '../../language-config.js';
+import { csharpSuffixFallbackAllowed } from './namespace-gate.js';
+import { EXTENSIONS } from '../import-candidates.js';
 
 /**
  * Directory index backing the namespace-directory fallback below (step 3).
@@ -397,40 +398,6 @@ export function resolveCSharpImportInternal(
     return [];
   }
   const pathParts = namespacePath.split('/').filter(Boolean);
-  const fallback = suffixResolve(pathParts, normalizedFileList, allFileList, index);
+  const fallback = suffixResolve(pathParts, normalizedFileList, allFileList, EXTENSIONS, index);
   return fallback ? [fallback] : [];
-}
-
-/**
- * Compute the directory suffix for a C# namespace import (for PackageMap).
- * Returns a suffix like "/ProjectDir/Models/" or null if no config matches.
- */
-export function resolveCSharpNamespaceDir(
-  importPath: string,
-  csharpConfigs: CSharpProjectConfig[],
-): string | null {
-  const namespacePath = importPath.replace(/\./g, '/');
-
-  for (const config of csharpConfigs) {
-    const nsPath = config.rootNamespace.replace(/\./g, '/');
-    let relative: string;
-    if (namespacePath.startsWith(nsPath + '/')) {
-      relative = namespacePath.slice(nsPath.length + 1);
-    } else if (namespacePath === nsPath) {
-      relative = '';
-    } else {
-      continue;
-    }
-
-    const dirPrefix = config.projectDir
-      ? relative
-        ? config.projectDir + '/' + relative
-        : config.projectDir
-      : relative;
-
-    if (!dirPrefix) continue;
-    return '/' + dirPrefix + '/';
-  }
-
-  return null;
 }

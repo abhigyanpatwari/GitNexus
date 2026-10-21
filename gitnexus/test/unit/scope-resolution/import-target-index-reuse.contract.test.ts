@@ -419,7 +419,7 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       // traversal per import: swapping this fixture onto that spelling posts
       // 201 traversals for 200 imports against 3 for two (measured). The
       // residual is real and is out of this file's reach — it lives in
-      // `import-resolvers/php.ts`, which the #2901 hoist does not touch — so it
+      // `languages/php/import-helpers.ts`, which the #2901 hoist does not touch — so it
       // is pinned by name in `php-import-target-parity.test.ts` and this
       // fixture takes the leg that IS indexed rather than restating it.
       missTarget: (i) => `Vendor${i}\\Ghost\\Missing`,

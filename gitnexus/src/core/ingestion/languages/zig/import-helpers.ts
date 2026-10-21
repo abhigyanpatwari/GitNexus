@@ -29,7 +29,7 @@ import {
   normalizeZigDepPath,
   type ZigBuildModule,
   type ZigBuildZonConfig,
-} from '../language-config.js';
+} from '../../language-config.js';
 
 const ZIG_STDLIB_NAMES = new Set(['std', 'builtin', 'root']);
 

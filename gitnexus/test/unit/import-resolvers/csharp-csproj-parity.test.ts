@@ -38,27 +38,24 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import {
-  resolveCSharpImportInternal,
-  resolveCSharpNamespaceDir,
-} from '../../../src/core/ingestion/import-resolvers/csharp.js';
+import { resolveCSharpImportInternal } from '../../../src/core/ingestion/languages/csharp/import-helpers.js';
 import {
   buildSuffixIndex,
   suffixResolve,
   type SuffixIndex,
-} from '../../../src/core/ingestion/import-resolvers/utils.js';
-import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/csharp-namespace-gate.js';
+} from '../../../src/core/ingestion/utils/suffix-index.js';
+import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/languages/csharp/namespace-gate.js';
 import { CountingSet } from '../../helpers/counting-file-set.js';
 import type {
   CSharpProjectConfig,
   CSharpNamespaceEvidence,
 } from '../../../src/core/ingestion/language-config.js';
+import { EXTENSIONS } from '../../../src/core/ingestion/languages/import-candidates.js';
 
 // ─── verbatim pre-change implementation ──────────────────────────────────────
-// `git show HEAD~:gitnexus/src/core/ingestion/import-resolvers/csharp.ts`, body
-// copied unchanged. Its helpers (`suffixResolve`, `csharpSuffixFallbackAllowed`,
-// `SuffixIndex`) are imported from production because this PR does not touch
-// them; only the function below changed.
+// Frozen implementation from before the direct-child probe optimization.
+// Its helpers (`suffixResolve`, `csharpSuffixFallbackAllowed`, `SuffixIndex`)
+// are imported from production; the frozen function retains the original probe.
 
 /**
  * The direct-child probe the frozen copies below run — four call sites, two in
@@ -163,7 +160,7 @@ function legacyResolveCSharpImportInternal(
     return [];
   }
   const pathParts = namespacePath.split('/').filter(Boolean);
-  const fallback = suffixResolve(pathParts, normalizedFileList, allFileList, index);
+  const fallback = suffixResolve(pathParts, normalizedFileList, allFileList, EXTENSIONS, index);
   return fallback ? [fallback] : [];
 }
 
@@ -244,7 +241,7 @@ function skipStep3WhenIndexed(
     return [];
   }
   const pathParts = namespacePath.split('/').filter(Boolean);
-  const fallback = suffixResolve(pathParts, normalizedFileList, allFileList, index);
+  const fallback = suffixResolve(pathParts, normalizedFileList, allFileList, EXTENSIONS, index);
   return fallback ? [fallback] : [];
 }
 
@@ -456,19 +453,6 @@ describe('C# csproj leg — directory index vs the pre-change linear scan (#2902
       ).join(' , ');
     }
     expect(current).toEqual(legacy);
-  });
-
-  it('leaves `resolveCSharpNamespaceDir` — the sibling that shares the dirPrefix maths — alone', () => {
-    const dirs: Record<string, string | null> = {};
-    for (const [shape, configs] of CONFIG_SHAPES) {
-      for (const importPath of IMPORTS) {
-        dirs[`${shape} | ${importPath}`] = resolveCSharpNamespaceDir(importPath, configs);
-      }
-    }
-    expect(dirs['projectDir=src | App.Models']).toBe('/src/Models/');
-    expect(dirs['no projectDir | App']).toBeNull();
-    expect(dirs['no projectDir | App.Models']).toBe('/Models/');
-    expect(dirs['no config matches | App.Models']).toBeNull();
   });
 });
 

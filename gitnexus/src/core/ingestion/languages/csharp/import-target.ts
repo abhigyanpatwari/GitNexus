@@ -21,18 +21,18 @@
 
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import type { CSharpProjectConfig, CSharpNamespaceEvidence } from '../../language-config.js';
-import { resolveCSharpImportInternal } from '../../import-resolvers/csharp.js';
+import { resolveCSharpImportInternal } from './import-helpers.js';
 import {
   getWorkspaceFileIndex,
   type WorkspaceFileIndex,
-} from '../../import-resolvers/workspace-file-index.js';
+} from '../../utils/workspace-file-index.js';
 import {
   buildPackageDirIndex,
   firstFileDirectlyInPkgDir,
   type PackageDirIndex,
-} from '../../import-resolvers/package-dir-index.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { csharpSuffixFallbackAllowed } from '../../csharp-namespace-gate.js';
+} from '../../utils/package-dir-index.js';
+import { perFileSet } from '../../utils/per-file-set.js';
+import { csharpSuffixFallbackAllowed } from './namespace-gate.js';
 
 export interface CsharpResolveContext {
   readonly fromFile: string;
@@ -44,7 +44,7 @@ export interface CsharpResolveContext {
 /**
  * Namespace-directory index over the `.cs` files, memoized on the Set's
  * identity. Feeds `firstFileDirectlyInPkgDir` (in
- * `import-resolvers/package-dir-index.ts`), which the no-csproj path calls once
+ * `utils/package-dir-index.ts`), which the no-csproj path calls once
  * for the direct match and then up to once per stripped namespace prefix.
  */
 const getCsharpDirIndex = perFileSet(

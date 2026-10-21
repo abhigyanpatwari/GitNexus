@@ -365,7 +365,7 @@
  * toward the noise floor would only buy flaky CI; see `_blind_spot` in
  * baselines.json. PR #2911 is the proof that this blind spot is real rather
  * than theoretical: JavaScript's missing index was a scan of
- * `ImportPassCache.normalizedFileList` on EVERY import, which the Set counter
+ * a cached normalized file array on EVERY import, which the Set counter
  * could not see, and it took a differential parity test over 211 200 pairs plus
  * this bench's arrival to pin it.
  *
@@ -485,7 +485,7 @@ import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope
 import { cobolScopeResolver } from '../../src/core/ingestion/languages/cobol/scope-resolver.ts';
 import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swift/import-target.ts';
 import { resolveRustImportTarget } from '../../src/core/ingestion/languages/rust/import-target.ts';
-import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.ts';
+import { resolveZigImportInternal } from '../../src/core/ingestion/languages/zig/import-helpers.ts';
 import { resolvePythonImportTarget } from '../../src/core/ingestion/languages/python/import-target.ts';
 import { makeJsResolveImportTarget } from '../../src/core/ingestion/languages/javascript/import-target.ts';
 import { makeVueResolveImportTarget } from '../../src/core/ingestion/languages/vue/import-target.ts';
@@ -1736,7 +1736,7 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
  * `resolutionConfig` the orchestrator threads beside it.
  *
  * `allFilePaths` is a FRESH Set per pass on purpose — every per-file-set memo
- * in `import-resolvers/per-file-set.ts` is keyed on that object's identity, so
+ * in `utils/per-file-set.ts` is keyed on that object's identity, so
  * reusing one Set across passes would hide the index build after the first and
  * let a rebuilt-per-import index look free from rep 2 onward.
  *

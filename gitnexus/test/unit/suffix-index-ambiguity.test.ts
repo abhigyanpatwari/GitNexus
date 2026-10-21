@@ -8,11 +8,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import {
-  buildSuffixIndex,
-  suffixResolve,
-} from '../../src/core/ingestion/import-resolvers/utils.js';
-import { resolvePythonImportInternal } from '../../src/core/ingestion/import-resolvers/python.js';
+import { buildSuffixIndex, suffixResolve } from '../../src/core/ingestion/utils/suffix-index.js';
+import { resolvePythonImportInternal } from '../../src/core/ingestion/languages/python/import-helpers.js';
+import { EXTENSIONS } from '../../src/core/ingestion/languages/import-candidates.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -36,7 +34,7 @@ function resolvePython(
   if (importPath.startsWith('.')) return null;
   const pathLike = importPath.replace(/\./g, '/');
   const parts = pathLike.split('/').filter(Boolean);
-  return suffixResolve(parts, ctx.normalized, ctx.files, ctx.index);
+  return suffixResolve(parts, ctx.normalized, ctx.files, EXTENSIONS, ctx.index);
 }
 
 // ---------------------------------------------------------------------------

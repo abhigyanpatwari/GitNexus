@@ -20,7 +20,7 @@ import {
   zigPackageFor,
   type ZigWorkspaceIndex,
 } from '../../language-config.js';
-import { resolveZigImportInternal } from '../../import-resolvers/zig.js';
+import { resolveZigImportInternal } from './import-helpers.js';
 import { zigProvider } from '../zig.js';
 import { expandZigWildcardNames, zigArityCompatibility, zigMergeBindings } from './index.js';
 import { populateZigRangeBindings } from './range-binding.js';

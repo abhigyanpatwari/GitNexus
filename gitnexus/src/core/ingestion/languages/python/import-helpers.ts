@@ -10,8 +10,9 @@ import {
   importerBarePrefixes,
   importerDirOf,
   pythonSegmentAbsent,
-} from './python-file-index.js';
-import { tryResolveWithExtensions } from './utils.js';
+} from './import-file-index.js';
+import { tryResolveWithExtensions } from '../../utils/suffix-index.js';
+import { EXTENSIONS } from '../import-candidates.js';
 
 /**
  * Resolve a Python import to a file path (low-level helper).
@@ -49,7 +50,7 @@ export function resolvePythonImportInternal(
       dirParts.push(...modulePart.replace(/\./g, '/').split('/'));
     }
 
-    return tryResolveWithExtensions(dirParts.join('/'), allFiles);
+    return tryResolveWithExtensions(dirParts.join('/'), allFiles, EXTENSIONS);
   }
 
   // Proximity bare import — single-segment only; package before module (PEP 451 §4)

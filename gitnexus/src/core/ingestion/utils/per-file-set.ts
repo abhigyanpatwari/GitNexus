@@ -41,7 +41,7 @@
  *    `CountingSet`, driven by the contract test's `minimumParsedFileReads`.
  *
  * A THIRD shape — an array materialized from the file set — is what the type
- * exists to reject. `import-resolvers/csharp.ts` used one until #2911, and it
+ * exists to reject. `languages/csharp/import-helpers.ts` used one until #2911, and it
  * is worth a compile error rather than a rule: copying an array mints a fresh
  * `WeakMap` key while traversing the Set zero extra times, so every
  * scan-counting guard stays green at its correct value while the index rebuilds

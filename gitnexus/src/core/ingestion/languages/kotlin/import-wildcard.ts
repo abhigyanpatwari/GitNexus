@@ -1,4 +1,4 @@
-import type { SyntaxNode } from '../utils/ast-helpers.js';
+import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 /**
  * Append .* to a Kotlin import path if the AST has a wildcard_import sibling node.

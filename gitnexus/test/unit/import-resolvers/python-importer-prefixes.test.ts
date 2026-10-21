@@ -1,6 +1,6 @@
 /**
  * Gate for the single-segment bare-import ancestor walk in
- * `import-resolvers/python.ts`: Python bare-import resolution must not scale
+ * `languages/python/import-helpers.ts`: Python bare-import resolution must not scale
  * with the importer's path depth.
  *
  * #2913 memoized the ancestor chains inside `languages/python/import-target.ts`
@@ -55,8 +55,8 @@ import { describe, expect, it } from 'vitest';
 import type { ParsedImport } from 'gitnexus-shared';
 import type { ImportResolutionContext } from '../../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
 import { pythonScopeResolver } from '../../../src/core/ingestion/languages/python/scope-resolver.js';
-import { resolvePythonImportInternal } from '../../../src/core/ingestion/import-resolvers/python.js';
-import { getPythonFileIndex } from '../../../src/core/ingestion/import-resolvers/python-file-index.js';
+import { resolvePythonImportInternal } from '../../../src/core/ingestion/languages/python/import-helpers.js';
+import { getPythonFileIndex } from '../../../src/core/ingestion/languages/python/import-file-index.js';
 
 /** The bare-import prefix memo, which lives inside the shared per-file-set index. */
 const prefixMemo = (files: ReadonlySet<string>): ReadonlyMap<string, readonly string[]> =>

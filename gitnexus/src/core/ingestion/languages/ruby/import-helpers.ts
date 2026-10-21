@@ -4,8 +4,9 @@
  * Used by the Ruby ScopeResolver.resolveImportTarget hook.
  */
 
-import type { SuffixIndex } from './utils.js';
-import { suffixResolve } from './utils.js';
+import type { SuffixIndex } from '../../utils/suffix-index.js';
+import { suffixResolve } from '../../utils/suffix-index.js';
+import { EXTENSIONS } from '../import-candidates.js';
 
 /**
  * Resolve a Ruby require/require_relative path to a matching .rb file (low-level helper).
@@ -20,5 +21,5 @@ export function resolveRubyImportInternal(
   index?: SuffixIndex,
 ): string | null {
   const pathParts = importPath.replace(/^\.\//, '').split('/').filter(Boolean);
-  return suffixResolve(pathParts, normalizedFileList, allFileList, index);
+  return suffixResolve(pathParts, normalizedFileList, allFileList, EXTENSIONS, index);
 }

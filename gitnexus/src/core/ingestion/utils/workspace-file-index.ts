@@ -39,7 +39,7 @@
  */
 
 import { perFileSet } from './per-file-set.js';
-import { buildSuffixIndex, type SuffixIndex } from './utils.js';
+import { buildSuffixIndex, type SuffixIndex } from './suffix-index.js';
 
 /**
  * `normalized` and `all` are `readonly string[]`, and — like
@@ -49,10 +49,9 @@ import { buildSuffixIndex, type SuffixIndex } from './utils.js';
  * pass, and these two are the largest shared arrays here (one element per file,
  * read by C#, Java, PHP and Ruby). `readonly` on the field is what makes the
  * compiler refuse the mutation at the call site instead of leaving it to a
- * comment. `ImportPassCache` (`pass-cache.ts`) states the same contract the
- * same way for the ts-family lists.
+ * comment.
  *
- * The positional pairing is load-bearing too and depends on it: `csharp.ts`
+ * The positional pairing is load-bearing too and depends on it: the C# import helper
  * caches POSITIONS into `normalized` and reads the answer out of `all`, so a
  * reordering of either array alone silently re-points every cached position.
  */

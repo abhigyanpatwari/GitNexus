@@ -471,7 +471,7 @@ Per-language tree-sitter queries use different AST node names but produce the **
 
 Per-language import resolution runs through `ScopeResolver.resolveImportTarget`, registered in `SCOPE_RESOLVERS`. The shared orchestrator (`scope-resolution/pipeline/run.ts`) passes each language's workspace configuration to the resolver hook. The hook maps a parsed import to its target file or files; finalization links imports and materializes bindings for scope lookup.
 
-Active helpers in `import-resolvers/` provide package-directory and suffix indexes, caches, and language-specific lookup primitives. The dormant `LanguageProvider.importResolver` field, adapter, and strategy factory have been removed; new languages implement the `ScopeResolver` hook.
+Language-specific import helpers and namespace rules live beside each resolver in `languages/<language>/`. Language-neutral package-directory and suffix indexes, workspace indexes, and per-file-set caches live in `ingestion/utils/`; suffix lookups receive their ordered extension candidates from callers. The dormant `LanguageProvider.importResolver` field, adapter, and strategy factory have been removed; new languages implement the `ScopeResolver` hook.
 
 ### Chunked parse-and-resolve
 

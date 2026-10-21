@@ -16,7 +16,7 @@ import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { kotlinExportChecker } from '../export-detection.js';
-import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
+import { appendKotlinWildcard } from './kotlin/import-wildcard.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';

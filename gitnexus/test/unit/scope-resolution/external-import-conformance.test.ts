@@ -11,8 +11,8 @@
  * reports a blast radius into code that cannot be affected. The reporter
  * measured 44 of 74 cross-package edges landing on two such files.
  *
- * The mechanism is shared, which is why this file is: `import-resolvers/
- * utils.ts:suffixResolve` asks "does any file in this repo have a path ending
+ * The shared `utils/suffix-index.ts:suffixResolve` helper asks
+ * "does any file in this repo have a path ending
  * in this specifier?", retrying with each leading segment dropped, and most
  * languages still end their resolution chain there.
  *

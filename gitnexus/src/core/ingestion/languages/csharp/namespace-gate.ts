@@ -3,13 +3,11 @@
  * (e.g. `System.Threading.Tasks`) can't match a coincidentally-named local
  * file (#1881).
  *
- * Lives in the shared `ingestion/` layer — NOT under `languages/csharp/` — so
- * BOTH the registry-primary scope resolver (`languages/csharp/import-target.ts`)
- * and the legacy DAG resolver (`import-resolvers/csharp.ts`) can import it
- * without an `import-resolvers/ -> languages/` dependency inversion (#5).
+ * Shared by this provider's import-target adapter and namespace-directory
+ * helpers. The legacy DAG resolver has been removed.
  */
 
-import type { CSharpNamespaceEvidence } from './language-config.js';
+import type { CSharpNamespaceEvidence } from '../../language-config.js';
 
 /**
  * Top-level namespace segments that clearly belong to the BCL / runtime / a
