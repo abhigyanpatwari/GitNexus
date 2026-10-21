@@ -3,6 +3,8 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   edgeSet,
   FIXTURES,
@@ -11,6 +13,7 @@ import {
   getRelationships,
   getResolutionOutcomes,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
@@ -1801,5 +1804,82 @@ describe.skipIf(!zigAvailable)('Zig namespace factory result types (#3498)', () 
         .filter((edge) => edge.source === source && edge.target === member)
         .map((edge) => edge.rel.targetId),
     ).toEqual(targets);
+  });
+});
+
+describe.skipIf(!zigAvailable)('Zig type-constructor receiver boundaries', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-zig-type-boundaries-'));
+    try {
+      writeFixtureRepo(root, {
+        'src/Math.zig': `count: u32 = 0,
+
+pub fn Wrapper(comptime T: type) type {
+    return if (@sizeOf(T) == 0) struct {} else struct {
+        pub fn get() void {}
+    };
+}
+pub fn Bridge(comptime T: type) type { return Wrapper(T); }
+pub fn use() void { Wrapper(u8).get(); }
+pub fn use2() void { const b = Bridge(u8); b.get(); }
+`,
+        'src/other.zig': 'pub const Wrapper = struct { pub fn get() void {} };\n',
+        'src/third.zig': 'pub const Unrelated = struct { pub fn get() void {} };\n',
+        'src/lib.zig': 'pub const Counter = struct {};\npub fn work() void {}\n',
+        'src/other_work.zig': 'pub fn work() void {}\n',
+        'src/other_local.zig': 'pub const Local = struct { pub fn get() void {} };\n',
+        'src/namespaced.zig': `const local = @import("local.zig");
+pub fn namespacePositive() void { local.Local(u8).get(); }
+`,
+        'src/whitespace.zig': `pub fn entry() void {
+    const Counter = @import("lib.zig").Counter;
+    _ = Counter;
+    @import( "lib.zig" ).work();
+}
+`,
+        'src/local.zig': `pub fn Local(comptime T: type) type {
+    _ = T;
+    return struct { pub fn get() void {} };
+}
+pub fn positive() void { Local(u8).get(); }
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 120000);
+
+  it.each(['use', 'use2'])('%s cannot borrow a class from an unimported file', (caller) => {
+    const externalTargets = getRelationships(result, 'CALLS')
+      .filter(
+        (edge) =>
+          edge.source === caller && edge.target === 'get' && edge.targetFilePath !== 'src/Math.zig',
+      )
+      .map((edge) => edge.rel.targetId);
+    expect(externalTargets).toEqual([]);
+  });
+
+  it('keeps the lexically bound type-application receiver', () => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'positive' && edge.target === 'get')
+      .map((edge) => edge.targetFilePath);
+    expect(targets).toEqual(['src/local.zig']);
+  });
+
+  it('resolves a differently spaced inline import after a member alias', () => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'entry' && edge.target === 'work')
+      .map((edge) => ({ file: edge.targetFilePath, reason: edge.rel.reason }));
+    expect(targets).toEqual([{ file: 'src/lib.zig', reason: 'import-resolved' }]);
+  });
+
+  it('keeps a namespace-qualified type application despite an unrelated namesake', () => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'namespacePositive' && edge.target === 'get')
+      .map((edge) => ({ file: edge.targetFilePath, reason: edge.rel.reason }));
+    expect(targets).toEqual([{ file: 'src/local.zig', reason: 'import-resolved' }]);
   });
 });

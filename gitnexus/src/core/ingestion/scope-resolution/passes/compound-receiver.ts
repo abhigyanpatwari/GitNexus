@@ -227,7 +227,7 @@ function escapeForRegExp(literal: string): string {
  * `isConstructionSelectorHop` (the `Class.new` spelling), this is where the
  * rule "constructing a class yields an instance of it" lives; the
  * per-language surface syntax arrives via `constructionSyntax` (#2708).
- * A type application (`Stack(u8)` in Zig, `isTypeApplicationCall`) names
+ * A type application (`Stack(u8)`, `isTypeApplicationCall`) names
  * its class the same way a bare construction does: the expression is the
  * TYPE rather than an instance, which receiver typing does not distinguish.
  *
@@ -312,6 +312,7 @@ function resolveConstructionExpressionClass(
     onNameFallback: options.onNameFallback,
     position: options.lookupPosition,
     purpose: 'value',
+    uniqueQualifiedNameFallback: typeApplication ? false : undefined,
   });
   if (direct !== undefined && isClassLike(direct.type)) return direct;
 
@@ -320,6 +321,7 @@ function resolveConstructionExpressionClass(
       onNameFallback: options.onNameFallback,
       position: options.lookupPosition,
       purpose: 'value',
+      uniqueQualifiedNameFallback: typeApplication ? false : undefined,
     });
     if (viaBaseName !== undefined && isClassLike(viaBaseName.type)) return viaBaseName;
   }
@@ -327,7 +329,8 @@ function resolveConstructionExpressionClass(
   // Qualified callee — `new ns.Service()` / `new Outer.Inner()`. Prefer an
   // unambiguous qualified-name match, then fall back to the trailing simple
   // name the way receiver resolution does elsewhere (#2708).
-  if (lastDot === -1) return undefined;
+  // Type-application syntax alone cannot justify a workspace-name guess.
+  if (lastDot === -1 || typeApplication) return undefined;
   const root = baseName.slice(0, baseName.indexOf('.'));
   const claim = lookupNameClaim(inScope, root, scopes, {
     position: options.lookupPosition,

@@ -1019,6 +1019,19 @@ pub fn f() !void {
     },
   );
 
+  it('keeps both namespace handles when repeated inline imports use different whitespace', () => {
+    const source = `pub fn entry() void {
+      const Counter = @import("lib.zig").Counter;
+      _ = Counter;
+      @import( "lib.zig" ).work();
+    }`;
+    const handles = emitZigScopeCaptures(source, 'main.zig')
+      .map(interpretZigImport)
+      .filter((imp) => imp?.kind === 'namespace')
+      .map((imp) => imp?.localName);
+    expect(handles.sort()).toEqual(['@import( "lib.zig" )', '@import("lib.zig")'].sort());
+  });
+
   it('a function-scoped @import is not deferred: Zig imports are compile-time (importsExecuteWhereWritten: false)', () => {
     // C `#include` and Rust `use` answer the same. Without the flag the scope
     // extractor marks a body-level `@import` `runsOnlyWhenCalled`, hiding a

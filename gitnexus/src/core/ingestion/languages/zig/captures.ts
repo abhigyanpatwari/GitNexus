@@ -1400,7 +1400,7 @@ export function emitZigScopeCaptures(
       if (claimedImportSourceIds.has(source.id) && !isReceiver) continue;
       const sourceCapture = grouped['@import.source']!;
       if (isReceiver) {
-        const key = `receiver:${zigLexicalHost(inlineImport)?.id}:${source.text}`;
+        const key = `receiver:${zigLexicalHost(inlineImport)?.id}:${inlineImport.text}`;
         if (importedSourceTexts.has(key)) continue;
         importedSourceTexts.add(key);
         out.push({
@@ -1435,7 +1435,7 @@ export function emitZigScopeCaptures(
       );
       const source = nodeMap['@import.source'];
       if (importRoot !== null && source !== undefined) {
-        const key = `receiver:${zigLexicalHost(importRoot)?.id}:${source.text}`;
+        const key = `receiver:${zigLexicalHost(importRoot)?.id}:${importRoot.text}`;
         if (!importedSourceTexts.has(key)) {
           importedSourceTexts.add(key);
           out.push({
@@ -1981,12 +1981,22 @@ function zigRangeKey(range: ZigRange): string {
 function addZigLexicalFacts(out: CaptureMatch[], root: SyntaxNode): void {
   const nodes = new Map<string, SyntaxNode[]>();
   const declarations: SyntaxNode[] = [];
+  const typeConstructors = new Set<number>();
   const visit = (node: SyntaxNode): void => {
     const key = zigRangeKey(zigNodeRange(node));
     const peers = nodes.get(key);
     if (peers === undefined) nodes.set(key, [node]);
     else peers.push(node);
-    if (node.type === 'variable_declaration' || node.type === 'parameter') declarations.push(node);
+    if (
+      node.type === 'variable_declaration' ||
+      node.type === 'parameter' ||
+      node.type === 'function_declaration'
+    )
+      declarations.push(node);
+    if (ZIG_CONTAINER_TYPES.has(node.type)) {
+      const constructor = zigTypeConstructorOf(node);
+      if (constructor !== null) typeConstructors.add(constructor.id);
+    }
     for (const child of node.namedChildren) if (child !== null) visit(child);
   };
   visit(root);
@@ -2046,8 +2056,16 @@ function addZigLexicalFacts(out: CaptureMatch[], root: SyntaxNode): void {
   }
   for (const node of declarations) {
     if (importedDeclarations.has(zigRangeKey(zigNodeRange(node)))) continue;
+    if (node.type === 'function_declaration' && node.childForFieldName('type')?.text !== 'type')
+      continue;
+    // A modeled constructor also binds its returned container under this name,
+    // with a different declaration range. Preserve that dual binding.
+    if (node.type === 'function_declaration' && typeConstructors.has(node.id)) continue;
     if (node.type === 'variable_declaration' && !isZigKeywordDeclaration(node)) continue;
-    const name = node.type === 'parameter' ? node.childForFieldName('name') : node.namedChild(0);
+    const name =
+      node.type === 'parameter' || node.type === 'function_declaration'
+        ? node.childForFieldName('name')
+        : node.namedChild(0);
     const owner = zigLexicalHost(node);
     if (owner !== null && name?.type === 'identifier') {
       // A file's @This() alias names the synthetic Struct declaration, whose
