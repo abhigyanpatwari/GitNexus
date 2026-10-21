@@ -2681,6 +2681,65 @@ def local_order():
   });
 });
 
+// #3498: the namespace lookup also runs in Phase 4, after the out-of-core seal
+// has made `scopeTree.byId` throw. A partition whose namespace calls are all
+// inline warms nothing before the seal, so the lookup must never need that walk.
+// The seal is a memory optimization: the edges must match an in-memory run.
+describe('Python inline namespace factory under the out-of-core scope seal (#3498)', () => {
+  let inMemory: PipelineResult;
+  let sealed: PipelineResult;
+  let repoDir: string;
+  let storeDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-sealed-factory-'));
+    storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-sealed-store-'));
+    writeFixtureRepo(repoDir, {
+      'mod.py': `class C:
+    def m(self):
+        return 1
+
+
+def make() -> C:
+    return C()
+`,
+      'callers.py': `import mod as rp
+
+
+def inline_alias():
+    return rp.make().m()
+`,
+    });
+    inMemory = await runPipelineFromRepo(repoDir, () => {});
+    const prev = process.env.GITNEXUS_DISK_SCOPE_INDEX;
+    process.env.GITNEXUS_DISK_SCOPE_INDEX = '1';
+    try {
+      sealed = await runPipelineFromRepo(repoDir, () => {}, { parsedFileStorePath: storeDir });
+    } finally {
+      if (prev === undefined) delete process.env.GITNEXUS_DISK_SCOPE_INDEX;
+      else process.env.GITNEXUS_DISK_SCOPE_INDEX = prev;
+    }
+  }, 120000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+    if (storeDir !== undefined) fs.rmSync(storeDir, { recursive: true, force: true });
+  });
+
+  const callEdges = (result: PipelineResult): string[] =>
+    getRelationships(result, 'CALLS')
+      .map((edge) => `${edge.source} -> ${edge.rel.targetId}`)
+      .sort();
+
+  it('resolves the inline call under the seal', () => {
+    expect(callEdges(sealed)).toContain('inline_alias -> Method:mod.py:C.m#0');
+  });
+
+  it('emits the same CALLS edges as the in-memory run', () => {
+    expect(callEdges(sealed)).toEqual(callEdges(inMemory));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Issue #289: static/classmethod classes must have HAS_METHOD edges
 // ---------------------------------------------------------------------------
