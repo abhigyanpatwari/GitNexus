@@ -40,8 +40,9 @@ export function resolveGoImportTarget(
     const location = locateGoImport(resolutionConfig, targetRaw, fromFile);
     if (location.kind === 'external') return null;
     if (location.kind === 'module') {
+      const index = getGoPackageIndex(allFilePaths);
       for (const dir of location.dirs) {
-        const files = findFilesInPkgDir(allFilePaths, dir);
+        const files = filesInPkgDir(index, dir);
         if (files.length > 0) return files;
       }
       return null;
@@ -83,10 +84,9 @@ const getGoPackageIndex = perFileSet(
     buildPackageDirIndex(allFilePaths, isGoPackageFile),
 );
 
-/** The package in exactly `dir`. The repository root keeps the sorted order
- *  its leg always had; any other directory keeps Set order. */
-function findFilesInPkgDir(allFilePaths: ReadonlySet<string>, dir: string): string[] {
-  const index = getGoPackageIndex(allFilePaths);
+/** The package in exactly `dir`: root files sorted, any other directory in
+ *  Set order. */
+function filesInPkgDir(index: PackageDirIndex, dir: string): string[] {
   return dir === '' ? sortedRootFiles(index) : filesInDir(index, dir);
 }
 

@@ -145,6 +145,8 @@ function parentDir(filePath: string): string {
   return slash < 0 ? '' : filePath.slice(0, slash);
 }
 
+/** Code-unit order, deliberately not `localeCompare`: the sorted config is
+ *  compared by value across runs, so the order must not depend on the locale. */
 function byDir(a: { readonly dir: string }, b: { readonly dir: string }): number {
   return a.dir < b.dir ? -1 : a.dir > b.dir ? 1 : 0;
 }
@@ -223,6 +225,12 @@ interface GoWorkspaceIndex {
   readonly modulesByPath: ReadonlyMap<string, readonly GoModule[]>;
   /** `go.work` directory → the module directories it uses. */
   readonly usesByWorkDir: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Directory → its nearest module (`null`: none), filled as imports ask. A
+   *  file's imports all start from one directory, and every candidate package
+   *  directory is checked against its owner, so the walks repeat. */
+  readonly ownerByDir: Map<string, GoModule | null>;
+  /** Directory → its nearest `go.work` uses (`null`: none), filled lazily. */
+  readonly workUsesByDir: Map<string, ReadonlySet<string> | null>;
 }
 
 /** Keyed on the config's identity: the orchestrator threads one config object
@@ -242,7 +250,13 @@ function indexOf(config: GoWorkspaceConfig): GoWorkspaceIndex {
   }
   const usesByWorkDir = new Map<string, ReadonlySet<string>>();
   for (const work of config.workFiles) usesByWorkDir.set(work.dir, new Set(work.use));
-  const index: GoWorkspaceIndex = { moduleByDir, modulesByPath, usesByWorkDir };
+  const index: GoWorkspaceIndex = {
+    moduleByDir,
+    modulesByPath,
+    usesByWorkDir,
+    ownerByDir: new Map(),
+    workUsesByDir: new Map(),
+  };
   INDEXES.set(config, index);
   return index;
 }
@@ -259,18 +273,34 @@ function nearest<T>(byDir: ReadonlyMap<string, T>, dir: string): T | undefined {
   }
 }
 
+/** {@link nearest}, memoized per directory in `cache` (`null` caches a miss). */
+function nearestCached<T>(
+  cache: Map<string, T | null>,
+  byDir: ReadonlyMap<string, T>,
+  dir: string,
+): T | undefined {
+  const cached = cache.get(dir);
+  if (cached !== undefined) return cached ?? undefined;
+  const found = nearest(byDir, dir);
+  cache.set(dir, found ?? null);
+  return found;
+}
+
 /**
  * Which of the modules declaring one path the importer means: the only one;
  * else the importer's own; else the only one its `go.work` uses. Anything else
  * is ambiguous and answers nothing — Go refuses such a build rather than pick.
+ * The importer's module and `go.work` are only looked up for a contested path.
  */
 function pickModule(
   group: readonly GoModule[],
-  own: GoModule | undefined,
-  workUses: ReadonlySet<string> | undefined,
+  ownOf: () => GoModule | undefined,
+  workUsesOf: () => ReadonlySet<string> | undefined,
 ): GoModule | undefined {
   if (group.length === 1) return group[0];
+  const own = ownOf();
   if (own !== undefined && group.includes(own)) return own;
+  const workUses = workUsesOf();
   if (workUses === undefined) return undefined;
   const used = group.filter((module) => workUses.has(module.dir));
   return used.length === 1 ? used[0] : undefined;
@@ -283,9 +313,11 @@ export function locateGoImport(
   fromFile: string,
 ): GoImportLocation {
   const index = indexOf(config);
-  const fromDir = parentDir(fromFile.replace(/\\/g, '/'));
-  const own = nearest(index.moduleByDir, fromDir);
-  const workUses = nearest(index.usesByWorkDir, fromDir);
+  const fromDir = parentDir(fromFile.includes('\\') ? fromFile.replace(/\\/g, '/') : fromFile);
+  const ownOf = (): GoModule | undefined =>
+    nearestCached(index.ownerByDir, index.moduleByDir, fromDir);
+  const workUsesOf = (): ReadonlySet<string> | undefined =>
+    nearestCached(index.workUsesByDir, index.usesByWorkDir, fromDir);
 
   const dirs: string[] = [];
   let owned = false;
@@ -296,13 +328,13 @@ export function locateGoImport(
     const group = index.modulesByPath.get(prefix);
     if (group !== undefined) {
       owned = true;
-      const module = pickModule(group, own, workUses);
+      const module = pickModule(group, ownOf, workUsesOf);
       if (module !== undefined) {
         const rel = importPath.slice(prefix.length + 1);
         const dir = module.dir === '' ? rel : rel === '' ? module.dir : `${module.dir}/${rel}`;
         // A nested `go.mod` between the module root and the package takes the
         // directory out of this module.
-        if (nearest(index.moduleByDir, dir) === module) dirs.push(dir);
+        if (nearestCached(index.ownerByDir, index.moduleByDir, dir) === module) dirs.push(dir);
       }
     }
     const slash = prefix.lastIndexOf('/');
@@ -311,5 +343,5 @@ export function locateGoImport(
   }
 
   if (owned) return { kind: 'module', dirs };
-  return own === undefined ? { kind: 'gopath' } : { kind: 'external' };
+  return ownOf() === undefined ? { kind: 'gopath' } : { kind: 'external' };
 }
