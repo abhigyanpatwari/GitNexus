@@ -27,6 +27,7 @@ import { javaScopeResolver } from '../../../src/core/ingestion/languages/java/sc
 import { pythonScopeResolver } from '../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { zigScopeResolver } from '../../../src/core/ingestion/languages/zig/scope-resolver.js';
 import { csharpScopeResolver } from '../../../src/core/ingestion/languages/csharp/scope-resolver.js';
+import { kotlinScopeResolver } from '../../../src/core/ingestion/languages/kotlin/scope-resolver.js';
 import { buildScopeModel, type ScopeModelFixture } from '../../helpers/scope-model.js';
 
 const range = { startLine: 1, startCol: 0, endLine: 1, endCol: 1 };
@@ -729,6 +730,36 @@ const csharpShadowFixture = buildScopeModel(
   'App/Shadow.cs',
 );
 
+const kotlinLibraryFixture = buildScopeModel(
+  kotlinScopeResolver,
+  `class Probe {
+    fun platform() {
+        System.out.println("x")
+    }
+}
+`,
+  'src/Probe.kt',
+);
+
+const kotlinShadowFixture = buildScopeModel(
+  kotlinScopeResolver,
+  `class Printer {
+    fun write(s: String) {}
+}
+
+object System {
+    val out = Printer()
+}
+
+class Probe {
+    fun run() {
+        System.out.println("x")
+    }
+}
+`,
+  'src/Shadow.kt',
+);
+
 describe('classifyReceiverOrigin — library and runtime receivers', () => {
   it.each([
     ['TypeScript document', tsLibraryFixture, 'appendChild'],
@@ -741,6 +772,7 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['Java platform package root', javaLibraryFixture, 'of'],
     ['C# System namespace', csharpLibraryFixture, 'WriteLine'],
     ['C# field declared as a library type', csharpLibraryFixture, 'Keys'],
+    ['Kotlin java.lang.System', kotlinLibraryFixture, 'println'],
   ] as const)('reports %s as external', (_label, fixture, memberName) => {
     expect(originOf(fixture, memberName)).toBe('external');
   });
@@ -759,6 +791,7 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['a C# field of a program type', 'in-program', csharpLibraryFixture, 'Items'],
     ['a C# extension method the program declares', 'in-program', csharpLibraryFixture, 'Size'],
     ['a C# class named System', 'in-program', csharpShadowFixture, 'WriteLine'],
+    ['a Kotlin object named System', 'in-program', kotlinShadowFixture, 'println'],
   ] as const)('keeps %s %s', (_label, expected, fixture, memberName) => {
     expect(originOf(fixture, memberName)).toBe(expected);
   });

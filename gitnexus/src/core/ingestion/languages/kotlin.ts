@@ -130,6 +130,22 @@ const BUILT_INS: ReadonlySet<string> = new Set([
   'step',
 ]);
 
+/**
+ * Program-boundary names for `LanguageProvider.externalReceiverNames`.
+ *
+ * `System` is `java.lang.System`, which Kotlin/JVM imports by default, so
+ * `System.out.println(...)` reaches the JDK. `java` and `kotlin` are package
+ * roots no program can declare into — the JVM refuses `java.*`, and the
+ * compiler reserves `kotlin.*` for the standard library — so a fully qualified
+ * `java.util.UUID.randomUUID()` is rooted outside too. A name counts only where
+ * the program binds nothing by it, so an `object System` still wins.
+ */
+const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set(['System', 'java', 'kotlin']);
+
+/** Imports from those same reserved roots can never resolve in-workspace. */
+const isKotlinPlatformModule = (specifier: string): boolean =>
+  /^(?:java|kotlin)(?:\.|$)/.test(specifier);
+
 export const kotlinProvider = defineLanguage({
   rename: kotlinRenameProvider,
   id: SupportedLanguages.Kotlin,
@@ -187,6 +203,8 @@ export const kotlinProvider = defineLanguage({
   variableExtractor: createVariableExtractor(kotlinVariableConfig),
   classExtractor: createClassExtractor(kotlinClassConfig),
   builtInNames: BUILT_INS,
+  externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isKotlinPlatformModule,
 
   // ── KDoc → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),
