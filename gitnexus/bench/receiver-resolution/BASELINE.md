@@ -1,5 +1,31 @@
 # Receiver-resolution baseline
 
+## Library and runtime receivers classified external (#3498 triage)
+
+Origin labels only. A same-corpus A/B against `main` (`04427e03c`) keeps all
+2,838 `CALLS`/`ACCESSES` edges byte-identical and the same 192 drops (128
+calls). Twenty-four drops move from `unknown` to `external` and none moves the
+other way, so call drops by origin go from 55 in-program, 44 external and 29
+unknown to 55, 62 and 11. Every shape-arm state is unchanged.
+
+The 18 moved call drops are rooted at host globals (TypeScript `document.body`
+x2, `window.history`, `Buffer.from(...)` x2), platform roots (C#
+`System.Console` x3, Kotlin `System.out`, Java `java.util.Optional`) and
+unresolved standard-library imports (Python `os.environ` x3 and
+`Path(__file__)`, Zig `std.sort` x2 and the `zig-qualified-literal`
+`std.Thread.Mutex{}` / `std.mem.Allocator{}`). The other six are reads at those
+same sites. The Zig literals are that fixture's edge negative control; it still
+emits no edge.
+
+Still hedged, on purpose: receivers from unresolved third-party imports
+(`express`, `fastapi`, `next/server`), which the import facts cannot tell apart
+from an in-program module the resolver missed; chains whose next type depends
+on a library method's return type (`users.stream().map(...)`, Zig
+`exe.root_module` after `b.addExecutable(...)`); and `process.env` reads, because
+three fixtures declare a top-level `function process()`. The two C#
+`this.data.Keys/Values` reads read `external` when their fixture is analysed
+alone; in the merged corpus `this` binds another fixture's global `App`.
+
 ## Express inline-handler fixture (#3488)
 
 The new `express-inline-handlers` fixture reads `req.query.path` inside an

@@ -229,9 +229,9 @@
       "chain-unwrap": 1
     },
     "callDropsByOrigin": {
+      "external": 62,
       "in-program": 55,
-      "external": 44,
-      "unknown": 29
+      "unknown": 11
     }
   }
 }
