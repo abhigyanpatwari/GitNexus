@@ -1,8 +1,11 @@
 /**
  * Go: package imports + cross-package calls + ambiguous struct disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { goScopeResolver } from '../../../src/core/ingestion/languages/go/scope-resolver.js';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -11,6 +14,7 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
 
@@ -2222,4 +2226,461 @@ describe('Go undecided interface satisfaction', () => {
     );
     expect(edgeSet(implementsEdges)).toEqual(['Label → Named']);
   });
+});
+
+// #3498: `pkg.New().Do()` takes `New`'s return type from the package. Go binds
+// receiver methods at package scope too, so a method sharing a function's name
+// (`(*WidgetFactory).Create`) must not type `pkg.Create()`.
+describe('Go package factory result types in inline chains (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-go-package-factory-'));
+    writeFixtureRepo(repoDir, {
+      'go.mod': 'module example.com/factory\n\ngo 1.21\n',
+      'pkg/pkg.go': `package pkg
+
+type Thing struct{}
+
+func (t *Thing) Do() int { return 1 }
+
+func New() *Thing { return &Thing{} }
+
+type Gadget struct{}
+
+func (g *Gadget) Spin() {}
+
+type Widget struct{}
+
+func (w *Widget) Spin() {}
+
+func Create() *Gadget { return &Gadget{} }
+
+type WidgetFactory struct{}
+
+func (f *WidgetFactory) Create() *Widget { return &Widget{} }
+`,
+      'main.go': `package main
+
+import "example.com/factory/pkg"
+
+func fresh() {
+\tpkg.New().Do()
+}
+
+func shadowedByMethod() {
+\tpkg.Create().Spin()
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { source: 'fresh', member: 'Do', targets: ['Method:pkg/pkg.go:Thing.Do#0'] },
+    { source: 'shadowedByMethod', member: 'Spin', targets: [] },
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(targets);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Package-qualified declared types (root cause A of the #3498 corpus triage)
+// ---------------------------------------------------------------------------
+
+describe('Go package-qualified field and parameter types', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-qualified-declared-types'),
+      () => {},
+    );
+  }, 60000);
+
+  /** Every CALLS target of `caller`, qualified by package dir and file — the
+   *  two `User` types share their method names, so only the file tells which
+   *  one a call bound to. Exact lists, so a wrong target fails the same row a
+   *  missing one does. */
+  const targetsOf = (caller: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((e) => e.source === caller)
+      .map((e) => `${e.target}@${e.targetFilePath.split('/').slice(-2).join('/')}`)
+      .sort();
+
+  // Capture normalizes `models.User` to `User`, and both `models` and `api`
+  // declare one. Before the qualified spelling was consulted, every qualified
+  // row lost its member call, and `Forward` bound to its own package's
+  // `api.User`. The bare same-package row is the control.
+  it.each([
+    ['a value parameter', 'ArchiveByValue', ['Archive@models/user.go']],
+    ['a pointer parameter', 'ArchiveByPointer', ['Archive@models/user.go']],
+    ['a parameter through an import alias', 'ArchiveAliased', ['Archive@models/user.go']],
+    ['a struct field', 'ArchiveMember', ['Archive@models/user.go']],
+    ['a pointer struct field', 'ArchivePointer', ['Archive@models/user.go']],
+    ['a struct field of the other package', 'ArchiveRemote', ['Archive@api/user.go']],
+    ['a field chain off a parameter', 'PurgeInbox', ['Purge@models/user.go']],
+    ['a declared local variable', 'ArchiveDeclared', ['Archive@models/user.go']],
+    // The composite literal's own constructor edge already resolved through
+    // the namespace; only the call on the value it produces did not.
+    [
+      'a pointer composite literal',
+      'ArchiveConstructed',
+      ['Archive@models/user.go', 'User@models/user.go'],
+    ],
+    [
+      'a qualifier naming another package than its own namesake',
+      'Forward',
+      ['Archive@models/user.go'],
+    ],
+    ['a bare same-package type', 'ArchiveLocal', ['Archive@api/user.go']],
+    // A receiver named like its type's package (`vault *vault.Vault`) binds the
+    // qualifier's own name where the type was written, so the qualifier has to
+    // be read from the file's imports, not from that scope.
+    ['a struct field named like its package', 'StowField', ['Stow@vault/vault.go']],
+    ['a parameter named like its package', 'StowParam', ['Stow@vault/vault.go']],
+    ['a local named like its package', 'StowLocal', ['Stow@vault/vault.go']],
+  ])('resolves %s to the type it names (%s)', (_shape, caller, expected) => {
+    expect(targetsOf(caller)).toEqual(expected);
+  });
+
+  it.each([
+    ['refuses a bare name two packages declare', 'ArchiveForeign', []],
+    ['refuses a bare name two packages declare', 'ArchiveForeignField', []],
+    ['refuses a workspace-unique bare name', 'SpinGadget', []],
+    ['refuses a workspace-unique bare name', 'SpinGadgetField', []],
+  ])('behind an unresolved import, %s (%s)', (_behaviour, caller, expected) => {
+    expect(targetsOf(caller)).toEqual(expected);
+  });
+});
+
+// #3498 review: a declared type's chain step must not hand the qualified lookup
+// another binding's spelling. `member models.User` normalizes to `User`, and the
+// extractor's chain-follow can land on a sibling field or a package-level
+// field named `User`; the binding keeps its own spelling, so it still means
+// `models.User` or, when the replaced type no longer matches, resolves nothing.
+// A method value (`f := p.Save`) types `p` through the same qualified lookup.
+describe('Go qualified declared types through chain steps and method values (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-go-qualified-chain-'));
+    writeFixtureRepo(repoDir, {
+      'go.mod': 'module example.com/chain\n\ngo 1.21\n',
+      'models/user.go': `package models
+
+type User struct{}
+
+func (u *User) Archive() {}
+
+func (u *User) Save() {}
+`,
+      'api/user.go': `package api
+
+type User struct{}
+
+func (u *User) Archive() {}
+`,
+      'api/principal.go': `package api
+
+type Principal struct{}
+
+func (p *Principal) Archive() {}
+`,
+      'auth/principal.go': `package auth
+
+type Principal struct{}
+
+func (p *Principal) Archive() {}
+`,
+      'services/archiver.go': `package services
+
+import (
+\t"example.com/chain/api"
+\t"example.com/chain/models"
+)
+
+type Archiver struct {
+\tUser   api.User
+\tmember models.User
+}
+
+func (a *Archiver) ArchiveMember() {
+\ta.member.Archive()
+}
+
+func (a *Archiver) ArchiveUser() {
+\ta.User.Archive()
+}
+
+func ArchiveParam(User api.User, member models.User) {
+\tmember.Archive()
+}
+`,
+      'held/session.go': `package held
+
+import "example.com/chain/auth"
+
+type Session struct {
+\tUser *auth.Principal
+}
+`,
+      'held/holder.go': `package held
+
+import "example.com/chain/models"
+
+type Holder struct {
+\towner *models.User
+}
+
+func (h *Holder) ArchiveHeld() {
+\th.owner.Archive()
+}
+`,
+      'values/local.go': `package values
+
+type User struct{}
+
+func (u *User) Save() {}
+`,
+      'values/values.go': `package values
+
+import "example.com/chain/models"
+
+func MethodValue(p *models.User) {
+\tf := p.Save
+\tf()
+}
+
+func Callback(p *models.User) {
+\trun(p.Save)
+}
+
+func run(f func()) {
+\tf()
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    {
+      source: 'ArchiveMember',
+      member: 'Archive',
+      targets: ['Method:models/user.go:User.Archive#0'],
+    },
+    {
+      source: 'ArchiveParam',
+      member: 'Archive',
+      targets: ['Method:models/user.go:User.Archive#0'],
+    },
+    { source: 'ArchiveUser', member: 'Archive', targets: ['Method:api/user.go:User.Archive#0'] },
+    { source: 'ArchiveHeld', member: 'Archive', targets: [] },
+    { source: 'MethodValue', member: 'Save', targets: ['Method:models/user.go:User.Save#0'] },
+    { source: 'run', member: 'Save', targets: ['Method:models/user.go:User.Save#0'] },
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId)
+        .sort(),
+    ).toEqual(targets);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Several go.mod files in one repository: each import is owned by the module
+// whose path is its longest prefix, and names the exact directory under that
+// module's root.
+// ---------------------------------------------------------------------------
+
+/** Every IMPORTS edge as `from → to`, repo-relative file paths. */
+const importEdgesOf = (result: PipelineResult): string[] =>
+  getRelationships(result, 'IMPORTS')
+    .map((e) => `${e.sourceFilePath} → ${e.targetFilePath}`)
+    .sort();
+
+/** Every CALLS target of `caller`, with the file it is declared in. Exact
+ *  lists, so a call bound to the other module's same-named type fails the row
+ *  a missing call does. */
+const callTargetsOf = (result: PipelineResult, caller: string): string[] =>
+  getRelationships(result, 'CALLS')
+    .filter((e) => e.source === caller)
+    .map((e) => `${e.target}@${e.targetFilePath}`)
+    .sort();
+
+describe('Go modules whose directories differ from their module paths', () => {
+  let result: PipelineResult;
+  let captureCount = 0;
+  let reloadCount = 0;
+
+  beforeAll(async () => {
+    const capture = vi.spyOn(goScopeResolver, 'captureResolutionConfig');
+    const reload = vi.spyOn(goScopeResolver, 'loadResolutionConfig');
+    try {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'go-multi-module-workspace'),
+        () => {},
+      );
+      captureCount = capture.mock.calls.length;
+      reloadCount = reload.mock.calls.length;
+    } finally {
+      capture.mockRestore();
+      reload.mockRestore();
+    }
+  }, 60000);
+
+  // The manifests come from the scan's own path list: no second directory walk.
+  it('captures the go.mod files once and never reloads them', () => {
+    expect(captureCount).toBe(1);
+    expect(reloadCount).toBe(0);
+  });
+
+  // No root go.mod. `orders-service/` and `billing-service/` both hold an
+  // `internal/repository`, and neither directory is named after its module, so
+  // the GOPATH suffix match reached `internal/repository` and returned both
+  // packages for either import. `tools/codegen/` declares
+  // `example.com/generator/v2`: no tail of that path names a directory at all.
+  it('resolves every import to a package of the importing module only', () => {
+    expect(importEdgesOf(result)).toEqual([
+      'billing-service/cmd/billing/main.go → billing-service/internal/repository/ledger.go',
+      'orders-service/cmd/orders/main.go → orders-service/internal/repository/ledger.go',
+      'tools/codegen/cmd/gen/main.go → tools/codegen/models/template.go',
+    ]);
+  });
+
+  it.each([
+    [
+      'PlaceOrder',
+      [
+        'ReserveStock@orders-service/internal/repository/ledger.go',
+        'Save@orders-service/internal/repository/ledger.go',
+      ],
+    ],
+    [
+      'ChargeOrder',
+      [
+        'ChargeCard@billing-service/internal/repository/ledger.go',
+        'Save@billing-service/internal/repository/ledger.go',
+      ],
+    ],
+    ['Generate', ['Render@tools/codegen/models/template.go']],
+  ])('binds the calls in %s to types of the importing module', (caller, expected) => {
+    expect(callTargetsOf(result, caller)).toEqual(expected);
+  });
+});
+
+describe('Go root module with a nested module', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-root-with-nested-module'), () => {});
+  }, 60000);
+
+  // `services/billing/go.mod` declares `github.com/acme/ledger`. Reading only
+  // the root go.mod dropped every import of that module (not owned by
+  // `example.com/platform`), and matched the root's own `internal/repository`
+  // against ANY directory ending in it — the nested module's included, though
+  // its go.mod removes that tree from the root module. `pkg/clock` exists only
+  // in the root module: the control that resolved either way.
+  it('anchors each import at its own module root', () => {
+    expect(importEdgesOf(result)).toEqual([
+      'cmd/server/main.go → internal/repository/ledger.go',
+      'cmd/server/main.go → pkg/clock/clock.go',
+      'services/billing/cmd/billing/main.go → services/billing/internal/repository/ledger.go',
+    ]);
+  });
+
+  it.each([
+    ['Serve', ['Save@internal/repository/ledger.go', 'Tick@pkg/clock/clock.go']],
+    ['Bill', ['Save@services/billing/internal/repository/ledger.go']],
+  ])('binds the calls in %s to types of the importing module', (caller, expected) => {
+    expect(callTargetsOf(result, caller)).toEqual(expected);
+  });
+});
+
+describe.each<[string, Record<string, string>, string[], string[]]>([
+  ['independent sibling modules', {}, [], []],
+  [
+    'selected workspace modules',
+    { 'go.work': 'go 1.21\nuse (\n./orders\n./billing\n)\n' },
+    ['orders/main.go → billing/repository/ledger.go'],
+    ['Save@billing/repository/ledger.go'],
+  ],
+  ['workspace excludes the importing module', { 'go.work': 'go 1.21\nuse ./billing\n' }, [], []],
+  [
+    'nearest workspace excludes the sibling',
+    {
+      'go.work': 'go 1.21\nuse (\n./orders\n./billing\n)\n',
+      'orders/go.work': 'go 1.21\nuse .\n',
+    },
+    [],
+    [],
+  ],
+])('Go module visibility: %s', (_scenario, workFiles, expectedImports, expectedCalls) => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-go-module-visibility-'));
+    writeFixtureRepo(repoDir, {
+      'orders/go.mod': 'module example.com/orders\n\ngo 1.21\n',
+      'billing/go.mod': 'module example.com/billing\n\ngo 1.21\n',
+      'orders/main.go': `package main
+
+import "example.com/billing/repository"
+
+func PlaceOrder(ledger *repository.Ledger) error {
+  return ledger.Save()
+}
+
+type Order struct { ledger *repository.Ledger }
+
+func PlaceOrderField(order *Order) error {
+  return order.ledger.Save()
+}
+
+func PlaceOrderValue(ledger *repository.Ledger) error {
+  save := ledger.Save
+  return save()
+}
+`,
+      'billing/repository/ledger.go': `package repository
+
+type Ledger struct{}
+
+func (l *Ledger) Save() error { return nil }
+`,
+      ...workFiles,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => fs.rmSync(repoDir, { recursive: true, force: true }));
+
+  it('only imports selected local providers', () => {
+    expect(importEdgesOf(result)).toEqual(expectedImports);
+  });
+
+  it.each(['PlaceOrder', 'PlaceOrderField', 'PlaceOrderValue'])(
+    'only binds %s calls through selected local providers',
+    (caller) => {
+      expect(callTargetsOf(result, caller)).toEqual(expectedCalls);
+    },
+  );
 });

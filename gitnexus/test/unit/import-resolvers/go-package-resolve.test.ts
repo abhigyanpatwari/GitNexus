@@ -27,7 +27,10 @@ import {
   resolveGoPackageDir,
 } from '../../../src/core/ingestion/import-resolvers/go.js';
 import type { GoModuleConfig } from '../../../src/core/ingestion/language-config.js';
-import { resolveGoImportTarget } from '../../../src/core/ingestion/languages/go/import-target.js';
+import {
+  buildPackageDirIndex,
+  filesDirectlyInPkgDir,
+} from '../../../src/core/ingestion/import-resolvers/package-dir-index.js';
 
 const MOD: GoModuleConfig = { modulePath: 'example.com/mod' };
 
@@ -36,14 +39,19 @@ function resolve(files: readonly string[], importPath: string): string[] {
   return resolveGoPackage(importPath, MOD, normalized, files);
 }
 
-/** The indexed leg, for the agreement arm. */
+/**
+ * The indexed membership rule, for the agreement arm: the package-dir index
+ * the ScopeResolver leg's GOPATH match answers from, asked the module-relative
+ * path this leg asks. Not `resolveGoImportTarget` itself any more — its module
+ * leg now names the exact directory under the module root, deliberately unlike
+ * this leg's suffix match (see `languages/go/workspace-config.ts`).
+ */
 function indexed(files: readonly string[], importPath: string): readonly string[] {
-  const got = resolveGoImportTarget(importPath, 'main.go', new Set(files), MOD);
-  // `typeof got === 'string'`, not `Array.isArray(got)`: `Array.isArray` narrows
-  // to `any[]`, which does not subsume `readonly string[]`, so the false branch
-  // kept the array member and `[got]` did not typecheck (TS2322 under
-  // `tsconfig.test.json`). Runtime behaviour is identical.
-  return got === null ? [] : typeof got === 'string' ? [got] : got;
+  const index = buildPackageDirIndex(
+    new Set(files),
+    (normalized) => normalized.endsWith('.go') && !normalized.endsWith('_test.go'),
+  );
+  return filesDirectlyInPkgDir(index, importPath.slice(MOD.modulePath.length + 1));
 }
 
 describe('resolveGoPackage', () => {
@@ -140,11 +148,10 @@ describe('resolveGoPackage', () => {
     ]);
   });
 
-  it('agrees with the indexed leg on the repeated-name shapes', () => {
-    // The two legs are independent implementations of one rule. Before #2881
-    // they agreed on the wrong answer; they must agree on the right one, or
-    // Go's LanguageProvider and ScopeResolver hooks disagree about which files
-    // a package holds.
+  it('agrees with the indexed membership rule on the repeated-name shapes', () => {
+    // The two are independent implementations of one rule. Before #2881 they
+    // agreed on the wrong answer; they must agree on the right one, or this
+    // leg and the GOPATH match disagree about which files a package holds.
     for (const files of [
       ['pkg/src/go/pkg/repo.go'],
       ['a/pkg/b/pkg/x.go'],

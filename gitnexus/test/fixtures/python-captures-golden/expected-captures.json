@@ -603,6 +603,14 @@
     "captureGroups": 13,
     "digest": "d3032a370833cf67e68672de0ec85b199756f43984488f93a37de81501cac1c1"
   },
+  "python-module-factory-return/callers.py": {
+    "captureGroups": 54,
+    "digest": "328eeab94d699fd28279ce150e097f7f260ffc39df741b9371eedb3752d2e34a"
+  },
+  "python-module-factory-return/mod.py": {
+    "captureGroups": 20,
+    "digest": "c9fe0b8d85d828d0a07195c07b6a9a521bf64df084893db58fc4d9abbb00794e"
+  },
   "python-module-import/app.py": {
     "captureGroups": 15,
     "digest": "29560a379fc78162c760c142019d480ddbdd56e807da5831bc39d2c559136f3e"

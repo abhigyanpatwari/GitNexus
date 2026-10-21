@@ -224,6 +224,11 @@ export function emitCppScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    if (grouped['@import.namespace-alias'] !== undefined) {
+      recordCppUsingDeclaration(filePath, grouped);
+      continue;
+    }
+
     // ── Handle #include statements ──────────────────────────────────
     // `@import.statement` is captured directly on the `preproc_include` node.
     if (grouped['@import.statement'] !== undefined) {

@@ -1409,7 +1409,7 @@ function qualifiedSpellingFallback(
  *
  * The receiver-typing lookups above understand a qualifier only as a `.`
  * namespace-import handle, and a language whose qualifier is a namespace path
- * (C++: `#include` binds no handle, and the index keys `rp::C` under `C`) never
+ * (an include binds no handle, and the index keys `rp::C` under `C`) never
  * has one, so a qualified local, parameter or factory result typed nothing.
  * Reducing the spelling to its tail is NOT the fix: the tail binds the nearest
  * same-named class, which is exactly the class the qualifier was written to

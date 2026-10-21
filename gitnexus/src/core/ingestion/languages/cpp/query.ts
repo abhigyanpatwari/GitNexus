@@ -264,6 +264,10 @@ const CPP_SCOPE_QUERY = `
 (type_definition
   declarator: (type_identifier) @declaration.name) @declaration.typedef
 
+(namespace_alias_definition
+  name: (namespace_identifier) @import.name
+  . (_) @import.source) @import.namespace-alias @import.statement
+
 ;; ─── Declarations — type alias (using Name = Type) ──────────────────
 (alias_declaration
   name: (type_identifier) @declaration.name) @declaration.typedef

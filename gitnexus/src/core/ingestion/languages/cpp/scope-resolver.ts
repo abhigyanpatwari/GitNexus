@@ -63,6 +63,7 @@ import {
   clearCppUsingDeclarations,
   populateCppIncludedUsingClaims,
   populateCppUsingBindings,
+  cppQualifiedTypeLookupSpelling,
 } from './using-bindings.js';
 
 /** A pointee worth binding: a bare identifier, not `T**`, `T[]`, `A::B` or a
@@ -335,6 +336,7 @@ export const cppScopeResolver: ScopeResolver = {
   // candidate's namespace, refuse on a tie — rather than by its tail, which
   // binds the nearer same-named class the qualifier was written to exclude.
   resolveQualifiedTypeSpellings: true,
+  qualifiedTypeLookupSpelling: cppQualifiedTypeLookupSpelling,
   resolveReceiverMember: resolveCppReceiverMember,
   // The `isFileLocalDef` hook on the global free-call fallback names
   // file-local linkage historically, but semantically gates "logically

@@ -7,12 +7,6 @@
       "issue": 3490,
       "reason": "Guard-style sanitizers are a documented taint limitation (#3490).",
       "baselineActual": ["handleGuarded -> runGit command-injection"]
-    },
-    {
-      "id": "python.factory-qualified",
-      "issue": 3498,
-      "reason": "Module-qualified factory return type is not followed (#3498).",
-      "baselineActual": []
     }
   ]
 }

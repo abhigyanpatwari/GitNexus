@@ -8,14 +8,17 @@ import type {
   Range,
   Scope,
   ScopeId,
+  TypeRef,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { isCppInlineNamespaceScope } from './inline-namespaces.js';
+import { isCppNamespaceQualifierShadowed } from './qualified-name-claims.js';
 
 /** Namespace lookup facts, deliberately distinct from preprocessor file imports. */
 export interface CppUsingDeclaration {
   readonly namespace: string;
   readonly name?: string;
+  readonly alias?: string;
   readonly range: Range;
 }
 
@@ -35,7 +38,12 @@ export function recordCppUsingDeclaration(filePath: string, capture: CaptureMatc
   if (namespace === undefined || range === undefined) return;
   const name = capture['@import.name']?.text;
   const declarations = declarationsByFile.get(filePath) ?? [];
-  declarations.push({ namespace, range, ...(name === undefined ? {} : { name }) });
+  const alias = capture['@import.namespace-alias'] === undefined ? undefined : name;
+  declarations.push({
+    namespace,
+    range,
+    ...(alias === undefined ? (name === undefined ? {} : { name }) : { alias }),
+  });
   declarationsByFile.set(filePath, declarations);
 }
 
@@ -92,7 +100,7 @@ export function attachCppUsingClaims(captures: CaptureMatch[], filePath: string)
     byOwner.set(owner.match, claims);
   };
   for (const declaration of collectCppUsingDeclarations(filePath)) {
-    if (declaration.name === undefined) continue;
+    if (declaration.alias !== undefined || declaration.name === undefined) continue;
     add({
       name: declaration.name,
       range: declaration.range,
@@ -276,6 +284,7 @@ export function populateCppIncludedUsingClaims(
   for (const parsed of parsedFiles) {
     const declarations = usingDeclarations(parsed).filter(
       (declaration) =>
+        declaration.alias === undefined &&
         declaration.name !== undefined &&
         owningScope(parsed, declaration.range)?.id === parsed.moduleScope,
     );
@@ -371,6 +380,43 @@ export function populateCppIncludedUsingClaims(
   }
 }
 
+interface NamespaceAliasTarget {
+  readonly target: string;
+  readonly availableFrom?: Range;
+}
+const namespaceAliases = new WeakMap<
+  ScopeResolutionIndexes,
+  Map<ScopeId, Map<string, NamespaceAliasTarget>>
+>();
+
+/** Expand only aliases visible from the binding's declaration scope. */
+export function cppQualifiedTypeLookupSpelling(
+  ref: TypeRef,
+  indexes?: ScopeResolutionIndexes,
+): string | undefined {
+  if (indexes === undefined) return undefined;
+  const separator = ref.rawName.indexOf('::');
+  if (separator <= 0) return undefined;
+  const head = ref.rawName.slice(0, separator).trim();
+  if (isCppNamespaceQualifierShadowed(head, ref.declaredAtScope, indexes)) return undefined;
+  let id: ScopeId | null = ref.declaredAtScope;
+  const seen = new Set<ScopeId>();
+  while (id !== null && !seen.has(id)) {
+    seen.add(id);
+    const alias = namespaceAliases.get(indexes)?.get(id)?.get(head);
+    const position = ref.lookupPosition ?? ref.bindingRange;
+    if (
+      alias !== undefined &&
+      (position === undefined ||
+        alias.availableFrom === undefined ||
+        compare(alias.availableFrom, position) <= 0)
+    )
+      return `${alias.target}::${ref.rawName.slice(separator + 2)}`;
+    id = indexes.scopeTree.getScope(id)?.parent ?? null;
+  }
+  return undefined;
+}
+
 /** Materialize namespace identities once, then augment only the using's owner. */
 export function populateCppUsingBindings(
   parsedFiles: readonly ParsedFile[],
@@ -381,6 +427,16 @@ export function populateCppUsingBindings(
     indexes.scopeTree.getScope(id),
   );
   const { namespacePath } = namespaceLookup;
+  const aliases = new Map<ScopeId, Map<string, NamespaceAliasTarget>>();
+  namespaceAliases.set(indexes, aliases);
+  const installAlias = (scope: ScopeId, name: string, value: NamespaceAliasTarget): void => {
+    let bucket = aliases.get(scope);
+    if (bucket === undefined) {
+      bucket = new Map();
+      aliases.set(scope, bucket);
+    }
+    bucket.set(name, value);
+  };
   const byFile = new Map(parsedFiles.map((parsed) => [parsed.filePath, parsed]));
   const visibleFiles = createIncludeClosure((filePath) => {
     const parsed = byFile.get(filePath);
@@ -389,6 +445,21 @@ export function populateCppUsingBindings(
       edge.targetFile !== null && edge.linkStatus !== 'unresolved' ? [edge.targetFile] : [],
     );
   });
+  const consumersByHeader = new Map<string, ScopeId[]>();
+  if (
+    parsedFiles.some((parsed) =>
+      usingDeclarations(parsed).some((declaration) => declaration.alias !== undefined),
+    )
+  ) {
+    for (const consumer of parsedFiles) {
+      for (const header of visibleFiles(consumer.filePath)) {
+        if (header === consumer.filePath) continue;
+        const consumers = consumersByHeader.get(header) ?? [];
+        consumers.push(consumer.moduleScope);
+        consumersByHeader.set(header, consumers);
+      }
+    }
+  }
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
   const append = (
     scope: Scope,
@@ -428,6 +499,14 @@ export function populateCppUsingBindings(
       );
       if (resolved === undefined) continue;
       const { target, members } = resolved;
+      if (declaration.alias !== undefined) {
+        installAlias(owner.id, declaration.alias, { target, availableFrom: declaration.range });
+        if (owner.id === parsed.moduleScope) {
+          for (const consumer of consumersByHeader.get(parsed.filePath) ?? [])
+            installAlias(consumer, declaration.alias, { target });
+        }
+        continue;
+      }
       for (const [name, refs] of members) {
         if (declaration.name !== undefined) {
           append(owner, name, refs, declaration);

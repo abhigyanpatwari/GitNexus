@@ -30,6 +30,7 @@
  */
 
 import type { Callsite, ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import { isCppNamespaceQualifierShadowed } from './qualified-name-claims.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import {
   isOverloadAmbiguousAfterNormalization,
@@ -487,7 +488,15 @@ export function resolveCppQualifiedNamespaceMember(
  */
 export function splitCppQualifiedCallee(
   callee: string,
+  callerScope?: ScopeId,
+  scopes?: ScopeResolutionIndexes,
 ): { readonly receiver: string; readonly member: string } | undefined {
+  if (callerScope !== undefined && scopes !== undefined && !/^\s*::/.test(callee)) {
+    const root = callee.trim().split('::')[0]?.trim();
+    if (root !== undefined) {
+      if (isCppNamespaceQualifierShadowed(root, callerScope, scopes)) return undefined;
+    }
+  }
   const separators: number[] = [];
   let angleDepth = 0;
   for (let i = 0; i < callee.length; i++) {

@@ -1145,7 +1145,7 @@ export interface ScopeResolver {
    *
    * The shared receiver lookups read a qualifier only as a `.` namespace-import
    * handle, so a language whose qualifier is a namespace PATH with no import
-   * handle behind it typed none of these receivers. C++ opts in: `#include`
+   * handle behind it typed none of these receivers. File includes
    * binds no handle and its index keys `rp::C` under `C`. The alternative —
    * reducing the spelling to its tail at capture — binds the nearest
    * same-named class, which is the class the qualifier was written to exclude.
@@ -1474,8 +1474,9 @@ export interface ScopeResolver {
    * resolver can ask `resolveQualifiedReceiverMember` for the callee's
    * definition and read the return type that definition declares (by
    * definition identity, never by name). Splitting is the language's job: the
-   * separator and which segment counts as the receiver are grammar facts (C++
-   * captures the innermost scope segment, so `a::b::make` is `b` / `make`).
+   * separator and which segment counts as the receiver are grammar facts; a
+   * provider may capture `a::b::make` as `b` / `make`. The caller scope and
+   * indexes let it reject dependent or shadowed qualifiers before splitting.
    *
    * Consulted only for a free-call head whose name binds no callable, and only
    * when `resolveQualifiedReceiverMember` is implemented too. It is asked
@@ -1483,6 +1484,8 @@ export interface ScopeResolver {
    */
   readonly splitQualifiedCallee?: (
     callee: string,
+    callerScope?: ScopeId,
+    scopes?: ScopeResolutionIndexes,
   ) => { readonly receiver: string; readonly member: string } | undefined;
 
   /**
@@ -1730,6 +1733,50 @@ export interface ScopeResolver {
    * TypeScript and C++ need it for field types.
    */
   readonly stripTypePreservingDecoration?: DecorationStripper;
+
+  /**
+   * The QUALIFIED spelling of a declared type whose qualifier capture-time
+   * normalization dropped from `rawName` — `models.User` for a binding written
+   * `*models.User` and stored as `User` — or `undefined` when the written type
+   * names no namespace, or `rawName` still carries it.
+   *
+   * Exists because a bare `rawName` cannot tell two namespaces' same-named
+   * types apart. Its lookup has no qualifier to follow, so a type imported
+   * through a namespace binds only by the workspace-wide unique-name fallback,
+   * which answers only while the name is unique: once a second package declares
+   * a `User`, every receiver typed `models.User` loses its edges, and a package
+   * declaring its own `User` binds `models.User` to THAT one through the scope
+   * chain. The written spelling (`TypeRef.declaredSpelling`) still has the
+   * qualifier; this hook reduces it the way `rawName` was reduced, minus the cut.
+   *
+   * Receiver typing tries the returned spelling FIRST, through the namespace
+   * branch of `findClassBindingInScope` — candidates only from the files the
+   * qualifier's import resolves to, filtered by `isNamespaceMemberVisible` —
+   * with the unique-name fallback switched off for that attempt, so a hit is a
+   * namespace decision and never a name guess. A miss (an unresolved import,
+   * no such type, two of them) is final: the bare `rawName` must not bind a type
+   * from another package. Bare lookup remains available when this hook returns
+   * no qualified spelling.
+   *
+   * The qualifier must name a FILE-level import: it is looked up from the module
+   * scope enclosing `declaredAtScope`, never from `declaredAtScope` itself. That
+   * scope holds the binding, and the binding may carry the qualifier's own name
+   * — `vault *vault.Vault` as a field, parameter or local — which would shadow
+   * the import there. A language whose imports can be block-scoped needs a
+   * different anchor and must not return a spelling this rule would misread.
+   *
+   * The binding itself is deliberately NOT rewritten to keep the qualifier:
+   * `rawName` has many readers, and the compound resolver reads a dotted one as
+   * a `value.member` alias path. Only receiver typing needs the distinction.
+   *
+   * Return a module-visible class spelling (no decoration or type arguments).
+   * Providers may also expand a namespace alias using the binding's declaration
+   * scope and the supplied indexes. Leave undefined when no expansion is needed.
+   */
+  readonly qualifiedTypeLookupSpelling?: (
+    typeRef: TypeRef,
+    scopes?: ScopeResolutionIndexes,
+  ) => string | undefined;
 
   /**
    * Whether the compound-receiver resolver should strip C-style cast
