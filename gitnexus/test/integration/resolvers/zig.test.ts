@@ -981,14 +981,13 @@ describe.skipIf(!zigAvailable)('Zig type aliases (zig-filestruct fixture, aliase
     // aliases.zig. Bound (`const bound = Bridge(Local)`) and inline
     // (`Bridge(Local).prototypeChain()`) spellings both reach Builder.
     const fromB12 = getRelationships(result, 'CALLS')
-      .filter((e) => e.source === 'b12')
-      .map((e) => e.rel.targetId);
-    expect(fromB12).toEqual(
-      expect.arrayContaining([
-        'Method:src/generic.zig:Builder.accessor#1',
-        'Method:src/generic.zig:Builder.prototypeChain#0',
-      ]),
-    );
+      .filter((e) => e.source === 'b12' && e.targetLabel === 'Method')
+      .map((e) => e.rel.targetId)
+      .sort();
+    expect(fromB12).toEqual([
+      'Method:src/generic.zig:Builder.accessor#1',
+      'Method:src/generic.zig:Builder.prototypeChain#0',
+    ]);
   });
 
   it('a value const / value call is not a type alias and gains no edge', () => {
@@ -1829,6 +1828,11 @@ pub fn use2() void { const b = Bridge(u8); b.get(); }
         'src/third.zig': 'pub const Unrelated = struct { pub fn get() void {} };\n',
         'src/lib.zig': 'pub const Counter = struct {};\npub fn work() void {}\n',
         'src/other_work.zig': 'pub fn work() void {}\n',
+        'src/typed.zig': `pub fn typedImport() void {
+    const Counter: type = @import("lib.zig").Counter;
+    _ = Counter;
+}
+`,
         'src/other_local.zig': 'pub const Local = struct { pub fn get() void {} };\n',
         'src/namespaced.zig': `const local = @import("local.zig");
 pub fn namespacePositive() void { local.Local(u8).get(); }
@@ -1872,6 +1876,13 @@ pub fn positive() void { Local(u8).get(); }
   it('resolves a differently spaced inline import after a member alias', () => {
     const targets = getRelationships(result, 'CALLS')
       .filter((edge) => edge.source === 'entry' && edge.target === 'work')
+      .map((edge) => ({ file: edge.targetFilePath, reason: edge.rel.reason }));
+    expect(targets).toEqual([{ file: 'src/lib.zig', reason: 'import-resolved' }]);
+  });
+
+  it('reads a member through an explicitly typed import alias initializer', () => {
+    const targets = getRelationships(result, 'ACCESSES')
+      .filter((edge) => edge.source === 'typedImport' && edge.target === 'Counter')
       .map((edge) => ({ file: edge.targetFilePath, reason: edge.rel.reason }));
     expect(targets).toEqual([{ file: 'src/lib.zig', reason: 'import-resolved' }]);
   });

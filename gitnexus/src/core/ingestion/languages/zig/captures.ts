@@ -111,7 +111,7 @@ export function isZigInlineImportReceiver(importNode: SyntaxNode): boolean {
     return (
       isZigKeywordDeclaration(use) &&
       use.childForFieldName('type')?.id !== field.id &&
-      zigMemberChainOf(use)?.root.id === importNode.id
+      use.namedChildren.filter((child) => child !== null).at(-1)?.id === field.id
     );
   }
   if (use.type === 'call_expression') return use.childForFieldName('function')?.id === field.id;

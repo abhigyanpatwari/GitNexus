@@ -18,6 +18,10 @@ unchanged.
 - 1 call and its callee-position read at zig-idioms `main.zig:42`
   (`Stack(u8).init()`): the new `isTypeApplicationCall` hook types the receiver
   as `Stack`.
+- 2 calls and their callee-position reads at zig-filestruct `aliases.zig:86`
+  and `:88` (`JsApi.Meta.prototype_chain` and `JsApi.value`): the
+  `bridge = generic.Bridge(Local)` alias reaches `Builder` through the
+  forwarding return type. These were lines 77 and 79 on the measured main.
 
 Forwarding type constructors (`Bridge ↦ Builder`) also work through the
 namespace-factory lookup already merged in #3648. The combined result clears

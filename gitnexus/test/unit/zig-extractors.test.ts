@@ -1019,6 +1019,16 @@ pub fn f() !void {
     },
   );
 
+  it('binds the namespace receiver of an explicitly typed member alias', () => {
+    const source = 'const Thing: type = @import("thing.zig").Thing;';
+    const groups = emitZigScopeCaptures(source, 'main.zig');
+    const handles = groups
+      .map(interpretZigImport)
+      .filter((imp) => imp?.kind === 'namespace')
+      .map((imp) => imp?.localName);
+    expect(handles).toEqual(['@import("thing.zig")']);
+  });
+
   it('keeps both namespace handles when repeated inline imports use different whitespace', () => {
     const source = `pub fn entry() void {
       const Counter = @import("lib.zig").Counter;
