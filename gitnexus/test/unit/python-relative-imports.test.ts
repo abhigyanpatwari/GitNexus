@@ -3,13 +3,13 @@ import { resolvePythonImportInternal } from '../../src/core/ingestion/languages/
 import { resolvePythonImportTarget } from '../../src/core/ingestion/languages/python/import-target.js';
 
 /** Both the helper and the public adapter must respect Python's file boundary. */
-function resolveBoth(files: string[], target = '.peer') {
-  const allFilePaths = new Set(['pkg/main.py', ...files]);
+function resolveBoth(files: string[], target = '.peer', fromFile = 'pkg/main.py') {
+  const allFilePaths = new Set([fromFile, ...files]);
   return [
-    resolvePythonImportInternal('pkg/main.py', target, allFilePaths),
+    resolvePythonImportInternal(fromFile, target, allFilePaths),
     resolvePythonImportTarget(
       { kind: 'namespace', targetRaw: target, localName: 'peer', importedName: '*' },
-      { fromFile: 'pkg/main.py', allFilePaths },
+      { fromFile, allFilePaths },
     ),
   ];
 }
@@ -28,6 +28,16 @@ describe('Python relative import file candidates', () => {
 
   it('selects a Python package despite a same-named TypeScript file', () => {
     expect(resolveBoth(['pkg/peer.ts', 'pkg/peer/__init__.py'])).toEqual([
+      'pkg/peer/__init__.py',
+      'pkg/peer/__init__.py',
+    ]);
+  });
+
+  it.each([
+    ['.peer', 'pkg/main.py'],
+    ['..peer', 'pkg/child/main.py'],
+  ])('prefers a package over a module for %s from %s', (target, fromFile) => {
+    expect(resolveBoth(['pkg/peer.py', 'pkg/peer/__init__.py'], target, fromFile)).toEqual([
       'pkg/peer/__init__.py',
       'pkg/peer/__init__.py',
     ]);

@@ -13,7 +13,7 @@ import {
 } from './import-file-index.js';
 import { tryResolveWithExtensions } from '../../utils/suffix-index.js';
 
-const RELATIVE_IMPORT_EXTENSIONS = ['.py', '/__init__.py'] as const;
+const RELATIVE_IMPORT_EXTENSIONS = ['/__init__.py', '.py'] as const;
 
 /**
  * Resolve a Python import to a file path (low-level helper).
@@ -23,8 +23,6 @@ const RELATIVE_IMPORT_EXTENSIONS = ['.py', '/__init__.py'] as const;
  *    Approximates the common case where co-located files find each other without an installed package.
  *    Single-segment only — multi-segment (e.g. `os.path`) falls through to suffixResolve.
  *    Checks package (__init__.py) before module (.py), matching CPython's finder order (PEP 451 §4).
- *    Coexistence of both is physically impossible (same name = file vs directory), so the order
- *    only matters for spec compliance.
  *    Note: implicit namespace packages (Python 3.3+, directory without __init__.py) are not handled.
  *
  * Returns null to let the caller fall through to suffixResolve.
