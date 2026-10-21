@@ -24,6 +24,7 @@ import { decodeReceiverChain } from '../../../src/core/ingestion/utils/receiver-
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { goScopeResolver } from '../../../src/core/ingestion/languages/go/scope-resolver.js';
 import { javaScopeResolver } from '../../../src/core/ingestion/languages/java/scope-resolver.js';
+import { pythonScopeResolver } from '../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { buildScopeModel, type ScopeModelFixture } from '../../helpers/scope-model.js';
 
 const range = { startLine: 1, startCol: 0, endLine: 1, endCol: 1 };
@@ -579,6 +580,36 @@ export class Status {
   'status.ts',
 );
 
+const pythonLibraryFixture = buildScopeModel(
+  pythonScopeResolver,
+  `import os
+from pathlib import Path
+from vendorlib import Client
+from .compat import json
+
+
+def via_os():
+    os.environ.setdefault("A", "b")
+
+
+def via_path():
+    return Path(__file__).resolve()
+
+
+def via_third_party():
+    Client().session.close()
+
+
+def via_relative():
+    json.codec.dumps({})
+
+
+def via_parameter(os):
+    os.environ.update()
+`,
+  'app/main.py',
+);
+
 const javaLibraryFixture = buildScopeModel(
   javaScopeResolver,
   `public class Probe {
@@ -608,6 +639,8 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['TypeScript window', tsLibraryFixture, 'pushState'],
     ['TypeScript Buffer', tsLibraryFixture, 'toString'],
     ['TypeScript process', tsLibraryFixture, 'HOME'],
+    ['Python stdlib namespace import', pythonLibraryFixture, 'setdefault'],
+    ['Python stdlib named import', pythonLibraryFixture, 'resolve'],
     ['Java platform package root', javaLibraryFixture, 'of'],
   ] as const)('reports %s as external', (_label, fixture, memberName) => {
     expect(originOf(fixture, memberName)).toBe('external');
@@ -619,6 +652,9 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['a TypeScript local named navigator', 'in-program', tsLibraryFixture, 'writeText'],
     ['a TypeScript class named Buffer', 'in-program', tsShadowFixture, 'encode'],
     ["a step typed only by another class's member", 'in-program', tsHoistedFixture, 'toLowerCase'],
+    ['an unresolved third-party Python import', 'unknown', pythonLibraryFixture, 'close'],
+    ['an unresolved relative Python import', 'unknown', pythonLibraryFixture, 'dumps'],
+    ['a Python parameter named os', 'unknown', pythonLibraryFixture, 'update'],
     ['a Java parameter named java', 'in-program', javaLibraryFixture, 'run'],
   ] as const)('keeps %s %s', (_label, expected, fixture, memberName) => {
     expect(originOf(fixture, memberName)).toBe(expected);
@@ -626,12 +662,12 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
 
   // The evidence lives in the provider. A language that supplies none of it
   // must never reach an `external` verdict through these routes.
-  it.each([['TypeScript document', tsLibraryFixture, 'appendChild']] as const)(
-    'degrades %s to non-external without the provider hooks',
-    (_label, fixture, name) => {
-      expect(originOfWithoutHooks(fixture, name)).not.toBe('external');
-    },
-  );
+  it.each([
+    ['TypeScript document', tsLibraryFixture, 'appendChild'],
+    ['Python stdlib import', pythonLibraryFixture, 'setdefault'],
+  ] as const)('degrades %s to non-external without the provider hooks', (_label, fixture, name) => {
+    expect(originOfWithoutHooks(fixture, name)).not.toBe('external');
+  });
 });
 
 describe('classifyReceiverShape', () => {
