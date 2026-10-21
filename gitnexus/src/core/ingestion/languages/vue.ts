@@ -21,7 +21,10 @@ import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { vueImportConfig } from '../import-resolvers/configs/typescript-javascript.js';
 import { TYPESCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
-import { BUILT_INS as TS_BUILT_INS } from './typescript.js';
+import {
+  BUILT_INS as TS_BUILT_INS,
+  EXTERNAL_RECEIVER_NAMES as TS_EXTERNAL_RECEIVER_NAMES,
+} from './typescript.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { typescriptVariableConfig } from '../variable-extractors/configs/typescript-javascript.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
@@ -92,6 +95,8 @@ export const vueProvider = defineLanguage({
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: vueClassExtractor,
   builtInNames: VUE_BUILT_INS,
+  // A `<script>` block runs on the same host as any other module.
+  externalReceiverNames: TS_EXTERNAL_RECEIVER_NAMES,
   // Vue SFC <script> blocks use the TypeScript or TSX grammar,
   // so the TS CFG visitor builds CFGs for the script's functions verbatim —
   // no Vue-specific visitor needed (#2195).

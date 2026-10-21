@@ -506,6 +506,58 @@ describe('classifyReceiverOrigin', () => {
 // gets wrong.
 // ---------------------------------------------------------------------------
 
+const tsLibraryFixture = buildScopeModel(
+  typescriptScopeResolver,
+  `export function viaDocument(): void {
+  document.body.appendChild(null);
+}
+
+export function viaWindow(): void {
+  window.history.pushState(null, '', '/');
+}
+
+export function viaBuffer(token: string): string {
+  return Buffer.from(token, 'base64').toString();
+}
+
+export function viaProcess(): string | undefined {
+  return process.env.HOME;
+}
+
+// The program binds the name at the site: never the host global.
+export function typedParameter(document: Doc): void {
+  document.body.render();
+}
+
+export function untypedParameter(window): void {
+  window.history.back();
+}
+
+export function localValue(): void {
+  const navigator = makeNavigator();
+  navigator.clipboard.writeText('x');
+}
+`,
+  'main.ts',
+);
+
+// A program class by a host-global name shadows the host global everywhere it
+// is visible. Its own file, because the class is visible module-wide.
+const tsShadowFixture = buildScopeModel(
+  typescriptScopeResolver,
+  `export class Buffer {
+  static from(raw: string): Buffer {
+    return new Buffer();
+  }
+}
+
+export function viaProgramBuffer(raw: string): void {
+  Buffer.from(raw).encode();
+}
+`,
+  'buffer.ts',
+);
+
 // TypeScript stores method return types on the MODULE scope, keyed by method
 // name alone. `Status` declares no `name()`; the module's `name` binding is
 // `Labels.name`'s. Reading it would type `this.name()` as a library `String`
@@ -551,19 +603,35 @@ class Util {
 );
 
 describe('classifyReceiverOrigin — library and runtime receivers', () => {
-  it.each([['Java platform package root', javaLibraryFixture, 'of']] as const)(
-    'reports %s as external',
-    (_label, fixture, memberName) => {
-      expect(originOf(fixture, memberName)).toBe('external');
-    },
-  );
+  it.each([
+    ['TypeScript document', tsLibraryFixture, 'appendChild'],
+    ['TypeScript window', tsLibraryFixture, 'pushState'],
+    ['TypeScript Buffer', tsLibraryFixture, 'toString'],
+    ['TypeScript process', tsLibraryFixture, 'HOME'],
+    ['Java platform package root', javaLibraryFixture, 'of'],
+  ] as const)('reports %s as external', (_label, fixture, memberName) => {
+    expect(originOf(fixture, memberName)).toBe('external');
+  });
 
   it.each([
+    ['a TypeScript parameter named document', 'unknown', tsLibraryFixture, 'render'],
+    ['an untyped TypeScript parameter named window', 'unknown', tsLibraryFixture, 'back'],
+    ['a TypeScript local named navigator', 'in-program', tsLibraryFixture, 'writeText'],
+    ['a TypeScript class named Buffer', 'in-program', tsShadowFixture, 'encode'],
     ["a step typed only by another class's member", 'in-program', tsHoistedFixture, 'toLowerCase'],
     ['a Java parameter named java', 'in-program', javaLibraryFixture, 'run'],
   ] as const)('keeps %s %s', (_label, expected, fixture, memberName) => {
     expect(originOf(fixture, memberName)).toBe(expected);
   });
+
+  // The evidence lives in the provider. A language that supplies none of it
+  // must never reach an `external` verdict through these routes.
+  it.each([['TypeScript document', tsLibraryFixture, 'appendChild']] as const)(
+    'degrades %s to non-external without the provider hooks',
+    (_label, fixture, name) => {
+      expect(originOfWithoutHooks(fixture, name)).not.toBe('external');
+    },
+  );
 });
 
 describe('classifyReceiverShape', () => {

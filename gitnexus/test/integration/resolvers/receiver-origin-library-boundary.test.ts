@@ -24,6 +24,24 @@ import {
 } from './helpers.js';
 
 const FILES: Record<string, string> = {
+  'web/dom.ts': `export function attach(link: unknown): void {
+  document.body.appendChild(link);
+}
+
+export function navigate(path: string): void {
+  window.history.pushState(null, '', path);
+}
+
+export function decode(token: string): string {
+  return Buffer.from(token, 'base64').toString();
+}
+
+export function typedParameter(document: Doc): void {
+  document.body.render();
+}
+`,
+  'web/env.ts': `export const API_BASE = process.env.API_BASE || '';
+`,
   'java/src/App.java': `public class App {
     public void run() {
         java.util.Optional<String> opt = java.util.Optional.of("x");
@@ -56,14 +74,24 @@ describe('Library and runtime receivers name the program boundary (#3498)', () =
         outcome.name === name,
     );
 
-  it.each([['the Java platform package root', 'java/src/App.java', 3, 'of']] as const)(
-    'records a drop rooted at %s as external',
+  it.each([
+    ['a DOM global', 'web/dom.ts', 2, 'appendChild'],
+    ['a browser global', 'web/dom.ts', 6, 'pushState'],
+    ['the Node Buffer global', 'web/dom.ts', 10, 'toString'],
+    ['the Node process global', 'web/env.ts', 1, 'API_BASE'],
+    ['the Java platform package root', 'java/src/App.java', 3, 'of'],
+  ] as const)('records a drop rooted at %s as external', (_label, filePath, line, name) => {
+    const drops = dropsAt(filePath, line, name);
+    expect(drops.length).toBeGreaterThan(0);
+    expect(drops).toEqual(drops.map(() => expect.objectContaining({ receiverOrigin: 'external' })));
+  });
+
+  it.each([['a TypeScript parameter named document', 'web/dom.ts', 14, 'render']] as const)(
+    'keeps a drop on %s hedged',
     (_label, filePath, line, name) => {
       const drops = dropsAt(filePath, line, name);
       expect(drops.length).toBeGreaterThan(0);
-      expect(drops).toEqual(
-        drops.map(() => expect.objectContaining({ receiverOrigin: 'external' })),
-      );
+      expect(drops).not.toContainEqual(expect.objectContaining({ receiverOrigin: 'external' }));
     },
   );
 });
