@@ -22,7 +22,8 @@
  *   5. **Receiver-binding synthesis** (Unit 3) — `this` type anchors on
  *      instance methods, with arrow-function lexical-this walk-up.
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * Derives captures from its inputs and records CommonJS classification for
+ * immediate side-channel collection. Performs no I/O.
  */
 
 import { recordCommonJsModuleKind } from './module-kind.js';

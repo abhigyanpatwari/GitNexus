@@ -26,7 +26,8 @@
  *      instanceof narrowing passes are duplicated from `typescript/captures.ts`
  *      (they are pure AST operations with no grammar-specific logic).
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * Derives captures from its inputs and records CommonJS classification for
+ * immediate side-channel collection. Performs no I/O.
  */
 
 import { recordCommonJsModuleKind } from '../typescript/module-kind.js';
