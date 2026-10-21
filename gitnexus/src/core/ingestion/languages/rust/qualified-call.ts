@@ -202,8 +202,7 @@ function* candidateModules(
   //
   //    The binding must name a MODULE, not a symbol inside one. Import
   //    resolution deliberately strips a trailing symbol segment when probing for
-  //    a file ("the last segment might be a symbol, not a module" —
-  //    import-resolvers/rust.ts), so `use crate::client::ClientBuilder;` also
+  //    a file, so `use crate::client::ClientBuilder;` also
   //    lands on `client/mod.rs`. Taking that at face value made the imported
   //    TYPE look like the module `client`, and `ClientBuilder::new()` then
   //    resolved against `client`'s module members — binding an associated

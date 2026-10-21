@@ -16,8 +16,6 @@ import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { kotlinExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { kotlinImportConfig } from '../import-resolvers/configs/jvm.js';
 import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
@@ -178,7 +176,6 @@ export const kotlinProvider = defineLanguage({
   treeSitterQueries: KOTLIN_QUERIES,
   typeConfig: kotlinTypeConfig,
   exportChecker: kotlinExportChecker,
-  importResolver: createImportResolver(kotlinImportConfig),
   importPathPreprocessor: appendKotlinWildcard,
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(kotlinCallConfig),

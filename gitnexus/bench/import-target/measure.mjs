@@ -1927,8 +1927,8 @@ function resolveOne(lang, from, target, pass) {
       contextFor(pass, { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target }),
     );
   }
-  // Quotes already stripped — `configs/zig.ts` strips them before this call in
-  // production too. `null` build config: this arm pins the path walk alone
+  // Quotes are already stripped from the parsed import target.
+  // `null` build config: this arm pins the path walk alone
   // (see the header); the config legs are gated by their own unit tests.
   if (lang === 'zig') return resolveZigImportInternal(from, target, allFilePaths, null);
   if (lang === 'python') {

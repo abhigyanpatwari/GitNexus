@@ -1,8 +1,7 @@
 /**
  * Ruby require/require_relative import resolution — internal helpers.
  *
- * Strategy lives in configs/ruby.ts.
- * This file only contains the low-level helper used by the strategy.
+ * Used by the Ruby ScopeResolver.resolveImportTarget hook.
  */
 
 import type { SuffixIndex } from './utils.js';

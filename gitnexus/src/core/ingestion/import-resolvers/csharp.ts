@@ -1,7 +1,7 @@
 /**
  * C# namespace import resolution — internal helpers.
  *
- * Strategy lives in configs/csharp.ts.
+ * Used by the C# ScopeResolver.resolveImportTarget hook.
  * This file contains shared helpers for namespace-based resolution.
  */
 

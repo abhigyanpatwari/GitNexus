@@ -2,8 +2,7 @@
  * Python import resolution — PEP 328 relative imports and proximity-based bare imports.
  * Import system spec: PEP 302 (original), PEP 451 (current).
  *
- * Strategy lives in configs/python.ts.
- * This file contains the shared internal helper used by the strategy and tests.
+ * Used by the Python ScopeResolver.resolveImportTarget hook and tests.
  */
 
 import {

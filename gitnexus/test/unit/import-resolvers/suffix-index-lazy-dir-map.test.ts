@@ -20,9 +20,8 @@
  *
  * All of it is memory. `dirMap` is the array-valued map — one entry and one
  * array push per file per directory component, O(files × depth) in entries and
- * in churn — and only four call sites ever read it
- * (`import-resolvers/{php,csharp,jvm}.ts`, `import-resolvers/configs/
- * python.ts`), yet `workspace-file-index.ts` serving Ruby,
+ * in churn — and only `import-resolvers/{php,csharp}.ts` read it, yet
+ * `workspace-file-index.ts` serving Ruby,
  * `languages/typescript/scope-resolver.ts`, `languages/vue/import-target.ts`
  * and `group/extractors/include-extractor.ts` all built it and never touched
  * it: ~15% of the retained C# index and ~19% of the retained Ruby one on

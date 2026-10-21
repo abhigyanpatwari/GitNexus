@@ -34,8 +34,7 @@
  * below pins that: it drives the naive cleanup and asserts it CHANGES answers.
  *
  * The arms all assert the full `string[]` and its order — this resolver returns
- * every match, not one, and `configs/csharp.ts` turns a multi-file result into a
- * `kind: 'package'` edge set whose order reaches the graph.
+ * every match, not one, and the active scope resolver selects the first match.
  */
 import { describe, expect, it } from 'vitest';
 

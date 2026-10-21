@@ -1,7 +1,7 @@
 /**
  * PHP PSR-4 import resolution — internal helpers.
  *
- * Strategy lives in configs/php.ts.
+ * Used by the PHP ScopeResolver.resolveImportTarget hook.
  * This file contains the shared helper for PSR-4 resolution via composer.json.
  */
 

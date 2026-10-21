@@ -280,9 +280,8 @@ export function buildSuffixIndex(
    * churn. Measured on the 32k-path arms of `bench/import-target/`, it is
    * ~15% of the retained C# index and ~19% of the retained Ruby one.
    *
-   * Only `getFilesInDir` reads it, and only four call sites reach that:
-   * `import-resolvers/{php,csharp,jvm}.ts` and `import-resolvers/configs/
-   * python.ts`. Every other consumer of this index — `workspace-file-index.ts`
+   * Only `getFilesInDir` reads it, through `import-resolvers/{php,csharp}.ts`.
+   * Every other consumer of this index — `workspace-file-index.ts`
    * serving Ruby, `languages/typescript/scope-resolver.ts`,
    * `languages/vue/import-target.ts`, `group/extractors/include-extractor.ts`
    * — asks only suffix questions and was paying the whole footprint for a map
@@ -369,12 +368,9 @@ export function buildSuffixIndex(
     // imports is the whole pass — which is why the interface makes the result
     // `readonly` and the compiler refuses the mutation at the call site.
     //
-    // Sharing beats copying because no caller keeps the array: two only measure
-    // it and two build a fresh array from it, so a defensive copy would
-    // allocate a whole bucket per import on the path this index exists to keep
-    // flat. `package-dir-index.ts` reached the same conclusion the same way —
-    // read-only containers, plus one copy where a bucket genuinely LEAVES
-    // (`sortedRootFiles`), which is the case `configs/swift.ts` is in.
+    // Neither caller mutates the bucket: one checks its length, the other
+    // filters into a fresh result. A defensive copy would allocate a bucket
+    // per import without protecting any mutation boundary.
     getFilesInDir: (dirSuffix: string, extension: string) => {
       return getDirMap().get(`${dirSuffix}:${extension}`) || [];
     },

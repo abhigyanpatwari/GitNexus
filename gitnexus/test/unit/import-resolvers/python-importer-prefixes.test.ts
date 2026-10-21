@@ -34,11 +34,8 @@
  * again, and with a non-vacuity assertion, because a perfect count is equally
  * true of a resolver that stopped resolving anything.
  *
- * Both production surfaces are driven, not the helper: `pythonScopeResolver
- * .resolveImportTarget` (the scope-resolution orchestrator's adapter, the one
- * that pays the walk twice) and `pythonImportStrategy` (the import-resolver
- * pipeline's, via `ImportTargetWorkspace`'s shared `ResolveCtx`). They thread
- * different objects around the same Set, and the memo is keyed on the Set.
+ * The production entry point is `pythonScopeResolver.resolveImportTarget`,
+ * which can reach the walk twice. The memo is keyed on the shared file Set.
  *
  * `legacyPrefixes` is a verbatim copy of the pre-change inline code, in the
  * house style of `python-importer-ancestors.test.ts`: it is the specification,
@@ -64,12 +61,6 @@ import { getPythonFileIndex } from '../../../src/core/ingestion/import-resolvers
 /** The bare-import prefix memo, which lives inside the shared per-file-set index. */
 const prefixMemo = (files: ReadonlySet<string>): ReadonlyMap<string, readonly string[]> =>
   getPythonFileIndex(files).bareImportPrefixesByDir;
-import { pythonImportStrategy } from '../../../src/core/ingestion/import-resolvers/configs/python.js';
-import { buildSuffixIndex } from '../../../src/core/ingestion/import-resolvers/utils.js';
-import type {
-  ImportResult,
-  ResolveCtx,
-} from '../../../src/core/ingestion/import-resolvers/types.js';
 import {
   IMPORTER_PATH_SHAPES,
   NO_PARSED_FILES,
@@ -101,43 +92,10 @@ function legacyPrefixes(currentFile: string): string[] {
 
 // ─── surfaces ────────────────────────────────────────────────────────────────
 
-/**
- * A `ResolveCtx` for the import-resolver pipeline surface. `allFilePaths` is
- * the caller's Set passed THROUGH — the memo is keyed on its identity, so a
- * copy here would measure nothing.
- */
-function makeResolveCtx(allFilePaths: Set<string>): ResolveCtx {
-  const allFileList = [...allFilePaths];
-  const normalizedFileList = allFileList.map((file) => file.replace(/\\/g, '/'));
-  return {
-    allFilePaths,
-    allFileList,
-    normalizedFileList,
-    index: buildSuffixIndex(normalizedFileList, allFileList),
-    resolveCache: new Map<string, string | null>(),
-    configs: {
-      tsconfigPaths: null,
-      goModule: null,
-      composerConfig: null,
-      swiftPackageConfig: null,
-      csharpConfigs: [],
-    },
-  };
-}
-
 const ctxFor = (parsedImport: ParsedImport): ImportResolutionContext => ({
   parsedFiles: NO_PARSED_FILES,
   parsedImport,
 });
-
-/**
- * An `ImportResult` as the arms read it: the resolved path, or `null` for a
- * miss. A stop-the-chain result carrying no files joins to `''`, which is
- * neither the hit nor a miss — the same distinction the pre-collapse arm drew
- * with `value?.kind === 'files' && value.files.join() === HIT_RESULT`.
- */
-const resolvedPath = (result: ImportResult): ChainMemoResult =>
-  result === null ? null : result.files.join();
 
 // ─── the workspace the surfaces are driven against ───────────────────────────
 
@@ -175,15 +133,11 @@ const WALK_TARGET = 'probe';
 const ABSENT_TARGET = 'ghostmod';
 
 /**
- * The spelling sequence BOTH surfaces are driven with, `perImporter` rounds of
+ * The spelling sequence the adapter is driven with, `perImporter` rounds of
  * it plus the one spelling that must resolve: one target that walks the whole
  * chain and misses, one that the absence proof retires before the walk, and one
  * that hits at the workspace root. No spelling is varied per round — the Python
  * chain keeps no per-target cache, so a repeated target really is re-resolved.
- *
- * `resolve` is the only thing that differs between the orchestrator adapter and
- * the import-resolver pipeline; everything about the sequence is shared, which
- * is why the two used to be the same loop written twice.
  */
 function drive<T>(
   fromFile: string,
@@ -209,25 +163,6 @@ const adapterArm = (mkImport: (targetRaw: string) => ParsedImport): ChainMemoArm
   hitResult: HIT_RESULT,
 });
 
-/**
- * The import-resolver pipeline surface. One `ResolveCtx` per drive rather than
- * one for the run, on purpose: everything the strategy reads off it is derived
- * from the same Set (and `pythonImportStrategy` only ever WRITES
- * `resolveCache`), so a fresh ctx around the same Set is exactly the "different
- * objects, same Set" case the memo has to survive.
- */
-const strategyArm: ChainMemoArm = {
-  memoOf: prefixMemo,
-  drive: (files, fromFile, perImporter) => {
-    const ctx = makeResolveCtx(files);
-    return drive(fromFile, perImporter, (target, from) =>
-      resolvedPath(pythonImportStrategy(target, from, ctx)),
-    );
-  },
-  legacyChain: legacyPrefixes,
-  hitResult: HIT_RESULT,
-};
-
 describe('Python bare-import prefix memo', () => {
   it.each([
     { perImporter: 1, kind: 'namespace', mkImport: pythonNamespaceImport },
@@ -238,16 +173,6 @@ describe('Python bare-import prefix memo', () => {
     'holds one chain per importer DIRECTORY, not per import — $perImporter x $kind',
     ({ perImporter, mkImport }) => {
       expectOneChainPerImporterDir(adapterArm(mkImport), new Set(WORKSPACE), perImporter);
-    },
-  );
-
-  it.each([
-    { perImporter: 1, label: 'one import per importer' },
-    { perImporter: 40, label: 'forty imports per importer' },
-  ])(
-    'holds one chain per importer DIRECTORY on the import-resolver surface too — $label',
-    ({ perImporter }) => {
-      expectOneChainPerImporterDir(strategyArm, new Set(WORKSPACE), perImporter);
     },
   );
 
@@ -387,16 +312,11 @@ describe('Python bare-import ancestor walk — resolution', () => {
     },
   ])('$why', ({ files, fromFile, expected }) => {
     const set = new Set(files);
-    // The helper, the scope-resolution adapter and the import-resolver
-    // strategy must agree: all three reach the same walk.
+    // The helper and scope-resolution adapter must reach the same walk.
     expect(resolvePythonImportInternal(fromFile, 'user', set)).toBe(expected);
     expect(
       resolveImportTarget('user', fromFile, set, undefined, ctxFor(pythonNamespaceImport('user'))),
     ).toBe(expected);
-    expect(pythonImportStrategy('user', fromFile, makeResolveCtx(set))).toEqual({
-      kind: 'files',
-      files: [expected],
-    });
   });
 
   it.each([

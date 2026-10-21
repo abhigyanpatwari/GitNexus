@@ -49,9 +49,7 @@
  * above and was caught only by a timing ratio in `bench/import-target/`. Derive
  * the array inside the builder from `getWorkspaceFileIndex(allFilePaths)`
  * instead. `string[]` is not assignable to `K`, so the shape cannot come back
- * silently — `configs/swift.ts` keeps the one hand-rolled `WeakMap` on
- * `ctx.allFileList` in the tree, deliberately and with its reasons written
- * down, and it is deliberately NOT on this primitive.
+ * silently.
  *
  * `T extends object` is deliberate, chosen over probing `has` before `get`.
  * `WeakMap.get` returning `undefined` cannot distinguish "not built yet" from
