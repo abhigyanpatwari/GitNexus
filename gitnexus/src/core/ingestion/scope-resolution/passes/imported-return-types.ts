@@ -115,7 +115,30 @@ function producerTypeRef(defId: string, scopes: ScopeResolutionIndexes): TypeRef
  */
 const RECHAIN_MAX_DEPTH = 8;
 
-const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+/** `head.member`, both plain identifiers. */
+const QUALIFIED_MEMBER_RE = /^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/;
+
+/**
+ * Every local name a namespace import binds anywhere in the workspace. Most
+ * dotted bindings are member chains (`user.address`) whose head is no such
+ * name, so they skip the scope-chain lookup entirely. Import edges are fixed
+ * once finalize has run.
+ */
+const namespaceLocalNamesByIndexes = new WeakMap<ScopeResolutionIndexes, ReadonlySet<string>>();
+function namespaceLocalNames(scopes: ScopeResolutionIndexes): ReadonlySet<string> {
+  let names = namespaceLocalNamesByIndexes.get(scopes);
+  if (names === undefined) {
+    const collected = new Set<string>();
+    for (const scope of scopes.scopeTree.byId?.values() ?? []) {
+      for (const edge of scopes.imports?.get(scope.id) ?? scope.imports ?? []) {
+        if (edge.kind === 'namespace') collected.add(edge.localName);
+      }
+    }
+    names = collected;
+    namespaceLocalNamesByIndexes.set(scopes, names);
+  }
+  return names;
+}
 
 /**
  * `ns.f` where `ns` is a namespace import and `f` has a return annotation in
@@ -129,9 +152,10 @@ export function namespaceCallReturnType(
   scopes: ScopeResolutionIndexes,
   position?: TypeRef['lookupPosition'],
 ): TypeRef | undefined {
-  const parts = rawName.split('.');
-  if (parts.length !== 2 || !parts.every((part) => IDENTIFIER.test(part))) return undefined;
-  const [head, member] = parts as [string, string];
+  const [, head, member] = QUALIFIED_MEMBER_RE.exec(rawName) ?? [];
+  if (head === undefined || member === undefined || !namespaceLocalNames(scopes).has(head)) {
+    return undefined;
+  }
   const claim = lookupNameClaim(inScope, head, scopes, { position, purpose: 'value' });
   if (claim.bindings.some((binding) => binding.origin === 'local')) return undefined;
   const targets = new Set<ScopeId>();

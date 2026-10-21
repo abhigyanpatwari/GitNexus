@@ -82,7 +82,7 @@ export function zigImportRootOf(value: SyntaxNode | null): SyntaxNode | null {
 /** Module-level `const ns = @import("ns.zig")` handles on a lowercase file: a
  *  namespace module, not a file-struct (`@import("Page.zig")`) whose methods
  *  live in its struct scope. Cached per tree. */
-const zigNamespaceHandlesByTree = new WeakMap<object, ReadonlySet<string>>();
+const zigNamespaceHandlesByTree = new WeakMap<SyntaxNode['tree'], ReadonlySet<string>>();
 function zigNamespaceHandles(node: SyntaxNode): ReadonlySet<string> {
   const cached = zigNamespaceHandlesByTree.get(node.tree);
   if (cached !== undefined) return cached;
