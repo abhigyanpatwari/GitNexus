@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import type { MixedChainStep } from 'gitnexus-shared';
 import {
   inferCallForm,
   extractReceiverName,
+  extractReceiverNode,
+  extractMixedChain,
 } from '../../src/core/ingestion/utils/call-analysis.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.js';
@@ -468,5 +471,107 @@ describe('ownerId on SymbolDefinition', () => {
     const defs = st.lookupCallableByName('save');
     expect(defs).toHaveLength(1);
     expect(defs[0].ownerId).toBe('Class:src/foo.ts:User');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractMixedChain: callee and receiver spellings the chain walk has to read
+// ---------------------------------------------------------------------------
+
+/** First leaf whose text is `name`, depth-first. */
+function findLeaf(node: SyntaxNode, name: string): SyntaxNode | undefined {
+  if (node.namedChildCount === 0) return node.text === name ? node : undefined;
+  for (const child of node.namedChildren) {
+    const hit = findLeaf(child, name);
+    if (hit !== undefined) return hit;
+  }
+  return undefined;
+}
+
+/** What `extractMixedChain` reads off the receiver of the call to `member`. */
+function receiverChainOf(language: Parser.Language, code: string, member: string) {
+  const parser = new Parser();
+  parser.setLanguage(language);
+  const nameNode = findLeaf(parser.parse(code).rootNode, member);
+  const receiver = nameNode === undefined ? undefined : extractReceiverNode(nameNode);
+  if (receiver === undefined) throw new Error(`no receiver for ${member} in: ${code}`);
+  return extractMixedChain(receiver);
+}
+
+const call = (name: string): MixedChainStep => ({ kind: 'call', name });
+const field = (name: string): MixedChainStep => ({ kind: 'field', name });
+
+interface ChainRow {
+  readonly label: string;
+  readonly language: Parser.Language;
+  readonly code: string;
+  readonly member: string;
+  readonly expected: ReturnType<typeof extractMixedChain>;
+}
+
+describe('extractMixedChain', () => {
+  // Explicit type arguments inside the callee node (#3498 RC3). The step must be
+  // named for the member, and Rust's wrapper must not hide the inner receiver.
+  const typeArgumentRows: readonly ChainRow[] = [
+    {
+      label: 'C# generic method',
+      language: CSharp,
+      code: 'class A { void M() { svc.GetTyped<User>().Save(); } }',
+      member: 'Save',
+      expected: { chain: [call('GetTyped')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'C# generic method then a field',
+      language: CSharp,
+      code: 'class A { void M() { svc.GetTyped<User>().Address.Save(); } }',
+      member: 'Save',
+      expected: { chain: [call('GetTyped'), field('Address')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'C++ template method through ->',
+      language: CPP,
+      code: 'void f() { svc->getTyped<User>()->save(); }',
+      member: 'save',
+      expected: { chain: [call('getTyped')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'C++ template method through .',
+      language: CPP,
+      code: 'void f() { svc.getTyped<User>().save(); }',
+      member: 'save',
+      expected: { chain: [call('getTyped')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'C++ dependent template method',
+      language: CPP,
+      code: 'void f() { svc->template getTyped<User>()->save(); }',
+      member: 'save',
+      expected: { chain: [call('getTyped')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'Rust turbofish method',
+      language: Rust,
+      code: 'fn f() { svc.get_typed::<User>().save(); }',
+      member: 'save',
+      expected: { chain: [call('get_typed')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'Rust turbofish free function has no base, so nothing is minted',
+      language: Rust,
+      code: 'fn f() { get_typed::<User>().save(); }',
+      member: 'save',
+      expected: { chain: [call('get_typed')], baseReceiverName: undefined },
+    },
+    {
+      label: 'Java type arguments sit beside the name (control)',
+      language: Java,
+      code: 'class A { void m() { svc.<User>getTyped().save(); } }',
+      member: 'save',
+      expected: { chain: [call('getTyped')], baseReceiverName: 'svc' },
+    },
+  ];
+
+  it.each(typeArgumentRows)('$label', ({ language, code, member, expected }) => {
+    expect(receiverChainOf(language, code, member)).toEqual(expected);
   });
 });

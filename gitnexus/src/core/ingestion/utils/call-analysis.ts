@@ -620,6 +620,50 @@ function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
   return current;
 }
 
+/**
+ * Callee nodes that carry EXPLICIT TYPE ARGUMENTS inside them.
+ *
+ * TypeScript, Java and Kotlin put `<User>` beside the callee, in a sibling field,
+ * so the walk never sees it. These grammars put it inside the callee node:
+ * C# `svc.GetTyped<User>()` and C++ `svc->getTyped<User>()` wrap the member
+ * name, so the step was named `GetTyped<User>` and matched no member. Rust's
+ * `svc.get_typed::<User>()` wraps the whole field access, so the walk found no
+ * name and no inner receiver, and minted no chain at all.
+ *
+ * Type arguments pick an instantiation. They never change which member is
+ * called, so the step name loses nothing when they are dropped. Substituting
+ * them into a generic return type is a separate problem: C++
+ * `template <typename T> T* getTyped()` still has no return type to fold.
+ *
+ * Keyed by node type. The value is the field that holds the callee without its
+ * type arguments, or `null` where the grammar gives that child no field name
+ * (it is then the first named child).
+ */
+const TYPE_ARGUMENT_CALLEE_NODE_TYPES = new Map<string, string | null>([
+  ['generic_name', null], // C# `GetTyped<User>`
+  ['template_method', 'name'], // C++ `svc->getTyped<User>`
+  ['template_function', 'name'], // C++ `getTyped<User>`
+  ['dependent_name', null], // C++ `svc->template getTyped<User>`, wraps a template_method
+  ['generic_function', 'function'], // Rust `svc.get_typed::<User>`, wraps the field access
+]);
+
+/** Iteration bound for the type-argument peel. `dependent_name` nests a
+ *  `template_method`, so real code needs two. */
+const MAX_TYPE_ARGUMENT_PEEL_DEPTH = 3;
+
+/** `node` without the explicit type arguments it carries, if any. */
+function stripTypeArguments(node: SyntaxNode): SyntaxNode {
+  let current = node;
+  for (let i = 0; i < MAX_TYPE_ARGUMENT_PEEL_DEPTH; i++) {
+    const field = TYPE_ARGUMENT_CALLEE_NODE_TYPES.get(current.type);
+    if (field === undefined) break;
+    const inner = field === null ? current.firstNamedChild : current.childForFieldName(field);
+    if (inner === null) break;
+    current = inner;
+  }
+  return current;
+}
+
 export function extractMixedChain(
   receiverNode: SyntaxNode,
 ): { chain: MixedChainStep[]; baseReceiverName: string | undefined } | undefined {
@@ -635,15 +679,19 @@ export function extractMixedChain(
     current = unwrapTransparentReceiver(current);
     if (CALL_EXPRESSION_TYPES.has(current.type)) {
       // ── Call expression: extract method name + inner receiver ────────────
-      const funcNode =
+      const callee =
         current.childForFieldName?.('function') ??
         current.childForFieldName?.('name') ??
         current.childForFieldName?.('method');
+      // Rust's turbofish wraps the whole field access, so peel it before
+      // reading either the name or the receiver.
+      const funcNode = callee ? stripTypeArguments(callee) : null;
       let methodName: string | undefined;
       let innerReceiver: SyntaxNode | null = null;
 
       if (funcNode) {
-        methodName = funcNode.lastNamedChild?.text ?? funcNode.text;
+        const member = funcNode.lastNamedChild;
+        methodName = member ? stripTypeArguments(member).text : funcNode.text;
       }
       // Kotlin/Swift: call_expression → navigation_expression
       if (!funcNode && current.type === 'call_expression') {

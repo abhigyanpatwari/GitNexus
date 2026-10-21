@@ -1,5 +1,23 @@
 # Receiver-resolution baseline
 
+## Receiver-chain walker spellings (#3498)
+
+`extractMixedChain` misread some receiver spellings: it read the wrong step
+name, stopped early, or built no chain at all. Each fix below moved only the
+cells listed, and the count arm did not move. A same-corpus A/B over
+`test/fixtures/lang-resolution` against `origin/main` (`ab0b03846`) emits
+identical CALLS/ACCESSES edges (2,924) and identical `receiver-unresolved`
+drops (208). No scope-capture fingerprint moved, and a capture dump of 13
+emitters over that corpus is byte-identical, because no fixture uses these
+spellings.
+
+- **Explicit type arguments inside the callee** (C# `GetTyped<User>`, C++
+  `getTyped<User>`, Rust `get_typed::<User>`): csharp `explicitTypeArgs`
+  VISIBLE-GAP → RESOLVES and rust `explicitTypeArgs` VISIBLE-GAP →
+  RESOLVES, both to `User.Save`/`User.save`. cpp `explicitTypeArgs` stays
+  VISIBLE-GAP: the step is now `getTyped`, but `T` is not substituted into
+  the template's return type.
+
 ## Swift/Dart stack integration after Rust and C#
 
 The Swift/Dart ownership and replay implementation is unchanged from reviewed
