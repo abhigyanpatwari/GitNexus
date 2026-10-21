@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { createWorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
@@ -62,6 +66,51 @@ describe('field declaration metadata through the parse worker', () => {
       ]);
     } finally {
       await pool.terminate();
+    }
+  }, 120000);
+});
+
+describe('Ruby accessor mutability on the logical property', () => {
+  it('combines readers and writers independently of declaration order', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ruby-accessor-mutability-'));
+    try {
+      await fs.writeFile(
+        path.join(root, 'accessors.rb'),
+        [
+          'class ReaderThenWriter',
+          '  attr_reader :foo',
+          '  attr_writer :foo',
+          'end',
+          'class WriterThenReader',
+          '  attr_writer :foo',
+          '  attr_reader :foo',
+          'end',
+          'class ReadersOnly',
+          '  attr_reader :foo',
+          '  attr_reader :foo',
+          'end',
+          'class MultiName',
+          '  attr_reader :foo, :bar',
+          '  attr_writer :bar',
+          'end',
+        ].join('\n'),
+      );
+      const result = await runPipelineFromRepo(root, () => {}, {});
+      const properties = [...result.graph.iterNodes()].filter((node) => node.label === 'Property');
+      const readonly = (owner: string, name = 'foo') => {
+        const property = properties.find(
+          (node) => node.id === `Property:accessors.rb:${owner}.${name}`,
+        );
+        expect(property).toBeDefined();
+        return property?.properties.isReadonly;
+      };
+      expect(readonly('ReaderThenWriter')).toBe(false);
+      expect(readonly('WriterThenReader')).toBe(false);
+      expect(readonly('ReadersOnly')).toBe(true);
+      expect(readonly('MultiName')).toBe(true);
+      expect(readonly('MultiName', 'bar')).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   }, 120000);
 });

@@ -1,4 +1,3 @@
-import { recordCommonJsModuleKind } from '../typescript/module-kind.js';
 /**
  * `emitScopeCaptures` for JavaScript.
  *
@@ -30,6 +29,7 @@ import { recordCommonJsModuleKind } from '../typescript/module-kind.js';
  * Pure given the input source text. No I/O, no globals consulted.
  */
 
+import { recordCommonJsModuleKind } from '../typescript/module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
   findNodeAtRange,

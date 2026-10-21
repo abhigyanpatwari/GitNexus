@@ -7,6 +7,19 @@ import {
   typescriptProvider,
 } from '../../src/core/ingestion/languages/typescript.js';
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
+import { isCommonJsModule } from '../../src/core/ingestion/languages/typescript/cjs-export-assignment.js';
+import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
+
+describe('deep CommonJS classification', () => {
+  it.each([false, true])('handles a deep expression with trailing ESM=%s', (esm) => {
+    const node = (type: string, namedChildren: SyntaxNode[], text = '') =>
+      ({ type, namedChildren, text, childForFieldName: () => null }) as unknown as SyntaxNode;
+    let expression = node('identifier', [], 'module');
+    for (let i = 0; i < 20000; i++) expression = node('binary_expression', [expression]);
+    const root = node('program', esm ? [expression, node('export_statement', [])] : [expression]);
+    expect(isCommonJsModule(root, 'deep.ts')).toBe(!esm);
+  });
+});
 
 describe.each([
   ['JavaScript', javascriptProvider, JavaScript, 'js', 'cjs', 'mjs'],
