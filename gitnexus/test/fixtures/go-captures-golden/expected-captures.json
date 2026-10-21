@@ -285,7 +285,7 @@
   },
   "go-multi-module-workspace/orders-service/internal/repository/ledger.go": {
     "captureGroups": 15,
-    "digest": "e77ba190b12dffe1fc02a1d720be38a6e74c803cd5b5b36a94a351371f4be3f9"
+    "digest": "3674ece23db6df045e050ff1e413649a803d9b900b435a9c633266426d73d732"
   },
   "go-multi-module-workspace/tools/codegen/cmd/gen/main.go": {
     "captureGroups": 10,

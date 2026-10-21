@@ -300,22 +300,25 @@ describe('captureGoWorkspaceConfig', () => {
 
   // A module boundary that silently vanished would send its imports to the
   // wrong module, so a manifest that fails to read surfaces as an error.
-  // Permission bits do not block reads on Windows.
-  it.skipIf(process.platform === 'win32')('throws when a go.mod cannot be read', async () => {
-    const dir = fixture({
-      'go.mod': 'module example.com/root\n',
-      'svc/go.mod': 'module example.com/svc\n',
-    });
-    const locked = path.join(dir, 'svc/go.mod');
-    fs.chmodSync(locked, 0o000);
-    try {
-      await expect(captureGoWorkspaceConfig(dir, ['go.mod', 'svc/go.mod'])).rejects.toThrow(
-        /EACCES/,
-      );
-    } finally {
-      fs.chmodSync(locked, 0o644);
-    }
-  });
+  // Permission bits do not block reads on Windows, or for root anywhere.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'throws when a go.mod cannot be read',
+    async () => {
+      const dir = fixture({
+        'go.mod': 'module example.com/root\n',
+        'svc/go.mod': 'module example.com/svc\n',
+      });
+      const locked = path.join(dir, 'svc/go.mod');
+      fs.chmodSync(locked, 0o000);
+      try {
+        await expect(captureGoWorkspaceConfig(dir, ['go.mod', 'svc/go.mod'])).rejects.toThrow(
+          /EACCES/,
+        );
+      } finally {
+        fs.chmodSync(locked, 0o644);
+      }
+    },
+  );
 
   it('throws when the standalone scan fails instead of reporting no modules', async () => {
     const dir = fixture({ 'go.mod': 'module example.com/root\n' });
