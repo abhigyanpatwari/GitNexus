@@ -174,10 +174,10 @@
       "decoratedFieldType": "RESOLVES"
     },
     "swift": {
-      "plainChain": "VISIBLE-GAP",
-      "plainDeepChain": "VISIBLE-GAP",
-      "optionalChain": "VISIBLE-GAP",
-      "nonNullAssert": "VISIBLE-GAP",
+      "plainChain": "RESOLVES",
+      "plainDeepChain": "RESOLVES",
+      "optionalChain": "RESOLVES",
+      "nonNullAssert": "RESOLVES",
       "awaitParen": "VISIBLE-GAP",
       "explicitTypeArgs": "N/A",
       "indexElement": "INVISIBLE-GAP",
@@ -186,9 +186,9 @@
       "decoratedFieldType": "RESOLVES"
     },
     "dart": {
-      "plainChain": "VISIBLE-GAP",
-      "plainDeepChain": "VISIBLE-GAP",
-      "optionalChain": "VISIBLE-GAP",
+      "plainChain": "RESOLVES",
+      "plainDeepChain": "RESOLVES",
+      "optionalChain": "RESOLVES",
       "nonNullAssert": "VISIBLE-GAP",
       "awaitParen": "RESOLVES",
       "explicitTypeArgs": "N/A",

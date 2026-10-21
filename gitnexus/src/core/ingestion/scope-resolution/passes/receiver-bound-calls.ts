@@ -194,6 +194,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'collapseMemberCallsByCallerTarget'
   | 'elementTypeOf'
   | 'hoistTypeBindingsToModule'
+  | 'hoistedTypeBindingsRequireOwner'
   | 'stripReceiverCastExpressions'
   | 'constructionSyntax'
   | 'isTypeApplicationCall'
@@ -936,6 +937,7 @@ export function emitReceiverBoundCalls(
     namespaceMemberVisible,
     namespaceSkipsEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
     hoistTypeBindingsToModule,
+    hoistedTypeBindingsRequireOwner: provider.hoistedTypeBindingsRequireOwner === true,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
     isTypeApplicationCall: provider.isTypeApplicationCall,

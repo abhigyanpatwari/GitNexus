@@ -1,5 +1,42 @@
 # Receiver-resolution baseline
 
+## Swift/Dart stack integration after Rust and C#
+
+The Swift/Dart ownership and replay implementation is unchanged from reviewed
+commit `cfeb11a9b`. It is combined with validated Rust parent `b6803fcb4`
+(tree `b6728e6dc`) and actual main `e7ef82dfc`, preserving Kotlin, PHP, C# and
+Rust behavior. Only the receiver-baseline documentation conflicted; both
+parents' sections are retained.
+
+On this combined source, a fresh package build, both pinned TypeScript
+configurations and 283 affected tests across nine files pass. Swift's capture
+fingerprint remains unchanged and its existing scaling budget passes; the
+historical all-language capture run below was not repeated for this merge.
+Receiver update and check pass: 138 call drops, 168 total, 30 reads and no
+writes. All count-arm buckets equal the validated Rust parent. Exactly seven
+Swift/Dart cells improve from VISIBLE-GAP to RESOLVES; all other shape cells
+retain the parent's states, including the C# and Rust field improvements.
+The 5,559-record resolution corpus is byte-identical to the Rust parent.
+The earlier c304-based 132/160 totals and 5,501-record comparison below are
+historical measurements, not the current combined baseline.
+
+## Swift and Dart hoisted return types (#3498 RC2)
+
+Swift and Dart hoist every method's return-type binding onto the Module scope,
+as C# does, but neither set `hoistTypeBindingsToModule`, so a chained receiver
+such as `svc.getUser().save()` never found the type of `getUser()`. Both now set
+it. Seven shape cells flip to `RESOLVES`, each with the correct target: swift
+`plainChain`, `plainDeepChain`, `optionalChain` and `nonNullAssert` (each
+VISIBLE-GAP on main `2b4456553` before), and dart `plainChain`, `plainDeepChain` and
+`optionalChain` (each VISIBLE-GAP before). Swift `awaitParen` and dart
+`nonNullAssert` still need their own fixes.
+
+Both languages also set the new `hoistedTypeBindingsRequireOwner`. The hoisted
+bindings are keyed by bare member name, so the walk now accepts one only when a
+member of the receiver's own class declared it. Without that check, two classes
+with a same-named method in one file typed each other's chains. The count arm
+does not move, and neither does any cell in another language.
+
 ## Rust smart-pointer field types (#3498)
 
 The struct-field normalizer in `rust/range-binding.ts` cut a type at its first
@@ -1111,6 +1148,47 @@ Shape states remain unchanged; counts are 132 call drops and
 Shape states remain unchanged; counts are 133 call drops and
 160 drops of all kinds (27 reads,
 0 writes). The counts include both main and this branch's fixes.
+
+## Hoisted return ownership after main integration
+
+Main `c30449394` is merged normally. Valid Swift optional-chain and force-
+unwrap fixtures use an optional `optionalAddress` property; plain deep chains
+retain the non-optional `address`. The benchmark uses the same split. Four
+Swift chain cells and three Dart cells resolve, and every other shape state
+matches main. The count arm is unchanged: 132 call drops, 160 drops across
+all kinds, 28 reads and 0 writes. The 5,501-record resolution corpus is
+byte-identical to main; its fixtures do not exercise the new method-return
+chains, which have separate exact-target integration controls.
+
+Hoisted lookup reads the authoritative method registry and exact callable
+return facts. A nearer declaration with an ambiguous or unavailable return
+stops ancestor fallback. Swift recovers overwritten declaration returns in
+both declaration orders. Dart supplies no exact declaration return facts and
+conservatively declines the overwritten owner. Method references remain
+callable values. Scope access remains valid after the disk-backed store seals;
+no parallel owner/name declaration index is added.
+
+Replay narrowing applies only to providers that opt into owner-checked hoisted
+returns. A uniquely selected Swift override retains its exact return when
+ancestor candidates have matching complete captured parameter-type vectors and
+count metadata. Matching undefined counts retain variadic overrides; unknown
+type slots, differing metadata and same-owner ties decline. Swift preserves an
+empty slot when a parameter type is unsupported instead of compressing it out.
+The fixed and variadic bound-override controls retain main's exact
+`Function:Main.swift:Admin.save#0` target. Both compiled pre-fix cases emitted no
+bound `Admin.save` edge, while main and the corrected branch emit one. The
+inline forms remain unresolved on both main and the branch. Matching uses
+captured normalized types; labels and richer type identity remain outside
+this proof.
+
+A fresh package build and both pinned TypeScript configurations pass on the
+combined source. All 283 affected tests in nine files pass. All 16 capture
+checks passed after main integration; Swift was rechecked after its
+parameter-metadata correction
+with unchanged fingerprint and budget. The other capture producers are
+unchanged. The receiver baseline update and check pass. Coverage includes
+sealed-store Swift/Dart resolution, exact override and owner targets, inherited-overload and tear-off refusal, and TypeScript/Python
+preservation controls. Hosted CI is required on the published commit.
 
 ### Inheritance visibility review boundaries
 

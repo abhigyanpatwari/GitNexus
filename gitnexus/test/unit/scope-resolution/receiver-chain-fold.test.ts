@@ -173,6 +173,23 @@ describe('foldReceiverChain', () => {
     });
     expect(foldIn(ctx, '2|svc|cgetUser', { hoistTypeBindingsToModule: false })).toBeUndefined();
   });
+
+  // `hoistedTypeBindingsRequireOwner` joins a hoisted binding to the member that
+  // declared it. `Service` declares `getUser`, so that binding joins. `inherited`
+  // is declared by `Base`, and this unit fixture builds no MRO, so the only way
+  // `Service` ever reached it was the name-keyed walk — which the toggle refuses
+  // and the default keeps (the pipeline reaches `Base` through the MRO instead).
+  it.each([
+    { chain: '2|svc|cgetUser', requireOwner: true, expected: 'User' },
+    { chain: '2|svc|cinherited', requireOwner: true, expected: undefined },
+    { chain: '2|svc|cinherited', requireOwner: false, expected: 'User' },
+  ])(
+    'folds $chain to $expected when hoistedTypeBindingsRequireOwner is $requireOwner',
+    ({ chain, requireOwner, expected }) => {
+      const folded = foldIn(ctx, chain, { hoistedTypeBindingsRequireOwner: requireOwner });
+      expect(folded?.qualifiedName).toEqual(expected);
+    },
+  );
 });
 
 /**

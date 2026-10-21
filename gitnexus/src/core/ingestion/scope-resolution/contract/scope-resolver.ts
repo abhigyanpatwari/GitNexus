@@ -21,6 +21,8 @@
  *        - hoistTypeBindingsToModule — enable ONLY when method return
  *          types are stored on the enclosing Module scope; most
  *          languages attach them to the class scope and leave this off
+ *        - hoistedTypeBindingsRequireOwner — with the above, accept a
+ *          hoisted binding only from a member of the receiver's own class
  *   2. Export a thin entry point:
  *      `runYourLangScopeResolution(input) = runScopeResolution(input, yourScopeResolver)`.
  *   3. Register the provider in
@@ -1824,8 +1826,36 @@ export interface ScopeResolver {
    * scope leave this undefined — enabling the walk-up for them would
    * add an unnecessary branch and risk picking up unrelated module-
    * level bindings.
+   *
+   * The hoisted bindings are keyed by bare member name, so on its own the
+   * walk-up accepts whatever binding of that name it meets first — see
+   * `hoistedTypeBindingsRequireOwner` for the guard.
    */
   readonly hoistTypeBindingsToModule?: boolean;
+
+  /**
+   * With `hoistTypeBindingsToModule`, accept a hoisted binding only when a
+   * member of the asked-about class declared it. Default `false`.
+   *
+   * The Module scope holds one hoisted binding per member NAME, so with
+   * `class A { getUser(): User }` and `class B { getUser(): Admin }` in one
+   * file only B's survives, and the plain walk-up types `a.getUser()` as
+   * `Admin`. It does the same with an imported top-level function of that
+   * name, or for a class that has no such member at all. With this toggle the
+   * walk-up joins the binding to its declaration instead: its
+   * `TypeRef.bindingRange` must enclose the declaration of a member with that
+   * name owned by the class (`ownerId`, from `populateOwners`), else the walk
+   * keeps climbing and, failing that, declines.
+   *
+   * The cost is the declaration whose binding was overwritten: `a.getUser()`
+   * above resolves to nothing rather than to `Admin`, including when A and B
+   * happen to return the same type, which the plain walk-up gets right by
+   * accident. Languages that already relied on the plain walk-up (C#,
+   * TypeScript, …) leave this off until the hoisted bindings are keyed per
+   * declaration; a language newly enabling the walk-up has no such edges to
+   * lose and should set it.
+   */
+  readonly hoistedTypeBindingsRequireOwner?: boolean;
 
   /**
    * Strip ONE layer of type-preserving decoration off a declared type name,

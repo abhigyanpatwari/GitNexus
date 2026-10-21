@@ -20,7 +20,7 @@
  * either don't trigger the call branch or skip this pass entirely.
  */
 
-import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type { Range, Scope, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ElementAccessRoute, ScopeResolver } from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
@@ -127,6 +127,15 @@ interface ResolveCompoundReceiverOptions {
    *  languages that hoist return-type bindings to Module scope (C#);
    *  otherwise we risk picking up unrelated module-level bindings. */
   readonly hoistTypeBindingsToModule?: boolean;
+  /** `ScopeResolver.hoistedTypeBindingsRequireOwner`: a binding found by that
+   *  walk counts only when a member of the class being asked about declared
+   *  it — see `hoistedMemberBinding`. */
+  readonly hoistedTypeBindingsRequireOwner?: boolean;
+  /** Authoritative method declarations from SemanticModel; no parallel symbol index. */
+  readonly lookupOwnedMethods?: (
+    ownerId: string,
+    memberName: string,
+  ) => readonly SymbolDefinition[];
   /** `ScopeResolver.resolveThisViaEnclosingClass` — the language declares that
    *  `this` IS the enclosing class rather than a per-function-scope binding.
    *  Read only by the `this` head seed below. */
@@ -636,6 +645,84 @@ function classOfReturnType(
   return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
 }
 
+/** Does `inner` lie entirely inside `outer`? Positions compare line-first. */
+function rangeWithin(inner: Range, outer: Range): boolean {
+  return (
+    (inner.startLine > outer.startLine ||
+      (inner.startLine === outer.startLine && inner.startCol >= outer.startCol)) &&
+    (inner.endLine < outer.endLine ||
+      (inner.endLine === outer.endLine && inner.endCol <= outer.endCol))
+  );
+}
+
+/**
+ * A member's type binding that the language hoisted out of `classScope` onto
+ * an ancestor (Module) scope.
+ *
+ * The hoisted bindings are keyed by the bare member NAME on the Module scope,
+ * so the name alone cannot say whose they are: `class A { getUser(): User }`
+ * and `class B { getUser(): Admin }` in one file leave a single `getUser`
+ * entry (the later one), an imported top-level function of the same name lands
+ * in the same map, and a class with no such member at all still finds it.
+ * Accepting by name types `a.getUser().save()` as `Admin.save`.
+ *
+ * With `hoistedTypeBindingsRequireOwner`, a unique owned declaration first
+ * supplies its exact recorded return type. Multiple declarations refuse the
+ * lookup, even when same-arity overloads share a graph ID. A declared member
+ * whose binding cannot be recovered returns null, stopping ancestor fallback;
+ * undefined means this owner declares no usable member. Without the toggle,
+ * the first ancestor binding is taken as before.
+ */
+function hoistedMemberBinding(
+  classScope: Scope,
+  ownerId: string,
+  memberName: string,
+  scopes: ScopeResolutionIndexes,
+  options: ResolveCompoundReceiverOptions,
+  index: WorkspaceResolutionIndex,
+  invoked = true,
+): TypeRef | null | undefined {
+  let declaration: SymbolDefinition | undefined;
+  if (options.hoistedTypeBindingsRequireOwner === true) {
+    const lookup = options.lookupOwnedMethods;
+    if (lookup === undefined) return null;
+    const owned = [
+      ...new Map(lookup(ownerId, memberName).map((def) => [def.nodeId, def])).values(),
+    ];
+    if (owned.length === 0) return undefined;
+    // A member reference is a callable value, not its invocation's return type.
+    if (!invoked || owned.length > 1) return null;
+    const member = owned[0]!;
+    for (const ancestor of scopes.methodDispatch.mroFor(ownerId)) {
+      if (ancestor === ownerId) continue;
+      for (const inherited of lookup(ancestor, memberName)) {
+        // Without argument labels or arity for this intermediate hop, only
+        // zero-argument overrides have an unambiguous inherited signature.
+        if (member.parameterCount !== 0 || inherited.parameterCount !== 0) return null;
+      }
+    }
+    const exact = index.declaredReturnTypeByCallableId.get(member.nodeId);
+    if (exact !== undefined) return exact;
+    declaration = member;
+  }
+  let curId: ScopeId | null = classScope.parent;
+  while (curId !== null) {
+    const curScope = scopes.scopeTree.getScope(curId);
+    if (curScope === undefined) return undefined;
+    const hoisted = curScope.typeBindings.get(memberName);
+    if (
+      hoisted !== undefined &&
+      (options.hoistedTypeBindingsRequireOwner !== true ||
+        (declaration?.declarationRange !== undefined &&
+          hoisted.bindingRange !== undefined &&
+          rangeWithin(declaration.declarationRange, hoisted.bindingRange)))
+    )
+      return hoisted;
+    curId = curScope.parent;
+  }
+  return declaration === undefined ? undefined : null;
+}
+
 /**
  * The return type a free-call callee declares for ITSELF — read by definition
  * identity (`producerTypeRef`), the way the chain follow types the bound form
@@ -669,6 +756,7 @@ function typeOfMemberOnClass(
   scopes: ScopeResolutionIndexes,
   index: WorkspaceResolutionIndex,
   options: ResolveCompoundReceiverOptions,
+  invoked = true,
 ): FoldState | undefined {
   const classScopeByDefId = index.classScopeByDefId;
   const ownerChain = [owner.nodeId, ...scopes.methodDispatch.mroFor(owner.nodeId)];
@@ -701,37 +789,35 @@ function typeOfMemberOnClass(
     // without this walk the fold cannot type a single step in the first
     // language it ships for. Gated on the same contract flag
     // `resolveCompoundReceiverClass` uses, so a language that does not hoist
-    // cannot pick up an unrelated module-level binding of the same name.
-    if (classScope !== undefined && options.hoistTypeBindingsToModule === true) {
-      let curId: ScopeId | null = classScope.parent;
-      while (curId !== null) {
-        const curScope = scopes.scopeTree.getScope(curId);
-        if (curScope === undefined) break;
-        const hoisted = curScope.typeBindings.get(memberName);
-        if (hoisted !== undefined) {
-          // Same stripper the primary branch above passes. Omitting it here
-          // meant a decorated declared type (`*Host`) resolved on one branch and
-          // not the other, for the same member of the same class.
-          const def = classOfDeclaredType(
-            hoisted,
-            scopes,
-            options,
-            options.stripTypePreservingDecoration,
-          );
-          // Identical to the primary branch: a declared type that named no
-          // class is still a usable position when the next step unwraps it.
-          // Returning `undefined` here made `svc.getMap()['k'].run()` decline
-          // while byte-identical `byId['k'].run()` resolved, purely because ten
-          // languages route return-type bindings through this hoisted branch
-          // and the other through the class scope.
-          return {
-            def,
-            declaredType: hoisted.declaredSpelling ?? hoisted.rawName,
-            declaredAtScope: hoisted.declaredAtScope,
-          };
-        }
-        curId = curScope.parent;
-      }
+    // cannot pick up an unrelated module-level binding of the same name. A
+    // language that also sets `hoistedTypeBindingsRequireOwner` additionally
+    // refuses a same-named member of another class (see `hoistedMemberBinding`).
+    const hoisted =
+      classScope !== undefined && options.hoistTypeBindingsToModule === true
+        ? hoistedMemberBinding(classScope, ownerId, memberName, scopes, options, index, invoked)
+        : undefined;
+    if (hoisted === null) return undefined;
+    if (hoisted !== undefined) {
+      // Same stripper the primary branch above passes. Omitting it here
+      // meant a decorated declared type (`*Host`) resolved on one branch and
+      // not the other, for the same member of the same class.
+      const def = classOfDeclaredType(
+        hoisted,
+        scopes,
+        options,
+        options.stripTypePreservingDecoration,
+      );
+      // Identical to the primary branch: a declared type that named no
+      // class is still a usable position when the next step unwraps it.
+      // Returning `undefined` here made `svc.getMap()['k'].run()` decline
+      // while byte-identical `byId['k'].run()` resolved, purely because ten
+      // languages route return-type bindings through this hoisted branch
+      // and the other through the class scope.
+      return {
+        def,
+        declaredType: hoisted.declaredSpelling ?? hoisted.rawName,
+        declaredAtScope: hoisted.declaredAtScope,
+      };
     }
   }
   return undefined;
@@ -953,7 +1039,14 @@ function foldReceiverChainState(
     // get here.
     if (options.constructionSyntax?.selector === step.name) return undefined;
     if (current.def === undefined) return undefined;
-    const next = typeOfMemberOnClass(current.def, step.name, scopes, index, options);
+    const next = typeOfMemberOnClass(
+      current.def,
+      step.name,
+      scopes,
+      index,
+      options,
+      step.kind === 'call',
+    );
     if (next === undefined) return undefined;
     current = next;
   }
@@ -1349,19 +1442,12 @@ export function resolveCompoundReceiverClass(
       // enabling it unconditionally would let other languages pick up
       // unrelated module-level bindings. See contract doc for the
       // invariant and `propagateImportedReturnTypes` for how the
-      // hoisted bindings originate.
+      // hoisted bindings originate. `hoistedMemberBinding` also applies the
+      // owner join when the language asks for it.
       if (cs !== undefined && options.hoistTypeBindingsToModule === true) {
-        let curId: ScopeId | null = cs.parent;
-        while (curId !== null) {
-          const curScope = scopes.scopeTree.getScope(curId);
-          if (curScope === undefined) break;
-          const cand = curScope.typeBindings.get(methodName);
-          if (cand !== undefined) {
-            retType = cand;
-            break;
-          }
-          curId = curScope.parent;
-        }
+        const hoisted = hoistedMemberBinding(cs, ownerId, methodName, scopes, options, index);
+        if (hoisted === null) return undefined;
+        retType = hoisted;
         if (retType !== undefined) break;
       }
     }
@@ -1613,17 +1699,17 @@ export function resolveCompoundReceiverClass(
       options.hoistTypeBindingsToModule === true &&
       cs !== undefined
     ) {
-      let curId: ScopeId | null = cs.parent;
-      while (curId !== null) {
-        const curScope = scopes.scopeTree.getScope(curId);
-        if (curScope === undefined) break;
-        const cand = curScope.typeBindings.get(memberName);
-        if (cand !== undefined) {
-          memberType = cand;
-          break;
-        }
-        curId = curScope.parent;
-      }
+      const hoisted = hoistedMemberBinding(
+        cs,
+        currentClass.nodeId,
+        memberName,
+        scopes,
+        options,
+        index,
+        segment.includes('('),
+      );
+      if (hoisted === null) return undefined;
+      memberType = hoisted;
     }
     if (memberType === undefined) {
       // Trailing segment may be a method name without `()` — e.g.
@@ -1923,17 +2009,17 @@ function resolveMapValueTypeNameFromPrefix(
     if (cs === undefined) return undefined;
     let memberType = cs.typeBindings.get(memberName);
     if (memberType === undefined && options.hoistTypeBindingsToModule === true) {
-      let curId: ScopeId | null = cs.parent;
-      while (curId !== null) {
-        const curScope = scopes.scopeTree.getScope(curId);
-        if (curScope === undefined) break;
-        const cand = curScope.typeBindings.get(memberName);
-        if (cand !== undefined) {
-          memberType = cand;
-          break;
-        }
-        curId = curScope.parent;
-      }
+      const hoisted = hoistedMemberBinding(
+        cs,
+        currentClass.nodeId,
+        memberName,
+        scopes,
+        options,
+        index,
+        segment.includes('('),
+      );
+      if (hoisted === null) return undefined;
+      memberType = hoisted;
     }
     if (memberType === undefined) return undefined;
     lastMemberType = memberType;
