@@ -12,7 +12,7 @@ describe('field declaration metadata through the parse worker', () => {
     ['instance first', 'p = new InstanceTarget();\n  static p = new StaticTarget();'],
     ['same line', 'static p = new StaticTarget(); p = new InstanceTarget();'],
   ])(
-    'keeps static and instance initializers on their declarations: %s',
+    'keeps static and instance initializer metadata in separate worker records: %s',
     async (_, fields) => {
       const pool = createWorkerPool(
         new URL('../../dist/core/ingestion/workers/parse-worker.js', import.meta.url),
