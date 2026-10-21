@@ -23,6 +23,7 @@ import { getProvider } from '../../src/core/ingestion/languages/index.js';
 
 // Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
 const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
+const Swift = requireVendoredGrammar('tree-sitter-swift');
 
 /**
  * Helper: parse code, run the language query, and return all @call captures
@@ -572,6 +573,65 @@ describe('extractMixedChain', () => {
   ];
 
   it.each(typeArgumentRows)('$label', ({ language, code, member, expected }) => {
+    expect(receiverChainOf(language, code, member)).toEqual(expected);
+  });
+
+  // Wrappers that denote exactly their operand (#3498 RC4): C#'s null-forgiving
+  // `svc!` and Swift's single-element tuple, which is how Swift spells `(x)`.
+  // A wrapper that changes the value (`i++`, a real tuple) must stay the base.
+  const wrapperRows: readonly ChainRow[] = [
+    {
+      label: 'C# null-forgiving base',
+      language: CSharp,
+      code: 'class A { void M() { svc!.GetUser().Save(); } }',
+      member: 'Save',
+      expected: { chain: [call('GetUser')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'C# postfix increment is not peeled',
+      language: CSharp,
+      code: 'class A { void M() { i++.GetUser().Save(); } }',
+      member: 'Save',
+      expected: { chain: [call('GetUser')], baseReceiverName: 'i++' },
+    },
+    {
+      label: 'Swift parenthesized await',
+      language: Swift,
+      code: 'func f() async { (await svc.getUserAsync()).save() }',
+      member: 'save',
+      expected: { chain: [call('getUserAsync'), { kind: 'await' }], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'Swift parenthesized base',
+      language: Swift,
+      code: 'func f() { (svc).getUser().save() }',
+      member: 'save',
+      expected: { chain: [call('getUser')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'Swift labelled one-element tuple is not peeled',
+      language: Swift,
+      code: 'func f() { (x: svc).getUser().save() }',
+      member: 'save',
+      expected: { chain: [call('getUser')], baseReceiverName: '(x: svc)' },
+    },
+    {
+      label: 'Swift two-element tuple is not peeled',
+      language: Swift,
+      code: 'func f() { (a, b).save() }',
+      member: 'save',
+      expected: undefined,
+    },
+    {
+      label: 'Rust one-element tuple keeps its trailing comma and is not peeled',
+      language: Rust,
+      code: 'fn f() { (svc,).get_user().save(); }',
+      member: 'save',
+      expected: { chain: [call('get_user')], baseReceiverName: '(svc,)' },
+    },
+  ];
+
+  it.each(wrapperRows)('$label', ({ language, code, member, expected }) => {
     expect(receiverChainOf(language, code, member)).toEqual(expected);
   });
 });

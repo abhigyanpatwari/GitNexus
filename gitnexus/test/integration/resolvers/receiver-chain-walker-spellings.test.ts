@@ -8,7 +8,9 @@
  * edge or vanished without a recorded drop:
  *
  * - explicit type arguments inside the callee (`svc.GetTyped<User>()`,
- *   `svc.get_typed::<User>()`, `svc->getTyped<User>()`).
+ *   `svc.get_typed::<User>()`, `svc->getTyped<User>()`);
+ * - wrappers that denote exactly their operand: C# `svc!` and Swift's
+ *   one-element tuple, which is how Swift parses `(x)`.
  *
  * A row lists every CALLS target of `member` from `source`, and every
  * `receiver-unresolved` call drop recorded for `member` in that method. A row
@@ -27,6 +29,8 @@ import {
   writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
+import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
 interface Row {
   readonly language: string;
@@ -41,7 +45,7 @@ interface Row {
 }
 
 interface LanguageCase {
-  readonly language: string;
+  readonly language: SupportedLanguages;
   readonly files: Readonly<Record<string, string>>;
   readonly rows: readonly Row[];
 }
@@ -108,9 +112,29 @@ public:
 };
 `;
 
+const SWIFT_MODELS = `class Address {
+    func save() {}
+}
+
+class User {
+    var address: Address = Address()
+    func save() {}
+}
+
+class Service {
+    func getUser() -> User { return User() }
+    func getUserAsync() async -> User { return User() }
+}
+
+class Holder {
+    var repo: User = User()
+    var users: [User] = []
+}
+`;
+
 const CASES: readonly LanguageCase[] = [
   {
-    language: 'csharp',
+    language: SupportedLanguages.CSharp,
     files: {
       'Models.cs': CSHARP_MODELS,
       'Main.cs': `public class Caller {
@@ -119,6 +143,9 @@ const CASES: readonly LanguageCase[] = [
     }
     void ExplicitTypeArgsThenField(Service svc) {
         svc.GetTyped<User>().Address.Save();
+    }
+    void NonNullAssert(Service svc) {
+        svc!.GetUser().Save();
     }
 }
 `,
@@ -138,10 +165,17 @@ const CASES: readonly LanguageCase[] = [
         targets: ['Method:Models.cs:Address.Save#0'],
         drops: [],
       },
+      {
+        language: 'csharp',
+        source: 'NonNullAssert',
+        member: 'Save',
+        targets: ['Method:Models.cs:User.Save#0'],
+        drops: [],
+      },
     ],
   },
   {
-    language: 'rust',
+    language: SupportedLanguages.Rust,
     files: {
       'models.rs': RUST_MODELS,
       'main.rs': `mod models;
@@ -174,7 +208,7 @@ fn explicit_type_args_then_field(svc: &Service) {
     ],
   },
   {
-    language: 'cpp',
+    language: SupportedLanguages.CPlusPlus,
     files: {
       'models.h': CPP_MODELS,
       'main.cpp': `#include "models.h"
@@ -194,6 +228,39 @@ void explicitTypeArgs(Service* svc) {
         member: 'save',
         targets: [],
         drops: ['main.cpp:4'],
+      },
+    ],
+  },
+  {
+    language: SupportedLanguages.Swift,
+    files: {
+      'models.swift': SWIFT_MODELS,
+      'main.swift': `func parenField(holder: Holder) {
+    (holder).repo.save()
+}
+
+func awaitParen(svc: Service) async {
+    (await svc.getUserAsync()).save()
+}
+`,
+    },
+    rows: [
+      {
+        language: 'swift',
+        source: 'parenField',
+        member: 'save',
+        targets: ['Function:models.swift:User.save#0'],
+        drops: [],
+      },
+      {
+        // KNOWN GAP. The chain `2|svc|cgetUserAsync|a` is now built, but Swift
+        // keeps return types on the Module scope and the fold does not look
+        // there yet.
+        language: 'swift',
+        source: 'awaitParen',
+        member: 'save',
+        targets: [],
+        drops: ['main.swift:6'],
       },
     ],
   },
@@ -219,45 +286,48 @@ function definitionsNamed(
 }
 
 describe.each(CASES)('receiver chain spellings ($language)', ({ language, files, rows }) => {
-  let root: string;
-  let result: PipelineResult;
+  // Swift is a vendored optional grammar; a host without its prebuild skips it.
+  describe.skipIf(!isLanguageAvailable(language))('with the grammar loaded', () => {
+    let root: string;
+    let result: PipelineResult;
 
-  beforeAll(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), `gitnexus-chain-spellings-${language}-`));
-    writeFixtureRepo(root, files);
-    result = await runPipelineFromRepo(root, () => {});
-  }, 180000);
+    beforeAll(async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), `gitnexus-chain-spellings-${language}-`));
+      writeFixtureRepo(root, files);
+      result = await runPipelineFromRepo(root, () => {});
+    }, 180000);
 
-  afterAll(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    afterAll(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it.each(rows)(
+      '$language: $member called from $source reaches $targets with drops $drops',
+      ({ source, member, targets, drops }) => {
+        const reached = getRelationships(result, 'CALLS')
+          .filter((edge) => edge.source === source && edge.target === member)
+          .map((edge) => edge.rel.targetId)
+          .sort();
+        expect(reached).toEqual(targets);
+
+        const definitions = definitionsNamed(result, source);
+        expect(definitions).toHaveLength(1);
+        const [definition] = definitions;
+        const dropped = getResolutionOutcomes(result)
+          .filter((outcome) => outcome.kind === 'suppressed')
+          .filter(
+            (outcome) =>
+              outcome.reason === 'receiver-unresolved' &&
+              outcome.siteKind === 'call' &&
+              outcome.name === member &&
+              outcome.filePath === definition.filePath &&
+              outcome.range.startLine >= definition.firstLine &&
+              outcome.range.startLine <= definition.lastLine,
+          )
+          .map((outcome) => `${outcome.filePath}:${outcome.range.startLine}`)
+          .sort();
+        expect(dropped).toEqual(drops);
+      },
+    );
   });
-
-  it.each(rows)(
-    '$language: $member called from $source reaches $targets with drops $drops',
-    ({ source, member, targets, drops }) => {
-      const reached = getRelationships(result, 'CALLS')
-        .filter((edge) => edge.source === source && edge.target === member)
-        .map((edge) => edge.rel.targetId)
-        .sort();
-      expect(reached).toEqual(targets);
-
-      const definitions = definitionsNamed(result, source);
-      expect(definitions).toHaveLength(1);
-      const [definition] = definitions;
-      const dropped = getResolutionOutcomes(result)
-        .filter((outcome) => outcome.kind === 'suppressed')
-        .filter(
-          (outcome) =>
-            outcome.reason === 'receiver-unresolved' &&
-            outcome.siteKind === 'call' &&
-            outcome.name === member &&
-            outcome.filePath === definition.filePath &&
-            outcome.range.startLine >= definition.firstLine &&
-            outcome.range.startLine <= definition.lastLine,
-        )
-        .map((outcome) => `${outcome.filePath}:${outcome.range.startLine}`)
-        .sort();
-      expect(dropped).toEqual(drops);
-    },
-  );
 });

@@ -557,8 +557,9 @@ export function extractCallChain(
  * operand rather than as the cast target.
  *
  * Keyed by node type; the value is the operator text that has to TERMINATE the
- * node for the peel to apply, or `null` for a node type that is transparent
- * unconditionally.
+ * node for the peel to apply, `null` for a node type that is transparent
+ * unconditionally, or `SOLE_ELEMENT` for a tuple node that is transparent only
+ * when it holds exactly one element.
  *
  * The gated entry exists because Swift force-unwrap (`self.a!`) is the exact
  * semantic of TypeScript's `non_null_expression` — it yields the wrapped type —
@@ -567,8 +568,17 @@ export function extractCallChain(
  * node type unconditionally would type the receiver as the operand and could
  * produce a confidently wrong owner. Reading the operator keeps the peel to the
  * case that is provably type-preserving.
+ *
+ * The `SOLE_ELEMENT` entry exists because Swift has no parenthesized-expression
+ * node: `(await svc.getUserAsync())` parses as a `tuple_expression` with one
+ * element. Only that shape denotes its operand. Rust also emits
+ * `tuple_expression`, and there `(svc,)` is a real one-element tuple; the
+ * trailing comma is an extra child, so the gate leaves it alone, as it does
+ * Swift's labelled `(x: svc)` and every tuple of two or more.
  */
-const TRANSPARENT_RECEIVER_WRAPPERS = new Map<string, string | null>([
+const SOLE_ELEMENT = Symbol('sole-element');
+
+const TRANSPARENT_RECEIVER_WRAPPERS = new Map<string, string | null | typeof SOLE_ELEMENT>([
   ['non_null_expression', null], // TypeScript `svc!`
   ['parenthesized_expression', null], // `(svc)`
   // NOT Swift-only: Kotlin's `!!` non-null assertion parses as the same node type
@@ -578,6 +588,10 @@ const TRANSPARENT_RECEIVER_WRAPPERS = new Map<string, string | null>([
   // rather than assumed. Any other grammar emitting `postfix_expression` is
   // affected as well; the `!` gate, not the language, is what bounds this.
   ['postfix_expression', '!'], // Swift `self.a!`, Kotlin `a!!`
+  // C#'s null-forgiving `svc!`. The same node type carries `x++` and `x--`,
+  // which the `!` gate leaves alone.
+  ['postfix_unary_expression', '!'], // C# `svc!`
+  ['tuple_expression', SOLE_ELEMENT], // Swift `(await svc.getUserAsync())`
 ]);
 
 /** Is `node` a wrapper that denotes exactly what its operand denotes? */
@@ -591,6 +605,9 @@ function isTransparentReceiverWrapper(node: SyntaxNode): boolean {
   // `has` probe, and one crossing of the native `node.type` getter.
   if (operator === undefined) return false;
   if (operator === null) return true;
+  // `(`, the element, `)`: anything more is a comma, a label or a second
+  // element, and then the node is a real tuple.
+  if (operator === SOLE_ELEMENT) return node.childCount === 3 && node.namedChildCount === 1;
   // The operator is an anonymous token, so it is not in `namedChildren`; the
   // node's own text is the reliable place to read it. Deliberately NOT
   // `node.lastChild` — measured 3x SLOWER (the child wrapper allocation

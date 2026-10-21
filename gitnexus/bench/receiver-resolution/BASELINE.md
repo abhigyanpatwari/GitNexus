@@ -17,6 +17,10 @@ spellings.
   RESOLVES, both to `User.Save`/`User.save`. cpp `explicitTypeArgs` stays
   VISIBLE-GAP: the step is now `getTyped`, but `T` is not substituted into
   the template's return type.
+- **C# `svc!` and Swift `(x)`** (a one-element `tuple_expression`): csharp
+  `nonNullAssert` VISIBLE-GAP → RESOLVES (`User.Save`). swift `awaitParen`
+  now builds its chain but stays VISIBLE-GAP until Swift's module-scope
+  return types are hoisted.
 
 ## Swift/Dart stack integration after Rust and C#
 

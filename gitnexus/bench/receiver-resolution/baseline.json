@@ -117,7 +117,7 @@
       "plainChain": "RESOLVES",
       "plainDeepChain": "RESOLVES",
       "optionalChain": "VISIBLE-GAP",
-      "nonNullAssert": "VISIBLE-GAP",
+      "nonNullAssert": "RESOLVES",
       "awaitParen": "RESOLVES",
       "explicitTypeArgs": "RESOLVES",
       "indexElement": "VISIBLE-GAP",
