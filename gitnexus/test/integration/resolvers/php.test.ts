@@ -2355,8 +2355,22 @@ describe('PHP namespaced-function factory result types (#3498 follow-up)', () =>
     ]);
   });
 
-  it.each(['untypedAlias', 'untypedInline'])('does not guess a receiver type for %s', (source) => {
-    expect(callsFrom(source, 'ping')).toEqual([]);
+  it.each(['untypedAlias', 'untypedInline', 'vendorCall', 'ambiguousCall'])(
+    'does not guess a receiver type for %s',
+    (source) => {
+      expect(callsFrom(source, 'ping')).toEqual([]);
+    },
+  );
+
+  // Fail closed: a qualified callee names its function by path, never by its
+  // tail, so one the path cannot resolve must not bind the same-named
+  // `Qff\Ext\count` / `Qff\Ext\make` declared in the caller's namespace.
+  it.each([
+    ['builtinCall', 'count'],
+    ['vendorCall', 'make'],
+    ['ambiguousCall', 'make'],
+  ])('emits no edge for the unresolvable qualified callee in %s', (source, target) => {
+    expect(callsFrom(source, target)).toEqual([]);
   });
 
   it.each([

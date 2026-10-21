@@ -71,7 +71,7 @@ describe('PHP qualified function-call captures', () => {
     const calls = (parsed?.referenceSites ?? [])
       .filter((site) => site.kind === 'call')
       .map((site) => [site.name, site.rawQualifiedName, site.callForm]);
-    expect(calls).toEqual([['make', path, 'free']]);
+    expect(calls).toEqual([[path, path, 'free']]);
     const bound = (parsed?.scopes ?? [])
       .flatMap((scope) => [...scope.typeBindings])
       .filter(([name]) => name === '$x')

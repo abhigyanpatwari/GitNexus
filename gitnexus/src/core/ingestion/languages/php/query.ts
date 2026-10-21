@@ -266,16 +266,17 @@ const PHP_SCOPE_QUERY = `
   function: (name) @reference.name) @reference.call.free
 
 ;; ── References — qualified free calls (qualified_name / relative_name) ───
-;; The tail names the callee; the written path rides along so the
-;; provider's resolveQualifiedFreeCall resolves it by PHP's name rules (#3498).
+;; The written path is both the site's name and its qualified name, so only
+;; the provider's resolveQualifiedFreeCall, reading it by PHP's name rules,
+;; can resolve it (#3498). Fail closed: a path it refuses (a builtin, an
+;; uninstalled package, a name declared twice) matches no simple-name lookup,
+;; so its tail never binds a same-named function in another namespace.
 
 (function_call_expression
-  function: (qualified_name
-    (name) @reference.name) @reference.qualified-name) @reference.call.free
+  function: (qualified_name) @reference.name @reference.qualified-name) @reference.call.free
 
 (function_call_expression
-  function: (relative_name
-    (name) @reference.name) @reference.qualified-name) @reference.call.free
+  function: (relative_name) @reference.name @reference.qualified-name) @reference.call.free
 
 ;; ── References — member calls: $obj->method() ────────────────────────────
 ;;

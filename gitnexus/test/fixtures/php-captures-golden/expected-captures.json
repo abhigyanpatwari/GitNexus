@@ -423,13 +423,21 @@
     "captureGroups": 7,
     "digest": "cdb9f71aa8530eda1b0615dfbe1afb982b4b8fee190ccc37a7d55cd87d364cea"
   },
+  "php-qualified-function-factory/lib/dup-a.php": {
+    "captureGroups": 7,
+    "digest": "5063b2414abef7146797f6287ae0ff5afa3e29d297927cdb20351773ea898063"
+  },
+  "php-qualified-function-factory/lib/dup-b.php": {
+    "captureGroups": 7,
+    "digest": "5063b2414abef7146797f6287ae0ff5afa3e29d297927cdb20351773ea898063"
+  },
   "php-qualified-function-factory/lib/functions.php": {
     "captureGroups": 9,
     "digest": "85a30e32c8fc36b34b959e1c081a607c0835687eef0e6f6bbba46984912c3872"
   },
   "php-qualified-function-factory/src/App/Callers.php": {
     "captureGroups": 36,
-    "digest": "19846b0438c564d2931da26ac4ca002ef4f4b20862cd66ac17ad75174f8d4ffa"
+    "digest": "781ed4bebea8b5aa90a7347628d16ff2645bc907e4460827d7f3ff4e33c81036"
   },
   "php-qualified-function-factory/src/App/Named.php": {
     "captureGroups": 8,
@@ -437,11 +445,19 @@
   },
   "php-qualified-function-factory/src/Entry.php": {
     "captureGroups": 7,
-    "digest": "14195813d6af5373c5a1d93ba0779b9958546f2b8d4090089fd43effe4871952"
+    "digest": "1e95af134ed94b73c91fbb92808fb815b97d612a4cd0d3dae1bd21883790ab4c"
+  },
+  "php-qualified-function-factory/src/Ext/Calls.php": {
+    "captureGroups": 18,
+    "digest": "4064e994401132e0339a926e9c397324c9a4c4d51e66d2774af46945a961ef65"
+  },
+  "php-qualified-function-factory/src/Ext/Shadows.php": {
+    "captureGroups": 11,
+    "digest": "2109281e6100c98d89eaa02bd433ce314e4c30f8945016c56046318c26b70894"
   },
   "php-qualified-function-factory/src/Mod/Local.php": {
     "captureGroups": 7,
-    "digest": "1c843d953b883510507a331ac468c835e68aeff4571fb37b423200dc540dfb45"
+    "digest": "6335dca7c7f6adfa7dc4e294cf5942cd3cc43050c37e89cdf04244566a4d82f0"
   },
   "php-qualified-function-factory/src/Mod/QffFactory.php": {
     "captureGroups": 8,

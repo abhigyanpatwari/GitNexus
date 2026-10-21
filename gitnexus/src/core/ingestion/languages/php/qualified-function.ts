@@ -189,7 +189,10 @@ export function bindPhpUseFunctionImports(
 }
 
 /** `ScopeResolver.resolveQualifiedFreeCall`: the same resolution, for the
- *  call site the qualified callee itself mints. */
+ *  call site the qualified callee itself mints. That site is NAMED by its
+ *  whole path (query.ts), so the simple-name tiers this hook falls through to
+ *  find nothing: a refusal here leaves the call unresolved, never bound to a
+ *  same-named function elsewhere. */
 export function resolvePhpQualifiedFreeCall(
   site: { readonly rawQualifiedName?: string; readonly inScope: ScopeId },
   _callerParsed: ParsedFile,
