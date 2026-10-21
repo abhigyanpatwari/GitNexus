@@ -700,6 +700,8 @@ export function runScopeResolution(
         if (extractionWarned) scopeExtractionFailedPaths.push(file.path);
         continue;
       }
+      const captureSideChannel = provider.languageProvider.collectCaptureSideChannel?.(file.path);
+      if (captureSideChannel !== undefined) parsed = { ...parsed, captureSideChannel };
       if (input.pdg === true && provider.languageProvider.collectSourceCfgs) {
         const warnCfg = (message: string): void => {
           logger.warn(message);

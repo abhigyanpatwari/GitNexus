@@ -35,4 +35,33 @@ describe('field declaration metadata through the parse worker', () => {
     },
     120000,
   );
+  it('keeps readonly metadata when an accessor argument is on a later line', async () => {
+    const pool = createWorkerPool(
+      new URL('../../dist/core/ingestion/workers/parse-worker.js', import.meta.url),
+      1,
+    );
+    try {
+      const results = await pool.dispatch<{ path: string; content: string }, ParseWorkerResult>([
+        {
+          path: 'reader.rb',
+          content: 'class Reader\n  attr_reader(\n    :foo\n  )\n  attr_reader :foo\nend\n',
+        },
+      ]);
+      const properties = results
+        .flatMap((result) => result.nodes)
+        .filter((node) => node.label === 'Property');
+      expect(
+        properties.map((node) => ({
+          name: node.properties.name,
+          line: node.properties.startLine,
+          readonly: node.properties.isReadonly,
+        })),
+      ).toEqual([
+        { name: 'foo', line: 2, readonly: true },
+        { name: 'foo', line: 4, readonly: true },
+      ]);
+    } finally {
+      await pool.terminate();
+    }
+  }, 120000);
 });

@@ -2152,7 +2152,7 @@ const processFileGroup = (
                 for (const item of routed.items) {
                   const routedFieldInfo = selectFieldInfo(
                     routedFieldMap?.get(item.propName),
-                    item.startLine + 1,
+                    captureMap['call'].startPosition.row + 1,
                     captureMap['call'].startPosition.column,
                   );
                   const propQualifiedName = propEnclosingInfo

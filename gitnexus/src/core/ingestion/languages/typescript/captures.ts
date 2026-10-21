@@ -1,3 +1,4 @@
+import { recordCommonJsModuleKind } from './module-kind.js';
 /**
  * `emitScopeCaptures` for TypeScript.
  *
@@ -398,6 +399,8 @@ export function emitTsScopeCaptures(
   } else {
     recordCacheHit();
   }
+
+  recordCommonJsModuleKind(tree.rootNode, filePath);
 
   const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
