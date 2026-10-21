@@ -25,6 +25,16 @@ export function cppBindingScopeFor(
   // 1. propagateImportedReturnTypes can mirror them across files
   // 2. compound-receiver can find method return types via hoistTypeBindingsToModule
   if (decl['@type-binding.return'] !== undefined) {
+    // EXCEPT a prototype declared in a namespace (`namespace rp { C make(); }`)
+    // — the only return binding whose anchor opens no scope of its own there,
+    // so its innermost scope IS the namespace. It stays in it, because the
+    // binding's scope is also where its type is looked up: hoisted, `C` meant
+    // whatever the file's module scope sees first, and a global `C` in the same
+    // header won over `rp::C`. Nothing is lost by not hoisting it: a namespace
+    // member is never mirrored to includers by bare name (`#include` does not
+    // leak namespace members), and callers read it by definition identity
+    // (`producerTypeRef`), which joins in any scope.
+    if (innermost.kind === 'Namespace') return innermost.id;
     let cur: Scope | undefined = innermost;
     while (cur !== undefined && cur.kind !== 'Module') {
       const parentId: ScopeId | null = cur.parent ?? null;

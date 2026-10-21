@@ -1,5 +1,5 @@
 /**
- * C++ receiver typing through qualified type spellings.
+ * C++ receiver typing through qualified type spellings and header prototypes.
  *
  * Every row names a caller in the `cpp-qualified-receiver-typing` fixture and
  * the exact `m` targets it must reach, as `<file>:<Owner>.m`. The fixture puts
@@ -14,6 +14,7 @@ import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } 
 
 const RP_C = 'mod.h:C.m';
 const GLOBAL_C = 'other.h:C.m';
+const D = 'mod.h:D.m';
 
 describe('C++ qualified receiver typing', () => {
   let result: PipelineResult;
@@ -59,6 +60,21 @@ describe('C++ qualified receiver typing', () => {
     ['brace_qualified', ['a.h:Config.m']],
     ['field_qualified', ['a.h:Config.m']],
   ])('qualified brace-init and member field: %s -> %j', (caller, expected) => {
+    expect(memberTargets(caller)).toEqual(expected);
+  });
+
+  it.each<[string, string[]]>([
+    ['auto_plain', [D]],
+    ['inline_plain', [D]],
+    ['auto_ptr', [D]],
+    ['global_factory', [GLOBAL_C]],
+    // A namespace prototype's return type is looked up inside its namespace,
+    // never from the file's module scope where the global Widget sits.
+    ['using_auto', [RP_C]],
+    ['using_same_file', ['mod.h:Widget.m']],
+    // The block-scope `E y();` in `vexing` must not hoist a file-level `y`.
+    ['uses_vexing_name', []],
+  ])('header prototype return type: %s -> %j', (caller, expected) => {
     expect(memberTargets(caller)).toEqual(expected);
   });
 });

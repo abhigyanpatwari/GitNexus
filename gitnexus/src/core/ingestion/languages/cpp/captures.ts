@@ -613,6 +613,17 @@ export function emitCppScopeCaptures(
       }
     }
 
+    // A prototype's return type (`D makeD();`) is a module-level fact only at
+    // namespace scope. In a function body the same syntax declares a
+    // block-scope function — the most vexing parse, `D x();` — and its binding
+    // would be hoisted to the module and type every undeclared `x` in the file.
+    // Only the prototype rules anchor `@type-binding.return` on a `declaration`
+    // (definitions anchor on `function_definition`, in-class prototypes on
+    // `field_declaration`), and the match carries nothing else, so it is dropped
+    // whole.
+    const prototypeReturn = nodeIfType(nodeMap['@type-binding.return'], 'declaration');
+    if (prototypeReturn !== null && !isCppNamespaceScopeDeclaration(prototypeReturn)) continue;
+
     const parameterNode = nodeMap['@type-binding.parameter'];
     const parameterCapture = grouped['@type-binding.parameter'];
     if (parameterNode !== undefined && parameterCapture !== undefined) {
@@ -653,6 +664,34 @@ export function emitCppScopeCaptures(
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, CPP_CALLABLE_CAPTURE_OPTIONS));
   attachCppUsingClaims(out, filePath);
   return out;
+}
+
+/** Nodes a namespace-scope declaration may sit inside without leaving namespace
+ *  scope: preprocessor conditionals (include guards nest every declaration of a
+ *  guarded header in one), single-declaration `extern "C"`, and a `template`
+ *  prefix. */
+const CPP_NAMESPACE_SCOPE_WRAPPERS: ReadonlySet<string> = new Set([
+  'preproc_if',
+  'preproc_ifdef',
+  'preproc_else',
+  'preproc_elif',
+  'preproc_elifdef',
+  'linkage_specification',
+  'template_declaration',
+]);
+
+/**
+ * Is `node` declared at namespace scope — directly in the translation unit or in
+ * a namespace / `extern "C" {}` body (`declaration_list`), through any number of
+ * {@link CPP_NAMESPACE_SCOPE_WRAPPERS}? A function body, class body, friend
+ * declaration or anything else on the way up answers no.
+ */
+function isCppNamespaceScopeDeclaration(node: SyntaxNode): boolean {
+  for (let parent = node.parent; parent !== null; parent = parent.parent) {
+    if (parent.type === 'translation_unit' || parent.type === 'declaration_list') return true;
+    if (!CPP_NAMESPACE_SCOPE_WRAPPERS.has(parent.type)) return false;
+  }
+  return false;
 }
 
 /** Prototype and nested function-pointer parameter names do not bind the body. */

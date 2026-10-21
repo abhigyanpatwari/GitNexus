@@ -4,5 +4,6 @@
 struct C {
   int m() { return 2; }
 };
+C make();
 
 #endif

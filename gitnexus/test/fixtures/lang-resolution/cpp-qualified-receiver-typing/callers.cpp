@@ -29,3 +29,15 @@ struct Holder {
   int field_qualified() { return cfg.m(); }
 };
 }  // namespace b
+
+// Factories declared only by header prototypes (definitions live in mod.cpp,
+// which nothing includes).
+int auto_plain() { auto x = makeD(); return x.m(); }
+int inline_plain() { return makeD().m(); }
+int auto_ptr() { auto p = makeDp(); return p->m(); }
+int global_factory() { auto y = make(); return y.m(); }
+
+// A block-scope `E y();` declares a local function; it must not leak a
+// file-level `y => E` binding to other functions.
+int vexing() { E y(); return 0; }
+int uses_vexing_name() { return y.m(); }

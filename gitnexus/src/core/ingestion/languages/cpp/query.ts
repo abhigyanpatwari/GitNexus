@@ -529,6 +529,29 @@ const CPP_SCOPE_QUERY = `
     declarator: (function_declarator
       declarator: (identifier) @type-binding.name))) @type-binding.return
 
+;; ─── Type bindings — free-function PROTOTYPE return type ─────────────
+;; Covers: D makeD();  D* makeDp();  namespace rp { C make(); }
+;; The usual layout is "header declares, .cpp defines", and a .cpp is never
+;; included — so the header prototype is the only return-type fact an includer
+;; can see. Only definitions carried one, which left \`auto x = makeD(); x.m()\`
+;; and \`makeD().m()\` untyped in every file that merely includes the header.
+;; Inside a function body the same syntax declares a BLOCK-scope function (the
+;; most vexing parse, \`D x();\`), whose binding would be hoisted to the module
+;; like any return type; captures.ts keeps only the matches at namespace scope
+;; (isCppNamespaceScopeDeclaration). A reference return (\`D& f();\`) has no
+;; rule here because such a function is not declared as a Function at all.
+(declaration
+  type: (type_identifier) @type-binding.type
+  declarator: (function_declarator
+    declarator: (identifier) @type-binding.name)) @type-binding.return
+
+;; Prototype pointer return: D* makeDp();
+(declaration
+  type: (type_identifier) @type-binding.type
+  declarator: (pointer_declarator
+    declarator: (function_declarator
+      declarator: (identifier) @type-binding.name))) @type-binding.return
+
 ;; ─── Type bindings — inline method return type ──────────────────────
 ;; Covers: class Foo { User getUser() { ... } };
 (function_definition
