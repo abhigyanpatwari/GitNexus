@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotlin/captures.js';
+import { interpretKotlinTypeBinding } from '../../src/core/ingestion/languages/kotlin/interpret.js';
 
 function captureTexts(source: string): Array<Record<string, string>> {
   return emitKotlinScopeCaptures(source, 'fixture.kt').map((match) =>
@@ -137,5 +138,41 @@ describe('Kotlin scope captures', () => {
     );
 
     expect(spuriousSelfBinding).toBeUndefined();
+  });
+});
+
+describe('Kotlin package-qualified call bindings (#3498 follow-up)', () => {
+  /** Every interpreted type binding for `x`, as `rawTypeName/source`. */
+  function bindingsOfX(source: string): string[] {
+    return emitKotlinScopeCaptures(source, 'fixture.kt')
+      .filter((match) => match['@type-binding.name']?.text === 'x')
+      .map((match) => interpretKotlinTypeBinding(match))
+      .filter((binding) => binding !== null)
+      .map((binding) => `${binding.rawTypeName}/${binding.source}`)
+      .sort();
+  }
+
+  it.each([
+    ['fun f() { val x = kqfmod.make() }', 'kqfmod.make'],
+    ['fun f() { val x = com.acme.mod.make() }', 'com.acme.mod.make'],
+    ['fun f() { val x = com.acme\n  .mod.make(1) }', 'com.acme.mod.make'],
+  ])('keeps the whole package path of %j', (source, path) => {
+    expect(bindingsOfX(source)).toEqual([`${path}/constructor-inferred`]);
+  });
+
+  it.each([
+    ['a parameter', 'fun f(kqfmod: Shadow) { val x = kqfmod.make() }'],
+    ['an untyped local', 'fun f() { val kqfmod = load(); val x = kqfmod.make() }'],
+    ['a property', 'class P(val kqfmod: Shadow) { fun f() { val x = kqfmod.make() } }'],
+    ['an import', 'import other.kqfmod\nfun f() { val x = kqfmod.make() }'],
+    ['an import alias', 'import other.Thing as kqfmod\nfun f() { val x = kqfmod.make() }'],
+    ['a lambda parameter', 'fun f() { run { kqfmod -> val x = kqfmod.make() } }'],
+    ['the implicit lambda parameter', 'fun f() { run { val x = it.make() } }'],
+    ['a class name', 'fun f() { val x = Holder.create() }'],
+    ['a safe call', 'fun f() { val x = kqfmod?.make() }'],
+    ['a call in the chain', 'fun f() { val x = kqfmod.make().next() }'],
+    ['this', 'fun f() { val x = this.make() }'],
+  ])('binds nothing when the head is %s', (_label, source) => {
+    expect(bindingsOfX(source)).toEqual([]);
   });
 });

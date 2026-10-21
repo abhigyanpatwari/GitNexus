@@ -32,10 +32,24 @@ export function interpretKotlinImport(captures: CaptureMatch): ParsedImport | nu
   }
 }
 
+/**
+ * Marks a call-return binding whose `@type-binding.type` is a package-qualified
+ * callee path (`com.acme.mod.make`), set by the local-assignment synthesis in
+ * `captures.ts`. A `@type.` key rather than a `@type-binding.` one, so the
+ * scope extractor never weighs it as the match's anchor.
+ */
+export const KOTLIN_QUALIFIED_CALLEE_TAG = '@type.qualified-callee';
+
 export function interpretKotlinTypeBinding(captures: CaptureMatch): ParsedTypeBinding | null {
   const nameCap = captures['@type-binding.name'];
   const typeCap = captures['@type-binding.type'];
   if (nameCap === undefined || typeCap === undefined) return null;
+
+  // Kept whole: the last segment is the function's name, not a type, and only
+  // `resolveQualifiedCallee` can read the path (#3498 follow-up).
+  if (captures[KOTLIN_QUALIFIED_CALLEE_TAG] !== undefined) {
+    return { boundName: nameCap.text, rawTypeName: typeCap.text, source: 'constructor-inferred' };
+  }
 
   let source: TypeRef['source'] = 'annotation';
   if (captures['@type-binding.self'] !== undefined) source = 'self';
