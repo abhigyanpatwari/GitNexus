@@ -19,13 +19,12 @@
  *    the module root. Nested module paths (`example.com/a`, `example.com/a/b`)
  *    are disjoint providers: `a/b`'s tree is not `a`'s, so the longest prefix
  *    whose directory exists is the one that answers;
- *  - a `go.work` names the workspace's main modules (`use`). It changes no
- *    module boundary; what it decides here is which of several `go.mod` files
- *    declaring the SAME path is meant, which Go otherwise refuses to build.
+ *  - a `go.work` names the workspace's main modules (`use`). It selects the
+ *    sibling modules available to an importer; it changes no module boundary.
  *
- * Every in-repo module counts as a provider, not only the importer's own: a
- * cross-module import inside one repo is what `go.work` and `replace => ./dir`
- * exist for, and the local tree is the code it names.
+ * The importer's own module and modules selected by its nearest `go.work`
+ * can provide local packages. An independent sibling remains unresolved even
+ * when its module path is unique. Local `replace` directives are not modelled.
  *
  * Discovery reads the scan's path list (`captureGoWorkspaceConfig`), like
  * Dart's `pubspec.yaml` capture, so the modules are the ones the analyzed file
@@ -66,8 +65,8 @@ export interface GoWorkspaceConfig {
  *
  *  - `module`: an in-repo module path owns the import. `dirs` are the package
  *    directories to try, longest module path first; empty when the owning
- *    module is ambiguous or the directory is another module's tree. The suffix
- *    match never runs for an owned path.
+ *    module is unselected, ambiguous or the directory is another module's
+ *    tree. The suffix match never runs for an owned path.
  *  - `external`: the importer is inside a module and no in-repo module owns
  *    the path — standard library or a dependency. Module mode never consults
  *    directory names for those.
@@ -339,22 +338,16 @@ function nearestCached<T>(
   return found;
 }
 
-/**
- * Which of the modules declaring one path the importer means: the only one;
- * else the importer's own; else the only one its `go.work` uses. Anything else
- * is ambiguous and answers nothing — Go refuses such a build rather than pick.
- * The importer's module and `go.work` are only looked up for a contested path.
- */
 function pickModule(
   group: readonly GoModule[],
   ownOf: () => GoModule | undefined,
   workUsesOf: () => ReadonlySet<string> | undefined,
 ): GoModule | undefined {
-  if (group.length === 1) return group[0];
   const own = ownOf();
   if (own !== undefined && group.includes(own)) return own;
   const workUses = workUsesOf();
   if (workUses === undefined) return undefined;
+  if (own !== undefined && !workUses.has(own.dir)) return undefined;
   const used = group.filter((module) => workUses.has(module.dir));
   return used.length === 1 ? used[0] : undefined;
 }

@@ -287,12 +287,20 @@ describe('Go import target resolution across several go.mod files', () => {
       ['orders-service/internal/repository/store.go'],
     ],
     [
-      "a sibling module's directory",
+      'nothing for an unselected sibling module',
       SERVICES,
       SERVICE_FILES,
       'github.com/acme/billing/internal/repository',
       'orders-service/cmd/main.go',
-      ['billing-service/internal/repository/store.go'],
+      null,
+    ],
+    [
+      "a selected workspace module's public package",
+      { ...SERVICES, workFiles: [{ dir: '', use: ['orders-service', 'billing-service'] }] },
+      ['billing-service/pkg/repository/store.go', 'orders-service/cmd/main.go'],
+      'github.com/acme/billing/pkg/repository',
+      'orders-service/cmd/main.go',
+      ['billing-service/pkg/repository/store.go'],
     ],
     [
       'nothing for a dependency that shares the tail',
@@ -327,8 +335,8 @@ describe('Go import target resolution across several go.mod files', () => {
       null,
     ],
     [
-      "a nested module's root package",
-      ROOT_AND_TOOLS,
+      "a selected nested module's root package",
+      { ...ROOT_AND_TOOLS, workFiles: [{ dir: '', use: ['', 'tools'] }] },
       ROOT_FILES,
       'example.com/tools',
       'main.go',

@@ -2361,24 +2361,23 @@ export function emitReceiverBoundCalls(
           purpose: typeRef.lookupPurpose ?? 'type',
           onNameFallback,
         };
-        // A namespace qualifier capture cut from `rawName` (`models.User` →
-        // `User`) is asked first, through the helper the compound resolver's
-        // declared-type lookup uses — a miss lands on the lookup below unchanged.
+        const qualifiedOwner = classOfQualifiedTypeSpelling(
+          typeRef,
+          scopes,
+          provider.qualifiedTypeLookupSpelling,
+          typeLookup,
+          namespaceMemberVisible,
+        );
         let ownerDef =
-          classOfQualifiedTypeSpelling(
-            typeRef,
-            scopes,
-            provider.qualifiedTypeLookupSpelling,
-            typeLookup,
-            namespaceMemberVisible,
-          ) ??
-          resolveClassBindingForName(
-            typeRef.declaredAtScope,
-            typeApplication ?? typeRef.rawName,
-            scopes,
-            undefined,
-            typeLookup,
-          );
+          qualifiedOwner === undefined
+            ? resolveClassBindingForName(
+                typeRef.declaredAtScope,
+                typeApplication ?? typeRef.rawName,
+                scopes,
+                undefined,
+                typeLookup,
+              )
+            : (qualifiedOwner ?? undefined);
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
         // rawName is itself a class symbol reachable through scope bindings.
         // For languages with namespace-style imports (Go), imported types
@@ -2399,6 +2398,7 @@ export function emitReceiverBoundCalls(
         });
         if (
           ownerDef === undefined &&
+          qualifiedOwner !== null &&
           typeApplication === undefined &&
           !hasExplicitNameClaim(typeClaim, typeRef.rawName)
         ) {
@@ -2425,7 +2425,7 @@ export function emitReceiverBoundCalls(
         // `rawName`; its callable-alias step retries the same name as a
         // construction). Asking again by a route that cannot see the grounds
         // would make the refusal decorative.
-        if (ownerDef === undefined && typeApplication === undefined) {
+        if (ownerDef === undefined && qualifiedOwner !== null && typeApplication === undefined) {
           ownerDef = resolveCompoundReceiverClass(
             receiverName,
             site.inScope,
@@ -2452,7 +2452,7 @@ export function emitReceiverBoundCalls(
         // name resolving in the index is precisely the evidence just rejected,
         // so claiming `in-program` from it would relaunder the fabrication as a
         // diagnostic, and the absent field hedges (the safe direction).
-        if (ownerDef === undefined && typeApplication !== undefined) {
+        if (ownerDef === undefined && (qualifiedOwner === null || typeApplication !== undefined)) {
           options.recordResolutionOutcome?.({
             kind: 'suppressed',
             reason: 'receiver-unresolved',

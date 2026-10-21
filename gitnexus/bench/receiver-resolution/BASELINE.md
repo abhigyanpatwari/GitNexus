@@ -1,5 +1,23 @@
 # Receiver-resolution baseline
 
+## Go module visibility and qualified receiver refusal
+
+Local imports now select the importer's own module or a module selected by its
+nearest `go.work`. An independent sibling's matching module path is insufficient.
+Qualified receiver types also stop when their import cannot resolve, instead of
+borrowing a same-named type from another package. Local `replace` directives
+remain unmodelled.
+
+Compared with `85329b4de` on the same corpus, exactly two `CALLS` edges disappear:
+`SpinGadget` and `Workshop.SpinGadgetField` in
+`go-qualified-declared-types/services/foreign.go` no longer bind the unrelated
+`gadgets.Gizmo.Spin`. No other `CALLS` or `ACCESSES` edge changes.
+
+The two invalid calls now report drops. `ArchiveForeign`, which already had no
+edge, also reports its refused qualified lookup; the simple calls additionally
+report their read sites. Call drops move from 135 to 138, all-kind drops from
+195 to 200, and `.go` call drops from 1 to 4. Every shape-arm state is unchanged.
+
 ## Go modules across several go.mod files
 
 The Go resolver read only the repository-root `go.mod` and matched every other

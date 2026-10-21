@@ -2353,16 +2353,11 @@ describe('Go package-qualified field and parameter types', () => {
     expect(targetsOf(caller)).toEqual(expected);
   });
 
-  // The qualified spelling is tried FIRST, not instead: when its import names
-  // no file in the workspace, the bare-name lookup still answers — and still
-  // refuses when the bare name is ambiguous. The field rows are the ones that
-  // need the declared-type lookup's own fallback; a parameter also has the
-  // simple-typeBinding case's unique-name fallback behind it.
   it.each([
     ['refuses a bare name two packages declare', 'ArchiveForeign', []],
     ['refuses a bare name two packages declare', 'ArchiveForeignField', []],
-    ['keeps the unique-name fallback', 'SpinGadget', ['Spin@gadgets/gizmo.go']],
-    ['keeps the unique-name fallback', 'SpinGadgetField', ['Spin@gadgets/gizmo.go']],
+    ['refuses a workspace-unique bare name', 'SpinGadget', []],
+    ['refuses a workspace-unique bare name', 'SpinGadgetField', []],
   ])('behind an unresolved import, %s (%s)', (_behaviour, caller, expected) => {
     expect(targetsOf(caller)).toEqual(expected);
   });
@@ -2617,4 +2612,75 @@ describe('Go root module with a nested module', () => {
   ])('binds the calls in %s to types of the importing module', (caller, expected) => {
     expect(callTargetsOf(result, caller)).toEqual(expected);
   });
+});
+
+describe.each<[string, Record<string, string>, string[], string[]]>([
+  ['independent sibling modules', {}, [], []],
+  [
+    'selected workspace modules',
+    { 'go.work': 'go 1.21\nuse (\n./orders\n./billing\n)\n' },
+    ['orders/main.go → billing/repository/ledger.go'],
+    ['Save@billing/repository/ledger.go'],
+  ],
+  ['workspace excludes the importing module', { 'go.work': 'go 1.21\nuse ./billing\n' }, [], []],
+  [
+    'nearest workspace excludes the sibling',
+    {
+      'go.work': 'go 1.21\nuse (\n./orders\n./billing\n)\n',
+      'orders/go.work': 'go 1.21\nuse .\n',
+    },
+    [],
+    [],
+  ],
+])('Go module visibility: %s', (_scenario, workFiles, expectedImports, expectedCalls) => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-go-module-visibility-'));
+    writeFixtureRepo(repoDir, {
+      'orders/go.mod': 'module example.com/orders\n\ngo 1.21\n',
+      'billing/go.mod': 'module example.com/billing\n\ngo 1.21\n',
+      'orders/main.go': `package main
+
+import "example.com/billing/repository"
+
+func PlaceOrder(ledger *repository.Ledger) error {
+  return ledger.Save()
+}
+
+type Order struct { ledger *repository.Ledger }
+
+func PlaceOrderField(order *Order) error {
+  return order.ledger.Save()
+}
+
+func PlaceOrderValue(ledger *repository.Ledger) error {
+  save := ledger.Save
+  return save()
+}
+`,
+      'billing/repository/ledger.go': `package repository
+
+type Ledger struct{}
+
+func (l *Ledger) Save() error { return nil }
+`,
+      ...workFiles,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => fs.rmSync(repoDir, { recursive: true, force: true }));
+
+  it('only imports selected local providers', () => {
+    expect(importEdgesOf(result)).toEqual(expectedImports);
+  });
+
+  it.each(['PlaceOrder', 'PlaceOrderField', 'PlaceOrderValue'])(
+    'only binds %s calls through selected local providers',
+    (caller) => {
+      expect(callTargetsOf(result, caller)).toEqual(expectedCalls);
+    },
+  );
 });
