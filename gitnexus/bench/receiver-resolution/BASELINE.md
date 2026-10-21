@@ -21,6 +21,8 @@ spellings.
   `nonNullAssert` VISIBLE-GAP → RESOLVES (`User.Save`). swift `awaitParen`
   now builds its chain but stays VISIBLE-GAP until Swift's module-scope
   return types are hoisted.
+- **C# null-conditional access** (`svc?.GetUser()`): csharp `optionalChain`
+  VISIBLE-GAP → RESOLVES (`User.Save`).
 
 ## Swift/Dart stack integration after Rust and C#
 

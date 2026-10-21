@@ -10,7 +10,9 @@
  * - explicit type arguments inside the callee (`svc.GetTyped<User>()`,
  *   `svc.get_typed::<User>()`, `svc->getTyped<User>()`);
  * - wrappers that denote exactly their operand: C# `svc!` and Swift's
- *   one-element tuple, which is how Swift parses `(x)`.
+ *   one-element tuple, which is how Swift parses `(x)`;
+ * - C# null-conditional access (`svc?.GetUser()`, `user?.Address`,
+ *   `repos?[0]`), which splits the receiver and the member across two nodes.
  *
  * A row lists every CALLS target of `member` from `source`, and every
  * `receiver-unresolved` call drop recorded for `member` in that method. A row
@@ -147,6 +149,18 @@ const CASES: readonly LanguageCase[] = [
     void NonNullAssert(Service svc) {
         svc!.GetUser().Save();
     }
+    void OptionalChain(Service svc) {
+        svc?.GetUser().Save();
+    }
+    void OptionalTypeArgs(Service svc) {
+        svc?.GetTyped<User>().Save();
+    }
+    void OptionalField(User user) {
+        user?.Address.Save();
+    }
+    void OptionalElement(User[] repos) {
+        repos?[0].Save();
+    }
 }
 `,
     },
@@ -171,6 +185,39 @@ const CASES: readonly LanguageCase[] = [
         member: 'Save',
         targets: ['Method:Models.cs:User.Save#0'],
         drops: [],
+      },
+      {
+        language: 'csharp',
+        source: 'OptionalChain',
+        member: 'Save',
+        targets: ['Method:Models.cs:User.Save#0'],
+        drops: [],
+      },
+      {
+        language: 'csharp',
+        source: 'OptionalTypeArgs',
+        member: 'Save',
+        targets: ['Method:Models.cs:User.Save#0'],
+        drops: [],
+      },
+      {
+        // Resolved before this change too, through the receiver-text cascade.
+        // Pinned so the structural walk cannot regress it.
+        language: 'csharp',
+        source: 'OptionalField',
+        member: 'Save',
+        targets: ['Method:Models.cs:Address.Save#0'],
+        drops: [],
+      },
+      {
+        // KNOWN GAP. The chain `2|repos|i` is now built, so the miss is
+        // recorded, but an array-typed parameter (`User[] repos`) gets no
+        // type binding yet.
+        language: 'csharp',
+        source: 'OptionalElement',
+        member: 'Save',
+        targets: [],
+        drops: ['Main.cs:21'],
       },
     ],
   },

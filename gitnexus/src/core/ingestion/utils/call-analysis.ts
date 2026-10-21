@@ -413,7 +413,8 @@ function isChainableReceiverNode(node: SyntaxNode): boolean {
     CALL_EXPRESSION_TYPES.has(node.type) ||
     FIELD_ACCESS_NODE_TYPES.has(node.type) ||
     AWAIT_EXPRESSION_NODE_TYPES.has(node.type) ||
-    SUBSCRIPT_NODE_TYPES.has(node.type)
+    SUBSCRIPT_NODE_TYPES.has(node.type) ||
+    CONDITIONAL_ACCESS_NODE_TYPES.has(node.type)
   );
 }
 
@@ -427,6 +428,34 @@ const FIELD_ACCESS_NODE_TYPES = new Set([
   'navigation_expression', // Kotlin/Swift
   'member_binding_expression', // C# null-conditional (user?.Address)
 ]);
+
+/**
+ * Null-conditional access, which splits one member access across two nodes.
+ * C# parses `svc?.GetUser()` as
+ * `conditional_access_expression(condition: svc, member_binding_expression)`:
+ * the receiver sits in the outer node's `condition` field and the member name
+ * in the binding child. Read like any other callee, the step was named
+ * `.GetUser` and had no inner receiver, so no chain was built and the call was
+ * lost without a drop. As a receiver (`svc?.Address.Save()`) the node stopped
+ * the walk, and its whole text became the base.
+ *
+ * Keyed by node type; the value is the field that holds the receiver.
+ */
+const CONDITIONAL_ACCESS_NODE_TYPES = new Map<string, string>([
+  ['conditional_access_expression', 'condition'], // C# `svc?.GetUser()`, `svc?.Address`, `repos?[0]`
+]);
+
+/** The binding child of a conditional access that names a member: C# `?.Name`. */
+const MEMBER_BINDING_NODE_TYPES = new Set(['member_binding_expression']);
+
+/** The binding child of a conditional access that is a subscript: C# `?[0]`. */
+const ELEMENT_BINDING_NODE_TYPES = new Set(['element_binding_expression']);
+
+/** The receiver of a conditional access, or `null` for any other node. */
+function conditionalAccessReceiver(node: SyntaxNode): SyntaxNode | null {
+  const field = CONDITIONAL_ACCESS_NODE_TYPES.get(node.type);
+  return field === undefined ? null : node.childForFieldName(field);
+}
 
 /**
  * One step in a mixed receiver chain.
@@ -681,6 +710,19 @@ function stripTypeArguments(node: SyntaxNode): SyntaxNode {
   return current;
 }
 
+/**
+ * The member a call's callee names, without type arguments. For a
+ * null-conditional callee (`svc?.GetUser`) that is the name inside its member
+ * binding; an element binding (`handlers?[0]()`) names no member.
+ */
+function calleeMemberName(funcNode: SyntaxNode): string | undefined {
+  const member = funcNode.lastNamedChild;
+  if (member === null) return funcNode.text;
+  if (!CONDITIONAL_ACCESS_NODE_TYPES.has(funcNode.type)) return stripTypeArguments(member).text;
+  const name = MEMBER_BINDING_NODE_TYPES.has(member.type) ? member.childForFieldName('name') : null;
+  return name === null ? undefined : stripTypeArguments(name).text;
+}
+
 export function extractMixedChain(
   receiverNode: SyntaxNode,
 ): { chain: MixedChainStep[]; baseReceiverName: string | undefined } | undefined {
@@ -707,8 +749,7 @@ export function extractMixedChain(
       let innerReceiver: SyntaxNode | null = null;
 
       if (funcNode) {
-        const member = funcNode.lastNamedChild;
-        methodName = member ? stripTypeArguments(member).text : funcNode.text;
+        methodName = calleeMemberName(funcNode);
       }
       // Kotlin/Swift: call_expression → navigation_expression
       if (!funcNode && current.type === 'call_expression') {
@@ -737,7 +778,7 @@ export function extractMixedChain(
           funcNode.childForFieldName?.('operand') ??
           funcNode.childForFieldName?.('argument') ?? // C/C++ field_expression
           funcNode.childForFieldName?.('expression') ??
-          null;
+          conditionalAccessReceiver(funcNode);
       }
       if (!innerReceiver && current.type === 'method_invocation') {
         innerReceiver = current.childForFieldName?.('object') ?? null;
@@ -853,6 +894,28 @@ export function extractMixedChain(
         return {
           chain,
           baseReceiverName: unwrapTransparentReceiver(obj).text || undefined,
+        };
+      }
+    } else if (CONDITIONAL_ACCESS_NODE_TYPES.has(current.type)) {
+      // ── Null-conditional access as a receiver: `svc?.Address`, `repos?[0]` ──
+      const binding = current.lastNamedChild;
+      if (binding !== null && MEMBER_BINDING_NODE_TYPES.has(binding.type)) {
+        const name = binding.childForFieldName('name')?.text;
+        if (!name) break;
+        chain.unshift({ kind: 'field', name });
+      } else if (binding !== null && ELEMENT_BINDING_NODE_TYPES.has(binding.type)) {
+        chain.unshift({ kind: 'index' });
+      } else {
+        break;
+      }
+      const inner = conditionalAccessReceiver(current);
+      if (!inner) break;
+      if (isChainableReceiverNode(inner)) {
+        current = inner;
+      } else {
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(inner).text || undefined,
         };
       }
     } else if (current.type === 'selector') {

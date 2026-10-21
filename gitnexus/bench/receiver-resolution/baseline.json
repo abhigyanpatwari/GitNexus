@@ -116,7 +116,7 @@
     "csharp": {
       "plainChain": "RESOLVES",
       "plainDeepChain": "RESOLVES",
-      "optionalChain": "VISIBLE-GAP",
+      "optionalChain": "RESOLVES",
       "nonNullAssert": "RESOLVES",
       "awaitParen": "RESOLVES",
       "explicitTypeArgs": "RESOLVES",

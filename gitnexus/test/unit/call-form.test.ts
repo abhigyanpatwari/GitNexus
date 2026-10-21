@@ -634,4 +634,63 @@ describe('extractMixedChain', () => {
   it.each(wrapperRows)('$label', ({ language, code, member, expected }) => {
     expect(receiverChainOf(language, code, member)).toEqual(expected);
   });
+
+  // C# null-conditional access (#3498 RC5): the receiver sits in the
+  // `condition` field and the member in a binding child, as a callee and as a
+  // receiver.
+  const conditionalRows: readonly ChainRow[] = [
+    {
+      label: 'C# null-conditional call',
+      language: CSharp,
+      code: 'class A { void M() { svc?.GetUser().Save(); } }',
+      member: 'Save',
+      expected: { chain: [call('GetUser')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'C# null-conditional call on both hops',
+      language: CSharp,
+      code: 'class A { void M() { svc?.GetUser()?.Save(); } }',
+      member: 'Save',
+      expected: { chain: [call('GetUser')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'C# null-conditional call then a field',
+      language: CSharp,
+      code: 'class A { void M() { svc?.GetUser().Address.Save(); } }',
+      member: 'Save',
+      expected: { chain: [call('GetUser'), field('Address')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'C# null-conditional generic call',
+      language: CSharp,
+      code: 'class A { void M() { svc?.GetTyped<User>().Save(); } }',
+      member: 'Save',
+      expected: { chain: [call('GetTyped')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'C# null-conditional field',
+      language: CSharp,
+      code: 'class A { void M() { user?.Address.Save(); } }',
+      member: 'Save',
+      expected: { chain: [field('Address')], baseReceiverName: 'user' },
+    },
+    {
+      label: 'C# null-conditional element',
+      language: CSharp,
+      code: 'class A { void M() { repos?[0].Save(); } }',
+      member: 'Save',
+      expected: { chain: [{ kind: 'index' }], baseReceiverName: 'repos' },
+    },
+    {
+      label: 'C# null-conditional element call names no member',
+      language: CSharp,
+      code: 'class A { void M() { handlers?[0]().Save(); } }',
+      member: 'Save',
+      expected: undefined,
+    },
+  ];
+
+  it.each(conditionalRows)('$label', ({ language, code, member, expected }) => {
+    expect(receiverChainOf(language, code, member)).toEqual(expected);
+  });
 });
