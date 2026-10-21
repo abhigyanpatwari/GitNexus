@@ -1,5 +1,41 @@
 # Receiver-resolution baseline
 
+## Go package-qualified declared types
+
+Go capture strips the package qualifier from field, parameter and local types,
+so `*models.User` is stored as `User`. The receiver lookup then saw only the bare
+name, and it resolves a bare name only while that name is unique in the
+workspace. In this combined corpus, `User` is declared in 29 Go files and
+`UserService` in 2. So every Go receiver chain rooted at a qualified parameter
+(`models.User`, `*models.User`, `*models.UserService`) dropped, even though each
+fixture resolves on its own and its standalone test passes. Receiver typing now
+tries the qualified spelling first, grounded on the qualifier's import. If that
+misses, it falls back to the bare name as before. A chain step keeps the
+binding's own written spelling, and the qualified spelling must name `rawName`
+itself, so a binding whose type a chain step replaced never borrows another
+binding's package.
+
+Thirteen Go drops clear: 5 calls and 8 reads in `go-deep-field-chain`,
+`go-field-types` and `go-mixed-chain`. Call drops move from 153 to 148,
+all-kind drops from 221 to 208, and reads from 48 to 40. `.go` call drops fall
+from 19 to 14, `chain-field` from 73 to 70, `chain-mixed` from 2 to 0, and
+`in-program` from 77 to 72. No drop was added, and every shape-arm state is
+unchanged. The remaining Go chain-field drops come from packages that several
+fixtures declare under the same import path, which nested `go.mod` resolution
+addresses separately.
+
+The new `go-qualified-declared-types` fixture records no drops. Compared with
+main (`278863068`) on the same corpus, no `CALLS` or `ACCESSES` edge disappears
+or changes target, with one exception inside the new fixture: main binds its
+`Forward` to `api.User.Archive`, which is that row's bug. Outside the new
+fixture, 19 edges are added. Thirteen belong to the chains cleared above. The
+other six come from receivers that never recorded a drop:
+
+- five simple `user.Save()` and `repo.Save()` receivers built as `models.X{}`
+  or declared `var x models.X`, in `go-constructor-type-inference`,
+  `go-member-calls` and `go-receiver-resolution`;
+- the field chain `s.cartRepo.Get()` in `go-interface-field-dispatch`.
+
 ## Namespace factory results and shared-position drops (#3498)
 
 Two changes move this baseline; neither moves an edge outside the new
