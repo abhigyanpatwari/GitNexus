@@ -819,8 +819,29 @@ function getFieldInfo(
     if (declarations !== undefined) declarations.push(field);
     else cached.set(field.name, [field]);
   }
+  for (const declarations of cached.values()) {
+    if (declarations.length > 1) {
+      declarations.sort((a, b) => a.line - b.line || (a.column ?? -1) - (b.column ?? -1));
+    }
+  }
   fieldInfoCache.set(cacheKey, cached);
   return cached;
+}
+
+function fieldInfoLowerBound(
+  declarations: readonly FieldInfo[],
+  line: number,
+  column: number,
+): number {
+  let lo = 0;
+  let hi = declarations.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const field = declarations[mid]!;
+    if (field.line < line || (field.line === line && (field.column ?? -1) < column)) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 function selectFieldInfo(
@@ -828,10 +849,14 @@ function selectFieldInfo(
   line: number,
   column?: number,
 ): FieldInfo | undefined {
-  if (declarations?.length === 1) return declarations[0];
-  const atLine = declarations?.filter((field) => field.line === line);
-  if (atLine?.length === 1) return atLine[0];
-  return column === undefined ? undefined : atLine?.find((field) => field.column === column);
+  if (declarations === undefined || declarations.length === 0) return undefined;
+  if (declarations.length === 1) return declarations[0];
+  const start = fieldInfoLowerBound(declarations, line, -1);
+  const end = fieldInfoLowerBound(declarations, line + 1, -1);
+  if (end - start === 1) return declarations[start];
+  if (column === undefined) return undefined;
+  const index = fieldInfoLowerBound(declarations, line, column);
+  return index < end && declarations[index]?.column === column ? declarations[index] : undefined;
 }
 
 // ============================================================================
