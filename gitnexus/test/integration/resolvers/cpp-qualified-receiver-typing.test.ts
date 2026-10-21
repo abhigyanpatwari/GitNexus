@@ -77,4 +77,11 @@ describe('C++ qualified receiver typing', () => {
   ])('header prototype return type: %s -> %j', (caller, expected) => {
     expect(memberTargets(caller)).toEqual(expected);
   });
+
+  it.each<[string, string[]]>([
+    ['using_inline', [RP_C]],
+    ['using_inline_same_file', ['mod.h:Widget.m']],
+  ])('inline call receiver typed by definition identity: %s -> %j', (caller, expected) => {
+    expect(memberTargets(caller)).toEqual(expected);
+  });
 });

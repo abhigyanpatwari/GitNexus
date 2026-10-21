@@ -32,6 +32,7 @@ import {
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import type { DecorationStripper } from '../scope/walkers.js';
+import { producerTypeRef } from './imported-return-types.js';
 import {
   findClassBindingInScope,
   lookupNameClaim,
@@ -526,6 +527,32 @@ function classOfReturnType(
   const record = options.recordReceiverType;
   if (def === undefined || record === undefined) return def;
   return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
+}
+
+/**
+ * The return type a free-call callee declares for ITSELF — read by definition
+ * identity (`producerTypeRef`), the way the chain follow types the bound form
+ * `auto x = make(); x.m()` — for when the name read finds no return binding
+ * under the callee's name. That happens whenever the callee arrived by a
+ * channel nothing mirrors a return binding through (a C++ using-directive), so
+ * `make().m()` dropped while the bound form beside it resolved.
+ *
+ * Only for a callee the name actually BINDS at the call. `findExportedDefByName`
+ * falls back to the first workspace callable of that name, and reading a
+ * return type off that guess typed a receiver from an unrelated module's
+ * same-named factory — a confident wrong edge where the name read declined.
+ */
+function boundCalleeReturnType(
+  fnDef: SymbolDefinition,
+  name: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  position: TypeRef['lookupPosition'],
+): TypeRef | undefined {
+  const claim = lookupNameClaim(inScope, name, scopes, { position, purpose: 'value' });
+  return claim.bindings.some((binding) => binding.def.nodeId === fnDef.nodeId)
+    ? producerTypeRef(fnDef.nodeId, scopes)
+    : undefined;
 }
 
 function typeOfMemberOnClass(
@@ -1042,9 +1069,10 @@ export function resolveCompoundReceiverClass(
         purpose: 'value',
       });
       if (fnDef !== undefined) {
-        const retType = findReceiverTypeBinding(inScope, fnExpr, scopes, {
-          position: options.lookupPosition,
-        });
+        const retType =
+          findReceiverTypeBinding(inScope, fnExpr, scopes, {
+            position: options.lookupPosition,
+          }) ?? boundCalleeReturnType(fnDef, fnExpr, inScope, scopes, options.lookupPosition);
         const viaReturn =
           retType === undefined ? undefined : classOfReturnType(retType, scopes, options);
         if (viaReturn !== undefined) return viaReturn;

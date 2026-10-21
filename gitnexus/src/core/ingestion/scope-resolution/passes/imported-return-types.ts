@@ -58,7 +58,12 @@ interface TypeFactOwner {
   readonly name: string;
 }
 const typeFactOwners = new WeakMap<ScopeResolutionIndexes, Map<string, TypeFactOwner>>();
-function producerTypeRef(defId: string, scopes: ScopeResolutionIndexes): TypeRef | undefined {
+/** The type fact a definition declares for itself (a callable's return type),
+ *  joined by definition identity rather than by name. */
+export function producerTypeRef(
+  defId: string,
+  scopes: ScopeResolutionIndexes,
+): TypeRef | undefined {
   let owners = typeFactOwners.get(scopes);
   if (owners === undefined) {
     owners = new Map();
