@@ -2377,6 +2377,21 @@ describe('PHP namespaced-function factory result types (#3498 follow-up)', () =>
     ]);
   });
 
+  it('types a use-function import outside any PSR-4 path from the function it names', () => {
+    expect(callsFrom('namedCall', 'ping')).toEqual([
+      'Method:src/Mod/QffWidget.php:QffWidget.ping#0',
+    ]);
+  });
+
+  it('resolves a use-function import outside any PSR-4 path by its fully qualified name', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'namedCall' && edge.target === 'make',
+    );
+    expect(edges.map((edge) => [edge.rel.targetId, edge.rel.reason])).toEqual([
+      ['Function:lib/functions.php:make', 'import-resolved'],
+    ]);
+  });
+
   it('records the untyped receivers as dropped sites instead of an exact miss', () => {
     const dropped = getResolutionOutcomes(result)
       .filter((outcome) => outcome.kind === 'suppressed')

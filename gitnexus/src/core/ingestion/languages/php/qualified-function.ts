@@ -18,7 +18,13 @@
  * shared scope-chain lookups already own it.
  */
 
-import type { ParsedFile, ParsedImport, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  BindingRef,
+  ParsedFile,
+  ParsedImport,
+  ScopeId,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 
 /** What PHP name resolution reads off the calling file. */
@@ -129,8 +135,57 @@ export function resolvePhpQualifiedCallee(
   const context = index.contextByFile.get(filePath);
   if (context === undefined) return undefined;
   const fqn = phpFunctionFqn(calleeText, context);
-  const defs = fqn === undefined ? undefined : index.functionsByFqn.get(fqn.toLowerCase());
+  return fqn === undefined ? undefined : uniqueFunction(fqn, index);
+}
+
+/** The one function declaring `fqn`, or `undefined` when none or several do. */
+function uniqueFunction(fqn: string, index: PhpFunctionIndex): SymbolDefinition | undefined {
+  const defs = index.functionsByFqn.get(fqn.toLowerCase());
   return defs?.length === 1 ? defs[0] : undefined;
+}
+
+/**
+ * Bind a `use function A\f;` that import resolution left without a binding to
+ * the one workspace function named `A\f`. Import resolution finds a function
+ * only through a PSR-4 directory or a file named after it, so one loaded
+ * through composer `autoload.files`, or declared in a project with no
+ * `composer.json`, binds nothing, and `$x = f()` has no return type to read.
+ * The fully qualified name is the function's identity, so this guesses
+ * nothing. A name the importing scope already binds is left alone: a resolved
+ * import or a local declaration is never second-guessed.
+ */
+export function bindPhpUseFunctionImports(
+  parsedFiles: readonly ParsedFile[],
+  indexes: ScopeResolutionIndexes,
+): void {
+  const index = indexByPass.get(indexes);
+  if (index === undefined) return;
+  const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
+  for (const parsed of parsedFiles) {
+    if (!index.contextByFile.has(parsed.filePath)) continue;
+    for (const parsedImport of parsed.parsedImports) {
+      if (parsedImport.kind !== 'named' && parsedImport.kind !== 'alias') continue;
+      if (parsedImport.importedSymbolKind !== 'function') continue;
+      const def = uniqueFunction(parsedImport.targetRaw.replace(/^\\+/, ''), index);
+      if (def === undefined) continue;
+      const name = parsedImport.localName;
+      // Finalize attaches PHP imports, and binds them, at the module scope.
+      const scopeId = parsed.moduleScope;
+      const via = indexes.imports.get(scopeId)?.find((edge) => edge.localName === name);
+      if (via === undefined) continue;
+      const bound =
+        (indexes.scopeTree.getScope(scopeId)?.bindings.get(name)?.length ?? 0) +
+        (indexes.bindings.get(scopeId)?.get(name)?.length ?? 0) +
+        (augmentations.get(scopeId)?.get(name)?.length ?? 0);
+      if (bound > 0) continue;
+      let scopeBindings = augmentations.get(scopeId);
+      if (scopeBindings === undefined) {
+        scopeBindings = new Map();
+        augmentations.set(scopeId, scopeBindings);
+      }
+      scopeBindings.set(name, [{ def, origin: 'import', via }]);
+    }
+  }
 }
 
 /** `ScopeResolver.resolveQualifiedFreeCall`: the same resolution, for the

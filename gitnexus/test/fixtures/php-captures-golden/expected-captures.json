@@ -431,6 +431,10 @@
     "captureGroups": 36,
     "digest": "19846b0438c564d2931da26ac4ca002ef4f4b20862cd66ac17ad75174f8d4ffa"
   },
+  "php-qualified-function-factory/src/App/Named.php": {
+    "captureGroups": 8,
+    "digest": "7ebd5c95e0428ded85e86c0bc03c94f423df1f2dbcb7d697704be6c1bc51f7fc"
+  },
   "php-qualified-function-factory/src/Entry.php": {
     "captureGroups": 7,
     "digest": "14195813d6af5373c5a1d93ba0779b9958546f2b8d4090089fd43effe4871952"
