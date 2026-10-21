@@ -57,6 +57,16 @@ def base_dir():
 def shadowed(os):
     os.environ.update()
 `,
+  'zig/src/sorter.zig': `const std = @import("std");
+
+pub fn sortItems(items: []u32) void {
+    std.sort.pdq(u32, items, {}, lessThan);
+}
+
+fn lessThan(_: void, a: u32, b: u32) bool {
+    return a < b;
+}
+`,
   'java/src/App.java': `public class App {
     public void run() {
         java.util.Optional<String> opt = java.util.Optional.of("x");
@@ -96,6 +106,7 @@ describe('Library and runtime receivers name the program boundary (#3498)', () =
     ['the Node process global', 'web/env.ts', 1, 'API_BASE'],
     ['a Python stdlib namespace import', 'py/settings.py', 6, 'setdefault'],
     ['a Python stdlib named import', 'py/settings.py', 10, 'resolve'],
+    ['the Zig standard library', 'zig/src/sorter.zig', 4, 'pdq'],
     ['the Java platform package root', 'java/src/App.java', 3, 'of'],
   ] as const)('records a drop rooted at %s as external', (_label, filePath, line, name) => {
     const drops = dropsAt(filePath, line, name);

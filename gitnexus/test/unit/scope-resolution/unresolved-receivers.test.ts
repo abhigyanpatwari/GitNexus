@@ -25,6 +25,7 @@ import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/t
 import { goScopeResolver } from '../../../src/core/ingestion/languages/go/scope-resolver.js';
 import { javaScopeResolver } from '../../../src/core/ingestion/languages/java/scope-resolver.js';
 import { pythonScopeResolver } from '../../../src/core/ingestion/languages/python/scope-resolver.js';
+import { zigScopeResolver } from '../../../src/core/ingestion/languages/zig/scope-resolver.js';
 import { buildScopeModel, type ScopeModelFixture } from '../../helpers/scope-model.js';
 
 const range = { startLine: 1, startCol: 0, endLine: 1, endCol: 1 };
@@ -610,6 +611,26 @@ def via_parameter(os):
   'app/main.py',
 );
 
+const zigLibraryFixture = buildScopeModel(
+  zigScopeResolver,
+  `const std = @import("std");
+const vendored = @import("std.zig");
+
+pub fn sortItems(items: []u32) void {
+    std.sort.pdq(u32, items, {}, lessThan);
+}
+
+pub fn viaVendored() void {
+    vendored.sort.insertion();
+}
+
+fn lessThan(_: void, a: u32, b: u32) bool {
+    return a < b;
+}
+`,
+  'src/main.zig',
+);
+
 const javaLibraryFixture = buildScopeModel(
   javaScopeResolver,
   `public class Probe {
@@ -641,6 +662,7 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['TypeScript process', tsLibraryFixture, 'HOME'],
     ['Python stdlib namespace import', pythonLibraryFixture, 'setdefault'],
     ['Python stdlib named import', pythonLibraryFixture, 'resolve'],
+    ['Zig std import', zigLibraryFixture, 'pdq'],
     ['Java platform package root', javaLibraryFixture, 'of'],
   ] as const)('reports %s as external', (_label, fixture, memberName) => {
     expect(originOf(fixture, memberName)).toBe('external');
@@ -655,6 +677,7 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['an unresolved third-party Python import', 'unknown', pythonLibraryFixture, 'close'],
     ['an unresolved relative Python import', 'unknown', pythonLibraryFixture, 'dumps'],
     ['a Python parameter named os', 'unknown', pythonLibraryFixture, 'update'],
+    ['a Zig path import spelled like std', 'unknown', zigLibraryFixture, 'insertion'],
     ['a Java parameter named java', 'in-program', javaLibraryFixture, 'run'],
   ] as const)('keeps %s %s', (_label, expected, fixture, memberName) => {
     expect(originOf(fixture, memberName)).toBe(expected);
@@ -665,6 +688,7 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
   it.each([
     ['TypeScript document', tsLibraryFixture, 'appendChild'],
     ['Python stdlib import', pythonLibraryFixture, 'setdefault'],
+    ['Zig std import', zigLibraryFixture, 'pdq'],
   ] as const)('degrades %s to non-external without the provider hooks', (_label, fixture, name) => {
     expect(originOfWithoutHooks(fixture, name)).not.toBe('external');
   });

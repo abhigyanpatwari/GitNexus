@@ -66,6 +66,17 @@ import {
   ZIG_CONTAINER_TYPES,
 } from './zig/index.js';
 
+/**
+ * The module names Zig reserves, for `LanguageProvider.isExternalModuleSpecifier`:
+ * `@import("std")` is the standard library and `@import("builtin")` is
+ * compiler-generated, so a name bound by either — `const std = @import("std")`
+ * or any other spelling — is rooted outside the program and `std.sort.pdq(...)`
+ * lost no in-program edge. Exact names only: `@import("std.zig")` is a FILE
+ * path, and `root` is the program's own root module. Modules named by
+ * `build.zig` (`addImport`) may be in-program or packages, so none is listed.
+ */
+const ZIG_RESERVED_MODULES: ReadonlySet<string> = new Set(['std', 'builtin']);
+
 export const zigProvider = defineLanguage({
   rename: zigRenameProvider,
   id: SupportedLanguages.Zig,
@@ -80,6 +91,7 @@ export const zigProvider = defineLanguage({
   cfgVisitor: createZigCfgVisitor(),
   exportChecker: zigExportChecker,
   importResolver: createImportResolver(zigImportConfig),
+  isExternalModuleSpecifier: (specifier) => ZIG_RESERVED_MODULES.has(specifier),
   callExtractor: createCallExtractor(zigCallConfig),
   classExtractor: createClassExtractor(zigClassConfig),
   fieldExtractor: createFieldExtractor(zigFieldConfig),
