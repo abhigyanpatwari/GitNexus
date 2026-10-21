@@ -12,7 +12,9 @@
  * - wrappers that denote exactly their operand: C# `svc!` and Swift's
  *   one-element tuple, which is how Swift parses `(x)`;
  * - C# null-conditional access (`svc?.GetUser()`, `user?.Address`,
- *   `repos?[0]`), which splits the receiver and the member across two nodes.
+ *   `repos?[0]`), which splits the receiver and the member across two nodes;
+ * - subscripts spelled as other node types: Ruby's `element_reference`, and
+ *   Swift's call with a bracketed argument list.
  *
  * A row lists every CALLS target of `member` from `source`, and every
  * `receiver-unresolved` call drop recorded for `member` in that method. A row
@@ -132,6 +134,19 @@ class Holder {
     var repo: User = User()
     var users: [User] = []
 }
+`;
+
+const RUBY_MODELS = `class Address
+  def save; end
+end
+
+class User
+  attr_reader :address
+  def initialize
+    @address = Address.new
+  end
+  def save; end
+end
 `;
 
 const CASES: readonly LanguageCase[] = [
@@ -289,6 +304,14 @@ void explicitTypeArgs(Service* svc) {
 func awaitParen(svc: Service) async {
     (await svc.getUserAsync()).save()
 }
+
+func indexElement(repos: [User]) {
+    repos[0].save()
+}
+
+func fieldIndexElement(holder: Holder) {
+    holder.users[0].save()
+}
 `,
     },
     rows: [
@@ -308,6 +331,48 @@ func awaitParen(svc: Service) async {
         member: 'save',
         targets: [],
         drops: ['main.swift:6'],
+      },
+      {
+        // KNOWN GAP. `repos[0]` now builds `2|repos|i`, so the miss is
+        // recorded, but Swift has no `elementTypeOf` hook to read `User` out
+        // of `[User]` yet.
+        language: 'swift',
+        source: 'indexElement',
+        member: 'save',
+        targets: [],
+        drops: ['main.swift:10'],
+      },
+      {
+        // KNOWN GAP, same hook. The chain is `2|holder|fusers|i`; before this
+        // change the walk read `users` as a method call.
+        language: 'swift',
+        source: 'fieldIndexElement',
+        member: 'save',
+        targets: [],
+        drops: ['main.swift:14'],
+      },
+    ],
+  },
+  {
+    language: SupportedLanguages.Ruby,
+    files: {
+      'models.rb': RUBY_MODELS,
+      'main.rb': `require_relative 'models'
+
+def index_element(repos)
+  repos[0].save
+end
+`,
+    },
+    rows: [
+      {
+        // KNOWN GAP. `repos` is untyped, so there is nothing to fold; the
+        // `2|repos|i` chain makes the miss visible instead of silent.
+        language: 'ruby',
+        source: 'index_element',
+        member: 'save',
+        targets: [],
+        drops: ['main.rb:4'],
       },
     ],
   },

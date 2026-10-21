@@ -18,6 +18,7 @@ import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import CPP from 'tree-sitter-cpp';
 import PHP from 'tree-sitter-php';
+import Ruby from 'tree-sitter-ruby';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 
@@ -691,6 +692,57 @@ describe('extractMixedChain', () => {
   ];
 
   it.each(conditionalRows)('$label', ({ language, code, member, expected }) => {
+    expect(receiverChainOf(language, code, member)).toEqual(expected);
+  });
+
+  // Subscripts spelled as other node types (#3498 RC8): Ruby's
+  // `element_reference`, and Swift's call with a bracketed argument list.
+  const subscriptRows: readonly ChainRow[] = [
+    {
+      label: 'Ruby element reference',
+      language: Ruby,
+      code: 'def f(repos)\n  repos[0].save\nend\n',
+      member: 'save',
+      expected: { chain: [{ kind: 'index' }], baseReceiverName: 'repos' },
+    },
+    {
+      label: 'Ruby element reference of a call',
+      language: Ruby,
+      code: 'def f(svc)\n  svc.get_users[0].save\nend\n',
+      member: 'save',
+      expected: { chain: [call('get_users'), { kind: 'index' }], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'Swift bracketed subscript',
+      language: Swift,
+      code: 'func f() { repos[0].save() }',
+      member: 'save',
+      expected: { chain: [{ kind: 'index' }], baseReceiverName: 'repos' },
+    },
+    {
+      label: 'Swift subscript of a property is a field then an index',
+      language: Swift,
+      code: 'func f() { holder.users[0].save() }',
+      member: 'save',
+      expected: { chain: [field('users'), { kind: 'index' }], baseReceiverName: 'holder' },
+    },
+    {
+      label: 'Swift subscript of a call result',
+      language: Swift,
+      code: 'func f() { svc.getUsers()[0].save() }',
+      member: 'save',
+      expected: { chain: [call('getUsers'), { kind: 'index' }], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'Swift parenthesized call stays a call',
+      language: Swift,
+      code: 'func f() { svc.getUser(0).save() }',
+      member: 'save',
+      expected: { chain: [call('getUser')], baseReceiverName: 'svc' },
+    },
+  ];
+
+  it.each(subscriptRows)('$label', ({ language, code, member, expected }) => {
     expect(receiverChainOf(language, code, member)).toEqual(expected);
   });
 });

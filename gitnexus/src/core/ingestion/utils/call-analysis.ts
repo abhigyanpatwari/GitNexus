@@ -395,7 +395,33 @@ const SUBSCRIPT_NODE_TYPES = new Set([
   'element_access_expression', // C#
   'array_access', // Java
   'indexing_expression', // Kotlin
+  'element_reference', // Ruby
 ]);
+
+/**
+ * Call nodes that spell a SUBSCRIPT. Swift has no subscript node: `repos[0]`
+ * parses as `call_expression → call_suffix → value_arguments`, exactly like a
+ * call, except that the argument list is delimited by `[`/`]` rather than
+ * `(`/`)`. Walked as a call it named no member (or, for `svc.users[0]`, named
+ * `users` as if it were a method), so the subscript never became an index step.
+ *
+ * Keyed by the suffix node type; the value is the argument-list node type
+ * inside it. The opening `[` token is what tells a subscript from a call.
+ */
+const BRACKETED_CALL_SUFFIXES = new Map<string, string>([
+  ['call_suffix', 'value_arguments'], // Swift `repos[0]`
+]);
+
+/** Is `node` a call node that is really a subscript, `repos[0]`? */
+function isBracketedSubscriptCall(node: SyntaxNode): boolean {
+  if (!CALL_EXPRESSION_TYPES.has(node.type)) return false;
+  const suffix = node.lastNamedChild;
+  if (suffix === null) return false;
+  const argumentListType = BRACKETED_CALL_SUFFIXES.get(suffix.type);
+  if (argumentListType === undefined) return false;
+  const argumentList = suffix.firstNamedChild;
+  return argumentList?.type === argumentListType && argumentList.firstChild?.type === '[';
+}
 
 /**
  * Can the chain walk descend into this node, or is it the base?
@@ -736,7 +762,8 @@ export function extractMixedChain(
     // fell straight through to the base case with an empty chain and minted
     // nothing — the await step could never be reached.
     current = unwrapTransparentReceiver(current);
-    if (CALL_EXPRESSION_TYPES.has(current.type)) {
+    const subscriptCall = isBracketedSubscriptCall(current);
+    if (CALL_EXPRESSION_TYPES.has(current.type) && !subscriptCall) {
       // ── Call expression: extract method name + inner receiver ────────────
       const callee =
         current.childForFieldName?.('function') ??
@@ -870,7 +897,7 @@ export function extractMixedChain(
           baseReceiverName: unwrapTransparentReceiver(inner).text || undefined,
         };
       }
-    } else if (SUBSCRIPT_NODE_TYPES.has(current.type)) {
+    } else if (subscriptCall || SUBSCRIPT_NODE_TYPES.has(current.type)) {
       // Name-free: a subscript key is a VALUE, not an identifier the resolver
       // could look up, so there is no member name to record.
       chain.unshift({ kind: 'index' });

@@ -132,7 +132,7 @@
       "nonNullAssert": "N/A",
       "awaitParen": "N/A",
       "explicitTypeArgs": "N/A",
-      "indexElement": "INVISIBLE-GAP",
+      "indexElement": "VISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "N/A"
@@ -180,7 +180,7 @@
       "nonNullAssert": "RESOLVES",
       "awaitParen": "VISIBLE-GAP",
       "explicitTypeArgs": "N/A",
-      "indexElement": "INVISIBLE-GAP",
+      "indexElement": "VISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "RESOLVES"

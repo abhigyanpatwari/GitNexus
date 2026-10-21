@@ -23,6 +23,11 @@ spellings.
   return types are hoisted.
 - **C# null-conditional access** (`svc?.GetUser()`): csharp `optionalChain`
   VISIBLE-GAP → RESOLVES (`User.Save`).
+- **Subscripts spelled as other node types** (Ruby `element_reference`, Swift
+  call with a bracketed argument list): ruby `indexElement` and swift
+  `indexElement` INVISIBLE-GAP → VISIBLE-GAP. Ruby's `repos` is untyped, so
+  there is nothing to fold; Swift has no `elementTypeOf` hook yet. Both
+  misses are now counted instead of silent.
 
 ## Swift/Dart stack integration after Rust and C#
 
