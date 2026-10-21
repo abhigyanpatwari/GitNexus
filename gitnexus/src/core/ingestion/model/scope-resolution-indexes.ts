@@ -125,17 +125,17 @@ export interface ScopeResolutionIndexes {
    *  after the per-scope chain and the flat `workspaceTypeBindings` miss.
    *  Populated post-finalize; most languages leave it empty. */
   readonly namespaceTypeBindings: ReadonlyMap<string, ReadonlyMap<string, TypeRef>>;
-  /** Accessibility gate for the per-namespace channels: maps a module ScopeId to
-   *  the namespace names type-visible from that file — its own declared
-   *  namespace(s) plus every imported/`using`d namespace (and dotted prefixes).
-   *  Materialized by the language hook so the language-neutral walkers can
-   *  consult `namespaceFqnBindings` / `namespaceTypeBindings` for exactly the
-   *  namespaces a file can see — preserving namespace visibility semantics
-   *  without the per-file binding copy. The walkers collect candidates in list
-   *  order, so a first-match lookup takes the earliest namespace's; the hook
-   *  lists namespaces in its language's lookup precedence. Empty when no
-   *  language populates the namespace channels. */
+  /** Accessibility gate for the per-namespace channels. A declaration or module
+   *  scope maps to the namespace names visible there, including enclosing and
+   *  global namespaces where the provider permits them. Provider ordering
+   *  preserves lookup precedence without copying definitions into every scope.
+   *  Empty for bundles that do not populate the namespace channels. */
   readonly accessibleNamespacesByScope: ReadonlyMap<ScopeId, readonly string[]>;
+  /** Optional precedence groups for namespace lookup. Candidates in one group
+   *  compete together; the first group containing a name hides later groups.
+   *  Keys may be declaration scopes as well as module scopes. Bundles that
+   *  omit this channel retain their existing flat accessibility semantics. */
+  readonly namespaceLookupTiersByScope?: ReadonlyMap<ScopeId, readonly (readonly string[])[]>;
   /** Pre-resolution usage facts; consumed by the resolution phase. */
   readonly referenceSites: readonly ReferenceSite[];
   /** SCC condensation of the file-level import graph — callers that want

@@ -49,6 +49,7 @@ import { definitionIdPosition } from '../utils/definition-id.js';
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
 
 interface IndexedNameLookupOptions extends NameLookupOptions {
+  readonly classCandidateFilter?: (def: SymbolDefinition) => boolean;
   /** Add same-scope candidates beside legacy local bindings. Explicit name
    * claims still select their own candidates through the shared resolver. */
   readonly expandLocalBindings?: (
@@ -56,6 +57,15 @@ interface IndexedNameLookupOptions extends NameLookupOptions {
     local: readonly BindingRef[],
     indexed: readonly BindingRef[],
   ) => readonly BindingRef[];
+}
+
+function compatibleClassBindings(
+  bindings: readonly BindingRef[],
+  accept?: (def: SymbolDefinition) => boolean,
+): readonly BindingRef[] {
+  return accept === undefined
+    ? bindings
+    : bindings.filter((binding) => !isClassLike(binding.def.type) || accept(binding.def));
 }
 
 /** Resolve ownership before any target-kind filtering or global fallback. */
@@ -72,8 +82,14 @@ export function lookupNameClaim(
       scopes: scopes.scopeTree,
       importsAt: (scope) => scopes.imports?.get(scope.id) ?? scope.imports,
       bindingsAt: (scope, spelling) => {
-        const local = scope.bindings.get(spelling) ?? [];
-        const augmented = scopes.bindingAugmentations.get(scope.id)?.get(spelling) ?? [];
+        const local = compatibleClassBindings(
+          scope.bindings.get(spelling) ?? EMPTY_BINDINGS,
+          options.classCandidateFilter,
+        );
+        const augmented = compatibleClassBindings(
+          scopes.bindingAugmentations.get(scope.id)?.get(spelling) ?? EMPTY_BINDINGS,
+          options.classCandidateFilter,
+        );
         // Unrelated claims must not change the legacy local binding tier.
         // Providers may add candidates that share that selected tier.
         if (local.length > 0 && nameClaimsFor(scope, spelling).length === 0) {
@@ -85,7 +101,7 @@ export function lookupNameClaim(
             ) ?? EMPTY_BINDINGS;
           return [
             ...local,
-            ...additional,
+            ...compatibleClassBindings(additional, options.classCandidateFilter),
             ...augmented.filter(
               (binding) =>
                 binding.declarationRange !== undefined || binding.availableFrom !== undefined,
@@ -94,10 +110,21 @@ export function lookupNameClaim(
         }
         return [
           ...local,
-          ...(scopes.bindings.get(scope.id)?.get(spelling) ?? []),
+          ...compatibleClassBindings(
+            scopes.bindings.get(scope.id)?.get(spelling) ?? EMPTY_BINDINGS,
+            options.classCandidateFilter,
+          ),
           ...augmented,
-          ...(collectNamespaceFqnBindings(scope.id, spelling, scopes) ?? []),
-          ...(scopes.workspaceFqnBindings?.get(spelling) ?? []),
+          ...(collectNamespaceFqnBindings(
+            scope.id,
+            spelling,
+            scopes,
+            options.classCandidateFilter,
+          ) ?? []),
+          ...compatibleClassBindings(
+            scopes.workspaceFqnBindings?.get(spelling) ?? EMPTY_BINDINGS,
+            options.classCandidateFilter,
+          ),
         ];
       },
     },
@@ -166,11 +193,8 @@ export function lookupBindingsAt(
   const finalized = scopes.bindings.get(scopeId)?.get(name);
   const augmented = scopes.bindingAugmentations.get(scopeId)?.get(name);
   const workspace = scopes.workspaceFqnBindings?.get(name);
-  // Per-namespace channel (#1871 named-namespace generalization). Gated by
-  // accessibility: only a *module* scope carries an `accessibleNamespacesByScope`
-  // entry, so this collects nothing at child scopes and at module scopes only for
-  // the namespaces that file can see. Empty (no entry) for every non-C# bundle,
-  // so the behavior of the three pre-existing channels is unchanged.
+  // Providers attach visible namespace channels to their owning scopes.
+  // An absent entry leaves the pre-existing channels unchanged.
   const namespaceRefs = collectNamespaceFqnBindings(scopeId, name, scopes);
   const fLen = finalized?.length ?? 0;
   const aLen = augmented?.length ?? 0;
@@ -203,16 +227,32 @@ export function lookupBindingsAt(
 /**
  * Collect `BindingRef`s for `name` from the per-namespace channel
  * (`namespaceFqnBindings`) across every namespace accessible from `scopeId`.
- * Accessibility comes from `accessibleNamespacesByScope`, which is keyed by
- * *module* scope id — so this returns `undefined` at non-module scopes and at
- * every scope in a bundle that didn't populate the channel (all non-C# today).
- * Language-neutral: keyed only by namespace strings and the index.
+ * Accessibility is supplied by the provider at declaration or module scopes.
+ * Optional precedence groups stop at the nearest matching group, preserving
+ * ambiguity within that group. Bundles without groups retain flat collection.
  */
 function collectNamespaceFqnBindings(
   scopeId: ScopeId,
   name: string,
   scopes: ScopeResolutionIndexes,
+  acceptClass?: (def: SymbolDefinition) => boolean,
 ): readonly BindingRef[] | undefined {
+  const tiers = scopes.namespaceLookupTiersByScope?.get(scopeId);
+  if (tiers !== undefined) {
+    for (const tier of tiers) {
+      const candidates: BindingRef[] = [];
+      for (const namespace of tier) {
+        candidates.push(
+          ...compatibleClassBindings(
+            scopes.namespaceFqnBindings?.get(namespace)?.get(name) ?? EMPTY_BINDINGS,
+            acceptClass,
+          ),
+        );
+      }
+      if (candidates.length > 0) return candidates;
+    }
+    return undefined;
+  }
   const namespaces = scopes.accessibleNamespacesByScope?.get(scopeId);
   if (namespaces === undefined || namespaces.length === 0) return undefined;
   let collected: BindingRef[] | undefined;
@@ -220,7 +260,7 @@ function collectNamespaceFqnBindings(
     const bucket = scopes.namespaceFqnBindings?.get(ns)?.get(name);
     if (bucket !== undefined && bucket.length > 0) {
       if (collected === undefined) collected = [];
-      for (const r of bucket) collected.push(r);
+      for (const r of compatibleClassBindings(bucket, acceptClass)) collected.push(r);
     }
   }
   return collected;
@@ -542,13 +582,12 @@ export function findReceiverTypeBinding(
   const claim = lookupNameClaim(startScope, receiverName, scopes, options);
   // An absent name keeps the type an undeclared write gave it in this scope.
   if (claim.status !== 'absent' || claim.typeBinding !== undefined) return claim.typeBinding;
-  const moduleScopeId = moduleScopeIdOf(startScope, scopes);
   // Fallback 1 — named namespaces accessible from this file (own + `using`d),
   // gated by `accessibleNamespacesByScope`. Consulted BEFORE the global channel
   // so a more-specific named binding wins, matching the pre-#1871 order where
   // these lived in the file's own `Scope.typeBindings` (the chain, above the
   // global fallback). Shared-channel routing avoids the O(files × names) blow-up.
-  const named = namespaceTypeBindingFor(moduleScopeId, receiverName, scopes);
+  const named = namespaceTypeBindingFor(startScope, receiverName, scopes);
   if (named !== undefined) return named;
   // Fallback 2 — global/default namespace: C# global types are visible from
   // every file (see `workspaceTypeBindings` doc), so this flat channel is the
@@ -558,19 +597,24 @@ export function findReceiverTypeBinding(
 
 /**
  * Resolve a typeBinding for `name` from the per-namespace channel
- * (`namespaceTypeBindings`) across the namespaces accessible from `moduleScopeId`.
- * First accessible-namespace hit wins. Returns `undefined` when the module has no
- * accessibility entry (non-module scope id, or a bundle that didn't populate the
- * channel — all non-C# today). Shared by the two typeBindings chain-walkers so
- * the named-namespace fallback stays identical between them.
+ * (`namespaceTypeBindings`) from the nearest scope carrying an accessibility
+ * entry. First accessible-namespace hit wins. Missing entries and parent cycles
+ * return no answer. Shared by the two post-finalize type-binding walkers.
  */
 export function namespaceTypeBindingFor(
-  moduleScopeId: ScopeId | null,
+  startScopeId: ScopeId | null,
   name: string,
   scopes: ScopeResolutionIndexes,
 ): TypeRef | undefined {
-  if (moduleScopeId === null) return undefined;
-  const namespaces = scopes.accessibleNamespacesByScope?.get(moduleScopeId);
+  let scopeId = startScopeId;
+  const visited = new Set<ScopeId>();
+  let namespaces: readonly string[] | undefined;
+  while (scopeId !== null && !visited.has(scopeId)) {
+    visited.add(scopeId);
+    namespaces = scopes.accessibleNamespacesByScope?.get(scopeId);
+    if (namespaces !== undefined) break;
+    scopeId = scopes.scopeTree.getScope(scopeId)?.parent ?? null;
+  }
   if (namespaces === undefined) return undefined;
   for (const ns of namespaces) {
     const hit = scopes.namespaceTypeBindings?.get(ns)?.get(name);
@@ -879,7 +923,7 @@ function soleBoundBaseName(bound: string): string | undefined {
   return base.length === 0 ? undefined : base;
 }
 
-export type ClassBindingLookup = NameLookupOptions & {
+export type ClassBindingLookup = IndexedNameLookupOptions & {
   /** A selected class came from a workspace-name guess, rather than a
    * binding/namespace decision. Observers must not treat it as edit proof. */
   readonly onNameFallback?: () => void;
@@ -970,7 +1014,8 @@ export function findClassBindingInScope(
             def !== undefined &&
             isClassLike(def.type) &&
             targetFiles.has(def.filePath) &&
-            (lookup?.namespaceMemberVisible?.(def) ?? true)
+            (lookup?.namespaceMemberVisible?.(def) ?? true) &&
+            (lookup?.classCandidateFilter?.(def) ?? true)
           )
             candidates.set(def.nodeId, def);
         }
@@ -988,7 +1033,11 @@ export function findClassBindingInScope(
     const qnames = scopes.qualifiedNames.get(receiverName);
     if (qnames.length === 1) {
       const def = scopes.defs.get(qnames[0]!);
-      if (def !== undefined && isClassLike(def.type)) {
+      if (
+        def !== undefined &&
+        isClassLike(def.type) &&
+        (lookup?.classCandidateFilter?.(def) ?? true)
+      ) {
         lookup?.onNameFallback?.();
         return def;
       }
@@ -1002,7 +1051,11 @@ export function findClassBindingInScope(
         const simpleIds = scopes.qualifiedNames.get(simple);
         if (simpleIds.length === 1) {
           const def = scopes.defs.get(simpleIds[0]!);
-          if (def !== undefined && isClassLike(def.type)) {
+          if (
+            def !== undefined &&
+            isClassLike(def.type) &&
+            (lookup?.classCandidateFilter?.(def) ?? true)
+          ) {
             lookup?.onNameFallback?.();
             return def;
           }

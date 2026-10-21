@@ -524,36 +524,94 @@ export function populateCsharpNamespaceSiblings(
     }
   }
 
-  // Materialize each file's accessible namespaces, keyed by the file's Module
-  // scope id, so the language-neutral walkers can gate their
-  // `namespaceFqnBindings` / `namespaceTypeBindings` lookups to exactly the
-  // namespaces a file can see. The walkers collect candidates in list order and
-  // a first-match lookup takes the earliest, so the order is C# name lookup's:
-  // each declared namespace, then the `using` targets of that declaration, then
-  // its enclosing namespaces innermost outward. The global ('') namespace is the
-  // outermost namespace, and the compilation unit's `using` targets come after
-  // its own types. A global type therefore never hides a same-named type in the
-  // file's own or an enclosing namespace. Dotted prefixes of `using` targets
-  // (kept so a `using static X.Y.Z;` class path reaches `X.Y`) are not C#
-  // lookup scopes, so they rank last.
+  // Namespace lookup follows declaration scopes. Types from one precedence
+  // group compete together; a nearer group hides later groups.
   const accessibleNamespacesByScope = indexes.accessibleNamespacesByScope as Map<ScopeId, string[]>;
+  const namespaceTiers = indexes.namespaceLookupTiersByScope as
+    | Map<ScopeId, readonly (readonly string[])[]>
+    | undefined;
   for (const parsed of parsedFiles) {
-    const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
+    const moduleScope = parsed.scopes.find((scope) => scope.kind === 'Module');
     if (moduleScope === undefined) continue;
     const declared = structureByFile.get(parsed.filePath)?.namespaces ?? [];
     const usings = usingTargetsByDeclaration(parsed, declared);
-    const ordered = new Set<string>();
-    for (const ns of declared) {
-      ordered.add(ns);
-      for (const target of usings.byNamespace.get(ns) ?? []) ordered.add(target);
-      for (const enclosing of enclosingNamespaces(ns)) ordered.add(enclosing);
+    const namespaceScopes = parsed.scopes
+      .filter((scope) => scope.kind === 'Namespace')
+      .sort((a, b) => comparePositions(a.range.startLine, a.range.startCol, b.range));
+    const namesByScope = new Map<ScopeId, string>();
+    for (let i = 0; i < namespaceScopes.length; i++) {
+      const scope = namespaceScopes[i]!;
+      const name = declaredNameAt(declared, namespaceScopes.length, i);
+      const parentName = scope.parent === null ? undefined : namesByScope.get(scope.parent);
+      if (name !== undefined)
+        namesByScope.set(scope.id, parentName === undefined ? name : `${parentName}.${name}`);
     }
-    ordered.add('');
-    for (const target of usings.compilationUnit) ordered.add(target);
-    for (const target of usings.all) {
-      for (const prefix of enclosingNamespaces(target)) ordered.add(prefix);
-    }
-    accessibleNamespacesByScope.set(moduleScope.id, [...ordered]);
+    const scopesById = new Map(namespaceScopes.map((scope) => [scope.id, scope]));
+    const sourceLines = (inputs.fileContents.get(parsed.filePath) ?? '').split('\n');
+    const fileScoped = namespaceScopes.find((scope) => {
+      let inComment = false;
+      for (let line = scope.range.startLine - 1; line < scope.range.endLine; line++) {
+        const text = sourceLines[line] ?? '';
+        const start = line === scope.range.startLine - 1 ? scope.range.startCol : 0;
+        for (let column = start; column < text.length; column++) {
+          if (inComment) {
+            if (text[column] === '*' && text[column + 1] === '/') {
+              inComment = false;
+              column++;
+            }
+            continue;
+          }
+          if (text[column] === '/' && text[column + 1] === '/') break;
+          if (text[column] === '/' && text[column + 1] === '*') {
+            inComment = true;
+            column++;
+            continue;
+          }
+          if (text[column] === '{') return false;
+          if (text[column] === ';') return true;
+        }
+      }
+      return false;
+    });
+    const install = (scopeId: ScopeId, owner?: Scope): void => {
+      const tiers: string[][] = [];
+      const seen = new Set<string>();
+      const imported: string[] = [];
+      const addNamespace = (name: string): void => {
+        if (!seen.has(name)) {
+          seen.add(name);
+          tiers.push([name]);
+        }
+      };
+      const visited = new Set<ScopeId>();
+      let current = owner;
+      while (current !== undefined && !visited.has(current.id)) {
+        visited.add(current.id);
+        const name = namesByScope.get(current.id);
+        if (name !== undefined) {
+          addNamespace(name);
+          const targets = usings.byDeclaration.get(current.id) ?? [];
+          if (targets.length > 0) {
+            tiers.push([...targets]);
+            imported.push(...targets);
+          }
+          for (const enclosing of enclosingNamespaces(name)) addNamespace(enclosing);
+        }
+        current = current.parent === null ? undefined : scopesById.get(current.parent);
+      }
+      addNamespace('');
+      if (usings.compilationUnit.length > 0) {
+        tiers.push([...usings.compilationUnit]);
+        imported.push(...usings.compilationUnit);
+      }
+      for (const target of imported) {
+        for (const prefix of enclosingNamespaces(target)) addNamespace(prefix);
+      }
+      accessibleNamespacesByScope.set(scopeId, [...new Set(tiers.flat())]);
+      namespaceTiers?.set(scopeId, tiers);
+    };
+    install(moduleScope.id, fileScoped);
+    for (const scope of namespaceScopes) install(scope.id, scope);
   }
 
   // `using static X.Y.Z;` — expose every public static method of
@@ -669,7 +727,7 @@ export function populateCsharpNamespaceSiblings(
     // (#1871), and billions for the global bucket of a large Unity solution
     // (tens of thousands of global types × tens of thousands of scopes).
     // Global types share this channel rather than a scope-independent one:
-    // the walkers consult it only at a module scope, through the file's
+    // the walkers consult it at the provider's owning scopes through their
     // ordered accessibility list, so a global type no longer answers from a
     // method scope before the walk reaches the file's own namespace.
     // `lookupBindingsAt` ranks finalized `scope.bindings` (local declarations)
@@ -728,12 +786,9 @@ function getAugmentationBucket(
 
 /** `using` targets of one file, grouped by the declaration that owns them. */
 interface UsingTargetsByDeclaration {
-  /** Directives inside a namespace declaration, keyed by its declared name. */
-  readonly byNamespace: ReadonlyMap<string, readonly string[]>;
+  readonly byDeclaration: ReadonlyMap<ScopeId, readonly string[]>;
   /** Directives at compilation-unit level. */
   readonly compilationUnit: readonly string[];
-  /** Every target, in source order. */
-  readonly all: readonly string[];
 }
 
 /**
@@ -756,32 +811,38 @@ function usingTargetsByDeclaration(
   const namespaceScopes = parsed.scopes
     .filter((s) => s.kind === 'Namespace')
     .sort((a, b) => comparePositions(a.range.startLine, a.range.startCol, b.range));
-  const byNamespace = new Map<string, string[]>();
+  const byDeclaration = new Map<ScopeId, string[]>();
   const compilationUnit: string[] = [];
-  const all: string[] = [];
   for (const imp of parsed.parsedImports) {
     if (imp.kind !== 'namespace' || imp.targetRaw === null) continue;
-    all.push(imp.targetRaw);
     const at = imp.atRange;
     let owner = -1;
     if (at !== undefined) {
-      for (const [i, scope] of namespaceScopes.entries()) {
-        if (comparePositions(at.startLine, at.startCol, scope.range) > 0) owner = i;
+      let lo = 0;
+      let hi = namespaceScopes.length;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (comparePositions(at.startLine, at.startCol, namespaceScopes[mid]!.range) > 0) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
       }
+      owner = lo - 1;
     }
     const name = owner === -1 ? undefined : declaredNameAt(declared, namespaceScopes.length, owner);
     if (name === undefined) {
       compilationUnit.push(imp.targetRaw);
       continue;
     }
-    let targets = byNamespace.get(name);
-    if (targets === undefined) {
-      targets = [];
-      byNamespace.set(name, targets);
+    const ownerScope = namespaceScopes[owner];
+    if (ownerScope !== undefined) {
+      const ownTargets = byDeclaration.get(ownerScope.id) ?? [];
+      ownTargets.push(imp.targetRaw);
+      byDeclaration.set(ownerScope.id, ownTargets);
     }
-    targets.push(imp.targetRaw);
   }
-  return { byNamespace, compilationUnit, all };
+  return { byDeclaration, compilationUnit };
 }
 
 /** The declared namespace name for the `index`-th Namespace scope, or the first

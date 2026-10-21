@@ -13,6 +13,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -146,6 +147,47 @@ describe.skipIf(!dartAvailable)('Dart field-type resolution', () => {
     expect(addressReads.length).toBe(1);
     expect(addressReads[0]!.source).toBe('processUser');
     expect(addressReads[0]!.targetLabel).toBe('Property');
+  });
+});
+
+// ── Prefixed-import factory results (#3498) ─────────────────────────────
+
+describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'dart-prefixed-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  const methodCalls = (source: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === source && edge.target === 'm')
+      .map((edge) => edge.rel.targetId);
+
+  it.each(['finalCall', 'varCall', 'inlineCall'])('resolves %s to C.m', (source) => {
+    expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+  });
+
+  // An awaited `Future<C>` is captured like a direct call, but no Dart path
+  // unwraps the Future of an awaited result yet, named imports included.
+  it.each(['untypedCall', 'awaitedCall'])('does not guess a receiver type for %s', (source) => {
+    expect(methodCalls(source)).toEqual([]);
+  });
+
+  it('records the untyped and awaited factory results as dropped sites', () => {
+    expect(
+      getResolutionOutcomes(result)
+        .filter((outcome) => outcome.kind === 'suppressed')
+        .filter(
+          (outcome) =>
+            outcome.reason === 'receiver-unresolved' && outcome.filePath === 'lib/callers.dart',
+        )
+        .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+        .sort(),
+    ).toEqual(['17:m', '22:m']);
   });
 });
 

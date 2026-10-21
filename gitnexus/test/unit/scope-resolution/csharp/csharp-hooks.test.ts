@@ -209,7 +209,7 @@ describe('populateCsharpNamespaceSiblings', () => {
       kind,
       parent,
       filePath,
-      range: { startLine: 1, startColumn: 0, endLine: 10, endColumn: 0 },
+      range: { startLine: 1, startCol: 0, endLine: 10, endCol: 0 },
       bindings: new Map(),
       imports: [],
       ownedDefs,
@@ -235,11 +235,19 @@ describe('populateCsharpNamespaceSiblings', () => {
     const moduleA = scope('scope:a:module', 'Module', 'a.cs');
     const moduleB = scope('scope:b:module', 'Module', 'b.cs');
     const classB = scope('scope:b:class', 'Class', 'b.cs', moduleB.id, [sibling]);
+    const namespaceA = {
+      ...scope('scope:a:namespace', 'Namespace', 'a.cs', moduleA.id),
+      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 15 },
+    };
+    const namespaceB = {
+      ...scope('scope:b:namespace', 'Namespace', 'b.cs', moduleB.id),
+      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 15 },
+    };
     const parsedFiles: ParsedFile[] = [
       {
         filePath: 'a.cs',
         moduleScope: moduleA.id,
-        scopes: Object.freeze([moduleA]),
+        scopes: Object.freeze([moduleA, namespaceA]),
         parsedImports: Object.freeze([]),
         localDefs: Object.freeze([]),
         referenceSites: Object.freeze([]),
@@ -247,7 +255,7 @@ describe('populateCsharpNamespaceSiblings', () => {
       {
         filePath: 'b.cs',
         moduleScope: moduleB.id,
-        scopes: Object.freeze([moduleB, classB]),
+        scopes: Object.freeze([moduleB, namespaceB, classB]),
         parsedImports: Object.freeze([]),
         localDefs: Object.freeze([sibling]),
         referenceSites: Object.freeze([]),
@@ -415,11 +423,9 @@ describe('populateCsharpNamespaceSiblings', () => {
     expect(indexes.accessibleNamespacesByScope.get(moduleB.id)).toEqual(['']);
   });
 
-  it('keeps every declaration of a repeated global simple name (partial classes across files)', () => {
-    // Two global-namespace files each declare `Foo` (a partial class split
-    // across files => distinct nodeIds, same simple name). Both must survive
-    // in the shared channel — the bucket de-dups by nodeId, not by name, so
-    // partial-class members from both files stay resolvable.
+  it('keeps every declaration of a repeated global simple name', () => {
+    // Two global-namespace files declare `Foo` with distinct nodeIds.
+    // Both declarations must survive the shared channel.
     const foo1 = classDef('def:foo1.Foo', 'foo1.cs', 'Foo');
     const foo2 = classDef('def:foo2.Foo', 'foo2.cs', 'Foo');
     const moduleA = scope('scope:foo1:module', 'Module', 'foo1.cs');
@@ -453,7 +459,7 @@ describe('populateCsharpNamespaceSiblings', () => {
       ]),
     });
 
-    // Both partial declarations are kept (de-dup is by nodeId, not name).
+    // Both declarations are kept (de-dup is by nodeId, not name).
     expect(
       indexes.namespaceFqnBindings
         .get('')
@@ -539,7 +545,14 @@ describe('populateCsharpNamespaceSiblings', () => {
         fileContents: new Map([['f.cs', content]]),
       });
 
-      expect(indexes.accessibleNamespacesByScope.get(moduleScope.id)).toEqual(expected);
+      const blockNamespace =
+        _label === 'a using inside a block namespace' ? namespaceScopes[0] : undefined;
+      expect(indexes.accessibleNamespacesByScope.get(blockNamespace?.id ?? moduleScope.id)).toEqual(
+        expected,
+      );
+      if (blockNamespace !== undefined) {
+        expect(indexes.accessibleNamespacesByScope.get(moduleScope.id)).toEqual(['']);
+      }
     },
   );
 });

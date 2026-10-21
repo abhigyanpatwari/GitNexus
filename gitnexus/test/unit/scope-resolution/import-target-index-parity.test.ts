@@ -56,6 +56,7 @@ import type {
 } from 'gitnexus-shared';
 
 import { resolveGoImportTarget } from '../../../src/core/ingestion/languages/go/import-target.js';
+import type { GoWorkspaceConfig } from '../../../src/core/ingestion/languages/go/workspace-config.js';
 import { resolveDartImportTarget } from '../../../src/core/ingestion/languages/dart/import-target.js';
 import { resolveRubyImportTarget } from '../../../src/core/ingestion/languages/ruby/import-target.js';
 import {
@@ -75,6 +76,10 @@ import { DART_HERITAGE_PREFIX } from '../../../src/core/ingestion/languages/dart
 import { CountingSet, countedParsedFilesWith } from '../../helpers/counting-file-set.js';
 
 // ─── pre-change implementations, minus the rule #2881 removed ────────────────
+//
+// And with Go's module leg anchored at the module root, which the multi-module
+// change made deliberately: a module-relative package path names ONE
+// directory, so the module leg no longer shares the GOPATH leg's suffix match.
 
 function legacyFindRootPackageFiles(allFilePaths: ReadonlySet<string>): string[] {
   const result: string[] = [];
@@ -103,6 +108,25 @@ function legacyFindAllFilesInPkgDir(allFilePaths: ReadonlySet<string>, pkgPath: 
   return result;
 }
 
+/** Files whose parent directory IS `dir`, in Set order: the module leg. */
+function legacyFindFilesInExactDir(allFilePaths: ReadonlySet<string>, dir: string): string[] {
+  const result: string[] = [];
+  for (const raw of allFilePaths) {
+    const normalized = raw.replace(/\\/g, '/');
+    if (!normalized.endsWith('.go') || normalized.endsWith('_test.go')) continue;
+    const slash = normalized.lastIndexOf('/');
+    if (slash >= 0 && normalized.slice(0, slash) === dir) result.push(raw);
+  }
+  return result;
+}
+
+/** The config `captureGoWorkspaceConfig` produces for a root-only go.mod. */
+function goRootModule(modulePath: string | undefined): GoWorkspaceConfig | undefined {
+  return modulePath === undefined
+    ? undefined
+    : { modules: [{ modulePath, dir: '' }], workFiles: [] };
+}
+
 function legacyResolveGoImportTarget(
   targetRaw: string,
   allFilePaths: ReadonlySet<string>,
@@ -117,7 +141,7 @@ function legacyResolveGoImportTarget(
     const files =
       relativePkg === ''
         ? legacyFindRootPackageFiles(allFilePaths)
-        : legacyFindAllFilesInPkgDir(allFilePaths, relativePkg);
+        : legacyFindFilesInExactDir(allFilePaths, relativePkg);
     if (files.length > 0) return files;
     return null;
   }
@@ -463,7 +487,7 @@ describe('import-target index hoist — output parity with the pre-change scans'
     for (let repo = 0; repo < 40; repo++) {
       const files = corpus(repo, '.go', 6 + (repo % 25));
       for (const modulePath of [undefined, 'example.com/mod']) {
-        const config = modulePath === undefined ? undefined : { modulePath };
+        const config = goRootModule(modulePath);
         for (const target of GO_TARGETS) {
           const actual = resolveGoImportTarget(target, 'main.go', files, config);
           const expected = legacyResolveGoImportTarget(target, files, modulePath);
@@ -602,18 +626,19 @@ describe('import-target index hoist — output parity with the pre-change scans'
     {
       lang: 'go',
       why: 'a package dir nested inside itself DOES answer the query (#2881)',
-      files: ['a/pkg/b/pkg/x.go'],
-      // Addressed through the MODULE leg as the single segment `pkg`, not as
-      // `a/pkg`. `a/pkg` never reached the first-occurrence branch this case
-      // was named for: `'/a/pkg/b/pkg/'.endsWith('/a/pkg/')` is already false,
-      // so the `endsWith` form agreed with the old predicate and the case
-      // passed either way. With `pkg`, `endsWith('/pkg/')` is TRUE and ONLY the
-      // "…and that occurrence is the FIRST" half rejected it — which is exactly
-      // why this case is the one that flips, and why it is still the case that
-      // tells the two predicates apart. The module leg is required because the
-      // GOPATH cascade skips single-segment targets.
-      target: 'example.com/mod/pkg',
-      modulePath: 'example.com/mod',
+      files: ['x/pkg/a/x/pkg/y.go'],
+      // The queried path must REPEAT inside the directory for this case to
+      // tell the two predicates apart: `'/x/pkg/a/x/pkg/'.endsWith('/x/pkg/')`
+      // is TRUE, and ONLY the "…and that occurrence is the FIRST" half rejected
+      // it — which is exactly why this case is the one that flips. A target
+      // that does not repeat (`a/pkg` against `a/pkg/b/pkg`) fails `endsWith`
+      // outright and passes under either rule.
+      //
+      // It used to reach the suffix match through the MODULE leg as the single
+      // segment `pkg`, which the GOPATH cascade skips. The module leg is now
+      // anchored at the module root and asks for `pkg/` exactly, so the case
+      // moved to the GOPATH leg with a two-segment repeat instead.
+      target: 'x/pkg',
     },
     {
       lang: 'go',
@@ -671,7 +696,7 @@ describe('import-target index hoist — output parity with the pre-change scans'
   it.each(HANDBUILT)('$lang hand-built: $why', ({ lang, files, target, fromFile, modulePath }) => {
     const set = new Set(files);
     if (lang === 'go') {
-      const config = modulePath === undefined ? undefined : { modulePath };
+      const config = goRootModule(modulePath);
       expect(resolveGoImportTarget(target, 'main.go', set, config)).toEqual(
         legacyResolveGoImportTarget(target, set, modulePath),
       );
@@ -791,9 +816,12 @@ describe('import-target index hoist — built once per file set, not once per im
   it('go builds one index for many imports (#2877)', () => {
     const files = countingCorpus(1, '.go');
     for (let i = 0; i < 200; i++) {
-      resolveGoImportTarget(`example.com/mod/repo${i}/pkg`, 'main.go', files, {
-        modulePath: 'example.com/mod',
-      });
+      resolveGoImportTarget(
+        `example.com/mod/repo${i}/pkg`,
+        'main.go',
+        files,
+        goRootModule('example.com/mod'),
+      );
     }
     // One pass: the package-dir index (root files are collected in the same pass).
     expect(files.scans).toBe(1);

@@ -167,7 +167,7 @@
  *     unconditionally), and `indexes.namespaceFqnBindings` +
  *     `indexes.namespaceTypeBindings` (per-namespace, consulted only for the
  *     namespaces in `indexes.accessibleNamespacesByScope` for the caller's
- *     module). All but `indexes.bindings` are mutable post-finalize and
+ *     owning scope). All but `indexes.bindings` are mutable post-finalize and
  *     populated by hooks; only `indexes.bindings` is frozen.
  *
  *     `indexes.bindings` is the **finalize-output channel**. After
@@ -1117,6 +1117,17 @@ export interface ScopeResolver {
    */
   readonly isNamespaceMemberVisible?: (ctx: { readonly member: SymbolDefinition }) => boolean;
 
+  /** Optional compatibility rule for bare class-name receivers. Runs before
+   * namespace precedence selection, so an incompatible declaration cannot
+   * hide a compatible declaration in an enclosing namespace. Value receivers
+   * and declared-type lookups keep their existing rules. */
+  readonly isBareClassReceiverCandidate?: (ctx: {
+    readonly candidate: SymbolDefinition;
+    readonly spelling: string;
+    readonly inScope: ScopeId;
+    readonly scopes: ScopeResolutionIndexes;
+  }) => boolean;
+
   /**
    * When true, a qualified receiver is walked SEGMENT BY SEGMENT from its
    * verified namespace root instead of being split once at the last dot:
@@ -1682,6 +1693,46 @@ export interface ScopeResolver {
    * TypeScript and C++ need it for field types.
    */
   readonly stripTypePreservingDecoration?: DecorationStripper;
+
+  /**
+   * The QUALIFIED spelling of a declared type whose qualifier capture-time
+   * normalization dropped from `rawName` — `models.User` for a binding written
+   * `*models.User` and stored as `User` — or `undefined` when the written type
+   * names no namespace, or `rawName` still carries it.
+   *
+   * Exists because a bare `rawName` cannot tell two namespaces' same-named
+   * types apart. Its lookup has no qualifier to follow, so a type imported
+   * through a namespace binds only by the workspace-wide unique-name fallback,
+   * which answers only while the name is unique: once a second package declares
+   * a `User`, every receiver typed `models.User` loses its edges, and a package
+   * declaring its own `User` binds `models.User` to THAT one through the scope
+   * chain. The written spelling (`TypeRef.declaredSpelling`) still has the
+   * qualifier; this hook reduces it the way `rawName` was reduced, minus the cut.
+   *
+   * Receiver typing tries the returned spelling FIRST, through the namespace
+   * branch of `findClassBindingInScope` — candidates only from the files the
+   * qualifier's import resolves to, filtered by `isNamespaceMemberVisible` —
+   * with the unique-name fallback switched off for that attempt, so a hit is a
+   * namespace decision and never a name guess. A miss (an unresolved import,
+   * no such type, two of them) is final: the bare `rawName` must not bind a type
+   * from another package. Bare lookup remains available when this hook returns
+   * no qualified spelling.
+   *
+   * The qualifier must name a FILE-level import: it is looked up from the module
+   * scope enclosing `declaredAtScope`, never from `declaredAtScope` itself. That
+   * scope holds the binding, and the binding may carry the qualifier's own name
+   * — `vault *vault.Vault` as a field, parameter or local — which would shadow
+   * the import there. A language whose imports can be block-scoped needs a
+   * different anchor and must not return a spelling this rule would misread.
+   *
+   * The binding itself is deliberately NOT rewritten to keep the qualifier:
+   * `rawName` has many readers, and the compound resolver reads a dotted one as
+   * a `value.member` alias path. Only receiver typing needs the distinction.
+   *
+   * Return a lookup-ready class name (no decoration, no type arguments). Leave
+   * undefined for languages whose `rawName` keeps its qualifier.
+   */
+  readonly qualifiedTypeLookupSpelling?: (typeRef: TypeRef) => string | undefined;
 
   /**
    * Whether the compound-receiver resolver should strip C-style cast
