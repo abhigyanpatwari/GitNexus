@@ -9,7 +9,10 @@
 import type { ParsedFile } from 'gitnexus-shared';
 import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
-import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import {
+  populateClassOwnedMembers,
+  resolveSameNamespaceInheritanceBase,
+} from '../../scope-resolution/scope/walkers.js';
 import { populateCsharpNamespacePrefixes } from './qualified-type-names.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import {
@@ -118,6 +121,18 @@ const csharpScopeResolver: ScopeResolver = {
   // same namespace, without any `using` directive. See
   // `namespace-siblings.ts` for the implementation.
   populateNamespaceSiblings: populateCsharpNamespaceSiblings,
+
+  // The inheritance pre-pass runs before those siblings exist, so a base
+  // declared in another file of the SAME named namespace binds here. Exact
+  // namespace only (the `namespacePrefix` sidecar from `populateOwners`):
+  // enclosing-namespace and global visibility stay with the shared chain.
+  resolveImplicitInheritanceBase: (baseName, derivingClass, scopes) =>
+    resolveSameNamespaceInheritanceBase(
+      baseName,
+      derivingClass,
+      scopes,
+      (def) => def.namespacePrefix,
+    ),
 
   // C# is statically typed — type information is reliable. Field-
   // fallback heuristic stays off (the type-binding layer already

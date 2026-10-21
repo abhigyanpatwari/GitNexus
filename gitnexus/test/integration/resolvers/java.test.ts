@@ -2101,6 +2101,57 @@ describe('Java grandparent method resolution via MRO (Phase B)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Same-package `extends` whose base name another package also declares.
+// com.acme.core's `B extends A` / `C extends B` carry no import (the Java
+// same-package rule), while com.acme.legacy declares its own A and B. The base
+// must bind through the package, not through a workspace-unique simple name
+// that the legacy pair makes ambiguous. Two guards: `Shadowed` single-type
+// imports legacy.A, which beats the same-package A; `Qualified` names
+// `com.acme.legacy.B`, which the same-package B must never answer.
+// ---------------------------------------------------------------------------
+
+describe('Java same-package extends with a colliding simple name', () => {
+  let result: PipelineResult;
+  const core = 'src/main/java/com/acme/core';
+  const legacy = 'src/main/java/com/acme/legacy';
+  const extendsEdges = (): string[] =>
+    getRelationships(result, 'EXTENDS').map(
+      (e) => `${e.sourceFilePath}:${e.source} → ${e.targetFilePath}:${e.target}`,
+    );
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-same-package-extends-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('binds unqualified bases by the same-package rule, a single-type import first', () => {
+    const unqualified = extendsEdges().filter((e) => !e.startsWith(`${core}/Qualified.java:`));
+    expect(unqualified.sort()).toEqual([
+      `${core}/B.java:B → ${core}/A.java:A`,
+      `${core}/C.java:C → ${core}/B.java:B`,
+      `${core}/Shadowed.java:Shadowed → ${legacy}/A.java:A`,
+      `${legacy}/B.java:B → ${legacy}/A.java:A`,
+    ]);
+  });
+
+  it('never binds a qualified base through the same-package simple name', () => {
+    expect(extendsEdges()).not.toContain(`${core}/Qualified.java:Qualified → ${core}/B.java:B`);
+  });
+
+  it.each([
+    ['greet', `${core}/A.java`],
+    ['save', `${core}/Stamp.java`],
+  ])('resolves App.process → %s through the C → B → A chain (%s)', (target, targetFile) => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'process' && c.target === target,
+    );
+    expect(calls.map((c) => c.targetFilePath)).toEqual([targetFile]);
+  });
+});
+
 // ── Phase P: Overload Disambiguation via Parameter Types ─────────────────
 
 describe('Java overload disambiguation by parameter types', () => {

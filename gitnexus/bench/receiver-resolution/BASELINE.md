@@ -1,5 +1,19 @@
 # Receiver-resolution baseline
 
+## Same-namespace inheritance base fallback
+
+`c.greet().save()` in `java-grandparent-resolution/src/services/App.java:8` no
+longer drops. Its `C extends B extends A` chain has no imports, so it binds only
+by the same-package rule, and that sibling visibility is populated after the
+inheritance pre-pass. The corpus's default-package `A`/`B`
+(`java-unrelated-method-collision`) made the unique-name fallback decline, so
+`C` had no EXTENDS edge and an empty MRO. The pre-pass now asks
+`ScopeResolver.resolveImplicitInheritanceBase` (Java, Kotlin, C#) for a bare,
+unclaimed base the shared chain left unbound. Call drops move from 128 to 127
+and all-kind drops from 192 to 191 (`.java` 49 to 48, `chain-call` 30 to 29,
+`in-program` 55 to 54). The three new collision fixtures add no drop; on main
+the C# one would add `leaf.Greet().Save()`. Every shape-arm state is unchanged.
+
 ## Express inline-handler fixture (#3488)
 
 The new `express-inline-handlers` fixture reads `req.query.path` inside an

@@ -1723,6 +1723,56 @@ function dirnameOf(filePath: string): string {
 }
 
 /**
+ * The class-like def named `baseName` that `derivingClass` sees through an
+ * implicit same-namespace rule — the shared body of
+ * `ScopeResolver.resolveImplicitInheritanceBase`. `namespaceOf` is the
+ * provider's namespace fact for a def (`undefined` = unknown, never matches).
+ *
+ * Candidates must share the deriving class's namespace. Several can when one
+ * namespace is declared under more than one source root (a multi-module
+ * build), so the nearest by shared leading path segments wins — the order the
+ * sibling hooks inject them in — and a tie at that distance refuses: a missing
+ * edge is recoverable, a wrong EXTENDS edge silently corrupts impact analysis.
+ */
+export function resolveSameNamespaceInheritanceBase(
+  baseName: string,
+  derivingClass: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+  namespaceOf: (def: SymbolDefinition) => string | undefined,
+): SymbolDefinition | undefined {
+  const namespace = namespaceOf(derivingClass);
+  if (namespace === undefined) return undefined;
+  const ownSegments = derivingClass.filePath.split('/');
+  let nearest: SymbolDefinition | undefined;
+  let nearestShared = -1;
+  let tied = false;
+  for (const id of scopes.qualifiedNames.get(baseName)) {
+    const def = scopes.defs.get(id);
+    if (def === undefined || def.nodeId === derivingClass.nodeId || !isClassLike(def.type)) {
+      continue;
+    }
+    if (namespaceOf(def) !== namespace) continue;
+    const segments = def.filePath.split('/');
+    let shared = 0;
+    while (
+      shared < segments.length &&
+      shared < ownSegments.length &&
+      segments[shared] === ownSegments[shared]
+    ) {
+      shared++;
+    }
+    if (shared > nearestShared) {
+      nearest = def;
+      nearestShared = shared;
+      tied = false;
+    } else if (shared === nearestShared) {
+      tied = true;
+    }
+  }
+  return tied ? undefined : nearest;
+}
+
+/**
  * True when the caller can see `classDef` through import evidence, not
  * merely because the class name is workspace-unique.
  *

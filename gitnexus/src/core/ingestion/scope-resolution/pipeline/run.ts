@@ -23,7 +23,13 @@
  * Plan: `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
-import type { ParsedFile, ReferenceSite, RegistryProviders, Scope } from 'gitnexus-shared';
+import type {
+  ParsedFile,
+  ReferenceSite,
+  RegistryProviders,
+  Scope,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
@@ -103,7 +109,13 @@ import {
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
-import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
+import {
+  findEnclosingClassDef,
+  hasExplicitNameClaim,
+  lookupNameClaim,
+  resolveInheritanceBaseInScope,
+} from '../scope/walkers.js';
+import { normalizeQualifiedName, stripTrailingTypeArguments } from '../../utils/qualified-name.js';
 import {
   heritageTypeArgumentsKey,
   type HeritageTypeArgumentSink,
@@ -208,6 +220,52 @@ function emitInheritanceEdgeDirect(
 }
 
 /**
+ * Whether an `inherits` site's base was written as a bare name, with no
+ * qualifier (`a.b.Base`, `Ns::Base`). Captures that keep only the simple tail
+ * carry no `rawQualifiedName`, so the name capture must also start where the
+ * base expression does: `Base<T>` and `Base(args)` lead with the name,
+ * `pkg.Base` does not. A site whose anchor is not the base expression at all
+ * fails the same test, which only costs it the implicit-namespace fallback.
+ */
+function isBareInheritanceBase(site: ReferenceSite): boolean {
+  if (
+    site.rawQualifiedName !== undefined &&
+    stripTrailingTypeArguments(normalizeQualifiedName(site.rawQualifiedName)).includes('.')
+  ) {
+    return false;
+  }
+  const name = site.nameRange;
+  return (
+    name !== undefined &&
+    name.startLine === site.atRange.startLine &&
+    name.startCol === site.atRange.startCol
+  );
+}
+
+/**
+ * The provider's implicit same-namespace base for an `inherits` site the shared
+ * chain left unbound. That visibility (`populateNamespaceSiblings`) is only
+ * populated after the inheritance pre-pass, so without this a base it alone
+ * makes visible reaches nothing but the workspace-unique name fallback. Bare,
+ * unclaimed bases only: for a written qualifier or a shadowing import the
+ * chain has already decided, and its miss stands.
+ */
+function resolveImplicitInheritanceBaseAtSite(
+  site: ReferenceSite,
+  derivingClass: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+  resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
+): SymbolDefinition | undefined {
+  if (resolveImplicitBase === undefined || !isBareInheritanceBase(site)) return undefined;
+  const claim = lookupNameClaim(site.lookupScope ?? site.inScope, site.name, scopes, {
+    position: site.atRange,
+    purpose: site.lookupPurpose ?? 'type',
+  });
+  if (hasExplicitNameClaim(claim, site.name)) return undefined;
+  return resolveImplicitBase(site.name, derivingClass, scopes);
+}
+
+/**
  * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
  * before MRO construction. This lets template-base captures contribute to the
  * graph in time for `buildMro`, while `handledSites` prevents the generic
@@ -231,6 +289,7 @@ function preEmitInheritanceEdges(
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
   recordTypeArguments: HeritageTypeArgumentSink,
   unresolvedInheritanceByClass: Set<string>,
+  resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
   recordSourceBinding?: SourceBindingRecorder,
 ): Set<string> {
   const handledSites = new Set<string>();
@@ -265,14 +324,15 @@ function preEmitInheritanceEdges(
     const callerClass = findEnclosingClassDef(site.inScope, scopes);
     if (callerClass === undefined) continue;
 
-    const targetDef = resolveInheritanceBaseInScope(
-      site.lookupScope ?? site.inScope,
-      site.name,
-      scopes,
-      site.rawQualifiedName,
-      callerClass,
-      { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
-    );
+    const targetDef =
+      resolveInheritanceBaseInScope(
+        site.lookupScope ?? site.inScope,
+        site.name,
+        scopes,
+        site.rawQualifiedName,
+        callerClass,
+        { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
+      ) ?? resolveImplicitInheritanceBaseAtSite(site, callerClass, scopes, resolveImplicitBase);
     if (targetDef === undefined || targetDef.nodeId === callerClass.nodeId) {
       // Static lookup can mistake the current declaration for an earlier
       // same-named base. A self-edge is not inheritance evidence and would
@@ -941,6 +1001,7 @@ export function runScopeResolution(
         nodeLookup,
         recordHeritageTypeArguments,
         unresolvedInheritanceByClass,
+        provider.resolveImplicitInheritanceBase,
         recordSourceBinding,
       );
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits

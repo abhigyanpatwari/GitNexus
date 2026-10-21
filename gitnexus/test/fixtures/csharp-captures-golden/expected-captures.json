@@ -603,6 +603,34 @@
     "captureGroups": 11,
     "digest": "daf34e132bd27b86fe012d64e6cc6fcf4f5e39dd168e9bd30dc1151644235d45"
   },
+  "csharp-same-namespace-base-collision/App/App.cs": {
+    "captureGroups": 14,
+    "digest": "23a4e39b9e81bde699e0ea97801591b269565e22f6bd200641fd7e9d3119ec63"
+  },
+  "csharp-same-namespace-base-collision/Core/A.cs": {
+    "captureGroups": 10,
+    "digest": "e3feae117230f7458726093097b396ca752737bf46d377a8416591553014fb52"
+  },
+  "csharp-same-namespace-base-collision/Core/B.cs": {
+    "captureGroups": 6,
+    "digest": "51ec8184444d674f9dc646cac0cb3b88b0fc916edfb27d91f5e12a8cb1aa6803"
+  },
+  "csharp-same-namespace-base-collision/Core/Leaf.cs": {
+    "captureGroups": 6,
+    "digest": "0cf391c146ada3f91172e0c484ad2857868ac686dcdcc6058a61a50e2be94204"
+  },
+  "csharp-same-namespace-base-collision/Core/Stamp.cs": {
+    "captureGroups": 8,
+    "digest": "e8422aaf8c91bcaa8ed7bfac1c087f94dc5b912b7c5f86cb92a9d8547b0b94ef"
+  },
+  "csharp-same-namespace-base-collision/Legacy/A.cs": {
+    "captureGroups": 8,
+    "digest": "57ff887da3157871ba8c549c5fa80a31dd72039da9841a4057ca1a5b9cc9a196"
+  },
+  "csharp-same-namespace-base-collision/Legacy/B.cs": {
+    "captureGroups": 6,
+    "digest": "b20bc3cd08070a4242d3530e8fc6e55e5bf003989c56ac96f78c43cf9cdd6193"
+  },
   "csharp-self-this-resolution/src/Models/Repo.cs": {
     "captureGroups": 8,
     "digest": "bc3ded7bee753993b7bb10a33f3fe4e4499cca0489fcfd58d8f80c811375a4a9"

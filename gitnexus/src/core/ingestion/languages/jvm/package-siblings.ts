@@ -1,7 +1,10 @@
-import type { BindingRef, ParsedFile, ScopeId, TypeRef } from 'gitnexus-shared';
+import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import { logger } from '../../../logger.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { isClassLike } from '../../scope-resolution/scope/walkers.js';
+import {
+  isClassLike,
+  resolveSameNamespaceInheritanceBase,
+} from '../../scope-resolution/scope/walkers.js';
 import type { JvmPackageFact } from './package-facts.js';
 
 /** Packages larger than this get no implicit sibling visibility at all — every
@@ -32,6 +35,14 @@ export interface JvmPackageSiblingVisibility {
     },
   ) => void;
   readonly isVisibilityIncomplete: (filePath: string) => boolean;
+  /** `ScopeResolver.resolveImplicitInheritanceBase`: an unqualified base bound
+   *  by the same-package rule, which the sibling bindings above only provide
+   *  after the inheritance pre-pass has run. */
+  readonly resolveImplicitInheritanceBase: (
+    baseName: string,
+    derivingClass: SymbolDefinition,
+    scopes: ScopeResolutionIndexes,
+  ) => SymbolDefinition | undefined;
 }
 
 interface PackageBucket {
@@ -225,9 +236,19 @@ export function createJvmPackageSiblingVisibility(
     }
   }
 
+  // A file whose package is unknown matches nothing, so it can neither claim a
+  // base nor be offered one. Top-level types only: `qualifiedNames` keys a
+  // nested type by its dotted `Outer.Inner` path, never by the bare name.
+  const packageOf = (def: SymbolDefinition): string | undefined => {
+    const fact = options.getPackageFact(def.filePath);
+    return fact?.status === 'known' ? fact.packageName : undefined;
+  };
+
   return {
     populateNamespaceSiblings,
     isVisibilityIncomplete: (filePath) => incompleteFiles.has(filePath),
+    resolveImplicitInheritanceBase: (baseName, derivingClass, scopes) =>
+      resolveSameNamespaceInheritanceBase(baseName, derivingClass, scopes, packageOf),
   };
 }
 

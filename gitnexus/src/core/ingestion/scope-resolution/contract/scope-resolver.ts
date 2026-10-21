@@ -1634,6 +1634,28 @@ export interface ScopeResolver {
   ) => void;
 
   /**
+   * Optional fallback for an UNQUALIFIED inheritance base that the shared
+   * chain (`resolveInheritanceBaseInScope`) could not bind. Consulted only by
+   * the inheritance pre-pass, which runs before `populateNamespaceSiblings`:
+   * a base visible solely through that implicit rule (`class C extends B`,
+   * `B` declared in another file of the same namespace) otherwise reaches only
+   * the workspace-unique simple-name fallback, which any other namespace
+   * declaring a `B` defeats — no inheritance edge, so an empty MRO.
+   *
+   * The pre-pass skips the hook when the chain bound a base, when the base is
+   * written qualified, or when the site holds an explicit name claim (an
+   * import that shadows the implicit rule), so it can add an edge but never
+   * retarget one. Answer with `resolveSameNamespaceInheritanceBase`
+   * (`scope/walkers.ts`) given the provider's namespace fact, or `undefined`
+   * to decline.
+   */
+  readonly resolveImplicitInheritanceBase?: (
+    baseName: string,
+    derivingClass: SymbolDefinition,
+    scopes: ScopeResolutionIndexes,
+  ) => SymbolDefinition | undefined;
+
+  /**
    * Whether the compound-receiver resolver should walk up from a
    * class scope to ancestor (Module) scopes when looking up a
    * method's return-type typeBinding. Default `false`.
