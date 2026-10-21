@@ -1,5 +1,24 @@
 # Receiver-resolution baseline
 
+## Rust module-qualified factory results (#3498 follow-up)
+
+Rust now types `let x = rp::make()`, `modx::make()`, `crate::modx::make()` and
+the inline `rp::make().m()` from `make`'s return annotation, through the new
+`ScopeResolver.resolveQualifiedCallee` hook. A receiver bound to a module
+function with no return annotation (`x = rp::untyped()`) is recorded as dropped
+rather than read as an exact miss.
+
+The count arm moves only by the new `rust-qualified-factory-return` fixture:
+its two untyped sites, `x = rp::untyped(); x.m()` and inline
+`modx::untyped().m()`, are each recorded as a call and a callee-position read
+(+2 calls, +2 reads). Its three typed inline forms resolve, so they record no
+drop. A same-corpus A/B against the parent branch (`739983986`) records no
+other drop change. Outside the new fixture the only edge change is one new
+correct edge, `rust-ambiguous` `main -> models::Handler.handle`
+(`let h = services::create_handler()`). Shape-arm cells are unchanged.
+
+Totals: call drops 152 -> 154, reads 48 -> 50, all kinds 220 -> 224.
+
 ## Namespace factory results and shared-position drops (#3498)
 
 Two changes move this baseline; neither moves an edge. A same-corpus A/B
