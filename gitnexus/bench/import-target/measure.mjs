@@ -675,7 +675,17 @@ function mix(n) {
   return (x ^ (x >>> 16)) >>> 0;
 }
 
-const GO_MODULE = { modulePath: 'example.com/mod' };
+/**
+ * The prefix the go arm's import paths share. Deliberately NOT a go.mod: the arm
+ * hands the resolver no module config, so every import takes the GOPATH suffix
+ * match. Under a go.mod a module-relative import names ONE directory below the
+ * module root, an exact map read; the suffix match is the leg that walks
+ * `PackageDirIndex` buckets once per path segment and merges same-tail
+ * directories — the costs and the #2881 nested-repeat rule the layouts below
+ * are built to reach. The answers are the ones the module leg gave while it
+ * still matched by suffix, so the fingerprints did not move with it.
+ */
+const GO_IMPORT_PREFIX = 'example.com/mod';
 /**
  * The `csharp_csproj` arm's project configs — the whole reason that arm exists.
  *
@@ -1256,7 +1266,7 @@ function buildParsedFiles(lang, files) {
 function uniqueTarget(lang, { local, r, d, j, dirs }) {
   if (lang === 'go') {
     return local
-      ? `${GO_MODULE.modulePath}/src/pkg${d}`
+      ? `${GO_IMPORT_PREFIX}/src/pkg${d}`
       : (r >>> 3) % 2 === 0
         ? ['fmt', 'os', 'net/http', 'encoding/json'][(r >>> 4) % 4]
         : `github.com/org/repo${(r >>> 4) % 97}/pkg/util`;
@@ -1469,10 +1479,10 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
   if (lang === 'go') {
     return local
       ? // The replicated package is addressed by the path it shares, so the
-        // module leg matches every service at once (`dirCount > 1`).
+        // suffix match takes every service at once (`dirCount > 1`).
         d % 5 === 1 && d % 7 !== 0
-        ? `${GO_MODULE.modulePath}/internal/shared`
-        : `${GO_MODULE.modulePath}/svc${d}/internal`
+        ? `${GO_IMPORT_PREFIX}/internal/shared`
+        : `${GO_IMPORT_PREFIX}/svc${d}/internal`
       : (r >>> 3) % 2 === 0
         ? ['fmt', 'os', 'net/http', 'encoding/json'][(r >>> 4) % 4]
         : // Ends in the shared segment, so the GOPATH fallback walks the whole
@@ -1838,7 +1848,7 @@ function resolveAll(lang, files, imports, pad = 0) {
 
 function resolveOne(lang, from, target, pass) {
   const allFilePaths = pass.allFilePaths;
-  if (lang === 'go') return resolveGoImportTarget(target, from, allFilePaths, GO_MODULE);
+  if (lang === 'go') return resolveGoImportTarget(target, from, allFilePaths);
   if (lang === 'dart') return resolveDartImportTarget(target, from, allFilePaths, pass.config);
   if (lang === 'ruby') return resolveRubyImportTarget(target, from, allFilePaths);
   if (lang === 'kotlin') {
@@ -2209,7 +2219,7 @@ const HEAP_PROBE_TARGET = {
   // budgeted ones above, except `dart`: a spelling `uniqueTarget` already mints, and
   // one that MISSES, so the reading is the index and the cascade runs to the
   // end. Chosen from the miss family that reaches furthest into each cascade:
-  //   - `go` names a missing package inside GO_MODULE, which reaches the
+  //   - `go` names a missing package under GO_IMPORT_PREFIX, which reaches the
   //     package-directory lookup and forces `PackageDirIndex`;
   //   - `dart` is a relative miss (`./src/thing.dart`), not a `uniqueTarget`
   //     spelling. No timing arm exercises the relative suffix fallback; this

@@ -1708,6 +1708,46 @@ export interface ScopeResolver {
   readonly stripTypePreservingDecoration?: DecorationStripper;
 
   /**
+   * The QUALIFIED spelling of a declared type whose qualifier capture-time
+   * normalization dropped from `rawName` — `models.User` for a binding written
+   * `*models.User` and stored as `User` — or `undefined` when the written type
+   * names no namespace, or `rawName` still carries it.
+   *
+   * Exists because a bare `rawName` cannot tell two namespaces' same-named
+   * types apart. Its lookup has no qualifier to follow, so a type imported
+   * through a namespace binds only by the workspace-wide unique-name fallback,
+   * which answers only while the name is unique: once a second package declares
+   * a `User`, every receiver typed `models.User` loses its edges, and a package
+   * declaring its own `User` binds `models.User` to THAT one through the scope
+   * chain. The written spelling (`TypeRef.declaredSpelling`) still has the
+   * qualifier; this hook reduces it the way `rawName` was reduced, minus the cut.
+   *
+   * Receiver typing tries the returned spelling FIRST, through the namespace
+   * branch of `findClassBindingInScope` — candidates only from the files the
+   * qualifier's import resolves to, filtered by `isNamespaceMemberVisible` —
+   * with the unique-name fallback switched off for that attempt, so a hit is a
+   * namespace decision and never a name guess. A miss (an unresolved import,
+   * no such type, two of them) is final: the bare `rawName` must not bind a type
+   * from another package. Bare lookup remains available when this hook returns
+   * no qualified spelling.
+   *
+   * The qualifier must name a FILE-level import: it is looked up from the module
+   * scope enclosing `declaredAtScope`, never from `declaredAtScope` itself. That
+   * scope holds the binding, and the binding may carry the qualifier's own name
+   * — `vault *vault.Vault` as a field, parameter or local — which would shadow
+   * the import there. A language whose imports can be block-scoped needs a
+   * different anchor and must not return a spelling this rule would misread.
+   *
+   * The binding itself is deliberately NOT rewritten to keep the qualifier:
+   * `rawName` has many readers, and the compound resolver reads a dotted one as
+   * a `value.member` alias path. Only receiver typing needs the distinction.
+   *
+   * Return a lookup-ready class name (no decoration, no type arguments). Leave
+   * undefined for languages whose `rawName` keeps its qualifier.
+   */
+  readonly qualifiedTypeLookupSpelling?: (typeRef: TypeRef) => string | undefined;
+
+  /**
    * Whether the compound-receiver resolver should strip C-style cast
    * expressions from receiver-position text before resolving it —
    * `((Target)((Object)expr)).method()` peels to receiver `expr` with

@@ -2,9 +2,10 @@
 
 ## Zig receiver gaps from the #3498 drop triage
 
-Four Zig fixes clear 14 `receiver-unresolved` sites: all-kind drops move from
-192 to 178, reads from 44 to 31 and calls from 128 to 127. Writes and every
-shape-arm state are unchanged, and no site was added.
+Measured against main `2b6542737`, the four Zig fixes clear 18
+`receiver-unresolved` sites: all-kind drops move from 200 to 182, reads from
+42 to 27 and calls from 138 to 135. Writes and every shape-arm state are
+unchanged.
 
 - 9 reads of `const X = @import("f.zig").X;` (zig-hub `stdx.zig:2-4`,
   zig-receivers `stdx.zig:2`, zig-idioms `holder.zig:6`, `main.zig:6`,
@@ -16,12 +17,125 @@ shape-arm state are unchanged, and no site was added.
   from the scope that evaluates it.
 - 1 call and its callee-position read at zig-idioms `main.zig:42`
   (`Stack(u8).init()`): the new `isTypeApplicationCall` hook types the receiver
-  as `Stack`. This is the call drop; Zig call drops fall from 11 to 10,
-  `no-chain` from 27 to 26 and `in-program` from 55 to 54.
+  as `Stack`.
 
-The forwarding type constructor fix (`Bridge ↦ Builder`) moves no counted site.
-Its `aliases.zig` rows are not recorded as drops on `main`, and the new `b12`
-fixture case resolves.
+Forwarding type constructors (`Bridge ↦ Builder`) also work through the
+namespace-factory lookup already merged in #3648. The combined result clears
+more sites than the original standalone branch, which cleared 14. The `b12`
+alias control resolves. Zig call drops fall from 13 to 10; `no-chain` call
+drops move from 34 to 31 and `in-program` calls from 60 to 57.
+
+## Go module visibility and qualified receiver refusal
+
+Local imports now select the importer's own module or a module selected by its
+nearest `go.work`. An independent sibling's matching module path is insufficient.
+Qualified receiver types also stop when their import cannot resolve, instead of
+borrowing a same-named type from another package. Local `replace` directives
+remain unmodelled.
+
+Compared with `85329b4de` on the same corpus, exactly two `CALLS` edges disappear:
+`SpinGadget` and `Workshop.SpinGadgetField` in
+`go-qualified-declared-types/services/foreign.go` no longer bind the unrelated
+`gadgets.Gizmo.Spin`. No other `CALLS` or `ACCESSES` edge changes.
+
+The two invalid calls now report drops. `ArchiveForeign`, which already had no
+edge, also reports its refused qualified lookup; the simple calls additionally
+report their read sites. Call drops move from 135 to 138, all-kind drops from
+195 to 200, and `.go` call drops from 1 to 4. Every shape-arm state is unchanged.
+
+## Go modules across several go.mod files
+
+The Go resolver read only the repository-root `go.mod` and matched every other
+import by directory suffix. In this combined corpus several fixtures declare
+packages under the same import path (`internal/repository`,
+`example.com/chaincall/models`), so their imports answered from the wrong
+fixture or from none, and the receivers typed through them dropped. Each
+import now belongs to the module whose path is its longest prefix, and names
+the exact directory under that module's root.
+
+Thirteen Go call drops clear, all `chain-field`/`chain-call` receivers in
+`go-chain-call`, `go-grouped-type-decl`, `go-interface-field-dispatch` and
+`go-pointer-receiver-field-chain`. Call drops move from 148 to 135, all-kind
+drops from 208 to 195, `.go` call drops from 14 to 1, `chain-field` from 70 to
+58, `chain-call` from 32 to 31, and `in-program` from 72 to 59. No drop was
+added, and every shape-arm state is unchanged. Against main (`ab0b03846`) on
+the same corpus, no `CALLS` or `ACCESSES` edge disappears or changes target,
+and 70 are added outside the two new fixtures.
+
+## Go package-qualified declared types
+
+Go capture strips the package qualifier from field, parameter and local types,
+so `*models.User` is stored as `User`. The receiver lookup then saw only the bare
+name, and it resolves a bare name only while that name is unique in the
+workspace. In this combined corpus, `User` is declared in 29 Go files and
+`UserService` in 2. So every Go receiver chain rooted at a qualified parameter
+(`models.User`, `*models.User`, `*models.UserService`) dropped, even though each
+fixture resolves on its own and its standalone test passes. Receiver typing now
+tries the qualified spelling first, grounded on the qualifier's import. If that
+misses, it falls back to the bare name as before. A chain step keeps the
+binding's own written spelling, and the qualified spelling must name `rawName`
+itself, so a binding whose type a chain step replaced never borrows another
+binding's package.
+
+Thirteen Go drops clear: 5 calls and 8 reads in `go-deep-field-chain`,
+`go-field-types` and `go-mixed-chain`. Call drops move from 153 to 148,
+all-kind drops from 221 to 208, and reads from 48 to 40. `.go` call drops fall
+from 19 to 14, `chain-field` from 73 to 70, `chain-mixed` from 2 to 0, and
+`in-program` from 77 to 72. No drop was added, and every shape-arm state is
+unchanged. The remaining Go chain-field drops come from packages that several
+fixtures declare under the same import path, which nested `go.mod` resolution
+addresses separately.
+
+The new `go-qualified-declared-types` fixture records no drops. Compared with
+main (`278863068`) on the same corpus, no `CALLS` or `ACCESSES` edge disappears
+or changes target, with one exception inside the new fixture: main binds its
+`Forward` to `api.User.Archive`, which is that row's bug. Outside the new
+fixture, 19 edges are added. Thirteen belong to the chains cleared above. The
+other six come from receivers that never recorded a drop:
+
+- five simple `user.Save()` and `repo.Save()` receivers built as `models.X{}`
+  or declared `var x models.X`, in `go-constructor-type-inference`,
+  `go-member-calls` and `go-receiver-resolution`;
+- the field chain `s.cartRepo.Get()` in `go-interface-field-dispatch`.
+
+## Namespace factory results and shared-position drops (#3498)
+
+Two changes move this baseline; neither moves an edge outside the new
+fixtures. A same-corpus A/B against `origin/main` (`7090ac80f`, 2,838 `CALLS`
+and `ACCESSES` edges) emits the identical edges on both sides; the full
+corpus with this PR's fixtures is 2,871.
+
+- **Namespace factory results.** `x = ns.make()` and inline `ns.make().m()`
+  now take `make`'s return annotation, as a named import of `make` already
+  did. The annotation must belong to the module's own `make` function (a
+  method of the same name never qualifies), the namespace must bind that
+  module (`import pkg.sub` binds `pkg`, not `pkg/sub.py`), and a dotted
+  annotation (`-> models.Order`) is not followed further; each of those
+  fails closed. A receiver bound to a namespace function with no usable
+  return type (`x = ns.untyped()`) is recorded as dropped rather than read
+  as an exact miss. The new `python-module-factory-return` fixture adds four
+  call drops: `x = rp.untyped()`, inline `rp.untyped().m()`, `x = untyped()`,
+  and `rp.make()` on a local `rp = Other()` that shadows the module alias.
+  The Zig `bridge.prototypeChain()` and `bridge.accessor("value")` namespace
+  calls in `zig-filestruct` are recorded as both a call and a read: +2
+  calls, +2 reads. Dart (`final x = rp.make()`) binds the dotted callee so
+  the same lookup applies; its fixture's untyped and awaited (`Future<C>`,
+  not unwrapped yet) factories add two call drops. Zig resolves the inline
+  form only: a file that imports a module cannot tell a namespace from a
+  file-struct, so `const x = rp.make()` keeps main's binding.
+- **Shared start positions.** Sites are keyed by `file:line:col`, and an outer
+  call starts where its inner receiver does (`s.orderRepo.DeleteItem(id)`
+  starts at `s.orderRepo`). A resolved inner site used to hide the outer
+  site's drop. Now only a duplicate capture of the same site (same receiver
+  and member, which also covers a call's own callee read) hides one. This
+  adds 18 call drops (Go 14, TypeScript 1, Rust 1, JavaScript 1) and 2
+  TypeScript reads. Each was checked against the corpus graph: none has a
+  `CALLS` edge to that member from its enclosing function. The Go sites
+  resolve when their fixture is analyzed alone, and are unresolved only in
+  the combined corpus, where several fixtures declare the same packages. The
+  same fix turns ten shape-arm cells from `INVISIBLE-GAP` to `VISIBLE-GAP`.
+
+Totals: call drops 128 -> 153, reads 44 -> 48, all kinds 192 -> 221.
 
 ## Express inline-handler fixture (#3488)
 

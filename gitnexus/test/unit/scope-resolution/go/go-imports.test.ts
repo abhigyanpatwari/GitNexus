@@ -7,6 +7,7 @@ import {
 import { getGoParser } from '../../../../src/core/ingestion/languages/go/query.js';
 import type { CaptureMatch } from 'gitnexus-shared';
 import { resolveGoImportBinding } from '../../../../src/core/ingestion/languages/go/import-binding.js';
+import type { GoWorkspaceConfig } from '../../../../src/core/ingestion/languages/go/workspace-config.js';
 
 function parseThenSplit(src: string): CaptureMatch[] {
   const tree = getGoParser().parse(src);
@@ -162,13 +163,18 @@ describe('Go import binding names', () => {
   });
 });
 
+/** The config a repository whose only go.mod sits at its root captures. */
+function rootModule(modulePath: string): GoWorkspaceConfig {
+  return { modules: [{ modulePath, dir: '' }], workFiles: [] };
+}
+
 describe('Go import target resolution', () => {
   it('resolves module root imports to root package files', () => {
     const result = resolveGoImportTarget(
       'example.com/lib',
       'cmd/app/main.go',
       new Set(['root.go', 'extra.go', 'internal/model/model.go', 'root_test.go']),
-      { modulePath: 'example.com/lib' },
+      rootModule('example.com/lib'),
     );
 
     expect(result).toEqual(['extra.go', 'root.go']);
@@ -179,7 +185,7 @@ describe('Go import target resolution', () => {
       'example.com/lib/internal/models',
       'cmd/app/main.go',
       new Set(['internal/models/user.go', 'internal/models/repo.go', 'root.go']),
-      { modulePath: 'example.com/lib' },
+      rootModule('example.com/lib'),
     );
 
     expect(Array.isArray(result)).toBe(true);
@@ -196,7 +202,7 @@ describe('Go import target resolution', () => {
         targetRaw,
         'main.go',
         new Set(['internal/models/user.go', 'main.go']),
-        { modulePath: 'example.com/mod' },
+        rootModule('example.com/mod'),
       );
 
       expect(result).toBeNull();
@@ -208,7 +214,7 @@ describe('Go import target resolution', () => {
       'example.com/mod/v2/internal/models',
       'cmd/app/main.go',
       new Set(['internal/models/user.go']),
-      { modulePath: 'example.com/mod/v2' },
+      rootModule('example.com/mod/v2'),
     );
 
     expect(result).toEqual(['internal/models/user.go']);
@@ -238,5 +244,129 @@ describe('Go import target resolution', () => {
 
     expect(Array.isArray(result)).toBe(true);
     expect(result as string[]).toEqual(['team/pkg/util.go']);
+  });
+});
+
+describe('Go import target resolution across several go.mod files', () => {
+  /** No root module; neither service directory is named after its module. */
+  const SERVICES: GoWorkspaceConfig = {
+    modules: [
+      { modulePath: 'github.com/acme/billing', dir: 'billing-service' },
+      { modulePath: 'github.com/acme/orders', dir: 'orders-service' },
+    ],
+    workFiles: [],
+  };
+  /** A root module and a nested one whose tree it must not include. */
+  const ROOT_AND_TOOLS: GoWorkspaceConfig = {
+    modules: [
+      { modulePath: 'example.com/app', dir: '' },
+      { modulePath: 'example.com/tools', dir: 'tools' },
+    ],
+    workFiles: [],
+  };
+  const SERVICE_FILES = [
+    'orders-service/internal/repository/store.go',
+    'orders-service/cmd/main.go',
+    'billing-service/internal/repository/store.go',
+    'scripts/internal/repository/legacy.go',
+  ];
+  const ROOT_FILES = [
+    'main.go',
+    'internal/models/user.go',
+    'tools/internal/models/gen.go',
+    'tools/main.go',
+  ];
+
+  it.each<[string, GoWorkspaceConfig, readonly string[], string, string, string[] | null]>([
+    [
+      "the owning module's directory, not every directory with that tail",
+      SERVICES,
+      SERVICE_FILES,
+      'github.com/acme/orders/internal/repository',
+      'orders-service/cmd/main.go',
+      ['orders-service/internal/repository/store.go'],
+    ],
+    [
+      'nothing for an unselected sibling module',
+      SERVICES,
+      SERVICE_FILES,
+      'github.com/acme/billing/internal/repository',
+      'orders-service/cmd/main.go',
+      null,
+    ],
+    [
+      "a selected workspace module's public package",
+      { ...SERVICES, workFiles: [{ dir: '', use: ['orders-service', 'billing-service'] }] },
+      ['billing-service/pkg/repository/store.go', 'orders-service/cmd/main.go'],
+      'github.com/acme/billing/pkg/repository',
+      'orders-service/cmd/main.go',
+      ['billing-service/pkg/repository/store.go'],
+    ],
+    [
+      'nothing for a dependency that shares the tail',
+      SERVICES,
+      SERVICE_FILES,
+      'github.com/vendor/dep/internal/repository',
+      'orders-service/cmd/main.go',
+      null,
+    ],
+    [
+      'the GOPATH match for an importer outside every module',
+      SERVICES,
+      SERVICE_FILES,
+      'github.com/vendor/scripts/internal/repository',
+      'scripts/main.go',
+      ['scripts/internal/repository/legacy.go'],
+    ],
+    [
+      "the root module's own directory only",
+      ROOT_AND_TOOLS,
+      ROOT_FILES,
+      'example.com/app/internal/models',
+      'main.go',
+      ['internal/models/user.go'],
+    ],
+    [
+      "nothing inside the nested module for the root module's path",
+      ROOT_AND_TOOLS,
+      ROOT_FILES,
+      'example.com/app/tools/internal/models',
+      'main.go',
+      null,
+    ],
+    [
+      "a selected nested module's root package",
+      { ...ROOT_AND_TOOLS, workFiles: [{ dir: '', use: ['', 'tools'] }] },
+      ROOT_FILES,
+      'example.com/tools',
+      'main.go',
+      ['tools/main.go'],
+    ],
+  ])('resolves to %s', (_case, config, files, targetRaw, fromFile, expected) => {
+    expect(resolveGoImportTarget(targetRaw, fromFile, new Set(files), config)).toEqual(expected);
+  });
+
+  it.each<[string, string[], string[] | null]>([
+    ['the shorter module alone', ['parent/b/pkg/item.go'], ['parent/b/pkg/item.go']],
+    ['the longer module alone', ['child/pkg/item.go'], ['child/pkg/item.go']],
+    ['both modules', ['parent/b/pkg/item.go', 'child/pkg/item.go'], null],
+    ['neither module', [], null],
+  ])('requires a unique provider with the package in %s', (_case, files, expected) => {
+    const config: GoWorkspaceConfig = {
+      modules: [
+        { modulePath: 'example.com/a', dir: 'parent' },
+        { modulePath: 'example.com/a/b', dir: 'child' },
+      ],
+      workFiles: [{ dir: '', use: ['parent', 'child'] }],
+    };
+
+    expect(
+      resolveGoImportTarget(
+        'example.com/a/b/pkg',
+        'parent/main.go',
+        new Set(['parent/main.go', ...files]),
+        config,
+      ),
+    ).toEqual(expected);
   });
 });
