@@ -10,6 +10,10 @@ int param_ns_ptr(rp::C* x) { return x->m(); }
 int param_template(rp::Box<int> b) { return b.m(); }
 int bare_global() { C x; return x.m(); }
 
+// Qualified declarations with no initializer.
+int declared_ns() { rp::C x; return x.m(); }
+int declared_ns_ptr() { rp::C* x = nullptr; return x->m(); }
+
 // Qualified brace-init and member field.
 int brace_ns() { auto x = rp::C{}; return x.m(); }
 

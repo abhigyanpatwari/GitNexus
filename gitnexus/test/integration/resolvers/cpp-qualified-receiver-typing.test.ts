@@ -48,6 +48,13 @@ describe('C++ qualified receiver typing', () => {
   });
 
   it.each<[string, string[]]>([
+    ['declared_ns', [RP_C]],
+    ['declared_ns_ptr', [RP_C]],
+  ])('qualified declaration without initializer: %s -> %j', (caller, expected) => {
+    expect(memberTargets(caller)).toEqual(expected);
+  });
+
+  it.each<[string, string[]]>([
     ['brace_ns', [RP_C]],
     ['brace_qualified', ['a.h:Config.m']],
     ['field_qualified', ['a.h:Config.m']],

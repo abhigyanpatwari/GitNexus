@@ -383,10 +383,28 @@ const CPP_SCOPE_QUERY = `
   type: (template_type) @type-binding.type
   declarator: (identifier) @type-binding.name) @type-binding.annotation
 
+;; Covers: rp::C x; std::vector<User> users;
+;; A QUALIFIED type is a qualified_identifier wrapping the type_identifier or
+;; template_type, so the two rules above never matched it and rp::C x; bound
+;; nothing — the receiver of x.m() was untyped. Matched on the OUTER node, one
+;; pattern per declarator shape like the qualified field rules below (depth- and
+;; genericity-agnostic, no alternation). The spelling is kept as written and
+;; resolved by the qualifier-aware route (resolveQualifiedTypeSpellings).
+(declaration
+  type: (qualified_identifier) @type-binding.type
+  declarator: (identifier) @type-binding.name) @type-binding.annotation
+
 ;; ─── Type bindings — pointer variable declaration ───────────────────
 ;; Covers: User* ptr = new User()
 (declaration
   type: (type_identifier) @type-binding.type
+  declarator: (init_declarator
+    declarator: (pointer_declarator
+      declarator: (identifier) @type-binding.name))) @type-binding.annotation
+
+;; Covers: rp::C* ptr = nullptr; (the qualified twin of the rule above)
+(declaration
+  type: (qualified_identifier) @type-binding.type
   declarator: (init_declarator
     declarator: (pointer_declarator
       declarator: (identifier) @type-binding.name))) @type-binding.annotation
