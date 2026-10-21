@@ -184,7 +184,7 @@ interface ResolveCompoundReceiverOptions {
    *  this is opt-in rather than global. */
   readonly stripTypePreservingDecoration?: DecorationStripper;
   /** `ScopeResolver.qualifiedTypeLookupSpelling`, tried before `rawName` by
-   *  every declared-type lookup in this file (see {@link classOfDeclaredType}).
+   *  every {@link classOfDeclaredType} caller (member, head and fold lookups).
    *  Absent ⇒ `rawName` alone, exactly as before. */
   readonly qualifiedTypeLookupSpelling?: ScopeResolver['qualifiedTypeLookupSpelling'];
 }

@@ -14,6 +14,7 @@ import type {
   ParsedFile,
   ScopeId,
   SymbolDefinition,
+  TypeRef,
 } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -32,6 +33,8 @@ import {
 } from '../scope/walkers.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
 import { narrowOverloadCandidates } from './overload-narrowing.js';
+import { classOfQualifiedTypeSpelling } from './compound-receiver.js';
+import type { ScopeResolver } from '../contract/scope-resolver.js';
 
 /**
  * Per-site dispatch-target cap. Above it the site is treated as overflowed and
@@ -90,6 +93,10 @@ export interface EmitCallableValueFlowInput {
   readonly deferredIndirectSites?: ReadonlySet<string>;
   /** When set, skip a second `referenceSites` signature walk. */
   readonly callSignaturesBySite?: ReadonlyMap<string, CallableFlowExpectedSignature>;
+  /** `ScopeResolver.qualifiedTypeLookupSpelling` and its visibility filter, so a
+   *  bound member (`f := p.Save`) types `p` the way receiver-bound calls do. */
+  readonly qualifiedTypeLookupSpelling?: ScopeResolver['qualifiedTypeLookupSpelling'];
+  readonly isNamespaceMemberVisible?: ScopeResolver['isNamespaceMemberVisible'];
 }
 
 export interface DeferredIndirectCollection {
@@ -231,7 +238,10 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   );
   const uniqueGraphTargets = dedupeTargets([...graphTargets.values()]);
   const globalBySimpleName = buildGlobalCallableIndex(uniqueGraphTargets);
-  const targetIndexes = buildCallableTargetIndexes(uniqueGraphTargets, input.scopes);
+  const targetIndexes: CallableTargetIndexes = {
+    ...buildCallableTargetIndexes(uniqueGraphTargets, input.scopes),
+    classOfQualifiedReceiver: qualifiedReceiverLookup(input),
+  };
 
   const bindingKey = (filePath: string, operand: CallableFlowOperand): string =>
     canonicalBindingKey(filePath, operand, input.scopes);
@@ -1122,6 +1132,9 @@ interface CallableTargetIndexes {
   readonly byQualifiedName: ReadonlyMap<string, readonly Target[]>;
   readonly byOwnerAndName: ReadonlyMap<string, readonly Target[]>;
   readonly byFileAndName: ReadonlyMap<string, readonly Target[]>;
+  /** The class a receiver's QUALIFIED declared type names, when the provider
+   *  recovers one (see `classOfQualifiedTypeSpelling`); absent otherwise. */
+  readonly classOfQualifiedReceiver?: (typeRef: TypeRef) => SymbolDefinition | undefined;
 }
 
 function buildCallableTargetIndexes(
@@ -1282,8 +1295,11 @@ function resolveBoundMemberCandidates(
     indirection: 0,
     addressOf: false,
   };
-  const typeRef = receiverType(receiverOperand, scopes) ?? receiverName;
-  const receiverClass = resolveInheritanceBaseInScope(inScope, typeRef, scopes);
+  const typeRef = receiverType(receiverOperand, scopes);
+  const receiverClass =
+    typeRef === undefined
+      ? resolveInheritanceBaseInScope(inScope, receiverName, scopes)
+      : classOfReceiverType(typeRef, inScope, scopes, targetIndexes);
   if (receiverClass === undefined) return [];
   const owners = [receiverClass.nodeId, ...scopes.methodDispatch.mroFor(receiverClass.nodeId)];
   const out: Target[] = [];
@@ -1548,10 +1564,11 @@ function expandMemberTargets(
   }
   const typeRef = receiverType(invoke.site.receiver, scopes);
   if (typeRef === undefined) return new Map(targets);
-  const receiverClass = resolveInheritanceBaseInScope(
-    invoke.site.receiver.inScope,
+  const receiverClass = classOfReceiverType(
     typeRef,
+    invoke.site.receiver.inScope,
     scopes,
+    targetIndexes,
   );
   if (receiverClass === undefined) return new Map(targets);
   const ownerChain = [receiverClass.nodeId, ...scopes.methodDispatch.mroFor(receiverClass.nodeId)];
@@ -1588,11 +1605,45 @@ function expandMemberTargets(
 function receiverType(
   operand: CallableFlowOperand,
   scopes: ScopeResolutionIndexes,
-): string | undefined {
+): TypeRef | undefined {
   return findReceiverTypeBinding(operand.inScope, operand.name, scopes, {
     position: operand.atRange.startLine > 0 ? operand.atRange : undefined,
     purpose: 'value',
-  })?.rawName;
+  });
+}
+
+/** The class a receiver's declared type names: its qualified spelling first,
+ *  as receiver-bound calls ask it, then the bare `rawName` exactly as before. */
+function classOfReceiverType(
+  typeRef: TypeRef,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  targetIndexes: CallableTargetIndexes,
+): SymbolDefinition | undefined {
+  return (
+    targetIndexes.classOfQualifiedReceiver?.(typeRef) ??
+    resolveInheritanceBaseInScope(inScope, typeRef.rawName, scopes)
+  );
+}
+
+function qualifiedReceiverLookup(
+  input: EmitCallableValueFlowInput,
+): CallableTargetIndexes['classOfQualifiedReceiver'] {
+  const spelling = input.qualifiedTypeLookupSpelling;
+  if (spelling === undefined) return undefined;
+  const memberVisible = input.isNamespaceMemberVisible;
+  const namespaceMemberVisible =
+    memberVisible === undefined
+      ? undefined
+      : (member: SymbolDefinition): boolean => memberVisible({ member });
+  return (typeRef) =>
+    classOfQualifiedTypeSpelling(
+      typeRef,
+      input.scopes,
+      spelling,
+      { position: typeRef.lookupPosition, purpose: typeRef.lookupPurpose ?? 'type' },
+      namespaceMemberVisible,
+    );
 }
 
 function targetForDef(

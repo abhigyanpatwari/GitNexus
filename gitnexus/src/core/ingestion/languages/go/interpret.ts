@@ -168,8 +168,15 @@ export function goQualifiedTypeLookupSpelling(typeRef: TypeRef): string | undefi
   if (written === undefined || !written.includes('.') || typeRef.rawName.includes('.')) {
     return undefined;
   }
-  const qualified = normalizeGoReturnType(written);
-  return GO_QUALIFIED_TYPE_NAME_RE.test(qualified) ? qualified : undefined;
+  // `func() *models.User` leaves `*models.User` after the return is unwrapped.
+  const qualified = stripGoOuterTypePrefixes(normalizeGoReturnType(written));
+  // The spelling must name `rawName` itself, only qualified: that is the cut
+  // `normalizeGoTypeName` made. A binding whose type a chain step replaced
+  // (`u *models.User` landing on a package-level `User *auth.Principal`) keeps
+  // its own spelling but not its own `rawName`, and must not borrow either.
+  return GO_QUALIFIED_TYPE_NAME_RE.test(qualified) && qualified.endsWith(`.${typeRef.rawName}`)
+    ? qualified
+    : undefined;
 }
 
 function stripGoOuterTypePrefixes(text: string): string {

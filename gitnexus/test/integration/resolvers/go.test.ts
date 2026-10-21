@@ -2366,3 +2366,143 @@ describe('Go package-qualified field and parameter types', () => {
     expect(targetsOf(caller)).toEqual(expected);
   });
 });
+
+// #3498 review: a declared type's chain step must not hand the qualified lookup
+// another binding's spelling. `member models.User` normalizes to `User`, and the
+// extractor's chain-follow can land on a sibling field or a package-level
+// field named `User`; the binding keeps its own spelling, so it still means
+// `models.User` or, when the replaced type no longer matches, resolves nothing.
+// A method value (`f := p.Save`) types `p` through the same qualified lookup.
+describe('Go qualified declared types through chain steps and method values (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-go-qualified-chain-'));
+    writeFixtureRepo(repoDir, {
+      'go.mod': 'module example.com/chain\n\ngo 1.21\n',
+      'models/user.go': `package models
+
+type User struct{}
+
+func (u *User) Archive() {}
+
+func (u *User) Save() {}
+`,
+      'api/user.go': `package api
+
+type User struct{}
+
+func (u *User) Archive() {}
+`,
+      'api/principal.go': `package api
+
+type Principal struct{}
+
+func (p *Principal) Archive() {}
+`,
+      'auth/principal.go': `package auth
+
+type Principal struct{}
+
+func (p *Principal) Archive() {}
+`,
+      'services/archiver.go': `package services
+
+import (
+\t"example.com/chain/api"
+\t"example.com/chain/models"
+)
+
+type Archiver struct {
+\tUser   api.User
+\tmember models.User
+}
+
+func (a *Archiver) ArchiveMember() {
+\ta.member.Archive()
+}
+
+func (a *Archiver) ArchiveUser() {
+\ta.User.Archive()
+}
+
+func ArchiveParam(User api.User, member models.User) {
+\tmember.Archive()
+}
+`,
+      'held/session.go': `package held
+
+import "example.com/chain/auth"
+
+type Session struct {
+\tUser *auth.Principal
+}
+`,
+      'held/holder.go': `package held
+
+import "example.com/chain/models"
+
+type Holder struct {
+\towner *models.User
+}
+
+func (h *Holder) ArchiveHeld() {
+\th.owner.Archive()
+}
+`,
+      'values/local.go': `package values
+
+type User struct{}
+
+func (u *User) Save() {}
+`,
+      'values/values.go': `package values
+
+import "example.com/chain/models"
+
+func MethodValue(p *models.User) {
+\tf := p.Save
+\tf()
+}
+
+func Callback(p *models.User) {
+\trun(p.Save)
+}
+
+func run(f func()) {
+\tf()
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    {
+      source: 'ArchiveMember',
+      member: 'Archive',
+      targets: ['Method:models/user.go:User.Archive#0'],
+    },
+    {
+      source: 'ArchiveParam',
+      member: 'Archive',
+      targets: ['Method:models/user.go:User.Archive#0'],
+    },
+    { source: 'ArchiveUser', member: 'Archive', targets: ['Method:api/user.go:User.Archive#0'] },
+    { source: 'ArchiveHeld', member: 'Archive', targets: [] },
+    { source: 'MethodValue', member: 'Save', targets: ['Method:models/user.go:User.Save#0'] },
+    { source: 'run', member: 'Save', targets: ['Method:models/user.go:User.Save#0'] },
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId)
+        .sort(),
+    ).toEqual(targets);
+  });
+});

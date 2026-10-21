@@ -306,9 +306,13 @@ describe('goQualifiedTypeLookupSpelling', () => {
     ['[]*models.User', 'models.User'],
     ['map[string]*models.User', 'models.User'],
     ['chan models.User', 'models.User'],
+    ['func() *models.User', 'models.User'],
+    ['models.Box[int]', 'models.Box'],
+    ['[4]models.User', 'models.User'],
     ['*User', undefined],
     ['[]User', undefined],
     ['interface{ Save() }', undefined],
+    ['a.b.User', undefined],
   ])('recovers the qualified name written as %s', (written, expected) => {
     expect(goQualifiedTypeLookupSpelling(writtenAs(written))).toBe(expected);
   });
@@ -328,6 +332,17 @@ describe('goQualifiedTypeLookupSpelling', () => {
     [
       'no written spelling',
       { rawName: 'User', declaredAtScope: 'scope:test', source: 'parameter-annotation' },
+    ],
+    // A chain step replaced the type (`u *models.User` landed on a package-level
+    // `User *auth.Principal`) but kept the binding's own spelling.
+    [
+      'a spelling that does not qualify rawName',
+      {
+        rawName: 'Principal',
+        declaredSpelling: '*models.User',
+        declaredAtScope: 'scope:test',
+        source: 'parameter-annotation',
+      },
     ],
   ])('declines %s', (_label, typeRef) => {
     expect(goQualifiedTypeLookupSpelling(typeRef)).toBeUndefined();
