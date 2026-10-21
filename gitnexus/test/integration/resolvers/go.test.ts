@@ -1,10 +1,11 @@
 /**
  * Go: package imports + cross-package calls + ambiguous struct disambiguation
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { goScopeResolver } from '../../../src/core/ingestion/languages/go/scope-resolver.js';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -2352,16 +2353,11 @@ describe('Go package-qualified field and parameter types', () => {
     expect(targetsOf(caller)).toEqual(expected);
   });
 
-  // The qualified spelling is tried FIRST, not instead: when its import names
-  // no file in the workspace, the bare-name lookup still answers — and still
-  // refuses when the bare name is ambiguous. The field rows are the ones that
-  // need the declared-type lookup's own fallback; a parameter also has the
-  // simple-typeBinding case's unique-name fallback behind it.
   it.each([
     ['refuses a bare name two packages declare', 'ArchiveForeign', []],
     ['refuses a bare name two packages declare', 'ArchiveForeignField', []],
-    ['keeps the unique-name fallback', 'SpinGadget', ['Spin@gadgets/gizmo.go']],
-    ['keeps the unique-name fallback', 'SpinGadgetField', ['Spin@gadgets/gizmo.go']],
+    ['refuses a workspace-unique bare name', 'SpinGadget', []],
+    ['refuses a workspace-unique bare name', 'SpinGadgetField', []],
   ])('behind an unresolved import, %s (%s)', (_behaviour, caller, expected) => {
     expect(targetsOf(caller)).toEqual(expected);
   });
@@ -2505,4 +2501,186 @@ func run(f func()) {
         .sort(),
     ).toEqual(targets);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Several go.mod files in one repository: each import is owned by the module
+// whose path is its longest prefix, and names the exact directory under that
+// module's root.
+// ---------------------------------------------------------------------------
+
+/** Every IMPORTS edge as `from → to`, repo-relative file paths. */
+const importEdgesOf = (result: PipelineResult): string[] =>
+  getRelationships(result, 'IMPORTS')
+    .map((e) => `${e.sourceFilePath} → ${e.targetFilePath}`)
+    .sort();
+
+/** Every CALLS target of `caller`, with the file it is declared in. Exact
+ *  lists, so a call bound to the other module's same-named type fails the row
+ *  a missing call does. */
+const callTargetsOf = (result: PipelineResult, caller: string): string[] =>
+  getRelationships(result, 'CALLS')
+    .filter((e) => e.source === caller)
+    .map((e) => `${e.target}@${e.targetFilePath}`)
+    .sort();
+
+describe('Go modules whose directories differ from their module paths', () => {
+  let result: PipelineResult;
+  let captureCount = 0;
+  let reloadCount = 0;
+
+  beforeAll(async () => {
+    const capture = vi.spyOn(goScopeResolver, 'captureResolutionConfig');
+    const reload = vi.spyOn(goScopeResolver, 'loadResolutionConfig');
+    try {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'go-multi-module-workspace'),
+        () => {},
+      );
+      captureCount = capture.mock.calls.length;
+      reloadCount = reload.mock.calls.length;
+    } finally {
+      capture.mockRestore();
+      reload.mockRestore();
+    }
+  }, 60000);
+
+  // The manifests come from the scan's own path list: no second directory walk.
+  it('captures the go.mod files once and never reloads them', () => {
+    expect(captureCount).toBe(1);
+    expect(reloadCount).toBe(0);
+  });
+
+  // No root go.mod. `orders-service/` and `billing-service/` both hold an
+  // `internal/repository`, and neither directory is named after its module, so
+  // the GOPATH suffix match reached `internal/repository` and returned both
+  // packages for either import. `tools/codegen/` declares
+  // `example.com/generator/v2`: no tail of that path names a directory at all.
+  it('resolves every import to a package of the importing module only', () => {
+    expect(importEdgesOf(result)).toEqual([
+      'billing-service/cmd/billing/main.go → billing-service/internal/repository/ledger.go',
+      'orders-service/cmd/orders/main.go → orders-service/internal/repository/ledger.go',
+      'tools/codegen/cmd/gen/main.go → tools/codegen/models/template.go',
+    ]);
+  });
+
+  it.each([
+    [
+      'PlaceOrder',
+      [
+        'ReserveStock@orders-service/internal/repository/ledger.go',
+        'Save@orders-service/internal/repository/ledger.go',
+      ],
+    ],
+    [
+      'ChargeOrder',
+      [
+        'ChargeCard@billing-service/internal/repository/ledger.go',
+        'Save@billing-service/internal/repository/ledger.go',
+      ],
+    ],
+    ['Generate', ['Render@tools/codegen/models/template.go']],
+  ])('binds the calls in %s to types of the importing module', (caller, expected) => {
+    expect(callTargetsOf(result, caller)).toEqual(expected);
+  });
+});
+
+describe('Go root module with a nested module', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-root-with-nested-module'), () => {});
+  }, 60000);
+
+  // `services/billing/go.mod` declares `github.com/acme/ledger`. Reading only
+  // the root go.mod dropped every import of that module (not owned by
+  // `example.com/platform`), and matched the root's own `internal/repository`
+  // against ANY directory ending in it — the nested module's included, though
+  // its go.mod removes that tree from the root module. `pkg/clock` exists only
+  // in the root module: the control that resolved either way.
+  it('anchors each import at its own module root', () => {
+    expect(importEdgesOf(result)).toEqual([
+      'cmd/server/main.go → internal/repository/ledger.go',
+      'cmd/server/main.go → pkg/clock/clock.go',
+      'services/billing/cmd/billing/main.go → services/billing/internal/repository/ledger.go',
+    ]);
+  });
+
+  it.each([
+    ['Serve', ['Save@internal/repository/ledger.go', 'Tick@pkg/clock/clock.go']],
+    ['Bill', ['Save@services/billing/internal/repository/ledger.go']],
+  ])('binds the calls in %s to types of the importing module', (caller, expected) => {
+    expect(callTargetsOf(result, caller)).toEqual(expected);
+  });
+});
+
+describe.each<[string, Record<string, string>, string[], string[]]>([
+  ['independent sibling modules', {}, [], []],
+  [
+    'selected workspace modules',
+    { 'go.work': 'go 1.21\nuse (\n./orders\n./billing\n)\n' },
+    ['orders/main.go → billing/repository/ledger.go'],
+    ['Save@billing/repository/ledger.go'],
+  ],
+  ['workspace excludes the importing module', { 'go.work': 'go 1.21\nuse ./billing\n' }, [], []],
+  [
+    'nearest workspace excludes the sibling',
+    {
+      'go.work': 'go 1.21\nuse (\n./orders\n./billing\n)\n',
+      'orders/go.work': 'go 1.21\nuse .\n',
+    },
+    [],
+    [],
+  ],
+])('Go module visibility: %s', (_scenario, workFiles, expectedImports, expectedCalls) => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-go-module-visibility-'));
+    writeFixtureRepo(repoDir, {
+      'orders/go.mod': 'module example.com/orders\n\ngo 1.21\n',
+      'billing/go.mod': 'module example.com/billing\n\ngo 1.21\n',
+      'orders/main.go': `package main
+
+import "example.com/billing/repository"
+
+func PlaceOrder(ledger *repository.Ledger) error {
+  return ledger.Save()
+}
+
+type Order struct { ledger *repository.Ledger }
+
+func PlaceOrderField(order *Order) error {
+  return order.ledger.Save()
+}
+
+func PlaceOrderValue(ledger *repository.Ledger) error {
+  save := ledger.Save
+  return save()
+}
+`,
+      'billing/repository/ledger.go': `package repository
+
+type Ledger struct{}
+
+func (l *Ledger) Save() error { return nil }
+`,
+      ...workFiles,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => fs.rmSync(repoDir, { recursive: true, force: true }));
+
+  it('only imports selected local providers', () => {
+    expect(importEdgesOf(result)).toEqual(expectedImports);
+  });
+
+  it.each(['PlaceOrder', 'PlaceOrderField', 'PlaceOrderValue'])(
+    'only binds %s calls through selected local providers',
+    (caller) => {
+      expect(callTargetsOf(result, caller)).toEqual(expectedCalls);
+    },
+  );
 });

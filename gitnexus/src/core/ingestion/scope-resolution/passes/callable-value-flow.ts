@@ -1133,8 +1133,8 @@ interface CallableTargetIndexes {
   readonly byOwnerAndName: ReadonlyMap<string, readonly Target[]>;
   readonly byFileAndName: ReadonlyMap<string, readonly Target[]>;
   /** The class a receiver's QUALIFIED declared type names, when the provider
-   *  recovers one (see `classOfQualifiedTypeSpelling`); absent otherwise. */
-  readonly classOfQualifiedReceiver?: (typeRef: TypeRef) => SymbolDefinition | undefined;
+   *  recovers one; null refuses a qualified miss, undefined permits bare lookup. */
+  readonly classOfQualifiedReceiver?: (typeRef: TypeRef) => SymbolDefinition | null | undefined;
 }
 
 function buildCallableTargetIndexes(
@@ -1612,18 +1612,16 @@ function receiverType(
   });
 }
 
-/** The class a receiver's declared type names: its qualified spelling first,
- *  as receiver-bound calls ask it, then the bare `rawName` exactly as before. */
 function classOfReceiverType(
   typeRef: TypeRef,
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   targetIndexes: CallableTargetIndexes,
 ): SymbolDefinition | undefined {
-  return (
-    targetIndexes.classOfQualifiedReceiver?.(typeRef) ??
-    resolveInheritanceBaseInScope(inScope, typeRef.rawName, scopes)
-  );
+  const qualified = targetIndexes.classOfQualifiedReceiver?.(typeRef);
+  return qualified === undefined
+    ? resolveInheritanceBaseInScope(inScope, typeRef.rawName, scopes)
+    : (qualified ?? undefined);
 }
 
 function qualifiedReceiverLookup(

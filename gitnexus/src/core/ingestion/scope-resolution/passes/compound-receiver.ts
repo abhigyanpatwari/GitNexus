@@ -438,13 +438,6 @@ interface FoldState {
  * (`resolveClassBindingForName` tries that first, and a name with no `<`
  * returns immediately after it).
  *
- * ── THE QUALIFIED SPELLING GOES FIRST ────────────────────────────────────────
- *
- * Capture can also cut a namespace qualifier (`models.User` → `User`), and then
- * the bare lookup cannot tell two packages' `User` apart. When the provider
- * recovers the qualified spelling, {@link classOfQualifiedTypeSpelling} asks it
- * first, grounded on the qualifier's import; only a miss reaches the bare
- * lookup, which still answers as it always did.
  */
 function classOfDeclaredType(
   typeRef: TypeRef,
@@ -464,29 +457,36 @@ function classOfDeclaredType(
   // The report keeps the spelling it always had, whichever lookup answers: it
   // is read only for type ARGUMENTS (#2912), and the qualified spelling has none.
   const spelling = erasedTypeApplication(typeRef) ?? typeRef.rawName;
+  const qualified = classOfQualifiedTypeSpelling(
+    typeRef,
+    scopes,
+    options.qualifiedTypeLookupSpelling,
+    lookup,
+    options.namespaceMemberVisible,
+  );
   const def =
-    classOfQualifiedTypeSpelling(
-      typeRef,
-      scopes,
-      options.qualifiedTypeLookupSpelling,
-      lookup,
-      options.namespaceMemberVisible,
-    ) ??
-    resolveClassBindingForName(typeRef.declaredAtScope, spelling, scopes, stripDecoration, lookup);
+    qualified === undefined
+      ? resolveClassBindingForName(
+          typeRef.declaredAtScope,
+          spelling,
+          scopes,
+          stripDecoration,
+          lookup,
+        )
+      : (qualified ?? undefined);
   return noteReceiverType(options.recordReceiverType, spelling, def);
 }
 
 /**
  * The class a declared type's QUALIFIED spelling names (`models.User`), or
- * `undefined` — see `ScopeResolver.qualifiedTypeLookupSpelling` for why the
- * qualifier has to be recovered at all.
+ * `null` when that spelling cannot resolve. `undefined` means the provider
+ * supplied no qualified spelling, so the caller may try the bare name.
  *
  * NAMESPACE-GROUNDED ONLY. The workspace-wide unique-name fallback is off for
  * this attempt, so a hit came from the qualifier's import (its target files,
  * filtered by `namespaceMemberVisible`), never from a name that happens to be
- * unique. Every miss returns `undefined` and the caller asks the bare `rawName`
- * exactly as before; that lookup keeps its own fallback, which is what still
- * reaches a workspace-unique type behind an import the resolver cannot follow.
+ * unique. A qualified miss is authoritative: the bare `rawName` cannot name
+ * a different package's declaration just because it is unique in the repo.
  *
  * FROM THE MODULE SCOPE, not from `declaredAtScope`. The hook's qualifier names
  * a file-level import, and `declaredAtScope` is where the BINDING lives — a
@@ -505,17 +505,19 @@ export function classOfQualifiedTypeSpelling(
   qualifiedTypeLookupSpelling: ScopeResolver['qualifiedTypeLookupSpelling'],
   lookup: ClassBindingLookup,
   namespaceMemberVisible: ClassBindingLookup['namespaceMemberVisible'],
-): SymbolDefinition | undefined {
+): SymbolDefinition | null | undefined {
   // Runs for every declared-type lookup in every language, so nothing is
   // allocated until the provider has actually returned a qualified spelling.
   const qualified = qualifiedTypeLookupSpelling?.(typeRef);
   if (qualified === undefined || qualified === typeRef.rawName) return undefined;
   const importScope = moduleScopeIdOf(typeRef.declaredAtScope, scopes) ?? typeRef.declaredAtScope;
-  return findClassBindingInScope(importScope, qualified, scopes, undefined, {
-    ...lookup,
-    namespaceMemberVisible,
-    uniqueQualifiedNameFallback: false,
-  });
+  return (
+    findClassBindingInScope(importScope, qualified, scopes, undefined, {
+      ...lookup,
+      namespaceMemberVisible,
+      uniqueQualifiedNameFallback: false,
+    }) ?? null
+  );
 }
 
 /**

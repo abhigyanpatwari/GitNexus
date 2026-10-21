@@ -1702,10 +1702,10 @@ export interface ScopeResolver {
    * branch of `findClassBindingInScope` — candidates only from the files the
    * qualifier's import resolves to, filtered by `isNamespaceMemberVisible` —
    * with the unique-name fallback switched off for that attempt, so a hit is a
-   * namespace decision and never a name guess. Any miss (an unresolved import,
-   * no such type, two of them) falls back to the bare `rawName` lookup exactly
-   * as before, guesses included. That fallback is load-bearing: a type behind an
-   * import the resolver cannot follow still binds by a workspace-unique name.
+   * namespace decision and never a name guess. A miss (an unresolved import,
+   * no such type, two of them) is final: the bare `rawName` must not bind a type
+   * from another package. Bare lookup remains available when this hook returns
+   * no qualified spelling.
    *
    * The qualifier must name a FILE-level import: it is looked up from the module
    * scope enclosing `declaredAtScope`, never from `declaredAtScope` itself. That

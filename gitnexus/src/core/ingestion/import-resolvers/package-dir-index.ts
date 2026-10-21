@@ -235,6 +235,20 @@ export function sortedRootFiles(index: PackageDirIndex): string[] {
 }
 
 /**
+ * Every accepted file directly inside exactly `dir` — a normalized directory
+ * with no leading or trailing slash — in `allFilePaths` iteration order.
+ *
+ * The anchored counterpart of {@link filesDirectlyInPkgDir}, for a caller that
+ * already knows where the package lives and must not also match every other
+ * directory ending in the same path. `''` answers nothing: root files have no
+ * directory, see {@link sortedRootFiles}.
+ */
+export function filesInDir(index: PackageDirIndex, dir: string): string[] {
+  const files = index.filesByDir.get(dir);
+  return files === undefined ? [] : files.map((f) => f.raw);
+}
+
+/**
  * The FIRST accepted file (in `allFilePaths` iteration order) directly inside a
  * directory ending with `pkgPath`, or `null`.
  */

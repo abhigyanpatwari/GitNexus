@@ -1,5 +1,42 @@
 # Receiver-resolution baseline
 
+## Go module visibility and qualified receiver refusal
+
+Local imports now select the importer's own module or a module selected by its
+nearest `go.work`. An independent sibling's matching module path is insufficient.
+Qualified receiver types also stop when their import cannot resolve, instead of
+borrowing a same-named type from another package. Local `replace` directives
+remain unmodelled.
+
+Compared with `85329b4de` on the same corpus, exactly two `CALLS` edges disappear:
+`SpinGadget` and `Workshop.SpinGadgetField` in
+`go-qualified-declared-types/services/foreign.go` no longer bind the unrelated
+`gadgets.Gizmo.Spin`. No other `CALLS` or `ACCESSES` edge changes.
+
+The two invalid calls now report drops. `ArchiveForeign`, which already had no
+edge, also reports its refused qualified lookup; the simple calls additionally
+report their read sites. Call drops move from 135 to 138, all-kind drops from
+195 to 200, and `.go` call drops from 1 to 4. Every shape-arm state is unchanged.
+
+## Go modules across several go.mod files
+
+The Go resolver read only the repository-root `go.mod` and matched every other
+import by directory suffix. In this combined corpus several fixtures declare
+packages under the same import path (`internal/repository`,
+`example.com/chaincall/models`), so their imports answered from the wrong
+fixture or from none, and the receivers typed through them dropped. Each
+import now belongs to the module whose path is its longest prefix, and names
+the exact directory under that module's root.
+
+Thirteen Go call drops clear, all `chain-field`/`chain-call` receivers in
+`go-chain-call`, `go-grouped-type-decl`, `go-interface-field-dispatch` and
+`go-pointer-receiver-field-chain`. Call drops move from 148 to 135, all-kind
+drops from 208 to 195, `.go` call drops from 14 to 1, `chain-field` from 70 to
+58, `chain-call` from 32 to 31, and `in-program` from 72 to 59. No drop was
+added, and every shape-arm state is unchanged. Against main (`ab0b03846`) on
+the same corpus, no `CALLS` or `ACCESSES` edge disappears or changes target,
+and 70 are added outside the two new fixtures.
+
 ## Go package-qualified declared types
 
 Go capture strips the package qualifier from field, parameter and local types,
