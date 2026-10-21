@@ -1,5 +1,24 @@
 # Receiver-resolution baseline
 
+## Go modules across several go.mod files
+
+The Go resolver read only the repository-root `go.mod` and matched every other
+import by directory suffix. In this combined corpus several fixtures declare
+packages under the same import path (`internal/repository`,
+`example.com/chaincall/models`), so their imports answered from the wrong
+fixture or from none, and the receivers typed through them dropped. Each
+import now belongs to the module whose path is its longest prefix, and names
+the exact directory under that module's root.
+
+Thirteen Go call drops clear, all `chain-field`/`chain-call` receivers in
+`go-chain-call`, `go-grouped-type-decl`, `go-interface-field-dispatch` and
+`go-pointer-receiver-field-chain`. Call drops move from 148 to 135, all-kind
+drops from 208 to 195, `.go` call drops from 14 to 1, `chain-field` from 70 to
+58, `chain-call` from 32 to 31, and `in-program` from 72 to 59. No drop was
+added, and every shape-arm state is unchanged. Against main (`ab0b03846`) on
+the same corpus, no `CALLS` or `ACCESSES` edge disappears or changes target,
+and 70 are added outside the two new fixtures.
+
 ## Go package-qualified declared types
 
 Go capture strips the package qualifier from field, parameter and local types,
