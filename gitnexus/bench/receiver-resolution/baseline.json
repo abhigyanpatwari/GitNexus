@@ -123,7 +123,7 @@
       "indexElement": "VISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
-      "decoratedFieldType": "VISIBLE-GAP"
+      "decoratedFieldType": "RESOLVES"
     },
     "ruby": {
       "plainChain": "VISIBLE-GAP",

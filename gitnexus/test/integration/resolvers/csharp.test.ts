@@ -1,7 +1,7 @@
 /**
  * C#: heritage resolution via base_list + ambiguous namespace-import refusal
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -1414,6 +1414,80 @@ describe('Field type resolution (C#)', () => {
     expect(addr).toBeDefined();
     expect(addr!.properties.visibility).toBe('public');
     expect(addr!.properties.declaredType).toBe('Address');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nullable member types as call receivers (#3498)
+//
+// `User? repo;` is a field_declaration whose variable_declaration type is a
+// `nullable_type`. Parameters and properties had a nullable_type binding rule;
+// fields did not, so the class scope held no binding for `repo` and
+// `this.repo.Save()` was dropped as receiver-unresolved. `Address` and `User`
+// both declare `Save`, so a by-name fallback cannot pass these rows.
+// ---------------------------------------------------------------------------
+
+describe('C# nullable member types as call receivers (#3498)', () => {
+  let result: PipelineResult;
+  let root: string;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-csharp-nullable-members-'));
+    writeFixtureRepo(root, {
+      'Address.cs': `public class Address {
+    public void Save() {}
+}
+`,
+      'User.cs': `public class User {
+    public void Save() {}
+}
+`,
+      'Holders.cs': `class NullableFieldHolder {
+    User? repo;
+    void ViaNullableField() {
+        this.repo.Save();
+    }
+}
+
+class NullablePropertyHolder {
+    User? Repo { get; set; }
+    void ViaNullableProperty() {
+        this.Repo.Save();
+    }
+}
+
+class PlainFieldHolder {
+    User repo;
+    void ViaPlainField() {
+        this.repo.Save();
+    }
+}
+`,
+    });
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it.each([
+    { caller: 'ViaNullableField', spelling: 'User? repo;' },
+    { caller: 'ViaNullableProperty', spelling: 'User? Repo { get; set; }' },
+    { caller: 'ViaPlainField', spelling: 'User repo; (control)' },
+  ])('$caller ($spelling) calls User.Save only', ({ caller }) => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === caller && edge.target === 'Save')
+      .map((edge) => `${edge.targetLabel}:${edge.targetFilePath}`);
+    expect(targets).toEqual(['Method:User.cs']);
+  });
+
+  it('records no receiver-unresolved drop in the holders', () => {
+    const drops = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter((outcome) => outcome.filePath === 'Holders.cs')
+      .map((outcome) => `${outcome.reason}:${outcome.name}:${outcome.range.startLine}`);
+    expect(drops).toEqual([]);
   });
 });
 

@@ -1,5 +1,15 @@
 # Receiver-resolution baseline
 
+## C# nullable field types (#3498)
+
+A field written `User? repo;` has a `nullable_type` as its declared type.
+Parameters, properties, method returns and foreach variables already had a
+`nullable_type` binding rule, but fields did not, so the class scope held no
+binding for `repo` and `this.repo.Save()` was dropped. With the new field rule,
+`csharp.decoratedFieldType` moves from VISIBLE-GAP to RESOLVES, and the edge
+lands on `User.Save`. No corpus fixture declares a nullable field, so the count
+arm and every other shape cell are unchanged.
+
 ## PHP namespaced-function factory results (#3498 follow-up)
 
 PHP types results of namespaced function calls such as `rp\make()`,
