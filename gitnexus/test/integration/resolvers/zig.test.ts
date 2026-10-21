@@ -1590,3 +1590,36 @@ describe.skipIf(!zigAvailable)('Zig monorepo package resolution', () => {
     expect(fromTool.map((e) => e.targetFilePath).join('\n')).not.toContain('packages/core/');
   });
 });
+
+// #3498: an inline `rp.make().m()` on a namespace module takes `make`'s return
+// type; file-struct handles, including a lowercase file with fields, keep
+// naming the struct. A bound `const x = rp.make()` is not typed yet: the
+// importing file cannot see whether the target is a namespace or a struct.
+describe.skipIf(!zigAvailable)('Zig namespace factory result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'zig-namespace-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  it.each([
+    { source: 'aliasCall', member: 'm', targets: [] },
+    { source: 'inlineCall', member: 'm', targets: ['Method:mod.zig:C.m#0'] },
+    { source: 'fileStructCall', member: 'm', targets: ['Method:Page.zig:Page.m#0'] },
+    { source: 'lowercaseFileStructCall', member: 'm', targets: ['Method:Page.zig:Page.m#0'] },
+    {
+      source: 'lowercaseFileStructFileCall',
+      member: 'listen',
+      targets: ['Method:config.zig:config.listen#0'],
+    },
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(targets);
+  });
+});

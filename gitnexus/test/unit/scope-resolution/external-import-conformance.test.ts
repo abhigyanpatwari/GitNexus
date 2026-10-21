@@ -48,11 +48,16 @@ import {
   clearKotlinPackageFacts,
   setKotlinPackageFact,
 } from '../../../src/core/ingestion/languages/kotlin/package-facts.js';
+import type { GoWorkspaceConfig } from '../../../src/core/ingestion/languages/go/workspace-config.js';
 
 /** The `composer.json` PSR-4 map `loadPhpComposerConfig` would have produced. */
 const PHP_COMPOSER: ComposerConfig = { psr4: new Map([['App', 'app']]) };
-/** The value `loadGoModulePath` produces for a repo with a `go.mod`. */
-const GO_MODULE = { modulePath: 'example.com/mod' };
+/** The value `captureGoWorkspaceConfig` produces for a repo whose only
+ *  `go.mod` is at its root. */
+const GO_MODULE: GoWorkspaceConfig = {
+  modules: [{ modulePath: 'example.com/mod', dir: '' }],
+  workFiles: [],
+};
 /** The root dependency scope `loadRubyResolutionConfig` would have produced. */
 const RUBY_GEMS = {
   scopesByDirectory: new Map([
