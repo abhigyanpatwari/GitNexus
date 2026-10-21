@@ -36,6 +36,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { walkRepositoryPaths } from '../../filesystem-walker.js';
 import { isAbsoluteZigDepPath, normalizeZigDepPath } from '../../language-config.js';
+import { getMaxFileSizeBytes } from '../../utils/max-file-size.js';
 
 /** One `go.mod`: the module path it declares and its repo-relative directory. */
 export interface GoModule {
@@ -151,35 +152,78 @@ function byDir(a: { readonly dir: string }, b: { readonly dir: string }): number
   return a.dir < b.dir ? -1 : a.dir > b.dir ? 1 : 0;
 }
 
+/** Manifests read at once; capture blocks the scan, and a k8s-style tree has
+ *  hundreds of `go.mod` files. */
+const MANIFEST_READ_CONCURRENCY = 32;
+
+/**
+ * A manifest's text, or null when it is deliberately not read:
+ *
+ *  - a symlink — it can point outside the repository, and Dart's manifest
+ *    capture excludes links the same way;
+ *  - not a regular file, or larger than the source-file cap — indexing skips
+ *    such files too;
+ *  - gone since the scan listed it (the stable-workspace boundary).
+ *
+ * Any other read error throws: a module boundary that silently disappears
+ * would send its imports to the wrong module or to GOPATH matching, and the
+ * capture contract requires failures to surface.
+ */
+async function readGoManifest(absolute: string, maxBytes: number): Promise<string | null> {
+  let stat;
+  try {
+    stat = await fs.lstat(absolute);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  if (!stat.isFile() || stat.size > maxBytes) return null;
+  try {
+    return await fs.readFile(absolute, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 /**
  * Capture every `go.mod` / `go.work` among the scan's paths. Null when the
  * repository declares no module: every import then takes the GOPATH match, as
  * it did with no root `go.mod`.
  *
- * A manifest that cannot be read or declares no `module` is treated as absent,
- * the rule `loadGoModulePath` applied to the root one: its files fall to the
- * enclosing module, or to GOPATH matching.
+ * A manifest {@link readGoManifest} declines, or a `go.mod` that declares no
+ * `module`, is treated as absent: its files fall to the enclosing module, or
+ * to GOPATH matching. A manifest that fails to read throws.
  */
 export async function captureGoWorkspaceConfig(
   repoPath: string,
   filePaths: readonly string[],
 ): Promise<GoWorkspaceConfig | null> {
+  const manifests = filePaths.filter((filePath) => {
+    const name = filePath.slice(filePath.lastIndexOf('/') + 1);
+    return name === GO_MOD || name === GO_WORK;
+  });
+  const maxBytes = getMaxFileSizeBytes();
+  const contents: (string | null)[] = [];
+  for (let start = 0; start < manifests.length; start += MANIFEST_READ_CONCURRENCY) {
+    const batch = manifests.slice(start, start + MANIFEST_READ_CONCURRENCY);
+    contents.push(
+      ...(await Promise.all(
+        batch.map((filePath) => readGoManifest(path.join(repoPath, filePath), maxBytes)),
+      )),
+    );
+  }
+
   const modules: GoModule[] = [];
   const workFiles: GoWorkFile[] = [];
-  for (const filePath of filePaths) {
-    const name = filePath.slice(filePath.lastIndexOf('/') + 1);
-    if (name !== GO_MOD && name !== GO_WORK) continue;
+  manifests.forEach((filePath, i) => {
+    const content = contents[i];
+    if (content === null || content === undefined) return;
     const dir = parentDir(filePath);
-    let content: string;
-    try {
-      content = await fs.readFile(path.join(repoPath, filePath), 'utf-8');
-    } catch {
-      continue;
-    }
-    if (name === GO_MOD) {
+    if (filePath.endsWith(GO_MOD)) {
       const modulePath = parseGoModulePath(content);
       if (modulePath !== null) modules.push({ modulePath, dir });
-      continue;
+      return;
     }
     const use: string[] = [];
     for (const rel of parseGoWorkUses(content)) {
@@ -187,7 +231,7 @@ export async function captureGoWorkspaceConfig(
       if (moduleDir !== null) use.push(moduleDir);
     }
     workFiles.push({ dir, use: use.sort() });
-  }
+  });
   if (modules.length === 0) return null;
   // Sorted, so the value is a function of the tree and not of listing order:
   // rename compares a refreshed config against its preview's by value.
@@ -195,19 +239,17 @@ export async function captureGoWorkspaceConfig(
 }
 
 /** Standalone callers (rename refresh) scan with the walker the pipeline uses,
- *  so they see the same manifests analyze captured. */
+ *  so they see the same manifests analyze captured. A scan failure throws
+ *  rather than reading as "no modules", which would silently swap in GOPATH
+ *  matching and a config unequal to the one a rename preview was built on. */
 export async function loadGoWorkspaceConfig(repoPath: string): Promise<GoWorkspaceConfig | null> {
   let captured: GoWorkspaceConfig | null = null;
-  try {
-    await walkRepositoryPaths(repoPath, undefined, {
-      quiet: true,
-      onPathsDiscovered: async (paths) => {
-        captured = await captureGoWorkspaceConfig(repoPath, paths);
-      },
-    });
-  } catch {
-    return null;
-  }
+  await walkRepositoryPaths(repoPath, undefined, {
+    quiet: true,
+    onPathsDiscovered: async (paths) => {
+      captured = await captureGoWorkspaceConfig(repoPath, paths);
+    },
+  });
   return captured;
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +15,7 @@ import {
 const temporary: string[] = [];
 afterEach(() => {
   for (const dir of temporary.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 function fixture(files: Readonly<Record<string, string>>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-go-workspace-'));
@@ -263,5 +264,60 @@ describe('captureGoWorkspaceConfig', () => {
     expect(await loadGoWorkspaceConfig(dir)).toEqual(
       await captureGoWorkspaceConfig(dir, Object.keys(NESTED)),
     );
+  });
+
+  // Manifests capture deliberately skips: each case lists `svc/go.mod` but
+  // leaves it unreadable as a manifest, so only the root module is captured.
+  const ROOT_ONLY: GoWorkspaceConfig = {
+    modules: [{ modulePath: 'example.com/root', dir: '' }],
+    workFiles: [],
+  };
+  it.each<[string, (dir: string) => void]>([
+    [
+      'a symlink, even to a real go.mod outside the repository',
+      (dir) => {
+        const outside = fixture({ 'go.mod': 'module example.com/outside\n' });
+        fs.symlinkSync(path.join(outside, 'go.mod'), path.join(dir, 'svc/go.mod'));
+      },
+    ],
+    [
+      'a manifest over the source-file size cap',
+      (dir) => {
+        fs.writeFileSync(
+          path.join(dir, 'svc/go.mod'),
+          `module example.com/svc\n${'//\n'.repeat(4096)}`,
+        );
+        vi.stubEnv('GITNEXUS_MAX_FILE_SIZE', '1');
+      },
+    ],
+    ['a directory named go.mod', (dir) => fs.mkdirSync(path.join(dir, 'svc/go.mod'))],
+    ['a manifest gone since the scan listed it', () => undefined],
+  ])('skips %s', async (_case, arrange) => {
+    const dir = fixture({ 'go.mod': 'module example.com/root\n', 'svc/main.go': 'package main\n' });
+    arrange(dir);
+    expect(await captureGoWorkspaceConfig(dir, ['go.mod', 'svc/go.mod'])).toEqual(ROOT_ONLY);
+  });
+
+  // A module boundary that silently vanished would send its imports to the
+  // wrong module, so a manifest that fails to read surfaces as an error.
+  it('throws when a go.mod cannot be read', async () => {
+    const dir = fixture({
+      'go.mod': 'module example.com/root\n',
+      'svc/go.mod': 'module example.com/svc\n',
+    });
+    const locked = path.join(dir, 'svc/go.mod');
+    fs.chmodSync(locked, 0o000);
+    try {
+      await expect(captureGoWorkspaceConfig(dir, ['go.mod', 'svc/go.mod'])).rejects.toThrow(
+        /EACCES/,
+      );
+    } finally {
+      fs.chmodSync(locked, 0o644);
+    }
+  });
+
+  it('throws when the standalone scan fails instead of reporting no modules', async () => {
+    const dir = fixture({ 'go.mod': 'module example.com/root\n' });
+    await expect(loadGoWorkspaceConfig(path.join(dir, 'go.mod'))).rejects.toThrow();
   });
 });
