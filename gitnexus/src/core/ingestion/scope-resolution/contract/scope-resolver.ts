@@ -1707,6 +1707,13 @@ export interface ScopeResolver {
    * as before, guesses included. That fallback is load-bearing: a type behind an
    * import the resolver cannot follow still binds by a workspace-unique name.
    *
+   * The qualifier must name a FILE-level import: it is looked up from the module
+   * scope enclosing `declaredAtScope`, never from `declaredAtScope` itself. That
+   * scope holds the binding, and the binding may carry the qualifier's own name
+   * — `vault *vault.Vault` as a field, parameter or local — which would shadow
+   * the import there. A language whose imports can be block-scoped needs a
+   * different anchor and must not return a spelling this rule would misread.
+   *
    * The binding itself is deliberately NOT rewritten to keep the qualifier:
    * `rawName` has many readers, and the compound resolver reads a dotted one as
    * a `value.member` alias path. Only receiver typing needs the distinction.

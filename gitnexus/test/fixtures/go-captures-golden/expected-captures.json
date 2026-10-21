@@ -375,6 +375,10 @@
     "captureGroups": 23,
     "digest": "cf7aeb0e27271337a7c8ee64f5dcc58d9168711448ab38bd6c05705092613551"
   },
+  "go-qualified-declared-types/api/vault.go": {
+    "captureGroups": 11,
+    "digest": "7a69aed08d317da159ec3a7ebf4bbb432a55a05488098dbf8a817cb2d366d2dd"
+  },
   "go-qualified-declared-types/gadgets/gizmo.go": {
     "captureGroups": 21,
     "digest": "8229ee21ee3f3b22c4df1de78500ad22463d8cc52c80794bfa47b91842f024cb"
@@ -398,6 +402,14 @@
   "go-qualified-declared-types/services/service.go": {
     "captureGroups": 60,
     "digest": "ab0fac055b7a055140d1d99d21bafebc47f0d932b6ea6080c20f2d0deb3a16fb"
+  },
+  "go-qualified-declared-types/services/vaults.go": {
+    "captureGroups": 30,
+    "digest": "1ddf14e740ffc861110385fb20fa8d91b66893aee95c4f8ac2c20348c8f8c15f"
+  },
+  "go-qualified-declared-types/vault/vault.go": {
+    "captureGroups": 11,
+    "digest": "1cfdf63e480498cb6f79bf7450a8744ef446d50b69155d7b613040b764c5a995"
   },
   "go-receiver-method-free-call/example.go": {
     "captureGroups": 8,

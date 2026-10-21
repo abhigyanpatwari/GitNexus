@@ -2342,6 +2342,12 @@ describe('Go package-qualified field and parameter types', () => {
       ['Archive@models/user.go'],
     ],
     ['a bare same-package type', 'ArchiveLocal', ['Archive@api/user.go']],
+    // A receiver named like its type's package (`vault *vault.Vault`) binds the
+    // qualifier's own name where the type was written, so the qualifier has to
+    // be read from the file's imports, not from that scope.
+    ['a struct field named like its package', 'StowField', ['Stow@vault/vault.go']],
+    ['a parameter named like its package', 'StowParam', ['Stow@vault/vault.go']],
+    ['a local named like its package', 'StowLocal', ['Stow@vault/vault.go']],
   ])('resolves %s to the type it names (%s)', (_shape, caller, expected) => {
     expect(targetsOf(caller)).toEqual(expected);
   });

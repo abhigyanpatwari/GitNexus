@@ -45,6 +45,7 @@ import {
   findReceiverTypeBinding,
   isClassLike,
   isNamespaceNameShadowed,
+  moduleScopeIdOf,
 } from '../scope/walkers.js';
 
 /** Max depth for compound-receiver chain resolution (`a().b().c().d()`).
@@ -484,6 +485,13 @@ function classOfDeclaredType(
  * exactly as before; that lookup keeps its own fallback, which is what still
  * reaches a workspace-unique type behind an import the resolver cannot follow.
  *
+ * FROM THE MODULE SCOPE, not from `declaredAtScope`. The hook's qualifier names
+ * a file-level import, and `declaredAtScope` is where the BINDING lives — a
+ * scope that can bind the qualifier's own name. `vault *vault.Vault` as a field,
+ * a parameter or a local is ordinary code, and asked from there the qualifier
+ * `vault` found the receiver itself rather than the import, so the namespace
+ * branch had no target files and the bare fallback refused the ambiguous name.
+ *
  * Exported for the simple-typeBinding case in `receiver-bound-calls`, so a
  * receiver typed through a field and one typed through a parameter cannot
  * disagree on which package `models.User` means.
@@ -496,7 +504,8 @@ export function classOfQualifiedTypeSpelling(
 ): SymbolDefinition | undefined {
   const qualified = qualifiedTypeLookupSpelling?.(typeRef);
   if (qualified === undefined || qualified === typeRef.rawName) return undefined;
-  return findClassBindingInScope(typeRef.declaredAtScope, qualified, scopes, undefined, {
+  const importScope = moduleScopeIdOf(typeRef.declaredAtScope, scopes) ?? typeRef.declaredAtScope;
+  return findClassBindingInScope(importScope, qualified, scopes, undefined, {
     ...lookup,
     uniqueQualifiedNameFallback: false,
   });
