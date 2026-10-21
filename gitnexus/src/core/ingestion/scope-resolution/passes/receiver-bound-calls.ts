@@ -2435,23 +2435,10 @@ export function emitReceiverBoundCalls(
             { ...fileCompoundOpts, receiverChain: site.receiverChain },
           );
         }
-        // The receiver has a declared type, that type is a type APPLICATION,
-        // and its base name could not be connected to any declaration this
-        // file can see. The site is DROPPED, and dropped deliberately, so it
-        // must be marked handled: `emitReferencesViaLookup` would otherwise
-        // re-emit the very target the grounds refused, because the pre-resolved
-        // reference index answers a name with the single workspace definition
-        // that carries it and knows nothing about erasure. That is exactly why
-        // the static-only filter above marks handled too — a refusal this pass
-        // makes is not a refusal until the fallback emitter is told.
-        //
-        // Recorded as `receiver-unresolved` rather than silently: the receiver's
-        // TYPE could not be established, which is the reason's own definition,
-        // and a consumer counting resolver gaps must see this drop rather than
-        // read the absence as a resolved site. No `receiverOrigin` — the base
-        // name resolving in the index is precisely the evidence just rejected,
-        // so claiming `in-program` from it would relaunder the fabrication as a
-        // diagnostic, and the absent field hedges (the safe direction).
+        // A qualified type or type application could not resolve to a visible
+        // declaration. Mark the site handled so the fallback reference emitter
+        // cannot reconnect it by bare name. Record the unresolved receiver, but
+        // omit receiverOrigin because no declaration was established.
         if (ownerDef === undefined && (qualifiedOwner === null || typeApplication !== undefined)) {
           options.recordResolutionOutcome?.({
             kind: 'suppressed',

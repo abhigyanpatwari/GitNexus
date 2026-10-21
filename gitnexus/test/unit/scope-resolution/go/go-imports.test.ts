@@ -345,4 +345,28 @@ describe('Go import target resolution across several go.mod files', () => {
   ])('resolves to %s', (_case, config, files, targetRaw, fromFile, expected) => {
     expect(resolveGoImportTarget(targetRaw, fromFile, new Set(files), config)).toEqual(expected);
   });
+
+  it.each<[string, string[], string[] | null]>([
+    ['the shorter module alone', ['parent/b/pkg/item.go'], ['parent/b/pkg/item.go']],
+    ['the longer module alone', ['child/pkg/item.go'], ['child/pkg/item.go']],
+    ['both modules', ['parent/b/pkg/item.go', 'child/pkg/item.go'], null],
+    ['neither module', [], null],
+  ])('requires a unique provider with the package in %s', (_case, files, expected) => {
+    const config: GoWorkspaceConfig = {
+      modules: [
+        { modulePath: 'example.com/a', dir: 'parent' },
+        { modulePath: 'example.com/a/b', dir: 'child' },
+      ],
+      workFiles: [{ dir: '', use: ['parent', 'child'] }],
+    };
+
+    expect(
+      resolveGoImportTarget(
+        'example.com/a/b/pkg',
+        'parent/main.go',
+        new Set(['parent/main.go', ...files]),
+        config,
+      ),
+    ).toEqual(expected);
+  });
 });

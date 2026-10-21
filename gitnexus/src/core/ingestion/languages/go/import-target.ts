@@ -19,8 +19,8 @@ import { isGoWorkspaceConfig, locateGoImport } from './workspace-config.js';
  *
  * Strategy (`resolutionConfig` is every go.mod / go.work in the repo, see
  * `workspace-config.ts`):
- *   1. An in-repo module owns the path: the package is the exact directory
- *      under that module's root, longest module path first. Never a suffix
+ *   1. An in-repo module owns the path: exactly one selected module must
+ *      contain the package in the directory under its root. Never a suffix
  *      match — `…/internal/repository` names one module's directory, not every
  *      directory ending in `internal/repository`.
  *   2. The importer is inside a module and nothing owns the path (standard
@@ -41,11 +41,14 @@ export function resolveGoImportTarget(
     if (location.kind === 'external') return null;
     if (location.kind === 'module') {
       const index = getGoPackageIndex(allFilePaths);
+      let result: readonly string[] | null = null;
       for (const dir of location.dirs) {
         const files = filesInPkgDir(index, dir);
-        if (files.length > 0) return files;
+        if (files.length === 0) continue;
+        if (result !== null) return null;
+        result = files;
       }
-      return null;
+      return result;
     }
   }
 

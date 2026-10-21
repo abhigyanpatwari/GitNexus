@@ -16,9 +16,9 @@
  *    from every enclosing module — with or without a `go.work`;
  *  - the module providing `p` is one whose path is `p` or a prefix of it at a
  *    `/` boundary, and the package is the directory `p` minus that path under
- *    the module root. Nested module paths (`example.com/a`, `example.com/a/b`)
- *    are disjoint providers: `a/b`'s tree is not `a`'s, so the longest prefix
- *    whose directory exists is the one that answers;
+ *    the module root. Exactly one selected module must contain the package;
+ *    matching multiple module path prefixes is ambiguous only when more than
+ *    one of their package directories contains Go files;
  *  - a `go.work` names the workspace's main modules (`use`). It selects the
  *    sibling modules available to an importer; it changes no module boundary.
  *
