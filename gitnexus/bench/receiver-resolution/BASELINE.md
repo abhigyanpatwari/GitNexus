@@ -1,5 +1,18 @@
 # Receiver-resolution baseline
 
+## Rust smart-pointer field types (#3498)
+
+The struct-field normalizer in `rust/range-binding.ts` cut a type at its first
+`<`, so a `repo: Box<User>` field was typed `Box` and `self.repo.save()` bound
+nothing. It now unwraps `Box`, `Rc` and `Arc` to their first type argument
+(including path-qualified and nested forms), strips `&'a` / `&'a mut` borrows,
+and reduces `Box<dyn Trait>` to the trait. `RefCell`, `Cell`, `Mutex`,
+`RwLock`, `Option` and `Vec` stay as written, because a method on the inner type
+needs an explicit step. `rust.decoratedFieldType` moves from INVISIBLE-GAP to
+RESOLVES, and the edge lands on `User::save`. No corpus fixture has a
+smart-pointer or borrowed struct field, so the count arm and every other shape
+cell are unchanged.
+
 ## C# nullable field types (#3498)
 
 A field written `User? repo;` has a `nullable_type` as its declared type.

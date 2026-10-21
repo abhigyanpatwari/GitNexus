@@ -147,7 +147,7 @@
       "indexElement": "RESOLVES",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "RESOLVES",
-      "decoratedFieldType": "VISIBLE-GAP"
+      "decoratedFieldType": "RESOLVES"
     },
     "c": {
       "plainChain": "N/A",

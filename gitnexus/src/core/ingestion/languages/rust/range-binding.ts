@@ -2,6 +2,7 @@ import type { ParsedFile, Scope, TypeRef } from 'gitnexus-shared';
 import { lookupLexicalName } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getRustParser } from './query.js';
+import { stripDynBound } from './interpret.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe, ParseTimeoutError } from '../../../tree-sitter/safe-parse.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
@@ -341,14 +342,55 @@ function findScopeForNode(
   return null;
 }
 
-function normalizeFieldType(text: string): string {
+/**
+ * Owning pointers that auto-deref on a method call: `self.repo.save()` on a
+ * `Box<User>`, `Rc<User>` or `Arc<User>` field reaches `User::save` with no
+ * explicit step, so the field is typed as its argument.
+ *
+ * Interior-mutability and container wrappers are left as written on purpose.
+ * `RefCell`, `Cell`, `Mutex` and `RwLock` need `.borrow()`, `.get()`,
+ * `.lock()` or `.read()` first, `Option` needs a match or an unwrap, and
+ * `Vec` needs an index or an iterator, so the receiver's type really is the
+ * wrapper. Element access into those goes through `unwrapGeneric`.
+ */
+const DEREF_TRANSPARENT_POINTERS: ReadonlySet<string> = new Set(['Box', 'Rc', 'Arc']);
+
+/** `&T`, `&mut T`, `&'a T`, `&'a mut T`. A struct field that borrows always
+ *  carries a lifetime, so the lifetime form is the common one. */
+const BORROW_PREFIX_RE = /^&\s*(?:'[A-Za-z_][A-Za-z0-9_]*\s+)?(?:mut\s+)?/;
+
+function stripBorrow(text: string): string {
   let t = text.trim();
-  if (t.startsWith('&')) t = t.replace(/^&\s*(mut\s+)?/, '');
+  while (t.startsWith('&')) t = t.replace(BORROW_PREFIX_RE, '').trim();
+  return t;
+}
+
+/** Final `::` segment: `std::rc::Rc` -> `Rc`. */
+function lastPathSegment(text: string): string {
+  const lastColon = text.lastIndexOf('::');
+  return lastColon === -1 ? text : text.slice(lastColon + 2);
+}
+
+/** `Box<User>` / `std::rc::Rc<Box<User>>` -> `User`; anything else as is. */
+function unwrapDerefPointers(text: string): string {
+  let t = stripBorrow(text);
+  for (;;) {
+    const open = t.indexOf('<');
+    if (open === -1 || !t.endsWith('>')) return t;
+    if (!DEREF_TRANSPARENT_POINTERS.has(lastPathSegment(t.slice(0, open).trim()))) return t;
+    const args = t.slice(open + 1, -1).trim();
+    const comma = findTopLevelComma(args);
+    t = stripBorrow(comma === -1 ? args : args.slice(0, comma));
+  }
+}
+
+function normalizeFieldType(text: string): string {
+  // `Box<dyn Repo + Send>` dispatches on the trait, the same as that spelling
+  // on a parameter (#2604).
+  let t = stripDynBound(unwrapDerefPointers(text));
   const bracket = t.indexOf('<');
   if (bracket !== -1) t = t.slice(0, bracket);
-  const lastColon = t.lastIndexOf('::');
-  if (lastColon !== -1) t = t.slice(lastColon + 2);
-  return t.trim();
+  return lastPathSegment(t.trim()).trim();
 }
 
 /** Get-or-create the inner map for `file` and record `name -> value`. */
