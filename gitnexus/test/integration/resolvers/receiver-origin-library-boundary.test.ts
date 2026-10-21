@@ -73,6 +73,28 @@ fn lessThan(_: void, a: u32, b: u32) bool {
     }
 }
 `,
+  'cs/App.cs': `using System.Collections.Generic;
+
+namespace Demo
+{
+    public class User { }
+
+    public class App
+    {
+        private Dictionary<string, User> data = new Dictionary<string, User>();
+
+        public void Greet()
+        {
+            System.Console.WriteLine("hello");
+        }
+
+        public void ReadKeys()
+        {
+            foreach (var key in this.data.Keys) { }
+        }
+    }
+}
+`,
 };
 
 describe('Library and runtime receivers name the program boundary (#3498)', () => {
@@ -108,6 +130,8 @@ describe('Library and runtime receivers name the program boundary (#3498)', () =
     ['a Python stdlib named import', 'py/settings.py', 10, 'resolve'],
     ['the Zig standard library', 'zig/src/sorter.zig', 4, 'pdq'],
     ['the Java platform package root', 'java/src/App.java', 3, 'of'],
+    ['the C# System namespace', 'cs/App.cs', 13, 'WriteLine'],
+    ['a C# field declared as a library type', 'cs/App.cs', 18, 'Keys'],
   ] as const)('records a drop rooted at %s as external', (_label, filePath, line, name) => {
     const drops = dropsAt(filePath, line, name);
     expect(drops.length).toBeGreaterThan(0);

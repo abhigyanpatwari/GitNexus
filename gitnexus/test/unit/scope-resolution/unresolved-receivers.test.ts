@@ -26,6 +26,7 @@ import { goScopeResolver } from '../../../src/core/ingestion/languages/go/scope-
 import { javaScopeResolver } from '../../../src/core/ingestion/languages/java/scope-resolver.js';
 import { pythonScopeResolver } from '../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { zigScopeResolver } from '../../../src/core/ingestion/languages/zig/scope-resolver.js';
+import { csharpScopeResolver } from '../../../src/core/ingestion/languages/csharp/scope-resolver.js';
 import { buildScopeModel, type ScopeModelFixture } from '../../helpers/scope-model.js';
 
 const range = { startLine: 1, startCol: 0, endLine: 1, endCol: 1 };
@@ -654,6 +655,80 @@ class Util {
   'src/Probe.java',
 );
 
+const csharpLibraryFixture = buildScopeModel(
+  csharpScopeResolver,
+  `using System.Collections.Generic;
+
+namespace App
+{
+    public class User { }
+
+    public class Registry
+    {
+        public int Count;
+    }
+
+    public static class DictionaryExtensions
+    {
+        public static int Size(this Dictionary<string, User> d) { return 0; }
+    }
+
+    public class Probe
+    {
+        private Dictionary<string, User> data = new Dictionary<string, User>();
+        private Registry registry = new Registry();
+
+        public void Platform()
+        {
+            System.Console.WriteLine("x");
+        }
+
+        public void ReadKeys()
+        {
+            foreach (var key in this.data.Keys) { }
+        }
+
+        public void ReadProgramField()
+        {
+            foreach (var item in this.registry.Items) { }
+        }
+
+        public void CallExtension()
+        {
+            this.data.Size();
+        }
+    }
+}
+`,
+  'App/Probe.cs',
+);
+
+const csharpShadowFixture = buildScopeModel(
+  csharpScopeResolver,
+  `namespace App
+{
+    public class Printer
+    {
+        public void Print(string s) { }
+    }
+
+    public class System
+    {
+        public static Printer Console = new Printer();
+    }
+
+    public class Probe
+    {
+        public void Run()
+        {
+            System.Console.WriteLine("x");
+        }
+    }
+}
+`,
+  'App/Shadow.cs',
+);
+
 describe('classifyReceiverOrigin — library and runtime receivers', () => {
   it.each([
     ['TypeScript document', tsLibraryFixture, 'appendChild'],
@@ -664,6 +739,8 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['Python stdlib named import', pythonLibraryFixture, 'resolve'],
     ['Zig std import', zigLibraryFixture, 'pdq'],
     ['Java platform package root', javaLibraryFixture, 'of'],
+    ['C# System namespace', csharpLibraryFixture, 'WriteLine'],
+    ['C# field declared as a library type', csharpLibraryFixture, 'Keys'],
   ] as const)('reports %s as external', (_label, fixture, memberName) => {
     expect(originOf(fixture, memberName)).toBe('external');
   });
@@ -679,6 +756,9 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['a Python parameter named os', 'unknown', pythonLibraryFixture, 'update'],
     ['a Zig path import spelled like std', 'unknown', zigLibraryFixture, 'insertion'],
     ['a Java parameter named java', 'in-program', javaLibraryFixture, 'run'],
+    ['a C# field of a program type', 'in-program', csharpLibraryFixture, 'Items'],
+    ['a C# extension method the program declares', 'in-program', csharpLibraryFixture, 'Size'],
+    ['a C# class named System', 'in-program', csharpShadowFixture, 'WriteLine'],
   ] as const)('keeps %s %s', (_label, expected, fixture, memberName) => {
     expect(originOf(fixture, memberName)).toBe(expected);
   });
@@ -689,6 +769,7 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['TypeScript document', tsLibraryFixture, 'appendChild'],
     ['Python stdlib import', pythonLibraryFixture, 'setdefault'],
     ['Zig std import', zigLibraryFixture, 'pdq'],
+    ['C# library-typed field', csharpLibraryFixture, 'Keys'],
   ] as const)('degrades %s to non-external without the provider hooks', (_label, fixture, name) => {
     expect(originOfWithoutHooks(fixture, name)).not.toBe('external');
   });
