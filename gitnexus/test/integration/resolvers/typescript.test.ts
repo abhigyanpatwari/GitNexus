@@ -3224,8 +3224,8 @@ describe('TS dynamic-this receiver seeding guard', () => {
   // or, when the read beside it (same start column) was handled first, as
   // nothing at all.
   it.each<readonly [OutcomeSite, readonly string[]]>([
-    [['app.ts', 17, 6, 'route'], ['receiver-owned-but-unbound']],
-    [['app.ts', 17, 6, 'go'], ['receiver-owned-but-unbound']],
+    [['app.ts', 17, 6, 'route', 'read'], ['receiver-owned-but-unbound']],
+    [['app.ts', 17, 6, 'go', 'call'], ['receiver-owned-but-unbound']],
   ])('records %j under its real reason', (site, reasons) => {
     expect(suppressionReasonsAt(result, site)).toEqual(reasons);
   });

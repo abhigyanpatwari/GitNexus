@@ -259,6 +259,7 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
         isReadonly: config.isReadonly(node),
         sourceFile: context.filePath,
         line: node.startPosition.row + 1,
+        column: node.startPosition.column,
       };
     }
   }

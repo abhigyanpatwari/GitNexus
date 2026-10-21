@@ -1549,6 +1549,7 @@ export interface ScopeResolver {
   readonly isModuleExportAssignment?: (
     site: ReferenceSite,
     scopes: ScopeResolutionIndexes,
+    parsed: ParsedFile,
   ) => boolean;
 
   /**

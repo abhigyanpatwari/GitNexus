@@ -192,7 +192,7 @@ const THIS_BINDING_NODE_TYPES = new Set([
  * `exports`/`module` reference marks it CommonJS. A file with neither signal
  * is left alone — silence is not evidence of CommonJS.
  */
-function isCommonJsModule(root: SyntaxNode, filePath?: string): boolean {
+export function isCommonJsModule(root: SyntaxNode, filePath?: string): boolean {
   // The extension settles it outright where Node itself does: `.cjs`/`.cts` are
   // CommonJS whatever the body contains, `.mjs`/`.mts` are ESM. Without this a
   // `.cjs` file whose only content is `this.x = fn` carries no AST signal and

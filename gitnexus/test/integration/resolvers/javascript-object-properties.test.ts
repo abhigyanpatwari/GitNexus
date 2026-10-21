@@ -184,57 +184,57 @@ describe('JavaScript plain-object property access (A1/A5)', () => {
     // Each row pins both halves: the edge exists at THIS site, and no drop does.
     it.each<readonly [OutcomeSite, string, string]>([
       [
-        ['destructured.js', 26, 4, 'exitContract'],
+        ['destructured.js', 26, 4, 'exitContract', 'write'],
         'Function:destructured.js:buildPlan',
         'Property:destructured.js:buildPlan.exitContract@25:4',
       ],
       [
-        ['destructured.js', 27, 6, 'destructuredOnlyField'],
+        ['destructured.js', 27, 6, 'destructuredOnlyField', 'write'],
         'Function:destructured.js:buildPlan',
         'Property:destructured.js:destructuredDefaults.destructuredOnlyField',
       ],
       [
-        ['destructured.js', 34, 4, 'destructuredOnlyField'],
+        ['destructured.js', 34, 4, 'destructuredOnlyField', 'write'],
         'Function:destructured.js:buildFlat',
         'Property:destructured.js:buildFlat.destructuredOnlyField@33:4',
       ],
       [
-        ['frozen.js', 26, 20, 'extra'],
+        ['frozen.js', 26, 20, 'extra', 'write'],
         'Function:frozen.js:buildRules',
         'Property:frozen.js:buildRules.extra@25:20',
       ],
       [
-        ['return-shape-typed.js', 6, 4, 'ambiguousProducedField'],
+        ['return-shape-typed.js', 6, 4, 'ambiguousProducedField', 'write'],
         'Function:return-shape-typed.js:producerAlpha',
         'Property:return-shape-typed.js:producerAlpha.ambiguousProducedField@5:4',
       ],
       [
-        ['return-shape-typed.js', 12, 4, 'ambiguousProducedField'],
+        ['return-shape-typed.js', 12, 4, 'ambiguousProducedField', 'write'],
         'Function:return-shape-typed.js:producerBeta',
         'Property:return-shape-typed.js:producerBeta.ambiguousProducedField@11:4',
       ],
       [
-        ['return-shape.js', 8, 4, 'returnShapeOnlyField'],
+        ['return-shape.js', 8, 4, 'returnShapeOnlyField', 'write'],
         'Function:return-shape.js:formatAlert',
         'Property:return-shape.js:formatAlert.returnShapeOnlyField@7:4',
       ],
       [
-        ['return-shape.js', 9, 4, 'sharedWithDeclared'],
+        ['return-shape.js', 9, 4, 'sharedWithDeclared', 'write'],
         'Function:return-shape.js:formatAlert',
         'Property:return-shape.js:formatAlert.sharedWithDeclared@8:4',
       ],
       [
-        ['return-shape.js', 20, 4, 'summaryOnlyField'],
+        ['return-shape.js', 20, 4, 'summaryOnlyField', 'write'],
         'Function:return-shape.js:formatSummary',
         'Property:return-shape.js:formatSummary.summaryOnlyField@19:4',
       ],
       [
-        ['return-shape.js', 45, 13, 'anonReturnKey'],
+        ['return-shape.js', 45, 13, 'anonReturnKey', 'write'],
         'File:return-shape.js',
         'Property:return-shape.js:fn@43:2.anonReturnKey@44:13',
       ],
       [
-        ['return-shape.js', 53, 4, 'productionAndTestField'],
+        ['return-shape.js', 53, 4, 'productionAndTestField', 'write'],
         'Function:return-shape.js:buildProductionShape',
         'Property:return-shape.js:buildProductionShape.productionAndTestField@52:4',
       ],

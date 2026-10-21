@@ -3192,7 +3192,7 @@ export function emitReceiverBoundCalls(
           (typeRef !== undefined &&
             BARE_TYPE_NAME_RE.test(receiverName) &&
             bindsNamespaceCallable(typeRef, namespaceTargets))) &&
-        provider.isModuleExportAssignment?.(site, scopes) !== true
+        provider.isModuleExportAssignment?.(site, scopes, parsed) !== true
       ) {
         // Decoded once: both the shape census and the origin classifier read the
         // same chain, and this is inside the drop guard so a resolved site pays

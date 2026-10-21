@@ -189,6 +189,7 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
       isReadonly: this.isReadonly(node),
       sourceFile: context.filePath,
       line: node.startPosition.row + 1,
+      column: node.startPosition.column,
     };
   }
 

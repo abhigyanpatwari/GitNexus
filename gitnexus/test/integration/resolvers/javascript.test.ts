@@ -720,7 +720,7 @@ describe('JavaScript inline constructor receiver resolution', () => {
 // ---------------------------------------------------------------------------
 
 describe('CommonJS export assignment receivers (JavaScript)', () => {
-  let repoDir: string;
+  let repoDir: string | undefined;
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -735,12 +735,16 @@ function wrap(module) {
 }
 module.exports.api.nested = 1;
 `,
+      'esm-export.js': 'export {};\nmodule.exports.esmExport = 1;\n',
+      'esm-import.js': 'import "./side-effect.js";\nmodule.exports.esmImport = 1;\n',
+      'side-effect.js': 'const initialized = true;\n',
+      'explicit.mjs': 'module.exports.explicitEsm = 1;\n',
     });
     result = await runPipelineFromRepo(repoDir, () => {}, {});
   }, 60000);
 
   afterAll(() => {
-    fs.rmSync(repoDir, { recursive: true, force: true });
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
   });
 
   // `module.exports.arrowRequest = …` DECLARES this module's `arrowRequest`
@@ -754,10 +758,10 @@ module.exports.api.nested = 1;
   // is the last line, which writes INTO a value hanging off the export object
   // rather than declaring an export.
   it.each<readonly [OutcomeSite, readonly string[]]>([
-    [['lib.js', 1, 0, 'memberRequest'], []],
-    [['lib.js', 4, 0, 'arrowRequest'], []],
-    [['lib.js', 6, 2, 'wrapped'], ['receiver-unresolved']],
-    [['lib.js', 8, 0, 'nested'], ['receiver-unresolved']],
+    [['lib.js', 1, 0, 'memberRequest', 'write'], []],
+    [['lib.js', 4, 0, 'arrowRequest', 'write'], []],
+    [['lib.js', 6, 2, 'wrapped', 'write'], ['receiver-unresolved']],
+    [['lib.js', 8, 0, 'nested', 'write'], ['receiver-unresolved']],
   ])('records %j as %j', (site, reasons) => {
     expect(suppressionReasonsAt(result, site)).toEqual(reasons);
   });
@@ -771,11 +775,26 @@ module.exports.api.nested = 1;
       .sort();
     expect(writes).toEqual(['arrowRequest', 'memberRequest']);
   });
+
+  it.each(['esm-export.js', 'esm-import.js', 'explicit.mjs'])(
+    'keeps a receiver drop for an unbound module in %s',
+    (filePath) => {
+      expect(
+        result.resolutionOutcomes?.some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.filePath === filePath &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.siteKind === 'write',
+        ),
+      ).toBe(true);
+    },
+  );
 });
 
 describe('Literal writes and owned receiver bases preserve bindings', () => {
   let result: PipelineResult;
-  let fixtureRoot: string;
+  let fixtureRoot: string | undefined;
 
   beforeAll(async () => {
     fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-literal-bindings-'));
@@ -848,7 +867,9 @@ tsAnnotated(TsActual);
     result = await runPipelineFromRepo(fixtureRoot, () => {}, { skipGraphPhases: true });
   }, 120000);
 
-  afterAll(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+  afterAll(() => {
+    if (fixtureRoot !== undefined) fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  });
 
   it.each(['read', 'write'])('keeps an input property %s on the declared input', (kind) => {
     const edges = getRelationships(result, 'ACCESSES').filter(

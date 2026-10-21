@@ -157,22 +157,22 @@ describe('caller-derived parameter types (W2-2)', () => {
   // as a `receiver-unresolved` drop — and kept it after the edge was emitted.
   it.each<readonly [OutcomeSite, string, string]>([
     [
-      ['src/producer.js', 4, 11, 'wickRatio'],
+      ['src/producer.js', 4, 11, 'wickRatio', 'write'],
       'Function:src/producer.js:makeSpike',
       'Property:src/producer.js:makeSpike.wickRatio@3:11',
     ],
     [
-      ['src/producer.js', 4, 27, 'source'],
+      ['src/producer.js', 4, 27, 'source', 'write'],
       'Function:src/producer.js:makeSpike',
       'Property:src/producer.js:makeSpike.source@3:27',
     ],
     [
-      ['src/producer.js', 8, 11, 'wickRatio'],
+      ['src/producer.js', 8, 11, 'wickRatio', 'write'],
       'Function:src/producer.js:makeCandle',
       'Property:src/producer.js:makeCandle.wickRatio@7:11',
     ],
     [
-      ['src/producer.js', 8, 27, 'source'],
+      ['src/producer.js', 8, 27, 'source', 'write'],
       'Function:src/producer.js:makeCandle',
       'Property:src/producer.js:makeCandle.source@7:27',
     ],

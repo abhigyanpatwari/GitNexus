@@ -1,4 +1,4 @@
-import type { ReferenceSite } from 'gitnexus-shared';
+import type { ParsedFile, ReferenceSite } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
@@ -16,7 +16,9 @@ import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 export function isCommonJsExportAssignment(
   site: ReferenceSite,
   scopes: ScopeResolutionIndexes,
+  parsed: ParsedFile,
 ): boolean {
+  if (parsed.captureSideChannel !== true) return false;
   if (site.kind !== 'write') return false;
   if (!isModuleExportsReceiver(site)) return false;
   const claim = lookupNameClaim(site.inScope, 'module', scopes, {

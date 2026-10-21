@@ -6,7 +6,7 @@ import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineOptions } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
-import type { GraphRelationship } from 'gitnexus-shared';
+import type { GraphRelationship, ReferenceKind } from 'gitnexus-shared';
 
 export const FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'lang-resolution');
 export const CROSS_FILE_FIXTURES = path.resolve(
@@ -68,18 +68,23 @@ export function getResolutionOutcomes(result: PipelineResult) {
   return result.resolutionOutcomes ?? [];
 }
 
-/** One reference site: file, 1-based start line and column, and member name. */
-export type OutcomeSite = readonly [filePath: string, line: number, col: number, name: string];
+/** File, 1-based start line, column, member name, and reference kind. */
+export type OutcomeSite = readonly [
+  filePath: string,
+  line: number,
+  col: number,
+  name: string,
+  kind: ReferenceKind,
+];
 
 /**
- * Reasons of the suppressed outcomes recorded at exactly `site`, sorted.
+ * Reasons recorded for the requested kind and member at this start position.
  *
- * Matched on the member name as well as the position: `a.b` and `a.b.c()`
- * start at the same column, so position alone names two sites.
+ * A call and a read can share both their member name and start position.
  */
 export function suppressionReasonsAt(
   result: PipelineResult,
-  [filePath, line, col, name]: OutcomeSite,
+  [filePath, line, col, name, siteKind]: OutcomeSite,
 ): string[] {
   return getResolutionOutcomes(result)
     .flatMap((outcome) =>
@@ -87,7 +92,8 @@ export function suppressionReasonsAt(
       outcome.filePath === filePath &&
       outcome.range.startLine === line &&
       outcome.range.startCol === col &&
-      outcome.name === name
+      outcome.name === name &&
+      outcome.siteKind === siteKind
         ? [outcome.reason]
         : [],
     )

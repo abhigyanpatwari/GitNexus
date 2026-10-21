@@ -667,7 +667,7 @@ const clearCaches = (): void => {
 // Keyed by class node startIndex (unique per AST node within a file).
 // ============================================================================
 
-const fieldInfoCache = new Map<number, Map<string, FieldInfo>>();
+const fieldInfoCache = new Map<number, Map<string, FieldInfo[]>>();
 
 /**
  * Walk up from a definition node to find the nearest enclosing class/struct/interface
@@ -796,14 +796,14 @@ const NOOP_SYMBOL_TABLE: SymbolTableReader = {
 
 /**
  * Get (or extract and cache) field info for a class node.
- * Returns a name→FieldInfo map, or undefined if the provider has no field extractor
+ * Returns a name→declarations map, or undefined if the provider has no field extractor
  * or the class yielded no fields.
  */
 function getFieldInfo(
   classNode: SyntaxNode,
   provider: LanguageProvider,
   context: FieldExtractorContext,
-): Map<string, FieldInfo> | undefined {
+): Map<string, FieldInfo[]> | undefined {
   if (!provider.fieldExtractor) return undefined;
 
   const cacheKey = classNode.startIndex;
@@ -813,12 +813,25 @@ function getFieldInfo(
   const result = provider.fieldExtractor.extract(classNode, context);
   if (!result?.fields?.length) return undefined;
 
-  cached = new Map<string, FieldInfo>();
+  cached = new Map<string, FieldInfo[]>();
   for (const field of result.fields) {
-    cached.set(field.name, field);
+    const declarations = cached.get(field.name);
+    if (declarations !== undefined) declarations.push(field);
+    else cached.set(field.name, [field]);
   }
   fieldInfoCache.set(cacheKey, cached);
   return cached;
+}
+
+function selectFieldInfo(
+  declarations: readonly FieldInfo[] | undefined,
+  line: number,
+  column?: number,
+): FieldInfo | undefined {
+  if (declarations?.length === 1) return declarations[0];
+  const atLine = declarations?.filter((field) => field.line === line);
+  if (atLine?.length === 1) return atLine[0];
+  return column === undefined ? undefined : atLine?.find((field) => field.column === column);
 }
 
 // ============================================================================
@@ -2099,7 +2112,7 @@ const processFileGroup = (
                 const propEnclosingClassId =
                   propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
                 // Enrich routed properties with FieldExtractor metadata
-                let routedFieldMap: Map<string, FieldInfo> | undefined;
+                let routedFieldMap: Map<string, FieldInfo[]> | undefined;
                 if (provider.fieldExtractor && typeEnv) {
                   const classNode = findEnclosingClassNode(captureMap['call']);
                   if (classNode) {
@@ -2112,7 +2125,11 @@ const processFileGroup = (
                   }
                 }
                 for (const item of routed.items) {
-                  const routedFieldInfo = routedFieldMap?.get(item.propName);
+                  const routedFieldInfo = selectFieldInfo(
+                    routedFieldMap?.get(item.propName),
+                    item.startLine + 1,
+                    captureMap['call'].startPosition.column,
+                  );
                   const propQualifiedName = propEnclosingInfo
                     ? `${propEnclosingInfo.className}.${item.propName}`
                     : item.propName;
@@ -2956,7 +2973,11 @@ const processFileGroup = (
               filePath: file.path,
               language,
             });
-            const info = fieldMap?.get(nodeName);
+            const info = selectFieldInfo(
+              fieldMap?.get(nodeName),
+              definitionNode.startPosition.row + 1,
+              definitionNode.startPosition.column,
+            );
             if (info) {
               declaredType = info.type ?? undefined;
               // Mutate methodProps BEFORE the `{...methodProps}` spread below —

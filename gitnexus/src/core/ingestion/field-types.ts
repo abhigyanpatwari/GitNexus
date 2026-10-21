@@ -63,6 +63,8 @@ export interface FieldInfo {
   sourceFile: string;
   /** Line number */
   line: number;
+  /** Zero-based declaration column, when the extractor has an AST position. */
+  column?: number;
 }
 
 /**

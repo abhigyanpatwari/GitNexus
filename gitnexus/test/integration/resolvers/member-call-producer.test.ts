@@ -93,27 +93,27 @@ describe('member-call producers (W2-1)', () => {
   // receiver-bound pass file the site as one before the edge existed.
   it.each<readonly [OutcomeSite, string, string]>([
     [
-      ['src/producer.js', 5, 13, 'secretFlag'],
+      ['src/producer.js', 5, 13, 'secretFlag', 'write'],
       'Method:src/producer.js:SignalService.make#0',
       'Property:src/producer.js:SignalService.make.secretFlag@4:13',
     ],
     [
-      ['src/producer.js', 5, 38, 'wickRatio'],
+      ['src/producer.js', 5, 38, 'wickRatio', 'write'],
       'Method:src/producer.js:SignalService.make#0',
       'Property:src/producer.js:SignalService.make.wickRatio@4:38',
     ],
     [
-      ['src/producer.js', 9, 13, 'secretFlag'],
+      ['src/producer.js', 9, 13, 'secretFlag', 'write'],
       'Method:src/producer.js:SignalService.other#0',
       'Property:src/producer.js:SignalService.other.secretFlag@8:13',
     ],
     [
-      ['src/producer.js', 15, 11, 'secretFlag'],
+      ['src/producer.js', 15, 11, 'secretFlag', 'write'],
       'Function:src/producer.js:makeSignal',
       'Property:src/producer.js:makeSignal.secretFlag@14:11',
     ],
     [
-      ['src/producer.js', 15, 36, 'wickRatio'],
+      ['src/producer.js', 15, 36, 'wickRatio', 'write'],
       'Function:src/producer.js:makeSignal',
       'Property:src/producer.js:makeSignal.wickRatio@14:36',
     ],
