@@ -240,15 +240,16 @@ export type ResolutionOutcomeRecorder = (outcome: ResolutionOutcome) => void;
  *
  * Position alone is not enough: `cfg.timeouts` (a read of `timeouts`) and
  * `cfg.timeouts.retry()` (a call of `retry`) both start at `cfg`, so a key of
- * file + line + column names two sites. The kind and member name separate them.
+ * file + line + column names two sites. The kind, member name, and full range
+ * separate them, including repeated names such as `res.data.data`.
  */
 export function answeredSiteKey(
   filePath: string,
-  range: Pick<Range, 'startLine' | 'startCol'>,
+  range: Range,
   siteKind: ReferenceKind,
   name: string,
 ): string {
-  return `${filePath}:${range.startLine}:${range.startCol}:${siteKind}:${name}`;
+  return `${filePath}:${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}:${siteKind}:${name}`;
 }
 
 /**

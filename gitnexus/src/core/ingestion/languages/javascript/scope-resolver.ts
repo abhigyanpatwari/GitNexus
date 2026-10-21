@@ -94,7 +94,6 @@ const javascriptScopeResolver: ScopeResolver = {
   // JavaScript `super` keyword: same pattern as TypeScript.
   isSuperReceiver: (text) => /^super(\s*\(|\s*\.|\s*\[|\s*$)/.test(text.trim()),
 
-  // `module.exports.x = …` declares an export; it is not a dropped member write.
   isModuleExportAssignment: isCommonJsExportAssignment,
 
   // JavaScript is dynamically typed — enable the field-fallback heuristic

@@ -63,7 +63,7 @@
  * rather than through `tryEmitEdge`, whose target side takes a def.
  */
 
-import type { ImportEdge, ParsedFile, ScopeId } from 'gitnexus-shared';
+import type { ImportEdge, ParsedFile, ReferenceSite, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
@@ -300,41 +300,6 @@ function buildDirectImportMap(
   return byFile;
 }
 
-/** Is this Property id qualified by `<owner>.`, allowing a position suffix? */
-function idOwnedBy(id: string, owner: string): boolean {
-  const at = id.indexOf(`:${owner}.`);
-  if (at === -1) return false;
-  const rest = id.slice(at + owner.length + 2);
-  return !rest.includes('.') || rest.indexOf('@') < rest.indexOf('.');
-}
-
-/**
- * The owner qualifier R3-4 writes into the ids of the return-shape keys a
- * callable owns, read off that callable's graph id: the qualified name after
- * `<Label>:<file>:`, without the overload suffix.
- *
- *   `Function:a/b.js:buildB`            -> `buildB`
- *   `Method:a/b.js:SignalService.make#0` -> `SignalService.make`
- *   `Function:a/b.js:outer.parse@25:2`  -> `outer.parse@25:2`
- *
- * The `#<arity>` (and any `~<types>`) suffix is identity for an overload, not
- * part of the qualifier its keys carry (`SignalService.make.secretFlag@4:13`),
- * so leaving it on meant a method never matched its own keys. A position is
- * kept: R3-4 qualifies a positioned owner's keys with it
- * (`fn@43:2.anonReturnKey@44:13`). Reading only the text after the LAST `:`
- * instead cut a positioned id down to its column (`2`), which `idOwnedBy` then
- * matched against any owner ending in `:2`. `undefined` for an id outside
- * `filePath` — a File node, which owns no return shape.
- */
-function ownerQualifierOfGraphId(graphId: string, filePath: string): string | undefined {
-  const fileSegment = `:${filePath}:`;
-  const at = graphId.indexOf(fileSegment);
-  if (at === -1) return undefined;
-  const qualified = graphId.slice(at + fileSegment.length);
-  const overload = qualified.indexOf('#');
-  return overload === -1 ? qualified : qualified.slice(0, overload);
-}
-
 /**
  * Pick the single candidate a read in `readingFile` can plausibly mean.
  *
@@ -348,8 +313,7 @@ function narrowToSingleCandidate(
   candidatesIn: readonly PropertyCandidate[],
   readingFile: string,
   importedFiles: ReadonlySet<string> | undefined,
-  /** Simple name of the callable the site sits in, when it could be resolved. */
-  ownerName?: string,
+  site: ReferenceSite,
 ): { readonly id: string; readonly tier: string } | null {
   // DECLARED ANCHORS FIRST. A return shape is a real definition but a weaker
   // one: it says "some function builds an object with this key", where a named
@@ -359,20 +323,13 @@ function narrowToSingleCandidate(
   // return shapes were indexed at all.
   let candidates = candidatesIn;
 
-  // A SITE INSIDE ITS OWN RETURN SHAPE BINDS TO ITS OWN KEY.
-  //
-  // `export function buildB(row) { return { tickIntervalMs: row.b } }` writes
-  // the key that IS `buildB.tickIntervalMs`. Ranking declared anchors above
-  // return shapes is right for a READ through a receiver, but applied here it
-  // handed that write to a same-named module const (`fnSettings.tickIntervalMs`)
-  // that `buildB` never touches — a wrong edge, reported at the confident tier,
-  // and the node the key actually defines was left with no writer at all.
-  //
-  // Checked before every other rule because it is evidence rather than ranking:
-  // the owner qualifier on the candidate id and the enclosing callable are the
-  // same symbol. Nothing else can outrank that.
-  if (ownerName !== undefined && ownerName.length > 0) {
-    const own = candidates.filter((c) => c.fromReturnShape && idOwnedBy(c.id, ownerName));
+  // Only the key's declaration WRITE proves ownership. Other accesses inside
+  // the producer still use ordinary ranking, even when they share its key name.
+  if (site.kind === 'write') {
+    const position = `@${site.atRange.startLine - 1}:${site.atRange.startCol}`;
+    const own = candidates.filter(
+      (c) => c.fromReturnShape && c.filePath === readingFile && c.id.endsWith(position),
+    );
     if (own.length === 1) return { id: own[0]!.id, tier: 'own-return-shape' };
   }
 
@@ -517,8 +474,6 @@ export function emitUniqueNamePropertyAccesses(
         continue;
       }
 
-      // Resolved BEFORE narrowing: the enclosing callable is evidence the
-      // ranking needs, not just the edge's source.
       const callerGraphId = resolveCallerGraphId(
         site.callerScope ?? site.inScope,
         indexes,
@@ -531,7 +486,7 @@ export function emitUniqueNamePropertyAccesses(
         candidates,
         parsed.filePath,
         directImports.get(parsed.filePath),
-        ownerQualifierOfGraphId(callerGraphId, parsed.filePath),
+        site,
       );
       if (choice === null) {
         ambiguous++;

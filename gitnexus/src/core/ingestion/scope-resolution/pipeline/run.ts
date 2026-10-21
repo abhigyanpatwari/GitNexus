@@ -1444,12 +1444,6 @@ export function runScopeResolution(
   // several functions returning the same field name. Sites it resolves are
   // added to the skip set, so the fallback below never second-guesses them.
   const sharedPropertyIndex = input.prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
-  // Read/write sites the two passes below answer with an edge. The
-  // receiver-bound pass ran first and may already have filed one of them as a
-  // `receiver-unresolved` drop — the capture makes an object literal the
-  // receiver of its own keys, and a literal holding `row.a` or `0.5` reads as a
-  // compound receiver it cannot type — so those drops are withdrawn once both
-  // passes have run. A site they also leave unanswered keeps its drop.
   const answeredAfterReceiverPass = new Set<string>();
   const returnShapeMembers = callableFlowOnly
     ? { emitted: 0, memberNotOnShape: 0 }

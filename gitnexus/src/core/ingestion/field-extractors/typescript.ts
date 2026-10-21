@@ -178,7 +178,6 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
       type = resolvedType ?? type;
     }
 
-    // Only a field with no declared type is typed by its initializer.
     const initializerType = type === null ? constructedTypeOfFieldInitializer(node) : undefined;
 
     return {

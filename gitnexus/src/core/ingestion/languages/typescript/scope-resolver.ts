@@ -138,7 +138,6 @@ const typescriptScopeResolver: ScopeResolver = {
   // contain the substring `super` (e.g. `superman`).
   isSuperReceiver: (text) => /^super(\s*\(|\s*\.|\s*\[|\s*$)/.test(text.trim()),
 
-  // `module.exports.x = …` declares an export; it is not a dropped member write.
   isModuleExportAssignment: isCommonJsExportAssignment,
 
   // TypeScript is statically typed — field-fallback heuristic off

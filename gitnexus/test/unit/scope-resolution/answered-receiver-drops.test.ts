@@ -23,7 +23,12 @@ const at = (startLine: number, startCol: number) => ({
   endCol: startCol + 1,
 });
 
-function drop(name: string, siteKind: SiteKind, line = 4, col = 2): ResolutionOutcome {
+function drop(
+  name: string,
+  siteKind: SiteKind,
+  line = 4,
+  col = 2,
+): Extract<ResolutionOutcome, { kind: 'suppressed' }> {
   return {
     kind: 'suppressed',
     reason: 'receiver-unresolved',
@@ -40,6 +45,18 @@ function drop(name: string, siteKind: SiteKind, line = 4, col = 2): ResolutionOu
 const ANSWERED = new Set([answeredSiteKey('src/producer.js', at(4, 2), 'write', 'wickRatio')]);
 
 describe('withdrawAnsweredReceiverDrops', () => {
+  it('keeps an unanswered repeated-name chain that ends after the answered inner read', () => {
+    const inner = drop('data', 'read');
+    const outer: ResolutionOutcome = {
+      ...drop('data', 'read'),
+      range: { ...at(4, 2), endCol: 12 },
+    };
+    const outcomes = [inner, outer];
+    const answered = new Set([answeredSiteKey(inner.filePath, inner.range, 'read', 'data')]);
+    expect(withdrawAnsweredReceiverDrops(outcomes, answered)).toBe(1);
+    expect(outcomes).toEqual([outer]);
+  });
+
   it.each<{ readonly label: string; readonly outcome: ResolutionOutcome; readonly kept: boolean }>([
     { label: 'the answered write itself', outcome: drop('wickRatio', 'write'), kept: false },
     // `a.b` and `a.b.c()` start at the same column, so position alone cannot

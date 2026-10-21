@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { summarizeUnresolvedReceivers } from '../../../src/core/ingestion/scope-resolution/unresolved-receivers.js';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -769,5 +770,186 @@ module.exports.api.nested = 1;
       .map((e) => e.target)
       .sort();
     expect(writes).toEqual(['arrowRequest', 'memberRequest']);
+  });
+});
+
+describe('Literal writes and owned receiver bases preserve bindings', () => {
+  let result: PipelineResult;
+  let fixtureRoot: string;
+
+  beforeAll(async () => {
+    fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-literal-bindings-'));
+    writeFixtureRepo(fixtureRoot, {
+      'private.js': `const config = { privateFlag: true };
+class PrivateProducer {
+  #make(row) { return { privateFlag: row.value }; }
+}
+`,
+      'owned.dart': `class DartWorker { void go() {} }
+class DartBundle { DartWorker worker = DartWorker(); }
+class DartOwner {
+  DartBundle task = DartBundle();
+  void loop(xs) {
+    for (final task in xs) { task.worker.go(); }
+  }
+}
+`,
+      'input.js': `const config = { secretFlag: true };
+export class SignalService {
+  make(options) {
+    options.secretFlag = false;
+    return { secretFlag: options.secretFlag };
+  }
+}
+new SignalService().make(config);
+`,
+      'foreign-reader.js': `const local = { foreignFlag: 1 };
+export class Service { make(obj) { return obj.foreignFlag; } }
+`,
+      'foreign-producer.js': `export class Service { make() { return { foreignFlag: 0.5 }; } }
+`,
+      'repeated.js': `function build() { return { data: { data: 1 } }; }
+function use() { const res = build(); return res.data.data; }
+`,
+      'static.js': `class StaticService { go() {} }
+class StaticOther { go() {} }
+class StaticBase { static svc = new StaticService(); }
+class NullChild extends StaticBase { static svc = null; }
+class UnknownChild extends StaticBase { static svc = unknownFactory(); }
+class InheritedChild extends StaticBase {}
+class TypedChild extends StaticBase { static svc = new StaticOther(); }
+function nullProbe() { return NullChild.svc.go(); }
+function unknownProbe() { return UnknownChild.svc.go(); }
+function inheritedProbe() { return InheritedChild.svc.go(); }
+function typedProbe() { return TypedChild.svc.go(); }
+`,
+      'constructor.js': `class JsRepo { save() {} }
+class JsActual { save() {} }
+function jsShadow(JsRepo) {
+  class JsHolder { static item = new JsRepo(); }
+  JsHolder.item.save();
+}
+jsShadow(JsActual);
+`,
+      'constructor.ts': `class TsRepo { save() {} }
+class TsActual { save() {} }
+function tsShadow(TsRepo: any) {
+  class TsHolder { static item = new TsRepo(); }
+  TsHolder.item.save();
+}
+function tsAnnotated(TsRepo: any) {
+  class AnnotatedHolder { static item: TsRepo; }
+  AnnotatedHolder.item.save();
+}
+tsShadow(TsActual);
+tsAnnotated(TsActual);
+`,
+    });
+    result = await runPipelineFromRepo(fixtureRoot, () => {}, { skipGraphPhases: true });
+  }, 120000);
+
+  afterAll(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  it.each(['read', 'write'])('keeps an input property %s on the declared input', (kind) => {
+    const edges = getRelationships(result, 'ACCESSES').filter(
+      (e) =>
+        e.rel.sourceId === 'Method:input.js:SignalService.make#1' &&
+        e.rel.reason?.endsWith(`: ${kind}`),
+    );
+    expect(edges.some((e) => e.rel.targetId === 'Property:input.js:config.secretFlag')).toBe(true);
+    if (kind === 'read') {
+      expect(edges.some((e) => e.rel.targetId.includes('SignalService.make.secretFlag@'))).toBe(
+        false,
+      );
+    }
+  });
+
+  it('keeps the returned literal declaration write on its own key', () => {
+    const writes = getRelationships(result, 'ACCESSES').filter(
+      (e) =>
+        e.rel.sourceId === 'Method:input.js:SignalService.make#1' &&
+        e.rel.targetId === 'Property:input.js:SignalService.make.secretFlag@4:13' &&
+        e.rel.reason?.endsWith(': write'),
+    );
+    expect(writes).toHaveLength(1);
+  });
+
+  it('binds a private method literal write to its own returned key', () => {
+    const writes = getRelationships(result, 'ACCESSES').filter(
+      (e) =>
+        e.sourceFilePath === 'private.js' &&
+        e.sourceLabel !== 'File' &&
+        e.rel.reason?.endsWith(': write'),
+    );
+    expect(writes).toHaveLength(1);
+    expect(writes[0]?.rel.targetId).toContain(
+      'Property:private.js:PrivateProducer.#make.privateFlag@',
+    );
+  });
+
+  it('records a Dart chain on a masked field base as owned but unbound', () => {
+    expect(getRelationships(result, 'CALLS').filter((e) => e.source === 'loop')).toEqual([]);
+    expect(
+      result.resolutionOutcomes?.some(
+        (o) =>
+          o.kind === 'suppressed' &&
+          o.reason === 'receiver-owned-but-unbound' &&
+          o.filePath === 'owned.dart' &&
+          o.name === 'go',
+      ),
+    ).toBe(true);
+    const owned =
+      result.resolutionOutcomes?.filter((outcome) => outcome.filePath === 'owned.dart') ?? [];
+    expect(summarizeUnresolvedReceivers(owned)?.counts.go).toBe(1);
+  });
+
+  it('keeps the unresolved outer read when a repeated-name inner read was answered', () => {
+    const drops = result.resolutionOutcomes?.filter(
+      (outcome) =>
+        outcome.kind === 'suppressed' &&
+        outcome.reason === 'receiver-unresolved' &&
+        outcome.filePath === 'repeated.js' &&
+        outcome.name === 'data',
+    );
+    expect(drops).toHaveLength(1);
+    expect(drops?.[0]).toMatchObject({
+      range: { startLine: 2, startCol: 45, endCol: 58 },
+    });
+    expect(
+      getRelationships(result, 'ACCESSES').some(
+        (edge) =>
+          edge.sourceFilePath === 'repeated.js' &&
+          edge.rel.reason === 'scope-resolution: return-shape member: read',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not borrow a same-named method return shape from another file', () => {
+    const reads = getRelationships(result, 'ACCESSES').filter(
+      (e) => e.rel.sourceId === 'Method:foreign-reader.js:Service.make#1',
+    );
+    expect(reads.map((e) => e.rel.targetId)).toEqual([
+      'Property:foreign-reader.js:local.foreignFlag',
+    ]);
+  });
+
+  it.each(['nullProbe', 'unknownProbe'])('stops at an untyped static override in %s', (source) => {
+    expect(getRelationships(result, 'CALLS').filter((e) => e.source === source)).toEqual([]);
+  });
+
+  it.each([
+    ['inheritedProbe', 'Method:static.js:StaticService.go#0'],
+    ['typedProbe', 'Method:static.js:StaticOther.go#0'],
+    ['tsAnnotated', 'Method:constructor.ts:TsRepo.save#0'],
+  ])('resolves the available field type in %s', (source, target) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((e) => e.source === source)
+        .map((e) => e.rel.targetId),
+    ).toContain(target);
+  });
+
+  it.each(['jsShadow', 'tsShadow'])('respects the constructor value parameter in %s', (source) => {
+    expect(getRelationships(result, 'CALLS').filter((e) => e.source === source)).toEqual([]);
   });
 });
