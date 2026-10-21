@@ -2365,10 +2365,13 @@ export function emitReceiverBoundCalls(
         // `User`) is asked first, through the helper the compound resolver's
         // declared-type lookup uses — a miss lands on the lookup below unchanged.
         let ownerDef =
-          classOfQualifiedTypeSpelling(typeRef, scopes, provider.qualifiedTypeLookupSpelling, {
-            ...typeLookup,
+          classOfQualifiedTypeSpelling(
+            typeRef,
+            scopes,
+            provider.qualifiedTypeLookupSpelling,
+            typeLookup,
             namespaceMemberVisible,
-          }) ??
+          ) ??
           resolveClassBindingForName(
             typeRef.declaredAtScope,
             typeApplication ?? typeRef.rawName,

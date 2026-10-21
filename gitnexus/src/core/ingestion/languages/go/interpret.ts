@@ -163,7 +163,11 @@ const GO_QUALIFIED_TYPE_NAME_RE = /^[\p{L}_][\p{L}\p{Nd}_]*\.[\p{L}_][\p{L}\p{Nd
  */
 export function goQualifiedTypeLookupSpelling(typeRef: TypeRef): string | undefined {
   const written = typeRef.declaredSpelling;
-  if (written === undefined || typeRef.rawName.includes('.')) return undefined;
+  // No `.` in the written type means no qualifier to recover; most bindings
+  // take this exit before any wrapper stripping.
+  if (written === undefined || !written.includes('.') || typeRef.rawName.includes('.')) {
+    return undefined;
+  }
   const qualified = normalizeGoReturnType(written);
   return GO_QUALIFIED_TYPE_NAME_RE.test(qualified) ? qualified : undefined;
 }

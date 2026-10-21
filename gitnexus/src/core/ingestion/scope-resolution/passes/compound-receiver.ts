@@ -465,10 +465,13 @@ function classOfDeclaredType(
   // is read only for type ARGUMENTS (#2912), and the qualified spelling has none.
   const spelling = erasedTypeApplication(typeRef) ?? typeRef.rawName;
   const def =
-    classOfQualifiedTypeSpelling(typeRef, scopes, options.qualifiedTypeLookupSpelling, {
-      ...lookup,
-      namespaceMemberVisible: options.namespaceMemberVisible,
-    }) ??
+    classOfQualifiedTypeSpelling(
+      typeRef,
+      scopes,
+      options.qualifiedTypeLookupSpelling,
+      lookup,
+      options.namespaceMemberVisible,
+    ) ??
     resolveClassBindingForName(typeRef.declaredAtScope, spelling, scopes, stripDecoration, lookup);
   return noteReceiverType(options.recordReceiverType, spelling, def);
 }
@@ -501,12 +504,16 @@ export function classOfQualifiedTypeSpelling(
   scopes: ScopeResolutionIndexes,
   qualifiedTypeLookupSpelling: ScopeResolver['qualifiedTypeLookupSpelling'],
   lookup: ClassBindingLookup,
+  namespaceMemberVisible: ClassBindingLookup['namespaceMemberVisible'],
 ): SymbolDefinition | undefined {
+  // Runs for every declared-type lookup in every language, so nothing is
+  // allocated until the provider has actually returned a qualified spelling.
   const qualified = qualifiedTypeLookupSpelling?.(typeRef);
   if (qualified === undefined || qualified === typeRef.rawName) return undefined;
   const importScope = moduleScopeIdOf(typeRef.declaredAtScope, scopes) ?? typeRef.declaredAtScope;
   return findClassBindingInScope(importScope, qualified, scopes, undefined, {
     ...lookup,
+    namespaceMemberVisible,
     uniqueQualifiedNameFallback: false,
   });
 }
