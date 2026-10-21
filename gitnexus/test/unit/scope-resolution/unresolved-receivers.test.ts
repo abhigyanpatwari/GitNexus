@@ -16,7 +16,10 @@ import type {
   ReceiverOrigin,
   ResolutionOutcome,
 } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
-import { classifyReceiverOrigin } from '../../../src/core/ingestion/scope-resolution/passes/receiver-bound-calls.js';
+import {
+  buildReceiverOriginEvidence,
+  classifyReceiverOrigin,
+} from '../../../src/core/ingestion/scope-resolution/passes/receiver-bound-calls.js';
 import { decodeReceiverChain } from '../../../src/core/ingestion/utils/receiver-chain-codec.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { goScopeResolver } from '../../../src/core/ingestion/languages/go/scope-resolver.js';
@@ -225,7 +228,7 @@ describe('summarizeUnresolvedReceivers origin routing', () => {
 
 /** The provider-hook bag `classifyReceiverOrigin` reads. Derived from the
  *  function so the two cannot drift. */
-type OriginHooks = Parameters<typeof classifyReceiverOrigin>[4];
+type OriginHooks = Parameters<typeof classifyReceiverOrigin>[5];
 
 /** Classify the receiver of the (unique) reference site invoking `memberName`
  *  under `hooks`, through exactly the arguments the pass threads at its drop
@@ -235,26 +238,47 @@ function classifyOriginOf(
   memberName: string,
   hooks: OriginHooks,
 ): ReceiverOrigin {
-  const site = fixture.sites.find(
-    (candidate) => candidate.name === memberName && candidate.explicitReceiver !== undefined,
-  );
-  expect(site).toBeDefined();
+  const site =
+    fixture.sites.find(
+      (candidate) => candidate.name === memberName && candidate.explicitReceiver !== undefined,
+    ) ?? expect.unreachable(`no receiver site invokes \`${memberName}\``);
+  const receiver =
+    site.explicitReceiver ?? expect.unreachable(`\`${memberName}\` has no explicit receiver`);
   return classifyReceiverOrigin(
-    decodeReceiverChain(site!.receiverChain),
-    site!.inScope,
-    site!.explicitReceiver!.name,
+    decodeReceiverChain(site.receiverChain),
+    site.inScope,
+    receiver.name,
+    site.name,
     fixture.scopes,
     hooks,
   );
 }
 
-/** The normal path: the language's own contract hooks, exactly as the pass
- *  supplies them. */
+/** The normal path: the language's own contract hooks, built by the same
+ *  factory the pass calls. The fold flags mirror the ones the pass hands
+ *  `resolveCompoundReceiverClass`, read off the resolver. */
 function originOf(fixture: ScopeModelFixture, memberName: string): ReceiverOrigin {
-  return classifyOriginOf(fixture, memberName, {
-    stripTypePreservingDecoration: fixture.resolver.stripTypePreservingDecoration,
-    isBuiltInName: fixture.resolver.languageProvider.isBuiltInName,
-  });
+  const { resolver } = fixture;
+  return classifyOriginOf(
+    fixture,
+    memberName,
+    buildReceiverOriginEvidence({
+      parsedFiles: [fixture.parsed],
+      scopes: fixture.scopes,
+      index: fixture.index,
+      foldOptions: {
+        fieldFallback: resolver.fieldFallbackOnMethodLookup ?? true,
+        elementTypeOf: resolver.elementTypeOf,
+        hoistTypeBindingsToModule: resolver.hoistTypeBindingsToModule === true,
+        stripTypePreservingDecoration: resolver.stripTypePreservingDecoration,
+        resolveThisViaEnclosingClass: resolver.resolveThisViaEnclosingClass,
+      },
+      stripTypePreservingDecoration: resolver.stripTypePreservingDecoration,
+      isBuiltInName: resolver.languageProvider.isBuiltInName,
+      externalReceiverNames: resolver.languageProvider.externalReceiverNames,
+      isExternalModuleSpecifier: resolver.languageProvider.isExternalModuleSpecifier,
+    }),
+  );
 }
 
 /** The degradation path: the same site with the language's provider hooks
@@ -344,6 +368,7 @@ public class Probe {
         names.iterator();
         List.of("a");
         Map.entry("a", "b");
+        Set.copyOf(names);
         Helper.assist();
         svc.loadUser();
         repo.findAll();
@@ -444,18 +469,100 @@ describe('classifyReceiverOrigin', () => {
     expect(originOf(javaFixture, 'findAll')).toBe('unknown');
   });
 
-  it('hedges a platform name deliberately kept OUT of the set', () => {
-    // `Map.entry(...)` is the exact syntactic twin of the `List.of(...)` above;
-    // the only thing separating the two verdicts is set membership. `Map` is a
-    // name applications really do declare (and in Java a same-package type needs
-    // no import to shadow it), so it stays out and its drops keep hedging. This
-    // pins the under-inclusion choice as a choice, not an oversight.
-    expect(originOf(javaFixture, 'entry')).toBe('unknown');
+  it('hedges an unimported platform name deliberately kept OUT of the set', () => {
+    // `Set.copyOf(...)` is the exact syntactic twin of the `List.of(...)` above,
+    // and nothing in the file imports `Set`. `Set` is a name applications really
+    // do declare, and in Java an unimported one can only be a type of this
+    // package, so it stays out and its drops keep hedging. This pins the
+    // under-inclusion choice as a choice, not an oversight.
+    expect(originOf(javaFixture, 'copyOf')).toBe('unknown');
+  });
+
+  it('reads an explicit platform import as evidence whatever the set says', () => {
+    // `import java.util.Map` shadows any same-package `Map` (JLS §6.4.1) and can
+    // never resolve in-workspace, so the import itself places `Map.entry(...)`
+    // in the JDK. Before the import counted, this drop hedged on set membership
+    // alone.
+    expect(originOf(javaFixture, 'entry')).toBe('external');
   });
 
   it('degrades every Java verdict to unknown when the hook is withheld', () => {
     expect(originOfWithoutHooks(javaFixture, 'format')).toBe('unknown');
     expect(originOfWithoutHooks(javaFixture, 'trim')).toBe('unknown');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Library and runtime receivers (#3498 triage).
+//
+// Every row below is a receiver the language's runtime or standard library
+// supplies — a host global, a stdlib import, a platform package root, or a
+// value whose declared type is a library type — next to a control where the
+// program binds the same name itself. The control is the point: positive
+// evidence means the program declares nothing by that name at the site, so a
+// parameter called `document`, a local `class System` or an unresolved import
+// from a non-library module must keep hedging. Built from real extraction for
+// the reason given above: what a binding contains is exactly what intuition
+// gets wrong.
+// ---------------------------------------------------------------------------
+
+// TypeScript stores method return types on the MODULE scope, keyed by method
+// name alone. `Status` declares no `name()`; the module's `name` binding is
+// `Labels.name`'s. Reading it would type `this.name()` as a library `String`
+// and call an in-program receiver external.
+const tsHoistedFixture = buildScopeModel(
+  typescriptScopeResolver,
+  `export class Labels {
+  name(): String {
+    return '';
+  }
+}
+
+export class Status {
+  label(): void {
+    this.name().toLowerCase();
+  }
+}
+`,
+  'status.ts',
+);
+
+const javaLibraryFixture = buildScopeModel(
+  javaScopeResolver,
+  `public class Probe {
+    public void qualified() {
+        java.util.Optional.of("x");
+    }
+
+    public void shadowed(Holder java) {
+        java.util.run();
+    }
+}
+
+class Holder {
+    Util util;
+}
+
+class Util {
+    void run() {}
+}
+`,
+  'src/Probe.java',
+);
+
+describe('classifyReceiverOrigin — library and runtime receivers', () => {
+  it.each([['Java platform package root', javaLibraryFixture, 'of']] as const)(
+    'reports %s as external',
+    (_label, fixture, memberName) => {
+      expect(originOf(fixture, memberName)).toBe('external');
+    },
+  );
+
+  it.each([
+    ["a step typed only by another class's member", 'in-program', tsHoistedFixture, 'toLowerCase'],
+    ['a Java parameter named java', 'in-program', javaLibraryFixture, 'run'],
+  ] as const)('keeps %s %s', (_label, expected, fixture, memberName) => {
+    expect(originOf(fixture, memberName)).toBe(expected);
   });
 });
 

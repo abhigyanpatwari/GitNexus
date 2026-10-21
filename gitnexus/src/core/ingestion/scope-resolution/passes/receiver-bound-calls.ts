@@ -99,10 +99,16 @@ import {
 import { constructionSiteReason } from './free-call-fallback.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
+  foldReceiverChainPosition,
   resolveCompoundReceiverClass,
   resolveCompoundReceiverTyped,
+  type FoldedReceiverPosition,
 } from '../passes/compound-receiver.js';
-import { erasedTypeApplication, typeApplicationArguments } from '../../utils/template-arguments.js';
+import {
+  erasedTypeApplication,
+  stripTemplateArguments,
+  typeApplicationArguments,
+} from '../../utils/template-arguments.js';
 import {
   heritageTypeArgumentsKey,
   stepHeritageInstantiation,
@@ -230,6 +236,193 @@ function isBareTypeName(rawName: string): boolean {
 }
 
 /**
+ * What {@link classifyReceiverOrigin} may consult beyond the scope indexes.
+ *
+ * Every member is optional, and a missing one can only WITHHOLD an `external`
+ * verdict — never produce one. Built once per pass by
+ * {@link buildReceiverOriginEvidence}, which the classifier unit tests call too,
+ * so the hooks a test exercises are the hooks the pass threads.
+ */
+export interface ReceiverOriginEvidence {
+  /** The language's type-preserving decoration stripper. Without it a Go
+   *  pointer receiver — `func (h *Host)` binds `h` to the literal `*Host` —
+   *  resolves to no class and the whole method body's drops were reported as
+   *  external. Same hook the three receiver-chain lookups in
+   *  `compound-receiver.ts` already receive. */
+  readonly stripTypePreservingDecoration?: DecorationStripper;
+  /** `LanguageProvider.isBuiltInName`, threaded through the pass options the
+   *  same way `emitFreeCallFallback` receives it. Languages that declare no
+   *  built-in set simply never produce an `external` verdict from it, which is
+   *  the safe default. */
+  readonly isBuiltInName?: (name: string) => boolean;
+  /** `LanguageProvider.externalReceiverNames` — host globals, platform
+   *  namespaces and library types, read as evidence only where the program
+   *  binds nothing by that name. */
+  readonly externalReceiverNames?: ReadonlySet<string>;
+  /** Is every import binding `localName` in `filePath` an import of a module the
+   *  language reserves for its runtime or standard library? Answered from the
+   *  import SPECIFIERS (`LanguageProvider.isExternalModuleSpecifier`); whether
+   *  the import resolved is the classifier's to check, from the import edges. */
+  readonly importsLibraryModule?: (filePath: string, localName: string) => boolean;
+  /** `foldReceiverChainPosition` under the pass's own compound-receiver
+   *  options, minus ancestor-hoisted bindings: where a minted receiver chain
+   *  lands when every step is typed by a declaration its owner makes. */
+  readonly foldChainPosition?: (
+    chain: DecodedReceiverChain,
+    inScope: ScopeId,
+  ) => FoldedReceiverPosition | undefined;
+  /** Does the program declare anything by this simple name? A program member
+   *  can be the target of a call on a LIBRARY type wherever the language lets
+   *  code add members to a type it does not own (extension methods, trait
+   *  impls), so a type-derived verdict declines whenever the dropped member's
+   *  name is one the program declares. */
+  readonly programDeclaresName?: (name: string) => boolean;
+}
+
+/**
+ * Build the {@link ReceiverOriginEvidence} for one language run.
+ *
+ * The per-file import table and the declared-name set are built on first use,
+ * not here: both exist only to answer questions about DROPPED sites, and a run
+ * that drops nothing should not pay a walk over every import and definition.
+ */
+export function buildReceiverOriginEvidence(input: {
+  readonly parsedFiles: readonly ParsedFile[];
+  readonly scopes: ScopeResolutionIndexes;
+  readonly index: WorkspaceResolutionIndex;
+  /** The options the pass hands `resolveCompoundReceiverClass`, so the fold
+   *  here types a subset of what the fold there types — see `foldChainPosition`
+   *  below for the one branch it leaves out. */
+  readonly foldOptions: NonNullable<Parameters<typeof foldReceiverChainPosition>[4]>;
+  readonly stripTypePreservingDecoration?: DecorationStripper;
+  readonly isBuiltInName?: (name: string) => boolean;
+  readonly externalReceiverNames?: ReadonlySet<string>;
+  readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
+}): ReceiverOriginEvidence {
+  const { parsedFiles, scopes, index, foldOptions, isExternalModuleSpecifier } = input;
+  let libraryImports: ReadonlyMap<string, ReadonlyMap<string, boolean>> | undefined;
+  let declaredNames: ReadonlySet<string> | undefined;
+  return {
+    stripTypePreservingDecoration: input.stripTypePreservingDecoration,
+    isBuiltInName: input.isBuiltInName,
+    externalReceiverNames: input.externalReceiverNames,
+    importsLibraryModule:
+      isExternalModuleSpecifier === undefined
+        ? undefined
+        : (filePath, localName) =>
+            (libraryImports ??= indexLibraryImports(parsedFiles, isExternalModuleSpecifier))
+              .get(filePath)
+              ?.get(localName) === true,
+    // Never through bindings hoisted onto an ancestor scope. That branch serves
+    // languages that store method return types on the module, but it answers
+    // with ANY same-named binding there — another class's member in the same
+    // file, or another file's in a shared package scope — so it can type a
+    // step against the wrong owner. Resolution tolerates that (a wrong owner
+    // that is a program class is still checked against its members); an
+    // `external` verdict built on it would not be checked at all.
+    foldChainPosition: (chain, inScope) =>
+      foldReceiverChainPosition(chain, inScope, scopes, index, {
+        ...foldOptions,
+        hoistTypeBindingsToModule: false,
+      }),
+    programDeclaresName: (name) => (declaredNames ??= indexDeclaredNames(scopes)).has(name),
+  };
+}
+
+/**
+ * Per file, per local name: is EVERY import binding that name an import of a
+ * library module? One non-library import of the same name (a relative module,
+ * a third-party package, a dynamic import) answers `false` for all of them.
+ */
+function indexLibraryImports(
+  parsedFiles: readonly ParsedFile[],
+  isExternalModuleSpecifier: (specifier: string) => boolean,
+): ReadonlyMap<string, ReadonlyMap<string, boolean>> {
+  const byFile = new Map<string, Map<string, boolean>>();
+  for (const parsed of parsedFiles) {
+    let byName: Map<string, boolean> | undefined;
+    for (const imp of parsed.parsedImports) {
+      // Wildcard, side-effect and resolved dynamic imports bind no local name.
+      if (!('localName' in imp)) continue;
+      const library = imp.kind !== 'dynamic-unresolved' && isExternalModuleSpecifier(imp.targetRaw);
+      byName ??= new Map();
+      byName.set(imp.localName, (byName.get(imp.localName) ?? true) && library);
+    }
+    if (byName !== undefined) byFile.set(parsed.filePath, byName);
+  }
+  return byFile;
+}
+
+/** Every simple name the program declares, from the qualified-name index. */
+function indexDeclaredNames(scopes: ScopeResolutionIndexes): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const qualifiedName of scopes.qualifiedNames.byQualifiedName.keys()) {
+    names.add(
+      qualifiedName.slice(
+        Math.max(qualifiedName.lastIndexOf('.'), qualifiedName.lastIndexOf(':')) + 1,
+      ),
+    );
+  }
+  return names;
+}
+
+/**
+ * Does this declared type spelling name a LIBRARY type the program does not
+ * declare? Asked of the head only — `Dictionary<string, User>` is a
+ * `Dictionary`, whatever its arguments — and only after the language's own
+ * decoration stripper, so `List<Post>?` and `*Build` are read by their types.
+ */
+function namesLibraryType(
+  spelling: string,
+  declaredAtScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  evidence: ReceiverOriginEvidence,
+): boolean {
+  const strip = evidence.stripTypePreservingDecoration;
+  const head = stripTemplateArguments(strip?.(spelling) ?? spelling).trim();
+  if (!isBareTypeName(head)) return false;
+  if (evidence.isBuiltInName?.(head) !== true && evidence.externalReceiverNames?.has(head) !== true)
+    return false;
+  // The program's own type by that name wins, wherever it is declared.
+  if (scopes.qualifiedNames.has(head)) return false;
+  return resolveClassBindingForName(declaredAtScope, head, scopes, strip) === undefined;
+}
+
+/**
+ * How the program binds a receiver's base name at the site — the question
+ * base-name evidence must answer first, because a name the program binds is
+ * the program's own however familiar it looks.
+ *
+ * - `unbound` — nothing on the scope chain claims the name: a global.
+ * - `library-import` — claimed only by imports that resolved to no file in the
+ *   program and that name a library module (`import os`,
+ *   `const std = @import("std")`).
+ * - `unresolved-import` — claimed only by imports that resolved to no file, at
+ *   least one from a module the language does not reserve. Not evidence: an
+ *   unresolved third-party package and an in-program module the resolver
+ *   missed look the same here.
+ * - `bound` — anything else: a parameter, a local, a resolved import.
+ */
+function baseRooting(
+  inScope: ScopeId,
+  base: string,
+  scopes: ScopeResolutionIndexes,
+  evidence: ReceiverOriginEvidence,
+): 'unbound' | 'library-import' | 'unresolved-import' | 'bound' {
+  const claim = lookupNameClaim(inScope, base, scopes);
+  if (claim.status === 'absent') return 'unbound';
+  const owner = claim.scope;
+  if (owner === undefined || claim.bindings.length > 0) return 'bound';
+  const edges = (scopes.imports.get(owner.id) ?? owner.imports).filter(
+    (edge) => edge.localName === base,
+  );
+  if (edges.length === 0 || edges.some((edge) => edge.targetFile !== null)) return 'bound';
+  return evidence.importsLibraryModule?.(owner.filePath, base) === true
+    ? 'library-import'
+    : 'unresolved-import';
+}
+
+/**
  * Is this dropped receiver rooted inside the analyzed program?
  *
  * Asks of the receiver's BASE — the leftmost name the chain hangs off — what
@@ -239,10 +432,21 @@ function isBareTypeName(rawName: string): boolean {
  * - `in-program` — the base's declared type resolves here, or the base itself is
  *   a class, a qualified name, or a value this program declares. A real edge was
  *   lost; the hedge must fire.
- * - `external` — POSITIVE evidence that the target is outside: the language
- *   itself names the base (or its bare declared type) a built-in. `console.log`,
- *   `fetch(...)`, `JSON.stringify` reach code no index contains, so there is no
- *   node an edge could have pointed at and nothing was lost.
+ * - `external` — POSITIVE evidence that the target is outside. Four kinds, each
+ *   supplied by the language provider and each void wherever the program binds
+ *   the name itself:
+ *   - the base is a name the language owns and the program binds nothing by
+ *     (`console.log`, `document.body.appendChild`, `System.out.println`);
+ *   - the base is bound only by an unresolved import of a library module
+ *     (`os.environ.setdefault`, `std.sort.pdq`);
+ *   - the base's bare declared type is a built-in (`String raw` ⇒ `raw.trim()`);
+ *   - every step of the receiver chain is typed by a program declaration and the
+ *     last one is declared as a library type (`this.data.Keys` with
+ *     `Dictionary<string, User> data`) — provided the program declares no member
+ *     by the dropped name, which in a language with extension members could be
+ *     the real target.
+ *   These reach code no index contains, so there is no node an edge could have
+ *   pointed at and nothing was lost.
  * - `unknown` — everything else. An absence of evidence is NOT evidence of
  *   externality: an unannotated parameter (`function f(svc) { svc.a().b(); }`)
  *   is recorded nowhere in the scope model at all, and calling that "external"
@@ -261,27 +465,40 @@ export function classifyReceiverOrigin(
   decoded: DecodedReceiverChain | undefined,
   inScope: string,
   receiverName: string,
+  memberName: string,
   scopes: ScopeResolutionIndexes,
-  options: {
-    /** The language's type-preserving decoration stripper. Without it a Go
-     *  pointer receiver — `func (h *Host)` binds `h` to the literal `*Host` —
-     *  resolves to no class and the whole method body's drops were reported as
-     *  external. Same hook the three receiver-chain lookups in
-     *  `compound-receiver.ts` already receive. */
-    readonly stripTypePreservingDecoration?: DecorationStripper;
-    /** `LanguageProvider.isBuiltInName`, threaded through the pass options the
-     *  same way `emitFreeCallFallback` receives it. THE only source of positive
-     *  external evidence available here; languages that declare no built-in set
-     *  simply never produce an `external` verdict, which is the safe default. */
-    readonly isBuiltInName?: (name: string) => boolean;
-  } = {},
+  evidence: ReceiverOriginEvidence = {},
 ): ReceiverOrigin {
   // The chain's base is authoritative. Without one, take the head of the
   // receiver text up to the first member/call punctuation.
   const base = decoded?.baseReceiverName ?? /^[A-Za-z_$][\w$]*/.exec(receiverName)?.[0];
   if (base === undefined || base.length === 0) return 'unknown';
-  const strip = options.stripTypePreservingDecoration;
-  const isBuiltIn = options.isBuiltInName;
+  const strip = evidence.stripTypePreservingDecoration;
+  const isBuiltIn = evidence.isBuiltInName;
+
+  // A chain the program typed all the way to a library type: every hop was a
+  // declaration the program wrote, and the last names a type it does not have.
+  // Asked first because the base of such a chain is usually in-program (`this`).
+  // The verdict says the member lives on a LIBRARY type, and a program member of
+  // the same name may have been added to that type (an extension method, a
+  // trait impl), so it holds only when the program declares no such name.
+  if (
+    decoded !== undefined &&
+    decoded.steps.length > 0 &&
+    evidence.foldChainPosition !== undefined
+  ) {
+    const position = evidence.foldChainPosition(decoded, inScope);
+    if (
+      position !== undefined &&
+      position.def === undefined &&
+      position.declaredType !== undefined &&
+      position.declaredAtScope !== undefined &&
+      namesLibraryType(position.declaredType, position.declaredAtScope, scopes, evidence) &&
+      evidence.programDeclaresName?.(memberName) === false
+    ) {
+      return 'external';
+    }
+  }
 
   // The base's declared TYPE, when it has one, is the strongest signal about
   // where the member lives: `inputs.stream()` has an in-program base bound to
@@ -321,9 +538,18 @@ export function classifyReceiverOrigin(
   // same population.
   if (findValueBindingInScope(inScope, base, scopes) !== undefined) return 'in-program';
 
-  // Positive external evidence, and the only kind reachable from this pass.
-  if (isBuiltIn?.(base) === true) return 'external';
-
+  // Everything below is evidence about the base's NAME, which says nothing once
+  // the program has bound that name itself: a parameter declared `document: Doc`
+  // or left untyped is the program's `document`, not the host's.
+  if (binding !== undefined) return 'unknown';
+  const rooting = baseRooting(inScope, base, scopes, evidence);
+  if (rooting === 'library-import') return 'external';
+  // An import the resolver could not follow is the program naming SOMETHING —
+  // possibly a module of its own — so a familiar spelling proves nothing there.
+  if (rooting !== 'unbound') return 'unknown';
+  if (isBuiltIn?.(base) === true || evidence.externalReceiverNames?.has(base) === true) {
+    return 'external';
+  }
   return 'unknown';
 }
 
@@ -415,6 +641,12 @@ export function emitReceiverBoundCalls(
      *  degrades a drop's label to `unknown` (the safe direction) and changes no
      *  edge. */
     readonly isBuiltInName?: (name: string) => boolean;
+    /** `LanguageProvider.externalReceiverNames`. Same channel and same contract
+     *  as `isBuiltInName`: read only by `classifyReceiverOrigin`, so unset means
+     *  fewer `external` labels and never a different edge. */
+    readonly externalReceiverNames?: ReadonlySet<string>;
+    /** `LanguageProvider.isExternalModuleSpecifier`. Same contract again. */
+    readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
     /** The generic arguments each heritage clause instantiated its base with,
      *  from the passes that emitted those heritage edges — the inheritance
      *  pre-pass, and the language resolvers that emit their own (Rust `impl T
@@ -626,12 +858,20 @@ export function emitReceiverBoundCalls(
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
   };
-  // Loop-invariant: both hooks come off the pass arguments, so the options bag
-  // for `classifyReceiverOrigin` is built once here rather than per dropped site.
-  const receiverOriginOpts = {
+  // Loop-invariant: every hook comes off the pass arguments, so the evidence for
+  // `classifyReceiverOrigin` is built once here rather than per dropped site.
+  // The fold reuses `compoundOpts`, so the classifier never types a chain that
+  // resolution could not have typed.
+  const receiverOriginEvidence = buildReceiverOriginEvidence({
+    parsedFiles,
+    scopes,
+    index,
+    foldOptions: compoundOpts,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     isBuiltInName: options.isBuiltInName,
-  };
+    externalReceiverNames: options.externalReceiverNames,
+    isExternalModuleSpecifier: options.isExternalModuleSpecifier,
+  });
 
   // Maps class-like graph ids back to ALL scope definitions that resolved to
   // them. Same-file partial declarations share one graph id but keep distinct
@@ -3179,8 +3419,9 @@ export function emitReceiverBoundCalls(
           receiverShape: classifyReceiverShape(decodedChain),
           // Whether anything was actually lost. An external target has no node
           // to point at, so its absence is completeness, not uncertainty — but
-          // ONLY a positive built-in match may say so. Everything the index
-          // cannot demonstrate stays `unknown` and keeps hedging.
+          // ONLY positive evidence from the language provider may say so.
+          // Everything the index cannot demonstrate stays `unknown` and keeps
+          // hedging.
           receiverOrigin:
             receiverNamespace?.callResultOrigin.isDefinite === false
               ? 'unknown'
@@ -3188,8 +3429,9 @@ export function emitReceiverBoundCalls(
                   receiverNamespace === undefined ? decodedChain : undefined,
                   receiverNamespace?.callResultOrigin.inScope ?? site.inScope,
                   receiverNamespace?.callResultOrigin.name ?? receiverName,
+                  site.name,
                   scopes,
-                  receiverOriginOpts,
+                  receiverOriginEvidence,
                 ),
         });
       }
