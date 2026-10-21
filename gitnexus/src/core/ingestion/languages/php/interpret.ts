@@ -94,6 +94,9 @@ export function interpretPhpImport(captures: CaptureMatch): ParsedImport | null 
 
 // ─── interpretTypeBinding ─────────────────────────────────────────────────
 
+/** A qualified or relative callee path: `Ns\f`, `\Ns\f`, `namespace\f`. */
+const PHP_CALLEE_PATH_RE = /^(?:\\|namespace\\)?(?:\w+\\)*\w+$/i;
+
 export function interpretPhpTypeBinding(captures: CaptureMatch): ParsedTypeBinding | null {
   const nameCap = captures['@type-binding.name'];
   const typeCap = captures['@type-binding.type'];
@@ -113,6 +116,7 @@ export function interpretPhpTypeBinding(captures: CaptureMatch): ParsedTypeBindi
     // `@type-binding.alias` captures cover several assignment RHS shapes:
     //   - `$alias = $u`               → rawType = '$u'   (variable alias)
     //   - `$u = getUser()`            → rawType = 'getUser' (callable alias)
+    //   - `$u = rp\getUser()`         → rawType = 'rp\getUser' (qualified callable)
     //   - `$u = new User()`           → rawType = 'User' (constructor — via @type-binding.constructor; handled below)
     //   - `$role = UserRole::Viewer`  → rawType = 'UserRole' (enum/class constant)
     //
@@ -121,7 +125,12 @@ export function interpretPhpTypeBinding(captures: CaptureMatch): ParsedTypeBindi
     // so `followChainedRef` can walk the chain `$alias → $u → User`.
     // For callable/class names, `normalizePhpType` strips qualifiers correctly.
     const rawText = typeCap.text.trim();
-    if (rawText.startsWith('$')) {
+    if (captures['@type-binding.qualified-callee'] !== undefined) {
+      // `$u = rp\make()`: the callee path verbatim, for the provider's
+      // `resolveQualifiedCallee` (#3498). `normalizePhpType` would strip the
+      // `\` that makes `\App\make` absolute, leaving the relative `App\make`.
+      rawType = PHP_CALLEE_PATH_RE.test(rawText) ? rawText : null;
+    } else if (rawText.startsWith('$')) {
       // Variable alias: keep as-is for chain-following.
       rawType = rawText;
     } else {

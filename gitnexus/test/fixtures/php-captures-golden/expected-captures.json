@@ -419,6 +419,38 @@
     "captureGroups": 21,
     "digest": "6373f13321137c00923fdef141121e13013a8ef5ed31928d957dc146e95b87d2"
   },
+  "php-qualified-function-factory/lib/decoy.php": {
+    "captureGroups": 7,
+    "digest": "cdb9f71aa8530eda1b0615dfbe1afb982b4b8fee190ccc37a7d55cd87d364cea"
+  },
+  "php-qualified-function-factory/lib/functions.php": {
+    "captureGroups": 9,
+    "digest": "85a30e32c8fc36b34b959e1c081a607c0835687eef0e6f6bbba46984912c3872"
+  },
+  "php-qualified-function-factory/src/App/Callers.php": {
+    "captureGroups": 36,
+    "digest": "19846b0438c564d2931da26ac4ca002ef4f4b20862cd66ac17ad75174f8d4ffa"
+  },
+  "php-qualified-function-factory/src/Entry.php": {
+    "captureGroups": 7,
+    "digest": "14195813d6af5373c5a1d93ba0779b9958546f2b8d4090089fd43effe4871952"
+  },
+  "php-qualified-function-factory/src/Mod/Local.php": {
+    "captureGroups": 7,
+    "digest": "1c843d953b883510507a331ac468c835e68aeff4571fb37b423200dc540dfb45"
+  },
+  "php-qualified-function-factory/src/Mod/QffFactory.php": {
+    "captureGroups": 8,
+    "digest": "201766a214776045984e6536c6a0bcbd17773caab18ab1c9ea49de2358e4320e"
+  },
+  "php-qualified-function-factory/src/Mod/QffGadget.php": {
+    "captureGroups": 7,
+    "digest": "3ea5bd22c2645df6162f08e46639a4fb72c3c4a51d16b56c4085cc93d649b321"
+  },
+  "php-qualified-function-factory/src/Mod/QffWidget.php": {
+    "captureGroups": 7,
+    "digest": "0394adb6e9a478294d4ae6809c7f7669405164547c066a30e37f1e8a4eb0cc56"
+  },
   "php-receiver-resolution/app/Models/Repo.php": {
     "captureGroups": 7,
     "digest": "44921bb2ae5aba27957cd45a7d3e515425f27f8e93af5d6285125b94f5d9ba88"

@@ -28,6 +28,7 @@
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getPhpParser } from './query.js';
+import { recordPhpFunctionIndex } from './qualified-function.js';
 
 // ─── PHP file structure extraction ──────────────────────────────────────────
 
@@ -221,6 +222,9 @@ export function populatePhpNamespaceSiblings(
     structureByFile.set(parsed.filePath, struct);
     namespaceByFilePath.set(parsed.filePath, struct.namespace);
   }
+  // Qualified function callees (`rp\make()`) resolve by fully qualified name,
+  // which needs every file's namespace and `use` table (#3498).
+  recordPhpFunctionIndex(parsedFiles, indexes, namespaceByFilePath);
 
   // Step 2: group class-like defs and module scopes by namespace.
   interface NamespaceBucket {

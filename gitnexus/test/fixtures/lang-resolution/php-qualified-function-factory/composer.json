@@ -1,0 +1,8 @@
+{
+  "autoload": {
+    "psr-4": {
+      "Qff\\": "src/"
+    },
+    "files": ["lib/functions.php"]
+  }
+}
