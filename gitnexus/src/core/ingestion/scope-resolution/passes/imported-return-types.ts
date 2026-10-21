@@ -50,6 +50,7 @@ import type {
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
+import { followedStep } from '../../utils/type-ref-chain.js';
 import {
   lookupBindingsAt,
   lookupNameClaim,
@@ -258,7 +259,7 @@ export function followChainPostFinalize(
         return current;
       }
       visited.add(returned.rawName);
-      current = { ...returned, bindingRange: start.bindingRange };
+      current = followedStep(start, returned);
       continue;
     }
     const claim = lookupNameClaim(lookupScope, current.rawName, scopes, {
@@ -300,7 +301,7 @@ export function followChainPostFinalize(
     if (next === undefined) return current;
     if (visited.has(next.rawName)) return current;
     visited.add(next.rawName);
-    current = { ...next, bindingRange: start.bindingRange };
+    current = followedStep(start, next);
   }
   return current;
 }

@@ -2291,3 +2291,218 @@ func shadowedByMethod() {
     ).toEqual(targets);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Package-qualified declared types (root cause A of the #3498 corpus triage)
+// ---------------------------------------------------------------------------
+
+describe('Go package-qualified field and parameter types', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-qualified-declared-types'),
+      () => {},
+    );
+  }, 60000);
+
+  /** Every CALLS target of `caller`, qualified by package dir and file — the
+   *  two `User` types share their method names, so only the file tells which
+   *  one a call bound to. Exact lists, so a wrong target fails the same row a
+   *  missing one does. */
+  const targetsOf = (caller: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((e) => e.source === caller)
+      .map((e) => `${e.target}@${e.targetFilePath.split('/').slice(-2).join('/')}`)
+      .sort();
+
+  // Capture normalizes `models.User` to `User`, and both `models` and `api`
+  // declare one. Before the qualified spelling was consulted, every qualified
+  // row lost its member call, and `Forward` bound to its own package's
+  // `api.User`. The bare same-package row is the control.
+  it.each([
+    ['a value parameter', 'ArchiveByValue', ['Archive@models/user.go']],
+    ['a pointer parameter', 'ArchiveByPointer', ['Archive@models/user.go']],
+    ['a parameter through an import alias', 'ArchiveAliased', ['Archive@models/user.go']],
+    ['a struct field', 'ArchiveMember', ['Archive@models/user.go']],
+    ['a pointer struct field', 'ArchivePointer', ['Archive@models/user.go']],
+    ['a struct field of the other package', 'ArchiveRemote', ['Archive@api/user.go']],
+    ['a field chain off a parameter', 'PurgeInbox', ['Purge@models/user.go']],
+    ['a declared local variable', 'ArchiveDeclared', ['Archive@models/user.go']],
+    // The composite literal's own constructor edge already resolved through
+    // the namespace; only the call on the value it produces did not.
+    [
+      'a pointer composite literal',
+      'ArchiveConstructed',
+      ['Archive@models/user.go', 'User@models/user.go'],
+    ],
+    [
+      'a qualifier naming another package than its own namesake',
+      'Forward',
+      ['Archive@models/user.go'],
+    ],
+    ['a bare same-package type', 'ArchiveLocal', ['Archive@api/user.go']],
+    // A receiver named like its type's package (`vault *vault.Vault`) binds the
+    // qualifier's own name where the type was written, so the qualifier has to
+    // be read from the file's imports, not from that scope.
+    ['a struct field named like its package', 'StowField', ['Stow@vault/vault.go']],
+    ['a parameter named like its package', 'StowParam', ['Stow@vault/vault.go']],
+    ['a local named like its package', 'StowLocal', ['Stow@vault/vault.go']],
+  ])('resolves %s to the type it names (%s)', (_shape, caller, expected) => {
+    expect(targetsOf(caller)).toEqual(expected);
+  });
+
+  // The qualified spelling is tried FIRST, not instead: when its import names
+  // no file in the workspace, the bare-name lookup still answers — and still
+  // refuses when the bare name is ambiguous. The field rows are the ones that
+  // need the declared-type lookup's own fallback; a parameter also has the
+  // simple-typeBinding case's unique-name fallback behind it.
+  it.each([
+    ['refuses a bare name two packages declare', 'ArchiveForeign', []],
+    ['refuses a bare name two packages declare', 'ArchiveForeignField', []],
+    ['keeps the unique-name fallback', 'SpinGadget', ['Spin@gadgets/gizmo.go']],
+    ['keeps the unique-name fallback', 'SpinGadgetField', ['Spin@gadgets/gizmo.go']],
+  ])('behind an unresolved import, %s (%s)', (_behaviour, caller, expected) => {
+    expect(targetsOf(caller)).toEqual(expected);
+  });
+});
+
+// #3498 review: a declared type's chain step must not hand the qualified lookup
+// another binding's spelling. `member models.User` normalizes to `User`, and the
+// extractor's chain-follow can land on a sibling field or a package-level
+// field named `User`; the binding keeps its own spelling, so it still means
+// `models.User` or, when the replaced type no longer matches, resolves nothing.
+// A method value (`f := p.Save`) types `p` through the same qualified lookup.
+describe('Go qualified declared types through chain steps and method values (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-go-qualified-chain-'));
+    writeFixtureRepo(repoDir, {
+      'go.mod': 'module example.com/chain\n\ngo 1.21\n',
+      'models/user.go': `package models
+
+type User struct{}
+
+func (u *User) Archive() {}
+
+func (u *User) Save() {}
+`,
+      'api/user.go': `package api
+
+type User struct{}
+
+func (u *User) Archive() {}
+`,
+      'api/principal.go': `package api
+
+type Principal struct{}
+
+func (p *Principal) Archive() {}
+`,
+      'auth/principal.go': `package auth
+
+type Principal struct{}
+
+func (p *Principal) Archive() {}
+`,
+      'services/archiver.go': `package services
+
+import (
+\t"example.com/chain/api"
+\t"example.com/chain/models"
+)
+
+type Archiver struct {
+\tUser   api.User
+\tmember models.User
+}
+
+func (a *Archiver) ArchiveMember() {
+\ta.member.Archive()
+}
+
+func (a *Archiver) ArchiveUser() {
+\ta.User.Archive()
+}
+
+func ArchiveParam(User api.User, member models.User) {
+\tmember.Archive()
+}
+`,
+      'held/session.go': `package held
+
+import "example.com/chain/auth"
+
+type Session struct {
+\tUser *auth.Principal
+}
+`,
+      'held/holder.go': `package held
+
+import "example.com/chain/models"
+
+type Holder struct {
+\towner *models.User
+}
+
+func (h *Holder) ArchiveHeld() {
+\th.owner.Archive()
+}
+`,
+      'values/local.go': `package values
+
+type User struct{}
+
+func (u *User) Save() {}
+`,
+      'values/values.go': `package values
+
+import "example.com/chain/models"
+
+func MethodValue(p *models.User) {
+\tf := p.Save
+\tf()
+}
+
+func Callback(p *models.User) {
+\trun(p.Save)
+}
+
+func run(f func()) {
+\tf()
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    {
+      source: 'ArchiveMember',
+      member: 'Archive',
+      targets: ['Method:models/user.go:User.Archive#0'],
+    },
+    {
+      source: 'ArchiveParam',
+      member: 'Archive',
+      targets: ['Method:models/user.go:User.Archive#0'],
+    },
+    { source: 'ArchiveUser', member: 'Archive', targets: ['Method:api/user.go:User.Archive#0'] },
+    { source: 'ArchiveHeld', member: 'Archive', targets: [] },
+    { source: 'MethodValue', member: 'Save', targets: ['Method:models/user.go:User.Save#0'] },
+    { source: 'run', member: 'Save', targets: ['Method:models/user.go:User.Save#0'] },
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId)
+        .sort(),
+    ).toEqual(targets);
+  });
+});
