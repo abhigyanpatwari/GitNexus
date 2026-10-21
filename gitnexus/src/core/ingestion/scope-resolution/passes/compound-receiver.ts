@@ -31,7 +31,8 @@ import {
 } from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
-import { namespaceCallReturnType } from './imported-return-types.js';
+import type { QualifiedCalleeResolver } from './imported-return-types.js';
+import { namespaceCallReturnType, qualifiedCalleeReturnType } from './imported-return-types.js';
 import type { DecorationStripper } from '../scope/walkers.js';
 import {
   findClassBindingInScope,
@@ -182,6 +183,10 @@ interface ResolveCompoundReceiverOptions {
    *  by the shared lookup's other callers — see the contract's own note on why
    *  this is opt-in rather than global. */
   readonly stripTypePreservingDecoration?: DecorationStripper;
+  /** `ScopeResolver.resolveQualifiedCallee`, bound to the pass. Types an
+   *  undotted call no scope binds (`rp::make()`) from the return annotation of
+   *  the callable the provider resolves it to. Absent ⇒ exactly as before. */
+  readonly resolveQualifiedCallee?: QualifiedCalleeResolver;
 }
 
 /** Is this hop the language's construction selector applied to the class
@@ -1040,6 +1045,24 @@ export function resolveCompoundReceiverClass(
                 options.onNameFallback,
               );
         if (viaReturn !== undefined) return viaReturn;
+      } else {
+        // A callee path only the provider can read (`rp::make()`, #3498).
+        const returned = qualifiedCalleeReturnType(
+          fnExpr,
+          inScope,
+          scopes,
+          options.resolveQualifiedCallee,
+        );
+        const viaQualified =
+          returned === undefined
+            ? undefined
+            : classOfReturnType(
+                returned,
+                scopes,
+                options.recordReceiverType,
+                options.onNameFallback,
+              );
+        if (viaQualified !== undefined) return viaQualified;
       }
       // Inline construction — `Service(db).m()` / `new Service(db).m()`.
       // The constructed value IS the receiver, so there is no binding to

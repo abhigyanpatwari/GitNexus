@@ -6,7 +6,7 @@ import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { rustProvider } from '../rust.js';
 import { rustArityCompatibility, rustMergeBindings, resolveRustImportTarget } from './index.js';
 import { populateRustOwners } from './method-owners.js';
-import { resolveRustQualifiedFreeCall } from './qualified-call.js';
+import { resolveRustQualifiedCallee, resolveRustQualifiedFreeCall } from './qualified-call.js';
 import { populateRustRangeBindings } from './range-binding.js';
 import {
   isClassLike,
@@ -169,6 +169,8 @@ export const rustScopeResolver: ScopeResolver = {
 
   resolveQualifiedFreeCall: (site, callerParsed, scopes, workspaceIndex, allFilePaths) =>
     resolveRustQualifiedFreeCall(site, callerParsed, scopes, workspaceIndex, allFilePaths),
+
+  resolveQualifiedCallee: resolveRustQualifiedCallee,
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildRustMro(graph, parsedFiles, nodeLookup),
 

@@ -97,6 +97,7 @@ import {
   type CalleeIdCaptureCtx,
 } from '../graph-bridge/edges.js';
 import { constructionSiteReason } from './free-call-fallback.js';
+import { bindQualifiedCalleeResolver } from './imported-return-types.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
   resolveCompoundReceiverClass,
@@ -209,6 +210,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isNamespaceMemberVisible'
   | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
+  | 'resolveQualifiedCallee'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
@@ -493,6 +495,18 @@ export function emitReceiverBoundCalls(
       CALLABLE_TYPES.has(lookupNamespaceMember(file, member)?.type ?? ''),
     );
   };
+  // The same question for a callee path only the provider can read
+  // (`x = rp::untyped()`): it names a callable the program defines.
+  const resolveQualifiedCallee = bindQualifiedCalleeResolver(
+    provider.resolveQualifiedCallee,
+    scopes,
+    index,
+    parsedFiles,
+  );
+  const bindsQualifiedCallable = (typeRef: TypeRef): boolean =>
+    CALLABLE_TYPES.has(
+      resolveQualifiedCallee?.(typeRef.rawName, typeRef.declaredAtScope)?.type ?? '',
+    );
   // A class-like def NESTED in `owner` (`A.Item` inside `A`): its qualified
   // name is the owner's plus the segment — the identity the structure phase
   // and `populateClassOwnedMembers` agree on — so the qualified-name index
@@ -640,6 +654,7 @@ export function emitReceiverBoundCalls(
     constructionSyntax: provider.constructionSyntax,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
+    resolveQualifiedCallee,
   };
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.
@@ -3180,7 +3195,7 @@ export function emitReceiverBoundCalls(
       const typedReceiverUnresolved =
         typeRef !== undefined &&
         BARE_TYPE_NAME_RE.test(receiverName) &&
-        bindsNamespaceCallable(typeRef, namespaceTargets);
+        (bindsNamespaceCallable(typeRef, namespaceTargets) || bindsQualifiedCallable(typeRef));
       // Every resolving case `continue`s, so a handled key here came from an
       // earlier site or pre-seeding; it hides this drop only when that site
       // was a duplicate capture of this one.

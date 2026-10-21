@@ -1046,7 +1046,12 @@ export function runScopeResolution(
   // with chain-follow per importer; quadratic regressions show up
   // here, not in finalize).
   if (provider.propagatesReturnTypesAcrossImports !== false) {
-    propagateImportedReturnTypes(parsedFiles, indexes, workspaceIndex);
+    propagateImportedReturnTypes(
+      parsedFiles,
+      indexes,
+      workspaceIndex,
+      provider.resolveQualifiedCallee,
+    );
   }
 
   const tRangeBindStart = PROF ? process.hrtime.bigint() : 0n;

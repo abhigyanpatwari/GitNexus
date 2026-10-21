@@ -158,8 +158,16 @@ function findTopLevelComma(text: string): number {
   return -1;
 }
 
+// A callee path whose segments are all lower-case names a module function
+// (`rp::make`, `crate::modx::make`): the casing rustc's lints enforce for
+// modules and functions, never for types.
+const RUST_MODULE_FN_PATH_RE = /^(?:[a-z_][A-Za-z0-9_]*::)+[a-z_][A-Za-z0-9_]*$/;
+
 function normalizeRustCallReturnType(text: string): string {
   let t = text.trim();
+  // Kept whole so `resolveQualifiedCallee` can read the function's return
+  // annotation; the head alone would name the module, not a type (#3498).
+  if (RUST_MODULE_FN_PATH_RE.test(t)) return t;
   // For scoped calls like `Foo::new()`, extract the type part before `::`
   const scopeIdx = t.indexOf('::');
   if (scopeIdx !== -1) {
