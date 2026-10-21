@@ -1,5 +1,31 @@
 # Receiver-resolution baseline
 
+## Kotlin package-qualified factory results (#3498 follow-up)
+
+Kotlin now types `val x = kqfmod.make()`, `val x = com.kqfacme.deep.make()` and
+the inline `kqfmod.make().m()` / `com.kqfacme.deep.make().m()` from `make`'s
+return annotation, through `ScopeResolver.resolveQualifiedCallee` reading the
+declared package facts. A local bound to a package function with no return
+annotation (`val x = kqfmod.untyped()`) is recorded as dropped rather than read
+as an exact miss.
+
+The count arm moves only by the new `kotlin-package-qualified-factory` fixture,
+whose six drops are all in `app/Callers.kt` (+4 calls, +2 reads):
+
+- `x.m()` on `val x = kqfmod.untyped()` (new with this change) and the inline
+  `kqfmod.untyped().m()`;
+- `com.kqfacme.deep.make()` itself, in `deepCall` and `inlineDeep`, each a
+  call plus a `deep` read on its receiver path. The package call has no
+  `CALLS` edge to `make`; only its result type is new.
+
+Under the parent's resolver the same fixture records seven drops: the two
+typed inline forms' `m` calls drop instead of resolving, and the untyped local
+passes as an exact miss. A same-corpus A/B against the parent branch
+(`b97d9e333`) records no other drop change and identical `CALLS`/`ACCESSES`
+edges outside the new fixture. Shape-arm cells are unchanged.
+
+Totals: call drops 154 -> 158, reads 50 -> 52, all kinds 224 -> 230.
+
 ## Rust module-qualified factory results (#3498 follow-up)
 
 Rust now types `let x = rp::make()`, `modx::make()`, `crate::modx::make()` and
