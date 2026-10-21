@@ -1,5 +1,53 @@
 # Receiver-resolution baseline
 
+## Typed shape bodies for JavaScript, Ruby, PHP and C (#3498)
+
+The JavaScript and Ruby rows had no type information anywhere, so every chain
+cell measured "the code is untyped". It could only flip by guessing from a
+method name. The PHP `plainDeepChain` and `optionalChain` cells went through
+the deliberately unannotated `getUser()`, so they measured the missing return
+type instead of their own spelling. The C row's structs lived in `models.h`,
+which the C++ provider owns, and every measured C call went through a
+function-pointer field. Only the shape corpora changed. The count arm and every
+other language's cells are unchanged.
+
+- **JavaScript** is typed with JSDoc: `@param {Service} svc` and
+  `@param {User[]} repos` on each entry, plus `@returns {User}` and
+  `@returns {Promise<User>}` on the support methods. `plainChain`,
+  `plainDeepChain`, `optionalChain` and `awaitParen` move VISIBLE-GAP ->
+  RESOLVES, each to the right target (`Address.save` for the deep chain,
+  `User.save` for the rest). `indexElement` stays VISIBLE-GAP, because
+  JavaScript has no `elementTypeOf` hook yet.
+- **Ruby** is typed with YARD: `@param <name> [Service]`, `@return [User]` on
+  `get_user`, and `@param idx_repos [Array<User>]`. `plainChain` and
+  `optionalChain` move VISIBLE-GAP -> RESOLVES (`User.save`). `plainDeepChain`
+  moves VISIBLE-GAP -> INVISIBLE-GAP. Its base now types and `address` reaches
+  the `attr_reader` property, but that property has no type, so `save` gets
+  no edge. No drop is recorded either; most likely the shared site key, now
+  that the inner calls resolve. `indexElement` stays INVISIBLE-GAP (no
+  subscript chain for `element_reference`, no Ruby `elementTypeOf`).
+- Each Ruby function names its parameter after its cell (`plain_svc`,
+  `deep_svc`, ...). YARD `@param` bindings land on the Module scope, so with a
+  shared `svc` an untyped function resolves through a sibling's tag. A probe
+  showed exactly that, in either order.
+- **One untyped control per language.** JavaScript and Ruby gain an extra id,
+  `untypedChain`: the old untyped `plainChain` body, which reads VISIBLE-GAP.
+  `save` exists on both `User` and `Address`, so an edge there would be a
+  guess. PHP's control is still `arrowCallChain` (INVISIBLE-GAP, unchanged).
+  The control is an extra id rather than an untyped `plainChain`, so every
+  canonical id keeps the same meaning in all 14 rows.
+- **PHP** `plainDeepChain` and `optionalChain` now call `getUserTyped()`. Both
+  move INVISIBLE-GAP -> RESOLVES (`Address.save` and `User.save`).
+  `indexElement` gains PHPDoc `@param User[] $repos` and stays VISIBLE-GAP,
+  because PHP has no `elementTypeOf` hook and the PHPDoc binding keeps only the
+  normalized `User`.
+- **C**: the structs moved into `main.c`. `plainDeepChain` and `indexElement`
+  move VISIBLE-GAP -> N/A, and `fieldReceiverCall` INVISIBLE-GAP -> N/A.
+  Dispatch through a function-pointer field has no static callee in the graph:
+  with the structs in `main.c` the receivers type, but neither `save` field has
+  a node. The C row is now all N/A. That header structs are invisible to C is a
+  product gap, tracked separately.
+
 ## Receiver-chain walker spellings (#3498)
 
 `extractMixedChain` misread some receiver spellings: it read the wrong step
