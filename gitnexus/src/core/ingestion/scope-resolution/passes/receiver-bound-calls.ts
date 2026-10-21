@@ -210,6 +210,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
   | 'resolveQualifiedTypeSpellings'
+  | 'splitQualifiedCallee'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
@@ -620,6 +621,27 @@ export function emitReceiverBoundCalls(
       return undefined;
     return uniqueClassAcross(files, tail);
   };
+  // A qualified callee as the free-call head of a compound receiver
+  // (`rp::make().m()`, or `x` bound to `rp::make`): the definition the
+  // qualified CALL resolves to, so its declared return type can type the
+  // receiver. Asked without call-site arity, so an ambiguous answer is none.
+  const splitQualifiedCallee = provider.splitQualifiedCallee;
+  const resolveQualifiedReceiverMember = provider.resolveQualifiedReceiverMember;
+  const resolveQualifiedCallee =
+    splitQualifiedCallee === undefined || resolveQualifiedReceiverMember === undefined
+      ? undefined
+      : (callee: string, inScope: ScopeId): SymbolDefinition | undefined => {
+          const parts = splitQualifiedCallee(callee);
+          if (parts === undefined) return undefined;
+          const def = resolveQualifiedReceiverMember(
+            parts.receiver,
+            parts.member,
+            inScope,
+            scopes,
+            parsedFiles,
+          );
+          return def === 'ambiguous' ? undefined : def;
+        };
   const compoundOpts = {
     fieldFallback,
     elementTypeOf: provider.elementTypeOf,
@@ -632,6 +654,7 @@ export function emitReceiverBoundCalls(
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
     qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+    resolveQualifiedCallee,
   };
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.

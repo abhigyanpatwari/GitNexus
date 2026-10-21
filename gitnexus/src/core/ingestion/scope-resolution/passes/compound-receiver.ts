@@ -187,6 +187,15 @@ interface ResolveCompoundReceiverOptions {
    *  return type (`rp::C`) that binds nothing is resolved through the precise
    *  qualified route. Absent ⇒ both lookups are exactly as before. */
   readonly qualifiedTypeSpellings?: boolean;
+  /** The definition a QUALIFIED callee (`rp::make`) names, through
+   *  `ScopeResolver.splitQualifiedCallee` + `resolveQualifiedReceiverMember`
+   *  — the same answer the qualified call itself got. Consulted for a
+   *  free-call head whose name binds no callable; absent ⇒ such a head types
+   *  nothing, exactly as before. */
+  readonly resolveQualifiedCallee?: (
+    callee: string,
+    inScope: ScopeId,
+  ) => SymbolDefinition | undefined;
 }
 
 /** The options the two declared-type lookups below read. */
@@ -1073,6 +1082,17 @@ export function resolveCompoundReceiverClass(
           findReceiverTypeBinding(inScope, fnExpr, scopes, {
             position: options.lookupPosition,
           }) ?? boundCalleeReturnType(fnDef, fnExpr, inScope, scopes, options.lookupPosition);
+        const viaReturn =
+          retType === undefined ? undefined : classOfReturnType(retType, scopes, options);
+        if (viaReturn !== undefined) return viaReturn;
+      } else {
+        // A qualified callee (`rp::make`, from `rp::make().m()` or the binding
+        // `auto x = rp::make()`) binds no name; its definition comes from the
+        // language's qualified-member lookup — the qualifier is the evidence —
+        // and its return type from that definition's own declaration.
+        const qualifiedDef = options.resolveQualifiedCallee?.(fnExpr, inScope);
+        const retType =
+          qualifiedDef === undefined ? undefined : producerTypeRef(qualifiedDef.nodeId, scopes);
         const viaReturn =
           retType === undefined ? undefined : classOfReturnType(retType, scopes, options);
         if (viaReturn !== undefined) return viaReturn;

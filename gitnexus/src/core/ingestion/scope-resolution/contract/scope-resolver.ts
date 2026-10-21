@@ -1462,6 +1462,30 @@ export interface ScopeResolver {
   ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
+   * Split a qualified CALLEE as written (`rp::make`, `a::b::make`) into the
+   * receiver/member pair this language's qualified call captures produce for
+   * the same spelling, or `undefined` when the callee is not qualified.
+   *
+   * A factory call types a receiver in two shapes — bound
+   * (`auto x = rp::make(); x.m()`, whose binding records the callee text) and
+   * inline (`rp::make().m()`) — and both reach the compound receiver resolver
+   * as callee TEXT, while the call itself was resolved from its captured
+   * receiver and member. This hook maps the text back onto that pair so the
+   * resolver can ask `resolveQualifiedReceiverMember` for the callee's
+   * definition and read the return type that definition declares (by
+   * definition identity, never by name). Splitting is the language's job: the
+   * separator and which segment counts as the receiver are grammar facts (C++
+   * captures the innermost scope segment, so `a::b::make` is `b` / `make`).
+   *
+   * Consulted only for a free-call head whose name binds no callable, and only
+   * when `resolveQualifiedReceiverMember` is implemented too. It is asked
+   * without call-site arity, so an `'ambiguous'` answer types nothing.
+   */
+  readonly splitQualifiedCallee?: (
+    callee: string,
+  ) => { readonly receiver: string; readonly member: string } | undefined;
+
+  /**
    * Every receiver spelling under which a namespace import's target is
    * reachable, and the file each spelling names (#2826). Returning
    * `undefined` keeps the shared default: the local binding name alone,

@@ -41,3 +41,18 @@ int global_factory() { auto y = make(); return y.m(); }
 // file-level `y => E` binding to other functions.
 int vexing() { E y(); return 0; }
 int uses_vexing_name() { return y.m(); }
+
+// Qualified factory callee.
+int auto_ns() { auto x = rp::make(); return x.m(); }
+int inline_ns() { return rp::make().m(); }
+int ctor_ns() { auto x = rp::C(); return x.m(); }
+
+// An unknown qualified factory types nothing, and must not let the inner `x`
+// fall through to the outer `D x`.
+int shadowed_auto() {
+  D x;
+  {
+    auto x = rp::unknown();
+    return x.m();
+  }
+}

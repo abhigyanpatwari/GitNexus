@@ -1,5 +1,6 @@
 /**
- * C++ receiver typing through qualified type spellings and header prototypes.
+ * C++ receiver typing through qualified type spellings, header prototypes and
+ * qualified factory callees.
  *
  * Every row names a caller in the `cpp-qualified-receiver-typing` fixture and
  * the exact `m` targets it must reach, as `<file>:<Owner>.m`. The fixture puts
@@ -82,6 +83,17 @@ describe('C++ qualified receiver typing', () => {
     ['using_inline', [RP_C]],
     ['using_inline_same_file', ['mod.h:Widget.m']],
   ])('inline call receiver typed by definition identity: %s -> %j', (caller, expected) => {
+    expect(memberTargets(caller)).toEqual(expected);
+  });
+
+  it.each<[string, string[]]>([
+    ['auto_ns', [RP_C]],
+    ['inline_ns', [RP_C]],
+    ['ctor_ns', [RP_C]],
+    // An unknown qualified factory types nothing, and the inner `x` must not
+    // fall through to the outer `D x`.
+    ['shadowed_auto', []],
+  ])('qualified factory callee: %s -> %j', (caller, expected) => {
     expect(memberTargets(caller)).toEqual(expected);
   });
 });

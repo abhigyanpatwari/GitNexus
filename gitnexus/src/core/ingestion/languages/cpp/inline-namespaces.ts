@@ -476,6 +476,38 @@ export function resolveCppQualifiedNamespaceMember(
   return 'ambiguous';
 }
 
+/**
+ * `ScopeResolver.splitQualifiedCallee` for C++: the receiver/member pair the
+ * qualified-call captures produce for a callee spelling, so
+ * {@link resolveCppQualifiedNamespaceMember} answers it exactly as it answers
+ * the call. Those captures take the INNERMOST scope segment as the receiver
+ * (`a::b::make()` → `b` / `make`), and so does this. Separators inside template
+ * arguments are not split points (`ns::Box<a::B>::make` → `Box<a::B>` / `make`,
+ * which names no namespace and resolves nothing). Unqualified → `undefined`.
+ */
+export function splitCppQualifiedCallee(
+  callee: string,
+): { readonly receiver: string; readonly member: string } | undefined {
+  const separators: number[] = [];
+  let angleDepth = 0;
+  for (let i = 0; i < callee.length; i++) {
+    const ch = callee[i];
+    if (ch === '<') angleDepth++;
+    else if (ch === '>') {
+      if (angleDepth > 0) angleDepth--;
+    } else if (angleDepth === 0 && ch === ':' && callee[i + 1] === ':') {
+      separators.push(i);
+      i++;
+    }
+  }
+  const last = separators[separators.length - 1];
+  if (last === undefined) return undefined;
+  const previous = separators.length > 1 ? separators[separators.length - 2] : undefined;
+  const receiver = callee.slice(previous === undefined ? 0 : previous + 2, last).trim();
+  const member = callee.slice(last + 2).trim();
+  return receiver.length > 0 && member.length > 0 ? { receiver, member } : undefined;
+}
+
 function findNamespaceDefInScope(scope: {
   readonly ownedDefs: readonly SymbolDefinition[];
 }): SymbolDefinition | undefined {

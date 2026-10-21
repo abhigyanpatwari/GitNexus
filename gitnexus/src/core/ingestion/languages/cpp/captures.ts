@@ -606,6 +606,17 @@ export function emitCppScopeCaptures(
                   grouped['@type-binding.type'] = nodeToCapture('@type-binding.type', fieldNode);
                   delete grouped['@type-binding.assignment'];
                 }
+              } else if (fnNode !== null && isCppQualifiedCallee(fnNode)) {
+                // auto x = rp::make() / auto x = rp::C() → bind the QUALIFIED
+                // callee, as `auto x = make()` binds `make` (the constructor rule
+                // in query.ts matches only a bare identifier callee). Left alone,
+                // the match bound `x` to the literal type `auto`. The resolver
+                // types `x` from the class the spelling names, or from the
+                // return type the callee's definition declares
+                // (ScopeResolver.splitQualifiedCallee).
+                grouped['@type-binding.constructor'] = anchor;
+                grouped['@type-binding.type'] = nodeToCapture('@type-binding.type', fnNode);
+                delete grouped['@type-binding.assignment'];
               }
             }
           }
@@ -664,6 +675,20 @@ export function emitCppScopeCaptures(
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, CPP_CALLABLE_CAPTURE_OPTIONS));
   attachCppUsingClaims(out, filePath);
   return out;
+}
+
+/**
+ * A `qualified_identifier` callee naming a plain function or class — `rp::make`,
+ * `a::b::make`, `rp::C` — as opposed to a template call (`std::make_shared<T>`,
+ * typed by its own rule in query.ts), an operator or a destructor.
+ */
+function isCppQualifiedCallee(node: SyntaxNode): boolean {
+  if (node.type !== 'qualified_identifier') return false;
+  let name = node.childForFieldName('name');
+  while (name !== null && name.type === 'qualified_identifier') {
+    name = name.childForFieldName('name');
+  }
+  return name !== null && name.type === 'identifier';
 }
 
 /** Nodes a namespace-scope declaration may sit inside without leaving namespace

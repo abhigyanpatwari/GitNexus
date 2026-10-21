@@ -44,6 +44,7 @@ import {
   clearCppInlineNamespaces,
   populateCppInlineNamespaceScopes,
   resolveCppQualifiedNamespaceMember,
+  splitCppQualifiedCallee,
 } from './inline-namespaces.js';
 import { populateCppRangeBindings } from './range-bindings.js';
 import { cppConstraintCompatibility } from './constraint-filter.js';
@@ -408,4 +409,8 @@ export const cppScopeResolver: ScopeResolver = {
     parsedFiles,
     callsite,
   ) => resolveCppQualifiedNamespaceMember(receiverName, memberName, parsedFiles, scopes, callsite),
+  // `auto x = rp::make(); x.m()` / `rp::make().m()`: map the callee text back
+  // onto the receiver/member pair the call capture used, so the hook above
+  // answers the factory's definition the way it answered the call.
+  splitQualifiedCallee: splitCppQualifiedCallee,
 };

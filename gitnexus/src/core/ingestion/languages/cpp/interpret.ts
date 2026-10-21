@@ -35,6 +35,9 @@ export function interpretCppImport(captures: CaptureMatch): ParsedImport | null 
   return { kind: 'wildcard', targetRaw: source, isSystem };
 }
 
+/** Placeholder type specifiers: the declared type is deduced, never named. */
+const CPP_PLACEHOLDER_TYPES: ReadonlySet<string> = new Set(['auto', 'decltype(auto)']);
+
 /**
  * Interpret a C++ type-binding capture into a ParsedTypeBinding.
  *
@@ -51,6 +54,12 @@ export function interpretCppTypeBinding(captures: CaptureMatch): ParsedTypeBindi
   const name = captures['@type-binding.name']?.text;
   const type = captures['@type-binding.type']?.text;
   if (name === undefined || type === undefined) return null;
+  // `auto` names no type: the deduced type is whatever the initializer yields,
+  // which the specific rules (constructor, alias, member access, qualified
+  // callee) capture directly. What reaches here as `auto` is a leftover —
+  // `auto n = 5;`, `[](auto v)` — and binding it records the literal type name
+  // `auto`, which types nothing and hides the variable from every other route.
+  if (CPP_PLACEHOLDER_TYPES.has(type.trim())) return null;
 
   let source: TypeRef['source'] = 'annotation';
 
