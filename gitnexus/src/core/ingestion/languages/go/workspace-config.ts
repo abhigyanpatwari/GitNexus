@@ -32,7 +32,7 @@
  * set lives in and no second directory walk runs during analyze.
  */
 
-import fs from 'node:fs/promises';
+import fs, { constants, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { walkRepositoryPaths } from '../../filesystem-walker.js';
 import { isAbsoluteZigDepPath, normalizeZigDepPath } from '../../language-config.js';
@@ -170,19 +170,30 @@ const MANIFEST_READ_CONCURRENCY = 32;
  * capture contract requires failures to surface.
  */
 async function readGoManifest(absolute: string, maxBytes: number): Promise<string | null> {
-  let stat;
+  // Every check reads the opened handle, never the path again, so the file
+  // cannot change between the check and the read. O_NOFOLLOW refuses a leaf
+  // symlink outright; O_NONBLOCK keeps a FIFO named go.mod from hanging.
+  let handle: FileHandle;
   try {
-    stat = await fs.lstat(absolute);
+    handle = await fs.open(
+      absolute,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ELOOP') return null;
+    // Platforms without O_NOFOLLOW report a link some other way.
+    if ((await fs.lstat(absolute).catch(() => null))?.isSymbolicLink()) return null;
     throw error;
   }
-  if (!stat.isFile() || stat.size > maxBytes) return null;
   try {
-    return await fs.readFile(absolute, 'utf-8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > maxBytes) return null;
+    // Without O_NOFOLLOW the open followed a link; refuse it the same way.
+    if ((await fs.lstat(absolute).catch(() => null))?.isSymbolicLink()) return null;
+    return await handle.readFile('utf-8');
+  } finally {
+    await handle.close();
   }
 }
 

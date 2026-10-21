@@ -300,7 +300,8 @@ describe('captureGoWorkspaceConfig', () => {
 
   // A module boundary that silently vanished would send its imports to the
   // wrong module, so a manifest that fails to read surfaces as an error.
-  it('throws when a go.mod cannot be read', async () => {
+  // Permission bits do not block reads on Windows.
+  it.skipIf(process.platform === 'win32')('throws when a go.mod cannot be read', async () => {
     const dir = fixture({
       'go.mod': 'module example.com/root\n',
       'svc/go.mod': 'module example.com/svc\n',
