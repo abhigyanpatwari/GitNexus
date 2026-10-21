@@ -178,11 +178,10 @@ describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#349
   it('records the untyped factory result as a dropped site', () => {
     expect(
       getResolutionOutcomes(result)
+        .filter((outcome) => outcome.kind === 'suppressed')
         .filter(
           (outcome) =>
-            outcome.kind === 'suppressed' &&
-            outcome.reason === 'receiver-unresolved' &&
-            outcome.filePath === 'lib/callers.dart',
+            outcome.reason === 'receiver-unresolved' && outcome.filePath === 'lib/callers.dart',
         )
         .map((outcome) => `${outcome.range.startLine}:${outcome.name}`),
     ).toEqual(['17:m']);

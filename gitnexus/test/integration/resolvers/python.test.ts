@@ -2568,11 +2568,9 @@ describe('Python module-qualified factory result types (#3498)', () => {
 
   it('records the untyped receivers as dropped sites instead of an exact miss', () => {
     const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
       .filter(
-        (outcome) =>
-          outcome.kind === 'suppressed' &&
-          outcome.reason === 'receiver-unresolved' &&
-          outcome.filePath === 'callers.py',
+        (outcome) => outcome.reason === 'receiver-unresolved' && outcome.filePath === 'callers.py',
       )
       .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
       .sort();
