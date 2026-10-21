@@ -16,3 +16,8 @@ int untypedCall() {
   final x = rp.untyped();
   return x.m();
 }
+
+Future<int> awaitedCall() async {
+  final x = await rp.makeAsync();
+  return x.m();
+}

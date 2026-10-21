@@ -1166,7 +1166,7 @@ export function emitReceiverBoundCalls(
     // Duplicate captures of one site share a key and a member name. Distinct
     // calls can share only the key (`ns.make().m()` starts where `ns.make()`
     // does), so one's resolution must not hide the other's drop (#3498).
-    const memberNamesByKey = new Map<string, string | Set<string>>();
+    const siteIdentitiesByKey = new Map<string, string | Set<string>>();
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
       if (site.explicitReceiver === undefined) continue;
@@ -1209,7 +1209,14 @@ export function emitReceiverBoundCalls(
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
-      const earlierAtKey = recordSiteMember(memberNamesByKey, siteKey, memberName);
+      // A duplicate capture (or a call's own callee read) repeats the member
+      // on the same receiver; an outer call that starts where its inner one
+      // does (`a.f().f()`) has the inner call as its receiver.
+      const earlierAtKey = recordSiteMember(
+        siteIdentitiesByKey,
+        siteKey,
+        `${receiverName}.${memberName}`,
+      );
 
       if (provider.suppressReceiverLookup !== undefined) {
         const baseName =
@@ -3278,28 +3285,29 @@ function splitClassLevelMemberReceiver(
 const TWO_PART_RECEIVER_RE = /^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/;
 
 /** How an earlier site in the same file relates to this one's position key. */
-type EarlierSiteAtKey = 'new-key' | 'shared-key' | 'repeated-site';
+export type EarlierSiteAtKey = 'new-key' | 'shared-key' | 'repeated-site';
 
-/** Record `memberName` at `siteKey` and say what was there before: nothing, a
- *  different call starting at the same position, or this same member (a
- *  duplicate capture). One map entry per key; a Set only on a collision. */
-function recordSiteMember(
-  memberNamesByKey: Map<string, string | Set<string>>,
+/** Record a site's identity (receiver and member) at its start `siteKey` and say
+ *  what was there before: nothing, a different call starting at the same
+ *  position, or this same site (a duplicate capture). One map entry per key;
+ *  a Set only on a collision. */
+export function recordSiteMember(
+  identitiesByKey: Map<string, string | Set<string>>,
   siteKey: string,
-  memberName: string,
+  identity: string,
 ): EarlierSiteAtKey {
-  const seen = memberNamesByKey.get(siteKey);
+  const seen = identitiesByKey.get(siteKey);
   if (seen === undefined) {
-    memberNamesByKey.set(siteKey, memberName);
+    identitiesByKey.set(siteKey, identity);
     return 'new-key';
   }
   if (typeof seen === 'string') {
-    if (seen === memberName) return 'repeated-site';
-    memberNamesByKey.set(siteKey, new Set([seen, memberName]));
+    if (seen === identity) return 'repeated-site';
+    identitiesByKey.set(siteKey, new Set([seen, identity]));
     return 'shared-key';
   }
-  if (seen.has(memberName)) return 'repeated-site';
-  seen.add(memberName);
+  if (seen.has(identity)) return 'repeated-site';
+  seen.add(identity);
   return 'shared-key';
 }
 

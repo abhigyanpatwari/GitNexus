@@ -39,7 +39,14 @@
  * scope-resolution generalization plan.
  */
 
-import type { ParsedFile, Scope, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type {
+  ImportEdge,
+  ParsedFile,
+  Scope,
+  ScopeId,
+  SymbolDefinition,
+  TypeRef,
+} from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
@@ -119,25 +126,66 @@ const RECHAIN_MAX_DEPTH = 8;
 const QUALIFIED_MEMBER_RE = /^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/;
 
 /**
- * Every local name a namespace import binds anywhere in the workspace. Most
- * dotted bindings are member chains (`user.address`) whose head is no such
- * name, so they skip the scope-chain lookup entirely. Import edges are fixed
- * once finalize has run.
+ * Every local name a resolved namespace import binds anywhere in the
+ * workspace. Most dotted bindings are member chains (`user.address`), or name
+ * an external module (`np.zeros`), and skip the scope-chain lookup entirely.
+ * Read from the finalized import map, never `scopeTree.byId`, which a sealed
+ * disk-backed tree cannot materialize. Import edges are fixed once finalize
+ * has run.
  */
 const namespaceLocalNamesByIndexes = new WeakMap<ScopeResolutionIndexes, ReadonlySet<string>>();
+
+/**
+ * A resolved namespace import whose local name stands for its target module.
+ * An unaliased path import (`import pkg.sub`) binds the root `pkg` while its
+ * target is the leaf `pkg/sub`, so the target's members are not `pkg`'s.
+ */
+function bindsTargetModule(edge: ImportEdge): boolean {
+  if (
+    edge.kind !== 'namespace' ||
+    edge.linkStatus === 'unresolved' ||
+    edge.targetModuleScope === undefined
+  ) {
+    return false;
+  }
+  if (edge.explicitAlias === true || !edge.targetExportedName.startsWith(`${edge.localName}.`)) {
+    return true;
+  }
+  const file = edge.targetFile?.split(/[\\/]/).pop() ?? '';
+  const dot = file.indexOf('.');
+  return (dot === -1 ? file : file.slice(0, dot)) === edge.localName;
+}
 function namespaceLocalNames(scopes: ScopeResolutionIndexes): ReadonlySet<string> {
   let names = namespaceLocalNamesByIndexes.get(scopes);
   if (names === undefined) {
     const collected = new Set<string>();
-    for (const scope of scopes.scopeTree.byId?.values() ?? []) {
-      for (const edge of scopes.imports?.get(scope.id) ?? scope.imports ?? []) {
-        if (edge.kind === 'namespace') collected.add(edge.localName);
+    for (const edges of scopes.imports.values()) {
+      for (const edge of edges) {
+        if (bindsTargetModule(edge)) collected.add(edge.localName);
       }
     }
     names = collected;
     namespaceLocalNamesByIndexes.set(scopes, names);
   }
   return names;
+}
+
+/**
+ * Some providers hoist method return types to the module scope under the
+ * method's name, so a module-scope return binding named `member` can belong
+ * to a class method. Accept it only when it is anchored on a free function the
+ * module itself binds under that name: the declaration-anchor join
+ * `producerTypeRef` uses. Providers that bind receiver methods at module
+ * scope (`func (f *T) Create()`) put a `Method` there, which never qualifies.
+ */
+function isModuleOwnReturn(returned: TypeRef, module: Scope, member: string): boolean {
+  const anchor = returned.bindingRange;
+  if (anchor === undefined) return true;
+  return (module.bindings.get(member) ?? []).some((binding) => {
+    if (binding.origin !== 'local' || binding.def.type !== 'Function') return false;
+    const position = definitionIdPosition(binding.def.nodeId, binding.def.filePath);
+    return position?.line === anchor.startLine && position.column === anchor.startCol;
+  });
 }
 
 /**
@@ -160,13 +208,19 @@ export function namespaceCallReturnType(
   if (claim.bindings.some((binding) => binding.origin === 'local')) return undefined;
   const targets = new Set<ScopeId>();
   for (const edge of claim.imports) {
-    if (edge.kind !== 'namespace' || edge.linkStatus === 'unresolved') continue;
-    if (edge.targetModuleScope !== undefined) targets.add(edge.targetModuleScope);
+    if (bindsTargetModule(edge) && edge.targetModuleScope !== undefined) {
+      targets.add(edge.targetModuleScope);
+    }
   }
   const [target] = targets;
   if (targets.size !== 1 || target === undefined) return undefined;
-  const returned = scopes.scopeTree.getScope(target)?.typeBindings.get(member);
-  return returned?.source === 'return-annotation' ? returned : undefined;
+  const module = scopes.scopeTree.getScope(target);
+  const returned = module?.typeBindings.get(member);
+  return module !== undefined &&
+    returned?.source === 'return-annotation' &&
+    isModuleOwnReturn(returned, module, member)
+    ? returned
+    : undefined;
 }
 
 /** Walk `ref.rawName` through the scope chain's typeBindings looking
@@ -193,7 +247,16 @@ export function followChainPostFinalize(
         scopes,
         current.lookupPosition,
       );
-      if (returned === undefined || visited.has(returned.rawName)) return current;
+      // A qualified return type (`-> models.Order`) names a namespace of the
+      // producer's module, which the consumer's receiver lookup would read
+      // against its own imports. Stop at the call rather than hand it over.
+      if (
+        returned === undefined ||
+        returned.rawName.includes('.') ||
+        visited.has(returned.rawName)
+      ) {
+        return current;
+      }
       visited.add(returned.rawName);
       current = { ...returned, bindingRange: start.bindingRange };
       continue;

@@ -171,11 +171,13 @@ describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#349
     expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
   });
 
-  it('does not guess a receiver type for an untyped factory result', () => {
-    expect(methodCalls('untypedCall')).toEqual([]);
+  // An awaited `Future<C>` is captured like a direct call, but no Dart path
+  // unwraps the Future of an awaited result yet, named imports included.
+  it.each(['untypedCall', 'awaitedCall'])('does not guess a receiver type for %s', (source) => {
+    expect(methodCalls(source)).toEqual([]);
   });
 
-  it('records the untyped factory result as a dropped site', () => {
+  it('records the untyped and awaited factory results as dropped sites', () => {
     expect(
       getResolutionOutcomes(result)
         .filter((outcome) => outcome.kind === 'suppressed')
@@ -183,8 +185,9 @@ describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#349
           (outcome) =>
             outcome.reason === 'receiver-unresolved' && outcome.filePath === 'lib/callers.dart',
         )
-        .map((outcome) => `${outcome.range.startLine}:${outcome.name}`),
-    ).toEqual(['17:m']);
+        .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+        .sort(),
+    ).toEqual(['17:m', '22:m']);
   });
 });
 

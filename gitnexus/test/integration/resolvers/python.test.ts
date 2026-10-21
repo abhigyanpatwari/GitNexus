@@ -2578,6 +2578,109 @@ describe('Python module-qualified factory result types (#3498)', () => {
   });
 });
 
+// #3498: two shapes where the namespace's module is not the module that owns
+// the return annotation. `import pkg.b` binds `pkg` but targets `pkg/b.py`, and
+// `-> models.Order` is spelled against the producer's own `models` import, not
+// the caller's. Both fail closed (no edge, a recorded drop) instead of
+// borrowing the wrong class.
+describe('Python namespace factory results that name another module (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-namespace-factory-'));
+    writeFixtureRepo(repoDir, {
+      'pkg/__init__.py': `class C1:
+    def m(self):
+        return 1
+
+
+def make() -> C1:
+    return C1()
+`,
+      'pkg/b.py': `class C2:
+    def m(self):
+        return 2
+
+
+def make() -> C2:
+    return C2()
+`,
+      'callers.py': `import pkg.b
+
+
+def submodule_import():
+    x = pkg.make()
+    return x.m()
+
+
+def submodule_import_inline():
+    return pkg.make().m()
+`,
+      'shop/__init__.py': '',
+      'shop/models.py': `class Order:
+    def save(self):
+        return 1
+`,
+      'shop/service.py': `from . import models
+
+
+def get_order() -> models.Order:
+    return models.Order()
+`,
+      'billing/__init__.py': '',
+      'billing/models.py': `class Order:
+    def save(self):
+        return 2
+`,
+      'billing/views.py': `from . import models
+import shop.service as svc
+
+
+def producer_spelled_return():
+    order = svc.get_order()
+    return order.save()
+
+
+def local_order():
+    order = models.Order()
+    return order.save()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { source: 'submodule_import', member: 'm', targets: [] },
+    { source: 'submodule_import_inline', member: 'm', targets: [] },
+    { source: 'producer_spelled_return', member: 'save', targets: [] },
+    {
+      source: 'local_order',
+      member: 'save',
+      targets: ['Method:billing/models.py:Order.save#0'],
+    },
+  ])('resolves $source.$member to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(targets);
+  });
+
+  it('records the undecided receivers as dropped sites', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter((outcome) => outcome.reason === 'receiver-unresolved')
+      .map((outcome) => `${outcome.filePath}:${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(dropped).toEqual(['billing/views.py:7:save', 'callers.py:10:m', 'callers.py:6:m']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Issue #289: static/classmethod classes must have HAS_METHOD edges
 // ---------------------------------------------------------------------------
