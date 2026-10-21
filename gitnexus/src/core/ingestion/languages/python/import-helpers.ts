@@ -12,7 +12,8 @@ import {
   pythonSegmentAbsent,
 } from './import-file-index.js';
 import { tryResolveWithExtensions } from '../../utils/suffix-index.js';
-import { EXTENSIONS } from '../import-candidates.js';
+
+const RELATIVE_IMPORT_EXTENSIONS = ['.py', '/__init__.py'] as const;
 
 /**
  * Resolve a Python import to a file path (low-level helper).
@@ -50,7 +51,7 @@ export function resolvePythonImportInternal(
       dirParts.push(...modulePart.replace(/\./g, '/').split('/'));
     }
 
-    return tryResolveWithExtensions(dirParts.join('/'), allFiles, EXTENSIONS);
+    return tryResolveWithExtensions(dirParts.join('/'), allFiles, RELATIVE_IMPORT_EXTENSIONS);
   }
 
   // Proximity bare import — single-segment only; package before module (PEP 451 §4)

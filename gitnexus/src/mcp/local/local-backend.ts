@@ -162,7 +162,6 @@ import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
-import { EXTENSIONS } from '../../core/ingestion/languages/import-candidates.js';
 import { compareCodeUnits } from '../../lib/utils.js';
 import {
   lookupExternalCallCount,
@@ -301,21 +300,14 @@ function ambiguityReport(
   };
 }
 
-/** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
- *  excluding the empty entry and the `/index.*` forms — used to decide whether
- *  an `explain` target is a file path vs a (possibly dotted) symbol name. */
-const SOURCE_FILE_EXTENSIONS: readonly string[] = EXTENSIONS.filter(
-  (e) => e.startsWith('.') && !e.includes('/'),
-);
 /** Recognize indexed source files and existing import suffixes; a bare dotted
  *  symbol (`UserController.create`) remains a symbol target. */
-function looksLikeFilePath(target: string): boolean {
-  if (/[\\/]/.test(target)) return true;
+async function looksLikeFilePath(target: string): Promise<boolean> {
+  if (/[\\/]/.test(target) || getLanguageFromFilename(target) !== null) return true;
+  // Keep analyze-only language modules out of the MCP startup closure (#2802).
+  const { EXTENSIONS } = await import('../../core/ingestion/languages/import-candidates.js');
   const lower = target.toLowerCase();
-  return (
-    getLanguageFromFilename(target) !== null ||
-    SOURCE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))
-  );
+  return EXTENSIONS.some((ext) => ext.startsWith('.') && !ext.includes('/') && lower.endsWith(ext));
 }
 
 /**
@@ -5911,7 +5903,7 @@ export class LocalBackend {
     anchor: { file: string; symbol?: string; startLine?: number; endLine?: number };
     early?: Record<string, unknown>;
   }> {
-    if (looksLikeFilePath(target)) {
+    if (await looksLikeFilePath(target)) {
       return {
         anchorClause:
           '(a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)',
