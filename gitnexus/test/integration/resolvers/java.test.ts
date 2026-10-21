@@ -2152,6 +2152,44 @@ describe('Java same-package extends with a colliding simple name', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// One package+type declared under several source roots. alpha and beta each
+// declare `models.User`; beta's UserService imports it from its own module,
+// gamma's Report sits equally far from both. The import must bind the
+// importer's own copy, and refuse when no copy is nearer, instead of whichever
+// file was parsed first. The import-free twin (same-package siblings) is
+// 'Java same-module priority for duplicate FQNs' above.
+// ---------------------------------------------------------------------------
+
+describe('Java import of a type declared under several source roots', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-duplicate-fqn-source-roots'),
+      () => {},
+    );
+  }, 60000);
+
+  it.each<[string, string, readonly string[]]>([
+    [
+      'beta/src/main/java/services/UserService.java',
+      'process',
+      ['beta/src/main/java/models/User.java'],
+    ],
+    ['gamma/src/main/java/reports/Report.java', 'run', []],
+  ])('%s (%s) imports and calls only %j', (importer, method, userFiles) => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (e) => e.sourceFilePath === importer && e.targetFilePath.endsWith('/models/User.java'),
+    );
+    const saves = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === method && c.target === 'save',
+    );
+    expect(imports.map((e) => e.targetFilePath)).toEqual(userFiles);
+    expect(saves.map((c) => c.targetFilePath)).toEqual(userFiles);
+  });
+});
+
 // ── Phase P: Overload Disambiguation via Parameter Types ─────────────────
 
 describe('Java overload disambiguation by parameter types', () => {
