@@ -7,7 +7,7 @@ function make(): QffWidget {
     return new QffWidget();
 }
 
-// No return type: nothing in the program says what a call returns.
+// No return type annotation: the resolver should not infer the result from the body.
 function untyped() {
     return new QffWidget();
 }

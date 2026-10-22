@@ -323,6 +323,29 @@ export function emitPhpScopeCaptures(
     if (callTag !== undefined) {
       const possibleFirstClass = nodeIfType(nodeMap[callTag], 'function_call_expression');
       const argumentsNode = possibleFirstClass?.childForFieldName('arguments');
+      const calleeNode = possibleFirstClass?.childForFieldName('function');
+      if (
+        possibleFirstClass &&
+        calleeNode &&
+        argumentsNode &&
+        (grouped['@reference.qualified-name'] !== undefined ||
+          grouped['@type-binding.qualified-callee'] !== undefined)
+      ) {
+        // The grammar treats some PHP identifier bytes as whitespace outside
+        // the callee. Refuse that shortened name instead of borrowing a factory.
+        const gap = possibleFirstClass.namedChildren
+          .filter(
+            (node) =>
+              node.type === 'comment' &&
+              node.startIndex >= calleeNode.endIndex &&
+              node.endIndex <= argumentsNode.startIndex,
+          )
+          .reduce(
+            (text, comment) => text.replace(comment.text, ''),
+            sourceText.slice(calleeNode.endIndex, argumentsNode.startIndex),
+          );
+        if (/[^\S\x00-\x7F]/u.test(gap)) continue;
+      }
       if (
         argumentsNode?.namedChildren.some(
           (child) => child !== null && child.type === 'variadic_placeholder',
