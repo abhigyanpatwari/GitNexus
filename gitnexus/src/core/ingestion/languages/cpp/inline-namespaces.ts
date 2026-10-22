@@ -539,8 +539,7 @@ export function splitCppQualifiedCallee(
   if (callerScope !== undefined && scopes !== undefined && !/^\s*::/.test(callee)) {
     const root = callee.trim().split('::')[0]?.trim();
     if (root !== undefined) {
-      if (isCppNamespaceQualifierShadowed(root, callerScope, scopes))
-        return undefined;
+      if (isCppNamespaceQualifierShadowed(root, callerScope, scopes)) return undefined;
     }
   }
   const separators: number[] = [];
