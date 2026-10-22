@@ -1212,6 +1212,29 @@ export interface ScopeResolver {
   };
 
   /**
+   * Optional: does a CALL written as a receiver apply a type constructor —
+   * yield a TYPE — rather than invoke a function? `callee` is the call's
+   * function expression as written (`Stack`, `util.List`).
+   *
+   * A language that spells a generic type as a call (`Stack(u8).init()`
+   * calls `init` on the type `Stack(u8)`) has no return-type binding for the
+   * callee — it returns `type` — and no construction syntax, so the inline
+   * receiver typed nothing even though the bound form (`var t =
+   * Stack(u8).init()`, whose binding drops the type arguments) resolved. When
+   * this answers true, the compound resolver types the receiver as the class
+   * the callee names through a lexical or import binding, including a
+   * namespace-qualified callee. A unique workspace name is insufficient. The
+   * callee's return-type binding is consulted first and still wins.
+   *
+   * A predicate rather than a flag so the language decides WHICH calls are
+   * type applications, for example by its naming convention for types.
+   *
+   * Only affects receiver TYPING, like `constructionSyntax`.
+   * Default: undefined (no call is a type application).
+   */
+  readonly isTypeApplicationCall?: (callee: string) => boolean;
+
+  /**
    * Optional per-slot conversion-rank function for overload resolution.
    * When provided, `narrowOverloadCandidates` uses ranked scoring as a
    * fallback when the exact-type filter produces no match. The function

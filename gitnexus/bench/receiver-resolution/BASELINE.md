@@ -1,5 +1,34 @@
 # Receiver-resolution baseline
 
+## Zig receiver gaps from the #3498 drop triage
+
+Measured against main `2b6542737`, the four Zig fixes clear 18
+`receiver-unresolved` sites: all-kind drops move from 200 to 182, reads from
+42 to 27 and calls from 138 to 135. Writes and every shape-arm state are
+unchanged.
+
+- 9 reads of `const X = @import("f.zig").X;` (zig-hub `stdx.zig:2-4`,
+  zig-receivers `stdx.zig:2`, zig-idioms `holder.zig:6`, `main.zig:6`,
+  `Element.zig:35`, `hub.zig:9-10`): the `@import(…)` receiver is now bound as a
+  namespace, so the read resolves through the written module (`import-resolved`).
+- 3 reads off an anonymous container (`Sorter.zig:16`, `:23`, `:28`):
+  the receiver names the container's minted identity. The site is now anchored
+  on the member, so it moves off the reported `struct` position and resolves
+  from the scope that evaluates it.
+- 1 call and its callee-position read at zig-idioms `main.zig:42`
+  (`Stack(u8).init()`): the new `isTypeApplicationCall` hook types the receiver
+  as `Stack`.
+- 2 calls and their callee-position reads at zig-filestruct `aliases.zig:86`
+  and `:88` (`JsApi.Meta.prototype_chain` and `JsApi.value`): the
+  `bridge = generic.Bridge(Local)` alias reaches `Builder` through the
+  forwarding return type. These were lines 77 and 79 on the measured main.
+
+Forwarding type constructors (`Bridge ↦ Builder`) also work through the
+namespace-factory lookup already merged in #3648. The combined result clears
+more sites than the original standalone branch, which cleared 14. The `b12`
+alias control resolves. Zig call drops fall from 13 to 10; `no-chain` call
+drops move from 34 to 31 and `in-program` calls from 60 to 57.
+
 ## Go module visibility and qualified receiver refusal
 
 Local imports now select the importer's own module or a module selected by its
