@@ -229,8 +229,8 @@
     },
     "callDropsByOrigin": {
       "in-program": 57,
-      "external": 44,
-      "unknown": 33,
+      "unknown": 47,
+      "external": 30,
       "<<unclassified>>": 2
     }
   }

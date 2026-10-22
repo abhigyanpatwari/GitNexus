@@ -760,6 +760,74 @@ export function foldReceiverChain(
   index: WorkspaceResolutionIndex,
   options: ResolveCompoundReceiverOptions = {},
 ): SymbolDefinition | undefined {
+  const current = foldReceiverChainState(chain, inScope, scopes, index, options);
+  if (current === undefined) return undefined;
+  // A chain that ended without a class returns undefined naturally — no
+  // separate guard, because `def` IS the signal.
+  //
+  // The receiver-type report is made HERE, from the final `FoldState`, because
+  // that record pairs the class with the spelling that produced it BY
+  // CONSTRUCTION — same step, same lookup. The individual `classOfDeclaredType`
+  // calls inside the fold also report, including from steps that were later
+  // folded past, so the last of those is not reliably about the class the fold
+  // returns. Reporting the final state last makes it the one that stands.
+  if (current.def !== undefined && current.declaredType !== undefined) {
+    options.recordReceiverType?.(current.declaredType, current.def.nodeId);
+  }
+  return current.def;
+}
+
+/** Where a fully folded receiver chain landed — see {@link foldReceiverChainPosition}. */
+export interface FoldedReceiverPosition {
+  /** The class the final position resolved to; absent when its declared type
+   *  named no class in the program (`Dictionary<string, User>`, `String`). */
+  readonly def: SymbolDefinition | undefined;
+  /** That position's declared type AS WRITTEN, when a declaration typed it. */
+  readonly declaredType: string | undefined;
+  /** The scope the declared type was written in — its lookup anchor. */
+  readonly declaredAtScope: ScopeId | undefined;
+}
+
+/**
+ * The position {@link foldReceiverChain} reaches, including a final position
+ * whose declared type named no class.
+ *
+ * `foldReceiverChain` answers "which class", so a chain ending at a member
+ * declared as `Dictionary<string, User>` reads as a miss there. That miss is
+ * itself informative: every step was typed by a declaration in the program, and
+ * the last one names a type the program does not contain. Exposed for the
+ * receiver-origin classifier, which needs exactly that to tell a library-typed
+ * receiver from an untypable one. Same fold, same declines — nothing is typed
+ * here that `foldReceiverChain` would not type — and it reports nothing to
+ * `recordReceiverType`.
+ */
+export function foldReceiverChainPosition(
+  chain: DecodedReceiverChain,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  index: WorkspaceResolutionIndex,
+  options: ResolveCompoundReceiverOptions = {},
+): FoldedReceiverPosition | undefined {
+  const current = foldReceiverChainState(chain, inScope, scopes, index, {
+    ...options,
+    recordReceiverType: undefined,
+  });
+  if (current === undefined) return undefined;
+  return {
+    def: current.def,
+    declaredType: current.declaredType,
+    declaredAtScope: current.declaredAtScope,
+  };
+}
+
+/** The fold behind {@link foldReceiverChain} and {@link foldReceiverChainPosition}. */
+function foldReceiverChainState(
+  chain: DecodedReceiverChain,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  index: WorkspaceResolutionIndex,
+  options: ResolveCompoundReceiverOptions,
+): FoldState | undefined {
   // A truncated chain is missing the head that decides the final type. The
   // producer refuses to mint one, so this is defence in depth against a
   // future producer that does.
@@ -888,19 +956,7 @@ export function foldReceiverChain(
     if (next === undefined) return undefined;
     current = next;
   }
-  // A chain that ended without a class returns undefined naturally — no
-  // separate guard, because `def` IS the signal.
-  //
-  // The receiver-type report is made HERE, from the final `FoldState`, because
-  // that record pairs the class with the spelling that produced it BY
-  // CONSTRUCTION — same step, same lookup. The individual `classOfDeclaredType`
-  // calls inside the fold also report, including from steps that were later
-  // folded past, so the last of those is not reliably about the class the fold
-  // returns. Reporting the final state last makes it the one that stands.
-  if (current.def !== undefined && current.declaredType !== undefined) {
-    options.recordReceiverType?.(current.declaredType, current.def.nodeId);
-  }
-  return current.def;
+  return current;
 }
 
 /** A resolved compound receiver, together with the declared spelling that typed
