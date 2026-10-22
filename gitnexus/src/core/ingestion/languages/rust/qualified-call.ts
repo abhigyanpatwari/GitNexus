@@ -33,7 +33,7 @@
  */
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { isOverloadableCallable } from '../../utils/callable-labels.js';
 import { lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -202,8 +202,7 @@ function* candidateModules(
   //
   //    The binding must name a MODULE, not a symbol inside one. Import
   //    resolution deliberately strips a trailing symbol segment when probing for
-  //    a file ("the last segment might be a symbol, not a module" —
-  //    import-resolvers/rust.ts), so `use crate::client::ClientBuilder;` also
+  //    a file, so `use crate::client::ClientBuilder;` also
   //    lands on `client/mod.rs`. Taking that at face value made the imported
   //    TYPE look like the module `client`, and `ClientBuilder::new()` then
   //    resolved against `client`'s module members — binding an associated
@@ -483,7 +482,7 @@ interface PassModuleIndex {
 }
 
 /**
- * DELIBERATELY NOT ON `import-resolvers/per-file-set.ts` (#2909 sweep), unlike
+ * DELIBERATELY NOT ON `utils/per-file-set.ts` (#2909 sweep), unlike
  * {@link moduleIndexFor} above. {@link passIndexFor} takes THREE inputs —
  * `workspaceIndex`, `index` and `scopes` — and keys on the first alone; the
  * builder reads `scopes.defs.byId` and `index`, neither of which is derivable

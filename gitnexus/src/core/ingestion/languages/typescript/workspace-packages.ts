@@ -20,9 +20,9 @@ import path from 'path';
 import { createRequire } from 'node:module';
 import type Parser from 'tree-sitter';
 
-import { isHardcodedIgnoredDirectoryAtPath } from '../../../config/ignore-service.js';
-import { logger } from '../../logger.js';
-import { resolveFile } from '../languages/typescript/file-candidates.js';
+import { isHardcodedIgnoredDirectoryAtPath } from '../../../../config/ignore-service.js';
+import { logger } from '../../../logger.js';
+import { resolveFile } from './file-candidates.js';
 
 // `js-yaml` is CJS; the rest of this repository reaches it the same way
 // (`core/group/config-parser.ts`, `cli/group.ts`).
@@ -830,7 +830,7 @@ async function staticViteEntry(text: string): Promise<string | null> {
   const [{ default: TreeSitter }, { default: grammar }, { parseSourceSafe }] = await Promise.all([
     import('tree-sitter'),
     import('tree-sitter-typescript'),
-    import('../../tree-sitter/safe-parse.js'),
+    import('../../../tree-sitter/safe-parse.js'),
   ]);
   const parser = new TreeSitter();
   parser.setLanguage(grammar.typescript);

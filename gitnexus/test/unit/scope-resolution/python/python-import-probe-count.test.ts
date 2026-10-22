@@ -46,7 +46,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ParsedImport } from 'gitnexus-shared';
 import { pythonScopeResolver } from '../../../../src/core/ingestion/languages/python/scope-resolver.js';
-import { resolvePythonImportInternal } from '../../../../src/core/ingestion/import-resolvers/python.js';
+import { resolvePythonImportInternal } from '../../../../src/core/ingestion/languages/python/import-helpers.js';
 import {
   NO_PARSED_FILES,
   pythonNamedImport,

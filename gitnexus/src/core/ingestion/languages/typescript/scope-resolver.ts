@@ -26,10 +26,7 @@ import { typescriptProvider } from '../typescript.js';
 import { typescriptModuleExports } from './module-exports.js';
 import { isCommonJsExportAssignment } from './cjs-export-receiver.js';
 import { loadTsconfigIndex, type TsconfigIndex } from './tsconfig.js';
-import {
-  loadNodeWorkspacePackages,
-  type NodeWorkspacePackages,
-} from '../../import-resolvers/node-workspace-packages.js';
+import { loadNodeWorkspacePackages, type NodeWorkspacePackages } from './workspace-packages.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { typescriptArityCompatibility, typescriptMergeBindings, resolveTsTarget } from './index.js';
 import {

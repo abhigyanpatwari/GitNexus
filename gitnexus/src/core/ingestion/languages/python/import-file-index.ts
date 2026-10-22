@@ -6,7 +6,7 @@
  *
  * Everything here is derived from `allFilePaths` and nothing here is specific
  * to either CALLER, and there are two of them on opposite sides of a layer
- * boundary: `import-resolvers/python.ts` resolves the single-segment bare tier
+ * boundary: `languages/python/import-helpers.ts` resolves the single-segment bare tier
  * and `languages/python/import-target.ts` resolves the dotted tiers. The second
  * imports the first, so the index could not live in either without the other
  * reaching back through a cycle — it used to live in `import-target.ts`, which
@@ -18,7 +18,7 @@
  * query functions taking the index.
  */
 
-import { perFileSet } from './per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 
 /**
  * The importer's ancestor directories, CLOSEST FIRST and excluding the
