@@ -1470,6 +1470,39 @@ export interface ScopeResolver {
   ) => SymbolDefinition | undefined;
 
   /**
+   * Optional resolver for a qualified CALLEE TEXT whose path syntax only the
+   * language can read — Rust `rp::make` in `let x = rp::make(); x.m()` and in
+   * the inline receiver `rp::make().m()`, where `rp` names a module rather than
+   * a value or a type (#3498).
+   *
+   * The shared walkers never split this text. They hand it over verbatim, with
+   * the scope the call sits in, and only after their own lookups found nothing:
+   *   - `followChainPostFinalize`, for a typeBinding rawName no scope binds (so
+   *     the provider's call-return binding must keep the whole callee path);
+   *   - the compound-receiver call branch, for an undotted callee no scope binds;
+   *   - the receiver-bound drop recorder, so a receiver bound to an in-program
+   *     callable with no return annotation records a `receiver-unresolved` drop
+   *     instead of passing as an exact miss.
+   *
+   * Return the callable the path names, or `undefined` when the text is not a
+   * qualified path in this language, names nothing in the workspace, or is
+   * ambiguous. The shared side reads that callable's `return-annotation` type
+   * fact by definition identity, so a callable without one types nothing.
+   * Refusal must be cheap: the hook is asked about every name these sites fail
+   * to resolve.
+   *
+   * Languages whose qualified callees are dotted member expressions covered by
+   * namespace imports (`ns.make()`) leave this undefined.
+   */
+  readonly resolveQualifiedCallee?: (
+    calleeText: string,
+    inScope: ScopeId,
+    scopes: ScopeResolutionIndexes,
+    workspaceIndex: WorkspaceResolutionIndex,
+    allFilePaths: ReadonlySet<string>,
+  ) => SymbolDefinition | undefined;
+
+  /**
    * Optional resolver for qualified-receiver member calls where the
    * receiver is a namespace (not a class) and ordinary scope-chain /
    * import resolution doesn't find the member. C++ uses this for
@@ -1706,8 +1739,8 @@ export interface ScopeResolver {
   ) => ArityVerdict;
 
   /**
-   * Optional post-finalize hook to inject cross-file bindings that
-   * aren't modeled via explicit imports. Runs after
+   * Optional post-finalize hook to complete provider-owned namespace and type
+   * facts that need finalized lexical ownership. Runs after
    * `buildWorkspaceResolutionIndex` and before
    * `propagateImportedReturnTypes`.
    *
@@ -1715,8 +1748,10 @@ export interface ScopeResolver {
    * makes names visible across files without a syntactic import —
    * for example a shared-namespace convention where types declared
    * in the same namespace see each other without a `using` / `import`
-   * statement. Languages that require explicit imports for cross-file
-   * visibility leave this undefined.
+   * statement. The hook may also refine existing scope type bindings before
+   * return propagation, such as distinguishing a qualified constructor from a
+   * namespace factory. Add visible bindings through bindingAugmentations;
+   * finalized indexes.bindings remains immutable.
    */
   readonly populateNamespaceSiblings?: (
     parsedFiles: readonly ParsedFile[],

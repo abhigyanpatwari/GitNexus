@@ -1,5 +1,30 @@
 # Receiver-resolution baseline
 
+## Rust module-qualified factory results (#3498)
+
+The provider resolves module-qualified factory callees such as `rp::make`,
+`modx::make` and `crate::modx::make` before reading their own return annotations.
+Bound and inline receivers share that lookup. Untyped factory results retain
+an unresolved-receiver drop. Type-qualified construction remains separate.
+
+The merged corpus contains 5,351 resolution records, compared with main
+`f6e42092`'s 5,319: 32 records added, none removed, all in Rust. The additions include the
+new factory fixture and `rust-ambiguous`'s `models::Handler.handle` receiver.
+Shape states are unchanged. The fixture's two untyped receivers add two call
+drops and two callee-read drops: calls 135 → 137, reads 27 → 29, all kinds
+182 → 186; writes remain 20. The final benchmark check verifies this baseline.
+
+Qualified candidates retain Unicode names and accept uppercase module names.
+Lexical type claims distinguish type-qualified construction from module calls,
+including lowercase types and derived `Default`. A resolved type import or local
+type claim cannot fall back to a same-named module. Const generic values remain
+in Rust's value namespace. Local type aliases are not expanded by this change.
+
+The merge retains main's Zig capture behavior. Filename casing cannot establish
+whether an imported file is a namespace; restoring main preserves the lowercase
+`config.zig` file-struct edge. Python root-package imports and method-return
+ownership use main's declaration checks. A cold Rust disk-scope regression and
+a repeated-member call regression cover the shared producer and drop paths.
 ## Zig receiver gaps from the #3498 drop triage
 
 Measured against main `2b6542737`, the four Zig fixes clear 18
@@ -982,6 +1007,9 @@ Shape states remain unchanged; counts are 133 call drops and
 160 drops of all kinds (27 reads,
 0 writes). The counts include both main and this branch's fixes.
 
+### Rust qualified factories after #3653
+
+Main `2b4456553` is merged normally. The receiver-drop guard preserves both qualified-factory evidence and the module-export exclusion. Fresh build, both TypeScript configurations and all 28 Rust boundary, capture-golden and CommonJS checks pass. The measured baseline has 135 call drops, 164 total drops, 29 reads and 0 writes.
 ### C++ qualified receivers after #3653
 
 Main `2b4456553` is merged normally. The field lookup retains both the declared namespace purpose and provider-qualified type handling. Build and both TypeScript configurations pass, and all 59 focused C++ and CommonJS merge checks pass. The measured receiver baseline has 133 call drops, 160 total drops, 27 reads and 0 writes.
@@ -989,8 +1017,15 @@ Main `2b4456553` is merged normally. The field lookup retains both the declared 
 
 Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
 
+### Rust qualified factories after #3655
+
+Main `caacc3bac` is merged normally. The C# capture baseline retains main's fixture additions, and receiver counts are regenerated on the combined source: 132 call drops, 160 total, 28 reads and zero writes. All shape states match the preceding Rust baseline. Fresh build, both TypeScript configurations and 23 Rust factory, capture and CommonJS checks pass. Final hosted CI remains required.
 ### C++ qualified receivers after #3655
 
 Main `caacc3bac` is merged normally. The regenerated combined baseline has 130 call drops,156 total,26 reads and zero writes; all shape states match. These counts include the C# namespace fix from main. The broad C++ resolver run was interrupted for the prioritized focused merge checks and is not reported as a pass. Fresh exact-head CI remains required.
 
 The prioritized merge validation passes a fresh package build, both TypeScript configurations and 56 tests across six C++, CommonJS and C# namespace-boundary files.
+
+### Rust qualified factories after #3656
+
+Main `a09f76be3` is merged normally. The shared receiver pass keeps Rust's provider-qualified callee hook and C++'s position-aware qualified-member lookup. Fresh package build, both TypeScript configurations and 302 tests across 20 Rust, C++, Go, CommonJS and sealed-disk-scope files pass. All 16 capture scaling checks pass without changing their budgets. The regenerated receiver check passes with 132 call drops, 160 across all kinds, 28 reads and zero writes; shape states are unchanged. The corpus adds 32 Rust resolution records to main's 5,392, removes none, and totals 5,424. Exact-head hosted CI remains required.

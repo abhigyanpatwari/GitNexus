@@ -49,6 +49,7 @@ import type {
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
 import { followedStep } from '../../utils/type-ref-chain.js';
 import {
@@ -241,6 +242,48 @@ export function namespaceCallReturnType(
     : undefined;
 }
 
+/** `ScopeResolver.resolveQualifiedCallee` bound to one resolution pass. */
+export type QualifiedCalleeResolver = (
+  calleeText: string,
+  inScope: ScopeId,
+) => SymbolDefinition | undefined;
+
+/** Bind the provider's qualified-callee hook to this pass's indexes, or
+ *  `undefined` when the language has none. Reuse the pipeline's file-path set
+ *  when supplied; standalone callers build one lazily. */
+export function bindQualifiedCalleeResolver(
+  hook: ScopeResolver['resolveQualifiedCallee'],
+  scopes: ScopeResolutionIndexes,
+  workspaceIndex: WorkspaceResolutionIndex,
+  parsedFiles: readonly ParsedFile[],
+  filePaths?: ReadonlySet<string>,
+): QualifiedCalleeResolver | undefined {
+  if (hook === undefined) return undefined;
+  let allFilePaths = filePaths;
+  return (calleeText, inScope) => {
+    allFilePaths ??= new Set(parsedFiles.map((parsed) => parsed.filePath));
+    return hook(calleeText, inScope, scopes, workspaceIndex, allFilePaths);
+  };
+}
+
+/**
+ * A callee only the provider can read (`rp::make`, #3498): the return
+ * annotation of the callable it resolves to, read by definition identity like
+ * the producer lookup in {@link followChainPostFinalize}. `undefined` when the
+ * provider resolves nothing or the callable declares no return type.
+ */
+export function qualifiedCalleeReturnType(
+  calleeText: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  resolveCallee: QualifiedCalleeResolver | undefined,
+): TypeRef | undefined {
+  const callee = resolveCallee?.(calleeText, inScope);
+  if (callee === undefined) return undefined;
+  const returned = producerTypeRef(callee.nodeId, scopes);
+  return returned?.source === 'return-annotation' ? returned : undefined;
+}
+
 /** Walk `ref.rawName` through the scope chain's typeBindings looking
  *  for a terminal class-like rawName. Mirrors the in-extractor
  *  `followChainedRef` but operates on post-finalize Scope objects so
@@ -250,6 +293,7 @@ export function followChainPostFinalize(
   start: TypeRef,
   fromScopeId: ScopeId,
   scopes: ScopeResolutionIndexes,
+  resolveCallee?: QualifiedCalleeResolver,
 ): TypeRef {
   let current = start;
   const visited = new Set<string>();
@@ -318,6 +362,10 @@ export function followChainPostFinalize(
       const ws = scopes.workspaceTypeBindings?.get(current.rawName);
       if (ws !== undefined && ws !== current) next = ws;
     }
+    // Last, a callee path no scope binds (`rp::make`): the provider names the
+    // callable, and its return annotation continues the chain (#3498).
+    if (next === undefined && claim.status === 'absent')
+      next = qualifiedCalleeReturnType(current.rawName, lookupScope, scopes, resolveCallee);
     if (next === undefined) return current;
     if (visited.has(next.rawName)) return current;
     visited.add(next.rawName);
@@ -346,8 +394,17 @@ export function propagateImportedReturnTypes(
   parsedFiles: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
   index: WorkspaceResolutionIndex,
+  resolveQualifiedCallee?: ScopeResolver['resolveQualifiedCallee'],
+  allFilePaths?: ReadonlySet<string>,
 ): void {
   const moduleScopeByFile = index.moduleScopeByFile;
+  const resolveCallee = bindQualifiedCalleeResolver(
+    resolveQualifiedCallee,
+    indexes,
+    index,
+    parsedFiles,
+    allFilePaths,
+  );
   const scopesByFile = new Map(parsedFiles.map((file) => [file.filePath, file.scopes]));
 
   // Walk SCCs in reverse-topological order (`indexes.sccs` is leaves-
@@ -401,7 +458,12 @@ export function propagateImportedReturnTypes(
 
             // Chain-follow inside the source module so we mirror the
             // terminal type, not an intermediate intra-source reference.
-            const terminal = followChainPostFinalize(sourceTypeRef, sourceModule.id, indexes);
+            const terminal = followChainPostFinalize(
+              sourceTypeRef,
+              sourceModule.id,
+              indexes,
+              resolveCallee,
+            );
 
             // Mutating typeBindings is safe because draftToScope
             // produced a non-frozen Map (Contract Invariant I3/I8).
@@ -423,7 +485,7 @@ export function propagateImportedReturnTypes(
       // later (closer-to-root) SCC will see x's terminal type rather
       // than an intra-module call ref.
       for (const [name, ref] of importerModule.typeBindings) {
-        const resolved = followChainPostFinalize(ref, importerModule.id, indexes);
+        const resolved = followChainPostFinalize(ref, importerModule.id, indexes, resolveCallee);
         if (resolved !== ref) {
           (importerModule.typeBindings as Map<string, TypeRef>).set(name, resolved);
         }
@@ -439,7 +501,7 @@ export function propagateImportedReturnTypes(
     for (const scope of parsed.scopes) {
       if (scope.id === moduleScopeId) continue;
       for (const [name, ref] of scope.typeBindings) {
-        const resolved = followChainPostFinalize(ref, scope.id, indexes);
+        const resolved = followChainPostFinalize(ref, scope.id, indexes, resolveCallee);
         if (resolved !== ref) {
           (scope.typeBindings as Map<string, TypeRef>).set(name, resolved);
         }

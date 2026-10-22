@@ -98,6 +98,7 @@ import {
   type CalleeIdCaptureCtx,
 } from '../graph-bridge/edges.js';
 import { constructionSiteReason } from './free-call-fallback.js';
+import { bindQualifiedCalleeResolver } from './imported-return-types.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
   classOfQualifiedTypeSpelling,
@@ -215,6 +216,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isBareClassReceiverCandidate'
   | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
+  | 'resolveQualifiedCallee'
   | 'resolveQualifiedTypeSpellings'
   | 'splitQualifiedCallee'
 >;
@@ -417,6 +419,8 @@ export function emitReceiverBoundCalls(
   index: WorkspaceResolutionIndex,
   model: SemanticModel,
   options: {
+    /** Stable pass identity for provider indexes shared with return propagation. */
+    readonly allFilePaths?: ReadonlySet<string>;
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
     readonly recordSourceBinding?: SourceBindingRecorder;
     /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
@@ -509,6 +513,17 @@ export function emitReceiverBoundCalls(
       const def = lookupNamespaceMember(file, member);
       return def !== undefined && CALLABLE_TYPES.has(def.type);
     });
+  };
+  const resolveProviderQualifiedCallee = bindQualifiedCalleeResolver(
+    provider.resolveQualifiedCallee,
+    scopes,
+    index,
+    parsedFiles,
+    options.allFilePaths,
+  );
+  const bindsQualifiedCallable = (typeRef: TypeRef): boolean => {
+    const definition = resolveProviderQualifiedCallee?.(typeRef.rawName, typeRef.declaredAtScope);
+    return definition !== undefined && CALLABLE_TYPES.has(definition.type);
   };
   // A class-like def NESTED in `owner` (`A.Item` inside `A`): its qualified
   // name is the owner's plus the segment — the identity the structure phase
@@ -653,7 +668,8 @@ export function emitReceiverBoundCalls(
   const splitQualifiedCallee = provider.splitQualifiedCallee;
   const resolveQualifiedReceiverMember = provider.resolveQualifiedReceiverMember;
   const resolveQualifiedCallee =
-    splitQualifiedCallee === undefined || resolveQualifiedReceiverMember === undefined
+    resolveProviderQualifiedCallee ??
+    (splitQualifiedCallee === undefined || resolveQualifiedReceiverMember === undefined
       ? undefined
       : (
           callee: string,
@@ -670,7 +686,7 @@ export function emitReceiverBoundCalls(
             parsedFiles,
           );
           return def === 'ambiguous' ? undefined : def;
-        };
+        });
   const compoundOpts = {
     fieldFallback,
     elementTypeOf: provider.elementTypeOf,
@@ -3245,7 +3261,8 @@ export function emitReceiverBoundCalls(
           // could not type (`x = ns.untyped()`) is a drop too, not an exact miss.
           (typeRef !== undefined &&
             BARE_TYPE_NAME_RE.test(receiverName) &&
-            bindsNamespaceCallable(typeRef, namespaceTargets))) &&
+            (bindsNamespaceCallable(typeRef, namespaceTargets) ||
+              bindsQualifiedCallable(typeRef)))) &&
         provider.isModuleExportAssignment?.(site, scopes, parsed) !== true
       ) {
         // Decoded once: both the shape census and the origin classifier read the
