@@ -2,7 +2,7 @@ namespace Billing;
 
 public class Voucher
 {
-    public Payee Payee { get; set; }
+    public Payee Payee { get; set; } = new Payee();
 
     public void Post()
     {

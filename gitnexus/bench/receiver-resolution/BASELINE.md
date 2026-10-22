@@ -38,13 +38,20 @@ at the winning tier, retaining ambiguity within that tier. Bare class receivers
 exclude known nonzero generic arity outside the class itself. Positioned using
 ownership uses binary search over namespace starts.
 
-Against main `2b6542737`, call drops move from 138 to 135, reads from 42 to 41,
+Before the Zig merge, against main `2b6542737`, call drops move from 138 to 135, reads from 42 to 41,
 writes stay at 20, and all-kind drops move from 200 to 196. The four cleared
 sites are the two Address.Save calls in csharp-field-types and
 csharp-deep-field-chain, plus the City read and GetName call in the latter.
 All shape-arm states are unchanged. The resolution corpus has 5,313 rows versus
 5,309 on main: 40 removed records and 44 added records, all in C#.
 Process traversal is capped; these counts do not prove whole-flow coverage.
+
+After merging main `f6e42092`, the baseline is 132 call drops, 26 reads,
+20 writes and 178 across all kinds. Initializing the fixture's `Voucher.Payee`
+keeps those counts and all shape states unchanged. The current corpus has
+5,324 records versus main's 5,319: 45 additions and 40 removals, all in C#.
+The initializer adds a constructor capture; only the C# capture fingerprint
+changes, and all 16 scaling ratios remain below their unchanged budgets.
 
 ## Go module visibility and qualified receiver refusal
 
