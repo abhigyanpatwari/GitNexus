@@ -83,8 +83,17 @@ export function interpretCsharpTypeBinding(captures: CaptureMatch): ParsedTypeBi
   // Qualified nullable fields need namespace-aware type lookup. The generic
   // receiver fallback can otherwise borrow an unrelated unique tail name.
   // Leave these unbound until the provider can establish the written owner.
-  if (captures['@type-binding.nullable-field'] !== undefined && withoutNullable.includes('.'))
-    return null;
+  if (captures['@type-binding.nullable-field'] !== undefined) {
+    // Comments can contain punctuation that is not part of the type.
+    const qualificationText = withoutNullable.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, '');
+    let depth = 0;
+    for (const char of qualificationText) {
+      if (char === '<') depth++;
+      else if (char === '>') depth = Math.max(0, depth - 1);
+      // A qualifier inside a generic argument does not qualify the receiver.
+      else if (char === '.' && depth === 0) return null;
+    }
+  }
   // A nullable wrapper field is not its element: List<User> is not User.
   const rawType =
     captures['@type-binding.nullable-field'] !== undefined
