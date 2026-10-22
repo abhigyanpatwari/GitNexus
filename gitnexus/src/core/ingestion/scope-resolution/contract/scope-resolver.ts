@@ -1509,6 +1509,8 @@ export interface ScopeResolver {
     scopes: ScopeResolutionIndexes,
     workspaceIndex: WorkspaceResolutionIndex,
     allFilePaths: ReadonlySet<string>,
+    /** Written arguments when resolving an inline call; absent for stored type facts. */
+    argumentsText?: string,
   ) => SymbolDefinition | undefined;
 
   /**

@@ -204,6 +204,7 @@ interface ResolveCompoundReceiverOptions {
     callee: string,
     inScope: ScopeId,
     position?: TypeRef['lookupPosition'],
+    argumentsText?: string,
   ) => SymbolDefinition | undefined;
   /** `ScopeResolver.qualifiedTypeLookupSpelling`, tried before `rawName` by
    *  declared and returned receiver types (member, head and fold lookups).
@@ -1139,6 +1140,10 @@ export function resolveCompoundReceiverClass(
       const viaTb = classOfDeclaredType(tb, scopes, options, options.stripTypePreservingDecoration);
       if (viaTb !== undefined) return viaTb;
 
+      // A written type that names no class is not a callable alias. Appending
+      // () would turn an unresolved annotation into an invented invocation.
+      if (tb.lookupPurpose === 'type') return undefined;
+
       // Member-alias / call-result shapes store the RHS path on rawName
       // (`user.address`, `addr.getCity`) — resolve as a compound chain.
       if (tb.rawName.includes('.') && !tb.rawName.includes('(')) {
@@ -1248,6 +1253,7 @@ export function resolveCompoundReceiverClass(
           fnExpr,
           inScope,
           options.lookupPosition,
+          workingText.slice(openIdx + 1, -1),
         );
         const retType =
           qualifiedDef === undefined ? undefined : producerTypeRef(qualifiedDef.nodeId, scopes);
@@ -1297,6 +1303,7 @@ export function resolveCompoundReceiverClass(
         inScope,
         scopes,
         options.resolveQualifiedCallee,
+        workingText.slice(openIdx + 1, -1),
       );
       return returned === undefined ? undefined : classOfReturnType(returned, scopes, options);
     }

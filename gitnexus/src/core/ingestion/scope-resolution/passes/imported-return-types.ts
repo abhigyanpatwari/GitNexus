@@ -246,6 +246,8 @@ export function namespaceCallReturnType(
 export type QualifiedCalleeResolver = (
   calleeText: string,
   inScope: ScopeId,
+  lookupPosition?: TypeRef['lookupPosition'],
+  argumentsText?: string,
 ) => SymbolDefinition | undefined;
 
 /** Bind the provider's qualified-callee hook to this pass's indexes, or
@@ -260,9 +262,9 @@ export function bindQualifiedCalleeResolver(
 ): QualifiedCalleeResolver | undefined {
   if (hook === undefined) return undefined;
   let allFilePaths = filePaths;
-  return (calleeText, inScope) => {
+  return (calleeText, inScope, _lookupPosition, argumentsText) => {
     allFilePaths ??= new Set(parsedFiles.map((parsed) => parsed.filePath));
-    return hook(calleeText, inScope, scopes, workspaceIndex, allFilePaths);
+    return hook(calleeText, inScope, scopes, workspaceIndex, allFilePaths, argumentsText);
   };
 }
 
@@ -277,8 +279,9 @@ export function qualifiedCalleeReturnType(
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   resolveCallee: QualifiedCalleeResolver | undefined,
+  argumentsText?: string,
 ): TypeRef | undefined {
-  const callee = resolveCallee?.(calleeText, inScope);
+  const callee = resolveCallee?.(calleeText, inScope, undefined, argumentsText);
   if (callee === undefined) return undefined;
   const returned = producerTypeRef(callee.nodeId, scopes);
   return returned?.source === 'return-annotation' ? returned : undefined;

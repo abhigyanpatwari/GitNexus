@@ -1,5 +1,31 @@
 # Receiver-resolution baseline
 
+## PHP namespaced-function factory results (#3498 follow-up)
+
+PHP types results of namespaced function calls such as `rp\make()`,
+`\App\Mod\make()`, `Mod\make()` and `namespace\make()` through
+`ScopeResolver.resolveQualifiedCallee`. The selected function supplies its own
+return annotation. Namespace aliases and `use function` imports participate in
+lookup; ambiguous or unowned declarations supply no result type.
+
+Stored call-result bindings retain an invocation marker, and inline calls
+carry their written arguments separately from the source-position slot used
+by qualified-member lookup. First-class callable creation contributes no
+factory-result binding. A written type that cannot resolve to a class is not
+reinterpreted as a value alias or synthesized function call. Valid class
+annotations resolve before that refusal. Native controls retain Java assigned
+factory results and their local aliases.
+
+On main `c30449394` plus Kotlin parent `d5a7c73fa`, the regenerated receiver
+baseline has 138 call drops, 168 drops across all kinds, 30 reads and no writes.
+The corpus contains 5,559 records versus the Kotlin parent's 5,523: 36 PHP
+additions and no removals. Against main's 5,501 records, the combined changes
+add 58 and remove none. Package build, both TypeScript configurations and 106
+focused tests across six files pass on this source. The earlier Kotlin-parent
+integration passed 641 tests across 17 files and all 16 capture gates before
+the final Kotlin shadow-binding corrections; these runs overlap. Final
+integration with current main and exact-head hosted CI remain required.
+
 ## Kotlin package-qualified factory results (#3498 follow-up)
 
 Kotlin now types `val x = kqfmod.make()`, `val x = com.kqfacme.deep.make()` and
@@ -1115,6 +1141,18 @@ Main `65b101407` is merged normally. The shared caller retains Rust's provider-q
 ### External receiver origins after #3657
 
 Main `65b101407` is merged normally. Origin evidence retains the qualified-type lookup policy and both pipeline passes retain workspace file paths. Package build, both pinned TypeScript configurations, 425 focused tests across 25 files, and all 16 capture checks pass. The regenerated receiver baseline preserves every shape state and main's 132 call drops, 160 total, 28 reads and zero writes. Origin labels are 30 external, 45 unknown, 55 in-program and two unclassified. The 5,424-record resolution corpus is byte-identical to main. Exact-head hosted CI remains required.
+
+## PHP producer ownership boundary
+
+Functions declared in multi-namespace files remain ambiguity evidence, but
+are refused as qualified CALLS targets, `use function` bindings and factory
+return producers while their declaration ownership is unproven. This is a
+conservative recall limit, including callers in other files. Native controls
+pin the missing direct call and aliased-import edges alongside positive
+aliased imports from a single namespace. Commented first-class callables
+and namespace headers after two block comments have pipeline controls.
+Member/static first-class callable creation is checked for incorrect
+return-result typing; its pre-existing direct CALLS behavior is outside this fix.
 
 ### Kotlin qualified factories after #3659
 
