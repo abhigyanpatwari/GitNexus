@@ -1598,7 +1598,7 @@ fn main() {}
   }, 60000);
 
   afterAll(() => {
-    fs.rmSync(root, { recursive: true, force: true });
+    if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
   it.each([

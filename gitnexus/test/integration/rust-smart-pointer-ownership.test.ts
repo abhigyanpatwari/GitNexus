@@ -8,21 +8,26 @@ const custom = (name: string) =>
 const localBox = `struct Box<T> { value:T } impl<T> Box<T> { fn save(&self) {} }`;
 describe('Rust field pointer ownership', () => {
   it.each([
-    ['custom Box', 'custom::Box<User>', custom('Box'), false],
-    ['custom Rc', 'custom::Rc<User>', custom('Rc'), false],
-    ['custom Arc', 'custom::Arc<User>', custom('Arc'), false],
-    ['shadowed prelude Box', 'Box<User>', localBox, false],
-    ['foreign imported Rc', 'Rc<User>', 'use foreign::Rc;', false],
-    ['nested custom Box', 'std::boxed::Box<custom::Box<User>>', custom('Box'), false],
-    ['std qualified Box', 'std::boxed::Box<User>', '', true],
-    ['std qualified Rc', 'std::rc::Rc<User>', '', true],
-    ['std qualified Arc', 'std::sync::Arc<User>', '', true],
-    ['prelude Box', 'Box<User>', '', true],
-    ['imported standard Rc', 'Rc<User>', 'use std::rc::Rc;', true],
-    ['imported standard Arc', 'Arc<User>', 'use std::sync::Arc;', true],
+    ['custom Box', 'custom::Box<User>', custom('Box'), ['Function:src/lib.rs:custom.Box.save#0']],
+    ['custom Rc', 'custom::Rc<User>', custom('Rc'), ['Function:src/lib.rs:custom.Rc.save#0']],
+    ['custom Arc', 'custom::Arc<User>', custom('Arc'), ['Function:src/lib.rs:custom.Arc.save#0']],
+    ['shadowed prelude Box', 'Box<User>', localBox, ['Function:src/lib.rs:Box.save#0']],
+    ['foreign imported Rc', 'Rc<User>', 'use foreign::Rc;', []],
+    ['nested custom Box', 'std::boxed::Box<custom::Box<User>>', custom('Box'), []],
+    ['std qualified Box', 'std::boxed::Box<User>', '', ['Function:src/lib.rs:User.save#0']],
+    ['std qualified Rc', 'std::rc::Rc<User>', '', ['Function:src/lib.rs:User.save#0']],
+    ['std qualified Arc', 'std::sync::Arc<User>', '', ['Function:src/lib.rs:User.save#0']],
+    ['prelude Box', 'Box<User>', '', ['Function:src/lib.rs:User.save#0']],
+    ['imported standard Rc', 'Rc<User>', 'use std::rc::Rc;', ['Function:src/lib.rs:User.save#0']],
+    [
+      'imported standard Arc',
+      'Arc<User>',
+      'use std::sync::Arc;',
+      ['Function:src/lib.rs:User.save#0'],
+    ],
   ] as const)(
     '%s',
-    async (_label, type, declaration, transparent) => {
+    async (_label, type, declaration, expectedTargets) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-pointer-'));
       try {
         writeFixtureRepo(root, {
@@ -38,11 +43,7 @@ impl Host { fn probe(&self) { self.repo.save(); } }
         const targets = getRelationships(result, 'CALLS')
           .filter((e) => e.source === 'probe')
           .map((e) => e.rel.targetId);
-        expect(targets.filter((target) => /User\.save#/.test(target))).toHaveLength(
-          transparent ? 1 : 0,
-        );
-        // A same-file wrapper keeps its own method rather than losing the call.
-        if (declaration === localBox) expect(targets).toEqual(['Function:src/lib.rs:Box.save#0']);
+        expect(targets).toEqual(expectedTargets);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }
