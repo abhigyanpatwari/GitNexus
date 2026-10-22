@@ -209,7 +209,7 @@ describe('populateCsharpNamespaceSiblings', () => {
       kind,
       parent,
       filePath,
-      range: { startLine: 1, startColumn: 0, endLine: 10, endColumn: 0 },
+      range: { startLine: 1, startCol: 0, endLine: 10, endCol: 0 },
       bindings: new Map(),
       imports: [],
       ownedDefs,
@@ -235,11 +235,19 @@ describe('populateCsharpNamespaceSiblings', () => {
     const moduleA = scope('scope:a:module', 'Module', 'a.cs');
     const moduleB = scope('scope:b:module', 'Module', 'b.cs');
     const classB = scope('scope:b:class', 'Class', 'b.cs', moduleB.id, [sibling]);
+    const namespaceA = {
+      ...scope('scope:a:namespace', 'Namespace', 'a.cs', moduleA.id),
+      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 15 },
+    };
+    const namespaceB = {
+      ...scope('scope:b:namespace', 'Namespace', 'b.cs', moduleB.id),
+      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 15 },
+    };
     const parsedFiles: ParsedFile[] = [
       {
         filePath: 'a.cs',
         moduleScope: moduleA.id,
-        scopes: Object.freeze([moduleA]),
+        scopes: Object.freeze([moduleA, namespaceA]),
         parsedImports: Object.freeze([]),
         localDefs: Object.freeze([]),
         referenceSites: Object.freeze([]),
@@ -247,7 +255,7 @@ describe('populateCsharpNamespaceSiblings', () => {
       {
         filePath: 'b.cs',
         moduleScope: moduleB.id,
-        scopes: Object.freeze([moduleB, classB]),
+        scopes: Object.freeze([moduleB, namespaceB, classB]),
         parsedImports: Object.freeze([]),
         localDefs: Object.freeze([sibling]),
         referenceSites: Object.freeze([]),
@@ -347,17 +355,25 @@ describe('populateCsharpNamespaceSiblings', () => {
     expect(namespaceFqnBindings.get('Demo')?.get('B')?.[0]?.def.nodeId).toBe('def:b.B');
   });
 
-  it('routes global-namespace types to workspaceFqnBindings, not per-scope augmentations (#1871 OOM guard)', () => {
-    // Types declared with NO `namespace` (the global/default namespace) are
-    // visible from every C# file, so the hook writes ONE workspace-level entry
-    // per simple name instead of O(scopes x defs) per-scope augmentations —
-    // the fix for the #1871 Unity-scale OOM. This pins both halves of that
-    // contract: global types are reachable via `workspaceFqnBindings`, and the
-    // per-scope augmentation channel stays empty for them.
-    //
-    // Note: the mock MUST supply `workspaceFqnBindings` — the global fast path
-    // reads `indexes.workspaceFqnBindings` directly, so omitting it (as the
-    // other tests in this suite do) would throw.
+  // Every channel the hook writes, so a test can assert which ones stayed empty.
+  const emptyIndexes = () => ({
+    bindings: new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>(),
+    bindingAugmentations: new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>(),
+    workspaceFqnBindings: new Map<string, readonly BindingRef[]>(),
+    workspaceTypeBindings: new Map<string, TypeRef>(),
+    namespaceFqnBindings: new Map<string, Map<string, BindingRef[]>>(),
+    namespaceTypeBindings: new Map<string, Map<string, TypeRef>>(),
+    accessibleNamespacesByScope: new Map<ScopeId, string[]>(),
+  });
+
+  it('routes global-namespace types to the shared per-namespace channel under the global key (#1871 OOM guard)', () => {
+    // Types declared with NO `namespace` (the global/default namespace) get ONE
+    // shared entry per simple name instead of O(scopes x defs) per-scope
+    // augmentations — the fix for the #1871 Unity-scale OOM. They live in
+    // `namespaceFqnBindings['']`, gated per file like any other namespace, NOT
+    // in the scope-independent `workspaceFqnBindings` channel: that one answers
+    // at every scope, so a global type hid the file's own namespace siblings
+    // from any lookup that started inside a method.
     const defA = classDef('def:a.A', 'a.cs', 'A'); // simple name => global namespace
     const defB = classDef('def:b.B', 'b.cs', 'B');
     const moduleA = scope('scope:a:module', 'Module', 'a.cs');
@@ -382,41 +398,34 @@ describe('populateCsharpNamespaceSiblings', () => {
         referenceSites: Object.freeze([]),
       } as ParsedFile,
     ];
-    const bindingAugmentations = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
-    const workspaceFqnBindings = new Map<string, readonly BindingRef[]>();
+    const indexes = emptyIndexes();
 
-    populateCsharpNamespaceSiblings(
-      parsedFiles,
-      {
-        bindings: new Map(),
-        bindingAugmentations,
-        workspaceFqnBindings,
-      } as unknown as ScopeResolutionIndexes,
-      {
-        fileContents: new Map([
-          ['a.cs', 'class A { }\n'], // no `namespace` => global
-          ['b.cs', 'class B { }\n'],
-        ]),
-      },
-    );
+    populateCsharpNamespaceSiblings(parsedFiles, indexes as unknown as ScopeResolutionIndexes, {
+      fileContents: new Map([
+        ['a.cs', 'class A { }\n'], // no `namespace` => global
+        ['b.cs', 'class B { }\n'],
+      ]),
+    });
 
-    // Global types are reachable workspace-wide via simple-name keys.
-    expect(workspaceFqnBindings.get('A')?.map((b) => b.def.nodeId)).toEqual(['def:a.A']);
-    expect(workspaceFqnBindings.get('B')?.map((b) => b.def.nodeId)).toEqual(['def:b.B']);
+    const global = indexes.namespaceFqnBindings.get('');
+    expect(global?.get('A')?.map((b) => b.def.nodeId)).toEqual(['def:a.A']);
+    expect(global?.get('B')?.map((b) => b.def.nodeId)).toEqual(['def:b.B']);
     // O(D) invariant: one entry per unique simple name, never scopes x defs.
-    expect(workspaceFqnBindings.size).toBe(2);
-    // The whole point of the fast path: no per-scope augmentation explosion.
-    expect(bindingAugmentations.size).toBe(0);
-    // Workspace entries carry the cross-file `namespace` origin (so shadowing
-    // precedence in lookupBindingsAt orders them after local/finalized).
-    expect(workspaceFqnBindings.get('A')?.[0]?.origin).toBe('namespace');
+    expect(global?.size).toBe(2);
+    // Cross-file `namespace` origin, so lookupBindingsAt orders it after
+    // local/finalized bindings.
+    expect(global?.get('A')?.[0]?.origin).toBe('namespace');
+    // Neither the per-scope nor the scope-independent channel is used.
+    expect(indexes.bindingAugmentations.size).toBe(0);
+    expect(indexes.workspaceFqnBindings.size).toBe(0);
+    // Every file can see the global namespace through its accessibility list.
+    expect(indexes.accessibleNamespacesByScope.get(moduleA.id)).toEqual(['']);
+    expect(indexes.accessibleNamespacesByScope.get(moduleB.id)).toEqual(['']);
   });
 
-  it('keeps every declaration of a repeated global simple name (partial classes across files)', () => {
-    // Two global-namespace files each declare `Foo` (a partial class split
-    // across files => distinct nodeIds, same simple name). Both must survive
-    // in the workspace channel — the fast path de-dups by nodeId, not by name,
-    // so partial-class members from both files stay resolvable.
+  it('keeps every declaration of a repeated global simple name', () => {
+    // Two global-namespace files declare `Foo` with distinct nodeIds.
+    // Both declarations must survive the shared channel.
     const foo1 = classDef('def:foo1.Foo', 'foo1.cs', 'Foo');
     const foo2 = classDef('def:foo2.Foo', 'foo2.cs', 'Foo');
     const moduleA = scope('scope:foo1:module', 'Module', 'foo1.cs');
@@ -441,33 +450,111 @@ describe('populateCsharpNamespaceSiblings', () => {
         referenceSites: Object.freeze([]),
       } as ParsedFile,
     ];
-    const bindingAugmentations = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
-    const workspaceFqnBindings = new Map<string, readonly BindingRef[]>();
+    const indexes = emptyIndexes();
 
-    populateCsharpNamespaceSiblings(
-      parsedFiles,
-      {
-        bindings: new Map(),
-        bindingAugmentations,
-        workspaceFqnBindings,
-      } as unknown as ScopeResolutionIndexes,
-      {
-        fileContents: new Map([
-          ['foo1.cs', 'class Foo { }\n'],
-          ['foo2.cs', 'class Foo { }\n'],
-        ]),
-      },
-    );
+    populateCsharpNamespaceSiblings(parsedFiles, indexes as unknown as ScopeResolutionIndexes, {
+      fileContents: new Map([
+        ['foo1.cs', 'class Foo { }\n'],
+        ['foo2.cs', 'class Foo { }\n'],
+      ]),
+    });
 
-    // Both partial declarations are kept (de-dup is by nodeId, not name).
+    // Both declarations are kept (de-dup is by nodeId, not name).
     expect(
-      workspaceFqnBindings
-        .get('Foo')
+      indexes.namespaceFqnBindings
+        .get('')
+        ?.get('Foo')
         ?.map((b) => b.def.nodeId)
         .sort(),
     ).toEqual(['def:foo1.Foo', 'def:foo2.Foo']);
-    expect(bindingAugmentations.size).toBe(0);
+    expect(indexes.bindingAugmentations.size).toBe(0);
   });
+
+  // C# name lookup order (ECMA-334, namespace and type names): the declared
+  // namespace, that declaration's using directives, then each enclosing
+  // namespace; the global namespace is the outermost, and the compilation
+  // unit's using directives come after its own types. Dotted prefixes of using
+  // targets are not lookup scopes and rank last.
+  const at = (line: number, col: number) => ({
+    startLine: line,
+    startCol: col,
+    endLine: line,
+    endCol: col + 1,
+  });
+  const usingOf = (target: string, line: number, col = 0): ParsedImport => ({
+    kind: 'namespace',
+    localName: target.slice(target.lastIndexOf('.') + 1),
+    importedName: target,
+    targetRaw: target,
+    atRange: at(line, col),
+  });
+  it.each([
+    ['a file outside any namespace', 'class P { }\n', [], [], ['']],
+    [
+      'a compilation-unit using in a global file',
+      'using Billing.Core;\nclass P { }\n',
+      [],
+      [usingOf('Billing.Core', 1)],
+      ['', 'Billing.Core', 'Billing'],
+    ],
+    [
+      'a compilation-unit using before a file-scoped namespace',
+      'using Billing;\nnamespace Audit.Trail;\nclass R { }\n',
+      [{ ...at(2, 0), endCol: 22 }],
+      [usingOf('Billing', 1)],
+      ['Audit.Trail', 'Audit', '', 'Billing'],
+    ],
+    [
+      'a using after a file-scoped namespace',
+      'namespace Audit.Trail;\nusing Billing;\nclass R { }\n',
+      [{ ...at(1, 0), endCol: 22 }],
+      [usingOf('Billing', 2)],
+      ['Audit.Trail', 'Billing', 'Audit', ''],
+    ],
+    [
+      'a using inside a block namespace',
+      'namespace Audit.Trail {\n  using Billing;\n  class R { }\n}\n',
+      [{ startLine: 1, startCol: 0, endLine: 4, endCol: 1 }],
+      [usingOf('Billing', 2, 2)],
+      ['Audit.Trail', 'Billing', 'Audit', ''],
+    ],
+  ])(
+    'orders accessible namespaces in C# lookup order for %s',
+    (_label, content, namespaceRanges, parsedImports, expected) => {
+      const moduleScope = scope('scope:f:module', 'Module', 'f.cs');
+      const namespaceScopes = namespaceRanges.map(
+        (range, i) =>
+          ({
+            ...scope(`scope:f:ns${i}`, 'Namespace', 'f.cs', moduleScope.id),
+            range,
+          }) as Scope,
+      );
+      const parsedFiles: ParsedFile[] = [
+        {
+          filePath: 'f.cs',
+          moduleScope: moduleScope.id,
+          scopes: Object.freeze([moduleScope, ...namespaceScopes]),
+          parsedImports: Object.freeze(parsedImports),
+          localDefs: Object.freeze([]),
+          referenceSites: Object.freeze([]),
+        } as ParsedFile,
+      ];
+      const indexes = emptyIndexes();
+
+      populateCsharpNamespaceSiblings(parsedFiles, indexes as unknown as ScopeResolutionIndexes, {
+        fileContents: new Map([['f.cs', content]]),
+      });
+
+      const blockNamespace =
+        _label === 'a using inside a block namespace' ? namespaceScopes[0] : undefined;
+      expect(indexes.accessibleNamespacesByScope.get(blockNamespace?.id ?? moduleScope.id)).toEqual(
+        expected,
+      );
+      if (blockNamespace !== undefined) {
+        expect(indexes.accessibleNamespacesByScope.get(moduleScope.id)).toEqual(['']);
+      }
+    },
+  );
 });
 
 describe('csharpReceiverBinding', () => {

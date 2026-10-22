@@ -218,6 +218,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'markConstructionSites'
   | 'namespaceExportsIncludeImportedNames'
   | 'isNamespaceMemberVisible'
+  | 'isBareClassReceiverCandidate'
   | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
 >;
@@ -2174,11 +2175,22 @@ export function emitReceiverBoundCalls(
       // opted in. Only a bare tail is walked here; `ns.Type.field.m()` is the
       // compound resolver's shape.
       sourceBindingGrounded = true;
+      const classReceiverCandidate = provider.isBareClassReceiverCandidate;
       const classDef =
         findClassBindingInScope(site.inScope, receiverName, scopes, undefined, {
           onNameFallback,
           position: site.atRange,
           purpose: 'value',
+          classCandidateFilter:
+            classReceiverCandidate === undefined
+              ? undefined
+              : (candidate) =>
+                  classReceiverCandidate({
+                    candidate,
+                    spelling: receiverName,
+                    inScope: site.inScope,
+                    scopes,
+                  }),
         }) ??
         resolveNamespaceQualifiedClass(receiverName, site.inScope, namespaceTargets, site.atRange);
       if (classDef !== undefined) {
