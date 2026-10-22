@@ -19,6 +19,7 @@ import { ChatAnthropic } from '@langchain/anthropic';
 import { ChatOllama } from '@langchain/ollama';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createGraphRAGTools, type GraphRAGBackend } from './tools';
+import { CYPHER_DIALECT_GUIDANCE } from './cypher-dialect';
 import type {
   AgentUserContent,
   ProviderConfig,
@@ -114,6 +115,8 @@ Before EVERY tool call, briefly state what you are doing and why. Keep narration
 - Exact patterns → \`grep\`
 
 ## 📊 GRAPH SCHEMA
+${CYPHER_DIALECT_GUIDANCE}
+
 Typed node labels: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process
 Single relation table: \`CodeRelation\` with \`type\` property: CONTAINS, DEFINES, IMPORTS, CALLS, EXTENDS, IMPLEMENTS, MEMBER_OF, STEP_IN_PROCESS
 

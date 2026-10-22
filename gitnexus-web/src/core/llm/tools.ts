@@ -13,6 +13,7 @@
 
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { CYPHER_DIALECT_GUIDANCE } from './cypher-dialect';
 import { NODE_TABLES, REL_TYPES, scoreImpactRisk, unusedAxesForImpactWalk } from 'gitnexus-shared';
 import type {
   EnrichedSearchResult,
@@ -319,12 +320,14 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
         return `${results.length} results:\n${formatted.join('\n')}${truncated}`;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return `Cypher error: ${message}\n\nCheck your query syntax. Node tables: File, Folder, Function, Class, Interface, Method, CodeElement. Relation: CodeRelation with type property (CONTAINS, DEFINES, IMPORTS, CALLS). Example: MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(g:File) RETURN f, g`;
+        return `Cypher error: ${message}\n\n${CYPHER_DIALECT_GUIDANCE}\n\nCheck your query syntax. Node tables: File, Folder, Function, Class, Interface, Method, CodeElement. Relation: CodeRelation with type property (CONTAINS, DEFINES, IMPORTS, CALLS). Example: MATCH (f:File)-[:CodeRelation {type: 'IMPORTS'}]->(g:File) RETURN f, g`;
       }
     },
     {
       name: 'cypher',
       description: `Execute a Cypher query against the code graph. Use for structural queries like finding callers, tracing imports, class inheritance, or custom traversals.
+
+${CYPHER_DIALECT_GUIDANCE}
 
 Node tables: File, Folder, Function, Class, Interface, Method, CodeElement
 Relation: CodeRelation (single table with 'type' property: CONTAINS, DEFINES, IMPORTS, CALLS, EXTENDS, IMPLEMENTS)
