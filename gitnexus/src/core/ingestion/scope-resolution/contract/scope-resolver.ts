@@ -1665,8 +1665,8 @@ export interface ScopeResolver {
   ) => ArityVerdict;
 
   /**
-   * Optional post-finalize hook to inject cross-file bindings that
-   * aren't modeled via explicit imports. Runs after
+   * Optional post-finalize hook to complete provider-owned namespace and type
+   * facts that need finalized lexical ownership. Runs after
    * `buildWorkspaceResolutionIndex` and before
    * `propagateImportedReturnTypes`.
    *
@@ -1674,8 +1674,10 @@ export interface ScopeResolver {
    * makes names visible across files without a syntactic import —
    * for example a shared-namespace convention where types declared
    * in the same namespace see each other without a `using` / `import`
-   * statement. Languages that require explicit imports for cross-file
-   * visibility leave this undefined.
+   * statement. The hook may also refine existing scope type bindings before
+   * return propagation, such as distinguishing a qualified constructor from a
+   * namespace factory. Add visible bindings through bindingAugmentations;
+   * finalized indexes.bindings remains immutable.
    */
   readonly populateNamespaceSiblings?: (
     parsedFiles: readonly ParsedFile[],

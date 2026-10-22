@@ -410,6 +410,8 @@ export function emitReceiverBoundCalls(
   index: WorkspaceResolutionIndex,
   model: SemanticModel,
   options: {
+    /** Stable pass identity for provider indexes shared with return propagation. */
+    readonly allFilePaths?: ReadonlySet<string>;
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
     readonly recordSourceBinding?: SourceBindingRecorder;
     /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
@@ -508,6 +510,7 @@ export function emitReceiverBoundCalls(
     scopes,
     index,
     parsedFiles,
+    options.allFilePaths,
   );
   const bindsQualifiedCallable = (typeRef: TypeRef): boolean => {
     const definition = resolveQualifiedCallee?.(typeRef.rawName, typeRef.declaredAtScope);

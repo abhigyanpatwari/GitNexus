@@ -250,16 +250,17 @@ export type QualifiedCalleeResolver = (
 ) => SymbolDefinition | undefined;
 
 /** Bind the provider's qualified-callee hook to this pass's indexes, or
- *  `undefined` when the language has none. The file-path set is built on first
- *  use, so a pass that never asks pays nothing. */
+ *  `undefined` when the language has none. Reuse the pipeline's file-path set
+ *  when supplied; standalone callers build one lazily. */
 export function bindQualifiedCalleeResolver(
   hook: ScopeResolver['resolveQualifiedCallee'],
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
   parsedFiles: readonly ParsedFile[],
+  filePaths?: ReadonlySet<string>,
 ): QualifiedCalleeResolver | undefined {
   if (hook === undefined) return undefined;
-  let allFilePaths: ReadonlySet<string> | undefined;
+  let allFilePaths = filePaths;
   return (calleeText, inScope) => {
     allFilePaths ??= new Set(parsedFiles.map((parsed) => parsed.filePath));
     return hook(calleeText, inScope, scopes, workspaceIndex, allFilePaths);
@@ -391,6 +392,7 @@ export function propagateImportedReturnTypes(
   indexes: ScopeResolutionIndexes,
   index: WorkspaceResolutionIndex,
   resolveQualifiedCallee?: ScopeResolver['resolveQualifiedCallee'],
+  allFilePaths?: ReadonlySet<string>,
 ): void {
   const moduleScopeByFile = index.moduleScopeByFile;
   const resolveCallee = bindQualifiedCalleeResolver(
@@ -398,6 +400,7 @@ export function propagateImportedReturnTypes(
     indexes,
     index,
     parsedFiles,
+    allFilePaths,
   );
   const scopesByFile = new Map(parsedFiles.map((file) => [file.filePath, file.scopes]));
 
