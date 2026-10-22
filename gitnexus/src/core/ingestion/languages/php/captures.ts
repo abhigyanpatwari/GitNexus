@@ -97,6 +97,39 @@ const FUNCTION_NODE_TYPES = [
   'arrow_function',
 ] as const;
 
+/** A callable on the receiver spine cannot be encoded as an ordinary invocation. */
+function receiverCreatesCallable(
+  node: SyntaxNode | undefined,
+  cache: Map<number, boolean>,
+): boolean {
+  let current: SyntaxNode | null | undefined = node;
+  const path: number[] = [];
+  let result = false;
+  while (current != null) {
+    const cached = cache.get(current.id);
+    if (cached !== undefined) {
+      result = cached;
+      break;
+    }
+    path.push(current.id);
+    if (
+      current
+        .childForFieldName('arguments')
+        ?.namedChildren.some((child) => child.type === 'variadic_placeholder')
+    ) {
+      result = true;
+      break;
+    }
+    // Follow the receiver/callee, never a regular call's argument values.
+    current =
+      current.type === 'function_call_expression'
+        ? current.childForFieldName('function')
+        : current.firstNamedChild;
+  }
+  for (const id of path) cache.set(id, result);
+  return result;
+}
+
 export function emitPhpScopeCaptures(
   sourceText: string,
   _filePath: string,
@@ -117,6 +150,7 @@ export function emitPhpScopeCaptures(
 
   const rawMatches = getPhpScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
+  const receiverCallableCache = new Map<number, boolean>();
 
   // Pre-scan: collect anchor node IDs of property_declaration nodes already
   // matched by the typed @declaration.property pattern (query.ts ~lines 95–98).
@@ -250,7 +284,8 @@ export function emitPhpScopeCaptures(
       // instead of re-parsing the receiver's source text. Self-gating: a
       // non-call match, an absent receiver, or a chain with no nameable base
       // all leave `grouped` untouched.
-      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
+      if (!receiverCreatesCallable(nodeMap['@reference.receiver'], receiverCallableCache))
+        synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
       continue;
     }
@@ -263,7 +298,8 @@ export function emitPhpScopeCaptures(
       // instead of re-parsing the receiver's source text. Self-gating: a
       // non-call match, an absent receiver, or a chain with no nameable base
       // all leave `grouped` untouched.
-      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
+      if (!receiverCreatesCallable(nodeMap['@reference.receiver'], receiverCallableCache))
+        synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
       const fnNode = nodeIfType(nodeMap['@scope.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
@@ -320,8 +356,13 @@ export function emitPhpScopeCaptures(
     const callTag = (
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
     ).find((t) => grouped[t] !== undefined);
-    if (callTag !== undefined) {
-      const possibleFirstClass = nodeIfType(nodeMap[callTag], 'function_call_expression');
+    if (callTag !== undefined || grouped['@type-binding.alias'] !== undefined) {
+      const possibleFirstClass =
+        callTag !== undefined
+          ? nodeIfType(nodeMap[callTag], 'function_call_expression')
+          : nodeIfType(nodeMap['@type-binding.alias'], 'assignment_expression')?.childForFieldName(
+              'right',
+            );
       const argumentsNode = possibleFirstClass?.childForFieldName('arguments');
       const calleeNode = possibleFirstClass?.childForFieldName('function');
       if (
@@ -395,7 +436,8 @@ export function emitPhpScopeCaptures(
     // instead of re-parsing the receiver's source text. Self-gating: a
     // non-call match, an absent receiver, or a chain with no nameable base
     // all leave `grouped` untouched.
-    synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
+    if (!receiverCreatesCallable(nodeMap['@reference.receiver'], receiverCallableCache))
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
     out.push(grouped);
   }
 
@@ -587,8 +629,7 @@ function normalizePhpReceiver(raw: string): string {
   let text = raw.replace(/\?->/g, '.').replace(/->/g, '.');
   // Strip a trailing `?` (null-safe fragment on the last object node).
   text = text.replace(/\?$/, '');
-  // Collapse any doubled dots from `?->` where `?` was on its own.
-  text = text.replace(/\.{2,}/g, '.');
+  // Keep argument spelling, including the first-class callable placeholder `...`.
   // Strip trailing dot.
   text = text.replace(/\.$/, '');
 

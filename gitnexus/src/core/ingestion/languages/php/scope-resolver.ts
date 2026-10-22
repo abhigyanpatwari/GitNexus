@@ -415,7 +415,10 @@ const phpScopeResolver: ScopeResolver = {
   // `use` table to one function by fully qualified name, for both the call's
   // CALLS edge and its result type (#3498).
   resolveQualifiedFreeCall: resolvePhpQualifiedFreeCall,
-  resolveQualifiedCallee: resolvePhpQualifiedCallee,
+  resolveQualifiedCallee: (callee, inScope, scopes, _workspace, _files, argumentsText) =>
+    argumentsText === undefined && !callee.endsWith('()')
+      ? undefined
+      : resolvePhpQualifiedCallee(callee, inScope, scopes, argumentsText),
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 

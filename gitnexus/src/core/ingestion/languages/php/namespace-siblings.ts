@@ -225,7 +225,7 @@ export function populatePhpNamespaceSiblings(
   // Qualified function callees (`rp\make()`) and `use function` imports no
   // PSR-4 path resolves find their function by fully qualified name, which
   // needs every file's namespace and `use` table (#3498).
-  recordPhpFunctionIndex(parsedFiles, indexes, namespaceByFilePath);
+  recordPhpFunctionIndex(parsedFiles, indexes, namespaceByFilePath, inputs);
   bindPhpUseFunctionImports(parsedFiles, indexes);
 
   // Step 2: group class-like defs and module scopes by namespace.
