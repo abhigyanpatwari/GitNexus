@@ -532,7 +532,7 @@ class ReportRendering(TestCase):
         self.assertIn("can drop: bump to `9.9.9`", line(f"{_R_GRAMMAR}@1.1.2"))
 
     def test_target_runtime_is_the_bundled_pin(self):
-        pkg = json.loads((_REPO_ROOT / "gitnexus" / "package.json").read_text())
+        pkg = json.loads((_REPO_ROOT / "gitnexus" / "package.json").read_text(encoding="utf-8"))
         self.assertEqual(readiness.TARGET_RUNTIME, pkg["dependencies"]["tree-sitter"])
         self.assertIn(f"Bundled runtime `tree-sitter@{readiness.TARGET_RUNTIME}`", self.report)
 
