@@ -26,13 +26,15 @@ other language's cells are unchanged.
   stays VISIBLE-GAP against main `caacc3bac`. Its base now types and `address`
   reaches the `attr_reader` property, but that property has no type, so
   `save` has an unresolved receiver and a drop is recorded. `indexElement`
-  stays INVISIBLE-GAP (no subscript chain for `element_reference`, no Ruby
-  `elementTypeOf`).
+  stays INVISIBLE-GAP against that main (no subscript chain for
+  `element_reference`, no Ruby `elementTypeOf`). On the #3667 stack parent the
+  chain walker reads `element_reference`, so it is VISIBLE-GAP there; Ruby
+  still has no `elementTypeOf`.
 - Each Ruby function names its parameter after its cell (`plain_svc`,
   `deep_svc`, ...). YARD `@param` bindings land on the Module scope, so with a
   shared `svc` an untyped function resolves through a sibling's tag. A probe
-  showed exactly that, in either order. This existing product limit is tracked
-  with the receiver-resolution gaps in #3609.
+  showed exactly that, in either order. This is an existing product limit,
+  not fixed here and not yet filed separately.
 - **One untyped control per language.** JavaScript and Ruby gain an extra id,
   `untypedChain`: the old untyped `plainChain` body, which reads VISIBLE-GAP.
   `save` exists on both `User` and `Address`, so an edge there would be a
@@ -50,7 +52,7 @@ other language's cells are unchanged.
   Dispatch through a function-pointer field has no static callee in the graph:
   with the structs in `main.c` the receivers type, but neither `save` field has
   a node. The C row is now all N/A. That header structs are invisible to C is a
-  product gap tracked with #3609.
+  product gap, not fixed here and not yet filed separately.
 
 ## Receiver-chain walker spellings (#3498)
 
@@ -1484,3 +1486,11 @@ required.
 ### Typed shape bodies after #3655
 
 After normal main caacc3bac integration, both benchmark arms were remeasured. The count arm remains 130 call drops, 156 across all kinds, 26 reads and 0 writes; the typed JavaScript/Ruby/PHP shape changes and C dispatch N/A cells remain as described above. Fresh package build and both pinned TypeScript configurations pass; the receiver benchmark check matches the newly written baseline.
+
+### Typed shape bodies after #3659
+
+Main `c30449394` is merged normally. The regenerated baseline is byte-identical to the textual merge: every shape state matches this branch before the merge, and the count arm matches main at 132 call drops, 160 across all kinds, 28 reads and zero writes, with 55 in-program, 45 unknown, 30 external and 2 unclassified origins. Fresh package build, both pinned TypeScript configurations and the receiver benchmark check pass.
+
+### Typed shape bodies on the #3667 stack parent
+
+The validated #3667 head `fb6316b90` is merged normally. Outside the three receiver-resolution bench files the source is byte-identical to that parent. The regenerated baseline is byte-identical to the textual merge. Against the parent, only this branch's cells move: JavaScript `plainChain`, `plainDeepChain`, `optionalChain` and `awaitParen`, Ruby `plainChain` and `optionalChain`, and PHP `plainDeepChain` and `optionalChain` go to RESOLVES; the JavaScript and Ruby `untypedChain` controls read VISIBLE-GAP; the three C dispatch cells go to N/A. Ruby `plainDeepChain`, PHP `arrowCallChain` and every `indexElement` cell keep the parent's states. Ruby `indexElement` is VISIBLE-GAP from the parent's walker change. Its `idx_repos` now carries a YARD element type, but Ruby has no `elementTypeOf`. The count arm equals the parent: 138 call drops, 168 across all kinds, 30 reads and zero writes, with 57 in-program, 49 unknown, 30 external and 2 unclassified origins. Fresh package build, both pinned TypeScript configurations and the receiver benchmark update and check pass on the combined source.
