@@ -17,15 +17,17 @@ other language's cells are unchanged.
   `plainDeepChain`, `optionalChain` and `awaitParen` move VISIBLE-GAP ->
   RESOLVES. The fixture probes observed `Address.save` for the deep chain
   and `User.save` for the rest; the shape gate itself matches member names,
-  so it does not verify the declaring owner. `indexElement` stays VISIBLE-GAP, because
-  JavaScript has no `elementTypeOf` hook yet.
+  so it does not verify the declaring owner. `indexElement` stays
+  VISIBLE-GAP, because JavaScript has no `elementTypeOf` hook yet.
 - **Ruby** is typed with YARD: `@param <name> [Service]`, `@return [User]` on
   `get_user`, and `@param idx_repos [Array<User>]`. `plainChain` and
-  `optionalChain` move VISIBLE-GAP -> RESOLVES (`User.save`). `plainDeepChain`
+  `optionalChain` move VISIBLE-GAP -> RESOLVES; the probes observed
+  `User.save`, while the shape gate checks member names. `plainDeepChain`
   stays VISIBLE-GAP against main `caacc3bac`. Its base now types and `address`
   reaches the `attr_reader` property, but that property has no type, so
-  `save` has an unresolved receiver and a drop is recorded. `indexElement` stays INVISIBLE-GAP (no
-  subscript chain for `element_reference`, no Ruby `elementTypeOf`).
+  `save` has an unresolved receiver and a drop is recorded. `indexElement`
+  stays INVISIBLE-GAP (no subscript chain for `element_reference`, no Ruby
+  `elementTypeOf`).
 - Each Ruby function names its parameter after its cell (`plain_svc`,
   `deep_svc`, ...). YARD `@param` bindings land on the Module scope, so with a
   shared `svc` an untyped function resolves through a sibling's tag. A probe
