@@ -318,7 +318,13 @@ export function createJvmPackageSiblingVisibility(
         scopes,
         packageOf,
         (def) =>
-          isPackageClass(def, scopes) && isJvmSourceVisible(derivingClass.filePath, def.filePath),
+          isPackageClass(def, scopes) &&
+          isJvmSourceVisible(derivingClass.filePath, def.filePath) &&
+          // Omitted arguments may be raw or constructor-inferred. Explicit
+          // arguments must match before proximity ranks same-package bases.
+          (site?.typeArguments === undefined ||
+            site.typeArguments.length === 0 ||
+            (def.typeParameters?.length ?? 0) === site.typeArguments.length),
       );
     },
   };
