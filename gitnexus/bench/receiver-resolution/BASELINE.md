@@ -1,5 +1,15 @@
 # Receiver-resolution baseline
 
+## C# nullable field types (#3498)
+
+A field written `User? repo;` has a `nullable_type` as its declared type.
+Parameters, properties, method returns and foreach variables already had a
+`nullable_type` binding rule, but fields did not, so the class scope held no
+binding for `repo` and `this.repo.Save()` was dropped. With the new field rule,
+`csharp.decoratedFieldType` moves from VISIBLE-GAP to RESOLVES, and the edge
+lands on `User.Save`. No corpus fixture declares a nullable field, so the count
+arm and every other shape cell are unchanged.
+
 ## PHP namespaced-function factory results (#3498 follow-up)
 
 PHP types results of namespaced function calls such as `rp\make()`,
@@ -1110,9 +1120,49 @@ The re-measured combined baseline is 139 call drops, 31 reads, no writes and
 
 Main `2b4456553` is merged normally. The field lookup retains both the declared namespace purpose and provider-qualified type handling. Build and both TypeScript configurations pass, and all 59 focused C++ and CommonJS merge checks pass. The measured receiver baseline has 133 call drops, 160 total drops, 27 reads and 0 writes.
 
+## Nullable field ownership controls
+
+Unqualified nullable wrapper fields such as `List<User>?` keep the wrapper as
+their type instead of unwrapping to `User`; no native control covers that
+shape. Qualified nullable fields, including custom wrappers such as
+`Custom.List<User>?`, remain unsupported: their type binding is refused
+until namespace-aware lookup can establish the written owner. Both external
+and in-workspace qualified spellings record unresolved call drops instead of
+borrowing a workspace-unique tail name. Local User? fields still resolve.
+
+The first mixed fixture masked a unique-name fallback by declaring several
+User classes. An isolated one-User fixture reproduces that false edge. The
+correction passes 240 native C# tests in three files, including distinct
+negative repos, a local positive and explicit receiver-unresolved receipts.
+A separate qualified-positive probe exposed the existing unsupported shape;
+that case is documented as a limit, not claimed as a repaired positive.
+The 5,323-record corpus is byte-identical to main 2b4456553, and the receiver
+benchmark retains 133 calls, 160 drops of all kinds, 27 reads and no writes.
+The earlier 273-test run predates this last boundary correction.
+
 ### After merging #3653 into the C# namespace branch
 
 Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
+
+After merging main caacc3bac normally, 321 tests across six C# ownership, resolver, extractor, golden and namespace-precedence files pass. Package build, both pinned TypeScript configurations and lint pass (zero errors, seven existing warnings). The C# capture check retains fingerprint 28a51b97c32bf95d85e5a322e443ab00cd490a1178269c2f6f9cfc4fb9776686: 186 files, 2,841 groups, ratio 1.109 within the unchanged 1.5 budget. The corpus is byte-identical to main with 5,328 records. Receiver totals are 130 calls, 156 all kinds, 26 reads and zero writes; only csharp.decoratedFieldType moves VISIBLE-GAP to RESOLVES. Qualified nullable fields remain unsupported as described above.
+
+After merging main c30449394 normally, 324 tests across the same six files pass. Package build, both pinned TypeScript configurations and lint (zero errors) pass. All 16 scope-capture checks pass against main's baselines; C# keeps fingerprint 3720a3d2 with 193 files, 2,899 groups and ratio 1.142 within the unchanged 1.5 budget. The 5,501-record corpus is byte-identical to main. The regenerated receiver baseline keeps main's 132 calls, 160 all kinds, 28 reads and zero writes, with origins 30 external, 45 unknown, 55 in-program and 2 unclassified; only csharp.decoratedFieldType moves VISIBLE-GAP to RESOLVES.
+
+### C# nullable fields with the prepared PHP parent
+
+The normal merge of PHP parent `6149ce156` includes Kotlin parent `d5a7c73fa`.
+The three C# implementation changes remain identical to the reviewed `8b986c68a`
+source. Package build, both pinned TypeScript configurations and 324 tests in
+six files pass. The C# capture check retains fingerprint `3720a3d2`, 193 entries
+and 2,899 groups, with ratio 1.022 below the unchanged 1.5 budget. The earlier
+main-only integration's all-16-language capture run is not repeated here.
+
+The corpus contains 5,559 records, byte-identical to the PHP parent's corpus.
+Receiver update and check agree on 138 call drops, 168 total, 30 reads and no
+writes, also matching that parent. Origins are 57 in-program, 49 unknown,
+30 external and two unclassified. Only `csharp.decoratedFieldType` changes
+from VISIBLE-GAP to RESOLVES relative to the parent. Final integration with
+current main and exact-head hosted CI remain required.
 
 After merging main caacc3bac normally, totals remain 130 calls, 156 across all kinds, 26 reads and zero writes. Origin labels are 30 external, 45 unknown, 53 in-program and 2 unclassified. Shape states are unchanged. The 5,328-record corpus is byte-identical to current main. Package build, both pinned TypeScript configurations, 23 CommonJS/C# precedence tests and 15 library-origin boundary tests pass.
 
