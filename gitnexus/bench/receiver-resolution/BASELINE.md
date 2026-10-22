@@ -29,6 +29,30 @@ more sites than the original standalone branch, which cleared 14. The `b12`
 alias control resolves. Zig call drops fall from 13 to 10; `no-chain` call
 drops move from 34 to 31 and `in-program` calls from 60 to 57.
 
+## C# namespace precedence after main integration
+
+Types resolve through the enclosing namespace declaration's lookup tiers.
+Its own namespace and scoped using targets precede enclosing and global
+namespaces; compilation-unit usings follow. Registry candidate collection stops
+at the winning tier, retaining ambiguity within that tier. Bare class receivers
+exclude known nonzero generic arity outside the class itself. Positioned using
+ownership uses binary search over namespace starts.
+
+Before the Zig merge, against main `2b6542737`, call drops move from 138 to 135, reads from 42 to 41,
+writes stay at 20, and all-kind drops move from 200 to 196. The four cleared
+sites are the two Address.Save calls in csharp-field-types and
+csharp-deep-field-chain, plus the City read and GetName call in the latter.
+All shape-arm states are unchanged. The resolution corpus has 5,313 rows versus
+5,309 on main: 40 removed records and 44 added records, all in C#.
+Process traversal is capped; these counts do not prove whole-flow coverage.
+
+After merging main `f6e42092`, the baseline is 132 call drops, 26 reads,
+20 writes and 178 across all kinds. Initializing the fixture's `Voucher.Payee`
+keeps those counts and all shape states unchanged. The current corpus has
+5,324 records versus main's 5,319: 45 additions and 40 removals, all in C#.
+The initializer adds a constructor capture; only the C# capture fingerprint
+changes, and all 16 scaling ratios remain below their unchanged budgets.
+
 ## JS/TS literal-key writes and class-level field receivers (#3498)
 
 Measured on top of #3654 (`a3db31923`, tree-identical to its squash merge
@@ -950,6 +974,10 @@ Two incidental corrections from that check, both to KTD6:
 ### Merged main `f6e42092`
 
 Re-measured both benchmark arms after merging the Zig receiver fix from main.
+Shape states remain unchanged; counts are 132 call drops and
+178 drops of all kinds (26 reads,
+20 writes). The counts include both main and this branch's fixes.
+
 Shape states remain unchanged; counts are 133 call drops and
 160 drops of all kinds (27 reads,
 0 writes). The counts include both main and this branch's fixes.
@@ -957,3 +985,12 @@ Shape states remain unchanged; counts are 133 call drops and
 ### C++ qualified receivers after #3653
 
 Main `2b4456553` is merged normally. The field lookup retains both the declared namespace purpose and provider-qualified type handling. Build and both TypeScript configurations pass, and all 59 focused C++ and CommonJS merge checks pass. The measured receiver baseline has 133 call drops, 160 total drops, 27 reads and 0 writes.
+### After merging #3653 into the C# namespace branch
+
+Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
+
+### C++ qualified receivers after #3655
+
+Main `caacc3bac` is merged normally. The regenerated combined baseline has 130 call drops,156 total,26 reads and zero writes; all shape states match. These counts include the C# namespace fix from main. The broad C++ resolver run was interrupted for the prioritized focused merge checks and is not reported as a pass. Fresh exact-head CI remains required.
+
+The prioritized merge validation passes a fresh package build, both TypeScript configurations and 56 tests across six C++, CommonJS and C# namespace-boundary files.
