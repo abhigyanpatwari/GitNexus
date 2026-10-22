@@ -1,4 +1,4 @@
-import type { ParsedFile, Scope, TypeRef } from 'gitnexus-shared';
+import type { ParsedFile, Scope, ScopeId, TypeRef } from 'gitnexus-shared';
 import { lookupLexicalName } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { getRustParser } from './query.js';
@@ -8,6 +8,11 @@ import { parseSourceSafe, ParseTimeoutError } from '../../../tree-sitter/safe-pa
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { logger } from '../../../logger.js';
 import { lookupBindingsAt, lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
+import {
+  buildRustPointerFieldSafety,
+  canFlattenRustPointerTarget,
+  type RustPointerFieldSafety,
+} from './pointer-field-safety.js';
 
 /**
  * Populate type bindings for patterns and iterators that the tree-sitter
@@ -148,6 +153,12 @@ export function populateRustRangeBindings(
   }
   const treeStore: Map<string, RustTree> | undefined =
     totalSourceBytes <= TREE_REUSE_SOURCE_BUDGET_BYTES ? new Map() : undefined;
+  const pointerSafety = buildRustPointerFieldSafety(
+    parsedFiles,
+    indexes,
+    (parsed) => getOrParseTree(parser, parsed.filePath, ctx, treeStore)?.rootNode ?? null,
+    (parsed, node) => lexicalScopeForNode(node, scopeRangesByFile.get(parsed.filePath)!)?.id,
+  );
 
   for (const parsed of parsedFiles) {
     const tree = getOrParseTree(parser, parsed.filePath, ctx, treeStore);
@@ -212,10 +223,25 @@ export function populateRustRangeBindings(
         const fieldName = field.childForFieldName('name');
         const fieldType = field.childForFieldName('type');
         if (fieldName !== null && fieldType !== null) {
-          fields.set(fieldName.text, normalizeFieldType(fieldType.text));
+          fields.set(
+            fieldName.text,
+            normalizeFieldType(
+              fieldType.text,
+              parsed,
+              indexes,
+              declarationScope?.id,
+              pointerSafety,
+            ),
+          );
           if (declarationScope !== undefined) {
             fieldRefs.set(fieldName.text, {
-              rawName: normalizeFieldType(fieldType.text),
+              rawName: normalizeFieldType(
+                fieldType.text,
+                parsed,
+                indexes,
+                declarationScope.id,
+                pointerSafety,
+              ),
               declaredSpelling: fieldType.text,
               declaredAtScope: declarationScope.id,
               lookupPosition: {
@@ -249,7 +275,7 @@ export function populateRustRangeBindings(
     // Publish per-type member bindings for the whole workspace before resolving
     // assignments. Otherwise an importer processed before its defining file can
     // miss a field or identity-method type solely because of file order.
-    processFieldTypeBindings(tree.rootNode, parsed, scopeMap);
+    processFieldTypeBindings(tree.rootNode, parsed, scopeMap, indexes, pointerSafety);
     processIdentityMethodBindings(parsed);
   }
 
@@ -303,6 +329,8 @@ function processFieldTypeBindings(
   root: SyntaxNode,
   parsed: ParsedFile,
   scopeMap: ReadonlyMap<string, Scope>,
+  indexes: ScopeResolutionIndexes,
+  pointerSafety: RustPointerFieldSafety,
 ): void {
   for (const structNode of root.descendantsOfType('struct_item')) {
     const nameNode = structNode.childForFieldName('name');
@@ -319,8 +347,24 @@ function processFieldTypeBindings(
       const fieldType = field.childForFieldName('type');
       if (fieldName === null || fieldType === null) continue;
 
-      const normalizedType = normalizeFieldType(fieldType.text);
-      injectTypeBinding(structScope, fieldName.text, normalizedType);
+      const normalizedType = normalizeFieldType(
+        fieldType.text,
+        parsed,
+        indexes,
+        structScope.id,
+        pointerSafety,
+      );
+      injectTypeBinding(structScope, fieldName.text, {
+        rawName: normalizedType,
+        declaredSpelling: fieldType.text,
+        declaredAtScope: structScope.id,
+        lookupPosition: {
+          startLine: fieldType.startPosition.row + 1,
+          startCol: fieldType.startPosition.column,
+        },
+        lookupPurpose: 'type',
+        source: 'annotation',
+      });
     }
   }
 }
@@ -355,6 +399,80 @@ function findScopeForNode(
  */
 const DEREF_TRANSPARENT_POINTERS: ReadonlySet<string> = new Set(['Box', 'Rc', 'Arc']);
 
+const STANDARD_POINTER_PATHS: ReadonlySet<string> = new Set([
+  'std::boxed::Box',
+  'alloc::boxed::Box',
+  'std::rc::Rc',
+  'alloc::rc::Rc',
+  'std::sync::Arc',
+  'alloc::sync::Arc',
+]);
+
+/** A familiar terminal name alone does not establish standard-library ownership. */
+function isStandardPointer(
+  spelling: string,
+  parsed: ParsedFile,
+  indexes: ScopeResolutionIndexes,
+  scopeId: ScopeId,
+  externCrateAliases: ReadonlySet<string>,
+): boolean {
+  const absolute = spelling.startsWith('::');
+  const path = absolute ? spelling.slice(2) : spelling;
+  const root = path.split('::')[0];
+  if (externCrateAliases.has(root)) return false;
+  const claim = lookupNameClaim(scopeId, root, indexes, { purpose: 'type' });
+  if (path.includes('::')) {
+    return STANDARD_POINTER_PATHS.has(path) && (absolute || claim.status === 'absent');
+  }
+  if (!DEREF_TRANSPARENT_POINTERS.has(path)) return false;
+  if (claim.status === 'absent') {
+    if (path !== 'Box') return false;
+    // An unresolved glob can shadow the prelude without a materialized binding.
+    const ancestors = new Set<ScopeId>();
+    let current: ScopeId | null = scopeId;
+    while (current !== null && !ancestors.has(current)) {
+      ancestors.add(current);
+      current = indexes.scopeTree.getScope(current)?.parent ?? null;
+    }
+    return !parsed.parsedImports.some(
+      (entry) =>
+        entry.kind === 'wildcard' &&
+        (entry.declaredAtScope === undefined || ancestors.has(entry.declaredAtScope)),
+    );
+  }
+  if (claim.bindings.length > 0 || claim.imports.length === 0 || claim.scope === undefined)
+    return false;
+  const owner = claim.scope;
+  const imports = parsed.parsedImports.filter(
+    (entry) =>
+      'localName' in entry &&
+      entry.localName === path &&
+      (entry.declaredAtScope === owner.id ||
+        (entry.declaredAtScope === undefined && owner.kind === 'Module')) &&
+      claim.imports.some(
+        (edge) =>
+          edge.atRange !== undefined &&
+          entry.atRange !== undefined &&
+          edge.atRange.startLine === entry.atRange.startLine &&
+          edge.atRange.startCol === entry.atRange.startCol,
+      ),
+  );
+  return (
+    imports.length > 0 &&
+    claim.imports.every((edge) => edge.targetFile === null) &&
+    imports.every((entry) => {
+      const importedPath = entry.targetRaw.replace(/^::/, '');
+      return (
+        STANDARD_POINTER_PATHS.has(importedPath) &&
+        !externCrateAliases.has(importedPath.split('::')[0]!) &&
+        (entry.targetRaw.startsWith('::') ||
+          lookupNameClaim(owner.id, importedPath.split('::')[0], indexes, { purpose: 'type' })
+            .status === 'absent')
+      );
+    })
+  );
+}
+
 /** `&T`, `&mut T`, `&'a T`, `&'a mut T`. A struct field that borrows always
  *  carries a lifetime, so the lifetime form is the common one. */
 const BORROW_PREFIX_RE = /^&\s*(?:'[A-Za-z_][A-Za-z0-9_]*\s+)?(?:mut\s+)?/;
@@ -372,22 +490,52 @@ function lastPathSegment(text: string): string {
 }
 
 /** `Box<User>` / `std::rc::Rc<Box<User>>` -> `User`; anything else as is. */
-function unwrapDerefPointers(text: string): string {
+function unwrapDerefPointers(text: string, ownsPointer: (spelling: string) => boolean): string {
   let t = stripBorrow(text);
   for (;;) {
     const open = t.indexOf('<');
     if (open === -1 || !t.endsWith('>')) return t;
-    if (!DEREF_TRANSPARENT_POINTERS.has(lastPathSegment(t.slice(0, open).trim()))) return t;
+    if (!ownsPointer(t.slice(0, open).trim())) return t;
     const args = t.slice(open + 1, -1).trim();
     const comma = findTopLevelComma(args);
     t = stripBorrow(comma === -1 ? args : args.slice(0, comma));
   }
 }
 
-function normalizeFieldType(text: string): string {
+function normalizeFieldType(
+  text: string,
+  parsed?: ParsedFile,
+  indexes?: ScopeResolutionIndexes,
+  scopeId?: ScopeId,
+  pointerSafety?: RustPointerFieldSafety,
+): string {
   // `Box<dyn Repo + Send>` dispatches on the trait, the same as that spelling
   // on a parameter (#2604).
-  let t = stripDynBound(unwrapDerefPointers(text));
+  let unwrapped = false;
+  let declined = false;
+  let t = stripDynBound(
+    unwrapDerefPointers(text, (spelling) => {
+      if (
+        parsed === undefined ||
+        indexes === undefined ||
+        scopeId === undefined ||
+        pointerSafety === undefined ||
+        !isStandardPointer(spelling, parsed, indexes, scopeId, pointerSafety.externCrateAliases)
+      )
+        return false;
+      if (pointerSafety.opaqueWrappers.has(lastPathSegment(spelling))) {
+        declined = true;
+        return false;
+      }
+      unwrapped = true;
+      return true;
+    }),
+  );
+  if (
+    declined ||
+    (unwrapped && !canFlattenRustPointerTarget(t, scopeId!, indexes!, pointerSafety!))
+  )
+    return stripBorrow(text);
   const bracket = t.indexOf('<');
   if (bracket !== -1) t = t.slice(0, bracket);
   return lastPathSegment(t.trim()).trim();
@@ -936,7 +1084,7 @@ function findFieldTypeAcrossFiles(
   structName: string,
   fieldName: string,
   allParsedFiles: readonly ParsedFile[],
-): string | null {
+): TypeRef | null {
   for (const pf of allParsedFiles) {
     for (const scope of pf.scopes) {
       if (scope.kind !== 'Class') continue;
@@ -945,7 +1093,7 @@ function findFieldTypeAcrossFiles(
       );
       if (!hasDef) continue;
       const tb = scope.typeBindings.get(fieldName);
-      if (tb !== undefined) return tb.rawName;
+      if (tb !== undefined) return tb;
     }
   }
   return null;
