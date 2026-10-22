@@ -93,7 +93,9 @@ func probeBound(svc: Child) { let user = svc.getUser(); user.save() }
 `,
         );
         const result = await runPipelineFromRepo(root, () => {}, {});
-        const wrong = [...result.graph.iterRelationships()].filter(
+        // Decline this inherited overload until the intermediate call carries
+        // enough argument evidence to select Base.getUser() and User.save.
+        const saveCalls = [...result.graph.iterRelationships()].filter(
           (e) =>
             e.type === 'CALLS' &&
             ['probe', 'probeBound'].includes(
@@ -101,7 +103,7 @@ func probeBound(svc: Child) { let user = svc.getUser(); user.save() }
             ) &&
             e.targetId.includes('.save'),
         );
-        expect(wrong).toEqual([]);
+        expect(saveCalls).toEqual([]);
       } finally {
         await fs.rm(root, { recursive: true, force: true });
       }
@@ -122,13 +124,13 @@ void probe(Service svc) { svc.getUser.call().save(); }
 `,
         );
         const result = await runPipelineFromRepo(root, () => {}, {});
-        const wrong = [...result.graph.iterRelationships()].filter(
+        const saveCalls = [...result.graph.iterRelationships()].filter(
           (e) =>
             e.type === 'CALLS' &&
             result.graph.getNode(e.sourceId)?.properties.name === 'probe' &&
             e.targetId.includes('.save'),
         );
-        expect(wrong).toEqual([]);
+        expect(saveCalls).toEqual([]);
       } finally {
         await fs.rm(root, { recursive: true, force: true });
       }

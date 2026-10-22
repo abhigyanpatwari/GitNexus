@@ -101,8 +101,8 @@ const ctx: FoldContext = { fixture: tsFixture, inScope: tsFixture.moduleScope };
  * what makes these tests measure the same fold `emitReceiverBoundCalls` runs.
  *
  * `overrides` replaces individual flags — used to exercise the OFF branch of
- * `hoistTypeBindingsToModule` (which six wired languages: c, cobol, dart,
- * python, ruby, swift, actually run) and the no-`elementTypeOf` branch (which
+ * `hoistTypeBindingsToModule` (which c, cobol, python and ruby actually run)
+ * and the no-`elementTypeOf` branch (which
  * twelve of the fourteen do).
  */
 function foldIn(ctx: FoldContext, encoded: string, overrides: FoldOptions = {}) {
