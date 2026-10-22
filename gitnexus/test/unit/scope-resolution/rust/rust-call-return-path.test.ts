@@ -14,14 +14,13 @@ function callReturnBinding(callee: string): CaptureMatch {
 }
 
 /**
- * A call-return binding names the TYPE for a type-qualified callee
- * (`Foo::new()`), but keeps the whole path for a module-qualified one
- * (`rp::make()`) so the provider's qualified-callee hook can find the function
- * and read its return annotation (#3498 follow-up).
+ * Preserve qualified callees until finalized scope ownership distinguishes a
+ * module factory from an associated function. Self and generic constructors
+ * keep their existing type spelling (#3498 follow-up).
  */
 describe('Rust call-return binding of a qualified callee', () => {
   it.each([
-    ['Foo::new', 'Foo'],
+    ['Foo::new', 'Foo::new'],
     ['Self::new', 'Self'],
     ['Vec::<u8>::new', 'Vec'],
     ['make', 'make'],
