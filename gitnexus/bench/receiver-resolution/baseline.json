@@ -178,7 +178,7 @@
       "plainDeepChain": "RESOLVES",
       "optionalChain": "RESOLVES",
       "nonNullAssert": "RESOLVES",
-      "awaitParen": "VISIBLE-GAP",
+      "awaitParen": "RESOLVES",
       "explicitTypeArgs": "N/A",
       "indexElement": "VISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",

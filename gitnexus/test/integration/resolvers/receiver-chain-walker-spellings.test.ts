@@ -323,14 +323,13 @@ func fieldIndexElement(holder: Holder) {
         drops: [],
       },
       {
-        // KNOWN GAP. The chain `2|svc|cgetUserAsync|a` is now built, but Swift
-        // keeps return types on the Module scope and the fold does not look
-        // there yet.
+        // The chain `2|svc|cgetUserAsync|a` is built through `(x)`, and the
+        // fold reads Swift's hoisted module-scope return type (#3666).
         language: 'swift',
         source: 'awaitParen',
         member: 'save',
-        targets: [],
-        drops: ['main.swift:6'],
+        targets: ['Function:models.swift:User.save#0'],
+        drops: [],
       },
       {
         // KNOWN GAP. `repos[0]` now builds `2|repos|i`, so the miss is
