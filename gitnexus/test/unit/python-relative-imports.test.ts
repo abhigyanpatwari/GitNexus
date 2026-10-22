@@ -44,6 +44,9 @@ describe('Python relative import file candidates', () => {
   });
 
   it('resolves a parent-relative Python module without borrowing a TypeScript file', () => {
-    expect(resolveBoth(['peer.ts', 'peer.py'], '..peer')).toEqual(['peer.py', 'peer.py']);
+    expect(resolveBoth(['pkg/peer.ts', 'pkg/peer.py'], '..peer', 'pkg/child/main.py')).toEqual([
+      'pkg/peer.py',
+      'pkg/peer.py',
+    ]);
   });
 });
