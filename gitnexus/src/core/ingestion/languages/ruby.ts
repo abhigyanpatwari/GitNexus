@@ -24,8 +24,7 @@ import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
 import { routeRubyCall } from '../call-routing.js';
 import { rubyExportChecker } from '../export-detection.js';
 import { RUBY_QUERIES } from '../tree-sitter-queries.js';
-import { createFieldExtractor } from '../field-extractors/generic.js';
-import { rubyConfig as rubyFieldConfig } from '../field-extractors/configs/ruby.js';
+import { rubyFieldExtractor } from './ruby/field-extractor.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
 import { rubyMethodConfig } from '../method-extractors/configs/ruby.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
@@ -216,7 +215,7 @@ export const rubyProvider = defineLanguage({
   callExtractor: createCallExtractor(rubyCallConfig),
   resolveEnclosingOwner: rubyResolveEnclosingOwner,
   resolveContainerTypeOwner: rubyResolveContainerTypeOwner,
-  fieldExtractor: createFieldExtractor(rubyFieldConfig),
+  fieldExtractor: rubyFieldExtractor,
   methodExtractor: createMethodExtractor({
     ...rubyMethodConfig,
     extractFunctionName: rubyExtractFunctionName,

@@ -22,9 +22,11 @@
  *   5. **Receiver-binding synthesis** (Unit 3) — `this` type anchors on
  *      instance methods, with arrow-function lexical-this walk-up.
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * Derives captures from its inputs and records CommonJS classification for
+ * immediate side-channel collection. Performs no I/O.
  */
 
+import { recordCommonJsModuleKind } from './module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
   findNodeAtRange,
@@ -284,7 +286,12 @@ export const TS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
  * For a class declaring BOTH twins the wrong edge does not disappear, it MOVES:
  * `Host.p` now reads the INSTANCE twin's binding, because that is what is left
  * in the map under that name. Only the no-twin case — the common static shape —
- * is a true missed edge.
+ * is a true missed edge, and its first hop no longer is: the field extractor
+ * records the type the initializer constructs on the static Property NODE
+ * (`initializerType`), and the class-level receiver route in
+ * `receiver-bound-calls.ts` reads it there, so `Host.q.m()` resolves `Wrong.m`
+ * without the binding ever entering the shared map. A longer chain off it
+ * (`Host.q.m().n()`) still goes through the fold and is still missed.
  *
  * The trade is still the right one, since `this.p` is overwhelmingly the more
  * common access and a `Host.p` static chain is the cheaper place to be wrong.
@@ -297,7 +304,8 @@ export const TS_CLASS_FIELD_DEFINITION_TYPES: ReadonlySet<string> = new Set([
  * with automatic parser-cache invalidation. Both shapes are pinned by rows in
  * `test/integration/resolvers/inferred-field-receiver-matrix.test.ts`
  * (`static-read-of-a-same-name-twin-picks-up-the-instance-type`,
- * `static-read-without-a-twin-loses-its-type`), so the cost moves visibly.
+ * `static-read-without-a-twin-types-from-its-initializer`), so the cost moves
+ * visibly.
  *
  * Sibling of {@link isStaticMethodThis}, which drops the ASSIGNMENT form
  * (`this.x = new Y()` inside a static method). Together they cover both ways a
@@ -392,6 +400,8 @@ export function emitTsScopeCaptures(
   } else {
     recordCacheHit();
   }
+
+  recordCommonJsModuleKind(tree.rootNode, filePath);
 
   const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).

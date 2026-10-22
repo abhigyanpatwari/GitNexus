@@ -46,6 +46,7 @@ import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
 import { typescriptModuleExports } from '../typescript/module-exports.js';
+import { isCommonJsExportAssignment } from '../typescript/cjs-export-receiver.js';
 import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
 
@@ -92,6 +93,8 @@ const javascriptScopeResolver: ScopeResolver = {
 
   // JavaScript `super` keyword: same pattern as TypeScript.
   isSuperReceiver: (text) => /^super(\s*\(|\s*\.|\s*\[|\s*$)/.test(text.trim()),
+
+  isModuleExportAssignment: isCommonJsExportAssignment,
 
   // JavaScript is dynamically typed — enable the field-fallback heuristic
   // so member-call receivers without type annotations can still resolve
