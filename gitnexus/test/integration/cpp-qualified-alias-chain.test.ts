@@ -18,6 +18,13 @@ namespace second = first;
 struct Decoy { int m(); };
 struct Holder { second::C c; int field_call() { return c.m(); } };
 int brace_call() { auto c = second::C{}; return c.m(); }
+second::C make();
+namespace factory { second::C make(); }
+int alias_return_inline() { return make().m(); }
+int alias_return_bound() { auto c = make(); return c.m(); }
+int qualified_alias_return_inline() { return factory::make().m(); }
+int qualified_alias_return_bound() { auto c = factory::make(); return c.m(); }
+int consumer_shadow() { using second = Decoy; return make().m(); }
 `,
     );
     result = await runPipelineFromRepo(root, () => {}, {});
@@ -25,7 +32,15 @@ int brace_call() { auto c = second::C{}; return c.m(); }
   afterAll(async () => {
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
-  it.each(['field_call', 'brace_call'])('%s resolves the canonical alias target', (caller) => {
+  it.each([
+    'field_call',
+    'brace_call',
+    'alias_return_inline',
+    'alias_return_bound',
+    'qualified_alias_return_inline',
+    'qualified_alias_return_bound',
+    'consumer_shadow',
+  ])('%s resolves the canonical alias target', (caller) => {
     expect(
       [...result.graph.iterRelationships()]
         .filter(

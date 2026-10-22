@@ -210,7 +210,11 @@ interface ResolveCompoundReceiverOptions {
 /** The options the two declared-type lookups below read. */
 type TypeLookupOptions = Pick<
   ResolveCompoundReceiverOptions,
-  'recordReceiverType' | 'onNameFallback' | 'qualifiedTypeSpellings'
+  | 'recordReceiverType'
+  | 'onNameFallback'
+  | 'qualifiedTypeSpellings'
+  | 'qualifiedTypeLookupSpelling'
+  | 'namespaceMemberVisible'
 >;
 
 /** Is this hop the language's construction selector applied to the class
@@ -599,15 +603,29 @@ function classOfReturnType(
   scopes: ScopeResolutionIndexes,
   options: TypeLookupOptions,
 ): SymbolDefinition | undefined {
-  const def =
-    findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
+  const qualified = classOfQualifiedTypeSpelling(
+    retType,
+    scopes,
+    options.qualifiedTypeLookupSpelling,
+    {
       position: retType.lookupPosition,
       purpose: retType.lookupPurpose ?? 'type',
       onNameFallback: options.onNameFallback,
-    }) ??
-    (options.qualifiedTypeSpellings === true
-      ? resolveQualifiedClassSpelling(retType.declaredAtScope, retType.rawName, scopes)
-      : undefined);
+      qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+    },
+    options.namespaceMemberVisible,
+  );
+  const def =
+    qualified === undefined
+      ? (findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
+          position: retType.lookupPosition,
+          purpose: retType.lookupPurpose ?? 'type',
+          onNameFallback: options.onNameFallback,
+        }) ??
+        (options.qualifiedTypeSpellings === true
+          ? resolveQualifiedClassSpelling(retType.declaredAtScope, retType.rawName, scopes)
+          : undefined))
+      : (qualified ?? undefined);
   const record = options.recordReceiverType;
   if (def === undefined || record === undefined) return def;
   return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
