@@ -1172,8 +1172,10 @@ The integrated build, both TypeScript configurations, 345 tests across ten files
 
 ## Nullable field ownership controls
 
-The nullable-field marker preserves custom generic wrappers as wrappers.
-Qualified nullable fields remain unsupported: their type binding is refused
+Unqualified nullable wrapper fields such as `List<User>?` keep the wrapper as
+their type instead of unwrapping to `User`; no native control covers that
+shape. Qualified nullable fields, including custom wrappers such as
+`Custom.List<User>?`, remain unsupported: their type binding is refused
 until namespace-aware lookup can establish the written owner. Both external
 and in-workspace qualified spellings record unresolved call drops instead of
 borrowing a workspace-unique tail name. Local User? fields still resolve.
