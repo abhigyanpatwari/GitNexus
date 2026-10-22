@@ -103,6 +103,12 @@ Indexing is memory-bound. If `gitnexus-server` runs out of memory on a large rep
 
 [![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/gitnexus/)
 
+### Deploy to Pethost
+
+[![Deploy on Pethost](https://pethost.dev/button.svg)](https://pethost.dev/templates/gitnexus/)
+
+The template runs `gitnexus-web` and `gitnexus-server` with the clones and indexes on a volume. The server takes the generated `TOKEN` from the project's `.env` as its bearer token, for the web UI and for `/api/mcp`.
+
 ## Two Ways to Use GitNexus
 
 |             | **CLI + MCP** (recommended)                                                        | **Web UI**                                                           |
