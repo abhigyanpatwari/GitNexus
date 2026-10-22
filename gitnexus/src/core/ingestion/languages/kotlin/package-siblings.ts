@@ -11,3 +11,6 @@ export const populateKotlinPackageSiblings =
 
 export const isKotlinPackageSiblingVisibilityIncomplete =
   kotlinPackageSiblingVisibility.isVisibilityIncomplete;
+
+export const resolveKotlinSamePackageBase =
+  kotlinPackageSiblingVisibility.resolveImplicitInheritanceBase;
