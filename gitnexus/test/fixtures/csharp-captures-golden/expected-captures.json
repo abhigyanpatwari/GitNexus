@@ -208,8 +208,8 @@
     "digest": "67c79d86f33ef9e01aaafeed049dceb50797e1e69ba9280412f10682262a219b"
   },
   "csharp-global-namespace-precedence/Billing/Voucher.cs": {
-    "captureGroups": 19,
-    "digest": "1066ec9ea4141f5905c152830625bd66e9b9af029a8849d07f7d513bb6d0cfc3"
+    "captureGroups": 20,
+    "digest": "31c8376a7c60a5303dcc45a67258a25ce16434d93aeaa9de7a7fb6e21915d8d3"
   },
   "csharp-global-namespace-precedence/Global/Voucher.cs": {
     "captureGroups": 6,
