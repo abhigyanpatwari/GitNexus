@@ -101,7 +101,7 @@ describe('cross-platform shard partition', () => {
   });
 
   it('keeps the R rename suite off the shards that hold the go and dml-gate suites', () => {
-    // Windows run 39077218566: rename-provider-r (599-750 s measured, 49
+    // Windows CI run, 2026-10-17: rename-provider-r (599-750 s measured, 49
     // persisted fixtures) was charged 100 s, so the packer put it with go and
     // dml-gate and the shard exhausted the 20-minute watchdog.
     const rWeight = weightOf('test/integration/rename-provider-r.test.ts');
