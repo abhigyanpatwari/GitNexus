@@ -36,7 +36,7 @@ import { getKotlinPackageFact } from './package-facts.js';
 import { companionHasNoSupertypes, isCompanionScope } from './companion-scopes.js';
 
 /** Two or more plain names joined by `.` (`kqfmod.make`, `com.acme.mod.make`). */
-const KOTLIN_DOTTED_PATH_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/;
+const KOTLIN_DOTTED_PATH_RE = /^[\p{L}_][\p{L}\p{Nd}_]*(?:\.[\p{L}_][\p{L}\p{Nd}_]*)+$/u;
 
 interface KotlinPackageDeclarations {
   /** Declared package → top-level function name → that name's functions, across

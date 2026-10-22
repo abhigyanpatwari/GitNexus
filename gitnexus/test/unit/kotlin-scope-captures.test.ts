@@ -173,13 +173,26 @@ describe('Kotlin package-qualified call bindings (#3498 follow-up)', () => {
   });
 
   it.each([
-    ['a parameter', 'fun f(kqfmod: Shadow) { val x = kqfmod.make() }'],
-    ['an untyped local', 'fun f() { val kqfmod = load(); val x = kqfmod.make() }'],
-    ['a property', 'class P(val kqfmod: Shadow) { fun f() { val x = kqfmod.make() } }'],
-    ['an import', 'import other.kqfmod\nfun f() { val x = kqfmod.make() }'],
-    ['an import alias', 'import other.Thing as kqfmod\nfun f() { val x = kqfmod.make() }'],
-    ['a lambda parameter', 'fun f() { run { kqfmod -> val x = kqfmod.make() } }'],
-    ['the implicit lambda parameter', 'fun f() { run { val x = it.make() } }'],
+    ['a parameter', 'fun f(kqfmod: Shadow) { val x = kqfmod.make() }', 'kqfmod.make'],
+    ['an untyped local', 'fun f() { val kqfmod = load(); val x = kqfmod.make() }', 'kqfmod.make'],
+    [
+      'a property',
+      'class P(val kqfmod: Shadow) { fun f() { val x = kqfmod.make() } }',
+      'kqfmod.make',
+    ],
+    ['an import', 'import other.kqfmod\nfun f() { val x = kqfmod.make() }', 'kqfmod.make'],
+    [
+      'an import alias',
+      'import other.Thing as kqfmod\nfun f() { val x = kqfmod.make() }',
+      'kqfmod.make',
+    ],
+    ['a lambda parameter', 'fun f() { run { kqfmod -> val x = kqfmod.make() } }', 'kqfmod.make'],
+    ['the implicit lambda parameter', 'fun f() { run { val x = it.make() } }', 'it.make'],
+  ])('defers a shadowable %s to semantic lookup', (_label, source, callee) => {
+    expect(bindingsOfX(source)).toEqual([`${callee}()/constructor-inferred`]);
+  });
+
+  it.each([
     ['a class name', 'fun f() { val x = Holder.create() }'],
     ['a safe call', 'fun f() { val x = kqfmod?.make() }'],
     ['a call in the chain', 'fun f() { val x = kqfmod.make().next() }'],

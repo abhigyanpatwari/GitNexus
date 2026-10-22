@@ -63,6 +63,8 @@ describe('Kotlin package heads under incomplete inheritance', () => {
   });
   it('never replaces an inherited companion member with a package', () => {
     const targets = memberTargets(result, 'Method:companion.kt:KnownCompanion.run#0');
+    // The main-branch control currently emits no edge for this companion shape.
+    // Allow future ordinary resolution of Other.m while rejecting every other owner.
     expect(targets.filter((target) => target !== 'Method:parents.kt:Other.m#0')).toEqual([]);
   });
   it('retains a package call with a companion that has no supertypes', () => {

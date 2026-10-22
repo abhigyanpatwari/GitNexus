@@ -1496,9 +1496,9 @@ export interface ScopeResolver {
    * Refusal must be cheap: the hook is asked about every name these sites fail
    * to resolve.
    *
-   * A dotted text is asked about only after the receiver walk failed, so a
-   * provider must refuse a path whose head the call site can see as a value or
-   * a type: that call is a member call, and refusing leaves it to the walk.
+   * Return-type chain following may also ask about dotted text before a
+   * compound receiver walk. Providers must refuse a path whose head is visible
+   * as a value or type; call/member resolution owns those paths.
    *
    * Languages whose qualified callees are dotted member expressions covered by
    * namespace imports (`ns.make()`) leave this undefined.
