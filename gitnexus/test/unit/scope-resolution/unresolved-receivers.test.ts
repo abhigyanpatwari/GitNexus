@@ -33,7 +33,7 @@ function dropped(
   name: string,
   siteKind: 'call' | 'read' | 'write' = 'call',
   receiverOrigin?: ReceiverOrigin,
-): ResolutionOutcome {
+): Extract<ResolutionOutcome, { kind: 'suppressed' }> {
   return {
     kind: 'suppressed',
     reason: 'receiver-unresolved',
@@ -48,6 +48,19 @@ function dropped(
 }
 
 describe('summarizeUnresolvedReceivers', () => {
+  it.each(['call', 'read', 'write'] as const)(
+    'counts owned-but-unbound %s sites only when they are calls',
+    (siteKind) => {
+      const outcome: ResolutionOutcome = {
+        ...dropped('go', siteKind),
+        reason: 'receiver-owned-but-unbound',
+      };
+      expect(summarizeUnresolvedReceivers([outcome])).toEqual(
+        siteKind === 'call' ? { counts: { go: 1 }, totalSites: 1 } : undefined,
+      );
+    },
+  );
+
   it('returns undefined when nothing was dropped, so a clean repo stores no key', () => {
     expect(summarizeUnresolvedReceivers([])).toBeUndefined();
   });

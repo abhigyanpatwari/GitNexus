@@ -53,6 +53,30 @@ keeps those counts and all shape states unchanged. The current corpus has
 The initializer adds a constructor capture; only the C# capture fingerprint
 changes, and all 16 scaling ratios remain below their unchanged budgets.
 
+## JS/TS literal-key writes and class-level field receivers (#3498)
+
+Measured on top of #3654 (`a3db31923`, tree-identical to its squash merge
+`2b6542737`). Call drops move from 138 to 136, all-kind drops from 200 to
+178, and writes from 20 to zero. Read drops remain 42 and every shape-arm
+state is unchanged.
+
+The 20 cleared writes are 19 object-literal keys answered by later resolution
+passes and the CommonJS `module.exports.arrowRequest` declaration. Answered
+sites withdraw only a matching kind/name/site drop; unanswered sites retain
+theirs. A return-shape key's own write requires its exact declaration position
+and file, so unrelated input reads and writes retain ordinary candidate ranking.
+
+The two call-drop changes are `Config.DEFAULT.validate()` resolving through
+its `new Config()` initializer and the owned `this.route.go()` site in
+`ts-dynamic-this-no-seed` being classified as `receiver-owned-but-unbound`,
+which is outside this gate. The latter does not gain a call edge, and its call
+remains in the persisted unresolved-receiver summary used by impact/context.
+Static field inference stops at an untyped override and resolves constructor names through
+the value namespace; annotations retain type-namespace lookup.
+
+Answered-site identity includes the full range, so an answered inner read in
+`res.data.data` cannot withdraw the unresolved outer read with the same name.
+
 ## Go module visibility and qualified receiver refusal
 
 Local imports now select the importer's own module or a module selected by its
@@ -953,3 +977,11 @@ Re-measured both benchmark arms after merging the Zig receiver fix from main.
 Shape states remain unchanged; counts are 132 call drops and
 178 drops of all kinds (26 reads,
 20 writes). The counts include both main and this branch's fixes.
+
+Shape states remain unchanged; counts are 133 call drops and
+160 drops of all kinds (27 reads,
+0 writes). The counts include both main and this branch's fixes.
+
+### After merging #3653 into the C# namespace branch
+
+Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
