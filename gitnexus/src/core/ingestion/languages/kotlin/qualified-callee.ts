@@ -30,6 +30,7 @@ import {
   findEnclosingClassDef,
   findClassBindingInScope,
   lookupNameClaim,
+  resolveInheritanceBaseInScope,
 } from '../../scope-resolution/scope/walkers.js';
 import { getKotlinPackageFact } from './package-facts.js';
 import { isCompanionScope } from './companion-scopes.js';
@@ -46,6 +47,8 @@ interface KotlinPackageDeclarations {
   readonly names: ReadonlyMap<string, ReadonlySet<string>>;
   /** Child IDs are stable for the pass; avoid rewalking every method scope per call. */
   readonly companionScopes: Map<ScopeId, readonly ScopeId[]>;
+  /** Inherited receivers whose captured bases are not proven by the canonical MRO. */
+  readonly unprovenInheritance: ReadonlySet<string>;
 }
 
 /**
@@ -58,6 +61,7 @@ const PACKAGE_DECLARATIONS = new WeakMap<WorkspaceResolutionIndex, KotlinPackage
 
 function packageDeclarationsFor(
   workspaceIndex: WorkspaceResolutionIndex,
+  scopes: ScopeResolutionIndexes,
 ): KotlinPackageDeclarations {
   const cached = PACKAGE_DECLARATIONS.get(workspaceIndex);
   if (cached !== undefined) return cached;
@@ -89,7 +93,29 @@ function packageDeclarationsFor(
       }
     }
   }
-  const index: KotlinPackageDeclarations = { functions, names, companionScopes: new Map() };
+  const unprovenInheritance = new Set<string>();
+  for (const site of scopes.referenceSites) {
+    if (site.kind !== 'inherits') continue;
+    const owner = findEnclosingClassDef(site.inScope, scopes);
+    if (owner === undefined) continue;
+    const base = resolveInheritanceBaseInScope(
+      site.lookupScope ?? site.inScope,
+      site.name,
+      scopes,
+      site.rawQualifiedName,
+      owner,
+      { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
+    );
+    if (base === undefined || !scopes.methodDispatch.mroFor(owner.nodeId).includes(base.nodeId)) {
+      unprovenInheritance.add(owner.nodeId);
+    }
+  }
+  const index: KotlinPackageDeclarations = {
+    functions,
+    names,
+    companionScopes: new Map(),
+    unprovenInheritance,
+  };
   PACKAGE_DECLARATIONS.set(workspaceIndex, index);
   return index;
 }
@@ -110,7 +136,7 @@ export function resolveKotlinQualifiedCallee(
   calleeText = calleeText.replace(/\s*\.\s*/g, '.');
   if (!KOTLIN_DOTTED_PATH_RE.test(calleeText)) return undefined;
   const lastDot = calleeText.lastIndexOf('.');
-  const index = packageDeclarationsFor(workspaceIndex);
+  const index = packageDeclarationsFor(workspaceIndex, scopes);
   const candidates = index.functions
     .get(calleeText.slice(0, lastDot))
     ?.get(calleeText.slice(lastDot + 1));
@@ -147,6 +173,7 @@ export function resolveKotlinQualifiedCallee(
   }
   for (const owner of owners) {
     for (const ancestor of [owner, ...scopes.methodDispatch.mroFor(owner)]) {
+      if (index.unprovenInheritance.has(ancestor)) return undefined;
       const scopeId = workspaceIndex.classScopeByDefId.get(ancestor)?.id;
       const memberScope = scopeId === undefined ? undefined : scopes.scopeTree.getScope(scopeId);
       if (memberScope === undefined) continue;

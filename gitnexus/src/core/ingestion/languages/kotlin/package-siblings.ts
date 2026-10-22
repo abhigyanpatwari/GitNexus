@@ -47,6 +47,14 @@ export const populateKotlinPackageSiblings: typeof kotlinPackageSiblingVisibilit
         }
       }
     }
+    // A global qualified spelling must establish one declared type. Keep
+    // declaration-local augmentations, which can still prove their own owner.
+    for (const [name, refs] of qualified) {
+      const owners = new Set(
+        refs.filter((ref) => isClassLike(ref.def.type)).map((ref) => ref.def.nodeId),
+      );
+      if (owners.size > 1) qualified.delete(name);
+    }
     Object.assign(indexes, { workspaceFqnBindings: qualified });
   };
 
