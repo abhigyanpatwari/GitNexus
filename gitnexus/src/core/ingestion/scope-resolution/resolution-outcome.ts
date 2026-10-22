@@ -233,3 +233,58 @@ export function classifyReceiverShape(decoded: DecodedReceiverChain | undefined)
 }
 
 export type ResolutionOutcomeRecorder = (outcome: ResolutionOutcome) => void;
+
+/**
+ * Identity of ONE reference site, for withdrawing that site's drop and no
+ * other's.
+ *
+ * Position alone is not enough: `cfg.timeouts` (a read of `timeouts`) and
+ * `cfg.timeouts.retry()` (a call of `retry`) both start at `cfg`, so a key of
+ * file + line + column names two sites. The kind, member name, and full range
+ * separate them, including repeated names such as `res.data.data`.
+ */
+export function answeredSiteKey(
+  filePath: string,
+  range: Range,
+  siteKind: ReferenceKind,
+  name: string,
+): string {
+  return `${filePath}:${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}:${siteKind}:${name}`;
+}
+
+/**
+ * Withdraw every `receiver-unresolved` drop whose site a LATER pass answered
+ * with an edge, keyed by {@link answeredSiteKey}. Returns how many it removed.
+ *
+ * The receiver-bound pass records a drop as soon as its own cases give up, but
+ * it is not the last pass to see a read or write: the return-shape and
+ * unique-name passes run after it and can still emit an `ACCESSES` edge for the
+ * same site. A drop says the site was lost with no candidate, and a site with an
+ * edge was not lost. A site those passes also left alone keeps its drop.
+ *
+ * A drop without a `siteKind` is kept: the key needs the kind, and guessing it
+ * would withdraw on a weaker identity than the one the passes recorded.
+ * Compacts in place, keeping the survivors in their recorded order.
+ */
+export function withdrawAnsweredReceiverDrops(
+  outcomes: ResolutionOutcome[],
+  answered: ReadonlySet<string>,
+): number {
+  if (answered.size === 0) return 0;
+  let kept = 0;
+  for (const outcome of outcomes) {
+    const isAnsweredDrop =
+      outcome.kind === 'suppressed' &&
+      outcome.reason === 'receiver-unresolved' &&
+      outcome.siteKind !== undefined &&
+      answered.has(
+        answeredSiteKey(outcome.filePath, outcome.range, outcome.siteKind, outcome.name),
+      );
+    if (isAnsweredDrop) continue;
+    outcomes[kept] = outcome;
+    kept++;
+  }
+  const withdrawn = outcomes.length - kept;
+  outcomes.length = kept;
+  return withdrawn;
+}

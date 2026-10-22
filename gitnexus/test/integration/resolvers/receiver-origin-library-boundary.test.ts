@@ -40,6 +40,8 @@ export function typedParameter(document: Doc): void {
   document.body.render();
 }
 `,
+  'web/interop.js': `export function invoke() { window.app.interopSave(); }\n`,
+  'web/program.ts': `export class Service { interopSave(): void {} }\n`,
   'web/env.ts': `export const API_BASE = process.env.API_BASE || '';
 export const ENDPOINT = process.env.SERVICE_URL || '';
 `,
@@ -150,6 +152,12 @@ describe('Library and runtime receivers name the program boundary (#3498)', () =
     ['a TypeScript parameter named document', 'web/dom.ts', 14, 'render'],
     ['a Python parameter named os', 'py/settings.py', 14, 'update'],
     ['a same-named program declaration', 'web/env.ts', 1, 'API_BASE'],
+    [
+      'a TypeScript member used through a JavaScript library receiver',
+      'web/interop.js',
+      1,
+      'interopSave',
+    ],
   ] as const)('keeps a drop on %s hedged', (_label, filePath, line, name) => {
     const drops = dropsAt(filePath, line, name);
     expect(drops.length).toBeGreaterThan(0);

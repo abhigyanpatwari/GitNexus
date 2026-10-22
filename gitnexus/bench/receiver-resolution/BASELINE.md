@@ -29,6 +29,30 @@ more sites than the original standalone branch, which cleared 14. The `b12`
 alias control resolves. Zig call drops fall from 13 to 10; `no-chain` call
 drops move from 34 to 31 and `in-program` calls from 60 to 57.
 
+## JS/TS literal-key writes and class-level field receivers (#3498)
+
+Measured on top of #3654 (`a3db31923`, tree-identical to its squash merge
+`2b6542737`). Call drops move from 138 to 136, all-kind drops from 200 to
+178, and writes from 20 to zero. Read drops remain 42 and every shape-arm
+state is unchanged.
+
+The 20 cleared writes are 19 object-literal keys answered by later resolution
+passes and the CommonJS `module.exports.arrowRequest` declaration. Answered
+sites withdraw only a matching kind/name/site drop; unanswered sites retain
+theirs. A return-shape key's own write requires its exact declaration position
+and file, so unrelated input reads and writes retain ordinary candidate ranking.
+
+The two call-drop changes are `Config.DEFAULT.validate()` resolving through
+its `new Config()` initializer and the owned `this.route.go()` site in
+`ts-dynamic-this-no-seed` being classified as `receiver-owned-but-unbound`,
+which is outside this gate. The latter does not gain a call edge, and its call
+remains in the persisted unresolved-receiver summary used by impact/context.
+Static field inference stops at an untyped override and resolves constructor names through
+the value namespace; annotations retain type-namespace lookup.
+
+Answered-site identity includes the full range, so an answered inner read in
+`res.data.data` cannot withdraw the unresolved outer read with the same name.
+
 ## Go module visibility and qualified receiver refusal
 
 Local imports now select the importer's own module or a module selected by its
@@ -924,6 +948,6 @@ Two incidental corrections from that check, both to KTD6:
 
 ### Library-rooted receiver evidence (#3658, #3498)
 
-After merging main `d57f570d`, the shape matrix and totals stay unchanged: 135 call drops, 182 across all kinds (27 reads and 20 writes). The origin split changes from 44 external / 32 unknown to 59 external / 17 unknown; 57 in-program and 2 unclassified calls stay unchanged. The 5,319-record resolution corpus is byte-for-byte identical to main.
+After merging main `2b4456553`, receiver totals and all shape states are unchanged: 133 call drops, 160 across all kinds, 27 reads and 0 writes. Provider evidence now classifies 30 calls external, 45 unknown, 56 in-program and 2 unclassified.
 
-Provider data supplies host globals and standard-library module evidence; shared resolution names no languages. A library or runtime root alone does not establish the final receiver: declarations matching the dropped member name keep the result hedged. The classifier uses only imports selected by the lexical claim walk, and globalThis is not an external boundary. The 85 passing classifier and pipeline checks include copied program instances, program-owned global properties, blocked claims, and an unrelated declaration sharing an environment key name. External classification still works in the positive controls.
+The member-name veto spans the workspace graph. A JavaScript receiver through `window.app` stays uncertain when its member is declared only in TypeScript. Direct built-in calls also stay uncertain when a program declaration matches the member name; that precision cost is deliberate. `globalThis` supplies no external evidence, and library imports must be selected by the lexical claim walk. The post-main build, both TypeScript configurations and all 105 classifier, pipeline and CommonJS checks pass. Before the main merge, the mixed-language correction preserves all 5,319 resolution records byte-for-byte; the final corpus check is recorded with the PR validation.
