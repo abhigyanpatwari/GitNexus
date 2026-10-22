@@ -22,7 +22,12 @@ import {
 } from '../../language-config.js';
 import { resolveZigImportInternal } from '../../import-resolvers/zig.js';
 import { zigProvider } from '../zig.js';
-import { expandZigWildcardNames, zigArityCompatibility, zigMergeBindings } from './index.js';
+import {
+  expandZigWildcardNames,
+  isZigTypeConstructorCallee,
+  zigArityCompatibility,
+  zigMergeBindings,
+} from './index.js';
 import { populateZigRangeBindings } from './range-binding.js';
 import { populateZigWorkspaceStaticGating } from './workspace-static-gating.js';
 
@@ -50,6 +55,13 @@ export const zigScopeResolver: ScopeResolver = {
   // (`opmod.Op.lookup.event_max()`) — walked hop by hop from the verified
   // import; a one-hop split at the last dot resolved none of them.
   resolveNamespaceChains: true,
+
+  // Zig spells a generic type as a call: `Stack(u8).init()` calls `init` on
+  // the TYPE `Stack(u8)`. `Stack` returns `type`, which binds nothing, so the
+  // inline receiver typed nothing while `var t = Stack(u8).init()` resolved.
+  // A TitleCase callee is a type constructor by Zig's naming convention — the
+  // same heuristic as `isZigTypeConstructorCall`.
+  isTypeApplicationCall: isZigTypeConstructorCallee,
 
   // The whole workspace, not just the root package. A Zig module's import table
   // is declared by the `build.zig` of the package the file belongs to, so a repo
