@@ -71,7 +71,9 @@ void actual_factory_namespace() { Factory::make().m(); }
     'overloaded_inline',
     'overloaded_argument_bound',
     'overloaded_argument_inline',
-  ])('%s declines ambiguous prototype returns', (caller) => {
+  ])('%s leaves distinct prototype returns unresolved without overload selection', (caller) => {
+    // These calls are valid and distinguishable by arity in C++. Receiver
+    // typing currently lacks the selected overload's return identity.
     expect(targets(caller)).toEqual([]);
   });
   it.each(['outer_mismatch_bound', 'outer_mismatch_inline'])(
@@ -86,7 +88,9 @@ void actual_factory_namespace() { Factory::make().m(); }
       expect(targets(caller)).toEqual(['ParsedDoc']);
     },
   );
-  it('does not use a namespace for an intermediate class qualifier', () => {
+  it('leaves an unsupported class-qualified factory unresolved without borrowing a namespace', () => {
+    // This is valid C++ and should eventually target NoArg::m. The current
+    // namespace factory hook cannot resolve a class owner.
     expect(targets('class_qualifier_collision')).toEqual([]);
   });
   it('keeps the real namespace that shares the class name', () => {

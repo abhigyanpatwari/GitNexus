@@ -26,6 +26,12 @@ void typed_value(int pkg) { pkg::Cross x; x.m(); }
 void auto_value(auto pkg) { pkg::Cross x; x.m(); }
 void alias_type() { using pkg = Decoy; pkg::Cross x; x.m(); }
 void later_alias() { pkg::Cross x; using pkg = Decoy; x.m(); }
+void later_alias_bound() { auto x = pkg::make(); using pkg = Decoy; x.m(); }
+void later_alias_inline() { pkg::make().m(); using pkg = Decoy; }
+void later_class_bound() { auto x = pkg::make(); struct pkg {}; x.m(); }
+void later_class_inline() { pkg::make().m(); struct pkg {}; }
+void prior_alias_bound() { using pkg = Decoy; auto x = pkg::make(); x.m(); }
+void prior_alias_inline() { using pkg = Decoy; pkg::make().m(); }
 template<class pkg> void dependent_type() { typename pkg::Cross x; x.m(); }
 `,
     );
@@ -43,6 +49,12 @@ template<class pkg> void dependent_type() { typename pkg::Cross x; x.m(); }
     ['auto_value', ['Method:provider.h:Cross.m#0']],
     ['alias_type', []],
     ['later_alias', ['Method:provider.h:Cross.m#0']],
+    ['later_alias_bound', ['Method:provider.h:Cross.m#0']],
+    ['later_alias_inline', ['Method:provider.h:Cross.m#0']],
+    ['later_class_bound', ['Method:provider.h:Cross.m#0']],
+    ['later_class_inline', ['Method:provider.h:Cross.m#0']],
+    ['prior_alias_bound', []],
+    ['prior_alias_inline', []],
     ['dependent_type', []],
   ] as const)('%s uses only the visible producer', (caller, targets) => {
     expect(

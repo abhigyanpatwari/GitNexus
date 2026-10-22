@@ -29,7 +29,7 @@
  * declaration transparently.
  */
 
-import type { Callsite, ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { Callsite, ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import { isCppNamespaceQualifierShadowed } from './qualified-name-claims.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import {
@@ -535,11 +535,12 @@ export function splitCppQualifiedCallee(
   callee: string,
   callerScope?: ScopeId,
   scopes?: ScopeResolutionIndexes,
+  position?: TypeRef['lookupPosition'],
 ): { readonly receiver: string; readonly member: string } | undefined {
   if (callerScope !== undefined && scopes !== undefined && !/^\s*::/.test(callee)) {
     const root = callee.trim().split('::')[0]?.trim();
     if (root !== undefined) {
-      if (isCppNamespaceQualifierShadowed(root, callerScope, scopes)) return undefined;
+      if (isCppNamespaceQualifierShadowed(root, callerScope, scopes, position)) return undefined;
     }
   }
   const separators: number[] = [];

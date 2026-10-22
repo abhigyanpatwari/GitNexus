@@ -199,6 +199,7 @@ interface ResolveCompoundReceiverOptions {
   readonly resolveQualifiedCallee?: (
     callee: string,
     inScope: ScopeId,
+    position?: TypeRef['lookupPosition'],
   ) => SymbolDefinition | undefined;
   /** `ScopeResolver.qualifiedTypeLookupSpelling`, tried before `rawName` by
    *  every {@link classOfDeclaredType} caller (member, head and fold lookups).
@@ -1165,7 +1166,11 @@ export function resolveCompoundReceiverClass(
         // `auto x = rp::make()`) binds no name; its definition comes from the
         // language's qualified-member lookup — the qualifier is the evidence —
         // and its return type from that definition's own declaration.
-        const qualifiedDef = options.resolveQualifiedCallee?.(fnExpr, inScope);
+        const qualifiedDef = options.resolveQualifiedCallee?.(
+          fnExpr,
+          inScope,
+          options.lookupPosition,
+        );
         const retType =
           qualifiedDef === undefined ? undefined : producerTypeRef(qualifiedDef.nodeId, scopes);
         const viaReturn =

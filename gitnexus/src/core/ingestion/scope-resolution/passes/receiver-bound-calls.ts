@@ -655,8 +655,12 @@ export function emitReceiverBoundCalls(
   const resolveQualifiedCallee =
     splitQualifiedCallee === undefined || resolveQualifiedReceiverMember === undefined
       ? undefined
-      : (callee: string, inScope: ScopeId): SymbolDefinition | undefined => {
-          const parts = splitQualifiedCallee(callee, inScope, scopes);
+      : (
+          callee: string,
+          inScope: ScopeId,
+          position?: TypeRef['lookupPosition'],
+        ): SymbolDefinition | undefined => {
+          const parts = splitQualifiedCallee(callee, inScope, scopes, position);
           if (parts === undefined) return undefined;
           const def = resolveQualifiedReceiverMember(
             parts.receiver,

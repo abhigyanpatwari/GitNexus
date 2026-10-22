@@ -440,17 +440,22 @@ export const cppScopeResolver: ScopeResolver = {
   // `auto x = rp::make(); x.m()` / `rp::make().m()`: map the callee text back
   // onto the receiver/member pair the call capture used, so the hook above
   // answers the factory's definition the way it answered the call.
-  splitQualifiedCallee: (callee, callerScope, scopes) => {
+  splitQualifiedCallee: (callee, callerScope, scopes, position) => {
     // The namespace-member resolver does not bind aliases. Decline instead
     // of treating an alias as an unrelated namespace with the same name.
     if (
       callerScope !== undefined &&
       cppQualifiedTypeLookupSpelling(
-        { rawName: callee, declaredAtScope: callerScope, source: 'assignment-inferred' },
+        {
+          rawName: callee,
+          declaredAtScope: callerScope,
+          source: 'assignment-inferred',
+          lookupPosition: position,
+        },
         scopes,
       ) !== undefined
     )
       return undefined;
-    return splitCppQualifiedCallee(callee, callerScope, scopes);
+    return splitCppQualifiedCallee(callee, callerScope, scopes, position);
   },
 };

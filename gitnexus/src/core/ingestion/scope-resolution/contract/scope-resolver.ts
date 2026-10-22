@@ -1511,6 +1511,8 @@ export interface ScopeResolver {
    * separator and which segment counts as the receiver are grammar facts; a
    * provider may capture `a::b::make` as `b` / `make`. The caller scope and
    * indexes let it reject dependent or shadowed qualifiers before splitting.
+   * The optional position keeps later local declarations from hiding the
+   * factory expression; bound receivers pass their producer lookup position.
    *
    * Consulted only for a free-call head whose name binds no callable, and only
    * when `resolveQualifiedReceiverMember` is implemented too. It is asked
@@ -1520,6 +1522,7 @@ export interface ScopeResolver {
     callee: string,
     callerScope?: ScopeId,
     scopes?: ScopeResolutionIndexes,
+    position?: TypeRef['lookupPosition'],
   ) => { readonly receiver: string; readonly member: string } | undefined;
 
   /**
