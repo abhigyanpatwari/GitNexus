@@ -1657,6 +1657,7 @@ describe.skipIf(!swiftAvailable)(
 
 class User {
     var address: Address = Address()
+    var optionalAddress: Address? = Address()
     func save() {}
 }
 
@@ -1679,11 +1680,11 @@ func plainDeepChain(svc: Service) {
 }
 
 func optionalChain(svc: Service) {
-    svc.getUser().address?.save()
+    svc.getUser().optionalAddress?.save()
 }
 
 func nonNullAssert(svc: Service) {
-    svc.getUser().address!.save()
+    svc.getUser().optionalAddress!.save()
 }
 
 func inheritedChain(child: ChildService) {
@@ -1809,16 +1810,21 @@ func viaD(d: D) {
       fs.rmSync(root, { recursive: true, force: true });
     });
 
-    // `viaA` and `viaC` are the guard: their class's own binding was overwritten
-    // by the other class's, so the walk finds a binding it must refuse. The safe
-    // answer is no `save` edge at all — never the other class's return type.
+    // The module's bare-name return bindings are overwritten in both orders.
+    // Exact declaration return types must recover each class's own target.
     it.each([
-      { source: 'viaA', targets: ['Function:Accounts.swift:A.getUser#0'] },
+      {
+        source: 'viaA',
+        targets: ['Function:Accounts.swift:A.getUser#0', 'Function:Accounts.swift:User.save#0'],
+      },
       {
         source: 'viaB',
         targets: ['Function:Accounts.swift:Admin.save#0', 'Function:Accounts.swift:B.getUser#0'],
       },
-      { source: 'viaC', targets: ['Function:Reversed.swift:C.getUser#0'] },
+      {
+        source: 'viaC',
+        targets: ['Function:Accounts.swift:Admin.save#0', 'Function:Reversed.swift:C.getUser#0'],
+      },
       {
         source: 'viaD',
         targets: ['Function:Accounts.swift:User.save#0', 'Function:Reversed.swift:D.getUser#0'],

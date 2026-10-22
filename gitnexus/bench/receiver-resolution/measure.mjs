@@ -1070,6 +1070,7 @@ class Service {
 
 class User {
     var address: Address = Address()
+    var optionalAddress: Address? = Address()
     func save() {}
 }
 
@@ -1084,8 +1085,8 @@ class Service {
     shapes: [
       { id: 'plainChain', member: 'save', body: 'svc.getUser().save()' },
       { id: 'plainDeepChain', member: 'save', body: 'svc.getUser().address.save()' },
-      { id: 'optionalChain', member: 'save', body: 'svc.getUser().address?.save()' },
-      { id: 'nonNullAssert', member: 'save', body: 'svc.getUser().address!.save()' },
+      { id: 'optionalChain', member: 'save', body: 'svc.getUser().optionalAddress?.save()' },
+      { id: 'nonNullAssert', member: 'save', body: 'svc.getUser().optionalAddress!.save()' },
       { id: 'awaitParen', member: 'save', body: '(await svc.getUserAsync()).save()' },
       {
         id: 'explicitTypeArgs',
