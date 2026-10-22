@@ -31,14 +31,18 @@ import {
 } from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
-import type { QualifiedCalleeResolver } from './imported-return-types.js';
-import { namespaceCallReturnType, qualifiedCalleeReturnType } from './imported-return-types.js';
+import {
+  namespaceCallReturnType,
+  producerTypeRef,
+  qualifiedCalleeReturnType,
+} from './imported-return-types.js';
 import type { ClassBindingLookup, DecorationStripper } from '../scope/walkers.js';
 import {
   findClassBindingInScope,
   lookupNameClaim,
   hasExplicitNameClaim,
   resolveClassBindingForName,
+  resolveQualifiedClassSpelling,
   findEnclosingClassDef,
   findExportedDef,
   findExportedDefByName,
@@ -187,15 +191,35 @@ interface ResolveCompoundReceiverOptions {
    *  by the shared lookup's other callers — see the contract's own note on why
    *  this is opt-in rather than global. */
   readonly stripTypePreservingDecoration?: DecorationStripper;
-  /** `ScopeResolver.resolveQualifiedCallee`, bound to the pass. Types an
-   *  undotted call no scope binds (`rp::make()`) from the return annotation of
-   *  the callable the provider resolves it to. Absent ⇒ exactly as before. */
-  readonly resolveQualifiedCallee?: QualifiedCalleeResolver;
+  /** `ScopeResolver.resolveQualifiedTypeSpellings`: a qualified declared or
+   *  return type (`rp::C`) that binds nothing is resolved through the precise
+   *  qualified route. Absent ⇒ both lookups are exactly as before. */
+  readonly qualifiedTypeSpellings?: boolean;
+  /** The definition a QUALIFIED callee (`rp::make`) names, through
+   *  `ScopeResolver.splitQualifiedCallee` + `resolveQualifiedReceiverMember`
+   *  — the same answer the qualified call itself got. Consulted for a
+   *  free-call head whose name binds no callable; absent ⇒ such a head types
+   *  nothing, exactly as before. */
+  readonly resolveQualifiedCallee?: (
+    callee: string,
+    inScope: ScopeId,
+    position?: TypeRef['lookupPosition'],
+  ) => SymbolDefinition | undefined;
   /** `ScopeResolver.qualifiedTypeLookupSpelling`, tried before `rawName` by
    *  declared and returned receiver types (member, head and fold lookups).
    *  Absent ⇒ `rawName` alone, exactly as before. */
   readonly qualifiedTypeLookupSpelling?: ScopeResolver['qualifiedTypeLookupSpelling'];
 }
+
+/** The options the two declared-type lookups below read. */
+type TypeLookupOptions = Pick<
+  ResolveCompoundReceiverOptions,
+  | 'recordReceiverType'
+  | 'onNameFallback'
+  | 'qualifiedTypeSpellings'
+  | 'qualifiedTypeLookupSpelling'
+  | 'namespaceMemberVisible'
+>;
 
 /** Is this hop the language's construction selector applied to the class
  *  itself — `Factory.new` — rather than an ordinary member named `new` on a
@@ -469,6 +493,7 @@ function classOfDeclaredType(
     position: typeRef.lookupPosition,
     purpose: typeRef.lookupPurpose ?? 'type',
     onNameFallback: options.onNameFallback,
+    qualifiedTypeSpellings: options.qualifiedTypeSpellings,
   };
   // The report keeps the spelling it always had, whichever lookup answers: it
   // is read only for type ARGUMENTS (#2912), and the qualified spelling has none.
@@ -524,11 +549,12 @@ export function classOfQualifiedTypeSpelling(
 ): SymbolDefinition | null | undefined {
   // Runs for every declared-type lookup in every language, so nothing is
   // allocated until the provider has actually returned a qualified spelling.
-  const qualified = qualifiedTypeLookupSpelling?.(typeRef);
+  const qualified = qualifiedTypeLookupSpelling?.(typeRef, scopes);
+  if (qualified === null) return null;
   if (qualified === undefined || qualified === typeRef.rawName) return undefined;
   const importScope = moduleScopeIdOf(typeRef.declaredAtScope, scopes) ?? typeRef.declaredAtScope;
   return (
-    findClassBindingInScope(importScope, qualified, scopes, undefined, {
+    resolveClassBindingForName(importScope, qualified, scopes, undefined, {
       ...lookup,
       namespaceMemberVisible,
       uniqueQualifiedNameFallback: false,
@@ -570,31 +596,70 @@ function noteReceiverType(
  * arguments intact. The spelling is built only once the lookup has actually
  * found a class, because it is discarded otherwise — and every fold hop
  * through a call reaches this, generic or not.
+ *
+ * A qualified return type (`rp::C make();`) binds nothing through the bare
+ * lookup for the same reason a qualified declared type does not, so it takes
+ * the same opt-in qualified route as a last resort (see
+ * `ScopeResolver.resolveQualifiedTypeSpellings`).
  */
 function classOfReturnType(
   retType: TypeRef,
   scopes: ScopeResolutionIndexes,
-  options: ResolveCompoundReceiverOptions,
+  options: TypeLookupOptions,
 ): SymbolDefinition | undefined {
-  const lookup: ClassBindingLookup = {
-    position: retType.lookupPosition,
-    purpose: retType.lookupPurpose ?? 'type',
-    onNameFallback: options.onNameFallback,
-  };
   const qualified = classOfQualifiedTypeSpelling(
     retType,
     scopes,
     options.qualifiedTypeLookupSpelling,
-    lookup,
+    {
+      position: retType.lookupPosition,
+      purpose: retType.lookupPurpose ?? 'type',
+      onNameFallback: options.onNameFallback,
+      qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+    },
     options.namespaceMemberVisible,
   );
   const def =
     qualified === undefined
-      ? findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, lookup)
+      ? (findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
+          position: retType.lookupPosition,
+          purpose: retType.lookupPurpose ?? 'type',
+          onNameFallback: options.onNameFallback,
+        }) ??
+        (options.qualifiedTypeSpellings === true
+          ? resolveQualifiedClassSpelling(retType.declaredAtScope, retType.rawName, scopes)
+          : undefined))
       : (qualified ?? undefined);
   const record = options.recordReceiverType;
   if (def === undefined || record === undefined) return def;
   return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
+}
+
+/**
+ * The return type a free-call callee declares for ITSELF — read by definition
+ * identity (`producerTypeRef`), the way the chain follow types the bound form
+ * `auto x = make(); x.m()` — for when the name read finds no return binding
+ * under the callee's name. That happens whenever the callee arrived by a
+ * channel nothing mirrors a return binding through (a namespace directive), so
+ * `make().m()` dropped while the bound form beside it resolved.
+ *
+ * Only for a callee the name actually BINDS at the call. `findExportedDefByName`
+ * falls back to the first workspace callable of that name, and reading a
+ * return type off that guess typed a receiver from an unrelated module's
+ * same-named factory — a confident wrong edge where the name read declined.
+ */
+function boundCalleeReturnType(
+  fnDef: SymbolDefinition,
+  name: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  position: TypeRef['lookupPosition'],
+): TypeRef | undefined {
+  const claim = lookupNameClaim(inScope, name, scopes, { position, purpose: 'value' });
+  const identities = new Set(claim.bindings.map((binding) => binding.def.nodeId));
+  return identities.size === 1 && identities.has(fnDef.nodeId)
+    ? producerTypeRef(fnDef.nodeId, scopes)
+    : undefined;
 }
 
 function typeOfMemberOnClass(
@@ -1111,23 +1176,28 @@ export function resolveCompoundReceiverClass(
         purpose: 'value',
       });
       if (fnDef !== undefined) {
-        const retType = findReceiverTypeBinding(inScope, fnExpr, scopes, {
-          position: options.lookupPosition,
-        });
+        const retType =
+          findReceiverTypeBinding(inScope, fnExpr, scopes, {
+            position: options.lookupPosition,
+          }) ?? boundCalleeReturnType(fnDef, fnExpr, inScope, scopes, options.lookupPosition);
         const viaReturn =
           retType === undefined ? undefined : classOfReturnType(retType, scopes, options);
         if (viaReturn !== undefined) return viaReturn;
       } else {
-        // A callee path only the provider can read (`rp::make()`, #3498).
-        const returned = qualifiedCalleeReturnType(
+        // A qualified callee (`rp::make`, from `rp::make().m()` or the binding
+        // `auto x = rp::make()`) binds no name; its definition comes from the
+        // language's qualified-member lookup — the qualifier is the evidence —
+        // and its return type from that definition's own declaration.
+        const qualifiedDef = options.resolveQualifiedCallee?.(
           fnExpr,
           inScope,
-          scopes,
-          options.resolveQualifiedCallee,
+          options.lookupPosition,
         );
-        const viaQualified =
-          returned === undefined ? undefined : classOfReturnType(returned, scopes, options);
-        if (viaQualified !== undefined) return viaQualified;
+        const retType =
+          qualifiedDef === undefined ? undefined : producerTypeRef(qualifiedDef.nodeId, scopes);
+        const viaReturn =
+          retType === undefined ? undefined : classOfReturnType(retType, scopes, options);
+        if (viaReturn !== undefined) return viaReturn;
       }
       // Inline construction — `Service(db).m()` / `new Service(db).m()`.
       // The constructed value IS the receiver, so there is no binding to

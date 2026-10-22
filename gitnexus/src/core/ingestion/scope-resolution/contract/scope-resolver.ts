@@ -167,7 +167,7 @@
  *     unconditionally), and `indexes.namespaceFqnBindings` +
  *     `indexes.namespaceTypeBindings` (per-namespace, consulted only for the
  *     namespaces in `indexes.accessibleNamespacesByScope` for the caller's
- *     module). All but `indexes.bindings` are mutable post-finalize and
+ *     owning scope). All but `indexes.bindings` are mutable post-finalize and
  *     populated by hooks; only `indexes.bindings` is frozen.
  *
  *     `indexes.bindings` is the **finalize-output channel**. After
@@ -1117,6 +1117,17 @@ export interface ScopeResolver {
    */
   readonly isNamespaceMemberVisible?: (ctx: { readonly member: SymbolDefinition }) => boolean;
 
+  /** Optional compatibility rule for bare class-name receivers. Runs before
+   * namespace precedence selection, so an incompatible declaration cannot
+   * hide a compatible declaration in an enclosing namespace. Value receivers
+   * and declared-type lookups keep their existing rules. */
+  readonly isBareClassReceiverCandidate?: (ctx: {
+    readonly candidate: SymbolDefinition;
+    readonly spelling: string;
+    readonly inScope: ScopeId;
+    readonly scopes: ScopeResolutionIndexes;
+  }) => boolean;
+
   /**
    * When true, a qualified receiver is walked SEGMENT BY SEGMENT from its
    * verified namespace root instead of being split once at the last dot:
@@ -1134,6 +1145,30 @@ export interface ScopeResolver {
    * 8.10), whose module system is nothing but nested `const` handles.
    */
   readonly resolveNamespaceChains?: boolean;
+
+  /**
+   * When true, a receiver's declared type written as a QUALIFIED name
+   * (`rp::C x`, `void f(a::Config c)`, a factory returning `rp::C`) that binds
+   * nothing through the scope chain is resolved through the same precise route
+   * a qualified inheritance base and a qualified type reference take
+   * (`resolveQualifiedInheritanceBase`): the qualifier must match the
+   * candidate's namespace, and a tie resolves nothing.
+   *
+   * The shared receiver lookups read a qualifier only as a `.` namespace-import
+   * handle, so a language whose qualifier is a namespace PATH with no import
+   * handle behind it typed none of these receivers. File includes
+   * binds no handle and its index keys `rp::C` under `C`. The alternative —
+   * reducing the spelling to its tail at capture — binds the nearest
+   * same-named class, which is the class the qualifier was written to exclude.
+   *
+   * Per-language rather than universal because PHP also keeps qualified
+   * (`\`-separated) declared types and resolves them through its own import
+   * channel; it was not measured under this route. Off ⇒ every receiver
+   * lookup is unchanged. It runs only after every existing lookup missed, and
+   * after the template-argument match, so it can add an edge but never
+   * retarget one.
+   */
+  readonly resolveQualifiedTypeSpellings?: boolean;
 
   /**
    * How this language spells a construction expression, so the compound
@@ -1503,6 +1538,36 @@ export interface ScopeResolver {
   ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
+   * Split a qualified CALLEE as written (`rp::make`, `a::b::make`) into the
+   * receiver/member pair this language's qualified call captures produce for
+   * the same spelling, or `undefined` when the callee is not qualified.
+   *
+   * A factory call types a receiver in two shapes — bound
+   * (`auto x = rp::make(); x.m()`, whose binding records the callee text) and
+   * inline (`rp::make().m()`) — and both reach the compound receiver resolver
+   * as callee TEXT, while the call itself was resolved from its captured
+   * receiver and member. This hook maps the text back onto that pair so the
+   * resolver can ask `resolveQualifiedReceiverMember` for the callee's
+   * definition and read the return type that definition declares (by
+   * definition identity, never by name). Splitting is the language's job: the
+   * separator and which segment counts as the receiver are grammar facts; a
+   * provider may capture `a::b::make` as `b` / `make`. The caller scope and
+   * indexes let it reject dependent or shadowed qualifiers before splitting.
+   * The optional position keeps later local declarations from hiding the
+   * factory expression; bound receivers pass their producer lookup position.
+   *
+   * Consulted only for a free-call head whose name binds no callable, and only
+   * when `resolveQualifiedReceiverMember` is implemented too. It is asked
+   * without call-site arity, so an `'ambiguous'` answer types nothing.
+   */
+  readonly splitQualifiedCallee?: (
+    callee: string,
+    callerScope?: ScopeId,
+    scopes?: ScopeResolutionIndexes,
+    position?: TypeRef['lookupPosition'],
+  ) => { readonly receiver: string; readonly member: string } | undefined;
+
+  /**
    * Every receiver spelling under which a namespace import's target is
    * reachable, and the file each spelling names (#2826). Returning
    * `undefined` keeps the shared default: the local binding name alone,
@@ -1804,10 +1869,15 @@ export interface ScopeResolver {
    * `rawName` has many readers, and the compound resolver reads a dotted one as
    * a `value.member` alias path. Only receiver typing needs the distinction.
    *
-   * Return a lookup-ready class name (no decoration, no type arguments). Leave
-   * undefined for languages whose `rawName` keeps its qualifier.
+   * Return a module-visible class spelling (no decoration or type arguments).
+   * Providers may also expand a namespace alias using the binding's declaration
+   * scope and the supplied indexes. Leave undefined when no expansion is needed.
+   * Return null to refuse the written qualified lookup and its fallback.
    */
-  readonly qualifiedTypeLookupSpelling?: (typeRef: TypeRef) => string | undefined;
+  readonly qualifiedTypeLookupSpelling?: (
+    typeRef: TypeRef,
+    scopes?: ScopeResolutionIndexes,
+  ) => string | null | undefined;
 
   /**
    * Whether the compound-receiver resolver should strip C-style cast
