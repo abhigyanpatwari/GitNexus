@@ -242,6 +242,19 @@ export function emitCppScopeCaptures(
       }
     }
 
+    const callable = nodeIfType(
+      nodeMap['@declaration.function'] ?? nodeMap['@declaration.method'],
+      'function_definition',
+    );
+    if (callable?.parent?.type === 'template_declaration') {
+      const parameters = callable.parent.childForFieldName('parameters');
+      if (parameters !== null)
+        grouped['@declaration.type-parameters'] = nodeToCapture(
+          '@declaration.type-parameters',
+          parameters,
+        );
+    }
+
     // ── Handle using declarations (using namespace / using name) ────
     // `@import.using-decl` is captured directly on the `using_declaration` node.
     if (grouped['@import.using-decl'] !== undefined) {

@@ -42,7 +42,7 @@ describe('C++ qualified receiver boundaries', () => {
     expect(receiverOwners('prototype_collision')).toEqual(['A']);
   });
   it('does not select a competing overload without call evidence', () => {
-    expect(receiverOwners('using_overload')).not.toContain('A');
+    expect(receiverOwners('using_overload')).toEqual([]);
   });
   it.each(['dependent_bound', 'dependent_inline', 'dependent_outer'])(
     '%s does not borrow a namespace factory',

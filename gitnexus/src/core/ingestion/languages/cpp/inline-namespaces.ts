@@ -183,6 +183,7 @@ interface QualifiedNsMemberIndex {
    * for are ever materialized, which is what keeps the deep-chain case linear.
    */
   readonly membersByReceiver: Map<string, Map<string, readonly SymbolDefinition[]>>;
+  readonly ownerScopeByDefId: ReadonlyMap<string, ScopeId>;
 }
 
 /** One `Namespace` scope as the qualified-lookup walk sees it. */
@@ -272,6 +273,7 @@ interface MemoizedIndex {
  *  pairs it already found. */
 function buildQualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): QualifiedNsMemberIndex {
   const rootsByReceiver = new Map<string, QualifiedNsNode[]>();
+  const ownerScopeByDefId = new Map<string, ScopeId>();
 
   for (const parsed of parsedFiles) {
     const nodesByScope = new Map<ScopeId, MutableNsNode>();
@@ -279,6 +281,8 @@ function buildQualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): Qualif
     for (const sc of parsed.scopes) {
       if (sc.kind !== 'Namespace') continue;
       const node: MutableNsNode = { ownMembers: bucketOwnMembers(sc), inlineChildren: [] };
+      for (const definitions of node.ownMembers.values())
+        for (const definition of definitions) ownerScopeByDefId.set(definition.nodeId, sc.id);
       nodesByScope.set(sc.id, node);
       namespaces.push([sc, node]);
     }
@@ -300,7 +304,7 @@ function buildQualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): Qualif
       roots.push(node);
     }
   }
-  return { rootsByReceiver, membersByReceiver: new Map() };
+  return { rootsByReceiver, membersByReceiver: new Map(), ownerScopeByDefId };
 }
 
 /** Bucket a namespace scope's own callable `ownedDefs` by member simple name.
@@ -451,10 +455,50 @@ export function resolveCppQualifiedNamespaceMember(
   receiverName: string,
   memberName: string,
   parsedFiles: readonly ParsedFile[],
-  _scopes: ScopeResolutionIndexes,
+  scopes: ScopeResolutionIndexes,
   callsite?: Callsite,
+  callerScope?: ScopeId,
 ): SymbolDefinition | 'ambiguous' | undefined {
-  const allHits = qualifiedNsMembers(qualifiedNsMemberIndex(parsedFiles), receiverName, memberName);
+  const index = qualifiedNsMemberIndex(parsedFiles);
+  const qualifier = receiverName.replace(/^::/, '').replace(/::/g, '.');
+  const qualified = receiverName.includes('::');
+  const receiver = qualifier.slice(qualifier.lastIndexOf('.') + 1);
+  let allHits = qualifiedNsMembers(index, receiver, memberName);
+  if (qualified) {
+    const prefixes: string[] = [];
+    let cursor = callerScope === undefined ? undefined : scopes.scopeTree.getScope(callerScope);
+    const visited = new Set<ScopeId>();
+    while (cursor !== undefined && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      if (cursor.kind === 'Namespace') {
+        const definition = findNamespaceDefInScope(cursor);
+        if (definition !== undefined) prefixes.unshift(simpleNameOf(definition));
+      }
+      cursor = cursor.parent === null ? undefined : scopes.scopeTree.getScope(cursor.parent);
+    }
+    const keys = new Set([qualifier]);
+    if (!receiverName.startsWith('::'))
+      for (let length = prefixes.length; length > 0; length--)
+        keys.add([...prefixes.slice(0, length), qualifier].join('.'));
+    allHits = allHits.filter((definition) => {
+      if (definition.namespacePrefix !== undefined && keys.has(definition.namespacePrefix))
+        return true;
+      const transparent: string[] = [];
+      let id = index.ownerScopeByDefId.get(definition.nodeId);
+      const seen = new Set<ScopeId>();
+      while (id !== undefined && !seen.has(id)) {
+        seen.add(id);
+        const scope = scopes.scopeTree.getScope(id);
+        if (scope === undefined) break;
+        if (scope.kind === 'Namespace' && !isCppInlineNamespaceScope(id)) {
+          const namespace = findNamespaceDefInScope(scope);
+          if (namespace !== undefined) transparent.unshift(simpleNameOf(namespace));
+        }
+        id = scope.parent ?? undefined;
+      }
+      return keys.has(transparent.join('.'));
+    });
+  }
   if (allHits.length === 0) return undefined;
   if (allHits.length === 1) return allHits[0];
 
@@ -481,9 +525,10 @@ export function resolveCppQualifiedNamespaceMember(
  * `ScopeResolver.splitQualifiedCallee` for C++: the receiver/member pair the
  * qualified-call captures produce for a callee spelling, so
  * {@link resolveCppQualifiedNamespaceMember} answers it exactly as it answers
- * the call. Those captures take the INNERMOST scope segment as the receiver
- * (`a::b::make()` → `b` / `make`), and so does this. Separators inside template
- * arguments are not split points (`ns::Box<a::B>::make` → `Box<a::B>` / `make`,
+ * the call. The full written qualifier is retained
+ * (`a::b::make()` → `a::b` / `make`) so another outer namespace cannot supply
+ * the result type. Separators inside template
+ * arguments are not split points (`ns::Box<a::B>::make` → `ns::Box<a::B>` / `make`,
  * which names no namespace and resolves nothing). Unqualified → `undefined`.
  */
 export function splitCppQualifiedCallee(
@@ -511,8 +556,7 @@ export function splitCppQualifiedCallee(
   }
   const last = separators[separators.length - 1];
   if (last === undefined) return undefined;
-  const previous = separators.length > 1 ? separators[separators.length - 2] : undefined;
-  const receiver = callee.slice(previous === undefined ? 0 : previous + 2, last).trim();
+  const receiver = callee.slice(0, last).trim();
   const member = callee.slice(last + 2).trim();
   return receiver.length > 0 && member.length > 0 ? { receiver, member } : undefined;
 }

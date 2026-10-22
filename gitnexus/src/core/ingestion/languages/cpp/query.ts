@@ -515,20 +515,20 @@ const CPP_SCOPE_QUERY = `
 ;; Covers: User getUser() { ... }
 ;; AST: function_definition > type_identifier + function_declarator > identifier
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (function_declarator
     declarator: (identifier) @type-binding.name)) @type-binding.return
 
 ;; Return type — out-of-class method: User Class::getUser() { ... }
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (function_declarator
     declarator: (qualified_identifier
       name: (identifier) @type-binding.name))) @type-binding.return
 
 ;; Return type — pointer return: User* getUser() { ... }
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (pointer_declarator
     declarator: (function_declarator
       declarator: (identifier) @type-binding.name))) @type-binding.return
@@ -545,13 +545,13 @@ const CPP_SCOPE_QUERY = `
 ;; (isCppNamespaceScopeDeclaration). A reference return (\`D& f();\`) has no
 ;; rule here because such a function is not declared as a Function at all.
 (declaration
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (function_declarator
     declarator: (identifier) @type-binding.name)) @type-binding.return
 
 ;; Prototype pointer return: D* makeDp();
 (declaration
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (pointer_declarator
     declarator: (function_declarator
       declarator: (identifier) @type-binding.name))) @type-binding.return
@@ -559,13 +559,13 @@ const CPP_SCOPE_QUERY = `
 ;; ─── Type bindings — inline method return type ──────────────────────
 ;; Covers: class Foo { User getUser() { ... } };
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (function_declarator
     declarator: (field_identifier) @type-binding.name)) @type-binding.return
 
 ;; Inline method pointer return type: class Foo { User* lookup(int) { ... } };
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (pointer_declarator
     declarator: (function_declarator
       declarator: (field_identifier) @type-binding.name))) @type-binding.return
@@ -574,13 +574,13 @@ const CPP_SCOPE_QUERY = `
 ;; Covers: class User { User* lookup(int); std::string getName(); };
 ;; AST: field_declaration > function_declarator > field_identifier
 (field_declaration
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (function_declarator
     declarator: (field_identifier) @type-binding.name)) @type-binding.return
 
 ;; Method prototype pointer return type: User* lookup(int id);
 (field_declaration
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (pointer_declarator
     declarator: (function_declarator
       declarator: (field_identifier) @type-binding.name))) @type-binding.return

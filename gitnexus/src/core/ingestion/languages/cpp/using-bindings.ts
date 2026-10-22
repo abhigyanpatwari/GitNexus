@@ -11,6 +11,7 @@ import type {
   TypeRef,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { isCppInlineNamespaceScope } from './inline-namespaces.js';
 import { isCppNamespaceQualifierShadowed } from './qualified-name-claims.js';
 
@@ -388,6 +389,43 @@ const namespaceAliases = new WeakMap<
   ScopeResolutionIndexes,
   Map<ScopeId, Map<string, NamespaceAliasTarget>>
 >();
+const classScopeIds = new WeakMap<ScopeResolutionIndexes, ReadonlyMap<string, ScopeId>>();
+
+function visibleNamespaceAlias(
+  name: string,
+  inScope: ScopeId,
+  indexes: ScopeResolutionIndexes,
+  position?: Pick<Range, 'startLine' | 'startCol'>,
+): string | undefined {
+  let id: ScopeId | null = inScope;
+  const seen = new Set<ScopeId>();
+  while (id !== null && !seen.has(id)) {
+    seen.add(id);
+    const alias = namespaceAliases.get(indexes)?.get(id)?.get(name);
+    if (
+      alias !== undefined &&
+      (position === undefined ||
+        alias.availableFrom === undefined ||
+        compare(alias.availableFrom, position) <= 0)
+    )
+      return alias.target;
+    const scope = indexes.scopeTree.getScope(id);
+    if (
+      scope?.bindings
+        .get(name)
+        ?.some(
+          (binding) =>
+            binding.def.type === 'Namespace' &&
+            (position === undefined ||
+              binding.declarationRange === undefined ||
+              compare(binding.declarationRange, position) <= 0),
+        )
+    )
+      break;
+    id = scope?.parent ?? null;
+  }
+  return undefined;
+}
 
 /** Expand only aliases visible from the binding's declaration scope. */
 export function cppQualifiedTypeLookupSpelling(
@@ -399,22 +437,62 @@ export function cppQualifiedTypeLookupSpelling(
   if (separator <= 0) return undefined;
   const head = ref.rawName.slice(0, separator).trim();
   if (isCppNamespaceQualifierShadowed(head, ref.declaredAtScope, indexes)) return undefined;
-  let id: ScopeId | null = ref.declaredAtScope;
-  const seen = new Set<ScopeId>();
-  while (id !== null && !seen.has(id)) {
-    seen.add(id);
-    const alias = namespaceAliases.get(indexes)?.get(id)?.get(head);
-    const position = ref.lookupPosition ?? ref.bindingRange;
-    if (
-      alias !== undefined &&
-      (position === undefined ||
-        alias.availableFrom === undefined ||
-        compare(alias.availableFrom, position) <= 0)
-    )
-      return `${alias.target}::${ref.rawName.slice(separator + 2)}`;
-    id = indexes.scopeTree.getScope(id)?.parent ?? null;
+  const alias = visibleNamespaceAlias(
+    head,
+    ref.declaredAtScope,
+    indexes,
+    ref.lookupPosition ?? ref.bindingRange,
+  );
+  const expanded =
+    alias === undefined ? undefined : `${alias}::${ref.rawName.slice(separator + 2)}`;
+  const spelling = expanded ?? ref.rawName;
+  const last = spelling.lastIndexOf('::');
+  const qualifier = spelling.slice(0, last).replace(/::/g, '.');
+  const tail = spelling.slice(last + 2);
+  const qualifiers = new Set([qualifier]);
+  if (alias === undefined && !spelling.startsWith('::')) {
+    const enclosing: string[] = [];
+    let scope = indexes.scopeTree.getScope(ref.declaredAtScope);
+    const seen = new Set<ScopeId>();
+    while (scope !== undefined && !seen.has(scope.id)) {
+      seen.add(scope.id);
+      if (scope.kind === 'Namespace') {
+        const name = scope.ownedDefs.find((def) => def.type === 'Namespace')?.qualifiedName;
+        if (name !== undefined) enclosing.unshift(name.slice(name.lastIndexOf('.') + 1));
+      }
+      scope = scope.parent === null ? undefined : indexes.scopeTree.getScope(scope.parent);
+    }
+    for (let length = enclosing.length; length > 0; length--)
+      qualifiers.add([...enclosing.slice(0, length), qualifier].join('.'));
   }
-  return undefined;
+  const matches = new Map<string, string>();
+  for (const candidateId of indexes.qualifiedNames.get(tail)) {
+    const classScopeId = classScopeIds.get(indexes)?.get(candidateId);
+    if (classScopeId === undefined) continue;
+    let parent = indexes.scopeTree.getScope(classScopeId)?.parent ?? null;
+    const visited = new Set<ScopeId>();
+    const full: string[] = [];
+    const transparent: string[] = [];
+    let hasInline = false;
+    while (parent !== null && !visited.has(parent)) {
+      visited.add(parent);
+      const scope = indexes.scopeTree.getScope(parent);
+      if (scope === undefined) break;
+      if (scope.kind === 'Namespace') {
+        const name = scope.ownedDefs.find((def) => def.type === 'Namespace')?.qualifiedName;
+        if (name !== undefined) {
+          const segment = name.slice(name.lastIndexOf('.') + 1);
+          full.unshift(segment);
+          if (isCppInlineNamespaceScope(scope.id)) hasInline = true;
+          else transparent.unshift(segment);
+        }
+      }
+      parent = scope.parent;
+    }
+    if (hasInline && qualifiers.has(transparent.join('.')))
+      matches.set(candidateId, [...full, tail].join('::'));
+  }
+  return matches.size === 1 ? matches.values().next().value : expanded;
 }
 
 /** Materialize namespace identities once, then augment only the using's owner. */
@@ -422,6 +500,15 @@ export function populateCppUsingBindings(
   parsedFiles: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
 ): void {
+  const classes = new Map<string, ScopeId>();
+  for (const parsed of parsedFiles) {
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Class') continue;
+      const definition = scope.ownedDefs.find((def) => isClassLike(def.type));
+      if (definition !== undefined) classes.set(definition.nodeId, scope.id);
+    }
+  }
+  classScopeIds.set(indexes, classes);
   if (!parsedFiles.some((parsed) => usingDeclarations(parsed).length > 0)) return;
   const namespaceLookup = createNamespaceLookup(parsedFiles, (id) =>
     indexes.scopeTree.getScope(id),
@@ -446,14 +533,17 @@ export function populateCppUsingBindings(
     );
   });
   const consumersByHeader = new Map<string, ScopeId[]>();
-  if (
-    parsedFiles.some((parsed) =>
-      usingDeclarations(parsed).some((declaration) => declaration.alias !== undefined),
-    )
-  ) {
+  const aliasFiles = new Set(
+    parsedFiles
+      .filter((parsed) =>
+        usingDeclarations(parsed).some((declaration) => declaration.alias !== undefined),
+      )
+      .map((parsed) => parsed.filePath),
+  );
+  if (aliasFiles.size > 0) {
     for (const consumer of parsedFiles) {
       for (const header of visibleFiles(consumer.filePath)) {
-        if (header === consumer.filePath) continue;
+        if (header === consumer.filePath || !aliasFiles.has(header)) continue;
         const consumers = consumersByHeader.get(header) ?? [];
         consumers.push(consumer.moduleScope);
         consumersByHeader.set(header, consumers);
@@ -483,30 +573,69 @@ export function populateCppUsingBindings(
     }
     bindings.set(name, bucket);
   };
+  const resolveDeclaration = (parsed: ParsedFile, declaration: CppUsingDeclaration) => {
+    const owner = owningScope(parsed, declaration.range);
+    if (owner === undefined) return undefined;
+    const parts = declaration.namespace.split('::').map((part) => part.trim());
+    const head = parts[0];
+    const alias =
+      head === undefined || head.length === 0
+        ? undefined
+        : visibleNamespaceAlias(head, owner.id, indexes, declaration.range);
+    const resolved = resolveUsingMembers(
+      alias === undefined
+        ? declaration
+        : { ...declaration, namespace: `::${[alias, ...parts.slice(1)].join('::')}` },
+      owner,
+      parsed.filePath,
+      visibleFiles(parsed.filePath),
+      namespaceLookup,
+    );
+    return resolved === undefined ? undefined : { owner, ...resolved };
+  };
+  // Includes are leaves-first. Retry only unresolved aliases inside cycles;
+  // successful aliases have canonical targets and never need expanding again.
+  const ordered = new Map<string, ParsedFile>();
+  for (const scc of indexes.sccs)
+    for (const file of scc.files) {
+      const parsed = byFile.get(file);
+      if (parsed !== undefined) ordered.set(file, parsed);
+    }
+  for (const parsed of parsedFiles)
+    if (!ordered.has(parsed.filePath)) ordered.set(parsed.filePath, parsed);
+  let pending = [...ordered.values()].flatMap((parsed) =>
+    usingDeclarations(parsed)
+      .filter((declaration) => declaration.alias !== undefined)
+      .map((declaration) => ({ parsed, declaration })),
+  );
+  while (pending.length > 0) {
+    const retry: typeof pending = [];
+    for (const item of pending) {
+      const resolved = resolveDeclaration(item.parsed, item.declaration);
+      const name = item.declaration.alias;
+      if (resolved === undefined || name === undefined) {
+        retry.push(item);
+        continue;
+      }
+      installAlias(resolved.owner.id, name, {
+        target: resolved.target,
+        availableFrom: item.declaration.range,
+      });
+      if (resolved.owner.id === item.parsed.moduleScope)
+        for (const consumer of consumersByHeader.get(item.parsed.filePath) ?? [])
+          installAlias(consumer, name, { target: resolved.target });
+    }
+    if (retry.length === pending.length) break;
+    pending = retry;
+  }
   for (const parsed of parsedFiles) {
     const facts = usingDeclarations(parsed);
     if (facts.length === 0) continue;
-    const visible = visibleFiles(parsed.filePath);
     for (const declaration of facts) {
-      const owner = owningScope(parsed, declaration.range);
-      if (owner === undefined) continue;
-      const resolved = resolveUsingMembers(
-        declaration,
-        owner,
-        parsed.filePath,
-        visible,
-        namespaceLookup,
-      );
+      if (declaration.alias !== undefined) continue;
+      const resolved = resolveDeclaration(parsed, declaration);
       if (resolved === undefined) continue;
-      const { target, members } = resolved;
-      if (declaration.alias !== undefined) {
-        installAlias(owner.id, declaration.alias, { target, availableFrom: declaration.range });
-        if (owner.id === parsed.moduleScope) {
-          for (const consumer of consumersByHeader.get(parsed.filePath) ?? [])
-            installAlias(consumer, declaration.alias, { target });
-        }
-        continue;
-      }
+      const { owner, target, members } = resolved;
       for (const [name, refs] of members) {
         if (declaration.name !== undefined) {
           append(owner, name, refs, declaration);
