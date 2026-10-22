@@ -667,7 +667,7 @@ const clearCaches = (): void => {
 // Keyed by class node startIndex (unique per AST node within a file).
 // ============================================================================
 
-const fieldInfoCache = new Map<number, Map<string, FieldInfo>>();
+const fieldInfoCache = new Map<number, Map<string, FieldInfo[]>>();
 
 /**
  * Walk up from a definition node to find the nearest enclosing class/struct/interface
@@ -796,14 +796,14 @@ const NOOP_SYMBOL_TABLE: SymbolTableReader = {
 
 /**
  * Get (or extract and cache) field info for a class node.
- * Returns a name→FieldInfo map, or undefined if the provider has no field extractor
+ * Returns a name→declarations map, or undefined if the provider has no field extractor
  * or the class yielded no fields.
  */
 function getFieldInfo(
   classNode: SyntaxNode,
   provider: LanguageProvider,
   context: FieldExtractorContext,
-): Map<string, FieldInfo> | undefined {
+): Map<string, FieldInfo[]> | undefined {
   if (!provider.fieldExtractor) return undefined;
 
   const cacheKey = classNode.startIndex;
@@ -813,12 +813,50 @@ function getFieldInfo(
   const result = provider.fieldExtractor.extract(classNode, context);
   if (!result?.fields?.length) return undefined;
 
-  cached = new Map<string, FieldInfo>();
+  cached = new Map<string, FieldInfo[]>();
   for (const field of result.fields) {
-    cached.set(field.name, field);
+    const declarations = cached.get(field.name);
+    if (declarations !== undefined) declarations.push(field);
+    else cached.set(field.name, [field]);
+  }
+  for (const declarations of cached.values()) {
+    if (declarations.length > 1) {
+      declarations.sort((a, b) => a.line - b.line || (a.column ?? -1) - (b.column ?? -1));
+    }
   }
   fieldInfoCache.set(cacheKey, cached);
   return cached;
+}
+
+function fieldInfoLowerBound(
+  declarations: readonly FieldInfo[],
+  line: number,
+  column: number,
+): number {
+  let lo = 0;
+  let hi = declarations.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const field = declarations[mid]!;
+    if (field.line < line || (field.line === line && (field.column ?? -1) < column)) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function selectFieldInfo(
+  declarations: readonly FieldInfo[] | undefined,
+  line: number,
+  column?: number,
+): FieldInfo | undefined {
+  if (declarations === undefined || declarations.length === 0) return undefined;
+  if (declarations.length === 1) return declarations[0];
+  const start = fieldInfoLowerBound(declarations, line, -1);
+  const end = fieldInfoLowerBound(declarations, line + 1, -1);
+  if (end - start === 1) return declarations[start];
+  if (column === undefined) return undefined;
+  const index = fieldInfoLowerBound(declarations, line, column);
+  return index < end && declarations[index]?.column === column ? declarations[index] : undefined;
 }
 
 // ============================================================================
@@ -2099,7 +2137,7 @@ const processFileGroup = (
                 const propEnclosingClassId =
                   propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
                 // Enrich routed properties with FieldExtractor metadata
-                let routedFieldMap: Map<string, FieldInfo> | undefined;
+                let routedFieldMap: Map<string, FieldInfo[]> | undefined;
                 if (provider.fieldExtractor && typeEnv) {
                   const classNode = findEnclosingClassNode(captureMap['call']);
                   if (classNode) {
@@ -2112,7 +2150,11 @@ const processFileGroup = (
                   }
                 }
                 for (const item of routed.items) {
-                  const routedFieldInfo = routedFieldMap?.get(item.propName);
+                  const routedFieldInfo = selectFieldInfo(
+                    routedFieldMap?.get(item.propName),
+                    captureMap['call'].startPosition.row + 1,
+                    captureMap['call'].startPosition.column,
+                  );
                   const propQualifiedName = propEnclosingInfo
                     ? `${propEnclosingInfo.className}.${item.propName}`
                     : item.propName;
@@ -2956,13 +2998,20 @@ const processFileGroup = (
               filePath: file.path,
               language,
             });
-            const info = fieldMap?.get(nodeName);
+            const info = selectFieldInfo(
+              fieldMap?.get(nodeName),
+              definitionNode.startPosition.row + 1,
+              definitionNode.startPosition.column,
+            );
             if (info) {
               declaredType = info.type ?? undefined;
               // Mutate methodProps BEFORE the `{...methodProps}` spread below —
               // rawDeclaredType is the verbatim generic type text (U1, PR #2200).
               if (info.rawDeclaredType !== undefined) {
                 methodProps.rawDeclaredType = info.rawDeclaredType;
+              }
+              if (info.initializerType !== undefined) {
+                methodProps.initializerType = info.initializerType;
               }
               // Field annotations ('@Name' strings, U2 PR #2200) — omit when empty.
               if (info.annotations !== undefined && info.annotations.length > 0) {
