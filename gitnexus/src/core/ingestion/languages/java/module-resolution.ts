@@ -1,3 +1,4 @@
+import { isJvmSourceVisible } from '../jvm/source-visibility.js';
 /**
  * Java import resolution against DECLARED packages (#2953).
  *
@@ -206,6 +207,7 @@ function nearestDeclaringFile(
   let nearestShared = -1;
   let tied = false;
   for (const file of files) {
+    if (!isJvmSourceVisible(fromFile, file)) continue;
     const segments = file.replace(/\\/g, '/').split('/');
     let shared = 0;
     while (

@@ -957,3 +957,9 @@ Re-measured both benchmark arms after merging the Zig receiver fix from main.
 Shape states remain unchanged; counts are 133 call drops and
 160 drops of all kinds (27 reads,
 0 writes). The counts include both main and this branch's fixes.
+
+### Inheritance visibility review boundaries
+
+Native review controls reproduced production Java imports and Java/Kotlin inheritance selecting nearer test-only declarations, an inherited nested base losing to a package homonym, a resolved Kotlin typealias import losing its claim, and a C# tuple argument counting as two type arguments. The corrected focused run passes 71 tests in five files, including positive test-source ownership controls and ordinary nested/local inheritance. The generic argument splitter now keeps tuple commas together.
+
+Canonical `src/main/java` and `src/main/kotlin` sources exclude recognized non-main source-set candidates before proximity ranking. Custom layouts retain prior eligibility; this is not build-system classpath resolution. JVM package fallback refuses when an enclosing class has inheritance whose member types the pre-MRO pass cannot establish, and explicit named imports retain their claim even when the import names a typealias rather than a class. These conservative cases may remain unresolved. Java duplicate-FQN import selection is part of this same package-ownership fix. Fresh current-main integration and hosted CI remain required.

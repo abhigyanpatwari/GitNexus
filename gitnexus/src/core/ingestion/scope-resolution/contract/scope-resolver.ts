@@ -1694,7 +1694,8 @@ export interface ScopeResolver {
     baseName: string,
     derivingClass: SymbolDefinition,
     scopes: ScopeResolutionIndexes,
-    /** Written base evidence, including generic arity. Absent for direct legacy callers. */
+    /** Written base evidence, including generic arity. Providers that require
+     * this evidence must decline when a direct caller omits it. */
     site?: ReferenceSite,
   ) => SymbolDefinition | undefined;
 
