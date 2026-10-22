@@ -4,7 +4,7 @@ mod shadow;
 use crate::modx as rp;
 use crate::modx::Other;
 
-// `make` is declared `-> C`, so every `x` below is a `C`.
+// Module-factory bindings below are `C`; type-qualified and untyped cases are controls.
 fn alias_call() -> i32 {
     let x = rp::make();
     x.m()

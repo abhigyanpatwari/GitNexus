@@ -24,26 +24,12 @@ passes as an exact miss. A same-corpus A/B against the parent branch
 (`b97d9e333`) records no other drop change and identical `CALLS`/`ACCESSES`
 edges outside the new fixture. Shape-arm cells are unchanged.
 
-Totals: call drops 154 -> 158, reads 50 -> 52, all kinds 224 -> 230.
+After merging main `f6e42092` and Rust parent `10b030001`, the corpus contains
+5,371 resolution records, compared with the Rust parent's 5,351. Current totals
+move from 137 to 141 call drops, 29 to 31 reads and 186 to 192 across all kinds;
+writes remain 20. Shape-arm states are unchanged. Review controls cover wildcard
+imports, whitespace around dots and inherited fields that shadow a package head.
 
-## Rust module-qualified factory results (#3498 follow-up)
-
-Rust now types `let x = rp::make()`, `modx::make()`, `crate::modx::make()` and
-the inline `rp::make().m()` from `make`'s return annotation, through the new
-`ScopeResolver.resolveQualifiedCallee` hook. A receiver bound to a module
-function with no return annotation (`x = rp::untyped()`) is recorded as dropped
-rather than read as an exact miss.
-
-The count arm moves only by the new `rust-qualified-factory-return` fixture:
-its two untyped sites, `x = rp::untyped(); x.m()` and inline
-`modx::untyped().m()`, are each recorded as a call and a callee-position read
-(+2 calls, +2 reads). Its three typed inline forms resolve, so they record no
-drop. A same-corpus A/B against the parent branch (`739983986`) records no
-other drop change. Outside the new fixture the only edge change is one new
-correct edge, `rust-ambiguous` `main -> models::Handler.handle`
-(`let h = services::create_handler()`). Shape-arm cells are unchanged.
-
-Totals: call drops 152 -> 154, reads 48 -> 50, all kinds 220 -> 224.
 ## Rust module-qualified factory results (#3498)
 
 The provider resolves module-qualified factory callees such as `rp::make`,
@@ -51,18 +37,53 @@ The provider resolves module-qualified factory callees such as `rp::make`,
 Bound and inline receivers share that lookup. Untyped factory results retain
 an unresolved-receiver drop. Type-qualified construction remains separate.
 
-The merged corpus contains 5,341 resolution records, compared with main's
-5,309: 32 records added, none removed, all in Rust. The additions include the
+The merged corpus contains 5,351 resolution records, compared with main
+`f6e42092`'s 5,319: 32 records added, none removed, all in Rust. The additions include the
 new factory fixture and `rust-ambiguous`'s `models::Handler.handle` receiver.
 Shape states are unchanged. The fixture's two untyped receivers add two call
-drops and two callee-read drops: calls 138 → 140, reads 42 → 44, all kinds
-200 → 204; writes remain 20. The final benchmark check verifies this baseline.
+drops and two callee-read drops: calls 135 → 137, reads 27 → 29, all kinds
+182 → 186; writes remain 20. The final benchmark check verifies this baseline.
+
+Qualified candidates retain Unicode names and accept uppercase module names.
+Lexical type claims distinguish type-qualified construction from module calls,
+including lowercase types and derived `Default`. A resolved type import or local
+type claim cannot fall back to a same-named module. Const generic values remain
+in Rust's value namespace. Local type aliases are not expanded by this change.
 
 The merge retains main's Zig capture behavior. Filename casing cannot establish
 whether an imported file is a namespace; restoring main preserves the lowercase
 `config.zig` file-struct edge. Python root-package imports and method-return
 ownership use main's declaration checks. A cold Rust disk-scope regression and
 a repeated-member call regression cover the shared producer and drop paths.
+
+## Zig receiver gaps from the #3498 drop triage
+
+Measured against main `2b6542737`, the four Zig fixes clear 18
+`receiver-unresolved` sites: all-kind drops move from 200 to 182, reads from
+42 to 27 and calls from 138 to 135. Writes and every shape-arm state are
+unchanged.
+
+- 9 reads of `const X = @import("f.zig").X;` (zig-hub `stdx.zig:2-4`,
+  zig-receivers `stdx.zig:2`, zig-idioms `holder.zig:6`, `main.zig:6`,
+  `Element.zig:35`, `hub.zig:9-10`): the `@import(…)` receiver is now bound as a
+  namespace, so the read resolves through the written module (`import-resolved`).
+- 3 reads off an anonymous container (`Sorter.zig:16`, `:23`, `:28`):
+  the receiver names the container's minted identity. The site is now anchored
+  on the member, so it moves off the reported `struct` position and resolves
+  from the scope that evaluates it.
+- 1 call and its callee-position read at zig-idioms `main.zig:42`
+  (`Stack(u8).init()`): the new `isTypeApplicationCall` hook types the receiver
+  as `Stack`.
+- 2 calls and their callee-position reads at zig-filestruct `aliases.zig:86`
+  and `:88` (`JsApi.Meta.prototype_chain` and `JsApi.value`): the
+  `bridge = generic.Bridge(Local)` alias reaches `Builder` through the
+  forwarding return type. These were lines 77 and 79 on the measured main.
+
+Forwarding type constructors (`Bridge ↦ Builder`) also work through the
+namespace-factory lookup already merged in #3648. The combined result clears
+more sites than the original standalone branch, which cleared 14. The `b12`
+alias control resolves. Zig call drops fall from 13 to 10; `no-chain` call
+drops move from 34 to 31 and `in-program` calls from 60 to 57.
 
 ## Go module visibility and qualified receiver refusal
 

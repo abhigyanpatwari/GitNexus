@@ -190,6 +190,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'hoistTypeBindingsToModule'
   | 'stripReceiverCastExpressions'
   | 'constructionSyntax'
+  | 'isTypeApplicationCall'
   | 'stripTypePreservingDecoration'
   | 'qualifiedTypeLookupSpelling'
   | 'resolveQualifiedReceiverMember'
@@ -657,6 +658,7 @@ export function emitReceiverBoundCalls(
     hoistTypeBindingsToModule,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
+    isTypeApplicationCall: provider.isTypeApplicationCall,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     qualifiedTypeLookupSpelling: provider.qualifiedTypeLookupSpelling,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
