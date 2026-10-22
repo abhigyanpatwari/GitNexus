@@ -14,7 +14,7 @@ import {
   resolveTsImportTarget,
   type TsResolveContext,
 } from '../../../../src/core/ingestion/languages/typescript/import-target.js';
-import * as importResolverUtils from '../../../../src/core/ingestion/import-resolvers/utils.js';
+import * as importResolverUtils from '../../../../src/core/ingestion/utils/suffix-index.js';
 import { typescriptScopeResolver } from '../../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helpers.js';
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';

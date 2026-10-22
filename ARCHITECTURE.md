@@ -69,7 +69,7 @@ Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path th
 | Embeddings                                              | `src/core/embeddings/` + `src/core/run-analyze.ts`                                                     |
 | Wiki generation                                         | `src/core/wiki/`                                                                                       |
 | Language support                                        | `src/core/ingestion/languages/` + `tree-sitter-queries.ts` + `gitnexus-shared/src/languages.ts`        |
-| Import resolution                                       | `src/core/ingestion/import-processor.ts` + `import-resolvers/configs/` + `model/resolution-context.ts` |
+| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks |
 | Call resolution/inheritance/MRO                         | `src/core/ingestion/scope-resolution/` (pipeline, passes, graph-bridge)                                |
 | Type extraction                                         | `src/core/ingestion/type-extractors/`                                                                  |
 | Worker pool                                             | `src/core/ingestion/workers/`                                                                          |
@@ -455,7 +455,6 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 | `id`, `extensions`     | Language identity and file matching                                                                                                                                                                                                                                                                                               |
 | `treeSitterQueries`    | S-expression queries for AST extraction                                                                                                                                                                                                                                                                                           |
 | `importSemantics`      | `named` / `wildcard-leaf` / `wildcard-transitive` / `namespace`                                                                                                                                                                                                                                                                   |
-| `importResolver`       | Language-specific path → file resolution                                                                                                                                                                                                                                                                                          |
 | `exportChecker`        | Public/exported symbol detection                                                                                                                                                                                                                                                                                                  |
 | `typeConfig`           | Type annotation extraction rules                                                                                                                                                                                                                                                                                                  |
 | `mroStrategy`          | `first-wins` / `c3` / `none`                                                                                                                                                                                                                                                                                                      |
@@ -470,22 +469,9 @@ Per-language tree-sitter queries use different AST node names but produce the **
 
 ### Import resolution
 
-Per-language import resolution uses the **configs + factory** pattern (like call/method/class extractors). Each language declares an `ImportResolutionConfig` in `import-resolvers/configs/`, listing an ordered chain of `ImportResolverStrategy` functions. `createImportResolver()` (in `resolver-factory.ts`) composes them: first non-null result wins. Low-level helpers shared across strategies live alongside the configs in `import-resolvers/` (e.g. `go.ts`, `rust.ts`, `python.ts`).
+Per-language import resolution runs through `ScopeResolver.resolveImportTarget`, registered in `SCOPE_RESOLVERS`. The shared orchestrator (`scope-resolution/pipeline/run.ts`) passes each language's workspace configuration to the resolver hook. The hook maps a parsed import to its target file or files; finalization links imports and materializes bindings for scope lookup.
 
-Unified 3-tier algorithm (`model/resolution-context.ts`), per-language `importSemantics` controls which tier activates:
-
-| Tier              | Confidence | Mechanism                                                              |
-| ----------------- | ---------- | ---------------------------------------------------------------------- |
-| 1 — same-file     | 0.95       | Symbol table for caller's file                                         |
-| 2 — import-scoped | 0.9        | `NamedImportMap` chains (named) or all files in `importMap` (wildcard) |
-| 3 — global        | 0.5        | O(1) index lookups: class, impl, callable. Fallback only               |
-
-| Import strategy       | Languages                           | Behavior                                       |
-| --------------------- | ----------------------------------- | ---------------------------------------------- |
-| `named`               | TS, JS, Java, C#, Rust, PHP, Kotlin | Only explicitly imported names visible         |
-| `wildcard-leaf`       | Go, Ruby, Swift, Dart               | Whole-package import, no transitive re-exports |
-| `wildcard-transitive` | C, C++                              | `#include` closure chains through re-exports   |
-| `namespace`           | Python                              | Module aliases resolved at call site           |
+Language-specific import helpers and namespace rules live beside each resolver in `languages/<language>/`. Language-neutral package-directory and suffix indexes, workspace indexes, and per-file-set caches live in `ingestion/utils/`; suffix lookups receive their ordered extension candidates from callers. The dormant `LanguageProvider.importResolver` field, adapter, and strategy factory have been removed; new languages implement the `ScopeResolver` hook.
 
 ### Chunked parse-and-resolve
 
