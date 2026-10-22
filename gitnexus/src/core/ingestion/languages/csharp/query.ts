@@ -320,12 +320,12 @@ const CSHARP_SCOPE_QUERY = `
       name: (identifier) @type-binding.name))) @type-binding.annotation
 
 ;; \`private User? _user;\` — same nullable_type shape that parameters and
-;; properties already bind; interpretCsharpTypeBinding strips the \`?\`.
+;; properties already bind. Preserve this field's written type ownership.
 (field_declaration
   (variable_declaration
     type: (nullable_type) @type-binding.type
     (variable_declarator
-      name: (identifier) @type-binding.name))) @type-binding.annotation
+      name: (identifier) @type-binding.name))) @type-binding.annotation @type-binding.nullable-field
 
 ;; Type bindings — property declaration: \`public User Owner { get; set; }\`.
 (property_declaration
