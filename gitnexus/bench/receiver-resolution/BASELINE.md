@@ -15,29 +15,31 @@ other language's cells are unchanged.
   `@param {User[]} repos` on each entry, plus `@returns {User}` and
   `@returns {Promise<User>}` on the support methods. `plainChain`,
   `plainDeepChain`, `optionalChain` and `awaitParen` move VISIBLE-GAP ->
-  RESOLVES, each to the right target (`Address.save` for the deep chain,
-  `User.save` for the rest). `indexElement` stays VISIBLE-GAP, because
+  RESOLVES. The fixture probes observed `Address.save` for the deep chain
+  and `User.save` for the rest; the shape gate itself matches member names,
+  so it does not verify the declaring owner. `indexElement` stays VISIBLE-GAP, because
   JavaScript has no `elementTypeOf` hook yet.
 - **Ruby** is typed with YARD: `@param <name> [Service]`, `@return [User]` on
   `get_user`, and `@param idx_repos [Array<User>]`. `plainChain` and
   `optionalChain` move VISIBLE-GAP -> RESOLVES (`User.save`). `plainDeepChain`
-  moves VISIBLE-GAP -> INVISIBLE-GAP. Its base now types and `address` reaches
-  the `attr_reader` property, but that property has no type, so `save` gets
-  no edge. No drop is recorded either; most likely the shared site key, now
-  that the inner calls resolve. `indexElement` stays INVISIBLE-GAP (no
+  stays VISIBLE-GAP against main `caacc3bac`. Its base now types and `address`
+  reaches the `attr_reader` property, but that property has no type, so
+  `save` has an unresolved receiver and a drop is recorded. `indexElement` stays INVISIBLE-GAP (no
   subscript chain for `element_reference`, no Ruby `elementTypeOf`).
 - Each Ruby function names its parameter after its cell (`plain_svc`,
   `deep_svc`, ...). YARD `@param` bindings land on the Module scope, so with a
   shared `svc` an untyped function resolves through a sibling's tag. A probe
-  showed exactly that, in either order.
+  showed exactly that, in either order. This existing product limit is tracked
+  with the receiver-resolution gaps in #3609.
 - **One untyped control per language.** JavaScript and Ruby gain an extra id,
   `untypedChain`: the old untyped `plainChain` body, which reads VISIBLE-GAP.
   `save` exists on both `User` and `Address`, so an edge there would be a
-  guess. PHP's control is still `arrowCallChain` (INVISIBLE-GAP, unchanged).
+  guess. PHP's control is still `arrowCallChain` (VISIBLE-GAP, unchanged).
   The control is an extra id rather than an untyped `plainChain`, so every
   canonical id keeps the same meaning in all 14 rows.
 - **PHP** `plainDeepChain` and `optionalChain` now call `getUserTyped()`. Both
-  move INVISIBLE-GAP -> RESOLVES (`Address.save` and `User.save`).
+  move VISIBLE-GAP -> RESOLVES; the probes observed `Address.save` and
+  `User.save`, respectively, while the shape gate checks member names.
   `indexElement` gains PHPDoc `@param User[] $repos` and stays VISIBLE-GAP,
   because PHP has no `elementTypeOf` hook and the PHPDoc binding keeps only the
   normalized `User`.
@@ -46,7 +48,7 @@ other language's cells are unchanged.
   Dispatch through a function-pointer field has no static callee in the graph:
   with the structs in `main.c` the receivers type, but neither `save` field has
   a node. The C row is now all N/A. That header structs are invisible to C is a
-  product gap, tracked separately.
+  product gap tracked with #3609.
 
 ## Receiver-chain walker spellings (#3498)
 
@@ -1476,3 +1478,7 @@ RESOLVES. The 5,559-record resolution corpus is byte-identical to the C#
 parent, with no additions or removals. These fixture results do not measure
 real-repository usefulness or pre-pass cost. Exact-head hosted CI remains
 required.
+
+### Typed shape bodies after #3655
+
+After normal main caacc3bac integration, both benchmark arms were remeasured. The count arm remains 130 call drops, 156 across all kinds, 26 reads and 0 writes; the typed JavaScript/Ruby/PHP shape changes and C dispatch N/A cells remain as described above. Fresh package build and both pinned TypeScript configurations pass; the receiver benchmark check matches the newly written baseline.
