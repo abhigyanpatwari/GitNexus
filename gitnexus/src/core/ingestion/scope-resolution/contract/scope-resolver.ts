@@ -1850,10 +1850,12 @@ export interface ScopeResolver {
    * Where the provider emits exact declaration return facts, those facts recover
    * overwritten bindings for both A and B. A provider without them conservatively
    * declines the overwritten owner.
-   * Multiple declarations sharing one graph ID remain ambiguous. Inherited
-   * overloads without a proven zero-argument override signature are declined,
-   * and reading a method reference does not invoke its return type. Languages
-   * that rely on the plain walk-up leave this off; its behaviour is unchanged.
+   * Multiple declarations sharing one graph ID remain ambiguous. Intermediate
+   * hops decline inherited overloads without a proven zero-argument signature.
+   * Exact-callee assignment replay can retain matching complete captured
+   * parameter metadata, including variadic signatures. Reading a method
+   * reference does not invoke its return type. Languages that rely on the plain
+   * walk-up leave this off; its behaviour is unchanged.
    */
   readonly hoistedTypeBindingsRequireOwner?: boolean;
 
