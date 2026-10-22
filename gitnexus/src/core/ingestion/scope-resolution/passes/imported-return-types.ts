@@ -56,7 +56,6 @@ import {
   lookupNameClaim,
   findReceiverTypeBinding,
   namesAtScope,
-  moduleScopeIdOf,
   namespaceTypeBindingFor,
 } from '../scope/walkers.js';
 
@@ -236,9 +235,6 @@ export function followChainPostFinalize(
 ): TypeRef {
   let current = start;
   const visited = new Set<string>();
-  // The caller's module scope is fixed across the walk; resolve it once so the
-  // accessibility-gated per-namespace fallback below can be consulted cheaply.
-  const moduleScopeId = moduleScopeIdOf(fromScopeId, scopes);
   for (let depth = 0; depth < RECHAIN_MAX_DEPTH; depth++) {
     const lookupScope = current.declaredAtScope ?? fromScopeId;
     if (current.rawName.includes('.')) {
@@ -291,7 +287,7 @@ export function followChainPostFinalize(
     // Both live in shared channels rather than each Scope.typeBindings to avoid
     // the O(files × names) blow-up.
     if (next === undefined && claim.status === 'absent') {
-      const nsHit = namespaceTypeBindingFor(moduleScopeId, current.rawName, scopes);
+      const nsHit = namespaceTypeBindingFor(lookupScope, current.rawName, scopes);
       if (nsHit !== undefined && nsHit !== current) next = nsHit;
     }
     if (next === undefined && claim.status === 'absent') {
