@@ -42,7 +42,7 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  * `python-const-resolver.ts` / `js-const-resolver.ts`). PHP has no such
  * binding yet — adding one is a real, separate project (this repo's PHP
  * import resolution for `use`-statements is its own multi-file subsystem
- * under `ingestion/import-resolvers/php.ts`, built for symbol/scope
+ * under `ingestion/languages/php/import-helpers.ts`, built for symbol/scope
  * resolution, not constant extraction) and is intentionally out of scope
  * here. Tracked as a follow-up, not silently punted.
  */

@@ -4,15 +4,15 @@
  */
 
 import path from 'path';
-import type { SuffixIndex } from '../../import-resolvers/utils.js';
-import { suffixResolve } from '../../import-resolvers/utils.js';
+import type { SuffixIndex } from '../../utils/suffix-index.js';
+import { suffixResolve } from '../../utils/suffix-index.js';
+import { EXTENSIONS } from '../import-candidates.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { rExportPatternMatches, type RPackageConfig } from './package-config.js';
 import { rBareName } from './bare-name.js';
 import { rFileTopLevel, rPackageDirForFile, type RFileTopLevel } from './namespace-imports.js';
-import type { ImportResult, ResolveCtx } from '../../import-resolvers/types.js';
 import type { ImportResolutionContext } from '../../scope-resolution/contract/scope-resolver.js';
-import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
+import { getWorkspaceFileIndex } from '../../utils/workspace-file-index.js';
 
 /**
  * Low-level R import resolver (internal helper).
@@ -51,7 +51,7 @@ export function resolveRImportInternal(
     if (direct !== undefined) return direct;
 
     const pathParts = cleaned.split('/').filter(Boolean);
-    return suffixResolve(pathParts, normalizedFileList, allFileList, index);
+    return suffixResolve(pathParts, normalizedFileList, allFileList, EXTENSIONS, index);
   }
 
   // library("pkg") / require("pkg") — resolve to ALL files in the local package
@@ -75,28 +75,7 @@ export function resolveRImportInternal(
 
   // Fallback: suffix-based resolution
   const pathParts = cleaned.split('/').filter(Boolean);
-  return suffixResolve(pathParts, normalizedFileList, allFileList, index);
-}
-
-/** R: library/require/source resolution via R package config. */
-export function resolveRImport(
-  rawImportPath: string,
-  filePath: string,
-  ctx: ResolveCtx,
-): ImportResult {
-  const resolved = resolveRImportInternal(
-    filePath,
-    rawImportPath,
-    ctx.normalizedFileList,
-    ctx.allFileList,
-    // The legacy `ResolveCtx` bundle never carried R's config; the live path is
-    // `resolveRImportTarget` + `loadResolutionConfig`.
-    null,
-    ctx.index,
-  );
-  if (!resolved) return null;
-  const files = Array.isArray(resolved) ? resolved : [resolved];
-  return { kind: 'files', files };
+  return suffixResolve(pathParts, normalizedFileList, allFileList, EXTENSIONS, index);
 }
 
 /** Per-package index of top-level definitions, built once per `parsedFiles` array. */
@@ -247,7 +226,7 @@ export function resolveRNamedImport(
  *  - Cross-language false-positive guard: a `library()`/`require()` package
  *    name not found in `rConfig.packages` would otherwise fall through to
  *    `resolveRImportInternal`'s generic suffix fallback — and `EXTENSIONS`
- *    (`../../import-resolvers/utils.ts`) has no `.R`/`.r` entry, so a bare R package reference can
+ *    (`languages/import-candidates.ts`) has no `.R`/`.r` entry, so a bare R package reference can
  *    suffix-match an unrelated same-named file in another language.
  *    `context.parsedImport.kind === 'wildcard'` is exactly the
  *    `library()`/`require()` shape (see `interpretRImport`), so the guard is

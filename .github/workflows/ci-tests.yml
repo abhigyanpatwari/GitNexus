@@ -833,7 +833,7 @@ jobs:
         if: ${{ !cancelled() }}
         # Build-free: same baseline approach as parse-dispatch-rounds —
         # exact declared/SDK/undeclared floors plus a fingerprint, then
-        # ratio timing only (resolveSwiftImportTarget, swiftPackageStrategy,
+        # ratio timing only (resolveSwiftImportTarget,
         # parseSwiftPackageManifest 4n/n). Pins declaration-only resolve,
         # https:// factory survival, and #2931 segment-boundary membership.
         # See bench/swift-package-imports/measure.mjs.

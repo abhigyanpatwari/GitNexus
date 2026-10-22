@@ -35,7 +35,6 @@ import type { ExportChecker } from './export-detection.js';
 import type { FieldExtractor } from './field-extractor.js';
 import type { MethodExtractor } from './method-types.js';
 import type { VariableExtractor } from './variable-types.js';
-import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
 import type { CollectedCfgs } from './cfg/collect.js';
@@ -366,8 +365,6 @@ interface LanguageProviderConfig {
   readonly typeConfig: LanguageTypeConfig;
   /** Export detection: is this AST node a public/exported symbol? */
   readonly exportChecker: ExportChecker;
-  /** Import resolution: resolves raw import path to file system path */
-  readonly importResolver: ImportResolverFn;
 
   // ── Calls & Imports (optional) ────────────────────────────────────
   /** Call routing for languages that express imports/heritage as calls (e.g., Ruby).

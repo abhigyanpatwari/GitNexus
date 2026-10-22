@@ -29,6 +29,7 @@ import {
   isModuleLevelThisExport,
   isShadowedCjsExportAssignmentNode,
 } from './typescript/cjs-export-assignment.js';
+import { collectCommonJsModuleKind, withCommonJsModuleKind } from './typescript/module-kind.js';
 
 const rootOf = (node: SyntaxNode): SyntaxNode | undefined =>
   (node as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
@@ -76,11 +77,6 @@ const memberAssignmentLabel = (node: SyntaxNode): NodeLabel | null => {
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import {
-  typescriptImportConfig,
-  javascriptImportConfig,
-} from '../import-resolvers/configs/typescript-javascript.js';
 import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -491,7 +487,6 @@ export const typescriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
-  importResolver: createImportResolver(typescriptImportConfig),
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   methodExtractor: createMethodExtractor({
@@ -528,7 +523,8 @@ export const typescriptProvider = defineLanguage({
   // ./typescript/index.ts for the full per-hook rationale and the
   // canonical capture vocabulary in ./typescript/query.ts
   // (TYPESCRIPT_SCOPE_QUERY constant).
-  emitScopeCaptures: emitTsScopeCaptures,
+  emitScopeCaptures: withCommonJsModuleKind(emitTsScopeCaptures),
+  collectCaptureSideChannel: collectCommonJsModuleKind,
   // CFG/PDG substrate (#2081 M1) — runs in the worker on a --pdg run.
   cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretTsImport,
@@ -592,7 +588,6 @@ export const javascriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
-  importResolver: createImportResolver(javascriptImportConfig),
   callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
@@ -623,7 +618,8 @@ export const javascriptProvider = defineLanguage({
   // semantics are identical; JS-specific additions (CJS require(),
   // JSDoc type bindings) live in ./javascript/captures.ts.
   // See ./javascript/index.ts for the full per-module rationale.
-  emitScopeCaptures: emitJsScopeCaptures,
+  emitScopeCaptures: withCommonJsModuleKind(emitJsScopeCaptures),
+  collectCaptureSideChannel: collectCommonJsModuleKind,
   // CFG/PDG substrate (#2081 M1) — TS and JS share the same grammar family.
   cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretJsImport,

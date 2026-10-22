@@ -12,7 +12,6 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as rTypeConfig } from '../type-extractors/r.js';
-import { resolveRImport } from './r/import-target.js';
 import { R_QUERIES } from '../tree-sitter-queries.js';
 import { RFieldExtractor } from '../field-extractors/r.js';
 import { rMethodExtractor } from '../method-extractors/r.js';
@@ -189,7 +188,6 @@ export const rProvider = defineLanguage({
   // Every definition is exported by default. NAMESPACE-driven export refinement lives in
   // `rPostParse`: an `ExportChecker` has no file-path context, and NAMESPACE detection needs it.
   exportChecker: () => true,
-  importResolver: resolveRImport,
   fieldExtractor: new RFieldExtractor(),
   methodExtractor: rMethodExtractor,
   builtInNames: R_BUILT_INS,

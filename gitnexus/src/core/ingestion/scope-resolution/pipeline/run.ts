@@ -110,6 +110,7 @@ import {
 } from '../utils/generic-instantiation.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
+import { withdrawAnsweredReceiverDrops } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
 import { parseTruthyEnv } from '../../utils/env.js';
 
@@ -699,6 +700,8 @@ export function runScopeResolution(
         if (extractionWarned) scopeExtractionFailedPaths.push(file.path);
         continue;
       }
+      const captureSideChannel = provider.languageProvider.collectCaptureSideChannel?.(file.path);
+      if (captureSideChannel !== undefined) parsed = { ...parsed, captureSideChannel };
       if (input.pdg === true && provider.languageProvider.collectSourceCfgs) {
         const warnCfg = (message: string): void => {
           logger.warn(message);
@@ -1018,11 +1021,9 @@ export function runScopeResolution(
   });
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
 
-  // Cross-file implicit-namespace visibility (C#). Must run before
-  // propagateImportedReturnTypes so the latter pass sees siblings'
-  // class bindings when chasing return-type chains across files.
-  // The hook writes to `bindingAugmentations` only; finalized
-  // `indexes.bindings` remains immutable post-finalize (I8).
+  // Complete implicit namespace visibility and refine provider-owned type facts
+  // before return propagation. New bindings use bindingAugmentations; existing
+  // scope typeBindings may be refined. indexes.bindings stays immutable (I8).
   if (provider.populateNamespaceSiblings !== undefined) {
     provider.populateNamespaceSiblings(parsedFiles, indexes, {
       fileContents: getFileContents(),
@@ -1046,7 +1047,13 @@ export function runScopeResolution(
   // with chain-follow per importer; quadratic regressions show up
   // here, not in finalize).
   if (provider.propagatesReturnTypesAcrossImports !== false) {
-    propagateImportedReturnTypes(parsedFiles, indexes, workspaceIndex);
+    propagateImportedReturnTypes(
+      parsedFiles,
+      indexes,
+      workspaceIndex,
+      provider.resolveQualifiedCallee,
+      allFilePaths,
+    );
   }
 
   const tRangeBindStart = PROF ? process.hrtime.bigint() : 0n;
@@ -1242,6 +1249,7 @@ export function runScopeResolution(
         {
           recordResolutionOutcome,
           recordSourceBinding,
+          allFilePaths,
           calleeIdSink: calleeIdAccumulator,
           // The pass's only source of positive EXTERNAL evidence for a dropped
           // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
@@ -1346,6 +1354,7 @@ export function runScopeResolution(
         calleeIdSink: calleeIdAccumulator,
         recordSourceBinding,
         isBuiltInName: provider.languageProvider.isBuiltInName,
+        allFilePaths,
         heritageTypeArguments,
         unresolvedInheritanceByClass,
       },
@@ -1443,6 +1452,7 @@ export function runScopeResolution(
   // several functions returning the same field name. Sites it resolves are
   // added to the skip set, so the fallback below never second-guesses them.
   const sharedPropertyIndex = input.prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
+  const answeredAfterReceiverPass = new Set<string>();
   const returnShapeMembers = callableFlowOnly
     ? { emitted: 0, memberNotOnShape: 0 }
     : emitReturnShapeMemberAccesses(
@@ -1453,6 +1463,7 @@ export function runScopeResolution(
         uniqueNameSkipSites,
         sharedPropertyIndex,
         uniqueNameSkipSites,
+        answeredAfterReceiverPass,
       );
 
   const nameFallbackDisabled = provider.fieldFallbackOnMethodLookup === false;
@@ -1474,7 +1485,9 @@ export function runScopeResolution(
         finalized,
         sharedPropertyIndex,
         nameFallbackDisabled,
+        answeredAfterReceiverPass,
       );
+  withdrawAnsweredReceiverDrops(resolutionOutcomes, answeredAfterReceiverPass);
 
   // value-ref registrations (#2437): USES edges at the registration sites
   // plus field-based dispatch — synthesized CALLS from member-call sites to

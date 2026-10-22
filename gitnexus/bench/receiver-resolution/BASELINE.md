@@ -1,5 +1,107 @@
 # Receiver-resolution baseline
 
+## Rust module-qualified factory results (#3498)
+
+The provider resolves module-qualified factory callees such as `rp::make`,
+`modx::make` and `crate::modx::make` before reading their own return annotations.
+Bound and inline receivers share that lookup. Untyped factory results retain
+an unresolved-receiver drop. Type-qualified construction remains separate.
+
+The merged corpus contains 5,351 resolution records, compared with main
+`f6e42092`'s 5,319: 32 records added, none removed, all in Rust. The additions include the
+new factory fixture and `rust-ambiguous`'s `models::Handler.handle` receiver.
+Shape states are unchanged. The fixture's two untyped receivers add two call
+drops and two callee-read drops: calls 135 → 137, reads 27 → 29, all kinds
+182 → 186; writes remain 20. The final benchmark check verifies this baseline.
+
+Qualified candidates retain Unicode names and accept uppercase module names.
+Lexical type claims distinguish type-qualified construction from module calls,
+including lowercase types and derived `Default`. A resolved type import or local
+type claim cannot fall back to a same-named module. Const generic values remain
+in Rust's value namespace. Local type aliases are not expanded by this change.
+
+The merge retains main's Zig capture behavior. Filename casing cannot establish
+whether an imported file is a namespace; restoring main preserves the lowercase
+`config.zig` file-struct edge. Python root-package imports and method-return
+ownership use main's declaration checks. A cold Rust disk-scope regression and
+a repeated-member call regression cover the shared producer and drop paths.
+## Zig receiver gaps from the #3498 drop triage
+
+Measured against main `2b6542737`, the four Zig fixes clear 18
+`receiver-unresolved` sites: all-kind drops move from 200 to 182, reads from
+42 to 27 and calls from 138 to 135. Writes and every shape-arm state are
+unchanged.
+
+- 9 reads of `const X = @import("f.zig").X;` (zig-hub `stdx.zig:2-4`,
+  zig-receivers `stdx.zig:2`, zig-idioms `holder.zig:6`, `main.zig:6`,
+  `Element.zig:35`, `hub.zig:9-10`): the `@import(…)` receiver is now bound as a
+  namespace, so the read resolves through the written module (`import-resolved`).
+- 3 reads off an anonymous container (`Sorter.zig:16`, `:23`, `:28`):
+  the receiver names the container's minted identity. The site is now anchored
+  on the member, so it moves off the reported `struct` position and resolves
+  from the scope that evaluates it.
+- 1 call and its callee-position read at zig-idioms `main.zig:42`
+  (`Stack(u8).init()`): the new `isTypeApplicationCall` hook types the receiver
+  as `Stack`.
+- 2 calls and their callee-position reads at zig-filestruct `aliases.zig:86`
+  and `:88` (`JsApi.Meta.prototype_chain` and `JsApi.value`): the
+  `bridge = generic.Bridge(Local)` alias reaches `Builder` through the
+  forwarding return type. These were lines 77 and 79 on the measured main.
+
+Forwarding type constructors (`Bridge ↦ Builder`) also work through the
+namespace-factory lookup already merged in #3648. The combined result clears
+more sites than the original standalone branch, which cleared 14. The `b12`
+alias control resolves. Zig call drops fall from 13 to 10; `no-chain` call
+drops move from 34 to 31 and `in-program` calls from 60 to 57.
+
+## C# namespace precedence after main integration
+
+Types resolve through the enclosing namespace declaration's lookup tiers.
+Its own namespace and scoped using targets precede enclosing and global
+namespaces; compilation-unit usings follow. Registry candidate collection stops
+at the winning tier, retaining ambiguity within that tier. Bare class receivers
+exclude known nonzero generic arity outside the class itself. Positioned using
+ownership uses binary search over namespace starts.
+
+Before the Zig merge, against main `2b6542737`, call drops move from 138 to 135, reads from 42 to 41,
+writes stay at 20, and all-kind drops move from 200 to 196. The four cleared
+sites are the two Address.Save calls in csharp-field-types and
+csharp-deep-field-chain, plus the City read and GetName call in the latter.
+All shape-arm states are unchanged. The resolution corpus has 5,313 rows versus
+5,309 on main: 40 removed records and 44 added records, all in C#.
+Process traversal is capped; these counts do not prove whole-flow coverage.
+
+After merging main `f6e42092`, the baseline is 132 call drops, 26 reads,
+20 writes and 178 across all kinds. Initializing the fixture's `Voucher.Payee`
+keeps those counts and all shape states unchanged. The current corpus has
+5,324 records versus main's 5,319: 45 additions and 40 removals, all in C#.
+The initializer adds a constructor capture; only the C# capture fingerprint
+changes, and all 16 scaling ratios remain below their unchanged budgets.
+
+## JS/TS literal-key writes and class-level field receivers (#3498)
+
+Measured on top of #3654 (`a3db31923`, tree-identical to its squash merge
+`2b6542737`). Call drops move from 138 to 136, all-kind drops from 200 to
+178, and writes from 20 to zero. Read drops remain 42 and every shape-arm
+state is unchanged.
+
+The 20 cleared writes are 19 object-literal keys answered by later resolution
+passes and the CommonJS `module.exports.arrowRequest` declaration. Answered
+sites withdraw only a matching kind/name/site drop; unanswered sites retain
+theirs. A return-shape key's own write requires its exact declaration position
+and file, so unrelated input reads and writes retain ordinary candidate ranking.
+
+The two call-drop changes are `Config.DEFAULT.validate()` resolving through
+its `new Config()` initializer and the owned `this.route.go()` site in
+`ts-dynamic-this-no-seed` being classified as `receiver-owned-but-unbound`,
+which is outside this gate. The latter does not gain a call edge, and its call
+remains in the persisted unresolved-receiver summary used by impact/context.
+Static field inference stops at an untyped override and resolves constructor names through
+the value namespace; annotations retain type-namespace lookup.
+
+Answered-site identity includes the full range, so an answered inner read in
+`res.data.data` cannot withdraw the unresolved outer read with the same name.
+
 ## Go module visibility and qualified receiver refusal
 
 Local imports now select the importer's own module or a module selected by its
@@ -892,3 +994,38 @@ Two incidental corrections from that check, both to KTD6:
   drop is recorded. An untyped fixture parameter had been reporting a language
   gap that was really a fixture defect — the same error class as the untyped
   `$repo` control caught earlier.
+
+
+### Merged main `f6e42092`
+
+Re-measured both benchmark arms after merging the Zig receiver fix from main.
+Shape states remain unchanged; counts are 132 call drops and
+178 drops of all kinds (26 reads,
+20 writes). The counts include both main and this branch's fixes.
+
+Shape states remain unchanged; counts are 133 call drops and
+160 drops of all kinds (27 reads,
+0 writes). The counts include both main and this branch's fixes.
+
+### Rust qualified factories after #3653
+
+Main `2b4456553` is merged normally. The receiver-drop guard preserves both qualified-factory evidence and the module-export exclusion. Fresh build, both TypeScript configurations and all 28 Rust boundary, capture-golden and CommonJS checks pass. The measured baseline has 135 call drops, 164 total drops, 29 reads and 0 writes.
+### C++ qualified receivers after #3653
+
+Main `2b4456553` is merged normally. The field lookup retains both the declared namespace purpose and provider-qualified type handling. Build and both TypeScript configurations pass, and all 59 focused C++ and CommonJS merge checks pass. The measured receiver baseline has 133 call drops, 160 total drops, 27 reads and 0 writes.
+### After merging #3653 into the C# namespace branch
+
+Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
+
+### Rust qualified factories after #3655
+
+Main `caacc3bac` is merged normally. The C# capture baseline retains main's fixture additions, and receiver counts are regenerated on the combined source: 132 call drops, 160 total, 28 reads and zero writes. All shape states match the preceding Rust baseline. Fresh build, both TypeScript configurations and 23 Rust factory, capture and CommonJS checks pass. Final hosted CI remains required.
+### C++ qualified receivers after #3655
+
+Main `caacc3bac` is merged normally. The regenerated combined baseline has 130 call drops,156 total,26 reads and zero writes; all shape states match. These counts include the C# namespace fix from main. The broad C++ resolver run was interrupted for the prioritized focused merge checks and is not reported as a pass. Fresh exact-head CI remains required.
+
+The prioritized merge validation passes a fresh package build, both TypeScript configurations and 56 tests across six C++, CommonJS and C# namespace-boundary files.
+
+### Rust qualified factories after #3656
+
+Main `a09f76be3` is merged normally. The shared receiver pass keeps Rust's provider-qualified callee hook and C++'s position-aware qualified-member lookup. Fresh package build, both TypeScript configurations and 302 tests across 20 Rust, C++, Go, CommonJS and sealed-disk-scope files pass. All 16 capture scaling checks pass without changing their budgets. The regenerated receiver check passes with 132 call drops, 160 across all kinds, 28 reads and zero writes; shape states are unchanged. The corpus adds 32 Rust resolution records to main's 5,392, removes none, and totals 5,424. Exact-head hosted CI remains required.

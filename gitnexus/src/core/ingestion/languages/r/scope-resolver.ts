@@ -35,7 +35,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { loadRPackageConfig, recordRPackageConfig } from './package-config.js';
 import { rBareName } from './bare-name.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { resolveRImportTarget } from './import-target.js';
 import {
   isRGlobalNameFallbackPlausible,
