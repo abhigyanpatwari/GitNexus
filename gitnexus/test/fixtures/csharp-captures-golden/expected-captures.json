@@ -191,6 +191,38 @@
     "captureGroups": 25,
     "digest": "28246dd1c88ecfe07fcee84ba314dbd9e39ccd0c30f20b8fb4633ec71e48e375"
   },
+  "csharp-global-namespace-precedence/Audit/Checker.cs": {
+    "captureGroups": 12,
+    "digest": "3d2b6d491fe36886ee16d556d17f725aa7e3abe4c3a060921b95651b3bc789f3"
+  },
+  "csharp-global-namespace-precedence/Audit/Recorder.cs": {
+    "captureGroups": 12,
+    "digest": "807da0ef85a563fccf5a350d922c632ba82005bf4596af44784b2a3342904b1b"
+  },
+  "csharp-global-namespace-precedence/Billing/Reports/Summary.cs": {
+    "captureGroups": 11,
+    "digest": "c0bb69ad176fdf9c98614e30caf5c5bbd0f19fc177c3599867df6d23ec42bf54"
+  },
+  "csharp-global-namespace-precedence/Billing/Service.cs": {
+    "captureGroups": 16,
+    "digest": "67c79d86f33ef9e01aaafeed049dceb50797e1e69ba9280412f10682262a219b"
+  },
+  "csharp-global-namespace-precedence/Billing/Voucher.cs": {
+    "captureGroups": 20,
+    "digest": "31c8376a7c60a5303dcc45a67258a25ce16434d93aeaa9de7a7fb6e21915d8d3"
+  },
+  "csharp-global-namespace-precedence/Global/Voucher.cs": {
+    "captureGroups": 6,
+    "digest": "936e83dab4b1ed046d7ac5ae868c42672b55a92e475af7a7eff93b9645b946d9"
+  },
+  "csharp-global-namespace-precedence/Program.cs": {
+    "captureGroups": 8,
+    "digest": "e7f5a4aed98f0dc1ac2ded7f90dd772dd8f3f33f3f54ffa4df1106585b4d03ad"
+  },
+  "csharp-global-namespace-precedence/Tools/Importer.cs": {
+    "captureGroups": 10,
+    "digest": "59a1dc4ccdb9f278140bfce172460c55335c6e6810253a2570259f71a7c36dae"
+  },
   "csharp-grandparent-resolution/Models/A.cs": {
     "captureGroups": 10,
     "digest": "159a52b959e021b1a34cc0dfbf1ba1a0748a0f29c84634948e2e85afc75db003"
