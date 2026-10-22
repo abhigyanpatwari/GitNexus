@@ -1,4 +1,4 @@
-import { it, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,23 +25,24 @@ const cases = [
     'use std::rc::Rc;\nmacro_rules! declare_describe { () => { trait Describe { fn describe(&self); } impl<T> Describe for T { fn describe(&self) {} } } }\ndeclare_describe!();\nstruct User; impl User { fn describe(&self) {} }\nstruct Holder { repo: Rc<User> }\nimpl Holder { fn probe(&self) { self.repo.describe(); } }',
   ],
 ] as const;
-it.each(cases)(
-  '%s does not invent pointee dispatch',
-  async (name, source) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pointer-synthesis-'));
-    try {
-      writeFixtureRepo(root, {
-        'src/lib.rs':
-          source +
-          '\nstruct Unrelated; impl Unrelated { fn as_ref(&self) {} fn describe(&self) {} }',
-      });
-      const r = await runPipelineFromRepo(root, () => {});
-      const edges = getRelationships(r, 'CALLS').filter((e) => e.source === 'probe');
-      console.log(JSON.stringify({ name, edges: edges.map((e) => e.rel.targetId) }));
-      expect(edges).toEqual([]);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  },
-  180000,
-);
+describe('Rust pointer fields with opaque dispatch evidence', () => {
+  it.each(cases)(
+    '%s does not invent pointee dispatch',
+    async (_name, source) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pointer-synthesis-'));
+      try {
+        writeFixtureRepo(root, {
+          'src/lib.rs':
+            source +
+            '\nstruct Unrelated; impl Unrelated { fn as_ref(&self) {} fn describe(&self) {} }',
+        });
+        const r = await runPipelineFromRepo(root, () => {});
+        const edges = getRelationships(r, 'CALLS').filter((e) => e.source === 'probe');
+        expect(edges.map((e) => e.rel.targetId)).toEqual([]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    180000,
+  );
+});
