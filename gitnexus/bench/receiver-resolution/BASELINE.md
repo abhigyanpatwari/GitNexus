@@ -1,5 +1,34 @@
 # Receiver-resolution baseline
 
+## Receiver-chain walker spellings (#3498)
+
+`extractMixedChain` misread some receiver spellings: it read the wrong step
+name, stopped early, or built no chain at all. Each fix below moved only the
+cells listed, and the count arm did not move. A same-corpus A/B over
+`test/fixtures/lang-resolution` against `origin/main` (`ab0b03846`) emits
+identical CALLS/ACCESSES edges (2,924) and identical `receiver-unresolved`
+drops (208). No scope-capture fingerprint moved, and a capture dump of 13
+emitters over that corpus is byte-identical, because no fixture uses these
+spellings.
+
+- **Explicit type arguments inside the callee** (C# `GetTyped<User>`, C++
+  `getTyped<User>`, Rust `get_typed::<User>`): csharp `explicitTypeArgs`
+  VISIBLE-GAP → RESOLVES and rust `explicitTypeArgs` VISIBLE-GAP →
+  RESOLVES, both to `User.Save`/`User.save`. cpp `explicitTypeArgs` stays
+  VISIBLE-GAP: the step is now `getTyped`, but `T` is not substituted into
+  the template's return type.
+- **C# `svc!` and Swift `(x)`** (a one-element `tuple_expression`): csharp
+  `nonNullAssert` VISIBLE-GAP → RESOLVES (`User.Save`). swift `awaitParen`
+  now builds its chain. On its own it stays VISIBLE-GAP; with #3666's hoisted
+  Swift return types it RESOLVES (`User.save`).
+- **C# null-conditional access** (`svc?.GetUser()`): csharp `optionalChain`
+  VISIBLE-GAP → RESOLVES (`User.Save`).
+- **Subscripts spelled as other node types** (Ruby `element_reference`, Swift
+  call with a bracketed argument list): ruby `indexElement` and swift
+  `indexElement` INVISIBLE-GAP → VISIBLE-GAP. Ruby's `repos` is untyped, so
+  there is nothing to fold; Swift has no `elementTypeOf` hook yet. Both
+  misses are now counted instead of silent.
+
 ## Swift/Dart stack integration after Rust and C#
 
 The Swift/Dart ownership and replay implementation is unchanged from reviewed
@@ -28,8 +57,11 @@ such as `svc.getUser().save()` never found the type of `getUser()`. Both now set
 it. Seven shape cells flip to `RESOLVES`, each with the correct target: swift
 `plainChain`, `plainDeepChain`, `optionalChain` and `nonNullAssert` (each
 VISIBLE-GAP on main `2b4456553` before), and dart `plainChain`, `plainDeepChain` and
-`optionalChain` (each VISIBLE-GAP before). Swift `awaitParen` and dart
-`nonNullAssert` still need their own fixes.
+`optionalChain` (each VISIBLE-GAP before). On #3666 alone (historical), Swift
+`awaitParen` and dart `nonNullAssert` remained unsupported. Combined with the
+receiver-chain walker (#3667), Swift `awaitParen` resolves to
+`Function:models.swift:User.save#0` with no drop; dart `nonNullAssert` remains
+unsupported.
 
 Both languages also set the new `hoistedTypeBindingsRequireOwner`. The hoisted
 bindings are keyed by bare member name, so the walk now accepts one only when a
@@ -1148,6 +1180,18 @@ Shape states remain unchanged; counts are 132 call drops and
 Shape states remain unchanged; counts are 133 call drops and
 160 drops of all kinds (27 reads,
 0 writes). The counts include both main and this branch's fixes.
+
+### Receiver spelling walkers after #3653
+
+Main `2b4456553` is merged normally. Fresh package build and both TypeScript configurations pass, with 83 unit and native receiver-chain checks in two files. That historical baseline had 133 call drops, 160 total, 27 reads and zero writes. The merge preserves this PR's shape changes listed above; it does not restore main's original shape states. The current-main measurement below supersedes those counts. Final review and hosted CI remain required.
+
+Normal main `caacc3bac` integration: package build, both pinned TypeScript configurations, 83 native/unit chain-walker tests in two files and all 16 capture scaling budgets pass without widening a budget. The regenerated receiver baseline has 130 calls, 156 total, 26 reads and zero writes. Shape states are unchanged by this main merge. Graph coverage remains a lower bound.
+
+The identical corpus comparison establishes no collateral edge changes in those fixtures. Native spelling tests and shape-cell changes establish the new behavior. Generic-arity overload ownership remains a known limitation outside this change: a two-arity C# probe produces the same wrong edges with this branch's walker and with main's walker, so that concrete defect predates this change.
+
+Normal main `c30449394` integration: package build, both pinned TypeScript configurations, the receiver `--check` and all 16 capture scaling checks pass without changing a budget. The regenerated receiver baseline is identical to the merged file: 132 call drops, 160 total, 28 reads and zero writes, with main's shape states plus this PR's six moves. Focused tests pass: 88 chain-walker tests in two files, 143 receiver-origin, unresolved-receiver, C++ and Rust receiver tests in seven files, and 244 C# resolver tests. The C# file aborted natively once under host load and passed when rerun alone. Graph coverage remains a lower bound.
+
+Normal merge of the validated #3666 stack head `684438d88`, which carries main `e7ef82dfc`: the only conflicts were additive BASELINE.md sections. The package build, both pinned TypeScript configurations, 231 tests in the nine focused receiver files, 248 C# and 130 Swift resolver tests pass. With Swift unavailable, the call-form file still collects: 64 pass and the nine Swift rows skip. Swift `awaitParen` now resolves to `User.save`, so its walker row expects that edge and no drop. The regenerated receiver baseline keeps the parent's counts (138 call drops, 168 total, 30 reads, zero writes) and moves seven cells against it: this PR's six plus swift `awaitParen` VISIBLE-GAP → RESOLVES. The 5,559-edge resolution corpus is byte-identical to the parent's. Scope-capture checks for C#, C++, Rust, Ruby, Swift and Kotlin pass with unchanged budgets. Earlier counts in this section are historical. Graph coverage remains a lower bound.
 
 ## Hoisted return ownership after main integration
 
