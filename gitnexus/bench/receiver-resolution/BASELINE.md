@@ -57,8 +57,11 @@ such as `svc.getUser().save()` never found the type of `getUser()`. Both now set
 it. Seven shape cells flip to `RESOLVES`, each with the correct target: swift
 `plainChain`, `plainDeepChain`, `optionalChain` and `nonNullAssert` (each
 VISIBLE-GAP on main `2b4456553` before), and dart `plainChain`, `plainDeepChain` and
-`optionalChain` (each VISIBLE-GAP before). Swift `awaitParen` and dart
-`nonNullAssert` still need their own fixes.
+`optionalChain` (each VISIBLE-GAP before). On #3666 alone (historical), Swift
+`awaitParen` and dart `nonNullAssert` remained unsupported. Combined with the
+receiver-chain walker (#3667), Swift `awaitParen` resolves to
+`Function:models.swift:User.save#0` with no drop; dart `nonNullAssert` remains
+unsupported.
 
 Both languages also set the new `hoistedTypeBindingsRequireOwner`. The hoisted
 bindings are keyed by bare member name, so the walk now accepts one only when a
@@ -1184,7 +1187,7 @@ Main `2b4456553` is merged normally. Fresh package build and both TypeScript con
 
 Normal main `caacc3bac` integration: package build, both pinned TypeScript configurations, 83 native/unit chain-walker tests in two files and all 16 capture scaling budgets pass without widening a budget. The regenerated receiver baseline has 130 calls, 156 total, 26 reads and zero writes. Shape states are unchanged by this main merge. Graph coverage remains a lower bound.
 
-The identical corpus comparison establishes no collateral edge changes in those fixtures. Native spelling tests and shape-cell changes establish the new behavior. Generic-arity overload ownership remains a known limitation tracked in #3609: a two-arity C# probe produces the same wrong edges with this branch's walker and with main's walker, so that concrete defect predates this change.
+The identical corpus comparison establishes no collateral edge changes in those fixtures. Native spelling tests and shape-cell changes establish the new behavior. Generic-arity overload ownership remains a known limitation outside this change: a two-arity C# probe produces the same wrong edges with this branch's walker and with main's walker, so that concrete defect predates this change.
 
 Normal main `c30449394` integration: package build, both pinned TypeScript configurations, the receiver `--check` and all 16 capture scaling checks pass without changing a budget. The regenerated receiver baseline is identical to the merged file: 132 call drops, 160 total, 28 reads and zero writes, with main's shape states plus this PR's six moves. Focused tests pass: 88 chain-walker tests in two files, 143 receiver-origin, unresolved-receiver, C++ and Rust receiver tests in seven files, and 244 C# resolver tests. The C# file aborted natively once under host load and passed when rerun alone. Graph coverage remains a lower bound.
 
