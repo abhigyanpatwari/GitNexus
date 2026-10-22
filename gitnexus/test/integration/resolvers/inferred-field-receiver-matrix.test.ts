@@ -213,6 +213,12 @@ export class StaticCtorThis {
   static constructor() { this.p = new Alien(); }
   run(x) { return this.p.inner().compute(x); }
 }
+export class StaticReadOnly {
+  static q = new Alien();
+}
+export class StaticReader {
+  readOnly(x) { return StaticReadOnly.q.inner().compute(x); }
+}
 `;
 
 // ── Python ───────────────────────────────────────────────────────────────────
@@ -1197,6 +1203,11 @@ const CASES: readonly LanguageCase[] = [
       //   `Host.p` (static twin)     Outer  ✗ WRONG      Alien  ✓ correct
       //   `Host.q` (static, no twin) — none, missed      Alien  ✓ correct
       //
+      // The `Host.q` cell has moved since, without touching the drop: the
+      // class-level receiver route types ONE hop from the static Property node's
+      // initializer type, so `Host.q.m()` now resolves `Alien.m` (the second row
+      // below). Only the twin row still pays the trade in full.
+      //
       // So the trade is NOT the "missed edge beats a wrong one" the comment on
       // `isStaticClassFieldBinding` claims, and this row is why that comment now
       // says otherwise. For a class with BOTH twins the wrong edge did not go
@@ -1216,17 +1227,22 @@ const CASES: readonly LanguageCase[] = [
         status: 'resolves',
       },
       // The static-only shape — no instance twin, so nothing at all is left in
-      // the map and the chain simply loses its type. This is the genuine MISSED
-      // edge, and the common static shape; the row above is the rarer one. A
-      // `known-gap` row rather than a positive assertion because there is no
-      // surviving target to name — the whole point is that the edge is gone. It
-      // is protected from vacuity by the `every row has a live caller node`
-      // guard, the same way this file's other known-gap rows are.
+      // the map. This was the genuine MISSED edge, and the common static shape.
+      // The class-level receiver route does not read the map: it types
+      // `StaticReadOnly.q` from the static Property NODE, which now carries the
+      // type its initializer constructs when the field declares none. So the
+      // first hop resolves to `Alien.inner` — and not to `Outer.inner`, which
+      // `Alien` shares the name with, so this cannot pass on a wrong type.
+      //
+      // `Inner.compute` is still absent, and that is the remaining gap: the
+      // second hop's receiver `StaticReadOnly.q.inner()` goes through the
+      // compound fold, which types a field step only from the class-scope map
+      // the static binding is kept out of.
       {
-        name: 'static-read-without-a-twin-loses-its-type',
+        name: 'static-read-without-a-twin-types-from-its-initializer',
         callerId: `Method:${TS_FILE}:StaticReader.readOnly#1`,
-        targets: [],
-        status: 'known-gap',
+        targets: [`Method:${TS_FILE}:Alien.inner#0`],
+        status: 'resolves',
       },
     ],
   },
@@ -1287,6 +1303,16 @@ const CASES: readonly LanguageCase[] = [
         name: 'static-constructor-this-does-not-retype-the-field',
         callerId: `Method:${JS_FILE}:StaticCtorThis.run#1`,
         targets: [`Method:${JS_FILE}:Outer.inner#0`],
+        status: 'resolves',
+      },
+      // JavaScript's half of the TypeScript static-only row: a field typed by
+      // nothing but its initializer, read through the class. JavaScript has no
+      // annotation to fall back on, so the initializer is the only evidence
+      // there is — the `Config.DEFAULT.validate()` shape.
+      {
+        name: 'static-read-without-a-twin-types-from-its-initializer',
+        callerId: `Method:${JS_FILE}:StaticReader.readOnly#1`,
+        targets: [`Method:${JS_FILE}:Alien.inner#0`],
         status: 'resolves',
       },
     ],

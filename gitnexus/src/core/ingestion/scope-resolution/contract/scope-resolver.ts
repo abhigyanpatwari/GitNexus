@@ -1600,6 +1600,24 @@ export interface ScopeResolver {
   readonly suppressReceiverLookup?: (typeRef: TypeRef) => boolean;
 
   /**
+   * True when a WRITE site is the language's module-export DECLARATION written
+   * through a qualified receiver — CommonJS `module.exports.name = …` — rather
+   * than a write to a member of some value.
+   *
+   * Instrumentation only. Consulted after the receiver-bound cases have all
+   * failed to type the receiver, to keep the declaration out of the
+   * `receiver-unresolved` drops: the receiver is the module's own export
+   * object, not a value whose type was lost. It neither emits an edge nor marks
+   * the site handled, so whatever the later passes do with the site is
+   * unchanged. Omit to record every such site as a drop.
+   */
+  readonly isModuleExportAssignment?: (
+    site: ReferenceSite,
+    scopes: ScopeResolutionIndexes,
+    parsed: ParsedFile,
+  ) => boolean;
+
+  /**
    * Enable the receiver-bound Case 0.5 fallback for explicit `this`
    * receivers (`this->m()` / `this.m()`) that resolves against the
    * enclosing class + MRO even when no explicit `this` typeBinding is
