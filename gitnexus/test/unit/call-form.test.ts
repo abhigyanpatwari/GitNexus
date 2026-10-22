@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, type TestContext } from 'vitest';
 import type { MixedChainStep } from 'gitnexus-shared';
 import {
   inferCallForm,
@@ -20,11 +20,16 @@ import CPP from 'tree-sitter-cpp';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 
 // Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
 const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
-const Swift = requireVendoredGrammar('tree-sitter-swift');
+// Swift is optional: a host without its prebuild skips the Swift rows rather
+// than failing to collect every other language's tests.
+const Swift = isLanguageAvailable(SupportedLanguages.Swift)
+  ? requireVendoredGrammar('tree-sitter-swift')
+  : undefined;
 
 /**
  * Helper: parse code, run the language query, and return all @call captures
@@ -505,10 +510,17 @@ const field = (name: string): MixedChainStep => ({ kind: 'field', name });
 
 interface ChainRow {
   readonly label: string;
-  readonly language: Parser.Language;
+  /** `undefined` when an optional grammar did not load on this host. */
+  readonly language: Parser.Language | undefined;
   readonly code: string;
   readonly member: string;
   readonly expected: ReturnType<typeof extractMixedChain>;
+}
+
+/** A row whose grammar did not load is reported skipped, never passed. */
+function expectChainRow(row: ChainRow, { skip }: TestContext): void {
+  if (row.language === undefined) return skip(`grammar not available: ${row.label}`);
+  expect(receiverChainOf(row.language, row.code, row.member)).toEqual(row.expected);
 }
 
 describe('extractMixedChain', () => {
@@ -587,9 +599,7 @@ describe('extractMixedChain', () => {
     },
   ];
 
-  it.each(typeArgumentRows)('$label', ({ language, code, member, expected }) => {
-    expect(receiverChainOf(language, code, member)).toEqual(expected);
-  });
+  it.for(typeArgumentRows)('$label', expectChainRow);
 
   // Wrappers that denote exactly their operand (#3498 RC4): C#'s null-forgiving
   // `svc!` and Swift's single-element tuple, which is how Swift spells `(x)`.
@@ -646,9 +656,7 @@ describe('extractMixedChain', () => {
     },
   ];
 
-  it.each(wrapperRows)('$label', ({ language, code, member, expected }) => {
-    expect(receiverChainOf(language, code, member)).toEqual(expected);
-  });
+  it.for(wrapperRows)('$label', expectChainRow);
 
   // C# null-conditional access (#3498 RC5): the receiver sits in the
   // `condition` field and the member in a binding child, as a callee and as a
@@ -705,9 +713,7 @@ describe('extractMixedChain', () => {
     },
   ];
 
-  it.each(conditionalRows)('$label', ({ language, code, member, expected }) => {
-    expect(receiverChainOf(language, code, member)).toEqual(expected);
-  });
+  it.for(conditionalRows)('$label', expectChainRow);
 
   // Subscripts spelled as other node types (#3498 RC8): Ruby's
   // `element_reference`, and Swift's call with a bracketed argument list.
@@ -779,7 +785,5 @@ describe('extractMixedChain', () => {
     },
   ];
 
-  it.each(subscriptRows)('$label', ({ language, code, member, expected }) => {
-    expect(receiverChainOf(language, code, member)).toEqual(expected);
-  });
+  it.for(subscriptRows)('$label', expectChainRow);
 });
