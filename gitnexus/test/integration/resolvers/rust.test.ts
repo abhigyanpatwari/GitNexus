@@ -9,6 +9,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
@@ -216,6 +217,15 @@ describe('Rust ambiguous symbol resolution', () => {
     for (const imp of imports) {
       expect(imp.targetFilePath).not.toMatch(/src\/other\//);
     }
+  });
+
+  it('types h from services::create_handler() as the imported models::Handler (#3498)', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'main' && edge.target === 'handle',
+    );
+    expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+      'Function:src/models/handler.rs:Handler.handle#0',
+    ]);
   });
 });
 
@@ -3017,5 +3027,85 @@ describe('Rust type-qualified calls outrank a same-named module (#2745 review)',
       if (n.label === 'Function' && n.properties.name === 'with_capacity') ids.push(n.id);
     });
     expect(ids).toContain('Function:src/lib.rs:Buffer.with_capacity');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Module-qualified factory calls type their result (#3498 follow-up).
+//
+// `let x = rp::make(); x.m()` bound `x` to `rp`: the call-return rule kept only
+// the text before the first `::` (the `Foo::new()` idiom), so the function name
+// was gone and `make`'s declared `-> C` was never read. The aliased module path
+// `rp::make()` also failed to resolve as a call, because `rp` names no module
+// file.
+// ---------------------------------------------------------------------------
+
+describe('Rust module-qualified factory result types (#3498 follow-up)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-qualified-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === source && edge.target === target)
+      .map((edge) => edge.rel.targetId)
+      .sort();
+
+  it.each([
+    'alias_call',
+    'module_call',
+    'crate_call',
+    'inline_alias',
+    'inline_module',
+    'inline_crate',
+  ])("types %s from make's return annotation", (source) => {
+    expect(callsFrom(source, 'm')).toEqual(['Function:src/modx.rs:C.m#0']);
+  });
+
+  it('does not let a let-bound value shadow the module segment of a path', () => {
+    expect(callsFrom('local_shadow', 'm')).toEqual([
+      'Function:src/modx.rs:C.m#0',
+      'Function:src/modx.rs:Other.m#0',
+    ]);
+  });
+
+  it('keeps reading a type-qualified call as the type', () => {
+    expect(callsFrom('type_qualified', 'm')).toEqual(['Function:src/modx.rs:Other.m#0']);
+  });
+
+  it.each(['untyped_alias', 'untyped_inline'])(
+    'does not guess a receiver type for %s',
+    (source) => {
+      expect(callsFrom(source, 'm')).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['alias_call', 'make'],
+    ['inline_alias', 'make'],
+    ['untyped_alias', 'untyped'],
+  ])('resolves the aliased module path in %s to modx::%s', (source, target) => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === source && edge.target === target,
+    );
+    expect(edges.map((edge) => [edge.rel.targetId, edge.rel.reason])).toEqual([
+      [`Function:src/modx.rs:${target}`, 'import-resolved'],
+    ]);
+  });
+
+  it('records the untyped receivers as dropped sites instead of an exact miss', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter(
+        (outcome) => outcome.reason === 'receiver-unresolved' && outcome.filePath === 'src/main.rs',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.siteKind}:${outcome.name}`)
+      .sort();
+    expect(dropped).toEqual(['44:call:m', '44:read:m', '48:call:m', '48:read:m']);
   });
 });

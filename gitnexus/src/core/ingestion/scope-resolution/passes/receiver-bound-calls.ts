@@ -98,6 +98,7 @@ import {
   type CalleeIdCaptureCtx,
 } from '../graph-bridge/edges.js';
 import { constructionSiteReason } from './free-call-fallback.js';
+import { bindQualifiedCalleeResolver } from './imported-return-types.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
   foldReceiverChainPosition,
@@ -221,6 +222,9 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isBareClassReceiverCandidate'
   | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
+  | 'resolveQualifiedCallee'
+  | 'resolveQualifiedTypeSpellings'
+  | 'splitQualifiedCallee'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
@@ -260,6 +264,8 @@ export interface ReceiverOriginEvidence {
    *  external. Same hook the three receiver-chain lookups in
    *  `compound-receiver.ts` already receive. */
   readonly stripTypePreservingDecoration?: DecorationStripper;
+  /** Classify qualified declared types with the same provider policy as resolution. */
+  readonly qualifiedTypeSpellings?: boolean;
   /** `LanguageProvider.isBuiltInName`, threaded through the pass options the
    *  same way `emitFreeCallFallback` receives it. Languages that declare no
    *  built-in set simply never produce an `external` verdict from it, which is
@@ -307,6 +313,7 @@ export function buildReceiverOriginEvidence(input: {
    *  below for the one branch it leaves out. */
   readonly foldOptions: NonNullable<Parameters<typeof foldReceiverChainPosition>[4]>;
   readonly stripTypePreservingDecoration?: DecorationStripper;
+  readonly qualifiedTypeSpellings?: boolean;
   readonly isBuiltInName?: (name: string) => boolean;
   readonly externalReceiverNames?: ReadonlySet<string>;
   readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
@@ -316,6 +323,7 @@ export function buildReceiverOriginEvidence(input: {
   let declaredNames: ReadonlySet<string> | undefined;
   return {
     stripTypePreservingDecoration: input.stripTypePreservingDecoration,
+    qualifiedTypeSpellings: input.qualifiedTypeSpellings,
     isBuiltInName: input.isBuiltInName,
     externalReceiverNames: input.externalReceiverNames,
     importsLibraryModule:
@@ -528,8 +536,9 @@ export function classifyReceiverOrigin(
     // arguments, so an in-program generic base (`Box<String> b; b.open()`)
     // resolves instead of being mislabelled and dropped from the hedge.
     if (
-      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip) !==
-      undefined
+      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip, {
+        qualifiedTypeSpellings: evidence.qualifiedTypeSpellings,
+      }) !== undefined
     ) {
       return 'in-program';
     }
@@ -646,6 +655,8 @@ export function emitReceiverBoundCalls(
   index: WorkspaceResolutionIndex,
   model: SemanticModel,
   options: {
+    /** Stable pass identity for provider indexes shared with return propagation. */
+    readonly allFilePaths?: ReadonlySet<string>;
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
     readonly recordSourceBinding?: SourceBindingRecorder;
     /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
@@ -744,6 +755,17 @@ export function emitReceiverBoundCalls(
       const def = lookupNamespaceMember(file, member);
       return def !== undefined && CALLABLE_TYPES.has(def.type);
     });
+  };
+  const resolveProviderQualifiedCallee = bindQualifiedCalleeResolver(
+    provider.resolveQualifiedCallee,
+    scopes,
+    index,
+    parsedFiles,
+    options.allFilePaths,
+  );
+  const bindsQualifiedCallable = (typeRef: TypeRef): boolean => {
+    const definition = resolveProviderQualifiedCallee?.(typeRef.rawName, typeRef.declaredAtScope);
+    return definition !== undefined && CALLABLE_TYPES.has(definition.type);
   };
   // A class-like def NESTED in `owner` (`A.Item` inside `A`): its qualified
   // name is the owner's plus the segment — the identity the structure phase
@@ -881,6 +903,32 @@ export function emitReceiverBoundCalls(
       return undefined;
     return uniqueClassAcross(files, tail);
   };
+  // A qualified callee as the free-call head of a compound receiver
+  // (`rp::make().m()`, or `x` bound to `rp::make`): the definition the
+  // qualified CALL resolves to, so its declared return type can type the
+  // receiver. Asked without call-site arity, so an ambiguous answer is none.
+  const splitQualifiedCallee = provider.splitQualifiedCallee;
+  const resolveQualifiedReceiverMember = provider.resolveQualifiedReceiverMember;
+  const resolveQualifiedCallee =
+    resolveProviderQualifiedCallee ??
+    (splitQualifiedCallee === undefined || resolveQualifiedReceiverMember === undefined
+      ? undefined
+      : (
+          callee: string,
+          inScope: ScopeId,
+          position?: TypeRef['lookupPosition'],
+        ): SymbolDefinition | undefined => {
+          const parts = splitQualifiedCallee(callee, inScope, scopes, position);
+          if (parts === undefined) return undefined;
+          const def = resolveQualifiedReceiverMember(
+            parts.receiver,
+            parts.member,
+            inScope,
+            scopes,
+            parsedFiles,
+          );
+          return def === 'ambiguous' ? undefined : def;
+        });
   const compoundOpts = {
     fieldFallback,
     elementTypeOf: provider.elementTypeOf,
@@ -894,6 +942,8 @@ export function emitReceiverBoundCalls(
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     qualifiedTypeLookupSpelling: provider.qualifiedTypeLookupSpelling,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
+    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+    resolveQualifiedCallee,
   };
   // Loop-invariant: every hook comes off the pass arguments, so the evidence for
   // `classifyReceiverOrigin` is built once here rather than per dropped site.
@@ -909,6 +959,7 @@ export function emitReceiverBoundCalls(
     isBuiltInName: options.isBuiltInName,
     externalReceiverNames: options.externalReceiverNames,
     isExternalModuleSpecifier: options.isExternalModuleSpecifier,
+    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
   });
 
   // Maps class-like graph ids back to ALL scope definitions that resolved to
@@ -2617,6 +2668,7 @@ export function emitReceiverBoundCalls(
           position: typeRef.lookupPosition,
           purpose: typeRef.lookupPurpose ?? 'type',
           onNameFallback,
+          qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
         };
         const qualifiedOwner = classOfQualifiedTypeSpelling(
           typeRef,
@@ -3345,7 +3397,11 @@ export function emitReceiverBoundCalls(
                   fieldDeclaredType.name,
                   scopes,
                   provider.stripTypePreservingDecoration,
-                  { onNameFallback, purpose: fieldDeclaredType.purpose },
+                  {
+                    onNameFallback,
+                    purpose: fieldDeclaredType.purpose,
+                    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+                  },
                 );
           if (receiverClass !== undefined) {
             const chain = [
@@ -3456,7 +3512,8 @@ export function emitReceiverBoundCalls(
           // could not type (`x = ns.untyped()`) is a drop too, not an exact miss.
           (typeRef !== undefined &&
             BARE_TYPE_NAME_RE.test(receiverName) &&
-            bindsNamespaceCallable(typeRef, namespaceTargets))) &&
+            (bindsNamespaceCallable(typeRef, namespaceTargets) ||
+              bindsQualifiedCallable(typeRef)))) &&
         provider.isModuleExportAssignment?.(site, scopes, parsed) !== true
       ) {
         // Decoded once: both the shape census and the origin classifier read the
