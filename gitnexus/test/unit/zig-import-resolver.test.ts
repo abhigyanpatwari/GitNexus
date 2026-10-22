@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.js';
+import { resolveZigImportInternal } from '../../src/core/ingestion/languages/zig/import-helpers.js';
 import {
   loadZigBuildConfig,
   loadZigWorkspaceIndex,

@@ -68,10 +68,10 @@ import {
   clearKotlinPackageFacts,
   setKotlinPackageFact,
 } from '../../../src/core/ingestion/languages/kotlin/package-facts.js';
-import { resolveRubyImportInternal } from '../../../src/core/ingestion/import-resolvers/ruby.js';
-import { buildSuffixIndex } from '../../../src/core/ingestion/import-resolvers/utils.js';
+import { resolveRubyImportInternal } from '../../../src/core/ingestion/languages/ruby/import-helpers.js';
+import { buildSuffixIndex } from '../../../src/core/ingestion/utils/suffix-index.js';
 import { isHeritageMarker } from '../../../src/core/ingestion/utils/heritage-marker.js';
-import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/csharp-namespace-gate.js';
+import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/languages/csharp/namespace-gate.js';
 import { DART_HERITAGE_PREFIX } from '../../../src/core/ingestion/languages/dart/interpret.js';
 import { CountingSet, countedParsedFilesWith } from '../../helpers/counting-file-set.js';
 

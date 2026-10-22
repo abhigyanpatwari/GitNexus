@@ -12,7 +12,7 @@
  * This module lives in `ingestion/` (the lower layer); the group layer imports
  * from it, matching the existing `group → ingestion` dependency direction
  * (e.g. `group/extractors/include-extractor.ts` already imports
- * `ingestion/import-resolvers/utils.ts`). It MUST NOT import anything from
+ * `ingestion/utils/suffix-index.ts`). It MUST NOT import anything from
  * `group/` to avoid a dependency cycle.
  */
 

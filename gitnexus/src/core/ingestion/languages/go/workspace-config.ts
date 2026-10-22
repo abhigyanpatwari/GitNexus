@@ -1,14 +1,9 @@
 /**
  * Go module discovery: every `go.mod` and `go.work` in the repository.
  *
- * `loadGoModulePath` reads only the ROOT `go.mod`. A monorepo with one module
- * per service (`services/orders/go.mod`), a root module with nested modules
- * (`tools/go.mod`, k8s-style `staging/`), or a repo with no root module at all
- * then answers every import from the wrong place: with no root `go.mod` the
- * GOPATH suffix match runs, so two modules' `internal/repository` both answer
- * `…/internal/repository`; with one, imports of a nested module are "not ours"
- * and drop, while the root module's own imports match any directory ENDING in
- * the package path — the nested modules' included.
+ * Every module needs its own root: services may have separate `go.mod` files,
+ * and nested modules own subtrees that an enclosing module cannot import as
+ * its own packages.
  *
  * Go itself resolves an import against modules, not directory names:
  *

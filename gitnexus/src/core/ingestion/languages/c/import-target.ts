@@ -1,5 +1,5 @@
 import { dirname, join } from 'path';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import {
   collapseRepoPath,
   nearestScope,

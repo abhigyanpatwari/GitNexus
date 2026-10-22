@@ -44,7 +44,7 @@ import {
   sweepStagingArtifacts,
 } from '../storage/index-lock.js';
 import { resolveEmbeddingRecovery } from '../storage/embedding-recovery.js';
-import { invalidateNodeWorkspacePackages } from './ingestion/import-resolvers/node-workspace-packages.js';
+import { invalidateNodeWorkspacePackages } from './ingestion/languages/typescript/workspace-packages.js';
 import {
   logNameFallbackSummary,
   summarizeNameFallback,

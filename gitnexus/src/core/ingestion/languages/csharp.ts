@@ -13,8 +13,6 @@ import { csharpClassConfig } from '../class-extractors/configs/csharp.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as csharpConfig } from '../type-extractors/csharp.js';
 import { csharpExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { csharpImportConfig } from '../import-resolvers/configs/csharp.js';
 import { CSHARP_QUERIES } from '../tree-sitter-queries.js';
 import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
@@ -195,7 +193,6 @@ export const csharpProvider = defineLanguage({
 `,
   typeConfig: csharpConfig,
   exportChecker: csharpExportChecker,
-  importResolver: createImportResolver(csharpImportConfig),
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(csharpCallConfig),
   fieldExtractor: createFieldExtractor(csharpFieldConfig),
