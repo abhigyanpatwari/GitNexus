@@ -1087,11 +1087,9 @@ export function runScopeResolution(
   });
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
 
-  // Cross-file implicit-namespace visibility (C#). Must run before
-  // propagateImportedReturnTypes so the latter pass sees siblings'
-  // class bindings when chasing return-type chains across files.
-  // The hook writes to `bindingAugmentations` only; finalized
-  // `indexes.bindings` remains immutable post-finalize (I8).
+  // Complete implicit namespace visibility and refine provider-owned type facts
+  // before return propagation. New bindings use bindingAugmentations; existing
+  // scope typeBindings may be refined. indexes.bindings stays immutable (I8).
   if (provider.populateNamespaceSiblings !== undefined) {
     provider.populateNamespaceSiblings(parsedFiles, indexes, {
       fileContents: getFileContents(),
@@ -1115,7 +1113,13 @@ export function runScopeResolution(
   // with chain-follow per importer; quadratic regressions show up
   // here, not in finalize).
   if (provider.propagatesReturnTypesAcrossImports !== false) {
-    propagateImportedReturnTypes(parsedFiles, indexes, workspaceIndex);
+    propagateImportedReturnTypes(
+      parsedFiles,
+      indexes,
+      workspaceIndex,
+      provider.resolveQualifiedCallee,
+      allFilePaths,
+    );
   }
 
   const tRangeBindStart = PROF ? process.hrtime.bigint() : 0n;
@@ -1311,11 +1315,15 @@ export function runScopeResolution(
         {
           recordResolutionOutcome,
           recordSourceBinding,
+          allFilePaths,
           calleeIdSink: calleeIdAccumulator,
-          // The pass's only source of positive EXTERNAL evidence for a dropped
-          // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
-          // the `emitFreeCallFallback` wiring below.
+          // The pass's sources of positive EXTERNAL evidence for a dropped
+          // receiver (`console.log`, `document.body`, `import os`). The first is
+          // the same hook, same spelling as the `emitFreeCallFallback` wiring
+          // below; the other two are read by nothing but the origin label.
           isBuiltInName: provider.languageProvider.isBuiltInName,
+          externalReceiverNames: provider.languageProvider.externalReceiverNames,
+          isExternalModuleSpecifier: provider.languageProvider.isExternalModuleSpecifier,
           // What each heritage clause instantiated its base with, so the
           // interface-dispatch fan-out can refuse an incompatible instantiation
           // (#2912). Empty under `callableFlowOnly`, which emits no dispatch.
@@ -1415,6 +1423,9 @@ export function runScopeResolution(
         calleeIdSink: calleeIdAccumulator,
         recordSourceBinding,
         isBuiltInName: provider.languageProvider.isBuiltInName,
+        externalReceiverNames: provider.languageProvider.externalReceiverNames,
+        isExternalModuleSpecifier: provider.languageProvider.isExternalModuleSpecifier,
+        allFilePaths,
         heritageTypeArguments,
         unresolvedInheritanceByClass,
       },

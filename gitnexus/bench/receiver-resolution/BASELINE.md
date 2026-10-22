@@ -1,5 +1,30 @@
 # Receiver-resolution baseline
 
+## Rust module-qualified factory results (#3498)
+
+The provider resolves module-qualified factory callees such as `rp::make`,
+`modx::make` and `crate::modx::make` before reading their own return annotations.
+Bound and inline receivers share that lookup. Untyped factory results retain
+an unresolved-receiver drop. Type-qualified construction remains separate.
+
+The merged corpus contains 5,351 resolution records, compared with main
+`f6e42092`'s 5,319: 32 records added, none removed, all in Rust. The additions include the
+new factory fixture and `rust-ambiguous`'s `models::Handler.handle` receiver.
+Shape states are unchanged. The fixture's two untyped receivers add two call
+drops and two callee-read drops: calls 135 → 137, reads 27 → 29, all kinds
+182 → 186; writes remain 20. The final benchmark check verifies this baseline.
+
+Qualified candidates retain Unicode names and accept uppercase module names.
+Lexical type claims distinguish type-qualified construction from module calls,
+including lowercase types and derived `Default`. A resolved type import or local
+type claim cannot fall back to a same-named module. Const generic values remain
+in Rust's value namespace. Local type aliases are not expanded by this change.
+
+The merge retains main's Zig capture behavior. Filename casing cannot establish
+whether an imported file is a namespace; restoring main preserves the lowercase
+`config.zig` file-struct edge. Python root-package imports and method-return
+ownership use main's declaration checks. A cold Rust disk-scope regression and
+a repeated-member call regression cover the shared producer and drop paths.
 ## Zig receiver gaps from the #3498 drop triage
 
 Measured against main `2b6542737`, the four Zig fixes clear 18
@@ -974,9 +999,11 @@ Two incidental corrections from that check, both to KTD6:
 
 The fallback excludes function-local and nested JVM candidates, while local and nested deriving classes can still use package-level bases. Synthetic deriving classes do not enter this fallback; their source captures do not retain the qualifier evidence needed here. C# filters by the written generic arity before source-root proximity. Five native assertions fail before the corrections; all 14 focused checks and all 755 Java/Kotlin/C# resolver and helper tests pass afterward. Build and both TypeScript configurations pass. After merging main `d57f570d`, receiver counts and all shape states match main (135 calls, 182 total, 27 reads and 20 writes).
 
+### Library-rooted receiver evidence (#3658, #3498)
 
-### Merged main `f6e42092`
+After merging main `2b4456553`, receiver totals and all shape states are unchanged: 133 call drops, 160 across all kinds, 27 reads and 0 writes. Provider evidence now classifies 30 calls external, 45 unknown, 56 in-program and 2 unclassified.
 
+The member-name veto spans the workspace graph. A JavaScript receiver through `window.app` stays uncertain when its member is declared only in TypeScript. Direct built-in calls also stay uncertain when a program declaration matches the member name; that precision cost is deliberate. `globalThis` supplies no external evidence, and library imports must be selected by the lexical claim walk. The post-main build, both TypeScript configurations and all 105 classifier, pipeline and CommonJS checks pass. Before the main merge, the mixed-language correction preserves all 5,319 resolution records byte-for-byte; the final corpus check is recorded with the PR validation.
 Re-measured both benchmark arms after merging the Zig receiver fix from main.
 Shape states remain unchanged; counts are 132 call drops and
 178 drops of all kinds (26 reads,
@@ -991,10 +1018,35 @@ Shape states remain unchanged; counts are 133 call drops and
 Native review controls reproduced production Java imports and Java/Kotlin inheritance selecting nearer test-only declarations, an inherited nested base losing to a package homonym, a resolved Kotlin typealias import losing its claim, and a C# tuple argument counting as two type arguments. The corrected focused run passes 71 tests in five files, including positive test-source ownership controls and ordinary nested/local inheritance. The generic argument splitter now keeps tuple commas together.
 
 Canonical `src/main/java` and `src/main/kotlin` sources exclude recognized non-main source-set candidates before proximity ranking. Custom layouts retain prior eligibility; this is not build-system classpath resolution. JVM package fallback refuses when an enclosing class has inheritance whose member types the pre-MRO pass cannot establish, and explicit named imports retain their claim even when the import names a typealias rather than a class. These conservative cases may remain unresolved. Java duplicate-FQN import selection is part of this same package-ownership fix. Fresh current-main integration and hosted CI remain required.
+### Rust qualified factories after #3653
+
+Main `2b4456553` is merged normally. The receiver-drop guard preserves both qualified-factory evidence and the module-export exclusion. Fresh build, both TypeScript configurations and all 28 Rust boundary, capture-golden and CommonJS checks pass. The measured baseline has 135 call drops, 164 total drops, 29 reads and 0 writes.
+### C++ qualified receivers after #3653
+
+Main `2b4456553` is merged normally. The field lookup retains both the declared namespace purpose and provider-qualified type handling. Build and both TypeScript configurations pass, and all 59 focused C++ and CommonJS merge checks pass. The measured receiver baseline has 133 call drops, 160 total drops, 27 reads and 0 writes.
 ### After merging #3653 into the C# namespace branch
 
 Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
 
+After merging main caacc3bac normally, totals remain 130 calls, 156 across all kinds, 26 reads and zero writes. Origin labels are 30 external, 45 unknown, 53 in-program and 2 unclassified. Shape states are unchanged. The 5,328-record corpus is byte-identical to current main. Package build, both pinned TypeScript configurations, 23 CommonJS/C# precedence tests and 15 library-origin boundary tests pass.
+
 ### Same-package inheritance after #3655
 
 Main `caacc3bac` is merged normally. The C# resolver retains both main's bare-receiver eligibility hook and this branch's inheritance hook. The combined source passes a fresh package build, both TypeScript configurations and82 focused checks in six files. Before this main merge, the final visibility fixes passed741 Java/Kotlin/C# resolver tests in three files; those runs overlap and are not a unique total. The combined C# capture baseline is remeasured at193 files and2899 groups, fingerprint3720a3d2, scaling1.039 below the unchanged1.5 budget. Receiver counts are remeasured from combined sources. Fresh hosted CI remains required.
+
+### Rust qualified factories after #3655
+
+Main `caacc3bac` is merged normally. The C# capture baseline retains main's fixture additions, and receiver counts are regenerated on the combined source: 132 call drops, 160 total, 28 reads and zero writes. All shape states match the preceding Rust baseline. Fresh build, both TypeScript configurations and 23 Rust factory, capture and CommonJS checks pass. Final hosted CI remains required.
+### C++ qualified receivers after #3655
+
+Main `caacc3bac` is merged normally. The regenerated combined baseline has 130 call drops,156 total,26 reads and zero writes; all shape states match. These counts include the C# namespace fix from main. The broad C++ resolver run was interrupted for the prioritized focused merge checks and is not reported as a pass. Fresh exact-head CI remains required.
+
+The prioritized merge validation passes a fresh package build, both TypeScript configurations and 56 tests across six C++, CommonJS and C# namespace-boundary files.
+
+### Rust qualified factories after #3656
+
+Main `a09f76be3` is merged normally. The shared receiver pass keeps Rust's provider-qualified callee hook and C++'s position-aware qualified-member lookup. Fresh package build, both TypeScript configurations and 302 tests across 20 Rust, C++, Go, CommonJS and sealed-disk-scope files pass. All 16 capture scaling checks pass without changing their budgets. The regenerated receiver check passes with 132 call drops, 160 across all kinds, 28 reads and zero writes; shape states are unchanged. The corpus adds 32 Rust resolution records to main's 5,392, removes none, and totals 5,424. Exact-head hosted CI remains required.
+
+### External receiver origins after #3657
+
+Main `65b101407` is merged normally. Origin evidence retains the qualified-type lookup policy and both pipeline passes retain workspace file paths. Package build, both pinned TypeScript configurations, 425 focused tests across 25 files, and all 16 capture checks pass. The regenerated receiver baseline preserves every shape state and main's 132 call drops, 160 total, 28 reads and zero writes. Origin labels are 30 external, 45 unknown, 55 in-program and two unclassified. The 5,424-record resolution corpus is byte-identical to main. Exact-head hosted CI remains required.

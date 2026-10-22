@@ -1,4 +1,4 @@
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import {
   findClassBindingInScope,
   findEnclosingClassDef,
@@ -44,6 +44,7 @@ import {
   clearCppInlineNamespaces,
   populateCppInlineNamespaceScopes,
   resolveCppQualifiedNamespaceMember,
+  splitCppQualifiedCallee,
 } from './inline-namespaces.js';
 import { populateCppRangeBindings } from './range-bindings.js';
 import { cppConstraintCompatibility } from './constraint-filter.js';
@@ -62,6 +63,7 @@ import {
   clearCppUsingDeclarations,
   populateCppIncludedUsingClaims,
   populateCppUsingBindings,
+  cppQualifiedTypeLookupSpelling,
 } from './using-bindings.js';
 
 /** A pointee worth binding: a bare identifier, not `T**`, `T[]`, `A::B` or a
@@ -231,6 +233,26 @@ export const cppScopeResolver: ScopeResolver = {
   },
 
   populateNamespaceSiblings: (parsedFiles, indexes) => {
+    // Name-keyed return facts cannot choose between free overloads whose
+    // return types differ. Keep their declaration identities, drop the guess.
+    for (const parsed of parsedFiles) {
+      for (const scope of parsed.scopes) {
+        if (scope.kind !== 'Module' && scope.kind !== 'Namespace') continue;
+        const returns = new Map<string, Set<string | undefined>>();
+        for (const definition of scope.ownedDefs) {
+          if (definition.type !== 'Function' || definition.qualifiedName === undefined) continue;
+          const name = definition.qualifiedName.slice(
+            definition.qualifiedName.lastIndexOf('.') + 1,
+          );
+          const types = returns.get(name) ?? new Set<string | undefined>();
+          types.add(definition.returnType);
+          returns.set(name, types);
+        }
+        for (const [name, types] of returns)
+          if (types.size > 1 && scope.typeBindings.get(name)?.source === 'return-annotation')
+            (scope.typeBindings as Map<string, TypeRef>).delete(name);
+      }
+    }
     populateCppUsingBindings(parsedFiles, indexes);
     populateCppIncludedOverloads(indexes);
   },
@@ -321,12 +343,18 @@ export const cppScopeResolver: ScopeResolver = {
   conversionOnlyArgTypePrefixes: CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
   // Range-for element type inference: for (auto& user : users) → bind user to User
   populateRangeBindings: populateCppRangeBindings,
-  // C++ method return-type bindings need to be visible from module scope
-  // for cross-file propagation and compound-receiver chain resolution.
-  // cppBindingScopeFor hoists @type-binding.return to Module scope.
-  hoistTypeBindingsToModule: true,
+  // Return bindings stay with their declaring class or namespace. An absent
+  // method fact must not borrow a same-name free function's return type.
   // Enable receiver-bound explicit-`this` fallback only for C++.
   resolveThisViaEnclosingClass: true,
+  // `rp::C x`, `void f(a::Config c)`: the capture keeps the qualifier, and
+  // neither `#include` (no namespace handle) nor the index (`rp::C` keyed as
+  // `C`) lets the shared receiver lookups read it. Resolve it the way a
+  // qualified base class already resolves — qualifier matched against the
+  // candidate's namespace, refuse on a tie — rather than by its tail, which
+  // binds the nearer same-named class the qualifier was written to exclude.
+  resolveQualifiedTypeSpellings: true,
+  qualifiedTypeLookupSpelling: cppQualifiedTypeLookupSpelling,
   resolveReceiverMember: resolveCppReceiverMember,
   // The `isFileLocalDef` hook on the global free-call fallback names
   // file-local linkage historically, but semantically gates "logically
@@ -396,9 +424,38 @@ export const cppScopeResolver: ScopeResolver = {
   resolveQualifiedReceiverMember: (
     receiverName,
     memberName,
-    _callerScope,
+    callerScope,
     scopes,
     parsedFiles,
     callsite,
-  ) => resolveCppQualifiedNamespaceMember(receiverName, memberName, parsedFiles, scopes, callsite),
+  ) =>
+    resolveCppQualifiedNamespaceMember(
+      receiverName,
+      memberName,
+      parsedFiles,
+      scopes,
+      callsite,
+      callerScope,
+    ),
+  // `auto x = rp::make(); x.m()` / `rp::make().m()`: map the callee text back
+  // onto the receiver/member pair the call capture used, so the hook above
+  // answers the factory's definition the way it answered the call.
+  splitQualifiedCallee: (callee, callerScope, scopes, position) => {
+    // The namespace-member resolver does not bind aliases. Decline instead
+    // of treating an alias as an unrelated namespace with the same name.
+    if (
+      callerScope !== undefined &&
+      cppQualifiedTypeLookupSpelling(
+        {
+          rawName: callee,
+          declaredAtScope: callerScope,
+          source: 'assignment-inferred',
+          lookupPosition: position,
+        },
+        scopes,
+      ) !== undefined
+    )
+      return undefined;
+    return splitCppQualifiedCallee(callee, callerScope, scopes, position);
+  },
 };
