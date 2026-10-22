@@ -199,6 +199,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'createReceiverNamespaceResolver'
   | 'resolveReceiverMember'
   | 'suppressReceiverLookup'
+  | 'isModuleExportAssignment'
   | 'resolveThisViaEnclosingClass'
   | 'resolveMissingReceiverMembersFromSubtypes'
   | 'missingReceiverSubtypeCandidateCompatibility'
@@ -1112,40 +1113,29 @@ export function emitReceiverBoundCalls(
     return n;
   };
 
-  /**
-   * Declared type of the CLASS-LEVEL field named `fieldName` on `ownerId`, or
-   * `undefined` when the owner declares no such field, declares only an
-   * instance one, or declares one whose type was never captured.
-   *
-   * Both facts live on the graph NODE rather than on `SymbolDefinition` —
-   * `isStatic` is set by the structure phase and `declaredType` by the field
-   * extractor — which is the same place {@link isUnreachableByInstanceDispatch}
-   * reads `isStatic` from, so this introduces no new dependency.
-   *
-   * `isStatic === true` is required, not merely preferred. The receiver that
-   * asks this question resolved its head to the CLASS, so an instance field of
-   * that name is not reachable through it and answering with the instance
-   * field's type would type the receiver as something the source cannot
-   * denote. A def that resolves to no node, or a node with no captured type,
-   * answers `undefined` — the declining direction, matching how the rest of
-   * this pass treats an unresolvable lookup.
-   */
+  // Undefined means absent; null means an untyped static declaration that
+  // shadows ancestors. An annotation names a type; a constructor names a value.
   const declaredTypeOfClassLevelField = (
     ownerId: string,
     fieldName: string,
-  ): string | undefined => {
+  ): { readonly name: string; readonly purpose: 'type' | 'value' } | null | undefined => {
+    let declaresStatic = false;
     for (const candidate of model.fields.lookupAllByOwner(ownerId, fieldName)) {
       const graphId = resolveDefGraphId(candidate.filePath, candidate, nodeLookup);
       if (graphId === undefined) continue;
       const properties = graph.getNode(graphId)?.properties;
       if (properties?.isStatic !== true) continue;
-      const declaredType = properties.declaredType;
-      if (typeof declaredType !== 'string') continue;
-      const trimmed = declaredType.trim();
-      if (trimmed.length === 0) continue;
-      return trimmed;
+      declaresStatic = true;
+      for (const [fieldType, purpose] of [
+        [properties.declaredType, 'type'],
+        [properties.initializerType, 'value'],
+      ] as const) {
+        if (typeof fieldType !== 'string') continue;
+        const trimmed = fieldType.trim();
+        if (trimmed.length > 0) return { name: trimmed, purpose };
+      }
     }
-    return undefined;
+    return declaresStatic ? null : undefined;
   };
 
   const resolveReceiverNamespace = provider.createReceiverNamespaceResolver?.(scopes, index);
@@ -1255,10 +1245,11 @@ export function emitReceiverBoundCalls(
         `${receiverName}.${memberName}`,
       );
 
+      const baseName =
+        decodeReceiverChain(site.receiverChain)?.baseReceiverName ??
+        receiverName.split(/[.([\s]/, 1)[0];
+
       if (provider.suppressReceiverLookup !== undefined) {
-        const baseName =
-          decodeReceiverChain(site.receiverChain)?.baseReceiverName ??
-          receiverName.split(/[.([\s]/, 1)[0];
         const baseTypeRef =
           baseName === undefined
             ? undefined
@@ -1287,7 +1278,7 @@ export function emitReceiverBoundCalls(
       // instead of letting the receiver-blind lexical fallback in
       // `lookupCore` match the enclosing class's member by name.
       // No-op for every language that leaves `Scope.ownsReceivers` unset.
-      if (isReceiverOwnedButUnbound(site.inScope, receiverName, scopes)) {
+      if (isReceiverOwnedButUnbound(site.inScope, baseName, scopes)) {
         options.recordSourceBinding?.(site, {
           status: 'blocked',
           targetDefIds: [],
@@ -1301,6 +1292,7 @@ export function emitReceiverBoundCalls(
           range: site.atRange,
           reason: 'receiver-owned-but-unbound',
           candidateIds: [],
+          siteKind: site.kind,
         });
         handledSites.add(siteKey);
         continue;
@@ -3091,7 +3083,7 @@ export function emitReceiverBoundCalls(
           // First owner that declares one wins, matching every other walk in
           // this pass.
           let fieldOwnerId: string | undefined;
-          let fieldDeclaredType: string | undefined;
+          let fieldDeclaredType: ReturnType<typeof declaredTypeOfClassLevelField>;
           for (const ownerId of [
             headClass.nodeId,
             ...scopes.methodDispatch.mroFor(headClass.nodeId),
@@ -3101,8 +3093,10 @@ export function emitReceiverBoundCalls(
               staticMemberReceiver.memberName,
             );
             if (declared === undefined) continue;
-            fieldOwnerId = ownerId;
-            fieldDeclaredType = declared;
+            if (declared !== null) {
+              fieldOwnerId = ownerId;
+              fieldDeclaredType = declared;
+            }
             break;
           }
           // Resolve the declared type from where it was WRITTEN — the
@@ -3113,15 +3107,16 @@ export function emitReceiverBoundCalls(
           const declaringScope =
             fieldOwnerId === undefined ? undefined : index.classScopeByDefId.get(fieldOwnerId)?.id;
           const receiverClass =
-            declaringScope === undefined || fieldDeclaredType === undefined
+            declaringScope === undefined || fieldDeclaredType == null
               ? undefined
               : resolveClassBindingForName(
                   declaringScope,
-                  fieldDeclaredType,
+                  fieldDeclaredType.name,
                   scopes,
                   provider.stripTypePreservingDecoration,
                   {
                     onNameFallback,
+                    purpose: fieldDeclaredType.purpose,
                     qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
                   },
                 );
@@ -3207,7 +3202,7 @@ export function emitReceiverBoundCalls(
                 site,
                 confidence,
                 calleeCapture,
-                fieldDeclaredType,
+                fieldDeclaredType?.name,
               );
               handledSites.add(siteKey);
               continue;
@@ -3234,7 +3229,8 @@ export function emitReceiverBoundCalls(
           // could not type (`x = ns.untyped()`) is a drop too, not an exact miss.
           (typeRef !== undefined &&
             BARE_TYPE_NAME_RE.test(receiverName) &&
-            bindsNamespaceCallable(typeRef, namespaceTargets)))
+            bindsNamespaceCallable(typeRef, namespaceTargets))) &&
+        provider.isModuleExportAssignment?.(site, scopes, parsed) !== true
       ) {
         // Decoded once: both the shape census and the origin classifier read the
         // same chain, and this is inside the drop guard so a resolved site pays

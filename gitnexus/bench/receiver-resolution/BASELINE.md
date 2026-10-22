@@ -29,6 +29,30 @@ more sites than the original standalone branch, which cleared 14. The `b12`
 alias control resolves. Zig call drops fall from 13 to 10; `no-chain` call
 drops move from 34 to 31 and `in-program` calls from 60 to 57.
 
+## JS/TS literal-key writes and class-level field receivers (#3498)
+
+Measured on top of #3654 (`a3db31923`, tree-identical to its squash merge
+`2b6542737`). Call drops move from 138 to 136, all-kind drops from 200 to
+178, and writes from 20 to zero. Read drops remain 42 and every shape-arm
+state is unchanged.
+
+The 20 cleared writes are 19 object-literal keys answered by later resolution
+passes and the CommonJS `module.exports.arrowRequest` declaration. Answered
+sites withdraw only a matching kind/name/site drop; unanswered sites retain
+theirs. A return-shape key's own write requires its exact declaration position
+and file, so unrelated input reads and writes retain ordinary candidate ranking.
+
+The two call-drop changes are `Config.DEFAULT.validate()` resolving through
+its `new Config()` initializer and the owned `this.route.go()` site in
+`ts-dynamic-this-no-seed` being classified as `receiver-owned-but-unbound`,
+which is outside this gate. The latter does not gain a call edge, and its call
+remains in the persisted unresolved-receiver summary used by impact/context.
+Static field inference stops at an untyped override and resolves constructor names through
+the value namespace; annotations retain type-namespace lookup.
+
+Answered-site identity includes the full range, so an answered inner read in
+`res.data.data` cannot withdraw the unresolved outer read with the same name.
+
 ## Go module visibility and qualified receiver refusal
 
 Local imports now select the importer's own module or a module selected by its
@@ -921,3 +945,15 @@ Two incidental corrections from that check, both to KTD6:
   drop is recorded. An untyped fixture parameter had been reporting a language
   gap that was really a fixture defect — the same error class as the untyped
   `$repo` control caught earlier.
+
+
+### Merged main `f6e42092`
+
+Re-measured both benchmark arms after merging the Zig receiver fix from main.
+Shape states remain unchanged; counts are 133 call drops and
+160 drops of all kinds (27 reads,
+0 writes). The counts include both main and this branch's fixes.
+
+### C++ qualified receivers after #3653
+
+Main `2b4456553` is merged normally. The field lookup retains both the declared namespace purpose and provider-qualified type handling. Build and both TypeScript configurations pass, and all 59 focused C++ and CommonJS merge checks pass. The measured receiver baseline has 133 call drops, 160 total drops, 27 reads and 0 writes.
