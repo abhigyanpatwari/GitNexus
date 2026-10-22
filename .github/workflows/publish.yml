@@ -541,20 +541,29 @@ jobs:
             fi
           fi
 
-          # 4. Counter: 1 + max existing N for `${BASE}-rc.*`, else 1.
+          # 4. Counter: reserve versions present in either npm or Git.
+          # npm can accept a publish while its metadata still omits that
+          # version ("Your package is being processed"). Checkout fetched
+          # all tags, including detached release commits, so those tags
+          # keep the next run from allocating an already-used version.
+          GIT_RC_TAGS="$(git tag --list "v${BASE}-rc.*")"
           cat > /tmp/next_rc.mjs <<'NODESCRIPT'
           const base = process.env.BASE;
           const prefix = base + "-rc.";
           let v;
           try { v = JSON.parse(process.env.VERSIONS_JSON); } catch { v = []; }
           if (!Array.isArray(v)) v = [v];
-          const ns = v
+          const tagged = process.env.GIT_RC_TAGS.split("\n")
+            .filter(Boolean).map(tag => tag.slice(1));
+          const ns = [...v, ...tagged]
             .filter(s => typeof s === "string" && s.startsWith(prefix))
-            .map(s => parseInt(s.slice(prefix.length), 10))
+            .map(s => s.slice(prefix.length))
+            .filter(s => /^\d+$/.test(s))
+            .map(Number)
             .filter(n => Number.isInteger(n) && n >= 0);
           process.stdout.write(String(ns.length ? Math.max(...ns) + 1 : 1));
           NODESCRIPT
-          NEXT_N="$(BASE="$BASE" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/next_rc.mjs)"
+          NEXT_N="$(BASE="$BASE" VERSIONS_JSON="$VERSIONS_JSON" GIT_RC_TAGS="$GIT_RC_TAGS" node /tmp/next_rc.mjs)"
           RC_VERSION="${BASE}-rc.${NEXT_N}"
           echo "Computed rc: $RC_VERSION"
 

@@ -199,40 +199,40 @@
     }
   },
   "countArm": {
-    "callDrops": 154,
-    "totalDropsAllKinds": 224,
+    "callDrops": 140,
+    "totalDropsAllKinds": 204,
     "bySiteKind": {
-      "call": 154,
-      "read": 50,
+      "call": 140,
+      "read": 44,
       "write": 20
     },
     "callDropsByExtension": {
       ".java": 49,
       ".py": 24,
-      ".go": 19,
       ".ts": 17,
       ".zig": 13,
       ".cs": 8,
       ".tsx": 6,
       ".rs": 6,
+      ".go": 4,
       ".php": 4,
       ".kt": 4,
       ".js": 2,
-      ".swift": 1,
-      ".dart": 1
+      ".dart": 2,
+      ".swift": 1
     },
     "callDropsByShape": {
-      "chain-field": 73,
-      "no-chain": 35,
-      "chain-call": 32,
-      "<<unclassified>>": 11,
-      "chain-mixed": 2,
+      "chain-field": 59,
+      "no-chain": 36,
+      "chain-call": 31,
+      "<<unclassified>>": 13,
       "chain-unwrap": 1
     },
     "callDropsByOrigin": {
-      "in-program": 79,
+      "in-program": 62,
       "external": 44,
-      "unknown": 31
+      "unknown": 32,
+      "<<unclassified>>": 2
     }
   }
 }

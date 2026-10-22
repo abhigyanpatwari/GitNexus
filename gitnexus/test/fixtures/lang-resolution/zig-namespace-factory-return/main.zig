@@ -1,6 +1,7 @@
 const rp = @import("mod.zig");
 const Page = @import("Page.zig");
 const page_mod = @import("Page.zig");
+const config = @import("config.zig");
 
 pub fn aliasCall() i32 {
     const x = rp.make();
@@ -19,4 +20,9 @@ pub fn fileStructCall() u32 {
 pub fn lowercaseFileStructCall() u32 {
     const q = page_mod.init();
     return q.m();
+}
+
+pub fn lowercaseFileStructFileCall() u16 {
+    const c = config.init();
+    return c.listen();
 }

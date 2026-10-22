@@ -16,7 +16,11 @@ import type {
   ReceiverOrigin,
   ResolutionOutcome,
 } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
-import { classifyReceiverOrigin } from '../../../src/core/ingestion/scope-resolution/passes/receiver-bound-calls.js';
+import {
+  classifyReceiverOrigin,
+  recordSiteMember,
+  type EarlierSiteAtKey,
+} from '../../../src/core/ingestion/scope-resolution/passes/receiver-bound-calls.js';
 import { decodeReceiverChain } from '../../../src/core/ingestion/utils/receiver-chain-codec.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { goScopeResolver } from '../../../src/core/ingestion/languages/go/scope-resolver.js';
@@ -507,5 +511,39 @@ describe('classifyReceiverShape', () => {
         ],
       }),
     ).toBe('chain-mixed');
+  });
+});
+
+// #3498: sites are keyed by start position, so `a.f().g()` puts `f` and `g`
+// on one key. Only a duplicate capture of the same site (same receiver, same
+// member) may hide a later drop at that key; a different call there must not.
+describe('recordSiteMember', () => {
+  it.each<{ name: string; identities: string[]; expected: EarlierSiteAtKey[] }>([
+    { name: 'first site at a key', identities: ['x.m'], expected: ['new-key'] },
+    {
+      name: 'duplicate capture of one site, or a call and its callee read',
+      identities: ['x.m', 'x.m'],
+      expected: ['new-key', 'repeated-site'],
+    },
+    {
+      name: 'outer call sharing the start of an inner call',
+      identities: ['rp.make', 'rp.make().m'],
+      expected: ['new-key', 'shared-key'],
+    },
+    {
+      name: 'same member name nested in its own chain',
+      identities: ['a.f', 'a.f().f'],
+      expected: ['new-key', 'shared-key'],
+    },
+    {
+      name: 'duplicate after a collision',
+      identities: ['rp.make', 'rp.make().m', 'rp.make'],
+      expected: ['new-key', 'shared-key', 'repeated-site'],
+    },
+  ])('$name', ({ identities, expected }) => {
+    const identitiesByKey = new Map<string, string | Set<string>>();
+    expect(
+      identities.map((identity) => recordSiteMember(identitiesByKey, 'a.py:1:4', identity)),
+    ).toEqual(expected);
   });
 });

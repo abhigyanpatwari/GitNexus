@@ -1542,6 +1542,8 @@ export function runScopeResolution(
           collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
           isCallableValueTarget: provider.isCallableValueTarget,
           hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
+          qualifiedTypeLookupSpelling: provider.qualifiedTypeLookupSpelling,
+          isNamespaceMemberVisible: provider.isNamespaceMemberVisible,
           deferredIndirectSites,
           callSignaturesBySite: deferredIndirectCollection.callSignaturesBySite,
           onWarn: (warning) =>

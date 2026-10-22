@@ -3682,3 +3682,97 @@ describe('TypeScript chain-typed receiver folding to an interface (Case 3b, #283
     expect(runCalls.map((e) => basename(e.targetFilePath))).toEqual(['plain-cache.ts']);
   });
 });
+
+// #3498: `ns.make()` takes `make`'s return annotation from the namespace's
+// module. A class method of the same name hoists its return type to the module
+// under that name, so the lookup must stay anchored on the module function and
+// fail closed instead of typing the receiver as the method's return.
+describe('TypeScript namespace factory result types (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-namespace-factory-'));
+    writeFixtureRepo(repoDir, {
+      'src/mod.ts': `export class C {
+  m(): number {
+    return 1;
+  }
+}
+
+export class Other {
+  m(): number {
+    return 2;
+  }
+}
+
+export function make(): C {
+  return new C();
+}
+`,
+      'src/hoist.ts': `import { C, Other } from './mod';
+
+export function build(): C {
+  return new C();
+}
+
+export class Builder {
+  build(): Other {
+    return new Other();
+  }
+}
+`,
+      'src/callers.ts': `import * as rp from './mod';
+import * as hz from './hoist';
+
+export function aliasCall() {
+  const x = rp.make();
+  return x.m();
+}
+
+export function inlineCall() {
+  return rp.make().m();
+}
+
+export function hoistedCall() {
+  const y = hz.build();
+  return y.m();
+}
+
+export function hoistedInline() {
+  return hz.build().m();
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { source: 'aliasCall', targets: ['Method:src/mod.ts:C.m#0'] },
+    { source: 'inlineCall', targets: ['Method:src/mod.ts:C.m#0'] },
+    { source: 'hoistedCall', targets: [] },
+    { source: 'hoistedInline', targets: [] },
+  ])('resolves m called from $source to $targets', ({ source, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === 'm')
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(targets);
+  });
+
+  it('records the hoisted sites as dropped instead of an exact miss', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter(
+        (outcome) =>
+          outcome.reason === 'receiver-unresolved' && outcome.filePath === 'src/callers.ts',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(dropped).toEqual(['15:m', '19:m']);
+  });
+});

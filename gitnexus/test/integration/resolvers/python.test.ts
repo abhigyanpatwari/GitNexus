@@ -2568,15 +2568,175 @@ describe('Python module-qualified factory result types (#3498)', () => {
 
   it('records the untyped receivers as dropped sites instead of an exact miss', () => {
     const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
       .filter(
-        (outcome) =>
-          outcome.kind === 'suppressed' &&
-          outcome.reason === 'receiver-unresolved' &&
-          outcome.filePath === 'callers.py',
+        (outcome) => outcome.reason === 'receiver-unresolved' && outcome.filePath === 'callers.py',
       )
       .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
       .sort();
     expect(dropped).toEqual(['27:make', '33:m', '37:m', '42:m']);
+  });
+});
+
+// #3498: two shapes where the namespace's module is not the module that owns
+// the return annotation. `import pkg.b` binds `pkg` but targets `pkg/b.py`, and
+// `-> models.Order` is spelled against the producer's own `models` import, not
+// the caller's. Both fail closed (no edge, a recorded drop) instead of
+// borrowing the wrong class.
+describe('Python namespace factory results that name another module (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-namespace-factory-'));
+    writeFixtureRepo(repoDir, {
+      'pkg/__init__.py': `class C1:
+    def m(self):
+        return 1
+
+
+def make() -> C1:
+    return C1()
+`,
+      'pkg/b.py': `class C2:
+    def m(self):
+        return 2
+
+
+def make() -> C2:
+    return C2()
+`,
+      'callers.py': `import pkg.b
+
+
+def submodule_import():
+    x = pkg.make()
+    return x.m()
+
+
+def submodule_import_inline():
+    return pkg.make().m()
+`,
+      'shop/__init__.py': '',
+      'shop/models.py': `class Order:
+    def save(self):
+        return 1
+`,
+      'shop/service.py': `from . import models
+
+
+def get_order() -> models.Order:
+    return models.Order()
+`,
+      'billing/__init__.py': '',
+      'billing/models.py': `class Order:
+    def save(self):
+        return 2
+`,
+      'billing/views.py': `from . import models
+import shop.service as svc
+
+
+def producer_spelled_return():
+    order = svc.get_order()
+    return order.save()
+
+
+def local_order():
+    order = models.Order()
+    return order.save()
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { source: 'submodule_import', member: 'm', targets: [] },
+    { source: 'submodule_import_inline', member: 'm', targets: [] },
+    { source: 'producer_spelled_return', member: 'save', targets: [] },
+    {
+      source: 'local_order',
+      member: 'save',
+      targets: ['Method:billing/models.py:Order.save#0'],
+    },
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(targets);
+  });
+
+  it('records the undecided receivers as dropped sites', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter((outcome) => outcome.reason === 'receiver-unresolved')
+      .map((outcome) => `${outcome.filePath}:${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(dropped).toEqual(['billing/views.py:7:save', 'callers.py:10:m', 'callers.py:6:m']);
+  });
+});
+
+// #3498: the namespace lookup also runs in Phase 4, after the out-of-core seal
+// has made `scopeTree.byId` throw. A partition whose namespace calls are all
+// inline warms nothing before the seal, so the lookup must never need that walk.
+// The seal is a memory optimization: the edges must match an in-memory run.
+describe('Python inline namespace factory under the out-of-core scope seal (#3498)', () => {
+  let inMemory: PipelineResult;
+  let sealed: PipelineResult;
+  let repoDir: string;
+  let storeDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-sealed-factory-'));
+    storeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-sealed-store-'));
+    writeFixtureRepo(repoDir, {
+      'mod.py': `class C:
+    def m(self):
+        return 1
+
+
+def make() -> C:
+    return C()
+`,
+      'callers.py': `import mod as rp
+
+
+def inline_alias():
+    return rp.make().m()
+`,
+    });
+    inMemory = await runPipelineFromRepo(repoDir, () => {});
+    const prev = process.env.GITNEXUS_DISK_SCOPE_INDEX;
+    process.env.GITNEXUS_DISK_SCOPE_INDEX = '1';
+    try {
+      sealed = await runPipelineFromRepo(repoDir, () => {}, { parsedFileStorePath: storeDir });
+    } finally {
+      if (prev === undefined) delete process.env.GITNEXUS_DISK_SCOPE_INDEX;
+      else process.env.GITNEXUS_DISK_SCOPE_INDEX = prev;
+    }
+  }, 120000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+    if (storeDir !== undefined) fs.rmSync(storeDir, { recursive: true, force: true });
+  });
+
+  const callEdges = (result: PipelineResult): string[] =>
+    getRelationships(result, 'CALLS')
+      .map((edge) => `${edge.source} -> ${edge.rel.targetId}`)
+      .sort();
+
+  it('resolves the inline call under the seal', () => {
+    expect(callEdges(sealed)).toContain('inline_alias -> Method:mod.py:C.m#0');
+  });
+
+  it('emits the same CALLS edges as the in-memory run', () => {
+    expect(callEdges(sealed)).toEqual(callEdges(inMemory));
   });
 });
 
