@@ -1253,6 +1253,7 @@ function collectKotlinDeclaredNames(rootNode: SyntaxNode): ReadonlySet<string> {
         break;
       }
       case 'import_header': {
+        if (node.namedChildren.some((child) => child.type === 'wildcard_import')) break;
         const alias = node.namedChildren
           .find((child) => child.type === 'import_alias')
           ?.namedChildren.find((child) => child.type === 'type_identifier');

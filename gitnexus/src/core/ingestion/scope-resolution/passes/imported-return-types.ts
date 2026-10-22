@@ -39,11 +39,19 @@
  * scope-resolution generalization plan.
  */
 
-import type { ParsedFile, Scope, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type {
+  ImportEdge,
+  ParsedFile,
+  Scope,
+  ScopeId,
+  SymbolDefinition,
+  TypeRef,
+} from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
+import { followedStep } from '../../utils/type-ref-chain.js';
 import {
   lookupBindingsAt,
   lookupNameClaim,
@@ -55,17 +63,30 @@ import {
 
 /** Definition identity → its own type fact; built once, facts read lazily after propagation. */
 interface TypeFactOwner {
-  readonly scope: Scope;
+  readonly scope: ScopeId;
   readonly name: string;
 }
 const typeFactOwners = new WeakMap<ScopeResolutionIndexes, Map<string, TypeFactOwner>>();
-function producerTypeRef(defId: string, scopes: ScopeResolutionIndexes): TypeRef | undefined {
+/** The type fact a definition declares for itself (a callable's return type),
+ *  joined by definition identity rather than by name. */
+export function producerTypeRef(
+  defId: string,
+  scopes: ScopeResolutionIndexes,
+): TypeRef | undefined {
   let owners = typeFactOwners.get(scopes);
   if (owners === undefined) {
     owners = new Map();
     const returnsByDeclaration = new Map<string, TypeFactOwner | null>();
     const definitions = new Map<string, SymbolDefinition>();
-    for (const scope of scopes.scopeTree.byId?.values() ?? []) {
+    const pending = [...scopes.moduleScopes.byFilePath.values()];
+    const visited = new Set<ScopeId>();
+    while (pending.length > 0) {
+      const id = pending.pop();
+      if (id === undefined || visited.has(id)) continue;
+      visited.add(id);
+      const scope = scopes.scopeTree.getScope(id);
+      if (scope === undefined) continue;
+      for (const child of scopes.scopeTree.getChildren(id)) pending.push(child);
       for (const def of scope.ownedDefs ?? []) definitions.set(def.nodeId, def);
       for (const [name, ref] of scope.typeBindings) {
         // Some providers hoist method return annotations to the module. Join
@@ -77,7 +98,10 @@ function producerTypeRef(defId: string, scopes: ScopeResolutionIndexes): TypeRef
         )
           continue;
         const key = `${scope.filePath}\0${ref.bindingRange.startLine}:${ref.bindingRange.startCol}`;
-        returnsByDeclaration.set(key, returnsByDeclaration.has(key) ? null : { scope, name });
+        returnsByDeclaration.set(
+          key,
+          returnsByDeclaration.has(key) ? null : { scope: scope.id, name },
+        );
       }
       for (const [name, bindings] of scope.bindings) {
         for (const binding of bindings) {
@@ -88,7 +112,7 @@ function producerTypeRef(defId: string, scopes: ScopeResolutionIndexes): TypeRef
             ref !== undefined &&
             !(ref.source === 'return-annotation' && ref.bindingRange !== undefined)
           )
-            owners.set(binding.def.nodeId, { scope, name });
+            owners.set(binding.def.nodeId, { scope: scope.id, name });
         }
       }
     }
@@ -103,7 +127,9 @@ function producerTypeRef(defId: string, scopes: ScopeResolutionIndexes): TypeRef
     typeFactOwners.set(scopes, owners);
   }
   const owner = owners.get(defId);
-  return owner?.scope.typeBindings.get(owner.name);
+  return owner === undefined
+    ? undefined
+    : scopes.scopeTree.getScope(owner.scope)?.typeBindings.get(owner.name);
 }
 
 /**
@@ -116,7 +142,71 @@ function producerTypeRef(defId: string, scopes: ScopeResolutionIndexes): TypeRef
  */
 const RECHAIN_MAX_DEPTH = 8;
 
-const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+/** `head.member`, both plain identifiers. */
+const QUALIFIED_MEMBER_RE = /^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/;
+
+/**
+ * Every local name a resolved namespace import binds anywhere in the
+ * workspace. Most dotted bindings are member chains (`user.address`), or name
+ * an external module (`np.zeros`), and skip the scope-chain lookup entirely.
+ * Read from the finalized import map, never `scopeTree.byId`, which a sealed
+ * disk-backed tree cannot materialize. Import edges are fixed once finalize
+ * has run.
+ */
+const namespaceLocalNamesByIndexes = new WeakMap<ScopeResolutionIndexes, ReadonlySet<string>>();
+
+/**
+ * A resolved namespace import whose local name stands for its target module.
+ * An unaliased path import (`import pkg.sub`) binds the root `pkg` while its
+ * target is the leaf `pkg/sub`, so the target's members are not `pkg`'s.
+ */
+function bindsTargetModule(edge: ImportEdge): boolean {
+  if (
+    edge.kind !== 'namespace' ||
+    edge.linkStatus === 'unresolved' ||
+    edge.targetModuleScope === undefined
+  ) {
+    return false;
+  }
+  if (edge.explicitAlias === true || !edge.targetExportedName.startsWith(`${edge.localName}.`)) {
+    return true;
+  }
+  const file = edge.targetFile?.split(/[\\/]/).pop() ?? '';
+  const dot = file.indexOf('.');
+  return (dot === -1 ? file : file.slice(0, dot)) === edge.localName;
+}
+function namespaceLocalNames(scopes: ScopeResolutionIndexes): ReadonlySet<string> {
+  let names = namespaceLocalNamesByIndexes.get(scopes);
+  if (names === undefined) {
+    const collected = new Set<string>();
+    for (const edges of scopes.imports.values()) {
+      for (const edge of edges) {
+        if (bindsTargetModule(edge)) collected.add(edge.localName);
+      }
+    }
+    names = collected;
+    namespaceLocalNamesByIndexes.set(scopes, names);
+  }
+  return names;
+}
+
+/**
+ * Some providers hoist method return types to the module scope under the
+ * method's name, so a module-scope return binding named `member` can belong
+ * to a class method. Accept it only when it is anchored on a free function the
+ * module itself binds under that name: the declaration-anchor join
+ * `producerTypeRef` uses. Providers that bind receiver methods at module
+ * scope (`func (f *T) Create()`) put a `Method` there, which never qualifies.
+ */
+function isModuleOwnReturn(returned: TypeRef, module: Scope, member: string): boolean {
+  const anchor = returned.bindingRange;
+  if (anchor === undefined) return true;
+  return (module.bindings.get(member) ?? []).some((binding) => {
+    if (binding.origin !== 'local' || binding.def.type !== 'Function') return false;
+    const position = definitionIdPosition(binding.def.nodeId, binding.def.filePath);
+    return position?.line === anchor.startLine && position.column === anchor.startCol;
+  });
+}
 
 /**
  * `ns.f` where `ns` is a namespace import and `f` has a return annotation in
@@ -130,20 +220,27 @@ export function namespaceCallReturnType(
   scopes: ScopeResolutionIndexes,
   position?: TypeRef['lookupPosition'],
 ): TypeRef | undefined {
-  const parts = rawName.split('.');
-  if (parts.length !== 2 || !parts.every((part) => IDENTIFIER.test(part))) return undefined;
-  const [head, member] = parts as [string, string];
+  const [, head, member] = QUALIFIED_MEMBER_RE.exec(rawName) ?? [];
+  if (head === undefined || member === undefined || !namespaceLocalNames(scopes).has(head)) {
+    return undefined;
+  }
   const claim = lookupNameClaim(inScope, head, scopes, { position, purpose: 'value' });
   if (claim.bindings.some((binding) => binding.origin === 'local')) return undefined;
   const targets = new Set<ScopeId>();
   for (const edge of claim.imports) {
-    if (edge.kind !== 'namespace' || edge.linkStatus === 'unresolved') continue;
-    if (edge.targetModuleScope !== undefined) targets.add(edge.targetModuleScope);
+    if (bindsTargetModule(edge) && edge.targetModuleScope !== undefined) {
+      targets.add(edge.targetModuleScope);
+    }
   }
   const [target] = targets;
   if (targets.size !== 1 || target === undefined) return undefined;
-  const returned = scopes.scopeTree.getScope(target)?.typeBindings.get(member);
-  return returned?.source === 'return-annotation' ? returned : undefined;
+  const module = scopes.scopeTree.getScope(target);
+  const returned = module?.typeBindings.get(member);
+  return module !== undefined &&
+    returned?.source === 'return-annotation' &&
+    isModuleOwnReturn(returned, module, member)
+    ? returned
+    : undefined;
 }
 
 /** `ScopeResolver.resolveQualifiedCallee` bound to one resolution pass. */
@@ -211,9 +308,18 @@ export function followChainPostFinalize(
       const returned =
         namespaceCallReturnType(current.rawName, lookupScope, scopes, current.lookupPosition) ??
         qualifiedCalleeReturnType(current.rawName, lookupScope, scopes, resolveCallee);
-      if (returned === undefined || visited.has(returned.rawName)) return current;
+      // A qualified return type (`-> models.Order`) names a namespace of the
+      // producer's module, which the consumer's receiver lookup would read
+      // against its own imports. Stop at the call rather than hand it over.
+      if (
+        returned === undefined ||
+        returned.rawName.includes('.') ||
+        visited.has(returned.rawName)
+      ) {
+        return current;
+      }
       visited.add(returned.rawName);
-      current = { ...returned, bindingRange: start.bindingRange };
+      current = followedStep(start, returned);
       continue;
     }
     const claim = lookupNameClaim(lookupScope, current.rawName, scopes, {
@@ -259,7 +365,7 @@ export function followChainPostFinalize(
     if (next === undefined) return current;
     if (visited.has(next.rawName)) return current;
     visited.add(next.rawName);
-    current = { ...next, bindingRange: start.bindingRange };
+    current = followedStep(start, next);
   }
   return current;
 }

@@ -26,7 +26,7 @@
 import type { Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../../scope-resolution/workspace-index.js';
-import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
+import { findEnclosingClassDef, lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 import { getKotlinPackageFact } from './package-facts.js';
 
 /** Two or more plain names joined by `.` (`kqfmod.make`, `com.acme.mod.make`). */
@@ -97,6 +97,7 @@ export function resolveKotlinQualifiedCallee(
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
 ): SymbolDefinition | undefined {
+  calleeText = calleeText.replace(/\s*\.\s*/g, '.');
   if (!KOTLIN_DOTTED_PATH_RE.test(calleeText)) return undefined;
   const lastDot = calleeText.lastIndexOf('.');
   const index = packageDeclarationsFor(workspaceIndex);
@@ -107,6 +108,21 @@ export function resolveKotlinQualifiedCallee(
   const head = calleeText.slice(0, calleeText.indexOf('.'));
   if (lookupNameClaim(inScope, head, scopes, { purpose: 'value' }).status !== 'absent') {
     return undefined;
+  }
+  const owner = findEnclosingClassDef(inScope, scopes);
+  if (owner !== undefined) {
+    for (const ancestor of scopes.methodDispatch.mroFor(owner.nodeId)) {
+      const scopeId = workspaceIndex.classScopeByDefId.get(ancestor)?.id;
+      const memberScope = scopeId === undefined ? undefined : scopes.scopeTree.getScope(scopeId);
+      const fieldType = memberScope?.typeBindings.get(head);
+      if (fieldType !== undefined && fieldType.source !== 'return-annotation') return undefined;
+      if (
+        memberScope?.bindings
+          .get(head)
+          ?.some((binding) => ['Property', 'Field', 'Variable', 'Const'].includes(binding.def.type))
+      )
+        return undefined;
+    }
   }
   const filePath = scopes.scopeTree.getScope(inScope)?.filePath;
   const moduleScope =

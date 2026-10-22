@@ -623,6 +623,7 @@ function findDirectCallValue(initVarDef: SyntaxNode): SyntaxNode | null {
  * `prefix.member(…)` as the whole initializer, written directly or awaited: the
  * dotted callee. The shared chain follow types a namespace function from its
  * return annotation, and a member call through the receiver's class (#3498).
+ * An awaited `Future<C>` is not unwrapped yet, so that receiver records a drop.
  * Longer chains (`rp.make().other`) are left alone.
  */
 function qualifiedCallValue(initVarDef: SyntaxNode): string | null {

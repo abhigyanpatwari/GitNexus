@@ -272,7 +272,8 @@ routes between two modes based on the triggering event:
     from `latest`. Dispatching with `bump: patch|minor|major` **resets**
     the cycle from `latest`.
   - `N` is auto-incremented against existing `X.Y.Z-rc.*` entries on the
-    registry. First rc for a given base is `rc.1`.
+    registry and `vX.Y.Z-rc.*` Git tags, so delayed npm visibility cannot
+    reuse an allocated version. First rc for a given base is `rc.1`.
   - The RC is gated by CI, including the fixed-answer tool-accuracy check
     (`gitnexus/bench/tool-accuracy/`); its report is attached to every
     release. RCs do not wait for a paid agent evaluation.

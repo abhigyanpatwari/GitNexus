@@ -9,3 +9,5 @@ class Other {
 C make() => C();
 
 untyped() => C();
+
+Future<C> makeAsync() async => C();
