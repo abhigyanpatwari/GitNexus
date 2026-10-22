@@ -1051,6 +1051,7 @@ export function runScopeResolution(
       indexes,
       workspaceIndex,
       provider.resolveQualifiedCallee,
+      allFilePaths,
     );
   }
 
@@ -1247,6 +1248,7 @@ export function runScopeResolution(
         {
           recordResolutionOutcome,
           recordSourceBinding,
+          allFilePaths,
           calleeIdSink: calleeIdAccumulator,
           // The pass's only source of positive EXTERNAL evidence for a dropped
           // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
@@ -1351,6 +1353,7 @@ export function runScopeResolution(
         calleeIdSink: calleeIdAccumulator,
         recordSourceBinding,
         isBuiltInName: provider.languageProvider.isBuiltInName,
+        allFilePaths,
         heritageTypeArguments,
         unresolvedInheritanceByClass,
       },
