@@ -1597,6 +1597,46 @@ describe('C# grandparent method resolution via MRO (Phase B)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Same-namespace base whose simple name another namespace also declares.
+// Acme.Core's `B : A` / `Leaf : B` carry no `using` (same-namespace visibility),
+// while Acme.Legacy declares its own A and B. The base must bind through the
+// namespace, not through a workspace-unique simple name the legacy pair makes
+// ambiguous.
+// ---------------------------------------------------------------------------
+
+describe('C# same-namespace base with a colliding simple name', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-same-namespace-base-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('binds every base inside its own namespace', () => {
+    const extends_ = getRelationships(result, 'EXTENDS').map(
+      (e) => `${e.sourceFilePath}:${e.source} → ${e.targetFilePath}:${e.target}`,
+    );
+    expect(extends_.sort()).toEqual([
+      'Core/B.cs:B → Core/A.cs:A',
+      'Core/Leaf.cs:Leaf → Core/B.cs:B',
+      'Legacy/B.cs:B → Legacy/A.cs:A',
+    ]);
+  });
+
+  it.each([
+    ['Greet', 'Core/A.cs'],
+    ['Save', 'Core/Stamp.cs'],
+  ])('resolves App.Process → %s through the Leaf → B → A chain (%s)', (target, targetFile) => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'Process' && c.target === target,
+    );
+    expect(calls.map((c) => c.targetFilePath)).toEqual([targetFile]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Phase C: C# null-check narrowing — if (x != null) and if (x is not null)
 // Both patterns emit patternOverrides for the if-body position range
 // ---------------------------------------------------------------------------

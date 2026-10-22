@@ -1639,6 +1639,48 @@ describe('Kotlin grandparent method resolution via MRO (Phase B)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Same-package supertype whose simple name another package also declares.
+// com.acme.core's `B : A()` / `C : B()` carry no import (same-package
+// visibility), while com.acme.legacy declares its own A and B. The supertype
+// must bind through the package, not through a workspace-unique simple name
+// the legacy pair makes ambiguous.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin same-package supertype with a colliding simple name', () => {
+  let result: PipelineResult;
+  const core = 'src/main/kotlin/com/acme/core';
+  const legacy = 'src/main/kotlin/com/acme/legacy';
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-same-package-extends-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('binds every supertype inside its own package', () => {
+    const extends_ = getRelationships(result, 'EXTENDS').map(
+      (e) => `${e.sourceFilePath}:${e.source} → ${e.targetFilePath}:${e.target}`,
+    );
+    expect(extends_.sort()).toEqual([
+      `${core}/B.kt:B → ${core}/A.kt:A`,
+      `${core}/C.kt:C → ${core}/B.kt:B`,
+      `${legacy}/B.kt:B → ${legacy}/A.kt:A`,
+    ]);
+  });
+
+  it.each([
+    ['greet', `${core}/A.kt`],
+    ['save', `${core}/Stamp.kt`],
+  ])('resolves App.process → %s through the C → B → A chain (%s)', (target, targetFile) => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'process' && c.target === target,
+    );
+    expect(calls.map((c) => c.targetFilePath)).toEqual([targetFile]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Phase C: Kotlin null-check narrowing — if (x != null) { x.save() }
 // NOTE: depends on nullable_type capture being fixed in jvm.ts
 // ---------------------------------------------------------------------------

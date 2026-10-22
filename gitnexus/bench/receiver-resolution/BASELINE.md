@@ -1026,6 +1026,10 @@ Two incidental corrections from that check, both to KTD6:
   gap that was really a fixture defect — the same error class as the untyped
   `$repo` control caught earlier.
 
+### Same-package inheritance review corrections
+
+The fallback excludes function-local and nested JVM candidates, while local and nested deriving classes can still use package-level bases. Synthetic deriving classes do not enter this fallback; their source captures do not retain the qualifier evidence needed here. C# filters by the written generic arity before source-root proximity. Five native assertions fail before the corrections; all 14 focused checks and all 755 Java/Kotlin/C# resolver and helper tests pass afterward. Build and both TypeScript configurations pass. After merging main `d57f570d`, receiver counts and all shape states match main (135 calls, 182 total, 27 reads and 20 writes).
+
 ### Library-rooted receiver evidence (#3658, #3498)
 
 After merging main `2b4456553`, receiver totals and all shape states are unchanged: 133 call drops, 160 across all kinds, 27 reads and 0 writes. Provider evidence now classifies 30 calls external, 45 unknown, 56 in-program and 2 unclassified.
@@ -1040,6 +1044,11 @@ Shape states remain unchanged; counts are 133 call drops and
 160 drops of all kinds (27 reads,
 0 writes). The counts include both main and this branch's fixes.
 
+### Inheritance visibility review boundaries
+
+Native review controls reproduced production Java imports and Java/Kotlin inheritance selecting nearer test-only declarations, an inherited nested base losing to a package homonym, a resolved Kotlin typealias import losing its claim, and a C# tuple argument counting as two type arguments. The corrected focused run passes 71 tests in five files, including positive test-source ownership controls and ordinary nested/local inheritance. The generic argument splitter now keeps tuple commas together.
+
+Canonical `src/main/java` and `src/main/kotlin` sources exclude recognized non-main source-set candidates before proximity ranking. Custom layouts retain prior eligibility; this is not build-system classpath resolution. JVM package fallback refuses when an enclosing class has inheritance whose member types the pre-MRO pass cannot establish, and explicit named imports retain their claim even when the import names a typealias rather than a class. These conservative cases may remain unresolved. Java duplicate-FQN import selection is part of this same package-ownership fix. Fresh current-main integration and hosted CI remain required.
 ### Rust qualified factories after #3653
 
 Main `2b4456553` is merged normally. The receiver-drop guard preserves both qualified-factory evidence and the module-export exclusion. Fresh build, both TypeScript configurations and all 28 Rust boundary, capture-golden and CommonJS checks pass. The measured baseline has 135 call drops, 164 total drops, 29 reads and 0 writes.
@@ -1059,6 +1068,11 @@ Main `2b4456553` is merged normally. The field lookup retains both the declared 
 Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
 
 After merging main caacc3bac normally, totals remain 130 calls, 156 across all kinds, 26 reads and zero writes. Origin labels are 30 external, 45 unknown, 53 in-program and 2 unclassified. Shape states are unchanged. The 5,328-record corpus is byte-identical to current main. Package build, both pinned TypeScript configurations, 23 CommonJS/C# precedence tests and 15 library-origin boundary tests pass.
+
+### Same-package inheritance after #3655
+
+Main `caacc3bac` is merged normally. The C# resolver retains both main's bare-receiver eligibility hook and this branch's inheritance hook. The combined source passes a fresh package build, both TypeScript configurations and82 focused checks in six files. Before this main merge, the final visibility fixes passed741 Java/Kotlin/C# resolver tests in three files; those runs overlap and are not a unique total. The combined C# capture baseline is remeasured at193 files and2899 groups, fingerprint3720a3d2, scaling1.039 below the unchanged1.5 budget. Receiver counts are remeasured from combined sources. Fresh hosted CI remains required.
+
 ### Rust qualified factories after #3655
 
 Main `caacc3bac` is merged normally. The C# capture baseline retains main's fixture additions, and receiver counts are regenerated on the combined source: 132 call drops, 160 total, 28 reads and zero writes. All shape states match the preceding Rust baseline. Fresh build, both TypeScript configurations and 23 Rust factory, capture and CommonJS checks pass. Final hosted CI remains required.

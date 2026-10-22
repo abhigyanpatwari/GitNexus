@@ -2101,6 +2101,95 @@ describe('Java grandparent method resolution via MRO (Phase B)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Same-package `extends` whose base name another package also declares.
+// com.acme.core's `B extends A` / `C extends B` carry no import (the Java
+// same-package rule), while com.acme.legacy declares its own A and B. The base
+// must bind through the package, not through a workspace-unique simple name
+// that the legacy pair makes ambiguous. Two guards: `Shadowed` single-type
+// imports legacy.A, which beats the same-package A; `Qualified` names
+// `com.acme.legacy.B`, which the same-package B must never answer.
+// ---------------------------------------------------------------------------
+
+describe('Java same-package extends with a colliding simple name', () => {
+  let result: PipelineResult;
+  const core = 'src/main/java/com/acme/core';
+  const legacy = 'src/main/java/com/acme/legacy';
+  const extendsEdges = (): string[] =>
+    getRelationships(result, 'EXTENDS').map(
+      (e) => `${e.sourceFilePath}:${e.source} → ${e.targetFilePath}:${e.target}`,
+    );
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-same-package-extends-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('binds unqualified bases by the same-package rule, a single-type import first', () => {
+    const unqualified = extendsEdges().filter((e) => !e.startsWith(`${core}/Qualified.java:`));
+    expect(unqualified.sort()).toEqual([
+      `${core}/B.java:B → ${core}/A.java:A`,
+      `${core}/C.java:C → ${core}/B.java:B`,
+      `${core}/Shadowed.java:Shadowed → ${legacy}/A.java:A`,
+      `${legacy}/B.java:B → ${legacy}/A.java:A`,
+    ]);
+  });
+
+  it('never binds a qualified base through the same-package simple name', () => {
+    expect(extendsEdges()).not.toContain(`${core}/Qualified.java:Qualified → ${core}/B.java:B`);
+  });
+
+  it.each([
+    ['greet', `${core}/A.java`],
+    ['save', `${core}/Stamp.java`],
+  ])('resolves App.process → %s through the C → B → A chain (%s)', (target, targetFile) => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'process' && c.target === target,
+    );
+    expect(calls.map((c) => c.targetFilePath)).toEqual([targetFile]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One package+type declared under several source roots. alpha and beta each
+// declare `models.User`; beta's UserService imports it from its own module,
+// gamma's Report sits equally far from both. The import must bind the
+// importer's own copy, and refuse when no copy is nearer, instead of whichever
+// file was parsed first. The import-free twin (same-package siblings) is
+// 'Java same-module priority for duplicate FQNs' above.
+// ---------------------------------------------------------------------------
+
+describe('Java import of a type declared under several source roots', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-duplicate-fqn-source-roots'),
+      () => {},
+    );
+  }, 60000);
+
+  it.each<[string, string, readonly string[]]>([
+    [
+      'beta/src/main/java/services/UserService.java',
+      'process',
+      ['beta/src/main/java/models/User.java'],
+    ],
+    ['gamma/src/main/java/reports/Report.java', 'run', []],
+  ])('%s (%s) imports and calls only %j', (importer, method, userFiles) => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (e) => e.sourceFilePath === importer && e.targetFilePath.endsWith('/models/User.java'),
+    );
+    const saves = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === method && c.target === 'save',
+    );
+    expect(imports.map((e) => e.targetFilePath)).toEqual(userFiles);
+    expect(saves.map((c) => c.targetFilePath)).toEqual(userFiles);
+  });
+});
+
 // ── Phase P: Overload Disambiguation via Parameter Types ─────────────────
 
 describe('Java overload disambiguation by parameter types', () => {
