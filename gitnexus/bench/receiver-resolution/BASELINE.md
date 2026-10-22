@@ -1170,6 +1170,20 @@ Main c30449394 is merged normally. Package-factory fallback declines inherited r
 
 The integrated build, both TypeScript configurations, 345 tests across ten files, Kotlin capture fingerprint and regenerated receiver check pass. The baseline remains 136 call drops, 166 drops across all kinds, 30 reads and zero writes, with unchanged shape states. The 5,521-record corpus is byte-identical to the candidate before the companion-header fix. These tests overlap earlier runs. Exact-head hosted CI remains required.
 
-### Nullable field ownership controls
+## Nullable field ownership controls
 
-The nullable-field capture carries a field-specific marker. Its interpreter removes only the nullable suffix, retaining the written qualifier and generic wrapper instead of treating a wrapper as its argument. Two native controls fail before this correction (External.User? borrowing the local User, and Custom.List<User>? borrowing User) and pass after it; the local User? field remains resolved. All 273 C# resolver, capture, hook and ownership tests pass, as do both TypeScript configurations and the receiver benchmark. This changes no shape or count relative to the preceding nullable-field candidate.
+The nullable-field marker preserves custom generic wrappers as wrappers.
+Qualified nullable fields remain unsupported: their type binding is refused
+until namespace-aware lookup can establish the written owner. Both external
+and in-workspace qualified spellings record unresolved call drops instead of
+borrowing a workspace-unique tail name. Local User? fields still resolve.
+
+The first mixed fixture masked a unique-name fallback by declaring several
+User classes. An isolated one-User fixture reproduces that false edge. The
+correction passes 240 native C# tests in three files, including distinct
+negative repos, a local positive and explicit receiver-unresolved receipts.
+A separate qualified-positive probe exposed the existing unsupported shape;
+that case is documented as a limit, not claimed as a repaired positive.
+The 5,323-record corpus is byte-identical to main 2b4456553, and the receiver
+benchmark retains 133 calls, 160 drops of all kinds, 27 reads and no writes.
+The earlier 273-test run predates this last boundary correction.

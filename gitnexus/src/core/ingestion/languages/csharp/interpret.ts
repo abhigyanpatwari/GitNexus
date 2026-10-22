@@ -77,11 +77,15 @@ export function interpretCsharpTypeBinding(captures: CaptureMatch): ParsedTypeBi
   const typeCap = captures['@type-binding.type'];
   if (nameCap === undefined || typeCap === undefined) return null;
 
-  // Other bindings retain the existing normalization of nullable suffix (`User?` → `User`), single-arg generic wrapper
-  // (`List<User>` → `User`), and qualifier (`System.User` → `User`) so
-  // receiver-typed resolution treats these identically.
+  // Other bindings retain their existing nullable, wrapper and qualifier
+  // normalization. Nullable field bindings keep wrappers as receiver types.
   const withoutNullable = stripNullable(typeCap.text.trim());
-  // Field receivers retain their qualifier and wrapper: List<User> is not User.
+  // Qualified nullable fields need namespace-aware type lookup. The generic
+  // receiver fallback can otherwise borrow an unrelated unique tail name.
+  // Leave these unbound until the provider can establish the written owner.
+  if (captures['@type-binding.nullable-field'] !== undefined && withoutNullable.includes('.'))
+    return null;
+  // A nullable wrapper field is not its element: List<User> is not User.
   const rawType =
     captures['@type-binding.nullable-field'] !== undefined
       ? withoutNullable
