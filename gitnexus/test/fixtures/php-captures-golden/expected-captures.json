@@ -433,7 +433,7 @@
   },
   "php-qualified-function-factory/lib/functions.php": {
     "captureGroups": 9,
-    "digest": "85a30e32c8fc36b34b959e1c081a607c0835687eef0e6f6bbba46984912c3872"
+    "digest": "2e90c15878b8c48edda39eb1c7cb146cabb41fba5180ca76204484945e5afc6e"
   },
   "php-qualified-function-factory/src/App/Callers.php": {
     "captureGroups": 36,
