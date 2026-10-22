@@ -995,9 +995,11 @@ Two incidental corrections from that check, both to KTD6:
   gap that was really a fixture defect — the same error class as the untyped
   `$repo` control caught earlier.
 
+### Library-rooted receiver evidence (#3658, #3498)
 
-### Merged main `f6e42092`
+After merging main `2b4456553`, receiver totals and all shape states are unchanged: 133 call drops, 160 across all kinds, 27 reads and 0 writes. Provider evidence now classifies 30 calls external, 45 unknown, 56 in-program and 2 unclassified.
 
+The member-name veto spans the workspace graph. A JavaScript receiver through `window.app` stays uncertain when its member is declared only in TypeScript. Direct built-in calls also stay uncertain when a program declaration matches the member name; that precision cost is deliberate. `globalThis` supplies no external evidence, and library imports must be selected by the lexical claim walk. The post-main build, both TypeScript configurations and all 105 classifier, pipeline and CommonJS checks pass. Before the main merge, the mixed-language correction preserves all 5,319 resolution records byte-for-byte; the final corpus check is recorded with the PR validation.
 Re-measured both benchmark arms after merging the Zig receiver fix from main.
 Shape states remain unchanged; counts are 132 call drops and
 178 drops of all kinds (26 reads,
@@ -1017,6 +1019,7 @@ Main `2b4456553` is merged normally. The field lookup retains both the declared 
 
 Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
 
+After merging main caacc3bac normally, totals remain 130 calls, 156 across all kinds, 26 reads and zero writes. Origin labels are 30 external, 45 unknown, 53 in-program and 2 unclassified. Shape states are unchanged. The 5,328-record corpus is byte-identical to current main. Package build, both pinned TypeScript configurations, 23 CommonJS/C# precedence tests and 15 library-origin boundary tests pass.
 ### Rust qualified factories after #3655
 
 Main `caacc3bac` is merged normally. The C# capture baseline retains main's fixture additions, and receiver counts are regenerated on the combined source: 132 call drops, 160 total, 28 reads and zero writes. All shape states match the preceding Rust baseline. Fresh build, both TypeScript configurations and 23 Rust factory, capture and CommonJS checks pass. Final hosted CI remains required.
@@ -1029,3 +1032,7 @@ The prioritized merge validation passes a fresh package build, both TypeScript c
 ### Rust qualified factories after #3656
 
 Main `a09f76be3` is merged normally. The shared receiver pass keeps Rust's provider-qualified callee hook and C++'s position-aware qualified-member lookup. Fresh package build, both TypeScript configurations and 302 tests across 20 Rust, C++, Go, CommonJS and sealed-disk-scope files pass. All 16 capture scaling checks pass without changing their budgets. The regenerated receiver check passes with 132 call drops, 160 across all kinds, 28 reads and zero writes; shape states are unchanged. The corpus adds 32 Rust resolution records to main's 5,392, removes none, and totals 5,424. Exact-head hosted CI remains required.
+
+### External receiver origins after #3657
+
+Main `65b101407` is merged normally. Origin evidence retains the qualified-type lookup policy and both pipeline passes retain workspace file paths. Package build, both pinned TypeScript configurations, 425 focused tests across 25 files, and all 16 capture checks pass. The regenerated receiver baseline preserves every shape state and main's 132 call drops, 160 total, 28 reads and zero writes. Origin labels are 30 external, 45 unknown, 55 in-program and two unclassified. The 5,424-record resolution corpus is byte-identical to main. Exact-head hosted CI remains required.

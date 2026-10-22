@@ -17,7 +17,11 @@
  * must flag that the true blast radius is higher.
  */
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { listRegisteredRepos, loadMeta } from '../../src/storage/repo-manager.js';
 import {
   MAX_UNRESOLVED_RECEIVER_MEMBERS,
@@ -324,6 +328,61 @@ withTestLbugDB(
         },
       );
     });
+
+    // The summaries above are hand-built. This one comes from a real analysis,
+    // so the verdict is the classifier's, end to end: a drop rooted at a host
+    // global must leave `impact()` exact, while the same member dropped on an
+    // untyped value — or on a parameter that merely shares the global's name —
+    // must still make it a lower bound (#3498 triage).
+    it.each([
+      [
+        'a drop rooted at a library global',
+        'exact',
+        'export function render(): void {\n  document.body.formatDate();\n}\n',
+        { receiverTyping: 0, externalBoundary: 1 },
+      ],
+      [
+        'a drop on an untyped parameter',
+        'lower-bound',
+        'export function render(svc): void {\n  svc.load().formatDate();\n}\n',
+        { receiverTyping: 1, externalBoundary: 0 },
+      ],
+      [
+        'a drop on a parameter named like the library global',
+        'lower-bound',
+        'export function render(document: Doc): void {\n  document.body.formatDate();\n}\n',
+        { receiverTyping: 1, externalBoundary: 0 },
+      ],
+    ] as const)(
+      'impact() reads %s from an analysed summary as %s',
+      async (_label, epistemic, source, causes) => {
+        const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-epistemic-origin-'));
+        try {
+          fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
+          fs.writeFileSync(path.join(repoDir, 'src', 'caller.ts'), source, 'utf8');
+          const analysed = await runPipelineFromRepo(repoDir, () => {}, {});
+          const summary = JSON.parse(
+            JSON.stringify(summarizeUnresolvedReceivers(analysed.resolutionOutcomes)),
+          );
+          vi.mocked(loadMeta).mockResolvedValue({
+            scopeExtractionReceipt: 1,
+            unresolvedReceiverMembers: summary,
+          } as Awaited<ReturnType<typeof loadMeta>>);
+
+          const result = await backend.callTool('impact', {
+            target: 'formatDate',
+            file_path: 'src/util.ts',
+            direction: 'upstream',
+          });
+
+          expect(result.epistemic).toBe(epistemic);
+          expect(result.causes).toMatchObject(causes);
+        } finally {
+          fs.rmSync(repoDir, { recursive: true, force: true });
+        }
+      },
+      60000,
+    );
 
     it('marks impact as a lower bound when scope extraction omitted files', async () => {
       vi.mocked(loadMeta).mockResolvedValue({

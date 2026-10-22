@@ -126,6 +126,19 @@ const BUILT_INS: ReadonlySet<string> = new Set([
   'Objects',
 ]);
 
+/**
+ * The platform's reserved package root, for both program-boundary hooks:
+ * `java.util.Optional.of(...)` spelled out in full, and `import java.util.List`
+ * — an import the workspace can never resolve. The JVM refuses to define a
+ * class in a `java.*` package outside the platform ("Prohibited package name"),
+ * so nothing a program declares can live under it. `javax` is deliberately
+ * absent: that root carries no such guarantee.
+ */
+const JAVA_PLATFORM_ROOT = 'java';
+
+const isJavaPlatformModule = (specifier: string): boolean =>
+  specifier === JAVA_PLATFORM_ROOT || specifier.startsWith(`${JAVA_PLATFORM_ROOT}.`);
+
 const orderJavaSameNameTypeCandidates = ({
   callSiteFilePath,
   candidates,
@@ -208,6 +221,8 @@ export const javaProvider = defineLanguage({
   // ── Javadoc → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),
   builtInNames: BUILT_INS,
+  externalReceiverNames: new Set([JAVA_PLATFORM_ROOT]),
+  isExternalModuleSpecifier: isJavaPlatformModule,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──
   emitScopeCaptures: emitJavaScopeCaptures,
