@@ -702,9 +702,10 @@ function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
  * `svc.get_typed::<User>()` wraps the whole field access, so the walk found no
  * name and no inner receiver, and minted no chain at all.
  *
- * Type arguments pick an instantiation. They never change which member is
- * called, so the step name loses nothing when they are dropped. Substituting
- * them into a generic return type is a separate problem: C++
+ * Type arguments can select an instantiation or overload. The chain stores
+ * only the member name; generic-arity overload selection is not represented
+ * here and remains a resolver limitation. Substituting type arguments into
+ * a generic return type is also a separate problem: C++
  * `template <typename T> T* getTyped()` still has no return type to fold.
  *
  * Keyed by node type. The value is the field that holds the callee without its
