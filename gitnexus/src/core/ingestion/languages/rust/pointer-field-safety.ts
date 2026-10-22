@@ -38,6 +38,48 @@ write_u8 write_usize write_vectored zip
     .split(/\s+/),
 );
 const POINTER_NAMES = new Set(['Box', 'Rc', 'Arc']);
+// Compiler attributes that cannot introduce arbitrary dispatch implementations.
+// cfg_attr and procedural/tool attributes deliberately remain opaque.
+const COMPILER_ATTRIBUTES = new Set([
+  'allow',
+  'warn',
+  'deny',
+  'forbid',
+  'expect',
+  'cfg',
+  'cold',
+  'inline',
+  'must_use',
+  'repr',
+  'non_exhaustive',
+  'deprecated',
+  'doc',
+  'test',
+  'ignore',
+  'should_panic',
+  'track_caller',
+  'no_mangle',
+  'export_name',
+  'link',
+  'link_name',
+  'link_section',
+  'used',
+  'unsafe',
+  'default',
+  'automatically_derived',
+  'derive',
+]);
+const COMPILER_DERIVES = new Set([
+  'Clone',
+  'Copy',
+  'Debug',
+  'Default',
+  'PartialEq',
+  'Eq',
+  'PartialOrd',
+  'Ord',
+  'Hash',
+]);
 
 export interface RustPointerFieldSafety {
   readonly externCrateAliases: ReadonlySet<string>;
@@ -88,7 +130,44 @@ export function buildRustPointerFieldSafety(
       );
       return claim.imports.length === 0 || claim.imports.some((edge) => edge.targetFile === null);
     });
-    if (hasUnknownImport || root.descendantsOfType('macro_definition').length > 0) {
+    const hasOpaqueAttribute = root
+      .descendantsOfType(['attribute_item', 'inner_attribute_item'])
+      .some((attribute) => {
+        const name = /^#!?\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(|=|\])/.exec(attribute.text)?.[1];
+        if (name === undefined || !COMPILER_ATTRIBUTES.has(name)) return true;
+        if (name !== 'derive') return false;
+        const args = /^#!?\[\s*derive\s*\(([\s\S]*)\)\s*\]$/.exec(attribute.text)?.[1];
+        return (
+          args === undefined ||
+          args
+            .split(',')
+            .map((part) => part.trim())
+            .filter(Boolean)
+            .some((part) => !COMPILER_DERIVES.has(part))
+        );
+      });
+    const hasOpaqueInvocation = root.descendantsOfType('macro_invocation').some((macro) => {
+      const name = macro.childForFieldName('macro')?.text ?? '';
+      const parent = macro.parent;
+      const owner = parent?.type === 'expression_statement' ? parent.parent : parent;
+      if (
+        name.includes('::') ||
+        name === 'include' ||
+        owner?.type === 'source_file' ||
+        owner?.type === 'declaration_list'
+      )
+        return true;
+      const tokens = macro.namedChildren.find((child) => child.type === 'token_tree')?.text ?? '';
+      // Macro token trees are not parsed as declarations. Reject hidden impls
+      // and nested invocations rather than guessing what their expansion emits.
+      return /\bimpl\b|\b[A-Za-z_][A-Za-z0-9_]*\s*!/.test(tokens);
+    });
+    if (
+      hasUnknownImport ||
+      hasOpaqueAttribute ||
+      hasOpaqueInvocation ||
+      root.descendantsOfType('macro_definition').length > 0
+    ) {
       for (const pointer of POINTER_NAMES) opaqueWrappers.add(pointer);
     }
     for (const declaration of root.descendantsOfType('extern_crate_declaration')) {
