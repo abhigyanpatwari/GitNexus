@@ -1,5 +1,53 @@
 # Receiver-resolution baseline
 
+## Kotlin package-qualified factory results (#3498 follow-up)
+
+Kotlin now types `val x = kqfmod.make()`, `val x = com.kqfacme.deep.make()` and
+the inline `kqfmod.make().m()` / `com.kqfacme.deep.make().m()` from `make`'s
+return annotation, through `ScopeResolver.resolveQualifiedCallee` reading the
+declared package facts. A local bound to a package function with no return
+annotation (`val x = kqfmod.untyped()`) is recorded as dropped rather than read
+as an exact miss.
+
+The count arm moves only by the new `kotlin-package-qualified-factory` fixture,
+whose six drops are all in `app/Callers.kt` (+4 calls, +2 reads):
+
+- `x.m()` on `val x = kqfmod.untyped()` (new with this change) and the inline
+  `kqfmod.untyped().m()`;
+- `com.kqfacme.deep.make()` itself, in `deepCall` and `inlineDeep`, each a
+  call plus a `deep` read on its receiver path. The package call has no
+  `CALLS` edge to `make`; only its result type is new.
+
+Under the parent's resolver the same fixture records seven drops: the two
+typed inline forms' `m` calls drop instead of resolving, and the untyped local
+passes as an exact miss. A same-corpus A/B against the parent branch
+(`b97d9e333`) records no other drop change and identical `CALLS`/`ACCESSES`
+edges outside the new fixture. Shape-arm cells are unchanged.
+
+The follow-up uses the semantic resolver for head visibility on both bound and
+inline calls. A name declared in another function no longer blocks a package
+factory. Existing lexical bindings, imports, members and implicit receivers
+prevent a value head from being treated as a package. Plain Unicode letter and
+digit identifiers are supported; escaped paths and combining marks remain out
+of scope.
+
+Kotlin emits partial name claims for destructuring, `when` bindings, untyped loops
+and plain constructor parameters, using the existing scope identities. A same-named
+ordinary binding takes precedence over these partial facts. Catch bodies and
+property accessors receive Block scopes, where package fallback declines.
+Loop, `when` and constructor claims can conservatively cover a larger indexed
+scope than their exact language lifetime; this can omit valid package edges.
+Companion inheritance through its own supertype remains an unsupported case:
+review controls reject a wrong package owner without claiming a new positive.
+
+On integrated main `c30449394`, the resolution corpus contains 5,523 records
+versus main's 5,501: 22 Kotlin additions and no removals. Receiver totals remain
+136 call drops, 166 across all kinds, 30 reads and no writes, with unchanged
+shape states. The capture gate covers 158 entries and 2,787 groups; the scaling
+budget remains 1.5. The final focused run passes 56 tests across two files.
+The broader 387-test run predates the last two loop corrections; all 16 capture
+gates pass, and the final Kotlin measurement retains the same fingerprint.
+
 ## Rust module-qualified factory results (#3498)
 
 The provider resolves module-qualified factory callees such as `rp::make`,
@@ -25,6 +73,7 @@ whether an imported file is a namespace; restoring main preserves the lowercase
 `config.zig` file-struct edge. Python root-package imports and method-return
 ownership use main's declaration checks. A cold Rust disk-scope regression and
 a repeated-member call regression cover the shared producer and drop paths.
+
 ## Zig receiver gaps from the #3498 drop triage
 
 Measured against main `2b6542737`, the four Zig fixes clear 18
@@ -1018,12 +1067,23 @@ Shape states remain unchanged; counts are 133 call drops and
 Native review controls reproduced production Java imports and Java/Kotlin inheritance selecting nearer test-only declarations, an inherited nested base losing to a package homonym, a resolved Kotlin typealias import losing its claim, and a C# tuple argument counting as two type arguments. The corrected focused run passes 71 tests in five files, including positive test-source ownership controls and ordinary nested/local inheritance. The generic argument splitter now keeps tuple commas together.
 
 Canonical `src/main/java` and `src/main/kotlin` sources exclude recognized non-main source-set candidates before proximity ranking. Custom layouts retain prior eligibility; this is not build-system classpath resolution. JVM package fallback refuses when an enclosing class has inheritance whose member types the pre-MRO pass cannot establish, and explicit named imports retain their claim even when the import names a typealias rather than a class. These conservative cases may remain unresolved. Java duplicate-FQN import selection is part of this same package-ownership fix. Fresh current-main integration and hosted CI remain required.
+
 ### Rust qualified factories after #3653
 
 Main `2b4456553` is merged normally. The receiver-drop guard preserves both qualified-factory evidence and the module-export exclusion. Fresh build, both TypeScript configurations and all 28 Rust boundary, capture-golden and CommonJS checks pass. The measured baseline has 135 call drops, 164 total drops, 29 reads and 0 writes.
+
+## Kotlin integration after JavaScript receiver fixes
+
+The normal merge of Rust parent `6b3b864e9` also brings in main `2b4456553`.
+The re-measured combined baseline is 139 call drops, 31 reads, no writes and
+170 drops across all kinds, compared with the Rust parent's 135 calls,
+29 reads and 164 drops. Shape-arm states remain unchanged. The earlier
+141/192/31/20 counts above describe the pre-#3653 candidate.
+
 ### C++ qualified receivers after #3653
 
 Main `2b4456553` is merged normally. The field lookup retains both the declared namespace purpose and provider-qualified type handling. Build and both TypeScript configurations pass, and all 59 focused C++ and CommonJS merge checks pass. The measured receiver baseline has 133 call drops, 160 total drops, 27 reads and 0 writes.
+
 ### After merging #3653 into the C# namespace branch
 
 Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
@@ -1037,6 +1097,7 @@ Main `caacc3bac` is merged normally. The C# resolver retains both main's bare-re
 ### Rust qualified factories after #3655
 
 Main `caacc3bac` is merged normally. The C# capture baseline retains main's fixture additions, and receiver counts are regenerated on the combined source: 132 call drops, 160 total, 28 reads and zero writes. All shape states match the preceding Rust baseline. Fresh build, both TypeScript configurations and 23 Rust factory, capture and CommonJS checks pass. Final hosted CI remains required.
+
 ### C++ qualified receivers after #3655
 
 Main `caacc3bac` is merged normally. The regenerated combined baseline has 130 call drops,156 total,26 reads and zero writes; all shape states match. These counts include the C# namespace fix from main. The broad C++ resolver run was interrupted for the prioritized focused merge checks and is not reported as a pass. Fresh exact-head CI remains required.
@@ -1047,6 +1108,16 @@ The prioritized merge validation passes a fresh package build, both TypeScript c
 
 Main `a09f76be3` is merged normally. The shared receiver pass keeps Rust's provider-qualified callee hook and C++'s position-aware qualified-member lookup. Fresh package build, both TypeScript configurations and 302 tests across 20 Rust, C++, Go, CommonJS and sealed-disk-scope files pass. All 16 capture scaling checks pass without changing their budgets. The regenerated receiver check passes with 132 call drops, 160 across all kinds, 28 reads and zero writes; shape states are unchanged. The corpus adds 32 Rust resolution records to main's 5,392, removes none, and totals 5,424. Exact-head hosted CI remains required.
 
+### Kotlin qualified factories after #3657
+
+Main `65b101407` is merged normally. The shared caller retains Rust's provider-qualified callee hook and C++'s position-aware fallback. Package build, both pinned TypeScript configurations, 573 tests across 21 Kotlin, Rust, C++, Go, CommonJS and sealed-disk-scope files, and all 16 capture checks pass. The regenerated receiver check passes at 136 call drops, 166 total, 30 reads and zero writes; the count arm now includes this branch's Kotlin fixture sites. Shape states are unchanged. The corpus has 5,444 records, with 20 additions in the Kotlin package-qualified factory fixture and no removals relative to main's 5,424. Exact-head hosted CI remains required.
+
 ### External receiver origins after #3657
 
 Main `65b101407` is merged normally. Origin evidence retains the qualified-type lookup policy and both pipeline passes retain workspace file paths. Package build, both pinned TypeScript configurations, 425 focused tests across 25 files, and all 16 capture checks pass. The regenerated receiver baseline preserves every shape state and main's 132 call drops, 160 total, 28 reads and zero writes. Origin labels are 30 external, 45 unknown, 55 in-program and two unclassified. The 5,424-record resolution corpus is byte-identical to main. Exact-head hosted CI remains required.
+
+### Kotlin qualified factories after #3659
+
+Main c30449394 is merged normally. Package-factory fallback declines inherited receivers whose captured bases cannot be re-established through current bindings and the canonical MRO. Global qualified names need one declared type; declaration-local facts remain available. Companions need captured proof that their header declares no supertype, and that proof survives the worker/cache carrier. Older carriers retain companion identity but supply no such proof. These conservative boundaries do not model a build-system classpath or complete companion inheritance.
+
+The integrated build, both TypeScript configurations, 345 tests across ten files, Kotlin capture fingerprint and regenerated receiver check pass. The baseline remains 136 call drops, 166 drops across all kinds, 30 reads and zero writes, with unchanged shape states. The 5,521-record corpus is byte-identical to the candidate before the companion-header fix. These tests overlap earlier runs. Exact-head hosted CI remains required.

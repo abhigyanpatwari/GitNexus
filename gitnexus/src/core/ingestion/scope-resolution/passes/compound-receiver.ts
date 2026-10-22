@@ -31,7 +31,11 @@ import {
 } from '../../utils/template-arguments.js';
 import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
-import { namespaceCallReturnType, producerTypeRef } from './imported-return-types.js';
+import {
+  namespaceCallReturnType,
+  producerTypeRef,
+  qualifiedCalleeReturnType,
+} from './imported-return-types.js';
 import type { ClassBindingLookup, DecorationStripper } from '../scope/walkers.js';
 import {
   findClassBindingInScope,
@@ -202,7 +206,7 @@ interface ResolveCompoundReceiverOptions {
     position?: TypeRef['lookupPosition'],
   ) => SymbolDefinition | undefined;
   /** `ScopeResolver.qualifiedTypeLookupSpelling`, tried before `rawName` by
-   *  every {@link classOfDeclaredType} caller (member, head and fold lookups).
+   *  declared and returned receiver types (member, head and fold lookups).
    *  Absent ⇒ `rawName` alone, exactly as before. */
   readonly qualifiedTypeLookupSpelling?: ScopeResolver['qualifiedTypeLookupSpelling'];
 }
@@ -1286,7 +1290,15 @@ export function resolveCompoundReceiverClass(
         if (viaReturn !== undefined) return viaReturn;
         return resolveConstructionExpressionClass(fnExpr, inScope, scopes, index, options);
       }
-      return undefined;
+      // A dotted callee path only the provider can read (`com.acme.mod.make()`,
+      // #3498): `objExpr` resolved to no class because it names no value.
+      const returned = qualifiedCalleeReturnType(
+        fnExpr,
+        inScope,
+        scopes,
+        options.resolveQualifiedCallee,
+      );
+      return returned === undefined ? undefined : classOfReturnType(returned, scopes, options);
     }
 
     // Does `objExpr` name the CLASS ITSELF (`Factory.new`) rather than a

@@ -1473,13 +1473,18 @@ export interface ScopeResolver {
    * Optional resolver for a qualified CALLEE TEXT whose path syntax only the
    * language can read — Rust `rp::make` in `let x = rp::make(); x.m()` and in
    * the inline receiver `rp::make().m()`, where `rp` names a module rather than
-   * a value or a type (#3498).
+   * a value or a type (#3498); Kotlin `com.acme.mod.make` in
+   * `val x = com.acme.mod.make()`, where the head names a package that no import
+   * binds.
    *
    * The shared walkers never split this text. They hand it over verbatim, with
    * the scope the call sits in, and only after their own lookups found nothing:
-   *   - `followChainPostFinalize`, for a typeBinding rawName no scope binds (so
-   *     the provider's call-return binding must keep the whole callee path);
-   *   - the compound-receiver call branch, for an undotted callee no scope binds;
+   *   - `followChainPostFinalize`, for an undotted typeBinding rawName no scope
+   *     binds, and for a dotted one no namespace import types (so the
+   *     provider's call-return binding must keep the whole callee path);
+   *   - the compound-receiver call branch, for an undotted callee no scope
+   *     binds, and for a dotted callee (`a.b.f()`) whose object part resolves to
+   *     no class and is no namespace import;
    *   - the receiver-bound drop recorder, so a receiver bound to an in-program
    *     callable with no return annotation records a `receiver-unresolved` drop
    *     instead of passing as an exact miss.
@@ -1490,6 +1495,10 @@ export interface ScopeResolver {
    * fact by definition identity, so a callable without one types nothing.
    * Refusal must be cheap: the hook is asked about every name these sites fail
    * to resolve.
+   *
+   * Return-type chain following may also ask about dotted text before a
+   * compound receiver walk. Providers must refuse a path whose head is visible
+   * as a value or type; call/member resolution owns those paths.
    *
    * Languages whose qualified callees are dotted member expressions covered by
    * namespace imports (`ns.make()`) leave this undefined.
@@ -1864,8 +1873,9 @@ export interface ScopeResolver {
    * chain. The written spelling (`TypeRef.declaredSpelling`) still has the
    * qualifier; this hook reduces it the way `rawName` was reduced, minus the cut.
    *
-   * Receiver typing tries the returned spelling FIRST, through the namespace
-   * branch of `findClassBindingInScope` — candidates only from the files the
+   * Receiver typing tries the returned spelling FIRST, through exact workspace
+   * qualified bindings or the namespace branch of `findClassBindingInScope` —
+   * namespace candidates only come from the files the
    * qualifier's import resolves to, filtered by `isNamespaceMemberVisible` —
    * with the unique-name fallback switched off for that attempt, so a hit is a
    * namespace decision and never a name guess. A miss (an unresolved import,
@@ -1873,7 +1883,7 @@ export interface ScopeResolver {
    * from another package. Bare lookup remains available when this hook returns
    * no qualified spelling.
    *
-   * The qualifier must name a FILE-level import: it is looked up from the module
+   * An import-relative qualifier must name a FILE-level import: it is looked up from the module
    * scope enclosing `declaredAtScope`, never from `declaredAtScope` itself. That
    * scope holds the binding, and the binding may carry the qualifier's own name
    * — `vault *vault.Vault` as a field, parameter or local — which would shadow

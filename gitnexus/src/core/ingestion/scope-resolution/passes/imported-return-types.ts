@@ -300,12 +300,11 @@ export function followChainPostFinalize(
   for (let depth = 0; depth < RECHAIN_MAX_DEPTH; depth++) {
     const lookupScope = current.declaredAtScope ?? fromScopeId;
     if (current.rawName.includes('.')) {
-      const returned = namespaceCallReturnType(
-        current.rawName,
-        lookupScope,
-        scopes,
-        current.lookupPosition,
-      );
+      // A namespace import's function (`ns.make`), else a dotted callee path
+      // only the provider can read (`com.acme.mod.make`, #3498).
+      const returned =
+        namespaceCallReturnType(current.rawName, lookupScope, scopes, current.lookupPosition) ??
+        qualifiedCalleeReturnType(current.rawName, lookupScope, scopes, resolveCallee);
       // A qualified return type (`-> models.Order`) names a namespace of the
       // producer's module, which the consumer's receiver lookup would read
       // against its own imports. Stop at the call rather than hand it over.
