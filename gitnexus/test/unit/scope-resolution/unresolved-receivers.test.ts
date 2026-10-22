@@ -19,6 +19,8 @@ import type {
 import {
   buildReceiverOriginEvidence,
   classifyReceiverOrigin,
+  recordSiteMember,
+  type EarlierSiteAtKey,
 } from '../../../src/core/ingestion/scope-resolution/passes/receiver-bound-calls.js';
 import { decodeReceiverChain } from '../../../src/core/ingestion/utils/receiver-chain-codec.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
@@ -762,6 +764,38 @@ class Probe {
 
 describe('classifyReceiverOrigin — library and runtime receivers', () => {
   it.each([
+    [
+      'program global properties',
+      typescriptScopeResolver,
+      'export class Service { save() {} } export function run() { globalThis.service.save(); }',
+      'save',
+      'caller.ts',
+    ],
+    [
+      'program members reached through window',
+      typescriptScopeResolver,
+      'export class Service { save() {} } export function run() { window.service.save(); }',
+      'save',
+      'caller.ts',
+    ],
+    [
+      'a library function returning a program instance',
+      pythonScopeResolver,
+      'import copy\nclass User:\n    def save(self): pass\ndef run(user):\n    copy.copy(user).save()\n',
+      'save',
+      'caller.py',
+    ],
+    [
+      'a blocked parameter and library import claim',
+      pythonScopeResolver,
+      'def run(os):\n    os.child.missing()\n    import os\n',
+      'missing',
+      'caller.py',
+    ],
+  ] as const)('keeps %s hedged', (_name, resolver, source, member, file) => {
+    expect(originOf(buildScopeModel(resolver, source, file), member)).not.toBe('external');
+  });
+  it.each([
     ['TypeScript document', tsLibraryFixture, 'appendChild'],
     ['TypeScript window', tsLibraryFixture, 'pushState'],
     ['TypeScript Buffer', tsLibraryFixture, 'toString'],
@@ -856,5 +890,39 @@ describe('classifyReceiverShape', () => {
         ],
       }),
     ).toBe('chain-mixed');
+  });
+});
+
+// #3498: sites are keyed by start position, so `a.f().g()` puts `f` and `g`
+// on one key. Only a duplicate capture of the same site (same receiver, same
+// member) may hide a later drop at that key; a different call there must not.
+describe('recordSiteMember', () => {
+  it.each<{ name: string; identities: string[]; expected: EarlierSiteAtKey[] }>([
+    { name: 'first site at a key', identities: ['x.m'], expected: ['new-key'] },
+    {
+      name: 'duplicate capture of one site, or a call and its callee read',
+      identities: ['x.m', 'x.m'],
+      expected: ['new-key', 'repeated-site'],
+    },
+    {
+      name: 'outer call sharing the start of an inner call',
+      identities: ['rp.make', 'rp.make().m'],
+      expected: ['new-key', 'shared-key'],
+    },
+    {
+      name: 'same member name nested in its own chain',
+      identities: ['a.f', 'a.f().f'],
+      expected: ['new-key', 'shared-key'],
+    },
+    {
+      name: 'duplicate after a collision',
+      identities: ['rp.make', 'rp.make().m', 'rp.make'],
+      expected: ['new-key', 'shared-key', 'repeated-site'],
+    },
+  ])('$name', ({ identities, expected }) => {
+    const identitiesByKey = new Map<string, string | Set<string>>();
+    expect(
+      identities.map((identity) => recordSiteMember(identitiesByKey, 'a.py:1:4', identity)),
+    ).toEqual(expected);
   });
 });

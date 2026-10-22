@@ -8,7 +8,7 @@ import { zigRenameProvider } from './zig/rename.js';
  *     `@heritage.*` captures).
  *   - exportChecker: walks to the enclosing variable_declaration /
  *     function_declaration and looks for a `pub` or `export` keyword child.
- *   - importResolver: resolves local `@import("./foo.zig")` paths and
+ *   - ScopeResolver.resolveImportTarget: resolves local `@import("./foo.zig")` paths and
  *     build.zig.zon `.path` deps (root the dep's build.zig declares, then
  *     src/root.zig, src/<name>.zig, src/main.zig); `@import("std")` and
  *     `.url` packages are deliberately external.
@@ -35,8 +35,6 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import { ZIG_QUERIES } from '../tree-sitter-queries.js';
 import { zigExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { zigImportConfig } from '../import-resolvers/configs/zig.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { zigCallConfig } from '../call-extractors/configs/zig.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
@@ -90,7 +88,6 @@ export const zigProvider = defineLanguage({
   typeConfig: zigTypeConfig,
   cfgVisitor: createZigCfgVisitor(),
   exportChecker: zigExportChecker,
-  importResolver: createImportResolver(zigImportConfig),
   isExternalModuleSpecifier: (specifier) => ZIG_RESERVED_MODULES.has(specifier),
   callExtractor: createCallExtractor(zigCallConfig),
   classExtractor: createClassExtractor(zigClassConfig),

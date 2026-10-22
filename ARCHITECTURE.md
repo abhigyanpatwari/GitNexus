@@ -69,7 +69,7 @@ Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path th
 | Embeddings                                              | `src/core/embeddings/` + `src/core/run-analyze.ts`                                                     |
 | Wiki generation                                         | `src/core/wiki/`                                                                                       |
 | Language support                                        | `src/core/ingestion/languages/` + `tree-sitter-queries.ts` + `gitnexus-shared/src/languages.ts`        |
-| Import resolution                                       | `src/core/ingestion/import-processor.ts` + `import-resolvers/configs/` + `model/resolution-context.ts` |
+| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks |
 | Call resolution/inheritance/MRO                         | `src/core/ingestion/scope-resolution/` (pipeline, passes, graph-bridge)                                |
 | Type extraction                                         | `src/core/ingestion/type-extractors/`                                                                  |
 | Worker pool                                             | `src/core/ingestion/workers/`                                                                          |
@@ -389,6 +389,7 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `fieldFallbackOnMethodLookup?`                          | Statically-typed languages turn this OFF — the heuristic over-connects (default on)                                                                                                                                                                             |
 | `elementTypeOf?`                                        | `(containerType, via: {kind:'index'} \| {kind:'accessor',name}) → elementType \| undefined` — element type of a container, reached by subscript (`repos[0]`) or by a property-style collection view (`data.Values`). ONE hook for both routes (it replaced the split `unwrapCollectionAccessor` / `unwrapCollectionElement`, where implementing one silently answered nothing for the other). Consulted only where the source actually performed the access — never as a general type-name normalizer |
 | `stripTypePreservingDecoration?`                        | `(typeName) → strippedName \| undefined` — strip ONE layer of TYPE-PRESERVING decoration (pointer, reference, `const`, nullable, borrow, sigil) so a receiver declared `*Host` still finds the `Host` binding (#2766). Never a container: unwrapping `Repo[]` here would fold `repos.find(x)` to `Repo.find` — that is `elementTypeOf`'s job, and only after a real subscript. Consulted only after every undecorated lookup fails, and only by receiver-chain base/step resolution — default off |
+| `qualifiedTypeLookupSpelling?`                          | `(typeRef) → 'pkg.Type' \| undefined` — the namespace-qualified spelling of a declared type whose qualifier capture cut from `rawName` (`*models.User` stored as `User`), recovered from `declaredSpelling`. Receiver typing tries it first, grounded on the qualifier's import (no unique-name guess), and falls back to the bare `rawName` lookup on any miss, so two packages' same-named types stop colliding. The binding is not rewritten — default off |
 | `collapseMemberCallsByCallerTarget?`                    | One CALLS edge per (caller, target) instead of per-site — default off                                                                                                                                                                                           |
 | `populateNamespaceSiblings?`                            | Cross-file implicit visibility (compiler-implicit namespace sharing) — default off; ctx carries `treeCache`                                                                                                                                                     |
 | `hoistTypeBindingsToModule?`                            | Walk up to Module scope when looking up a method's return-type typeBinding — default off; enable only when bindings are stored at module level                                                                                                                  |
@@ -454,7 +455,6 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 | `id`, `extensions`     | Language identity and file matching                                                                                                                                                                                                                                                                                               |
 | `treeSitterQueries`    | S-expression queries for AST extraction                                                                                                                                                                                                                                                                                           |
 | `importSemantics`      | `named` / `wildcard-leaf` / `wildcard-transitive` / `namespace`                                                                                                                                                                                                                                                                   |
-| `importResolver`       | Language-specific path → file resolution                                                                                                                                                                                                                                                                                          |
 | `exportChecker`        | Public/exported symbol detection                                                                                                                                                                                                                                                                                                  |
 | `typeConfig`           | Type annotation extraction rules                                                                                                                                                                                                                                                                                                  |
 | `mroStrategy`          | `first-wins` / `c3` / `none`                                                                                                                                                                                                                                                                                                      |
@@ -469,22 +469,9 @@ Per-language tree-sitter queries use different AST node names but produce the **
 
 ### Import resolution
 
-Per-language import resolution uses the **configs + factory** pattern (like call/method/class extractors). Each language declares an `ImportResolutionConfig` in `import-resolvers/configs/`, listing an ordered chain of `ImportResolverStrategy` functions. `createImportResolver()` (in `resolver-factory.ts`) composes them: first non-null result wins. Low-level helpers shared across strategies live alongside the configs in `import-resolvers/` (e.g. `go.ts`, `rust.ts`, `python.ts`).
+Per-language import resolution runs through `ScopeResolver.resolveImportTarget`, registered in `SCOPE_RESOLVERS`. The shared orchestrator (`scope-resolution/pipeline/run.ts`) passes each language's workspace configuration to the resolver hook. The hook maps a parsed import to its target file or files; finalization links imports and materializes bindings for scope lookup.
 
-Unified 3-tier algorithm (`model/resolution-context.ts`), per-language `importSemantics` controls which tier activates:
-
-| Tier              | Confidence | Mechanism                                                              |
-| ----------------- | ---------- | ---------------------------------------------------------------------- |
-| 1 — same-file     | 0.95       | Symbol table for caller's file                                         |
-| 2 — import-scoped | 0.9        | `NamedImportMap` chains (named) or all files in `importMap` (wildcard) |
-| 3 — global        | 0.5        | O(1) index lookups: class, impl, callable. Fallback only               |
-
-| Import strategy       | Languages                           | Behavior                                       |
-| --------------------- | ----------------------------------- | ---------------------------------------------- |
-| `named`               | TS, JS, Java, C#, Rust, PHP, Kotlin | Only explicitly imported names visible         |
-| `wildcard-leaf`       | Go, Ruby, Swift, Dart               | Whole-package import, no transitive re-exports |
-| `wildcard-transitive` | C, C++                              | `#include` closure chains through re-exports   |
-| `namespace`           | Python                              | Module aliases resolved at call site           |
+Language-specific import helpers and namespace rules live beside each resolver in `languages/<language>/`. Language-neutral package-directory and suffix indexes, workspace indexes, and per-file-set caches live in `ingestion/utils/`; suffix lookups receive their ordered extension candidates from callers. The dormant `LanguageProvider.importResolver` field, adapter, and strategy factory have been removed; new languages implement the `ScopeResolver` hook.
 
 ### Chunked parse-and-resolve
 

@@ -41,6 +41,7 @@ export function typedParameter(document: Doc): void {
 }
 `,
   'web/env.ts': `export const API_BASE = process.env.API_BASE || '';
+export const ENDPOINT = process.env.SERVICE_URL || '';
 `,
   'py/settings.py': `import os
 from pathlib import Path
@@ -131,7 +132,7 @@ describe('Library and runtime receivers name the program boundary (#3498)', () =
     ['a DOM global', 'web/dom.ts', 2, 'appendChild'],
     ['a browser global', 'web/dom.ts', 6, 'pushState'],
     ['the Node Buffer global', 'web/dom.ts', 10, 'toString'],
-    ['the Node process global', 'web/env.ts', 1, 'API_BASE'],
+    ['the Node process global', 'web/env.ts', 2, 'SERVICE_URL'],
     ['a Python stdlib namespace import', 'py/settings.py', 6, 'setdefault'],
     ['a Python stdlib named import', 'py/settings.py', 10, 'resolve'],
     ['the Zig standard library', 'zig/src/sorter.zig', 4, 'pdq'],
@@ -148,6 +149,7 @@ describe('Library and runtime receivers name the program boundary (#3498)', () =
   it.each([
     ['a TypeScript parameter named document', 'web/dom.ts', 14, 'render'],
     ['a Python parameter named os', 'py/settings.py', 14, 'update'],
+    ['a same-named program declaration', 'web/env.ts', 1, 'API_BASE'],
   ] as const)('keeps a drop on %s hedged', (_label, filePath, line, name) => {
     const drops = dropsAt(filePath, line, name);
     expect(drops.length).toBeGreaterThan(0);

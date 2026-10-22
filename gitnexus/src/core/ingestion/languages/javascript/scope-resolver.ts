@@ -46,7 +46,7 @@ import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
 import { typescriptModuleExports } from '../typescript/module-exports.js';
-import { loadNodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
+import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
 
 async function loadResolutionConfig(repoPath: string, fresh = false) {
