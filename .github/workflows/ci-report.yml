@@ -69,6 +69,7 @@ jobs:
             const temp = process.env.RUNNER_TEMP;
             await downloadArtifact('pr-meta', path.join(temp, 'dl'));
             await downloadArtifact('test-reports', path.join(temp, 'dl'));
+            await downloadArtifact('test-dupes', path.join(temp, 'dl'));
 
       - name: Extract artifacts
         shell: bash
@@ -454,6 +455,34 @@ jobs:
               echo ""
               echo "⚠️ Coverage data unavailable - check the [unit test job](${RUN_URL}) for details."
               echo ""
+            fi
+
+            # ── Possible duplicate tests (advisory, ci.yml test-dupes job) ──
+            # The JSON is produced by PR code, so only whitelisted kinds and
+            # strict path/line shapes reach the comment; free text is dropped.
+            DUPES_FILE=$(find_first "$DIR/test-dupes" "test-dupes.json")
+            if [ -n "$DUPES_FILE" ]; then
+              jq -r '
+                def path_ok: type == "string" and test("^[A-Za-z0-9._/@+-]{1,300}$");
+                def line_ok: type == "number" and . >= 1 and . <= 1000000 and floor == .;
+                def loc: "`\(.file):\(.line)`";
+                [ .findings[]?
+                  | select(.kind | IN("same-test", "assertions-pinned", "same-fixture-setup", "copied-helper", "orphan-bench-gate"))
+                  | select((.file | path_ok) and (.line | line_ok))
+                  | .matches = ([(.matches // [])[]? | select((.file | path_ok) and (.line | line_ok))][:3])
+                ]
+                | if length == 0 then empty else
+                    "### Possible duplicate tests",
+                    "",
+                    "Advisory only, never blocks merge: \(length) finding(s) on lines this PR changes. Run `npm run test:dupes` in `gitnexus/` for details; mark an intentional repeat with `// dupe-ok: <reason>`.",
+                    "",
+                    "| Kind | Changed | Already at |",
+                    "|------|---------|------------|",
+                    (.[:20][] | "| `\(.kind)` | \(loc) | \(if (.matches | length) == 0 then "no workflow runs it" else (.matches | map(loc) | join("<br>")) end) |"),
+                    (if length > 20 then "", "…and \(length - 20) more." else empty end),
+                    ""
+                  end
+              ' "$DUPES_FILE" 2>/dev/null || true
             fi
 
             echo "---"

@@ -26,6 +26,7 @@ From `gitnexus/`:
 | `npm run test:parity`         | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
 | `npm run test:cross-platform` | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
 | `npm run test:watch`          | Vitest in watch mode                               | Active development                    |
+| `npm run test:dupes`          | Duplicate-test scan of lines changed vs `main`     | Before adding tests or benchmarks     |
 
 Vitest transpiles TypeScript without checking types. Run `npm run typecheck:tests`
 in `gitnexus/` to check test code and helpers against the production types. This
@@ -158,6 +159,27 @@ are included in the combined PR report.
 The PR report shows the reconciled result as **Unverified**. Zero means every test
 has execution evidence; individual OS logs still show tests that require another
 OS as skipped. Failed executions remain failures even if another job passes.
+
+### Duplicate-test scan (advisory)
+
+The `Duplicate test scan` job in `ci.yml` runs `npm run test:dupes` on the lines a PR
+changes, and the PR report lists what it finds under **Possible duplicate tests**. It
+never fails a build. It reports:
+
+| Kind                 | Meaning                                                                    |
+| -------------------- | -------------------------------------------------------------------------- |
+| `same-test`          | Same body and same setup as an existing test                               |
+| `assertions-pinned`  | Every assertion is a literal `fn(...)` → matcher another test already makes |
+| `same-fixture-setup` | A `before*` hook builds a fixture another describe already builds          |
+| `copied-helper`      | A top-level helper identical to one in another file or `test/helpers`      |
+| `orphan-bench-gate`  | A bench script with `--check` that no workflow or npm script runs          |
+
+"Same setup" includes enclosing hooks, describe-level statements, wrapper arguments,
+loop heads, `each` tables, referenced file-local declarations and resolved imports, so
+identical bodies that run against different fixtures are not reported. Mark an
+intentional repeat with `// dupe-ok: <reason>` on the reported line or the line above.
+Locally, `npm run test:dupes` compares against `origin/main`; pass `--base <ref>` to
+change that, or `--all` to scan every test. Python tests are not scanned.
 
 `npm run test:benchmarks` discovers all tests gated by `GITNEXUS_BENCH` and runs
 them serially. Keep timing measurements out of parallel coverage workers. The
