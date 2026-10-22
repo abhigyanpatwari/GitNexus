@@ -431,19 +431,37 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
   // ============================================================================
 
   const readTool = tool(
-    async ({ filePath }: { filePath: string }) => {
+    async ({
+      filePath,
+      startLine,
+      endLine,
+    }: {
+      filePath: string;
+      startLine?: number | null;
+      endLine?: number | null;
+    }) => {
       try {
         const content = await readFile(filePath);
+        const lines = content.split('\n');
+        const hasRange = startLine != null || endLine != null;
+        const start = startLine ?? 1;
+        const end = Math.min(endLine ?? lines.length, lines.length);
+        if (start > lines.length || end < start) {
+          return `Invalid line range: requested ${startLine ?? 1}-${endLine ?? lines.length}, but ${filePath} has ${lines.length} lines. Use 1-based startLine/endLine with startLine <= endLine.`;
+        }
+        const selected = hasRange ? lines.slice(start - 1, end).join('\n') : content;
+        const range = hasRange
+          ? `lines ${start}-${end} of ${lines.length}`
+          : `${lines.length} lines`;
 
-        // Truncate large files
+        // Keep the existing output budget, including when a range is requested.
         const MAX_CONTENT = 50000;
-        if (content.length > MAX_CONTENT) {
-          const lines = content.split('\n').length;
-          return `File: ${filePath} (${lines} lines, truncated)\n\n${content.slice(0, MAX_CONTENT)}\n\n... [truncated]`;
+        if (selected.length > MAX_CONTENT) {
+          const requested = hasRange ? `requested ${range}` : range;
+          return `File: ${filePath} (${requested}, truncated)\n\n${selected.slice(0, MAX_CONTENT)}\n\n... [truncated at ${MAX_CONTENT} characters; use startLine/endLine to read a smaller range]`;
         }
 
-        const lines = content.split('\n').length;
-        return `File: ${filePath} (${lines} lines)\n\n${content}`;
+        return `File: ${filePath} (${range})\n\n${selected}`;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes('not found') || message.includes('404')) {
@@ -455,9 +473,17 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
     {
       name: 'read',
       description:
-        'Read the full content of a file. Use to see source code after finding files via search or grep.',
+        'Read file content after finding it via search or grep. Optional startLine/endLine select a 1-based, inclusive range, including code beyond the 50,000-character output limit. Use smaller ranges if the result is truncated.',
       schema: z.object({
         filePath: z.string().describe('File path to read (can be partial like "src/utils.ts")'),
+        startLine: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .nullable()
+          .describe('First line, 1-based'),
+        endLine: z.number().int().positive().optional().nullable().describe('Last line, inclusive'),
       }),
     },
   );
