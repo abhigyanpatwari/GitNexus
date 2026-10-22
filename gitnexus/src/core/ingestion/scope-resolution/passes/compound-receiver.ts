@@ -541,6 +541,7 @@ export function classOfQualifiedTypeSpelling(
   // Runs for every declared-type lookup in every language, so nothing is
   // allocated until the provider has actually returned a qualified spelling.
   const qualified = qualifiedTypeLookupSpelling?.(typeRef, scopes);
+  if (qualified === null) return null;
   if (qualified === undefined || qualified === typeRef.rawName) return undefined;
   const importScope = moduleScopeIdOf(typeRef.declaredAtScope, scopes) ?? typeRef.declaredAtScope;
   return (

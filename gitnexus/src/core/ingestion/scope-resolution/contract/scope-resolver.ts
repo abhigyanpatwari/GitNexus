@@ -1795,11 +1795,12 @@ export interface ScopeResolver {
    * Return a module-visible class spelling (no decoration or type arguments).
    * Providers may also expand a namespace alias using the binding's declaration
    * scope and the supplied indexes. Leave undefined when no expansion is needed.
+   * Return null to refuse the written qualified lookup and its fallback.
    */
   readonly qualifiedTypeLookupSpelling?: (
     typeRef: TypeRef,
     scopes?: ScopeResolutionIndexes,
-  ) => string | undefined;
+  ) => string | null | undefined;
 
   /**
    * Whether the compound-receiver resolver should strip C-style cast

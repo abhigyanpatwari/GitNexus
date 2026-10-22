@@ -11,7 +11,7 @@ import type {
   TypeRef,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { isClassLike } from '../../scope-resolution/scope/walkers.js';
+import { findClassBindingInScope, isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { isCppInlineNamespaceScope } from './inline-namespaces.js';
 import { isCppNamespaceQualifierShadowed } from './qualified-name-claims.js';
 
@@ -383,7 +383,7 @@ export function populateCppIncludedUsingClaims(
 
 interface NamespaceAliasTarget {
   readonly target: string;
-  readonly availableFrom?: Range;
+  readonly availableFrom?: Pick<Range, 'startLine' | 'startCol'>;
 }
 const namespaceAliases = new WeakMap<
   ScopeResolutionIndexes,
@@ -431,12 +431,29 @@ function visibleNamespaceAlias(
 export function cppQualifiedTypeLookupSpelling(
   ref: TypeRef,
   indexes?: ScopeResolutionIndexes,
-): string | undefined {
+): string | null | undefined {
   if (indexes === undefined) return undefined;
   const separator = ref.rawName.indexOf('::');
   if (separator <= 0) return undefined;
   const head = ref.rawName.slice(0, separator).trim();
-  if (isCppNamespaceQualifierShadowed(head, ref.declaredAtScope, indexes)) return undefined;
+  if (
+    isCppNamespaceQualifierShadowed(
+      head,
+      ref.declaredAtScope,
+      indexes,
+      ref.lookupPosition ?? ref.bindingRange,
+    )
+  ) {
+    // A concrete class can still own the written nested type. A type alias or
+    // dependent qualifier with no class identity cannot borrow a namespace.
+    return findClassBindingInScope(ref.declaredAtScope, head, indexes, undefined, {
+      uniqueQualifiedNameFallback: false,
+      position: ref.lookupPosition ?? ref.bindingRange,
+      purpose: 'type',
+    }) === undefined
+      ? null
+      : undefined;
+  }
   const alias = visibleNamespaceAlias(
     head,
     ref.declaredAtScope,
@@ -532,7 +549,10 @@ export function populateCppUsingBindings(
       edge.targetFile !== null && edge.linkStatus !== 'unresolved' ? [edge.targetFile] : [],
     );
   });
-  const consumersByHeader = new Map<string, ScopeId[]>();
+  const consumersByHeader = new Map<
+    string,
+    Map<ScopeId, Pick<Range, 'startLine' | 'startCol'> | undefined>
+  >();
   const aliasFiles = new Set(
     parsedFiles
       .filter((parsed) =>
@@ -542,11 +562,22 @@ export function populateCppUsingBindings(
   );
   if (aliasFiles.size > 0) {
     for (const consumer of parsedFiles) {
-      for (const header of visibleFiles(consumer.filePath)) {
-        if (header === consumer.filePath || !aliasFiles.has(header)) continue;
-        const consumers = consumersByHeader.get(header) ?? [];
-        consumers.push(consumer.moduleScope);
-        consumersByHeader.set(header, consumers);
+      for (const edge of indexes.imports.get(consumer.moduleScope) ?? []) {
+        if (edge.targetFile === null || edge.linkStatus === 'unresolved') continue;
+        for (const header of visibleFiles(edge.targetFile)) {
+          if (header === consumer.filePath || !aliasFiles.has(header)) continue;
+          const consumers = consumersByHeader.get(header) ?? new Map();
+          const previous = consumers.get(consumer.moduleScope);
+          const availableFrom = edge.atRange === undefined ? undefined : end(edge.atRange);
+          if (
+            !consumers.has(consumer.moduleScope) ||
+            availableFrom === undefined ||
+            (previous !== undefined && compare(availableFrom, previous) < 0)
+          ) {
+            consumers.set(consumer.moduleScope, availableFrom);
+          }
+          consumersByHeader.set(header, consumers);
+        }
       }
     }
   }
@@ -622,8 +653,11 @@ export function populateCppUsingBindings(
         availableFrom: item.declaration.range,
       });
       if (resolved.owner.id === item.parsed.moduleScope)
-        for (const consumer of consumersByHeader.get(item.parsed.filePath) ?? [])
-          installAlias(consumer, name, { target: resolved.target });
+        for (const [consumer, availableFrom] of consumersByHeader.get(item.parsed.filePath) ?? [])
+          installAlias(consumer, name, {
+            target: resolved.target,
+            availableFrom,
+          });
     }
     if (retry.length === pending.length) break;
     pending = retry;
