@@ -27,9 +27,21 @@ describe('Kotlin package factories and implicit receivers', () => {
       'unknown-parameter.kt':
         'package caller\nfun unknownParameter(kqfmod: ExternalThing) { kqfmod.make().m() }\n',
       'plain.kt': 'package caller\nfun plain() { kqfmod.make().m() }\n',
+      'companion-inline.kt':
+        'package companioncaller\nimport modelpkg.Shadow\nclass InlineHost {\n companion object {\n val kqfmod: Shadow = Shadow()\n }\n fun run() { kqfmod.make().m() }\n}\n',
+      'companion-bound.kt':
+        'package companioncaller\nimport modelpkg.Shadow\nclass BoundHost {\n companion object {\n val kqfmod: Shadow = Shadow()\n }\n fun run() { val x = kqfmod.make(); x.m() }\n}\n',
+      'modelpkg/BaseCompanion.kt':
+        'package modelpkg\nopen class BaseCompanion {\n companion object {\n val kqfmod: Shadow = Shadow()\n }\n}\n',
+      'inherited-companion-inline.kt':
+        'package inheritedcaller\nimport modelpkg.BaseCompanion\nclass InheritedInlineHost : BaseCompanion() { fun run() { kqfmod.make().m() } }\n',
+      'inherited-companion-bound.kt':
+        'package inheritedcaller\nimport modelpkg.BaseCompanion\nclass InheritedBoundHost : BaseCompanion() { fun run() { val x = kqfmod.make(); x.m() } }\n',
     };
-    for (const [file, source] of Object.entries(sources))
+    for (const [file, source] of Object.entries(sources)) {
+      await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
       await fs.writeFile(path.join(root, file), source);
+    }
     result = await runPipelineFromRepo(root, () => {}, {});
   }, 120000);
   afterAll(async () => {
@@ -49,10 +61,25 @@ describe('Kotlin package factories and implicit receivers', () => {
     'with-inline.kt',
     'unknown-local.kt',
     'unknown-parameter.kt',
+    'companion-inline.kt',
+    'companion-bound.kt',
+    'inherited-companion-inline.kt',
+    'inherited-companion-bound.kt',
   ])('%s does not borrow the package receiver', (file) => {
     expect(packageTargets(file)).toEqual([]);
   });
   it('keeps the unshadowed package call', () => {
     expect(packageTargets('plain.kt')).toHaveLength(1);
+  });
+  it('parses and links the companion-owning base class', () => {
+    const targetId = 'Class:modelpkg/BaseCompanion.kt:BaseCompanion';
+    expect(result.graph.getNode(targetId)).toBeDefined();
+    expect([...result.graph.iterRelationships()]).toContainEqual(
+      expect.objectContaining({
+        type: 'EXTENDS',
+        sourceId: 'Class:inherited-companion-inline.kt:InheritedInlineHost',
+        targetId,
+      }),
+    );
   });
 });

@@ -20,6 +20,7 @@ const SCOPE_TYPES = new Set([
   'impl_item',
   'enum_item',
   'union_item',
+  'type_item',
 ]);
 
 /** Pattern identifiers own values even when no useful target/type was indexed. */

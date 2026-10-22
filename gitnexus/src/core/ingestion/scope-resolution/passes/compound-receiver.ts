@@ -192,7 +192,7 @@ interface ResolveCompoundReceiverOptions {
    *  the callable the provider resolves it to. Absent ⇒ exactly as before. */
   readonly resolveQualifiedCallee?: QualifiedCalleeResolver;
   /** `ScopeResolver.qualifiedTypeLookupSpelling`, tried before `rawName` by
-   *  every {@link classOfDeclaredType} caller (member, head and fold lookups).
+   *  declared and returned receiver types (member, head and fold lookups).
    *  Absent ⇒ `rawName` alone, exactly as before. */
   readonly qualifiedTypeLookupSpelling?: ScopeResolver['qualifiedTypeLookupSpelling'];
 }

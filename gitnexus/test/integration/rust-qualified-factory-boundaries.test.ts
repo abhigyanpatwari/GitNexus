@@ -6,6 +6,26 @@ import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { TransitionalScopeTree } from '../../src/storage/scope-index-store.js';
 
 describe('Rust qualified factory boundaries', () => {
+  it('keeps an alias type parameter out of the enclosing module', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rust-alias-parameter-'));
+    try {
+      await fs.writeFile(
+        path.join(root, 'main.rs'),
+        'mod T { pub struct Product; impl Product { pub fn m(&self) {} } pub fn make() -> Product { Product } }\ntype Alias<T> = Option<T>;\nfn caller() { let x = T::make(); x.m(); }\n',
+      );
+      const result = await runPipelineFromRepo(root, () => {}, {});
+      const calls = [...result.graph.iterRelationships()].filter(
+        (edge) =>
+          edge.type === 'CALLS' &&
+          result.graph.getNode(edge.sourceId)?.properties.name === 'caller',
+      );
+      expect(
+        calls.map((edge) => result.graph.getNode(edge.targetId)?.properties.name).sort(),
+      ).toEqual(['m', 'make']);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }, 120000);
   it('retains the outer unresolved call when its member repeats the inner callee', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rust-qualified-repeat-'));
     try {

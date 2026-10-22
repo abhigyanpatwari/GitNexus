@@ -32,6 +32,7 @@ import {
   lookupNameClaim,
 } from '../../scope-resolution/scope/walkers.js';
 import { getKotlinPackageFact } from './package-facts.js';
+import { isCompanionScope } from './companion-scopes.js';
 
 /** Two or more plain names joined by `.` (`kqfmod.make`, `com.acme.mod.make`). */
 const KOTLIN_DOTTED_PATH_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/;
@@ -43,6 +44,8 @@ interface KotlinPackageDeclarations {
   readonly functions: ReadonlyMap<string, ReadonlyMap<string, readonly SymbolDefinition[]>>;
   /** Declared package → every top-level name its files declare, of any kind. */
   readonly names: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Child IDs are stable for the pass; avoid rewalking every method scope per call. */
+  readonly companionScopes: Map<ScopeId, readonly ScopeId[]>;
 }
 
 /**
@@ -86,7 +89,7 @@ function packageDeclarationsFor(
       }
     }
   }
-  const index: KotlinPackageDeclarations = { functions, names };
+  const index: KotlinPackageDeclarations = { functions, names, companionScopes: new Map() };
   PACKAGE_DECLARATIONS.set(workspaceIndex, index);
   return index;
 }
@@ -146,14 +149,29 @@ export function resolveKotlinQualifiedCallee(
     for (const ancestor of [owner, ...scopes.methodDispatch.mroFor(owner)]) {
       const scopeId = workspaceIndex.classScopeByDefId.get(ancestor)?.id;
       const memberScope = scopeId === undefined ? undefined : scopes.scopeTree.getScope(scopeId);
-      const fieldType = memberScope?.typeBindings.get(head);
-      if (fieldType !== undefined && fieldType.source !== 'return-annotation') return undefined;
-      if (
-        memberScope?.bindings
-          .get(head)
-          ?.some((binding) => ['Property', 'Field', 'Variable', 'Const'].includes(binding.def.type))
-      )
-        return undefined;
+      if (memberScope === undefined) continue;
+      let companions = index.companionScopes.get(memberScope.id);
+      if (companions === undefined) {
+        companions = scopes.scopeTree
+          .getChildren(memberScope.id)
+          .filter((id) => isCompanionScope(memberScope.filePath, id));
+        index.companionScopes.set(memberScope.id, companions);
+      }
+      for (const candidate of [
+        memberScope,
+        ...companions.map((id) => scopes.scopeTree.getScope(id)),
+      ]) {
+        const fieldType = candidate?.typeBindings.get(head);
+        if (fieldType !== undefined && fieldType.source !== 'return-annotation') return undefined;
+        if (
+          candidate?.bindings
+            .get(head)
+            ?.some((binding) =>
+              ['Property', 'Field', 'Variable', 'Const'].includes(binding.def.type),
+            )
+        )
+          return undefined;
+      }
     }
   }
   const filePath = scopes.scopeTree.getScope(inScope)?.filePath;

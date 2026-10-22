@@ -1765,8 +1765,9 @@ export interface ScopeResolver {
    * chain. The written spelling (`TypeRef.declaredSpelling`) still has the
    * qualifier; this hook reduces it the way `rawName` was reduced, minus the cut.
    *
-   * Receiver typing tries the returned spelling FIRST, through the namespace
-   * branch of `findClassBindingInScope` — candidates only from the files the
+   * Receiver typing tries the returned spelling FIRST, through exact workspace
+   * qualified bindings or the namespace branch of `findClassBindingInScope` —
+   * namespace candidates only come from the files the
    * qualifier's import resolves to, filtered by `isNamespaceMemberVisible` —
    * with the unique-name fallback switched off for that attempt, so a hit is a
    * namespace decision and never a name guess. A miss (an unresolved import,
@@ -1774,7 +1775,7 @@ export interface ScopeResolver {
    * from another package. Bare lookup remains available when this hook returns
    * no qualified spelling.
    *
-   * The qualifier must name a FILE-level import: it is looked up from the module
+   * An import-relative qualifier must name a FILE-level import: it is looked up from the module
    * scope enclosing `declaredAtScope`, never from `declaredAtScope` itself. That
    * scope holds the binding, and the binding may carry the qualifier's own name
    * — `vault *vault.Vault` as a field, parameter or local — which would shadow
