@@ -13,7 +13,7 @@ import {
 } from './resolution-config.js';
 import { expandCWildcardNames, isStaticName, clearStaticNames } from './static-linkage.js';
 import { applyCStaticLinkageSideChannel } from './capture-side-channel.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 
 /**
  * Per-pass memo of the augmented `#include`-resolution file set
@@ -35,8 +35,7 @@ import { perFileSet } from '../../import-resolvers/per-file-set.js';
  * byte-identical. The augmented set's IDENTITY is load-bearing downstream —
  * C++ delegates to `resolveCImportTarget`, whose `suffixIndex` memo is keyed on
  * exactly this set — so one memo shared across the two languages would hand
- * each the other's index. Same builder-shared/memo-separate rule as
- * `import-resolvers/pass-cache.ts`.
+ * each the other's index. Sharing a builder must not share its memo.
  */
 const augmentedFilePathsFor = perFileSet((allFilePaths: ReadonlySet<string>) =>
   perFileSet((headerPaths: ReadonlySet<string>): ReadonlySet<string> => {

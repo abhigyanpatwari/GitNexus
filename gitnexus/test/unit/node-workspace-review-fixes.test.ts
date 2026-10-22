@@ -13,7 +13,7 @@ import {
   loadNodeWorkspacePackages,
   invalidateNodeWorkspacePackages,
   resolveNodeWorkspaceImport,
-} from '../../src/core/ingestion/import-resolvers/node-workspace-packages.js';
+} from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
 import { _captureLogger } from '../../src/core/logger.js';
 
 function mkRepo(prefix: string) {

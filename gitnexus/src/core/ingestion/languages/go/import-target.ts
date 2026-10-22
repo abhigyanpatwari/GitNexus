@@ -4,8 +4,8 @@ import {
   filesInDir,
   sortedRootFiles,
   type PackageDirIndex,
-} from '../../import-resolvers/package-dir-index.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+} from '../../utils/package-dir-index.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { isGoWorkspaceConfig, locateGoImport } from './workspace-config.js';
 
 /**
@@ -80,7 +80,7 @@ function isGoPackageFile(normalized: string): boolean {
  *
  * The orchestrator hands the same Set to every import in a pass, so the index
  * is built once per run. `resolveGoImportTarget` must therefore never copy the
- * Set before this point — see `import-resolvers/workspace-file-index.ts`.
+ * Set before this point — see `utils/workspace-file-index.ts`.
  */
 const getGoPackageIndex = perFileSet(
   (allFilePaths: ReadonlySet<string>): PackageDirIndex =>
