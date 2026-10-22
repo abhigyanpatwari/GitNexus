@@ -29,7 +29,7 @@ import { expandRWildcardNames } from '../../../../src/core/ingestion/languages/r
 import {
   resolveRImportTarget,
   resolveRNamedImport,
-} from '../../../../src/core/ingestion/import-resolvers/r.js';
+} from '../../../../src/core/ingestion/languages/r/import-target.js';
 
 function parse(src: string, filePath: string): ParsedFile {
   const parsed = extractParsedFile(rProvider, src, filePath);

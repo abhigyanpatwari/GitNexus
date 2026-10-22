@@ -5,7 +5,7 @@
  * roxygen tags and rename requests carry the symbol. The scope, qualified-call,
  * post-parse, rename and type code compare the two spellings through
  * {@link rBareName}, so there is one definition of "the same name" there. The one
- * other normaliser is `stripBackticks` in `import-resolvers/r.ts`, which removes
+ * other normaliser is `stripBackticks` in `languages/r/import-target.ts`, which removes
  * every leading and trailing backtick from a NAMESPACE entry (a quoted
  * `` "`x`" `` entry keeps its backticks after `normaliseArg`) before comparing it
  * with a symbol.

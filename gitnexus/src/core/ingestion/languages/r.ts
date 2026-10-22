@@ -12,7 +12,7 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as rTypeConfig } from '../type-extractors/r.js';
-import { resolveRImport } from '../import-resolvers/r.js';
+import { resolveRImport } from './r/import-target.js';
 import { R_QUERIES } from '../tree-sitter-queries.js';
 import { RFieldExtractor } from '../field-extractors/r.js';
 import { rMethodExtractor } from '../method-extractors/r.js';

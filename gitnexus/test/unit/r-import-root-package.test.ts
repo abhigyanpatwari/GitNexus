@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveRImportTarget } from '../../src/core/ingestion/import-resolvers/r.js';
+import { resolveRImportTarget } from '../../src/core/ingestion/languages/r/import-target.js';
 import type { RPackageConfig } from '../../src/core/ingestion/languages/r/package-config.js';
 
 // `library("pkg")` resolves to the `R/` files of the local package, whatever directory the

@@ -4,19 +4,15 @@
  */
 
 import path from 'path';
-import type { SuffixIndex } from './utils.js';
-import { suffixResolve } from './utils.js';
+import type { SuffixIndex } from '../../import-resolvers/utils.js';
+import { suffixResolve } from '../../import-resolvers/utils.js';
 import type { ParsedFile } from 'gitnexus-shared';
-import { rExportPatternMatches, type RPackageConfig } from '../languages/r/package-config.js';
-import { rBareName } from '../languages/r/bare-name.js';
-import {
-  rFileTopLevel,
-  rPackageDirForFile,
-  type RFileTopLevel,
-} from '../languages/r/namespace-imports.js';
-import type { ImportResult, ResolveCtx } from './types.js';
-import type { ImportResolutionContext } from '../scope-resolution/contract/scope-resolver.js';
-import { getWorkspaceFileIndex } from './workspace-file-index.js';
+import { rExportPatternMatches, type RPackageConfig } from './package-config.js';
+import { rBareName } from './bare-name.js';
+import { rFileTopLevel, rPackageDirForFile, type RFileTopLevel } from './namespace-imports.js';
+import type { ImportResult, ResolveCtx } from '../../import-resolvers/types.js';
+import type { ImportResolutionContext } from '../../scope-resolution/contract/scope-resolver.js';
+import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
 
 /**
  * Low-level R import resolver (internal helper).
@@ -251,7 +247,7 @@ export function resolveRNamedImport(
  *  - Cross-language false-positive guard: a `library()`/`require()` package
  *    name not found in `rConfig.packages` would otherwise fall through to
  *    `resolveRImportInternal`'s generic suffix fallback — and `EXTENSIONS`
- *    (`./utils.js`) has no `.R`/`.r` entry, so a bare R package reference can
+ *    (`../../import-resolvers/utils.ts`) has no `.R`/`.r` entry, so a bare R package reference can
  *    suffix-match an unrelated same-named file in another language.
  *    `context.parsedImport.kind === 'wildcard'` is exactly the
  *    `library()`/`require()` shape (see `interpretRImport`), so the guard is

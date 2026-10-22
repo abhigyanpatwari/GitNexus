@@ -28,7 +28,7 @@ import {
   resolveRQualifiedFreeCall,
 } from '../../../../src/core/ingestion/languages/r/qualified-call.js';
 import { expandRWildcardNames } from '../../../../src/core/ingestion/languages/r/scope-resolver.js';
-import { resolveRNamedImport } from '../../../../src/core/ingestion/import-resolvers/r.js';
+import { resolveRNamedImport } from '../../../../src/core/ingestion/languages/r/import-target.js';
 
 function parse(src: string, filePath: string): ParsedFile {
   const parsed = extractParsedFile(rProvider, src, filePath);

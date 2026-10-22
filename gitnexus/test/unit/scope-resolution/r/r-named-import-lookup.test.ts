@@ -11,7 +11,7 @@ import type {
   RNamespaceInfo,
   RPackageConfig,
 } from '../../../../src/core/ingestion/languages/r/package-config.js';
-import { resolveRNamedImport } from '../../../../src/core/ingestion/import-resolvers/r.js';
+import { resolveRNamedImport } from '../../../../src/core/ingestion/languages/r/import-target.js';
 
 /** A set that counts every way of walking all of its entries. */
 class CountingSet extends Set<string> {

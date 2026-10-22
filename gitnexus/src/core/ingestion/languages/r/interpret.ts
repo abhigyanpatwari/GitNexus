@@ -8,7 +8,7 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding } from 'gitnexus-sha
  * `library()`/`require()` are wildcard imports — every top-level name of the
  * named local package becomes visible (`rScopeResolver.expandsWildcardTo`).
  *
- * `resolveRImportTarget` (`import-resolvers/r.ts`) guards on
+ * `resolveRImportTarget` (`languages/r/import-target.ts`) guards on
  * `context.parsedImport.kind === 'wildcard'` specifically to refuse a
  * `library()`/`require()` package name that isn't a known local package
  * (rather than falling through to a cross-language suffix-match false

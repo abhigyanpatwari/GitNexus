@@ -3,7 +3,7 @@
  * generic `runScopeResolution` orchestrator.
  *
  * Thin wiring: import resolution reuses `resolveRImportTarget`
- * (`import-resolvers/r.ts`), an adapter over the existing
+ * (`languages/r/import-target.ts`), an adapter over the existing
  * `resolveRImportInternal`, with the repo's local R packages
  * threaded through `loadRPackageConfig`. Heritage (R6 `inherit=`, S4
  * `contains=`) mostly rides the generic `@reference.inherits` mechanism —
@@ -36,7 +36,7 @@ import { generateId } from '../../../../lib/utils.js';
 import { loadRPackageConfig, recordRPackageConfig } from './package-config.js';
 import { rBareName } from './bare-name.js';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { resolveRImportTarget } from '../../import-resolvers/r.js';
+import { resolveRImportTarget } from './import-target.js';
 import {
   isRGlobalNameFallbackPlausible,
   populateRNamespaceImports,
@@ -157,7 +157,7 @@ const parsedFileByModuleScope = perFileSet(
  * never callable as `foo()`) can win. The dropped name resolves through the
  * free-call fallback instead, where {@link rIsCallableVisibleFromCaller}
  * removes the dotted def from the candidates. Order-blind, like the matching
- * guard in `import-resolvers/r.ts`.
+ * guard in `languages/r/import-target.ts`.
  */
 export function expandRWildcardNames(
   targetModuleScope: ScopeId,

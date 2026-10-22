@@ -29,7 +29,7 @@
  * The second half of the file binds those entries to workspace definitions:
  * {@link populateRNamespaceImports} synthesises `named` imports for
  * `importFrom()` names that a *local* package provides, and
- * {@link resolveRImportTarget}'s `named` branch (`import-resolvers/r.ts`)
+ * {@link resolveRImportTarget}'s `named` branch (`languages/r/import-target.ts`)
  * resolves them using {@link rFileTopLevel} / {@link rPackageDirForFile}.
  *
  * The file also hosts the pieces of `pkg::name()` qualifier handling that the
@@ -43,7 +43,7 @@ import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import type { RPackageConfig } from './package-config.js';
 import { unescapeRString } from './export-pattern.js';
 import { rBareName } from './bare-name.js';
-import { resolveRNamedImport } from '../../import-resolvers/r.js';
+import { resolveRNamedImport } from './import-target.js';
 
 /** One `importFrom(pkg, name)` pair, in NAMESPACE file order. */
 export interface RNamespaceImportFromEntry {
@@ -861,7 +861,7 @@ export function populateRNamespaceImports(
       for (const spelling of spellingsByPackage.get(pkg)?.get(name) ?? [name]) {
         // `null` means the name can never bind. A synthesised import for it would stay unresolved
         // yet count as an explicit name claim, suppressing the documented `global-name-fallback`.
-        // (Importing the resolver forms a cycle with import-resolvers/r.ts; every use is deferred
+        // (Importing the resolver forms a cycle with languages/r/import-target.ts; every use is deferred
         // to call time, so it is safe at runtime.)
         if (resolveRNamedImport(cfg, pkg, spelling, parsedFiles) === null) continue;
         synthesised.push({

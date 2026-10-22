@@ -33,7 +33,7 @@ import {
   compileRExportPattern,
   type RExportMatcher,
 } from '../../../../src/core/ingestion/languages/r/export-pattern.js';
-import { resolveRImportTarget } from '../../../../src/core/ingestion/import-resolvers/r.js';
+import { resolveRImportTarget } from '../../../../src/core/ingestion/languages/r/import-target.js';
 import { CountingSet } from '../../../helpers/counting-file-set.js';
 
 // ─── builders ───────────────────────────────────────────────────────────────
