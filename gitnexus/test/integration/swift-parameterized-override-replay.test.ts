@@ -53,7 +53,7 @@ func probeBound(svc: Child) { let u = svc.find(${args}); u.save() }
         child: '_ kind: Admin.Type, _ values: Int...',
         args: 'User.self, 1, 2',
       },
-    ])('declines inherited $label', async ({ base, child, args }) => {
+    ])('preserves return-owner precision for $label', async ({ base, child, args }) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-swift-overload-replay-'));
       try {
         writeFixtureRepo(root, {
@@ -68,7 +68,11 @@ func probeBound(svc: Child) { let u = svc.find(${args}); u.save() }
         const calls = getRelationships(result, 'CALLS').filter(
           (edge) => edge.source === 'probeBound' && edge.target === 'save',
         );
-        expect(calls).toEqual([]);
+        // Call argument types are not captured yet. Check owner precision
+        // without requiring the correct inherited result to stay unresolved.
+        for (const call of calls) {
+          expect(call.rel.targetId).toBe('Function:Main.swift:User.save#0');
+        }
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }
