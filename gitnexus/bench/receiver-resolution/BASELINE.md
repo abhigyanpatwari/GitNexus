@@ -982,6 +982,15 @@ Shape states remain unchanged; counts are 133 call drops and
 160 drops of all kinds (27 reads,
 0 writes). The counts include both main and this branch's fixes.
 
+### C++ qualified receivers after #3653
+
+Main `2b4456553` is merged normally. The field lookup retains both the declared namespace purpose and provider-qualified type handling. Build and both TypeScript configurations pass, and all 59 focused C++ and CommonJS merge checks pass. The measured receiver baseline has 133 call drops, 160 total drops, 27 reads and 0 writes.
 ### After merging #3653 into the C# namespace branch
 
 Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
+
+### C++ qualified receivers after #3655
+
+Main `caacc3bac` is merged normally. The regenerated combined baseline has 130 call drops,156 total,26 reads and zero writes; all shape states match. These counts include the C# namespace fix from main. The broad C++ resolver run was interrupted for the prioritized focused merge checks and is not reported as a pass. Fresh exact-head CI remains required.
+
+The prioritized merge validation passes a fresh package build, both TypeScript configurations and 56 tests across six C++, CommonJS and C# namespace-boundary files.

@@ -224,6 +224,11 @@ export function emitCppScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    if (grouped['@import.namespace-alias'] !== undefined) {
+      recordCppUsingDeclaration(filePath, grouped);
+      continue;
+    }
+
     // ── Handle #include statements ──────────────────────────────────
     // `@import.statement` is captured directly on the `preproc_include` node.
     if (grouped['@import.statement'] !== undefined) {
@@ -235,6 +240,19 @@ export function emitCppScopeCaptures(
           continue;
         }
       }
+    }
+
+    const callable = nodeIfType(
+      nodeMap['@declaration.function'] ?? nodeMap['@declaration.method'],
+      'function_definition',
+    );
+    if (callable?.parent?.type === 'template_declaration') {
+      const parameters = callable.parent.childForFieldName('parameters');
+      if (parameters !== null)
+        grouped['@declaration.type-parameters'] = nodeToCapture(
+          '@declaration.type-parameters',
+          parameters,
+        );
     }
 
     // ── Handle using declarations (using namespace / using name) ────
@@ -606,12 +624,34 @@ export function emitCppScopeCaptures(
                   grouped['@type-binding.type'] = nodeToCapture('@type-binding.type', fieldNode);
                   delete grouped['@type-binding.assignment'];
                 }
+              } else if (fnNode !== null && isCppQualifiedCallee(fnNode)) {
+                // auto x = rp::make() / auto x = rp::C() → bind the QUALIFIED
+                // callee, as `auto x = make()` binds `make` (the constructor rule
+                // in query.ts matches only a bare identifier callee). Left alone,
+                // the match bound `x` to the literal type `auto`. The resolver
+                // types `x` from the class the spelling names, or from the
+                // return type the callee's definition declares
+                // (ScopeResolver.splitQualifiedCallee).
+                grouped['@type-binding.constructor'] = anchor;
+                grouped['@type-binding.type'] = nodeToCapture('@type-binding.type', fnNode);
+                delete grouped['@type-binding.assignment'];
               }
             }
           }
         }
       }
     }
+
+    // A prototype's return type (`D makeD();`) is a module-level fact only at
+    // namespace scope. In a function body the same syntax declares a
+    // block-scope function — the most vexing parse, `D x();` — and its binding
+    // would be hoisted to the module and type every undeclared `x` in the file.
+    // Only the prototype rules anchor `@type-binding.return` on a `declaration`
+    // (definitions anchor on `function_definition`, in-class prototypes on
+    // `field_declaration`), and the match carries nothing else, so it is dropped
+    // whole.
+    const prototypeReturn = nodeIfType(nodeMap['@type-binding.return'], 'declaration');
+    if (prototypeReturn !== null && !isCppNamespaceScopeDeclaration(prototypeReturn)) continue;
 
     const parameterNode = nodeMap['@type-binding.parameter'];
     const parameterCapture = grouped['@type-binding.parameter'];
@@ -653,6 +693,48 @@ export function emitCppScopeCaptures(
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, CPP_CALLABLE_CAPTURE_OPTIONS));
   attachCppUsingClaims(out, filePath);
   return out;
+}
+
+/**
+ * A `qualified_identifier` callee naming a plain function or class — `rp::make`,
+ * `a::b::make`, `rp::C` — as opposed to a template call (`std::make_shared<T>`,
+ * typed by its own rule in query.ts), an operator or a destructor.
+ */
+function isCppQualifiedCallee(node: SyntaxNode): boolean {
+  if (node.type !== 'qualified_identifier') return false;
+  let name = node.childForFieldName('name');
+  while (name !== null && name.type === 'qualified_identifier') {
+    name = name.childForFieldName('name');
+  }
+  return name !== null && name.type === 'identifier';
+}
+
+/** Nodes a namespace-scope declaration may sit inside without leaving namespace
+ *  scope: preprocessor conditionals (include guards nest every declaration of a
+ *  guarded header in one), single-declaration `extern "C"`, and a `template`
+ *  prefix. */
+const CPP_NAMESPACE_SCOPE_WRAPPERS: ReadonlySet<string> = new Set([
+  'preproc_if',
+  'preproc_ifdef',
+  'preproc_else',
+  'preproc_elif',
+  'preproc_elifdef',
+  'linkage_specification',
+  'template_declaration',
+]);
+
+/**
+ * Is `node` declared at namespace scope — directly in the translation unit or in
+ * a namespace / `extern "C" {}` body (`declaration_list`), through any number of
+ * {@link CPP_NAMESPACE_SCOPE_WRAPPERS}? A function body, class body, friend
+ * declaration or anything else on the way up answers no.
+ */
+function isCppNamespaceScopeDeclaration(node: SyntaxNode): boolean {
+  for (let parent = node.parent; parent !== null; parent = parent.parent) {
+    if (parent.type === 'translation_unit' || parent.type === 'declaration_list') return true;
+    if (!CPP_NAMESPACE_SCOPE_WRAPPERS.has(parent.type)) return false;
+  }
+  return false;
 }
 
 /** Prototype and nested function-pointer parameter names do not bind the body. */

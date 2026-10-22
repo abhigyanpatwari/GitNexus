@@ -215,6 +215,8 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isBareClassReceiverCandidate'
   | 'importsBindAtLexicalScope'
   | 'resolveNamespaceChains'
+  | 'resolveQualifiedTypeSpellings'
+  | 'splitQualifiedCallee'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
@@ -279,6 +281,10 @@ export function classifyReceiverOrigin(
      *  external. Same hook the three receiver-chain lookups in
      *  `compound-receiver.ts` already receive. */
     readonly stripTypePreservingDecoration?: DecorationStripper;
+    /** `ScopeResolver.resolveQualifiedTypeSpellings`, so a base declared with a
+     *  qualified type (`rp::C x`) is classified by the same lookup that typed
+     *  (or failed to type) it. */
+    readonly qualifiedTypeSpellings?: boolean;
     /** `LanguageProvider.isBuiltInName`, threaded through the pass options the
      *  same way `emitFreeCallFallback` receives it. THE only source of positive
      *  external evidence available here; languages that declare no built-in set
@@ -302,8 +308,9 @@ export function classifyReceiverOrigin(
     // arguments, so an in-program generic base (`Box<String> b; b.open()`)
     // resolves instead of being mislabelled and dropped from the hedge.
     if (
-      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip) !==
-      undefined
+      resolveClassBindingForName(binding.declaredAtScope, binding.rawName, scopes, strip, {
+        qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+      }) !== undefined
     ) {
       return 'in-program';
     }
@@ -639,6 +646,31 @@ export function emitReceiverBoundCalls(
       return undefined;
     return uniqueClassAcross(files, tail);
   };
+  // A qualified callee as the free-call head of a compound receiver
+  // (`rp::make().m()`, or `x` bound to `rp::make`): the definition the
+  // qualified CALL resolves to, so its declared return type can type the
+  // receiver. Asked without call-site arity, so an ambiguous answer is none.
+  const splitQualifiedCallee = provider.splitQualifiedCallee;
+  const resolveQualifiedReceiverMember = provider.resolveQualifiedReceiverMember;
+  const resolveQualifiedCallee =
+    splitQualifiedCallee === undefined || resolveQualifiedReceiverMember === undefined
+      ? undefined
+      : (
+          callee: string,
+          inScope: ScopeId,
+          position?: TypeRef['lookupPosition'],
+        ): SymbolDefinition | undefined => {
+          const parts = splitQualifiedCallee(callee, inScope, scopes, position);
+          if (parts === undefined) return undefined;
+          const def = resolveQualifiedReceiverMember(
+            parts.receiver,
+            parts.member,
+            inScope,
+            scopes,
+            parsedFiles,
+          );
+          return def === 'ambiguous' ? undefined : def;
+        };
   const compoundOpts = {
     fieldFallback,
     elementTypeOf: provider.elementTypeOf,
@@ -652,12 +684,15 @@ export function emitReceiverBoundCalls(
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     qualifiedTypeLookupSpelling: provider.qualifiedTypeLookupSpelling,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
+    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+    resolveQualifiedCallee,
   };
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.
   const receiverOriginOpts = {
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
     isBuiltInName: options.isBuiltInName,
+    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
   };
 
   // Maps class-like graph ids back to ALL scope definitions that resolved to
@@ -2366,6 +2401,7 @@ export function emitReceiverBoundCalls(
           position: typeRef.lookupPosition,
           purpose: typeRef.lookupPurpose ?? 'type',
           onNameFallback,
+          qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
         };
         const qualifiedOwner = classOfQualifiedTypeSpelling(
           typeRef,
@@ -3094,7 +3130,11 @@ export function emitReceiverBoundCalls(
                   fieldDeclaredType.name,
                   scopes,
                   provider.stripTypePreservingDecoration,
-                  { onNameFallback, purpose: fieldDeclaredType.purpose },
+                  {
+                    onNameFallback,
+                    purpose: fieldDeclaredType.purpose,
+                    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+                  },
                 );
           if (receiverClass !== undefined) {
             const chain = [
