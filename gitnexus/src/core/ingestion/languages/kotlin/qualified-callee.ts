@@ -33,7 +33,7 @@ import {
   resolveInheritanceBaseInScope,
 } from '../../scope-resolution/scope/walkers.js';
 import { getKotlinPackageFact } from './package-facts.js';
-import { isCompanionScope } from './companion-scopes.js';
+import { companionHasNoSupertypes, isCompanionScope } from './companion-scopes.js';
 
 /** Two or more plain names joined by `.` (`kqfmod.make`, `com.acme.mod.make`). */
 const KOTLIN_DOTTED_PATH_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/;
@@ -55,7 +55,8 @@ interface KotlinPackageDeclarations {
  * Keyed on the pass's workspace index, like Rust's `passIndexFor`: the builder
  * reads the package facts and module scopes of the same pass, which
  * `perFileSet`'s key-only builder cannot hand it. A new pass is a new key, and
- * the WeakMap entry goes with it.
+ * the WeakMap entry goes with it. The hook first runs after MRO construction;
+ * scopes and the workspace index stay paired for that pass.
  */
 const PACKAGE_DECLARATIONS = new WeakMap<WorkspaceResolutionIndex, KotlinPackageDeclarations>();
 
@@ -184,6 +185,8 @@ export function resolveKotlinQualifiedCallee(
           .filter((id) => isCompanionScope(memberScope.filePath, id));
         index.companionScopes.set(memberScope.id, companions);
       }
+      if (companions.some((id) => !companionHasNoSupertypes(memberScope.filePath, id)))
+        return undefined;
       for (const candidate of [
         memberScope,
         ...companions.map((id) => scopes.scopeTree.getScope(id)),

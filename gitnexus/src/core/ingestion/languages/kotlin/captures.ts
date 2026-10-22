@@ -255,7 +255,13 @@ export function emitKotlinScopeCaptures(
         range: grouped['@scope.companion']!.range,
         kind: 'Class',
       });
-      markCompanionScope(filePath, scopeId);
+      const companion = nodeIfType(groupedNodes['@scope.companion'], 'companion_object');
+      const hasNoSupertypes =
+        companion !== null &&
+        !companion.namedChildren.some(
+          (child) => child?.type === 'delegation_specifier' || child?.type === 'ERROR',
+        );
+      markCompanionScope(filePath, scopeId, hasNoSupertypes);
       continue;
     }
 
