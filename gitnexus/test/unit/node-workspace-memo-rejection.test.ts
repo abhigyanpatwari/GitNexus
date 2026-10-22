@@ -85,7 +85,7 @@ describe('node-workspace-packages memo: a rejected invalidated load keeps the ne
 
   it('load B survives load A rejecting after invalidation', async () => {
     const { loadNodeWorkspacePackages, invalidateNodeWorkspacePackages } =
-      await import('../../src/core/ingestion/import-resolvers/node-workspace-packages.js');
+      await import('../../src/core/ingestion/languages/typescript/workspace-packages.js');
     const key = path.resolve(repo);
 
     ctx.gateRoot = key;

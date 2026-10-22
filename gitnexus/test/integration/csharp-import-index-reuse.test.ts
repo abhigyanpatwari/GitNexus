@@ -3,7 +3,7 @@
  *
  * The no-csproj `using` path reads TWO per-file-set indexes, each memoized on
  * the `allFilePaths` Set identity via its own WeakMap: the shared
- * `getWorkspaceFileIndex` (`import-resolvers/workspace-file-index.ts`, used by
+ * `getWorkspaceFileIndex` (`utils/workspace-file-index.ts`, used by
  * both the csproj and no-csproj legs) and `getCsharpDirIndex`
  * (`languages/csharp/import-target.ts`, the namespace-directory index behind
  * `firstFileDirectlyInPkgDir`). A four-segment `using` used to cost up to eight
