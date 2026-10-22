@@ -29,6 +29,7 @@ import {
   isModuleLevelThisExport,
   isShadowedCjsExportAssignmentNode,
 } from './typescript/cjs-export-assignment.js';
+import { collectCommonJsModuleKind, withCommonJsModuleKind } from './typescript/module-kind.js';
 
 const rootOf = (node: SyntaxNode): SyntaxNode | undefined =>
   (node as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
@@ -522,7 +523,8 @@ export const typescriptProvider = defineLanguage({
   // ./typescript/index.ts for the full per-hook rationale and the
   // canonical capture vocabulary in ./typescript/query.ts
   // (TYPESCRIPT_SCOPE_QUERY constant).
-  emitScopeCaptures: emitTsScopeCaptures,
+  emitScopeCaptures: withCommonJsModuleKind(emitTsScopeCaptures),
+  collectCaptureSideChannel: collectCommonJsModuleKind,
   // CFG/PDG substrate (#2081 M1) — runs in the worker on a --pdg run.
   cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretTsImport,
@@ -616,7 +618,8 @@ export const javascriptProvider = defineLanguage({
   // semantics are identical; JS-specific additions (CJS require(),
   // JSDoc type bindings) live in ./javascript/captures.ts.
   // See ./javascript/index.ts for the full per-module rationale.
-  emitScopeCaptures: emitJsScopeCaptures,
+  emitScopeCaptures: withCommonJsModuleKind(emitJsScopeCaptures),
+  collectCaptureSideChannel: collectCommonJsModuleKind,
   // CFG/PDG substrate (#2081 M1) — TS and JS share the same grammar family.
   cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretJsImport,

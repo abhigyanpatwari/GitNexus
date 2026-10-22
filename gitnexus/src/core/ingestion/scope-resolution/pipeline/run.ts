@@ -122,6 +122,7 @@ import {
 } from '../utils/generic-instantiation.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
+import { withdrawAnsweredReceiverDrops } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
 import { parseTruthyEnv } from '../../utils/env.js';
 
@@ -764,6 +765,8 @@ export function runScopeResolution(
         if (extractionWarned) scopeExtractionFailedPaths.push(file.path);
         continue;
       }
+      const captureSideChannel = provider.languageProvider.collectCaptureSideChannel?.(file.path);
+      if (captureSideChannel !== undefined) parsed = { ...parsed, captureSideChannel };
       if (input.pdg === true && provider.languageProvider.collectSourceCfgs) {
         const warnCfg = (message: string): void => {
           logger.warn(message);
@@ -1509,6 +1512,7 @@ export function runScopeResolution(
   // several functions returning the same field name. Sites it resolves are
   // added to the skip set, so the fallback below never second-guesses them.
   const sharedPropertyIndex = input.prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
+  const answeredAfterReceiverPass = new Set<string>();
   const returnShapeMembers = callableFlowOnly
     ? { emitted: 0, memberNotOnShape: 0 }
     : emitReturnShapeMemberAccesses(
@@ -1519,6 +1523,7 @@ export function runScopeResolution(
         uniqueNameSkipSites,
         sharedPropertyIndex,
         uniqueNameSkipSites,
+        answeredAfterReceiverPass,
       );
 
   const nameFallbackDisabled = provider.fieldFallbackOnMethodLookup === false;
@@ -1540,7 +1545,9 @@ export function runScopeResolution(
         finalized,
         sharedPropertyIndex,
         nameFallbackDisabled,
+        answeredAfterReceiverPass,
       );
+  withdrawAnsweredReceiverDrops(resolutionOutcomes, answeredAfterReceiverPass);
 
   // value-ref registrations (#2437): USES edges at the registration sites
   // plus field-based dispatch — synthesized CALLS from member-call sites to

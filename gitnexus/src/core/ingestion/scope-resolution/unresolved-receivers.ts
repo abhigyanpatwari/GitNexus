@@ -1,5 +1,5 @@
 /**
- * Aggregate `receiver-unresolved` resolution outcomes into the small,
+ * Aggregate unresolved and owned-but-unbound receiver calls into the small,
  * index-persisted summary that `impact()` / `context()` read to decide whether
  * their result is exact or a lower bound (#2744, the second half of #2708).
  *
@@ -74,7 +74,7 @@ export interface UnresolvedReceiverSummary {
  * identical or the artifact churns on one map and not the other is exactly the
  */
 /**
- * A `receiver-unresolved` drop at a CALL site.
+ * An unresolved or owned-but-unbound receiver at a CALL site.
  *
  * ONE predicate, shared by the persisted summary and the per-file diagnostic —
  * the same contract `rankAndCap` states for its comparator. If the two ever
@@ -86,8 +86,9 @@ export interface UnresolvedReceiverSummary {
  * (`x.argtypes = [...]`) arrive alongside lost method calls — measured at 25 of
  * 124 drops on the fixture corpus. Counting them made the consumer's "N call
  * sites invoking X were dropped" literally false. A missing `siteKind` counts as
- * a call: the only emitter always sets it, and erring toward `lower-bound` is
- * the safe direction for an epistemic signal.
+ * a call for `receiver-unresolved`, preserving the older recorder contract.
+ * Owned-but-unbound outcomes require an explicit call kind because that
+ * recorder also reports property accesses.
  *
  * Receiver ORIGIN is deliberately NOT decided here — the summary routes external
  * drops into their own bucket while the diagnostic excludes them, and collapsing
@@ -98,8 +99,9 @@ function isUnresolvedReceiverCall(
 ): outcome is Extract<ResolutionOutcome, { kind: 'suppressed' }> {
   return (
     outcome.kind === 'suppressed' &&
-    outcome.reason === 'receiver-unresolved' &&
-    (outcome.siteKind === undefined || outcome.siteKind === 'call')
+    ((outcome.reason === 'receiver-unresolved' &&
+      (outcome.siteKind === undefined || outcome.siteKind === 'call')) ||
+      (outcome.reason === 'receiver-owned-but-unbound' && outcome.siteKind === 'call'))
   );
 }
 
