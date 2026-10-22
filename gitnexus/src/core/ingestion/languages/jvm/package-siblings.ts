@@ -244,11 +244,38 @@ export function createJvmPackageSiblingVisibility(
     return fact?.status === 'known' ? fact.packageName : undefined;
   };
 
+  // Scope indexes are immutable for this inheritance pass. Hydrate each file's
+  // module children once; local and nested classes are not package siblings.
+  const topLevelIds = new WeakMap<ScopeResolutionIndexes, Map<string, ReadonlySet<string>>>();
+  const isPackageClass = (def: SymbolDefinition, scopes: ScopeResolutionIndexes): boolean => {
+    let files = topLevelIds.get(scopes);
+    if (files === undefined) topLevelIds.set(scopes, (files = new Map()));
+    let ids = files.get(def.filePath);
+    if (ids === undefined) {
+      const found = new Set<string>();
+      const module = scopes.moduleScopes.get(def.filePath);
+      if (module !== undefined) {
+        for (const childId of scopes.scopeTree.getChildren(module)) {
+          const child = scopes.scopeTree.getScope(childId);
+          if (child?.kind !== 'Class') continue;
+          for (const candidate of child.ownedDefs) {
+            if (isClassLike(candidate.type) || candidate.type === 'Annotation')
+              found.add(candidate.nodeId);
+          }
+        }
+      }
+      files.set(def.filePath, (ids = found));
+    }
+    return ids.has(def.nodeId);
+  };
+
   return {
     populateNamespaceSiblings,
     isVisibilityIncomplete: (filePath) => incompleteFiles.has(filePath),
     resolveImplicitInheritanceBase: (baseName, derivingClass, scopes) =>
-      resolveSameNamespaceInheritanceBase(baseName, derivingClass, scopes, packageOf),
+      resolveSameNamespaceInheritanceBase(baseName, derivingClass, scopes, packageOf, (def) =>
+        isPackageClass(def, scopes),
+      ),
   };
 }
 

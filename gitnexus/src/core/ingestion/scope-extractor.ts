@@ -115,6 +115,7 @@ import {
   typeApplicationArguments,
 } from './utils/template-arguments.js';
 import { parseTypeParameterList } from './utils/type-parameters.js';
+import { followedStep } from './utils/type-ref-chain.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -1312,7 +1313,7 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
     if (next === current) return current; // self-ref
     if (visited.has(next.rawName)) return current; // cycle guard
     visited.add(next.rawName);
-    current = { ...next, bindingRange: start.bindingRange };
+    current = followedStep(start, next);
   }
   return current;
 }

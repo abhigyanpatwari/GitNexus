@@ -21,7 +21,7 @@ try {
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
-import { buildSuffixIndex, type SuffixIndex } from '../../ingestion/import-resolvers/utils.js';
+import { buildSuffixIndex, type SuffixIndex } from '../../ingestion/utils/suffix-index.js';
 import { createIgnoreFilter } from '../../../config/ignore-service.js';
 import { getMaxFileSizeBytes } from '../../ingestion/utils/max-file-size.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';

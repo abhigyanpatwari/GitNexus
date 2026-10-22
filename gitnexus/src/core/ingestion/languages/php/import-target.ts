@@ -17,10 +17,10 @@
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import type { ImportResolutionContext } from '../../scope-resolution/contract/scope-resolver.js';
-import { resolvePhpImportInternal } from '../../import-resolvers/php.js';
-import type { SuffixIndex } from '../../import-resolvers/utils.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
+import { resolvePhpImportInternal } from './import-helpers.js';
+import type { SuffixIndex } from '../../utils/suffix-index.js';
+import { perFileSet } from '../../utils/per-file-set.js';
+import { getWorkspaceFileIndex } from '../../utils/workspace-file-index.js';
 import {
   mergeComposerConfigs,
   parseComposerConfig,
@@ -305,7 +305,7 @@ const getPhpWorkspaceIndex = perFileSet((allFilePaths: ReadonlySet<string>): Php
    *
    * DEFERRED for the same reason as the shared `dirMap` (#2903), and here the
    * case is stronger: `getFilesInDir` has exactly one caller,
-   * `import-resolvers/php.ts`'s PSR-4 function/constant fallback, and that
+   * `import-helpers.ts`'s PSR-4 function/constant fallback, and that
    * caller sits inside `if (composerConfig) { … }`. `resolvePhpImportTarget`
    * hard-codes `composerConfig: null`, so on the LanguageProvider path the map
    * is statically unreachable; on the ScopeResolver path it is reachable only

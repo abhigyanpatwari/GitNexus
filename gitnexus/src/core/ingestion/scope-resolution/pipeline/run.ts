@@ -256,13 +256,18 @@ function resolveImplicitInheritanceBaseAtSite(
   scopes: ScopeResolutionIndexes,
   resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
 ): SymbolDefinition | undefined {
-  if (resolveImplicitBase === undefined || !isBareInheritanceBase(site)) return undefined;
+  if (
+    resolveImplicitBase === undefined ||
+    derivingClass.isSynthetic === true ||
+    !isBareInheritanceBase(site)
+  )
+    return undefined;
   const claim = lookupNameClaim(site.lookupScope ?? site.inScope, site.name, scopes, {
     position: site.atRange,
     purpose: site.lookupPurpose ?? 'type',
   });
   if (hasExplicitNameClaim(claim, site.name)) return undefined;
-  return resolveImplicitBase(site.name, derivingClass, scopes);
+  return resolveImplicitBase(site.name, derivingClass, scopes, site);
 }
 
 /**
@@ -1598,6 +1603,8 @@ export function runScopeResolution(
           collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
           isCallableValueTarget: provider.isCallableValueTarget,
           hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
+          qualifiedTypeLookupSpelling: provider.qualifiedTypeLookupSpelling,
+          isNamespaceMemberVisible: provider.isNamespaceMemberVisible,
           deferredIndirectSites,
           callSignaturesBySite: deferredIndirectCollection.callSignaturesBySite,
           onWarn: (warning) =>

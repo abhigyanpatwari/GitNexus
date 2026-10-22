@@ -1,5 +1,5 @@
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 
 /**
  * Per-file set of function names declared with `static` storage class.

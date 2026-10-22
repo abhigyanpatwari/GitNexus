@@ -126,12 +126,16 @@ const csharpScopeResolver: ScopeResolver = {
   // declared in another file of the SAME named namespace binds here. Exact
   // namespace only (the `namespacePrefix` sidecar from `populateOwners`):
   // enclosing-namespace and global visibility stay with the shared chain.
-  resolveImplicitInheritanceBase: (baseName, derivingClass, scopes) =>
+  resolveImplicitInheritanceBase: (baseName, derivingClass, scopes, site) =>
     resolveSameNamespaceInheritanceBase(
       baseName,
       derivingClass,
       scopes,
       (def) => def.namespacePrefix,
+      // This provider captures type parameters for every class-like declaration.
+      (def) =>
+        site !== undefined &&
+        (def.typeParameters?.length ?? 0) === (site.typeArguments?.length ?? 0),
     ),
 
   // C# is statically typed — type information is reliable. Field-

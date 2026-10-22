@@ -1739,6 +1739,7 @@ export function resolveSameNamespaceInheritanceBase(
   derivingClass: SymbolDefinition,
   scopes: ScopeResolutionIndexes,
   namespaceOf: (def: SymbolDefinition) => string | undefined,
+  acceptsCandidate?: (def: SymbolDefinition) => boolean,
 ): SymbolDefinition | undefined {
   const namespace = namespaceOf(derivingClass);
   if (namespace === undefined) return undefined;
@@ -1751,7 +1752,7 @@ export function resolveSameNamespaceInheritanceBase(
     if (def === undefined || def.nodeId === derivingClass.nodeId || !isClassLike(def.type)) {
       continue;
     }
-    if (namespaceOf(def) !== namespace) continue;
+    if (namespaceOf(def) !== namespace || acceptsCandidate?.(def) === false) continue;
     const segments = def.filePath.split('/');
     let shared = 0;
     while (
