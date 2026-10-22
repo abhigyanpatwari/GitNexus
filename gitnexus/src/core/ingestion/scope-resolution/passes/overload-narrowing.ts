@@ -24,8 +24,8 @@
  *      equality. An empty string in `argTypes[i]` means "unknown" and
  *      counts as a match. Mismatches disqualify. A non-empty typed
  *      result wins; otherwise return the arity-filtered candidates.
- *      Unknown parameter slots retain possible candidates alongside exact
- *      or conversion matches without counting as exact-match evidence.
+ *      Unknown parameter slots may retain candidates whose known slots satisfy
+ *      the active exact/conversion stage; they are not exact-match evidence.
  *   4b. When the exact-type filter from step 4 returns empty AND a
  *       `conversionRankFn` is provided (via `hookCtx`), rank candidates
  *       via pairwise dominance comparison (ISO C++ [over.ics.rank]):
@@ -235,7 +235,7 @@ export function narrowOverloadCandidates(
       }
       return true;
     });
-    if (unknownParameterMatches.length > 0) {
+    if (unknownParameterMatches.length > 0 && result.length > 0) {
       result = candidates.filter(
         (candidate) => result.includes(candidate) || unknownParameterMatches.includes(candidate),
       );

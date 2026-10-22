@@ -62,6 +62,7 @@ class Admin { func save() {} }
 class Base { func find(${base}) -> User { User() } }
 class Child: Base { func find(${child}) -> Admin { Admin() } }
 func probeBound(svc: Child) { let u = svc.find(${args}); u.save() }
+func probeControl(user: User) { user.save() }
 `,
         });
         const result = await runPipelineFromRepo(root, () => {}, {});
@@ -73,6 +74,13 @@ func probeBound(svc: Child) { let u = svc.find(${args}); u.save() }
         for (const call of calls) {
           expect(call.rel.targetId).toBe('Function:Main.swift:User.save#0');
         }
+        // This supported call checks fixture-local resolution, not completeness
+        // of the primary call or coverage of every selective primary-path loss.
+        const controlCalls = getRelationships(result, 'CALLS')
+          .filter((edge) => edge.source === 'probeControl' && edge.target === 'save')
+          .map((edge) => edge.rel.targetId)
+          .sort();
+        expect(controlCalls).toEqual(['Function:Main.swift:User.save#0']);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }

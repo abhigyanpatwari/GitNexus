@@ -90,6 +90,7 @@ class Base { func getUser() -> User { return User() } }
 class Child: Base { func getUser(_ id: Int) -> Admin { return Admin() } }
 func probe(svc: Child) { svc.getUser().save() }
 func probeBound(svc: Child) { let user = svc.getUser(); user.save() }
+func probeControl(user: User) { user.save() }
 `,
         );
         const result = await runPipelineFromRepo(root, () => {}, {});
@@ -105,6 +106,18 @@ func probeBound(svc: Child) { let user = svc.getUser(); user.save() }
         for (const call of saveCalls) {
           expect(call.targetId).toBe('Function:Models.swift:User.save#0');
         }
+        // This supported call checks fixture-local resolution, not completeness
+        // of the primary calls or coverage of every selective primary-path loss.
+        const controlCalls = [...result.graph.iterRelationships()]
+          .filter(
+            (e) =>
+              e.type === 'CALLS' &&
+              result.graph.getNode(e.sourceId)?.properties.name === 'probeControl' &&
+              e.targetId.includes('.save'),
+          )
+          .map((e) => e.targetId)
+          .sort();
+        expect(controlCalls).toEqual(['Function:Models.swift:User.save#0']);
       } finally {
         await fs.rm(root, { recursive: true, force: true });
       }
@@ -122,6 +135,7 @@ func probeBound(svc: Child) { let user = svc.getUser(); user.save() }
 class User { Admin call() => Admin(); void save() {} }
 class Service { User getUser() => User(); }
 void probe(Service svc) { svc.getUser.call().save(); }
+void probeControl(User user) { user.save(); }
 `,
         );
         const result = await runPipelineFromRepo(root, () => {}, {});
@@ -135,6 +149,18 @@ void probe(Service svc) { svc.getUser.call().save(); }
         for (const call of saveCalls) {
           expect(call.targetId).toBe('Method:models.dart:User.save#0');
         }
+        // This supported call checks fixture-local resolution, not completeness
+        // of the primary call or coverage of every selective primary-path loss.
+        const controlCalls = [...result.graph.iterRelationships()]
+          .filter(
+            (e) =>
+              e.type === 'CALLS' &&
+              result.graph.getNode(e.sourceId)?.properties.name === 'probeControl' &&
+              e.targetId.includes('.save'),
+          )
+          .map((e) => e.targetId)
+          .sort();
+        expect(controlCalls).toEqual(['Method:models.dart:User.save#0']);
       } finally {
         await fs.rm(root, { recursive: true, force: true });
       }
