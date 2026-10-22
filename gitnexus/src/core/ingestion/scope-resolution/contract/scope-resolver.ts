@@ -1841,19 +1841,17 @@ export interface ScopeResolver {
    * `class A { getUser(): User }` and `class B { getUser(): Admin }` in one
    * file only B's survives, and the plain walk-up types `a.getUser()` as
    * `Admin`. It does the same with an imported top-level function of that
-   * name, or for a class that has no such member at all. With this toggle the
-   * walk-up joins the binding to its declaration instead: its
-   * `TypeRef.bindingRange` must enclose the declaration of a member with that
-   * name owned by the class (`ownerId`, from `populateOwners`), else the walk
-   * keeps climbing and, failing that, declines.
+   * name, or for a class that has no such member at all. With this toggle,
+   * authoritative owner-scoped method lookup first selects a unique member
+   * and reads its exact declared return fact. When that fact is absent, a
+   * hoisted binding counts only if its `bindingRange` encloses that member's
+   * declaration. A known ambiguous or untyped member stops ancestor fallback.
    *
-   * The cost is the declaration whose binding was overwritten: `a.getUser()`
-   * above resolves to nothing rather than to `Admin`, including when A and B
-   * happen to return the same type, which the plain walk-up gets right by
-   * accident. Languages that already relied on the plain walk-up (C#,
-   * TypeScript, …) leave this off until the hoisted bindings are keyed per
-   * declaration; a language newly enabling the walk-up has no such edges to
-   * lose and should set it.
+   * Exact declaration facts recover overwritten bindings for both A and B.
+   * Multiple declarations sharing one graph ID remain ambiguous. Inherited
+   * overloads without a proven zero-argument override signature are declined,
+   * and reading a method reference does not invoke its return type. Languages
+   * that rely on the plain walk-up leave this off; its behaviour is unchanged.
    */
   readonly hoistedTypeBindingsRequireOwner?: boolean;
 

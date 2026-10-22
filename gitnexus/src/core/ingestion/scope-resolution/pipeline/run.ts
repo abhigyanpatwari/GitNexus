@@ -121,6 +121,7 @@ import {
   type HeritageTypeArgumentSink,
 } from '../utils/generic-instantiation.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
+import { narrowOverloadCandidates } from '../passes/overload-narrowing.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 import { withdrawAnsweredReceiverDrops } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
@@ -139,20 +140,31 @@ export function applyPreciseCallResultBindings(
   workspaceIndex: ReturnType<typeof buildWorkspaceResolutionIndex>,
   calleeIds: CalleeIdAccumulator,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
+  model: SemanticModel,
+  requireOwnedHoistedReturn = false,
 ): number {
   let updated = 0;
-  const returnTypeByGraphId = new Map<string, TypeRef>();
+  const returnTypeByGraphId = new Map<string, { type: TypeRef; def: SymbolDefinition }>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       const returnType = workspaceIndex.declaredReturnTypeByCallableId.get(def.nodeId);
       if (returnType === undefined) continue;
       const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
-      if (graphId !== undefined) returnTypeByGraphId.set(graphId, returnType);
+      if (graphId !== undefined) returnTypeByGraphId.set(graphId, { type: returnType, def });
     }
   }
   for (const parsed of parsedFiles) {
     const resolvedByPosition = calleeIds.get(parsed.filePath);
     if (resolvedByPosition === undefined) continue;
+    let callsByPosition: Map<string, ReferenceSite | null> | undefined;
+    if (requireOwnedHoistedReturn) {
+      callsByPosition = new Map();
+      for (const site of parsed.referenceSites) {
+        if (site.kind !== 'call') continue;
+        const key = calleeIdPosKey(site.atRange.startLine, site.atRange.startCol);
+        callsByPosition.set(key, callsByPosition.has(key) ? null : site);
+      }
+    }
     for (const assignment of parsed.callResultAssignmentSites ?? []) {
       const targets = resolvedByPosition.get(
         calleeIdPosKey(assignment.callSite.startLine, assignment.callSite.startCol),
@@ -160,8 +172,59 @@ export function applyPreciseCallResultBindings(
       if (targets === undefined || targets.size !== 1) continue;
       const targetId = targets.values().next().value as string | undefined;
       if (targetId === undefined) continue;
-      const returnType = returnTypeByGraphId.get(targetId);
-      if (returnType === undefined) continue;
+      const returned = returnTypeByGraphId.get(targetId);
+      if (returned === undefined) continue;
+      if (requireOwnedHoistedReturn) {
+        const site = callsByPosition?.get(
+          calleeIdPosKey(assignment.callSite.startLine, assignment.callSite.startCol),
+        );
+        if (site == null || site.arity === undefined) continue;
+        const def = returned.def;
+        const candidates =
+          def.ownerId === undefined
+            ? [def]
+            : [def.ownerId, ...indexes.methodDispatch.mroFor(def.ownerId)].flatMap((owner) =>
+                model.methods.lookupAllByOwner(owner, site.name),
+              );
+        const narrowed = [
+          ...new Map(
+            narrowOverloadCandidates(candidates, site.arity, site.argumentTypes).map(
+              (candidate) => [candidate.nodeId, candidate],
+            ),
+          ).values(),
+        ];
+        // The exact selected declaration may shadow distinct ancestors only
+        // with equivalent, fully known parameter metadata. Numeric counts may
+        // both be absent (variadics); an empty type slot is still unknown.
+        const ancestors = new Set(
+          def.ownerId === undefined ? [] : indexes.methodDispatch.mroFor(def.ownerId),
+        );
+        const owners = new Set(narrowed.map((candidate) => candidate.ownerId));
+        const parameters = def.parameterTypes;
+        if (
+          narrowed[0]?.nodeId !== def.nodeId ||
+          owners.size !== narrowed.length ||
+          narrowed
+            .slice(1)
+            .some(
+              (candidate) =>
+                candidate.ownerId === undefined ||
+                !ancestors.has(candidate.ownerId) ||
+                candidate.parameterCount !== def.parameterCount ||
+                (def.parameterCount !== 0 &&
+                  (parameters === undefined ||
+                    parameters.length === 0 ||
+                    (def.parameterCount !== undefined &&
+                      parameters.length !== def.parameterCount) ||
+                    candidate.parameterTypes?.length !== parameters.length ||
+                    parameters.some(
+                      (type, index) => type === '' || type !== candidate.parameterTypes?.[index],
+                    ))),
+            )
+        )
+          continue;
+      }
+      const returnType = returned.type;
       const scope = indexes.scopeTree.getScope(assignment.inScope);
       if (scope === undefined) continue;
       (scope.typeBindings as Map<string, TypeRef>).set(assignment.lhs, {
@@ -1407,6 +1470,8 @@ export function runScopeResolution(
           workspaceIndex,
           calleeIdAccumulator,
           postHeritageNodeLookup,
+          readonlyModel,
+          provider.hoistedTypeBindingsRequireOwner === true,
         );
   if (replayedCallResultBindings > 0) {
     const handledBeforeReplay = new Set(handledSites);

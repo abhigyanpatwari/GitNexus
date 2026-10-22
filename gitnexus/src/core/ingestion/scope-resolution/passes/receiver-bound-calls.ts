@@ -938,6 +938,8 @@ export function emitReceiverBoundCalls(
     namespaceSkipsEnclosingClasses: provider.namespaceSkipsEnclosingClasses,
     hoistTypeBindingsToModule,
     hoistedTypeBindingsRequireOwner: provider.hoistedTypeBindingsRequireOwner === true,
+    lookupOwnedMethods: (ownerId: string, memberName: string) =>
+      model.methods.lookupAllByOwner(ownerId, memberName),
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
     isTypeApplicationCall: provider.isTypeApplicationCall,
