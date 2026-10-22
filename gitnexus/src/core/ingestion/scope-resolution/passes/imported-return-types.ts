@@ -328,6 +328,12 @@ export function followChainPostFinalize(
     if (next === undefined || claim.bindings.some((binding) => binding.origin !== 'local')) {
       const candidates = new Map<string, TypeRef>();
       for (const binding of claim.bindings) {
+        // A member exposed through an import bucket must not replace a
+        // return fact anchored on the module's own free function.
+        if (binding.def.type === 'Method' && next?.source === 'return-annotation') {
+          const owner = scopes.scopeTree.getScope(next.declaredAtScope);
+          if (owner?.kind === 'Module' && isModuleOwnReturn(next, owner, current.rawName)) continue;
+        }
         const producer = producerTypeRef(binding.def.nodeId, scopes);
         if (producer !== undefined) candidates.set(binding.def.nodeId, producer);
       }
