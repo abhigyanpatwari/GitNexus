@@ -273,7 +273,7 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
       const className = children[0];
       const method = children[1];
       if (className?.type === 'identifier' && method?.text === 'new') {
-        return { varName: lhs.text, calleeName: className.text };
+        return { varName: lhs.text, calleeName: rBareName(className.text) };
       }
     }
   }

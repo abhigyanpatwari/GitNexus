@@ -185,6 +185,13 @@ describe('R type environment: only an assignment binds a type', () => {
     });
   });
 
+  it('scans a backticked R6 class name as the bare class name', () => {
+    expect(constructorBinding('obj <- `Foo`$new()')).toEqual({
+      varName: 'obj',
+      calleeName: 'Foo',
+    });
+  });
+
   it.each(['+', '==', '->'])('scans nothing for `obj %s Foo$new()`', (op) => {
     expect(constructorBinding(`obj ${op} Foo$new()`)).toBeUndefined();
     expect(constructorBinding(`obj ${op} new("Foo")`)).toBeUndefined();
