@@ -7,6 +7,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { isBuiltin } from 'node:module';
 import type Parser from 'tree-sitter';
 import { unboundCallableName } from './typescript/unbound-callables.js';
 import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
@@ -531,6 +532,7 @@ export const typescriptProvider = defineLanguage({
   }),
   builtInNames: BUILT_INS,
   externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isBuiltin,
 
   // Member-assignment shapes are not free functions (#2723 follow-up). The
   // capture arrives anchored on the assignment, so the shape is decided from
@@ -633,6 +635,7 @@ export const javascriptProvider = defineLanguage({
   }),
   builtInNames: BUILT_INS,
   externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isBuiltin,
 
   // Member-assignment shapes — see the TypeScript provider above.
   labelOverride: (functionNode, defaultLabel) =>

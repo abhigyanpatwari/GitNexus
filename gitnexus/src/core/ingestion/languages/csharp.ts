@@ -139,13 +139,23 @@ const BUILT_INS: ReadonlySet<string> = new Set([
  * `Dictionary<string, User> data`). Kept out of `BUILT_INS`, which also
  * filters callee names.
  *
- * `System` is the BCL's root namespace. `Dictionary` is the one collection the
- * capture layer does NOT reduce to its element type (it takes two arguments),
- * so it is the one that reaches a receiver position spelled as itself. `string`
+ * `System` is the BCL's root namespace. These two-argument collection types
+ * retain their outer name at capture rather than reducing to one element type,
+ * so they reach a receiver position spelled as themselves. `string`
  * is a keyword alias of `System.String` and cannot be declared by a program.
  * A program type or binding by any of these names still wins.
  */
-const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set(['System', 'Dictionary', 'string']);
+const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set([
+  'System',
+  'Dictionary',
+  'SortedDictionary',
+  'SortedList',
+  'ConcurrentDictionary',
+  'ReadOnlyDictionary',
+  'IDictionary',
+  'IReadOnlyDictionary',
+  'string',
+]);
 
 export const csharpProvider = defineLanguage({
   rename: csharpRenameProvider,
