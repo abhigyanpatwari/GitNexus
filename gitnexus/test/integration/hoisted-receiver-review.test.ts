@@ -99,7 +99,7 @@ func probeBound(svc: Child) { let user = svc.getUser(); user.save() }
             ['probe', 'probeBound'].includes(
               result.graph.getNode(e.sourceId)?.properties.name ?? '',
             ) &&
-            e.targetId.includes('Admin.save'),
+            e.targetId.includes('.save'),
         );
         expect(wrong).toEqual([]);
       } finally {
@@ -126,7 +126,7 @@ void probe(Service svc) { svc.getUser.call().save(); }
           (e) =>
             e.type === 'CALLS' &&
             result.graph.getNode(e.sourceId)?.properties.name === 'probe' &&
-            e.targetId.includes('Admin.save'),
+            e.targetId.includes('.save'),
         );
         expect(wrong).toEqual([]);
       } finally {

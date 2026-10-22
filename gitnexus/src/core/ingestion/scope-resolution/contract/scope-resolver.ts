@@ -1847,7 +1847,9 @@ export interface ScopeResolver {
    * hoisted binding counts only if its `bindingRange` encloses that member's
    * declaration. A known ambiguous or untyped member stops ancestor fallback.
    *
-   * Exact declaration facts recover overwritten bindings for both A and B.
+   * Where the provider emits exact declaration return facts, those facts recover
+   * overwritten bindings for both A and B. A provider without them conservatively
+   * declines the overwritten owner.
    * Multiple declarations sharing one graph ID remain ambiguous. Inherited
    * overloads without a proven zero-argument override signature are declined,
    * and reading a method reference does not invoke its return type. Languages

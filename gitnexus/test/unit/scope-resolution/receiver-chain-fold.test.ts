@@ -8,6 +8,8 @@
 
 import { describe, it, expect } from 'vitest';
 import type { ScopeId } from 'gitnexus-shared';
+import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
+import { reconcileOwnership } from '../../../src/core/ingestion/scope-resolution/pipeline/reconcile-ownership.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { csharpScopeResolver } from '../../../src/core/ingestion/languages/csharp/scope-resolver.js';
 import { foldReceiverChain } from '../../../src/core/ingestion/scope-resolution/passes/compound-receiver.js';
@@ -106,8 +108,11 @@ const ctx: FoldContext = { fixture: tsFixture, inScope: tsFixture.moduleScope };
 function foldIn(ctx: FoldContext, encoded: string, overrides: FoldOptions = {}) {
   const decoded = decodeReceiverChain(encoded);
   expect(decoded).toBeDefined();
+  const model = createSemanticModel();
+  reconcileOwnership([ctx.fixture.parsed], model);
   return foldReceiverChain(decoded!, ctx.inScope, ctx.fixture.scopes, ctx.fixture.index, {
     fieldFallback: false,
+    lookupOwnedMethods: (owner, name) => model.methods.lookupAllByOwner(owner, name),
     hoistTypeBindingsToModule: true,
     elementTypeOf: ctx.fixture.resolver.elementTypeOf,
     ...overrides,
