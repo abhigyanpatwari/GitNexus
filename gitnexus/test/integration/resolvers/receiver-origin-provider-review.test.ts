@@ -10,6 +10,28 @@ import {
 } from './helpers.js';
 const cases = [
   [
+    'Node process import in Vue',
+    'App.vue',
+    `<script lang="ts">
+import process from 'node:process';
+export const CURRENT = process.env.RUNTIME_TEST_KEY;
+export default {};
+</script>`,
+    'RUNTIME_TEST_KEY',
+    true,
+  ],
+  [
+    'unknown import named process in Vue',
+    'App.vue',
+    `<script lang="ts">
+import process from 'not-node-runtime';
+export const CURRENT = process.env.RUNTIME_TEST_KEY;
+export default {};
+</script>`,
+    'RUNTIME_TEST_KEY',
+    false,
+  ],
+  [
     'Node process import in TypeScript',
     'main.ts',
     "import process from 'node:process';\nexport const CURRENT = process.env.RUNTIME_TEST_KEY;\n",

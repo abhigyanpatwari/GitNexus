@@ -12,6 +12,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { isBuiltin } from 'node:module';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { vueClassConfig } from '../class-extractors/configs/typescript-javascript.js';
 import { defineLanguage } from '../language-provider.js';
@@ -94,6 +95,7 @@ export const vueProvider = defineLanguage({
   builtInNames: VUE_BUILT_INS,
   // A `<script>` block runs on the same host as any other module.
   externalReceiverNames: TS_EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isBuiltin,
   // Vue SFC <script> blocks use the TypeScript or TSX grammar,
   // so the TS CFG visitor builds CFGs for the script's functions verbatim —
   // no Vue-specific visitor needed (#2195).
