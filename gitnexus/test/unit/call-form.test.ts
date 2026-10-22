@@ -565,6 +565,20 @@ describe('extractMixedChain', () => {
       expected: { chain: [call('get_typed')], baseReceiverName: undefined },
     },
     {
+      label: 'C# generic free call has no base, so nothing is minted',
+      language: CSharp,
+      code: 'class A { void M() { GetTyped<User>().Save(); } }',
+      member: 'Save',
+      expected: { chain: [call('GetTyped')], baseReceiverName: undefined },
+    },
+    {
+      label: 'C++ qualified template function has no base, so nothing is minted',
+      language: CPP,
+      code: 'void f() { ns::getTyped<User>()->save(); }',
+      member: 'save',
+      expected: { chain: [call('getTyped')], baseReceiverName: undefined },
+    },
+    {
       label: 'Java type arguments sit beside the name (control)',
       language: Java,
       code: 'class A { void m() { svc.<User>getTyped().save(); } }',
@@ -739,6 +753,29 @@ describe('extractMixedChain', () => {
       code: 'func f() { svc.getUser(0).save() }',
       member: 'save',
       expected: { chain: [call('getUser')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'Swift trailing-closure call stays a call',
+      language: Swift,
+      code: 'func f() { svc.getUsers { $0 }.save() }',
+      member: 'save',
+      expected: { chain: [call('getUsers')], baseReceiverName: 'svc' },
+    },
+    // Kotlin shares `call_suffix → value_arguments`; its subscripts are
+    // `indexing_expression`, so its calls must never read as index steps.
+    {
+      label: 'Kotlin parenthesized call stays a call',
+      language: Kotlin,
+      code: 'fun f() { svc.getUser(0).save() }',
+      member: 'save',
+      expected: { chain: [call('getUser')], baseReceiverName: 'svc' },
+    },
+    {
+      label: 'Kotlin generic call stays a call',
+      language: Kotlin,
+      code: 'fun f() { svc.getTyped<User>().save() }',
+      member: 'save',
+      expected: { chain: [call('getTyped')], baseReceiverName: 'svc' },
     },
   ];
 
