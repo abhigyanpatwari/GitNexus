@@ -1,8 +1,10 @@
 /**
  * Rust: trait implementations + ambiguous module import disambiguation
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -13,6 +15,7 @@ import {
   findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
   type RelEdge,
 } from './helpers.js';
@@ -1501,6 +1504,160 @@ describe('Field type resolution (Rust)', () => {
     expect(addr!.properties.isReadonly).toBe(true);
     expect(addr!.properties.declaredType).toBe('Address');
   });
+});
+
+// ---------------------------------------------------------------------------
+// Smart-pointer and borrowed struct fields as call receivers (#3498)
+//
+// The struct-field normalizer cut everything from the first `<`, so a
+// `Box<User>` field was typed `Box` and `self.repo.save()` bound nothing. It
+// also stripped `&` but not a lifetime, so `&'a User` came out as `'a User`.
+// Box, Rc and Arc auto-deref on a method call, so they now unwrap to their
+// argument. RefCell, Cell, Mutex, RwLock, Option and Vec need `.borrow()`,
+// `.get()`, `.lock()`, `.read()`, a match or an index first, so a direct call
+// on them must still bind nothing. `Address` and `User` both declare `save`,
+// so a by-name fallback cannot pass the positive rows.
+// ---------------------------------------------------------------------------
+
+describe('Rust smart-pointer field receivers (#3498)', () => {
+  let result: PipelineResult;
+  let root: string;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rust-pointer-fields-'));
+    writeFixtureRepo(root, {
+      'address.rs': `pub struct Address;
+
+impl Address {
+    pub fn save(&self) {}
+}
+`,
+      'user.rs': `pub struct User;
+
+impl User {
+    pub fn save(&self) {}
+}
+`,
+      'saver.rs': `pub trait Saver {
+    fn persist(&self);
+}
+`,
+      'main.rs': `mod address;
+mod saver;
+mod user;
+use saver::Saver;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, RwLock};
+use user::User;
+
+struct Holder<'a> {
+    boxed: Box<User>,
+    rc: Rc<User>,
+    arc: Arc<User>,
+    qualified_rc: std::rc::Rc<User>,
+    nested: Rc<Box<User>>,
+    borrowed: &'a User,
+    borrowed_mut: &'a mut User,
+    dyn_boxed: Box<dyn Saver>,
+    plain: User,
+    ref_cell: RefCell<User>,
+    cell: Cell<User>,
+    mutex: Mutex<User>,
+    rw_lock: RwLock<User>,
+    option: Option<User>,
+    vec: Vec<User>,
+    arc_ref_cell: Arc<RefCell<User>>,
+}
+
+impl<'a> Holder<'a> {
+    fn via_boxed(&self) { self.boxed.save(); }
+    fn via_rc(&self) { self.rc.save(); }
+    fn via_arc(&self) { self.arc.save(); }
+    fn via_qualified_rc(&self) { self.qualified_rc.save(); }
+    fn via_nested(&self) { self.nested.save(); }
+    fn via_borrowed(&self) { self.borrowed.save(); }
+    fn via_borrowed_mut(&self) { self.borrowed_mut.save(); }
+    fn via_dyn_boxed(&self) { self.dyn_boxed.persist(); }
+    fn via_plain(&self) { self.plain.save(); }
+    fn via_ref_cell(&self) { self.ref_cell.save(); }
+    fn via_cell(&self) { self.cell.save(); }
+    fn via_mutex(&self) { self.mutex.save(); }
+    fn via_rw_lock(&self) { self.rw_lock.save(); }
+    fn via_option(&self) { self.option.save(); }
+    fn via_vec(&self) { self.vec.save(); }
+    fn via_arc_ref_cell(&self) { self.arc_ref_cell.save(); }
+}
+
+fn via_boxed_param(u: Box<User>) { u.save(); }
+
+fn main() {}
+`,
+    });
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it.each([
+    { caller: 'via_boxed', spelling: 'Box<User>', member: 'save', targets: ['Function:user.rs'] },
+    { caller: 'via_rc', spelling: 'Rc<User>', member: 'save', targets: ['Function:user.rs'] },
+    { caller: 'via_arc', spelling: 'Arc<User>', member: 'save', targets: ['Function:user.rs'] },
+    {
+      caller: 'via_qualified_rc',
+      spelling: 'std::rc::Rc<User>',
+      member: 'save',
+      targets: ['Function:user.rs'],
+    },
+    {
+      caller: 'via_nested',
+      spelling: 'Rc<Box<User>>',
+      member: 'save',
+      targets: ['Function:user.rs'],
+    },
+    { caller: 'via_borrowed', spelling: "&'a User", member: 'save', targets: ['Function:user.rs'] },
+    {
+      caller: 'via_borrowed_mut',
+      spelling: "&'a mut User",
+      member: 'save',
+      targets: ['Function:user.rs'],
+    },
+    {
+      caller: 'via_dyn_boxed',
+      spelling: 'Box<dyn Saver>',
+      member: 'persist',
+      targets: ['Function:saver.rs'],
+    },
+    {
+      caller: 'via_plain',
+      spelling: 'User (control)',
+      member: 'save',
+      targets: ['Function:user.rs'],
+    },
+    {
+      caller: 'via_boxed_param',
+      spelling: 'Box<User> parameter (control)',
+      member: 'save',
+      targets: ['Function:user.rs'],
+    },
+    { caller: 'via_ref_cell', spelling: 'RefCell<User>', member: 'save', targets: [] },
+    { caller: 'via_cell', spelling: 'Cell<User>', member: 'save', targets: [] },
+    { caller: 'via_mutex', spelling: 'Mutex<User>', member: 'save', targets: [] },
+    { caller: 'via_rw_lock', spelling: 'RwLock<User>', member: 'save', targets: [] },
+    { caller: 'via_option', spelling: 'Option<User>', member: 'save', targets: [] },
+    { caller: 'via_vec', spelling: 'Vec<User>', member: 'save', targets: [] },
+    { caller: 'via_arc_ref_cell', spelling: 'Arc<RefCell<User>>', member: 'save', targets: [] },
+  ])(
+    'resolves $member called from $caller through $spelling to $targets',
+    ({ caller, member, targets }) => {
+      const actual = getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === caller && edge.target === member)
+        .map((edge) => `${edge.targetLabel}:${edge.targetFilePath}`);
+      expect(actual).toEqual(targets);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
