@@ -7052,8 +7052,8 @@ export class LocalBackend {
         filePath: row.filePath,
         startLine: row.startLine ?? undefined,
         endLine: row.endLine ?? undefined,
-        // The indexed export verdict, for providers whose refinement lives outside the indexed
-        // sources. Absent on tables without the column, and never consulted by the engine.
+        // The indexed export verdict, read by providers whose refinement lives outside the
+        // indexed sources (R rename's second privacy check). Absent on tables without the column.
         ...(typeof row.isExported === 'boolean' ? { isExported: row.isExported } : {}),
       },
     }));
