@@ -11,6 +11,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
   writeFixtureRepo,
@@ -2942,5 +2943,57 @@ describe('C# inline constructor receiver resolution', () => {
     );
     expect(call).toMatchObject({ target: 'DoWork' });
     expect(call!.rel.targetId).toContain('Other.DoWork');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Global-namespace precedence: a global type must not hide a same-named type
+// that C# name lookup reaches first. Inside a namespace declaration a simple
+// name binds to the current namespace, then each enclosing one, and the global
+// namespace is the outermost. Each namespace declaration's using directives are
+// consulted at that level. So the compilation unit's usings come after the
+// global namespace's own types. The fixture pairs `Billing.Voucher` with an
+// unrelated global `Voucher` in another file.
+// ---------------------------------------------------------------------------
+
+describe('C# global-namespace type precedence', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-global-namespace-precedence'),
+      () => {},
+    );
+  }, 60000);
+
+  it.each([
+    ['Create', 'Voucher', 'Billing/Voucher.cs', 'own class, constructed inside itself'],
+    ['Open', 'Voucher', 'Billing/Voucher.cs', 'same-namespace sibling constructor'],
+    ['Settle', 'Post', 'Billing/Voucher.cs', 'same-namespace sibling member'],
+    ['Settle', 'Notify', 'Billing/Voucher.cs', 'field chain through the sibling'],
+    ['Print', 'Post', 'Billing/Voucher.cs', 'enclosing namespace'],
+    ['Check', 'Post', 'Billing/Voucher.cs', 'using inside a block namespace'],
+    ['Record', 'Post', 'Billing/Voucher.cs', 'using after a file-scoped namespace'],
+    ['Main', 'Post', 'Global/Voucher.cs', 'file outside any namespace'],
+    ['Import', 'Post', 'Global/Voucher.cs', 'global type before compilation-unit using'],
+  ])('%s -> %s resolves only into %s (%s)', (caller, callee, targetFile) => {
+    const targetFiles = getRelationships(result, 'CALLS')
+      .filter((e) => e.source === caller && e.target === callee)
+      .map((e) => e.targetFilePath);
+    expect(targetFiles).toEqual([targetFile]);
+  });
+
+  it('reads the Payee property of Billing.Voucher in the field chain', () => {
+    const reads = getRelationships(result, 'ACCESSES')
+      .filter((e) => e.source === 'Settle')
+      .map((e) => `${e.targetLabel}:${e.target}@${e.targetFilePath}`);
+    expect(reads).toEqual(['Property:Payee@Billing/Voucher.cs']);
+  });
+
+  it('leaves no receiver unresolved', () => {
+    const drops = getResolutionOutcomes(result).filter(
+      (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
+    );
+    expect(drops).toEqual([]);
   });
 });

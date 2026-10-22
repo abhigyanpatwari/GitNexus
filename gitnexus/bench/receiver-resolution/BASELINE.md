@@ -29,6 +29,30 @@ more sites than the original standalone branch, which cleared 14. The `b12`
 alias control resolves. Zig call drops fall from 13 to 10; `no-chain` call
 drops move from 34 to 31 and `in-program` calls from 60 to 57.
 
+## C# namespace precedence after main integration
+
+Types resolve through the enclosing namespace declaration's lookup tiers.
+Its own namespace and scoped using targets precede enclosing and global
+namespaces; compilation-unit usings follow. Registry candidate collection stops
+at the winning tier, retaining ambiguity within that tier. Bare class receivers
+exclude known nonzero generic arity outside the class itself. Positioned using
+ownership uses binary search over namespace starts.
+
+Before the Zig merge, against main `2b6542737`, call drops move from 138 to 135, reads from 42 to 41,
+writes stay at 20, and all-kind drops move from 200 to 196. The four cleared
+sites are the two Address.Save calls in csharp-field-types and
+csharp-deep-field-chain, plus the City read and GetName call in the latter.
+All shape-arm states are unchanged. The resolution corpus has 5,313 rows versus
+5,309 on main: 40 removed records and 44 added records, all in C#.
+Process traversal is capped; these counts do not prove whole-flow coverage.
+
+After merging main `f6e42092`, the baseline is 132 call drops, 26 reads,
+20 writes and 178 across all kinds. Initializing the fixture's `Voucher.Payee`
+keeps those counts and all shape states unchanged. The current corpus has
+5,324 records versus main's 5,319: 45 additions and 40 removals, all in C#.
+The initializer adds a constructor capture; only the C# capture fingerprint
+changes, and all 16 scaling ratios remain below their unchanged budgets.
+
 ## JS/TS literal-key writes and class-level field receivers (#3498)
 
 Measured on top of #3654 (`a3db31923`, tree-identical to its squash merge
@@ -954,6 +978,10 @@ The fallback excludes function-local and nested JVM candidates, while local and 
 ### Merged main `f6e42092`
 
 Re-measured both benchmark arms after merging the Zig receiver fix from main.
+Shape states remain unchanged; counts are 132 call drops and
+178 drops of all kinds (26 reads,
+20 writes). The counts include both main and this branch's fixes.
+
 Shape states remain unchanged; counts are 133 call drops and
 160 drops of all kinds (27 reads,
 0 writes). The counts include both main and this branch's fixes.
@@ -963,3 +991,10 @@ Shape states remain unchanged; counts are 133 call drops and
 Native review controls reproduced production Java imports and Java/Kotlin inheritance selecting nearer test-only declarations, an inherited nested base losing to a package homonym, a resolved Kotlin typealias import losing its claim, and a C# tuple argument counting as two type arguments. The corrected focused run passes 71 tests in five files, including positive test-source ownership controls and ordinary nested/local inheritance. The generic argument splitter now keeps tuple commas together.
 
 Canonical `src/main/java` and `src/main/kotlin` sources exclude recognized non-main source-set candidates before proximity ranking. Custom layouts retain prior eligibility; this is not build-system classpath resolution. JVM package fallback refuses when an enclosing class has inheritance whose member types the pre-MRO pass cannot establish, and explicit named imports retain their claim even when the import names a typealias rather than a class. These conservative cases may remain unresolved. Java duplicate-FQN import selection is part of this same package-ownership fix. Fresh current-main integration and hosted CI remain required.
+### After merging #3653 into the C# namespace branch
+
+Main `2b4456553` is merged normally. The measured baseline has 130 call drops and 156 across all kinds, with 26 reads and zero writes. Main has 133 calls, 27 reads and zero writes (160 total). Every shape state matches main. The fresh build and both TypeScript configurations pass, as do all 68 namespace-boundary, capture, hook and CommonJS merge checks.
+
+### Same-package inheritance after #3655
+
+Main `caacc3bac` is merged normally. The C# resolver retains both main's bare-receiver eligibility hook and this branch's inheritance hook. The combined source passes a fresh package build, both TypeScript configurations and82 focused checks in six files. Before this main merge, the final visibility fixes passed741 Java/Kotlin/C# resolver tests in three files; those runs overlap and are not a unique total. The combined C# capture baseline is remeasured at193 files and2899 groups, fingerprint3720a3d2, scaling1.039 below the unchanged1.5 budget. Receiver counts are remeasured from combined sources. Fresh hosted CI remains required.
