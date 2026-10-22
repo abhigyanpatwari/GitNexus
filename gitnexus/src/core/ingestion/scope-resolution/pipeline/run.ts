@@ -1018,11 +1018,9 @@ export function runScopeResolution(
   });
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
 
-  // Cross-file implicit-namespace visibility (C#). Must run before
-  // propagateImportedReturnTypes so the latter pass sees siblings'
-  // class bindings when chasing return-type chains across files.
-  // The hook writes to `bindingAugmentations` only; finalized
-  // `indexes.bindings` remains immutable post-finalize (I8).
+  // Complete implicit namespace visibility and refine provider-owned type facts
+  // before return propagation. New bindings use bindingAugmentations; existing
+  // scope typeBindings may be refined. indexes.bindings stays immutable (I8).
   if (provider.populateNamespaceSiblings !== undefined) {
     provider.populateNamespaceSiblings(parsedFiles, indexes, {
       fileContents: getFileContents(),
