@@ -41,7 +41,7 @@
  *    `CountingSet`, driven by the contract test's `minimumParsedFileReads`.
  *
  * A THIRD shape — an array materialized from the file set — is what the type
- * exists to reject. `import-resolvers/csharp.ts` used one until #2911, and it
+ * exists to reject. `languages/csharp/import-helpers.ts` used one until #2911, and it
  * is worth a compile error rather than a rule: copying an array mints a fresh
  * `WeakMap` key while traversing the Set zero extra times, so every
  * scan-counting guard stays green at its correct value while the index rebuilds
@@ -49,9 +49,7 @@
  * above and was caught only by a timing ratio in `bench/import-target/`. Derive
  * the array inside the builder from `getWorkspaceFileIndex(allFilePaths)`
  * instead. `string[]` is not assignable to `K`, so the shape cannot come back
- * silently — `configs/swift.ts` keeps the one hand-rolled `WeakMap` on
- * `ctx.allFileList` in the tree, deliberately and with its reasons written
- * down, and it is deliberately NOT on this primitive.
+ * silently.
  *
  * `T extends object` is deliberate, chosen over probing `has` before `get`.
  * `WeakMap.get` returning `undefined` cannot distinguish "not built yet" from

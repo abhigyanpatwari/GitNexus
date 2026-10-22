@@ -30,30 +30,10 @@
  * (`languages/kotlin/import-target.ts`); this index, the C# csproj index and
  * the legacy `go.ts` scan followed.
  *
- * The strongest evidence that the rule was accidental is that a sixth
- * implementation of the same question never had it. `import-resolvers/jvm.ts`
- * answers "files directly inside a directory ending with <packagePath>" for
- * Java and Kotlin wildcard imports, and has used `lastIndexOf` since #488.
- *
- * That is evidence about how the predicate was WRITTEN, not about live
- * behaviour, and the distinction matters enough to spell out. `jvm.ts` is
- * reached only through `provider.importResolver`, which `languages/java.ts` and
- * `languages/kotlin.ts` do wire — but that field currently has no production
- * READER. Its only reader anywhere is `import-target-adapter.ts`, whose own
- * docblock says it is "threaded through `finalizeScopeModel`"; nothing threads
- * it, and neither that module nor its two exports
- * (`buildImportTargetWorkspace`, `resolveImportTargetAcrossLanguages`) is
- * referenced outside its own unit test. So `jvm.ts`'s `resolveJvmWildcard` and
- * `import-resolvers/go.ts`'s `resolveGoPackage` are dormant, while THIS index,
- * `csharp.ts`'s `resolveCSharpImportInternal` and Kotlin's `dirChildren` are
- * the ones that run. Whether those two dormant resolvers should be deleted or
- * actually wired up is an open question and wants its own issue; it is not
- * settled here.
- *
- * The argument survives that correction intact, because it never needed the
- * resolvers to be live: an independent implementation of the same question,
- * written without reference to the pre-index scan, reached for `lastIndexOf`.
- * The extra clause was never a rule anyone chose. All six spellings now agree.
+ * The former JVM wildcard helper independently used `lastIndexOf` since #488,
+ * which helped identify the first-occurrence restriction as accidental.
+ * That dormant helper has been removed; this index and the active namespace
+ * resolvers retain the corrected suffix predicate.
  *
  * The length guard the `indexOf` form needed is gone with it: `endsWith` is
  * false for a shorter `D` instead of comparing -1 to -1.

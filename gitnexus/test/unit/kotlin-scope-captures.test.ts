@@ -139,6 +139,18 @@ describe('Kotlin scope captures', () => {
 
     expect(spuriousSelfBinding).toBeUndefined();
   });
+
+  it('retains the receiver of an extension function as this', () => {
+    const captures = captureTexts('fun Ctx.run() { work() }');
+    expect(
+      captures.some(
+        (match) =>
+          match['@type-binding.self'] !== undefined &&
+          match['@type-binding.name'] === 'this' &&
+          match['@type-binding.type'] === 'Ctx',
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('Kotlin package-qualified call bindings (#3498 follow-up)', () => {
@@ -157,7 +169,7 @@ describe('Kotlin package-qualified call bindings (#3498 follow-up)', () => {
     ['fun f() { val x = com.acme.mod.make() }', 'com.acme.mod.make'],
     ['fun f() { val x = com.acme\n  .mod.make(1) }', 'com.acme.mod.make'],
   ])('keeps the whole package path of %j', (source, path) => {
-    expect(bindingsOfX(source)).toEqual([`${path}/constructor-inferred`]);
+    expect(bindingsOfX(source)).toEqual([`${path}()/constructor-inferred`]);
   });
 
   it.each([

@@ -12,7 +12,7 @@
  * `targetRaw` arrives already quote-stripped from `interpretDartImport`.
  */
 
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { DART_HERITAGE_PREFIX } from './interpret.js';
 import type { DartPackageConfig } from './package-config.js';
 import { DART_PACKAGE_SCHEME, dartPackageImportName } from './package-uri.js';

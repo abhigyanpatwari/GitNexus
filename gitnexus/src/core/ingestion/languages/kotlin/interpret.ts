@@ -48,7 +48,15 @@ export function interpretKotlinTypeBinding(captures: CaptureMatch): ParsedTypeBi
   // Kept whole: the last segment is the function's name, not a type, and only
   // `resolveQualifiedCallee` can read the path (#3498 follow-up).
   if (captures[KOTLIN_QUALIFIED_CALLEE_TAG] !== undefined) {
-    return { boundName: nameCap.text, rawTypeName: typeCap.text, source: 'constructor-inferred' };
+    const callee = `${typeCap.text}()`;
+    return {
+      boundName: nameCap.text,
+      rawTypeName: callee,
+      // A callee is not a declared type; leave the spelling slot available for
+      // the selected producer's return annotation after the chain is followed.
+      declaredSpelling: callee,
+      source: 'constructor-inferred',
+    };
   }
 
   let source: TypeRef['source'] = 'annotation';

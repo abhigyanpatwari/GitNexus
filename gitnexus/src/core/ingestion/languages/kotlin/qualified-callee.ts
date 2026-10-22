@@ -23,10 +23,14 @@
  * the index is built once per resolution pass.
  */
 
-import type { Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { Scope, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../../scope-resolution/workspace-index.js';
-import { findEnclosingClassDef, lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
+import {
+  findEnclosingClassDef,
+  findClassBindingInScope,
+  lookupNameClaim,
+} from '../../scope-resolution/scope/walkers.js';
 import { getKotlinPackageFact } from './package-facts.js';
 
 /** Two or more plain names joined by `.` (`kqfmod.make`, `com.acme.mod.make`). */
@@ -56,9 +60,11 @@ function packageDeclarationsFor(
   if (cached !== undefined) return cached;
   const functions = new Map<string, Map<string, SymbolDefinition[]>>();
   const names = new Map<string, Set<string>>();
-  for (const [filePath, moduleScope] of workspaceIndex.moduleScopeByFile) {
+  for (const filePath of workspaceIndex.moduleScopeByFile.keys()) {
     const fact = getKotlinPackageFact(filePath);
     if (fact?.status !== 'known') continue;
+    const moduleScope = workspaceIndex.moduleScopeByFile.get(filePath);
+    if (moduleScope === undefined) continue;
     let packageNames = names.get(fact.packageName);
     if (packageNames === undefined) {
       packageNames = new Set();
@@ -97,6 +103,7 @@ export function resolveKotlinQualifiedCallee(
   scopes: ScopeResolutionIndexes,
   workspaceIndex: WorkspaceResolutionIndex,
 ): SymbolDefinition | undefined {
+  if (calleeText.endsWith('()')) calleeText = calleeText.slice(0, -2);
   calleeText = calleeText.replace(/\s*\.\s*/g, '.');
   if (!KOTLIN_DOTTED_PATH_RE.test(calleeText)) return undefined;
   const lastDot = calleeText.lastIndexOf('.');
@@ -109,9 +116,34 @@ export function resolveKotlinQualifiedCallee(
   if (lookupNameClaim(inScope, head, scopes, { purpose: 'value' }).status !== 'absent') {
     return undefined;
   }
-  const owner = findEnclosingClassDef(inScope, scopes);
-  if (owner !== undefined) {
-    for (const ancestor of scopes.methodDispatch.mroFor(owner.nodeId)) {
+  const owners = new Set<string>();
+  const visited = new Set<ScopeId>();
+  let current: ScopeId | null = inScope;
+  while (current !== null && !visited.has(current)) {
+    visited.add(current);
+    const scope = scopes.scopeTree.getScope(current);
+    if (scope === undefined) return undefined;
+    // Block scopes include receiver lambdas. Their implicit receiver contract
+    // is not retained, so they cannot prove that a head names a package.
+    if (scope.kind === 'Block') return undefined;
+    const owner = findEnclosingClassDef(current, scopes);
+    if (owner !== undefined) owners.add(owner.nodeId);
+    const receiver = scope.typeBindings.get('this');
+    if (receiver !== undefined) {
+      const receiverClass = findClassBindingInScope(
+        receiver.declaredAtScope,
+        receiver.rawName,
+        scopes,
+        undefined,
+        { purpose: 'type', uniqueQualifiedNameFallback: false },
+      );
+      if (receiverClass === undefined) return undefined;
+      owners.add(receiverClass.nodeId);
+    }
+    current = scope.lookupPolicy?.parentScope ?? scope.parent;
+  }
+  for (const owner of owners) {
+    for (const ancestor of [owner, ...scopes.methodDispatch.mroFor(owner)]) {
       const scopeId = workspaceIndex.classScopeByDefId.get(ancestor)?.id;
       const memberScope = scopeId === undefined ? undefined : scopes.scopeTree.getScope(scopeId);
       const fieldType = memberScope?.typeBindings.get(head);
@@ -130,6 +162,17 @@ export function resolveKotlinQualifiedCallee(
   if (filePath === undefined || moduleScope === undefined) return undefined;
   if (declaredOutsideClaims(head, filePath, moduleScope, scopes, index)) return undefined;
   return candidates[0];
+}
+
+/** Honor a written qualified type only while it still names this type fact. */
+export function kotlinQualifiedTypeLookupSpelling(ref: TypeRef): string | undefined {
+  if (ref.rawName.endsWith('()')) return undefined;
+  const spelling = ref.declaredSpelling?.trim().replace(/\?+$/, '');
+  if (spelling === undefined) return undefined;
+  const stem = spelling.split('<', 1)[0]?.trim();
+  if (stem === undefined || !KOTLIN_DOTTED_PATH_RE.test(stem) || !stem.endsWith(`.${ref.rawName}`))
+    return undefined;
+  return stem;
 }
 
 /**

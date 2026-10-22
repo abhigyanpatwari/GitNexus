@@ -574,14 +574,25 @@ function noteReceiverType(
 function classOfReturnType(
   retType: TypeRef,
   scopes: ScopeResolutionIndexes,
-  record: ReceiverTypeRecorder | undefined,
-  onNameFallback?: () => void,
+  options: ResolveCompoundReceiverOptions,
 ): SymbolDefinition | undefined {
-  const def = findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
+  const lookup: ClassBindingLookup = {
     position: retType.lookupPosition,
     purpose: retType.lookupPurpose ?? 'type',
-    onNameFallback,
-  });
+    onNameFallback: options.onNameFallback,
+  };
+  const qualified = classOfQualifiedTypeSpelling(
+    retType,
+    scopes,
+    options.qualifiedTypeLookupSpelling,
+    lookup,
+    options.namespaceMemberVisible,
+  );
+  const def =
+    qualified === undefined
+      ? findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, lookup)
+      : (qualified ?? undefined);
+  const record = options.recordReceiverType;
   if (def === undefined || record === undefined) return def;
   return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
 }
@@ -1104,14 +1115,7 @@ export function resolveCompoundReceiverClass(
           position: options.lookupPosition,
         });
         const viaReturn =
-          retType === undefined
-            ? undefined
-            : classOfReturnType(
-                retType,
-                scopes,
-                options.recordReceiverType,
-                options.onNameFallback,
-              );
+          retType === undefined ? undefined : classOfReturnType(retType, scopes, options);
         if (viaReturn !== undefined) return viaReturn;
       } else {
         // A callee path only the provider can read (`rp::make()`, #3498).
@@ -1122,14 +1126,7 @@ export function resolveCompoundReceiverClass(
           options.resolveQualifiedCallee,
         );
         const viaQualified =
-          returned === undefined
-            ? undefined
-            : classOfReturnType(
-                returned,
-                scopes,
-                options.recordReceiverType,
-                options.onNameFallback,
-              );
+          returned === undefined ? undefined : classOfReturnType(returned, scopes, options);
         if (viaQualified !== undefined) return viaQualified;
       }
       // Inline construction — `Service(db).m()` / `new Service(db).m()`.
@@ -1163,14 +1160,7 @@ export function resolveCompoundReceiverClass(
         // named import of that function (#3498).
         const returned = namespaceCallReturnType(fnExpr, inScope, scopes, options.lookupPosition);
         const viaReturn =
-          returned === undefined
-            ? undefined
-            : classOfReturnType(
-                returned,
-                scopes,
-                options.recordReceiverType,
-                options.onNameFallback,
-              );
+          returned === undefined ? undefined : classOfReturnType(returned, scopes, options);
         if (viaReturn !== undefined) return viaReturn;
         return resolveConstructionExpressionClass(fnExpr, inScope, scopes, index, options);
       }
@@ -1182,9 +1172,7 @@ export function resolveCompoundReceiverClass(
         scopes,
         options.resolveQualifiedCallee,
       );
-      return returned === undefined
-        ? undefined
-        : classOfReturnType(returned, scopes, options.recordReceiverType, options.onNameFallback);
+      return returned === undefined ? undefined : classOfReturnType(returned, scopes, options);
     }
 
     // Does `objExpr` name the CLASS ITSELF (`Factory.new`) rather than a
@@ -1282,7 +1270,7 @@ export function resolveCompoundReceiverClass(
     }
 
     if (retType === undefined) return undefined;
-    return classOfReturnType(retType, scopes, options.recordReceiverType, options.onNameFallback);
+    return classOfReturnType(retType, scopes, options);
   }
 
   // Mixed dotted + call chain: `obj.field.method().field.method()…`.

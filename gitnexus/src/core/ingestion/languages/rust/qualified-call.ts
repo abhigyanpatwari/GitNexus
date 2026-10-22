@@ -33,7 +33,7 @@
  */
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { isOverloadableCallable } from '../../utils/callable-labels.js';
 import {
   isClassLike,
@@ -612,7 +612,7 @@ interface PassModuleIndex {
 }
 
 /**
- * DELIBERATELY NOT ON `import-resolvers/per-file-set.ts` (#2909 sweep), unlike
+ * DELIBERATELY NOT ON `utils/per-file-set.ts` (#2909 sweep), unlike
  * {@link moduleIndexFor} above. {@link passIndexFor} takes THREE inputs —
  * `workspaceIndex`, `index` and `scopes` — and keys on the first alone; the
  * builder reads `scopes.defs.byId` and `index`, neither of which is derivable

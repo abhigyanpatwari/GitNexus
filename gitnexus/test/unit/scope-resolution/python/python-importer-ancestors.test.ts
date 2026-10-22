@@ -53,7 +53,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ParsedImport } from 'gitnexus-shared';
 import { pythonScopeResolver } from '../../../../src/core/ingestion/languages/python/scope-resolver.js';
-import { getPythonFileIndex } from '../../../../src/core/ingestion/import-resolvers/python-file-index.js';
+import { getPythonFileIndex } from '../../../../src/core/ingestion/languages/python/import-file-index.js';
 import {
   IMPORTER_PATH_SHAPES,
   countedParsedFiles,
