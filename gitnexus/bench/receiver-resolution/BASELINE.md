@@ -4,11 +4,12 @@
 
 The struct-field normalizer in `rust/range-binding.ts` cut a type at its first
 `<`, so a `repo: Box<User>` field was typed `Box` and `self.repo.save()` bound
-nothing. It now unwraps `Box`, `Rc` and `Arc` to their first type argument
-(including path-qualified and nested forms), strips `&'a` / `&'a mut` borrows,
-and reduces `Box<dyn Trait>` to the trait. `RefCell`, `Cell`, `Mutex`,
+nothing. It now unwraps proven standard `Box`, `Rc` and `Arc` pointers to a
+lexically resolved, unqualified pointee (including nested standard pointers),
+strips `&'a` / `&'a mut` borrows, and reduces `Box<dyn Trait>` to the trait.
+Qualified pointees, projections and callable types remain wrapped. `RefCell`, `Cell`, `Mutex`,
 `RwLock`, `Option` and `Vec` stay as written, because a method on the inner type
-needs an explicit step. `rust.decoratedFieldType` moves from INVISIBLE-GAP to
+needs an explicit step. `rust.decoratedFieldType` moves from VISIBLE-GAP to
 RESOLVES, and the edge lands on `User::save`. No corpus fixture has a
 smart-pointer or borrowed struct field, so the count arm and every other shape
 cell are unchanged.
@@ -1205,6 +1206,71 @@ Main `65b101407` is merged normally. The shared caller retains Rust's provider-q
 
 Main `65b101407` is merged normally. Origin evidence retains the qualified-type lookup policy and both pipeline passes retain workspace file paths. Package build, both pinned TypeScript configurations, 425 focused tests across 25 files, and all 16 capture checks pass. The regenerated receiver baseline preserves every shape state and main's 132 call drops, 160 total, 28 reads and zero writes. Origin labels are 30 external, 45 unknown, 55 in-program and two unclassified. The 5,424-record resolution corpus is byte-identical to main. Exact-head hosted CI remains required.
 
+### Standard pointer ownership
+
+Only known std/alloc Box, Rc and Arc paths, unshadowed prelude Box, and
+lexically selected explicit standard imports permit pointer unwrapping. A
+custom qualified wrapper, local Box, foreign Rc import, or nested custom
+wrapper cannot borrow User’s methods, and a same-file `Box` keeps its own
+`save` target. Any visible glob conservatively blocks prelude Box inference.
+Normalization without declaration-scope evidence keeps the wrapper rather than
+introducing a new dereference guess.
+
+### Pointer dispatch precision
+
+Flattening a pointer field loses Rust's ordered autoderef lookup. A pointer's
+own `as_ref` or a local trait implementation on `Rc<User>` must take precedence
+over an identically named method on `User`. The field now stays wrapped when
+its pointee declares a method in the conservative Rust 1.99.1 pointer-member
+inventory, or when local trait implementations make pointer ownership opaque.
+This guard deliberately declines the entire field: a valid `User.save()` call
+on a field whose `User` also declares `as_ref()` remains unresolved. Separate
+controls retain all three pointer kinds' unconflicted `SafeUser.save()` edges.
+The inventory includes conditional and blanket implementations; it is a refusal
+guard, not a replacement for Rust's method selection.
+
+Absolute paths do not bypass an `extern crate ... as std/alloc` claim. Field
+bindings carried into assigned locals retain their declaration scope and
+position. The safety prepass is linear in declarations; it reuses retained
+trees within the existing 16 MiB source budget and adds a parse pass when trees
+cannot be retained.
+
+### Workspace-wide opacity
+
+Impls, traits and macro expansions outside the parsed declaration model can
+change which method Rust selects. Every pointer field in the analyzed
+workspace therefore stays wrapped when any Rust file contains one of these:
+
+- an impl whose self type cannot be resolved;
+- a non-standard import, including a glob, that does not resolve to workspace
+  declarations;
+- a `macro_rules!` definition, an item-position or qualified macro call,
+  `include!`, or a macro whose input contains `impl` or another macro call;
+- an attribute outside the known compiler attributes, or a derive outside the
+  nine built-in derives.
+
+One such line can suppress otherwise valid pointer-field calls in another
+file. A crate with any unresolved dependency import or any `macro_rules!` gets
+no pointer-field unwrapping, and expected-limit tests pin both cases.
+`derive(Clone)` and a simple `println!` expression keep their positive
+controls. This is a conservative field-typing guard, not Rust method lookup or
+macro expansion.
+
+### Pointer field validation
+
+Native probes reproduced each guarded wrong edge before its fix: six ownership
+negatives, eight pointer-dispatch edges (pointer methods, qualified pointees, a
+crate alias and local trait impls), four opaque-dispatch cases and six
+macro-expansion cases. The old main normalizer emits none of them.
+After merging main `c30449394` normally, the combined tree passes a fresh
+package build, both pinned TypeScript configurations, lint with zero errors,
+and 351 tests in 13 Rust test files, including main's qualified-factory,
+call-return and capture-golden checks. The regenerated receiver baseline keeps
+main's counts (132 call drops, 160 drops of all kinds, 28 reads and no writes)
+and differs from main only in `rust.decoratedFieldType`. The 5,501-record
+resolution corpus is byte-identical to main `c30449394`. Exact-head hosted CI
+remains required.
+
 ## PHP producer ownership boundary
 
 Functions declared in multi-namespace files remain ambiguity evidence, but
@@ -1222,3 +1288,21 @@ return-result typing; its pre-existing direct CALLS behavior is outside this fix
 Main c30449394 is merged normally. Package-factory fallback declines inherited receivers whose captured bases cannot be re-established through current bindings and the canonical MRO. Global qualified names need one declared type; declaration-local facts remain available. Companions need captured proof that their header declares no supertype, and that proof survives the worker/cache carrier. Older carriers retain companion identity but supply no such proof. These conservative boundaries do not model a build-system classpath or complete companion inheritance.
 
 The integrated build, both TypeScript configurations, 345 tests across ten files, Kotlin capture fingerprint and regenerated receiver check pass. The baseline remains 136 call drops, 166 drops across all kinds, 30 reads and zero writes, with unchanged shape states. The 5,521-record corpus is byte-identical to the candidate before the companion-header fix. These tests overlap earlier runs. Exact-head hosted CI remains required.
+
+
+### Rust pointer fields on the prepared C#/PHP/Kotlin stack
+
+The reviewed C# parent `b74fe72b8` is merged normally, retaining PHP
+`6149ce156` and Kotlin `d5a7c73fa`. The Rust implementation is byte-identical
+to `1da61e025`. A fresh package build, both pinned TypeScript configurations,
+and 351 tests across 13 Rust files pass on this combined source. The Rust
+capture fingerprint remains `19045ed3d4ee9fce`, with 207 fixture files and
+3,699 groups; its measured scaling ratio is 0.989 within the unchanged budget.
+
+The regenerated receiver check preserves the parent's count arm: 138 call
+drops, 168 drops across all kinds, 30 reads and no writes. Its only shape-state
+change against that parent is `rust.decoratedFieldType` from VISIBLE-GAP to
+RESOLVES. The 5,559-record resolution corpus is byte-identical to the C#
+parent, with no additions or removals. These fixture results do not measure
+real-repository usefulness or pre-pass cost. Exact-head hosted CI remains
+required.
