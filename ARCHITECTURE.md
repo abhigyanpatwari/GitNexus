@@ -265,36 +265,94 @@ about before changing either:
 
 ## Semantic model
 
-`SemanticModel` (`gitnexus/src/core/ingestion/model/semantic-model.ts`) is the authoritative store for every symbol-indexed lookup (by `nodeId`, `simpleName`, `qualifiedName`, or `filePath`). The scope-resolution pipeline reads from here: `findOwnedMember`, `pickOverload`, and `findExportedDefByName` all consult `model.methods` / `model.fields` / `model.symbols`.
+`SemanticModel` is the active declaration store used by the ingestion pipeline.
+Its `symbols`, `types`, `methods` and `fields` registries supply symbol and
+owner-oriented lookups. Scope resolution consumes this model; it does not replace
+it with a second symbol store.
 
-`ParsedFile` (`gitnexus-shared/src/scope-resolution/parsed-file.ts`) is the single per-file artifact the scope-resolution pipeline consumes. Scope-resolution passes MUST NOT build a parallel parse representation. If a per-language hook needs AST-level facts that `ParsedFile` doesn't expose, it should reuse the orchestrator's `treeCache` (`RunScopeResolutionInput.treeCache`) rather than re-invoking `parser.parse(...)` on its own — the C# `populateNamespaceSiblings` hook is the reference implementation of this pattern.
+### Type facts and resolution responsibilities
 
-The scope-resolution pipeline additionally carries `WorkspaceResolutionIndex` for `Scope`-valued lookups (`classScopeByDefId`, `moduleScopeByFile`) that `SemanticModel` structurally cannot hold. No symbol-indexed duplicates exist outside `SemanticModel`.
+| Layer                                | Responsibility                                                                                         |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `LanguageProvider` and parse workers | Extract declarations, type annotations, imports and reference facts using language-owned rules.        |
+| `TypeEnvironment` (`type-env.ts`)    | Collect temporary per-file hints used by extraction and exported-type metadata.                        |
+| `ParsedFile`                         | Carry declarations, scopes, imports, type bindings and reference sites into workspace resolution.      |
+| `SemanticModel`                      | Keep authoritative declaration registries and member ownership.                                        |
+| `ScopeResolver` and shared passes    | Apply language rules, visibility, type propagation, receiver folding and dispatch to emit graph edges. |
 
-**Write / read phase contract.** The model is mutable during three ordered phases and read-only afterward:
+```text
+Language providers + parse workers
+    ├── symbol registration ───────► SemanticModel
+    ├── scope/type/reference facts ► ParsedFile
+    └── TypeEnv hints ─────────────► extraction / exported-type metadata
 
+SemanticModel + ParsedFile + ScopeResolver hooks
+    └──► finalize scopes/imports → propagate types → resolve → emit graph edges
 ```
- Phase 1: parse            ──► symbolTable.add fans into types/methods/fields
- Phase 2: scope-resolution ──► reconcileOwnership() registers corrected ownerIds
- Phase 3: finalize         ──► model.attachScopeIndexes(bundle) — one-shot freeze
- ─────────────────────────── phase boundary ───────────────────────────
- Read phase: all resolution passes + MCP + HTTP + embeddings see
-             SemanticModel (read-only handle); writes are type-errors.
-```
 
-`runScopeResolution` narrows `MutableSemanticModel` → `SemanticModel` at the phase boundary so downstream passes physically cannot mutate the model even accidentally.
+Type handling occurs during both extraction and resolution. The worker builds
+TypeEnv without a global model or imported-binding inputs. Only file-scope
+TypeEnv bindings are serialized into `BindingAccumulator` for exported-type
+metadata enrichment; function-local maps are not a second workspace resolver.
+The current `crossFile` phase only disposes that accumulator. The legacy
+cross-file call re-resolution and call-resolution DAG were removed in #942.
 
-**Reconciliation pass.** `reconcileOwnership` (`scope-resolution/pipeline/reconcile-ownership.ts`) is a shim for languages whose parse-time extractor doesn't resolve `enclosingClassId` at parse time (Python class-body methods are the canonical case). It walks `parsed.localDefs[i].ownerId` after `populateOwners` and registers any missed methods/fields into the model. Idempotent — safe to re-run, safe alongside languages whose extractor already carries `ownerId` (C#).
+`ParsedFile` (`gitnexus-shared/src/scope-resolution/parsed-file.ts`) is the per-file
+artifact the scope-resolution pipeline consumes. Passes must reuse it rather
+than build parallel parse representations. If a provider needs additional AST
+facts, it can reuse the orchestrator's `treeCache`; ordinary worker-pool runs
+consume serialized facts because native Trees cannot cross MessageChannels.
 
-The architectural end state is for every language's parse-time extractor to emit the correct `ownerId` directly, making reconciliation a no-op (tracked as a follow-up refactor). The dev-mode validator `validateOwnershipParity` surfaces any drift via `onWarn` under `NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`.
+`WorkspaceResolutionIndex` supplies derived scope and return-fact lookups, such as
+`classScopeByDefId` and `moduleScopeByFile`. These caches complement the model's
+authoritative declaration registries.
 
-References: `semantic-model.ts` file-head (full write/read contract); `contract/scope-resolver.ts` Contract Invariant I9 (scope-resolution-side rule).
+### Write and read lifecycle
+
+1. Parsing calls `model.symbols.add`, which registers declarations with the
+   appropriate type, method or field registry.
+2. The per-language scope pipeline populates ownership and calls
+   `reconcileOwnership` to register corrections before reference resolution.
+3. The orchestrator narrows the model to the read-only `SemanticModel` interface
+   for downstream resolution passes. `finalizeScopeModel` returns the scope/index
+   bundle that the orchestrator consumes directly.
+
+This read-only model handle restricts registry writes. It does not freeze every
+scope map: imported-return propagation and precise call-result binding deliberately
+refine `Scope.typeBindings` in ordered passes. Graph-query MCP and HTTP endpoints read the
+persisted graph/index rather than a live parse-time model handle.
+
+The model also exports optional `scopes` / `attachScopeIndexes` APIs. No production
+attachment call is present in the reviewed source, so callers must not assume
+`model.scopes` is populated. Similarly, the shared `resolveTypeRef` helper is
+exported and unit-tested, while current registry lookup resolves receiver owners
+directly. These are API-audit candidates, not reasons to label the whole model or
+typing layer obsolete.
+
+`reconcileOwnership` is an active compatibility pass for providers whose parse-time
+owner differs from their scope-resolution owner. The dev validator
+`validateOwnershipParity` reports drift under
+`NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`. Retiring reconciliation
+requires provider ownership parity first.
+
+See [Type Resolution System](type-resolution-system.md) for execution details and
+[Type Resolution Roadmap](type-resolution-roadmap.md) for delivered work and the
+remaining backlog.
 
 ---
 
 ## Scope-Resolution Pipeline (RFC #909 Ring 3)
 
-Language-agnostic scope-resolution resolver. This is the resolution path for every language — it owns CALLS/ACCESSES/USES emission and inheritance edges. Adding a language is one interface implementation (`ScopeResolver`) plus one registration in the `SCOPE_RESOLVERS` map — no changes to shared code, no new pipeline phase. (RING4-1 #942 removed the legacy call-resolution DAG and the per-language `MIGRATED_LANGUAGES` flag, so `SCOPE_RESOLVERS` registration is all that's needed.)
+The shared scope-resolution pipeline handles ordinary source-language references
+using `ParsedFile`, `SemanticModel` and provider hooks. It emits resolved calls,
+accesses, value uses and inheritance edges. Register a `ScopeResolver` in
+`SCOPE_RESOLVERS` to participate; the old per-language migration flag and parallel
+call-resolution DAG were removed in RING4-1 #942.
+
+A provider can explicitly restrict its edge mode. COBOL currently uses
+`callable-flow-only`: its established processor retains structural CALLS/IMPORTS,
+and scope resolution contributes procedure-pointer calls. Registration alone is
+not a claim that every language feature uses identical resolution rules.
 
 ### Pipeline stages
 
