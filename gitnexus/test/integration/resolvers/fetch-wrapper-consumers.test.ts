@@ -70,6 +70,8 @@ def models(): return []
 def agent(id: str): return {}
 @app.get('/models')
 def other_models(): return []
+@app.get('/unsupported')
+def unsupported(): return []
 `,
       'web/config.ts': `declare const VITE_API_BASE_URL: string;
 export function getApiUrl(path: string) {
@@ -100,6 +102,8 @@ export function models() {
 }`,
       'web/clients/forward.ts': `import { forward } from '../request';
 export function models() { return forward('/models'); }`,
+      'web/unsupported.ts': `function send(path: string) { return fetch(path.toUpperCase()); }
+send('/unsupported');`,
       'web/decoy.ts': `function request(channel: string) { return channel; }
 request('/models');
 const cache = new Map(); cache.get('/models');`,
@@ -107,11 +111,11 @@ const cache = new Map(); cache.get('/models');`,
     cacheDir = await mkdtemp(path.join(tmpdir(), 'consumer-mount-cache-'));
     const parseCache = await loadParseCache(cacheDir, parseIdentity, cacheDir);
     result = await runPipelineFromRepo(root, () => {}, { parseCache });
-    await saveParseCache(cacheDir, parseCache);
+    const savedKeys = await saveParseCache(cacheDir, parseCache);
     await pruneAndSaveDurableParsedFileStore(
       getDurableParsedFileDir(cacheDir),
       parseIdentity.base,
-      parseCache.usedKeys,
+      new Set(savedKeys),
     );
   }, 60_000);
 
@@ -139,6 +143,17 @@ const cache = new Map(); cache.get('/models');`,
     expect(getRelationships(result, 'FETCHES').filter((edge) => edge.target === '/models')).toEqual(
       [],
     );
+  });
+
+  it('does not count an unknown transformed destination as the raw route consumer', () => {
+    const route = [...result.graph.iterNodes()].find(
+      (node) => node.label === 'Route' && node.properties.name === '/unsupported',
+    );
+    expect(route).toBeDefined();
+    expect(route?.properties.unverifiedConsumers).toBeUndefined();
+    expect(
+      getRelationships(result, 'FETCHES').filter((edge) => edge.target === '/unsupported'),
+    ).toEqual([]);
   });
 
   it('preserves composed consumers when replaying a persisted parse cache', async () => {

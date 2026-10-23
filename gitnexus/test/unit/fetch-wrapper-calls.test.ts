@@ -65,6 +65,18 @@ for (const [name, grammar, provider] of grammars) {
         expected: [],
       },
       {
+        shape: 'a conditional-only URL-builder return with fallthrough',
+        source: `function build(path) { if (runtime()) return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'a URL builder with an early bare return',
+        source: `function build(path) { if (runtime()) return; return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
         shape: 'literal concatenation',
         source: `function request(path) { return fetch('/api' + path); }`,
         expected: ['/api/models'],

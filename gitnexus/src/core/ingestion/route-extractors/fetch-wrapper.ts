@@ -570,8 +570,7 @@ export function createFetchWrapperContext(
       const name = node.childForFieldName('name');
       if (name) exported(name, node.childForFieldName('alias')?.text ?? name.text);
     } else if (type === 'return_statement') {
-      const value = firstNamed(node);
-      if (value) active.returns.push(value);
+      active.returns.push(node);
     } else if (type === 'call_expression' && !node.hasError) {
       active.calls.push(node);
       allCalls.push(node);
@@ -852,11 +851,12 @@ export function createFetchWrapperContext(
       if (call.region !== root && reaches(call.region))
         recordUrl(call.callee, call.argument, call.seed);
     const body = fn.childForFieldName('body');
+    const explicitReturn = root.returns.length === 1 ? root.returns[0] : undefined;
     const returnNode =
-      root.returns.length === 1
-        ? root.returns[0]
-        : body?.type !== 'statement_block'
-          ? body
+      body?.type !== 'statement_block'
+        ? body
+        : explicitReturn?.parent?.id === body.id
+          ? firstNamed(explicitReturn)
           : undefined;
     const returnsString =
       !fn.type.startsWith('generator_') &&
