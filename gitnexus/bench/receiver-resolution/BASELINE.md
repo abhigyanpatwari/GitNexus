@@ -1,5 +1,142 @@
 # Receiver-resolution baseline
 
+## Typed shape bodies for JavaScript, Ruby, PHP and C (#3498)
+
+The JavaScript and Ruby rows had no type information anywhere, so every chain
+cell measured "the code is untyped". It could only flip by guessing from a
+method name. The PHP `plainDeepChain` and `optionalChain` cells went through
+the deliberately unannotated `getUser()`, so they measured the missing return
+type instead of their own spelling. The C row's structs lived in `models.h`,
+which the C++ provider owns, and every measured C call went through a
+function-pointer field. Only the shape corpora changed. The count arm and every
+other language's cells are unchanged.
+
+- **JavaScript** is typed with JSDoc: `@param {Service} svc` and
+  `@param {User[]} repos` on each entry, plus `@returns {User}` and
+  `@returns {Promise<User>}` on the support methods. `plainChain`,
+  `plainDeepChain`, `optionalChain` and `awaitParen` move VISIBLE-GAP ->
+  RESOLVES. The fixture probes observed `Address.save` for the deep chain
+  and `User.save` for the rest; the shape gate itself matches member names,
+  so it does not verify the declaring owner. `indexElement` stays
+  VISIBLE-GAP, because JavaScript has no `elementTypeOf` hook yet.
+- **Ruby** is typed with YARD: `@param <name> [Service]`, `@return [User]` on
+  `get_user`, and `@param idx_repos [Array<User>]`. `plainChain` and
+  `optionalChain` move VISIBLE-GAP -> RESOLVES; the probes observed
+  `User.save`, while the shape gate checks member names. `plainDeepChain`
+  stays VISIBLE-GAP against main `caacc3bac`. Its base now types and `address`
+  reaches the `attr_reader` property, but that property has no type, so
+  `save` has an unresolved receiver and a drop is recorded. `indexElement`
+  stays INVISIBLE-GAP against that main (no subscript chain for
+  `element_reference`, no Ruby `elementTypeOf`). On the #3667 stack parent the
+  chain walker reads `element_reference`, so it is VISIBLE-GAP there; Ruby
+  still has no `elementTypeOf`.
+- Each Ruby function names its parameter after its cell (`plain_svc`,
+  `deep_svc`, ...). YARD `@param` bindings land on the Module scope, so with a
+  shared `svc` an untyped function resolves through a sibling's tag. A probe
+  showed exactly that, in either order. This is an existing product limit,
+  not fixed here and not yet filed separately.
+- **One untyped control per language.** JavaScript and Ruby gain an extra id,
+  `untypedChain`: the old untyped `plainChain` body, which reads VISIBLE-GAP.
+  `save` exists on both `User` and `Address`, so an edge there would be a
+  guess. PHP's control is still `arrowCallChain` (VISIBLE-GAP, unchanged).
+  The control is an extra id rather than an untyped `plainChain`, so every
+  canonical id keeps the same meaning in all 14 rows.
+- **PHP** `plainDeepChain` and `optionalChain` now call `getUserTyped()`. Both
+  move VISIBLE-GAP -> RESOLVES; the probes observed `Address.save` and
+  `User.save`, respectively, while the shape gate checks member names.
+  `indexElement` gains PHPDoc `@param User[] $repos` and stays VISIBLE-GAP,
+  because PHP has no `elementTypeOf` hook and the PHPDoc binding keeps only the
+  normalized `User`.
+- **C**: the structs moved into `main.c`. `plainDeepChain` and `indexElement`
+  move VISIBLE-GAP -> N/A, and `fieldReceiverCall` INVISIBLE-GAP -> N/A.
+  Dispatch through a function-pointer field has no static callee in the graph:
+  with the structs in `main.c` the receivers type, but neither `save` field has
+  a node. The C row is now all N/A. That header structs are invisible to C is a
+  product gap, not fixed here and not yet filed separately.
+
+## Receiver-chain walker spellings (#3498)
+
+`extractMixedChain` misread some receiver spellings: it read the wrong step
+name, stopped early, or built no chain at all. Each fix below moved only the
+cells listed, and the count arm did not move. A same-corpus A/B over
+`test/fixtures/lang-resolution` against `origin/main` (`ab0b03846`) emits
+identical CALLS/ACCESSES edges (2,924) and identical `receiver-unresolved`
+drops (208). No scope-capture fingerprint moved, and a capture dump of 13
+emitters over that corpus is byte-identical, because no fixture uses these
+spellings.
+
+- **Explicit type arguments inside the callee** (C# `GetTyped<User>`, C++
+  `getTyped<User>`, Rust `get_typed::<User>`): csharp `explicitTypeArgs`
+  VISIBLE-GAP → RESOLVES and rust `explicitTypeArgs` VISIBLE-GAP →
+  RESOLVES, both to `User.Save`/`User.save`. cpp `explicitTypeArgs` stays
+  VISIBLE-GAP: the step is now `getTyped`, but `T` is not substituted into
+  the template's return type.
+- **C# `svc!` and Swift `(x)`** (a one-element `tuple_expression`): csharp
+  `nonNullAssert` VISIBLE-GAP → RESOLVES (`User.Save`). swift `awaitParen`
+  now builds its chain. On its own it stays VISIBLE-GAP; with #3666's hoisted
+  Swift return types it RESOLVES (`User.save`).
+- **C# null-conditional access** (`svc?.GetUser()`): csharp `optionalChain`
+  VISIBLE-GAP → RESOLVES (`User.Save`).
+- **Subscripts spelled as other node types** (Ruby `element_reference`, Swift
+  call with a bracketed argument list): ruby `indexElement` and swift
+  `indexElement` INVISIBLE-GAP → VISIBLE-GAP. Ruby's `repos` is untyped, so
+  there is nothing to fold; Swift has no `elementTypeOf` hook yet. Both
+  misses are now counted instead of silent.
+
+## Swift/Dart stack integration after Rust and C#
+
+The Swift/Dart ownership and replay implementation is unchanged from reviewed
+commit `cfeb11a9b`. It is combined with validated Rust parent `b6803fcb4`
+(tree `b6728e6dc`) and actual main `e7ef82dfc`, preserving Kotlin, PHP, C# and
+Rust behavior. Only the receiver-baseline documentation conflicted; both
+parents' sections are retained.
+
+On this combined source, a fresh package build, both pinned TypeScript
+configurations and 283 affected tests across nine files pass. Swift's capture
+fingerprint remains unchanged and its existing scaling budget passes; the
+historical all-language capture run below was not repeated for this merge.
+Receiver update and check pass: 138 call drops, 168 total, 30 reads and no
+writes. All count-arm buckets equal the validated Rust parent. Exactly seven
+Swift/Dart cells improve from VISIBLE-GAP to RESOLVES; all other shape cells
+retain the parent's states, including the C# and Rust field improvements.
+The 5,559-record resolution corpus is byte-identical to the Rust parent.
+The earlier c304-based 132/160 totals and 5,501-record comparison below are
+historical measurements, not the current combined baseline.
+
+## Swift and Dart hoisted return types (#3498 RC2)
+
+Swift and Dart hoist every method's return-type binding onto the Module scope,
+as C# does, but neither set `hoistTypeBindingsToModule`, so a chained receiver
+such as `svc.getUser().save()` never found the type of `getUser()`. Both now set
+it. Seven shape cells flip to `RESOLVES`, each with the correct target: swift
+`plainChain`, `plainDeepChain`, `optionalChain` and `nonNullAssert` (each
+VISIBLE-GAP on main `2b4456553` before), and dart `plainChain`, `plainDeepChain` and
+`optionalChain` (each VISIBLE-GAP before). On #3666 alone (historical), Swift
+`awaitParen` and dart `nonNullAssert` remained unsupported. Combined with the
+receiver-chain walker (#3667), Swift `awaitParen` resolves to
+`Function:models.swift:User.save#0` with no drop; dart `nonNullAssert` remains
+unsupported.
+
+Both languages also set the new `hoistedTypeBindingsRequireOwner`. The hoisted
+bindings are keyed by bare member name, so the walk now accepts one only when a
+member of the receiver's own class declared it. Without that check, two classes
+with a same-named method in one file typed each other's chains. The count arm
+does not move, and neither does any cell in another language.
+
+## Rust smart-pointer field types (#3498)
+
+The struct-field normalizer in `rust/range-binding.ts` cut a type at its first
+`<`, so a `repo: Box<User>` field was typed `Box` and `self.repo.save()` bound
+nothing. It now unwraps proven standard `Box`, `Rc` and `Arc` pointers to a
+lexically resolved, unqualified pointee (including nested standard pointers),
+strips `&'a` / `&'a mut` borrows, and reduces `Box<dyn Trait>` to the trait.
+Qualified pointees, projections and callable types remain wrapped. `RefCell`, `Cell`, `Mutex`,
+`RwLock`, `Option` and `Vec` stay as written, because a method on the inner type
+needs an explicit step. `rust.decoratedFieldType` moves from VISIBLE-GAP to
+RESOLVES, and the edge lands on `User::save`. No corpus fixture has a
+smart-pointer or borrowed struct field, so the count arm and every other shape
+cell are unchanged.
+
 ## C# nullable field types (#3498)
 
 A field written `User? repo;` has a `nullable_type` as its declared type.
@@ -1098,6 +1235,59 @@ Shape states remain unchanged; counts are 133 call drops and
 160 drops of all kinds (27 reads,
 0 writes). The counts include both main and this branch's fixes.
 
+### Receiver spelling walkers after #3653
+
+Main `2b4456553` is merged normally. Fresh package build and both TypeScript configurations pass, with 83 unit and native receiver-chain checks in two files. That historical baseline had 133 call drops, 160 total, 27 reads and zero writes. The merge preserves this PR's shape changes listed above; it does not restore main's original shape states. The current-main measurement below supersedes those counts. Final review and hosted CI remain required.
+
+Normal main `caacc3bac` integration: package build, both pinned TypeScript configurations, 83 native/unit chain-walker tests in two files and all 16 capture scaling budgets pass without widening a budget. The regenerated receiver baseline has 130 calls, 156 total, 26 reads and zero writes. Shape states are unchanged by this main merge. Graph coverage remains a lower bound.
+
+The identical corpus comparison establishes no collateral edge changes in those fixtures. Native spelling tests and shape-cell changes establish the new behavior. Generic-arity overload ownership remains a known limitation outside this change: a two-arity C# probe produces the same wrong edges with this branch's walker and with main's walker, so that concrete defect predates this change.
+
+Normal main `c30449394` integration: package build, both pinned TypeScript configurations, the receiver `--check` and all 16 capture scaling checks pass without changing a budget. The regenerated receiver baseline is identical to the merged file: 132 call drops, 160 total, 28 reads and zero writes, with main's shape states plus this PR's six moves. Focused tests pass: 88 chain-walker tests in two files, 143 receiver-origin, unresolved-receiver, C++ and Rust receiver tests in seven files, and 244 C# resolver tests. The C# file aborted natively once under host load and passed when rerun alone. Graph coverage remains a lower bound.
+
+Normal merge of the validated #3666 stack head `684438d88`, which carries main `e7ef82dfc`: the only conflicts were additive BASELINE.md sections. The package build, both pinned TypeScript configurations, 231 tests in the nine focused receiver files, 248 C# and 130 Swift resolver tests pass. With Swift unavailable, the call-form file still collects: 64 pass and the nine Swift rows skip. Swift `awaitParen` now resolves to `User.save`, so its walker row expects that edge and no drop. The regenerated receiver baseline keeps the parent's counts (138 call drops, 168 total, 30 reads, zero writes) and moves seven cells against it: this PR's six plus swift `awaitParen` VISIBLE-GAP → RESOLVES. The 5,559-edge resolution corpus is byte-identical to the parent's. Scope-capture checks for C#, C++, Rust, Ruby, Swift and Kotlin pass with unchanged budgets. Earlier counts in this section are historical. Graph coverage remains a lower bound.
+
+## Hoisted return ownership after main integration
+
+Main `c30449394` is merged normally. Valid Swift optional-chain and force-
+unwrap fixtures use an optional `optionalAddress` property; plain deep chains
+retain the non-optional `address`. The benchmark uses the same split. Four
+Swift chain cells and three Dart cells resolve, and every other shape state
+matches main. The count arm is unchanged: 132 call drops, 160 drops across
+all kinds, 28 reads and 0 writes. The 5,501-record resolution corpus is
+byte-identical to main; its fixtures do not exercise the new method-return
+chains, which have separate exact-target integration controls.
+
+Hoisted lookup reads the authoritative method registry and exact callable
+return facts. A nearer declaration with an ambiguous or unavailable return
+stops ancestor fallback. Swift recovers overwritten declaration returns in
+both declaration orders. Dart supplies no exact declaration return facts and
+conservatively declines the overwritten owner. Method references remain
+callable values. Scope access remains valid after the disk-backed store seals;
+no parallel owner/name declaration index is added.
+
+Replay narrowing applies only to providers that opt into owner-checked hoisted
+returns. A uniquely selected Swift override retains its exact return when
+ancestor candidates have matching complete captured parameter-type vectors and
+count metadata. Matching undefined counts retain variadic overrides; unknown
+type slots, differing metadata and same-owner ties decline. Swift preserves an
+empty slot when a parameter type is unsupported instead of compressing it out.
+The fixed and variadic bound-override controls retain main's exact
+`Function:Main.swift:Admin.save#0` target. Both compiled pre-fix cases emitted no
+bound `Admin.save` edge, while main and the corrected branch emit one. The
+inline forms remain unresolved on both main and the branch. Matching uses
+captured normalized types; labels and richer type identity remain outside
+this proof.
+
+A fresh package build and both pinned TypeScript configurations pass on the
+combined source. All 283 affected tests in nine files pass. All 16 capture
+checks passed after main integration; Swift was rechecked after its
+parameter-metadata correction
+with unchanged fingerprint and budget. The other capture producers are
+unchanged. The receiver baseline update and check pass. Coverage includes
+sealed-store Swift/Dart resolution, exact override and owner targets, inherited-overload and tear-off refusal, and TypeScript/Python
+preservation controls. Hosted CI is required on the published commit.
+
 ### Inheritance visibility review boundaries
 
 Native review controls reproduced production Java imports and Java/Kotlin inheritance selecting nearer test-only declarations, an inherited nested base losing to a package homonym, a resolved Kotlin typealias import losing its claim, and a C# tuple argument counting as two type arguments. The corrected focused run passes 71 tests in five files, including positive test-source ownership controls and ordinary nested/local inheritance. The generic argument splitter now keeps tuple commas together.
@@ -1192,6 +1382,71 @@ Main `65b101407` is merged normally. The shared caller retains Rust's provider-q
 
 Main `65b101407` is merged normally. Origin evidence retains the qualified-type lookup policy and both pipeline passes retain workspace file paths. Package build, both pinned TypeScript configurations, 425 focused tests across 25 files, and all 16 capture checks pass. The regenerated receiver baseline preserves every shape state and main's 132 call drops, 160 total, 28 reads and zero writes. Origin labels are 30 external, 45 unknown, 55 in-program and two unclassified. The 5,424-record resolution corpus is byte-identical to main. Exact-head hosted CI remains required.
 
+### Standard pointer ownership
+
+Only known std/alloc Box, Rc and Arc paths, unshadowed prelude Box, and
+lexically selected explicit standard imports permit pointer unwrapping. A
+custom qualified wrapper, local Box, foreign Rc import, or nested custom
+wrapper cannot borrow User’s methods, and a same-file `Box` keeps its own
+`save` target. Any visible glob conservatively blocks prelude Box inference.
+Normalization without declaration-scope evidence keeps the wrapper rather than
+introducing a new dereference guess.
+
+### Pointer dispatch precision
+
+Flattening a pointer field loses Rust's ordered autoderef lookup. A pointer's
+own `as_ref` or a local trait implementation on `Rc<User>` must take precedence
+over an identically named method on `User`. The field now stays wrapped when
+its pointee declares a method in the conservative Rust 1.99.1 pointer-member
+inventory, or when local trait implementations make pointer ownership opaque.
+This guard deliberately declines the entire field: a valid `User.save()` call
+on a field whose `User` also declares `as_ref()` remains unresolved. Separate
+controls retain all three pointer kinds' unconflicted `SafeUser.save()` edges.
+The inventory includes conditional and blanket implementations; it is a refusal
+guard, not a replacement for Rust's method selection.
+
+Absolute paths do not bypass an `extern crate ... as std/alloc` claim. Field
+bindings carried into assigned locals retain their declaration scope and
+position. The safety prepass is linear in declarations; it reuses retained
+trees within the existing 16 MiB source budget and adds a parse pass when trees
+cannot be retained.
+
+### Workspace-wide opacity
+
+Impls, traits and macro expansions outside the parsed declaration model can
+change which method Rust selects. Every pointer field in the analyzed
+workspace therefore stays wrapped when any Rust file contains one of these:
+
+- an impl whose self type cannot be resolved;
+- a non-standard import, including a glob, that does not resolve to workspace
+  declarations;
+- a `macro_rules!` definition, an item-position or qualified macro call,
+  `include!`, or a macro whose input contains `impl` or another macro call;
+- an attribute outside the known compiler attributes, or a derive outside the
+  nine built-in derives.
+
+One such line can suppress otherwise valid pointer-field calls in another
+file. A crate with any unresolved dependency import or any `macro_rules!` gets
+no pointer-field unwrapping, and expected-limit tests pin both cases.
+`derive(Clone)` and a simple `println!` expression keep their positive
+controls. This is a conservative field-typing guard, not Rust method lookup or
+macro expansion.
+
+### Pointer field validation
+
+Native probes reproduced each guarded wrong edge before its fix: six ownership
+negatives, eight pointer-dispatch edges (pointer methods, qualified pointees, a
+crate alias and local trait impls), four opaque-dispatch cases and six
+macro-expansion cases. The old main normalizer emits none of them.
+After merging main `c30449394` normally, the combined tree passes a fresh
+package build, both pinned TypeScript configurations, lint with zero errors,
+and 351 tests in 13 Rust test files, including main's qualified-factory,
+call-return and capture-golden checks. The regenerated receiver baseline keeps
+main's counts (132 call drops, 160 drops of all kinds, 28 reads and no writes)
+and differs from main only in `rust.decoratedFieldType`. The 5,501-record
+resolution corpus is byte-identical to main `c30449394`. Exact-head hosted CI
+remains required.
+
 ## PHP producer ownership boundary
 
 Functions declared in multi-namespace files remain ambiguity evidence, but
@@ -1209,3 +1464,33 @@ return-result typing; its pre-existing direct CALLS behavior is outside this fix
 Main c30449394 is merged normally. Package-factory fallback declines inherited receivers whose captured bases cannot be re-established through current bindings and the canonical MRO. Global qualified names need one declared type; declaration-local facts remain available. Companions need captured proof that their header declares no supertype, and that proof survives the worker/cache carrier. Older carriers retain companion identity but supply no such proof. These conservative boundaries do not model a build-system classpath or complete companion inheritance.
 
 The integrated build, both TypeScript configurations, 345 tests across ten files, Kotlin capture fingerprint and regenerated receiver check pass. The baseline remains 136 call drops, 166 drops across all kinds, 30 reads and zero writes, with unchanged shape states. The 5,521-record corpus is byte-identical to the candidate before the companion-header fix. These tests overlap earlier runs. Exact-head hosted CI remains required.
+
+
+### Rust pointer fields on the prepared C#/PHP/Kotlin stack
+
+The reviewed C# parent `b74fe72b8` is merged normally, retaining PHP
+`6149ce156` and Kotlin `d5a7c73fa`. The Rust implementation is byte-identical
+to `1da61e025`. A fresh package build, both pinned TypeScript configurations,
+and 351 tests across 13 Rust files pass on this combined source. The Rust
+capture fingerprint remains `19045ed3d4ee9fce`, with 207 fixture files and
+3,699 groups; its measured scaling ratio is 0.989 within the unchanged budget.
+
+The regenerated receiver check preserves the parent's count arm: 138 call
+drops, 168 drops across all kinds, 30 reads and no writes. Its only shape-state
+change against that parent is `rust.decoratedFieldType` from VISIBLE-GAP to
+RESOLVES. The 5,559-record resolution corpus is byte-identical to the C#
+parent, with no additions or removals. These fixture results do not measure
+real-repository usefulness or pre-pass cost. Exact-head hosted CI remains
+required.
+
+### Typed shape bodies after #3655
+
+After normal main caacc3bac integration, both benchmark arms were remeasured. The count arm remains 130 call drops, 156 across all kinds, 26 reads and 0 writes; the typed JavaScript/Ruby/PHP shape changes and C dispatch N/A cells remain as described above. Fresh package build and both pinned TypeScript configurations pass; the receiver benchmark check matches the newly written baseline.
+
+### Typed shape bodies after #3659
+
+Main `c30449394` is merged normally. The regenerated baseline is byte-identical to the textual merge: every shape state matches this branch before the merge, and the count arm matches main at 132 call drops, 160 across all kinds, 28 reads and zero writes, with 55 in-program, 45 unknown, 30 external and 2 unclassified origins. Fresh package build, both pinned TypeScript configurations and the receiver benchmark check pass.
+
+### Typed shape bodies on the #3667 stack parent
+
+The validated #3667 head `fb6316b90` is merged normally. Outside the three receiver-resolution bench files the source is byte-identical to that parent. The regenerated baseline is byte-identical to the textual merge. Against the parent, only this branch's cells move: JavaScript `plainChain`, `plainDeepChain`, `optionalChain` and `awaitParen`, Ruby `plainChain` and `optionalChain`, and PHP `plainDeepChain` and `optionalChain` go to RESOLVES; the JavaScript and Ruby `untypedChain` controls read VISIBLE-GAP; the three C dispatch cells go to N/A. Ruby `plainDeepChain`, PHP `arrowCallChain` and every `indexElement` cell keep the parent's states. Ruby `indexElement` is VISIBLE-GAP from the parent's walker change. Its `idx_repos` now carries a YARD element type, but Ruby has no `elementTypeOf`. The count arm equals the parent: 138 call drops, 168 across all kinds, 30 reads and zero writes, with 57 in-program, 49 unknown, 30 external and 2 unclassified origins. Fresh package build, both pinned TypeScript configurations and the receiver benchmark update and check pass on the combined source.

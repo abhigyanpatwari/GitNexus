@@ -21,6 +21,8 @@
  *        - hoistTypeBindingsToModule — enable ONLY when method return
  *          types are stored on the enclosing Module scope; most
  *          languages attach them to the class scope and leave this off
+ *        - hoistedTypeBindingsRequireOwner — with the above, accept a
+ *          hoisted binding only from a member of the receiver's own class
  *   2. Export a thin entry point:
  *      `runYourLangScopeResolution(input) = runScopeResolution(input, yourScopeResolver)`.
  *   3. Register the provider in
@@ -1824,8 +1826,38 @@ export interface ScopeResolver {
    * scope leave this undefined — enabling the walk-up for them would
    * add an unnecessary branch and risk picking up unrelated module-
    * level bindings.
+   *
+   * The hoisted bindings are keyed by bare member name, so on its own the
+   * walk-up accepts whatever binding of that name it meets first — see
+   * `hoistedTypeBindingsRequireOwner` for the guard.
    */
   readonly hoistTypeBindingsToModule?: boolean;
+
+  /**
+   * With `hoistTypeBindingsToModule`, accept a hoisted binding only when a
+   * member of the asked-about class declared it. Default `false`.
+   *
+   * The Module scope holds one hoisted binding per member NAME, so with
+   * `class A { getUser(): User }` and `class B { getUser(): Admin }` in one
+   * file only B's survives, and the plain walk-up types `a.getUser()` as
+   * `Admin`. It does the same with an imported top-level function of that
+   * name, or for a class that has no such member at all. With this toggle,
+   * authoritative owner-scoped method lookup first selects a unique member
+   * and reads its exact declared return fact. When that fact is absent, a
+   * hoisted binding counts only if its `bindingRange` encloses that member's
+   * declaration. A known ambiguous or untyped member stops ancestor fallback.
+   *
+   * Where the provider emits exact declaration return facts, those facts recover
+   * overwritten bindings for both A and B. A provider without them conservatively
+   * declines the overwritten owner.
+   * Multiple declarations sharing one graph ID remain ambiguous. Intermediate
+   * hops decline inherited overloads without a proven zero-argument signature.
+   * Exact-callee assignment replay can retain matching complete captured
+   * parameter metadata, including variadic signatures. Reading a method
+   * reference does not invoke its return type. Languages that rely on the plain
+   * walk-up leave this off; its behaviour is unchanged.
+   */
+  readonly hoistedTypeBindingsRequireOwner?: boolean;
 
   /**
    * Strip ONE layer of type-preserving decoration off a declared type name,

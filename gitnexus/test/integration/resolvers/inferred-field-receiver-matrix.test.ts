@@ -32,6 +32,12 @@
  *   Dart        Outer.inner    Outer.inner (#2807)     Outer.inner (#2807)
  *   Swift       both links     both links  (#2807)     optional field (#2807)
  *
+ * Swift's second link (`Inner.compute`) arrived with #3498, when Swift started
+ * walking up to the Module scope for hoisted return types. Dart walks up too
+ * since #3498, but its `Outer` rows keep one link: later classes in the Dart
+ * fixture redeclare `inner`, which overwrites `Outer.inner`'s hoisted binding,
+ * and the owner-checked walk declines rather than borrow another class's type.
+ *
  * Shapes marked n/a do not exist in that language: Python and Ruby have no
  * field DECLARATIONS at all (a field is created by assignment, so only the
  * assigned column is meaningful), PHP property initializers accept only
@@ -1901,10 +1907,21 @@ const CASES: readonly LanguageCase[] = [
       // {Alien, Alien.inner, Outer.inner}. A regression that merely breaks the
       // fixture empties the set and the row still fails — it cannot pass
       // vacuously in either direction.
+      //
+      // The witness also carries `Inner.compute#1` since #3498 (Dart sets
+      // `hoistTypeBindingsToModule`): `Alien.inner()` returns `Inner`, and
+      // `Alien` is the LAST class in this file to declare `inner`, so its
+      // binding is the one the Module scope keeps. `Outer.inner`'s binding was
+      // overwritten by that same name, so the owner-checked walk declines on
+      // `Outer` receivers and the rows above stay at `Outer.inner` alone.
       {
         name: 'loop-var-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:LoopVarReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // Dart 3 patterns are the binder family this branch widened twice, so the
@@ -1913,7 +1930,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'pattern-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:PatternReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // ONE ROW PER BINDER SHAPE, because the two rows above pin two of the
@@ -1938,7 +1959,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'param-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:ParamReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // A local `var ze;` with NO initializer: the resolver has nothing to type
@@ -1947,7 +1972,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'local-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:LocalReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // Deliberately a BARE `catch (zf)` rather than the `on Err catch (w)` the
@@ -1958,7 +1987,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'catch-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:CatchReadShadowedField.probe#0`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // The closure parameter is the shape that pins WHERE the mask is emitted.
@@ -1972,7 +2005,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'closure-param-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:ClosureParamReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // The second for-in form. `for (var zh in xs)` and the `final` form of
@@ -1984,7 +2021,11 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'loop-var-var-read-does-not-see-the-field',
         callerId: `Method:${DART_FILE}:LoopVarVarReadShadowedField.probe#1`,
-        targets: [`Class:${DART_FILE}:Alien`, `Method:${DART_FILE}:Alien.inner#0`],
+        targets: [
+          `Class:${DART_FILE}:Alien`,
+          `Method:${DART_FILE}:Alien.inner#0`,
+          `Method:${DART_FILE}:Inner.compute#1`,
+        ],
         status: 'resolves',
       },
       // THE COUNTERWEIGHT. `use` reads the same field by bare name and binds
@@ -2035,13 +2076,17 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'control-local',
         callerId: `Function:${SWIFT_FILE}:ControlLocal.run#1`,
-        targets: [`Class:${SWIFT_FILE}:Outer`, `Function:${SWIFT_FILE}:Outer.inner#0`],
+        targets: [
+          `Class:${SWIFT_FILE}:Outer`,
+          `Function:${SWIFT_FILE}:Inner.compute#1`,
+          `Function:${SWIFT_FILE}:Outer.inner#0`,
+        ],
         status: 'resolves',
       },
       {
         name: 'inferred-field',
         callerId: `Function:${SWIFT_FILE}:InferredField.run#1`,
-        targets: [`Function:${SWIFT_FILE}:Outer.inner#0`],
+        targets: [`Function:${SWIFT_FILE}:Inner.compute#1`, `Function:${SWIFT_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
       // Swift cannot declare a stored property with neither a type nor an
@@ -2054,7 +2099,7 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'optional-assigned-field',
         callerId: `Function:${SWIFT_FILE}:OptionalAssignedField.run#1`,
-        targets: [`Function:${SWIFT_FILE}:Outer.inner#0`],
+        targets: [`Function:${SWIFT_FILE}:Inner.compute#1`, `Function:${SWIFT_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
     ],
