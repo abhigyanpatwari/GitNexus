@@ -3,6 +3,8 @@ import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
 import { createFetchWrapperContext } from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
+import { buildFetchWrapperIndex } from '../../src/core/ingestion/route-extractors/fetch-wrapper-index.js';
+import { normalizeFetchURL } from '../../src/core/ingestion/route-extractors/nextjs.js';
 
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
 import {
@@ -42,6 +44,122 @@ function harness(grammar: (typeof grammars)[number][1], provider: (typeof gramma
 for (const [name, grammar, provider] of grammars) {
   describe(`${name} fetch wrapper calls`, () => {
     const { context, extract } = harness(grammar, provider);
+
+    it.each([
+      {
+        shape: 'a parameter-independent refresh alongside a URL fetch',
+        source: `function request(path) { fetch('/api/refresh'); return fetch('/api' + path); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a literal-only call that must not activate a URL carrier',
+        source: `function send(path) { return fetch(path); }
+          function request(event) { return send('/api/telemetry'); }`,
+        expected: [],
+      },
+      {
+        shape: 'an unknown-leading caller URL through slash normalization',
+        source: `function build(path) { return '/api' + (path.startsWith('/') ? path : '/' + path); }
+          function request(path) { return fetch(build(path)); }`,
+        input: '${BASE}/models',
+        expected: [],
+      },
+      {
+        shape: 'a conditional-only URL-builder return with fallthrough',
+        source: `function build(path) { if (runtime()) return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'a URL builder with an early bare return',
+        source: `function build(path) { if (runtime()) return; return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'literal concatenation',
+        source: `function request(path) { return fetch('/api' + path); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a stable local prefix and URL alias',
+        source: `function request(path) { const prefix = '/api'; const url = prefix + path; return fetch(url); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a returned URL through a helper chain',
+        source: `function prefix(path) { return '/api' + path; }
+          function build(path) { return prefix(path); }
+          function request(path) { const url = build(path); return fetch(url); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a transformed argument forwarded to another wrapper',
+        source: `function send(path) { return fetch(path); }
+          function request(path) { return send('/api' + path); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a mount prefix inside a reachable retry callback',
+        source: `function request(path) { return retry(() => fetch('/api' + path)); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'an unused nested fetch helper',
+        source: `function request(path) { const unused = () => fetch('/api' + path); return path; }`,
+        expected: [],
+      },
+      {
+        shape: 'startsWith with an explicit offset',
+        source: `function build(path) { const normalized = path.startsWith('/', 1) ? path : '/' + path; return '/api' + normalized; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'a rebound prefix',
+        source: `function request(path) { let prefix = '/api'; prefix = runtime(); return fetch(prefix + path); }`,
+        expected: [],
+      },
+      {
+        shape: 'a rebound URL parameter',
+        source: `function request(path) { path = runtime(); return fetch('/api' + path); }`,
+        expected: [],
+      },
+      {
+        shape: 'a URL builder with different branch returns',
+        source: `function build(path) { if (runtime()) return '/private' + path; return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'a recursive URL builder',
+        source: `function build(path) { return build(path); }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'an async URL builder returning a Promise',
+        source: `async function build(path) { return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'a generator URL builder returning an iterator',
+        source: `function* build(path) { return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+    ])('resolves the actual URL for $shape (#2858)', ({ source, expected, input = '/models' }) => {
+      const { root, context: wrapper } = context(`${source}\nrequest('${input}');`);
+      const definitions = root.namedChildren.flatMap((node) => {
+        const facts = wrapper.facts(node);
+        const name = node.childForFieldName('name')?.text;
+        return facts && name ? [{ ...facts, filePath: 'consumer.ts', functionName: name }] : [];
+      });
+      const index = buildFetchWrapperIndex(definitions);
+      const call = wrapper.calls().find((candidate) => candidate.functionName === 'request')!;
+      expect(index.urlsForCall(call).map(normalizeFetchURL)).toEqual(expected);
+    });
 
     it('preserves exact callee names and source lines, including comments and optional calls', () => {
       expect(

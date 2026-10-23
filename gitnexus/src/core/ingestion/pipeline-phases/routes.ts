@@ -574,8 +574,9 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     if (routeRegistry.size > 0 && wrapperCalls.length > 0) {
       const wrappers = buildFetchWrapperIndex(allFetchWrapperDefs ?? [], configuredWrappers);
       for (const call of wrapperCalls) {
-        if (wrappers.isWrapperCall(call)) allFetchCalls.push(call);
-        else unprovenCalls.push(call);
+        const urls = wrappers.urlsForCall(call);
+        if (urls.length === 0 && !wrappers.isWrapperCall(call)) unprovenCalls.push(call);
+        for (const fetchURL of urls) allFetchCalls.push({ ...call, fetchURL });
       }
     }
 
