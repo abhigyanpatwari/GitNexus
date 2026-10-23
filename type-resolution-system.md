@@ -219,13 +219,13 @@ DAG, not a route contributors should extend.
 
 Use source-pinned fixtures instead of the former broad Yes/No matrix:
 
-| Evidence                  | What it establishes                                      | What it does not establish                                       |
-| ------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------- |
-| Provider extraction test  | A construct emits the expected facts                     | Correct cross-file ownership or dispatch                         |
-| Resolver integration test | Exact targets/drops for the supplied fixture             | General language parity                                          |
-| Receiver shape baseline   | Recorded state for each typed or deliberate untyped case | Declaring-owner identity when the gate matches only member names |
-| Fixed resolution corpus   | Edge/drop comparison on that corpus                      | Coverage of spellings absent from the corpus                     |
-| Optional-grammar skip     | The parser is unavailable in that environment            | A passing resolver case                                          |
+| Evidence                  | What it establishes                              | What it does not establish                        |
+| ------------------------- | ------------------------------------------------ | ------------------------------------------------- |
+| Provider extraction test  | A construct emits the expected facts             | Correct cross-file ownership or dispatch          |
+| Resolver integration test | Exact targets/drops for the supplied fixture     | General language parity                           |
+| Receiver shape baseline   | Exact target or recorded gap for each fixed case | Language-wide completeness or arbitrary inference |
+| Fixed resolution corpus   | Edge/drop comparison on that corpus              | Coverage of spellings absent from the corpus      |
+| Optional-grammar skip     | The parser is unavailable in that environment    | A passing resolver case                           |
 
 ## Current Strengths
 

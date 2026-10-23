@@ -1,28 +1,30 @@
 # Kotlin Ingestion Gaps
 
-Reviewed on 2026-10-23 against source `bbbc1b49e`. This inventory uses
-checked-in evidence; no new ingestion or benchmark run was performed for this update.
-See the [inventory guide](README.md) for evidence definitions, the source pin and
-planning requirements. Broader ingestion coverage remains unassessed unless noted.
+Audited on 2026-10-23 with freshly built production sources at `c35806d24` and
+the accompanying benchmark changes. See the [measurement audit](receiver-resolution-audit.md)
+for commands, target checks, exclusions and test limits. Historical reports below
+remain separate from freshly measured receiver cases; broader ingestion is not
+exhaustively assessed.
 
 ## Receiver shape snapshot
 
 States below come from [baseline.json](../../gitnexus/bench/receiver-resolution/baseline.json).
 The [harness](../../gitnexus/bench/receiver-resolution/measure.mjs) defines each
-spelling and its N/A reason. RESOLVES checks caller/member names, not exact owners.
+spelling and its N/A reason. RESOLVES requires the exact expected declaration ID
+and no same-named call to a different owner. WRONG-TARGET records incorrect edges.
 
-| Shape                   | Recorded state |
-| ----------------------- | -------------- |
-| `plainChain`            | RESOLVES       |
-| `plainDeepChain`        | RESOLVES       |
-| `optionalChain`         | RESOLVES       |
-| `nonNullAssert`         | RESOLVES       |
-| `awaitParen`            | RESOLVES       |
-| `explicitTypeArgs`      | RESOLVES       |
-| `indexElement`          | RESOLVES       |
-| `fieldReceiverCall`     | RESOLVES       |
-| `decoratedReceiverBase` | N/A            |
-| `decoratedFieldType`    | RESOLVES       |
+| Shape                   | Recorded state | Expression or exclusion                   |
+| ----------------------- | -------------- | ----------------------------------------- |
+| `plainChain`            | RESOLVES       | `svc.getUser().save()`                    |
+| `plainDeepChain`        | RESOLVES       | `svc.getUser().address.save()`            |
+| `optionalChain`         | RESOLVES       | `svc?.getUser()?.save()`                  |
+| `nonNullAssert`         | RESOLVES       | `svc!!.getUser().save()`                  |
+| `awaitParen`            | RESOLVES       | `(svc.getUserAsync()).save()`             |
+| `explicitTypeArgs`      | RESOLVES       | `svc.getTyped<User>().save()`             |
+| `indexElement`          | RESOLVES       | `repos[0].save()`                         |
+| `fieldReceiverCall`     | RESOLVES       | `this.repo.save()`                        |
+| `decoratedReceiverBase` | N/A            | Kotlin `this` carries no type decoration. |
+| `decoratedFieldType`    | RESOLVES       | `this.repo?.save()`                       |
 
 Every applicable shape in this row resolves. Separate qualified-factory controls retain conservative ownership boundaries: inherited receivers need re-established bases and canonical MRO evidence; companion fallback requires captured proof that the companion header has no supertype. This is not a complete build-system classpath model.
 

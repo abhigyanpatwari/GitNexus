@@ -1,28 +1,30 @@
 # COBOL Ingestion Gaps
 
-Reviewed on 2026-10-23 against source `bbbc1b49e`. This inventory uses
-checked-in evidence; no new ingestion or benchmark run was performed for this update.
-See the [inventory guide](README.md) for evidence definitions, the source pin and
-planning requirements. Broader ingestion coverage remains unassessed unless noted.
+Audited on 2026-10-23 with freshly built production sources at `c35806d24` and
+the accompanying benchmark changes. See the [measurement audit](receiver-resolution-audit.md)
+for commands, target checks, exclusions and test limits. Historical reports below
+remain separate from freshly measured receiver cases; broader ingestion is not
+exhaustively assessed.
 
 ## Receiver shape snapshot
 
 States below come from [baseline.json](../../gitnexus/bench/receiver-resolution/baseline.json).
 The [harness](../../gitnexus/bench/receiver-resolution/measure.mjs) defines each
-spelling and its N/A reason. RESOLVES checks caller/member names, not exact owners.
+spelling and its N/A reason. RESOLVES requires the exact expected declaration ID
+and no same-named call to a different owner. WRONG-TARGET records incorrect edges.
 
-| Shape                   | Recorded state |
-| ----------------------- | -------------- |
-| `plainChain`            | N/A            |
-| `plainDeepChain`        | N/A            |
-| `optionalChain`         | N/A            |
-| `nonNullAssert`         | N/A            |
-| `awaitParen`            | N/A            |
-| `explicitTypeArgs`      | N/A            |
-| `indexElement`          | N/A            |
-| `fieldReceiverCall`     | N/A            |
-| `decoratedReceiverBase` | N/A            |
-| `decoratedFieldType`    | N/A            |
+| Shape                   | Recorded state | Expression or exclusion                                                                                                                            |
+| ----------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plainChain`            | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
+| `plainDeepChain`        | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
+| `optionalChain`         | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
+| `nonNullAssert`         | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
+| `awaitParen`            | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
+| `explicitTypeArgs`      | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
+| `indexElement`          | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
+| `fieldReceiverCall`     | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
+| `decoratedReceiverBase` | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
+| `decoratedFieldType`    | N/A            | The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage. |
 
 The receiver benchmark marks COBOL N/A because its emitter has no method-call receiver chains. The registered resolver uses `scopeResolutionEdgeMode: callable-flow-only`: it contributes procedure-pointer CALLS while the established COBOL processor owns structural CALLS and IMPORTS.
 

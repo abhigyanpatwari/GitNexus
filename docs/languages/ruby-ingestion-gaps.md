@@ -1,31 +1,33 @@
 # Ruby Ingestion Gaps
 
-Reviewed on 2026-10-23 against source `bbbc1b49e`. This inventory uses
-checked-in evidence; no new ingestion or benchmark run was performed for this update.
-See the [inventory guide](README.md) for evidence definitions, the source pin and
-planning requirements. Broader ingestion coverage remains unassessed unless noted.
+Audited on 2026-10-23 with freshly built production sources at `c35806d24` and
+the accompanying benchmark changes. See the [measurement audit](receiver-resolution-audit.md)
+for commands, target checks, exclusions and test limits. Historical reports below
+remain separate from freshly measured receiver cases; broader ingestion is not
+exhaustively assessed.
 
 ## Receiver shape snapshot
 
 States below come from [baseline.json](../../gitnexus/bench/receiver-resolution/baseline.json).
 The [harness](../../gitnexus/bench/receiver-resolution/measure.mjs) defines each
-spelling and its N/A reason. RESOLVES checks caller/member names, not exact owners.
+spelling and its N/A reason. RESOLVES requires the exact expected declaration ID
+and no same-named call to a different owner. WRONG-TARGET records incorrect edges.
 
-| Shape                   | Recorded state |
-| ----------------------- | -------------- |
-| `plainChain`            | RESOLVES       |
-| `untypedChain`          | VISIBLE-GAP    |
-| `plainDeepChain`        | VISIBLE-GAP    |
-| `optionalChain`         | RESOLVES       |
-| `nonNullAssert`         | N/A            |
-| `awaitParen`            | N/A            |
-| `explicitTypeArgs`      | N/A            |
-| `indexElement`          | VISIBLE-GAP    |
-| `fieldReceiverCall`     | RESOLVES       |
-| `decoratedReceiverBase` | N/A            |
-| `decoratedFieldType`    | N/A            |
+| Shape                   | Recorded state | Expression or exclusion                                                             |
+| ----------------------- | -------------- | ----------------------------------------------------------------------------------- |
+| `plainChain`            | RESOLVES       | `plain_svc.get_user.save`                                                           |
+| `untypedChain`          | VISIBLE-GAP    | `untyped_svc.get_user.save` (intentional untyped control)                           |
+| `plainDeepChain`        | VISIBLE-GAP    | `deep_svc.get_user.address.save`                                                    |
+| `optionalChain`         | RESOLVES       | `opt_svc&.get_user.save`                                                            |
+| `nonNullAssert`         | N/A            | Ruby has no non-null assertion operator.                                            |
+| `awaitParen`            | N/A            | Ruby has no await expression in the core language.                                  |
+| `explicitTypeArgs`      | N/A            | Ruby has no type-argument syntax.                                                   |
+| `indexElement`          | VISIBLE-GAP    | `idx_repos[0].save`                                                                 |
+| `fieldReceiverCall`     | RESOLVES       | `@repo.save`                                                                        |
+| `decoratedReceiverBase` | N/A            | Ruby method receivers carry no type decoration.                                     |
+| `decoratedFieldType`    | N/A            | Ruby instance variables carry no declared type, so there is no decoration to strip. |
 
-The typed plain and safe-navigation chains resolve. The baseline records YARD parameter bindings landing on Module scope: a typed sibling can lend its type to an untyped parameter with the same name, in either declaration order. The benchmark avoids the collision with distinct parameter names; that workaround does not fix the product.
+The typed plain and safe-navigation chains resolve. The baseline records YARD parameter bindings landing on Module scope: a typed sibling can lend its type to an untyped parameter with the same name, in either declaration order. The benchmark avoids the collision with distinct parameter names; that workaround does not fix the product. Fresh probes using the same `svc` parameter reproduced the wrong `User.save` edge from the untyped sibling in both declaration orders; see the audit receipt.
 
 ## Planning candidates
 

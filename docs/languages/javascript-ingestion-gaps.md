@@ -1,29 +1,31 @@
 # JavaScript Ingestion Gaps
 
-Reviewed on 2026-10-23 against source `bbbc1b49e`. This inventory uses
-checked-in evidence; no new ingestion or benchmark run was performed for this update.
-See the [inventory guide](README.md) for evidence definitions, the source pin and
-planning requirements. Broader ingestion coverage remains unassessed unless noted.
+Audited on 2026-10-23 with freshly built production sources at `c35806d24` and
+the accompanying benchmark changes. See the [measurement audit](receiver-resolution-audit.md)
+for commands, target checks, exclusions and test limits. Historical reports below
+remain separate from freshly measured receiver cases; broader ingestion is not
+exhaustively assessed.
 
 ## Receiver shape snapshot
 
 States below come from [baseline.json](../../gitnexus/bench/receiver-resolution/baseline.json).
 The [harness](../../gitnexus/bench/receiver-resolution/measure.mjs) defines each
-spelling and its N/A reason. RESOLVES checks caller/member names, not exact owners.
+spelling and its N/A reason. RESOLVES requires the exact expected declaration ID
+and no same-named call to a different owner. WRONG-TARGET records incorrect edges.
 
-| Shape                   | Recorded state |
-| ----------------------- | -------------- |
-| `plainChain`            | RESOLVES       |
-| `untypedChain`          | VISIBLE-GAP    |
-| `plainDeepChain`        | RESOLVES       |
-| `optionalChain`         | RESOLVES       |
-| `nonNullAssert`         | N/A            |
-| `awaitParen`            | RESOLVES       |
-| `explicitTypeArgs`      | N/A            |
-| `indexElement`          | VISIBLE-GAP    |
-| `fieldReceiverCall`     | RESOLVES       |
-| `decoratedReceiverBase` | N/A            |
-| `decoratedFieldType`    | N/A            |
+| Shape                   | Recorded state | Expression or exclusion                                                       |
+| ----------------------- | -------------- | ----------------------------------------------------------------------------- |
+| `plainChain`            | RESOLVES       | `svc.getUser().save();`                                                       |
+| `untypedChain`          | VISIBLE-GAP    | `svc.getUser().save();` (intentional untyped control)                         |
+| `plainDeepChain`        | RESOLVES       | `svc.getUser().address.save();`                                               |
+| `optionalChain`         | RESOLVES       | `svc?.getUser().save();`                                                      |
+| `nonNullAssert`         | N/A            | JavaScript has no non-null assertion operator.                                |
+| `awaitParen`            | RESOLVES       | `(await svc.getUserAsync()).save();`                                          |
+| `explicitTypeArgs`      | N/A            | JavaScript has no type-argument syntax.                                       |
+| `indexElement`          | VISIBLE-GAP    | `repos[0].save();`                                                            |
+| `fieldReceiverCall`     | RESOLVES       | `this.repo.save();`                                                           |
+| `decoratedReceiverBase` | N/A            | JavaScript method receivers carry no type decoration.                         |
+| `decoratedFieldType`    | N/A            | JavaScript fields carry no declared type, so there is no decoration to strip. |
 
 JSDoc supplies the types in the passing plain, deep, optional and awaited chains. `indexElement` remains a visible gap with `@param {User[]} repos`; JavaScript has no `ScopeResolver.elementTypeOf` hook. `untypedChain` is an intentional negative control, not a request to guess a target from its method name.
 

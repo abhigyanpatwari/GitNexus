@@ -50,8 +50,11 @@ The merged [receiver baseline](gitnexus/bench/receiver-resolution/BASELINE.md)
 records the combined results. Its count arm is 138 call drops, 168 total drops,
 30 reads and no writes. The typed-shape PR changes exactly 13 parent-relative
 cells; eight typed cells resolve, two untyped controls remain visible gaps, and
-three C cells become N/A. The shape gate matches caller/member names; exact-owner
-proof requires separate resolver assertions.
+three C cells become N/A. At that merge, the shape gate matched only member
+names. The [measurement audit](docs/languages/receiver-resolution-audit.md) adds
+exact declaration checks, exposes a wrong Dart await target and executes previously
+excluded C++, Rust, PHP, Dart and Vue cases. These are measurement corrections,
+not resolver fixes.
 
 The combined walker validation recorded a 5,559-record resolution corpus. The
 benchmark-only child retained that parent evidence through identical producer
@@ -76,7 +79,8 @@ unresolved. Preserve method return and instance-field bindings.
 
 ### 2. Type indexed receivers
 
-Start with JavaScript `repos[0].save()`, then evaluate Ruby, PHP and Swift as
+The fresh audit records indexed gaps in JavaScript, Java, C#, Ruby, PHP, Swift,
+Dart and Vue. Start with JavaScript `repos[0].save()`, then evaluate the others as
 separate provider changes. Preserve element-type evidence and implement the
 appropriate `ScopeResolver.elementTypeOf` routes. Reading a subscript spelling,
 recognizing a container annotation and typing an element are separate steps.
@@ -91,6 +95,8 @@ unresolved; preserve the conversion-only suppression regression tests.
 
 ### 4. Extend callable returns and inherited overload selection
 
+Dart awaited-call ownership needs correction: the fixture reaches Address.save
+where User.save is required. Explicit generic calls also remain a measured gap.
 Dart tear-off invocation and Swift argument-aware inherited overloads need
 additional evidence. Existing supported fixed/variadic override positives must
 remain exact. Fixture-local positive controls detect fixture-wide resolution loss;

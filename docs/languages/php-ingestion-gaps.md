@@ -1,30 +1,32 @@
 # PHP Ingestion Gaps
 
-Reviewed on 2026-10-23 against source `bbbc1b49e`. This inventory uses
-checked-in evidence; no new ingestion or benchmark run was performed for this update.
-See the [inventory guide](README.md) for evidence definitions, the source pin and
-planning requirements. Broader ingestion coverage remains unassessed unless noted.
+Audited on 2026-10-23 with freshly built production sources at `c35806d24` and
+the accompanying benchmark changes. See the [measurement audit](receiver-resolution-audit.md)
+for commands, target checks, exclusions and test limits. Historical reports below
+remain separate from freshly measured receiver cases; broader ingestion is not
+exhaustively assessed.
 
 ## Receiver shape snapshot
 
 States below come from [baseline.json](../../gitnexus/bench/receiver-resolution/baseline.json).
 The [harness](../../gitnexus/bench/receiver-resolution/measure.mjs) defines each
-spelling and its N/A reason. RESOLVES checks caller/member names, not exact owners.
+spelling and its N/A reason. RESOLVES requires the exact expected declaration ID
+and no same-named call to a different owner. WRONG-TARGET records incorrect edges.
 
-| Shape                   | Recorded state |
-| ----------------------- | -------------- |
-| `arrowCallChain`        | VISIBLE-GAP    |
-| `arrowPropertyPath`     | RESOLVES       |
-| `plainChain`            | RESOLVES       |
-| `plainDeepChain`        | RESOLVES       |
-| `optionalChain`         | RESOLVES       |
-| `nonNullAssert`         | N/A            |
-| `awaitParen`            | N/A            |
-| `explicitTypeArgs`      | N/A            |
-| `indexElement`          | VISIBLE-GAP    |
-| `fieldReceiverCall`     | N/A            |
-| `decoratedReceiverBase` | N/A            |
-| `decoratedFieldType`    | RESOLVES       |
+| Shape                   | Recorded state | Expression or exclusion                                      |
+| ----------------------- | -------------- | ------------------------------------------------------------ |
+| `arrowCallChain`        | VISIBLE-GAP    | `$svc->getUser()->save();` (intentional untyped control)     |
+| `arrowPropertyPath`     | RESOLVES       | `$this->repo->save();`                                       |
+| `plainChain`            | RESOLVES       | `$svc->getUserTyped()->save();`                              |
+| `plainDeepChain`        | RESOLVES       | `$svc->getUserTyped()->address->save();`                     |
+| `optionalChain`         | RESOLVES       | `$svc?->getUserTyped()->save();`                             |
+| `nonNullAssert`         | N/A            | PHP has no non-null assertion operator.                      |
+| `awaitParen`            | N/A            | PHP has no await expression in the core language.            |
+| `explicitTypeArgs`      | N/A            | PHP has no generic type-argument syntax at a call site.      |
+| `indexElement`          | VISIBLE-GAP    | `$repos[0]->save();`                                         |
+| `fieldReceiverCall`     | RESOLVES       | `$this->repo->save();`                                       |
+| `decoratedReceiverBase` | N/A            | PHP `$this` carries no type decoration on a method receiver. |
+| `decoratedFieldType`    | RESOLVES       | `$this->repo->save();`                                       |
 
 Typed return annotations make the plain/deep/nullsafe chains resolve. `indexElement` stays visible: PHPDoc `User[]` is normalized to `User`, losing container evidence, and PHP has no `elementTypeOf` hook. `arrowCallChain` deliberately calls an unannotated producer and remains a negative control.
 

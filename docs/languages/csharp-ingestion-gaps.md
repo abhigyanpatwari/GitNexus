@@ -1,28 +1,30 @@
 # C# Ingestion Gaps
 
-Reviewed on 2026-10-23 against source `bbbc1b49e`. This inventory uses
-checked-in evidence; no new ingestion or benchmark run was performed for this update.
-See the [inventory guide](README.md) for evidence definitions, the source pin and
-planning requirements. Broader ingestion coverage remains unassessed unless noted.
+Audited on 2026-10-23 with freshly built production sources at `c35806d24` and
+the accompanying benchmark changes. See the [measurement audit](receiver-resolution-audit.md)
+for commands, target checks, exclusions and test limits. Historical reports below
+remain separate from freshly measured receiver cases; broader ingestion is not
+exhaustively assessed.
 
 ## Receiver shape snapshot
 
 States below come from [baseline.json](../../gitnexus/bench/receiver-resolution/baseline.json).
 The [harness](../../gitnexus/bench/receiver-resolution/measure.mjs) defines each
-spelling and its N/A reason. RESOLVES checks caller/member names, not exact owners.
+spelling and its N/A reason. RESOLVES requires the exact expected declaration ID
+and no same-named call to a different owner. WRONG-TARGET records incorrect edges.
 
-| Shape                   | Recorded state |
-| ----------------------- | -------------- |
-| `plainChain`            | RESOLVES       |
-| `plainDeepChain`        | RESOLVES       |
-| `optionalChain`         | RESOLVES       |
-| `nonNullAssert`         | RESOLVES       |
-| `awaitParen`            | RESOLVES       |
-| `explicitTypeArgs`      | RESOLVES       |
-| `indexElement`          | VISIBLE-GAP    |
-| `fieldReceiverCall`     | RESOLVES       |
-| `decoratedReceiverBase` | N/A            |
-| `decoratedFieldType`    | RESOLVES       |
+| Shape                   | Recorded state | Expression or exclusion               |
+| ----------------------- | -------------- | ------------------------------------- |
+| `plainChain`            | RESOLVES       | `svc.GetUser().Save();`               |
+| `plainDeepChain`        | RESOLVES       | `svc.GetUser().Address.Save();`       |
+| `optionalChain`         | RESOLVES       | `svc?.GetUser().Save();`              |
+| `nonNullAssert`         | RESOLVES       | `svc!.GetUser().Save();`              |
+| `awaitParen`            | RESOLVES       | `(await svc.GetUserAsync()).Save();`  |
+| `explicitTypeArgs`      | RESOLVES       | `svc.GetTyped<User>().Save();`        |
+| `indexElement`          | VISIBLE-GAP    | `repos[0].Save();`                    |
+| `fieldReceiverCall`     | RESOLVES       | `this.repo.Save();`                   |
+| `decoratedReceiverBase` | N/A            | C# `this` carries no type decoration. |
+| `decoratedFieldType`    | RESOLVES       | `this.repo.Save();`                   |
 
 The matrix resolves local nullable fields and the tested chain wrappers. It still loses `repos[0].Save()` with a `User[]` parameter. The resolver already registers an `elementTypeOf` hook, so this gap needs a full capture-to-resolution trace, not an assumption that the hook is absent.
 

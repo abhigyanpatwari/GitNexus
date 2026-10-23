@@ -1,30 +1,32 @@
 # Java Ingestion Gaps
 
-Reviewed on 2026-10-23 against source `bbbc1b49e`. This inventory uses
-checked-in evidence; no new ingestion or benchmark run was performed for this update.
-See the [inventory guide](README.md) for evidence definitions, the source pin and
-planning requirements. Broader ingestion coverage remains unassessed unless noted.
+Audited on 2026-10-23 with freshly built production sources at `c35806d24` and
+the accompanying benchmark changes. See the [measurement audit](receiver-resolution-audit.md)
+for commands, target checks, exclusions and test limits. Historical reports below
+remain separate from freshly measured receiver cases; broader ingestion is not
+exhaustively assessed.
 
 ## Receiver shape snapshot
 
 States below come from [baseline.json](../../gitnexus/bench/receiver-resolution/baseline.json).
 The [harness](../../gitnexus/bench/receiver-resolution/measure.mjs) defines each
-spelling and its N/A reason. RESOLVES checks caller/member names, not exact owners.
+spelling and its N/A reason. RESOLVES requires the exact expected declaration ID
+and no same-named call to a different owner. WRONG-TARGET records incorrect edges.
 
-| Shape                   | Recorded state |
-| ----------------------- | -------------- |
-| `plainChain`            | RESOLVES       |
-| `plainDeepChain`        | RESOLVES       |
-| `optionalChain`         | N/A            |
-| `nonNullAssert`         | N/A            |
-| `awaitParen`            | N/A            |
-| `explicitTypeArgs`      | RESOLVES       |
-| `indexElement`          | VISIBLE-GAP    |
-| `fieldReceiverCall`     | RESOLVES       |
-| `decoratedReceiverBase` | N/A            |
-| `decoratedFieldType`    | N/A            |
+| Shape                   | Recorded state | Expression or exclusion                                                                                                                                                    |
+| ----------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plainChain`            | RESOLVES       | `svc.getUser().save();`                                                                                                                                                    |
+| `plainDeepChain`        | RESOLVES       | `svc.getUser().address.save();`                                                                                                                                            |
+| `optionalChain`         | N/A            | Java has no optional-chaining operator.                                                                                                                                    |
+| `nonNullAssert`         | N/A            | Java has no non-null assertion operator.                                                                                                                                   |
+| `awaitParen`            | N/A            | Java has no await expression in the core language.                                                                                                                         |
+| `explicitTypeArgs`      | RESOLVES       | `svc.<User>getTyped().save();`                                                                                                                                             |
+| `indexElement`          | VISIBLE-GAP    | `repos[0].save();`                                                                                                                                                         |
+| `fieldReceiverCall`     | RESOLVES       | `this.repo.save();`                                                                                                                                                        |
+| `decoratedReceiverBase` | N/A            | Java `this` carries no type decoration.                                                                                                                                    |
+| `decoratedFieldType`    | N/A            | Java's only field-type decorations are containers (arrays, generics), which change the member set and are measured by indexElement rather than by a type-preserving strip. |
 
-The matrix resolves plain/deep chains, explicit type arguments and field receivers. `repos[0].save()` with a `User[]` parameter is a visible gap. The benchmark only checks caller/member names, so the passing explicit-type-argument case does not prove general generic substitution.
+The matrix resolves plain/deep chains, explicit type arguments and field receivers. `repos[0].save()` with a `User[]` parameter is a visible gap. The explicit-type-argument fixture declares a concrete User return regardless of its type parameter. Its exact target passes, but it does not prove generic return substitution.
 
 ## Planning candidates
 

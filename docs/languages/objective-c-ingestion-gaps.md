@@ -1,15 +1,17 @@
 # Objective-C Ingestion Gaps
 
-Reviewed on 2026-10-23 against source `bbbc1b49e`. This inventory uses
-checked-in evidence; no new ingestion or benchmark run was performed for this update.
-See the [inventory guide](README.md) for evidence definitions, the source pin and
-planning requirements. Broader ingestion coverage remains unassessed unless noted.
+Audited on 2026-10-23 with freshly built production sources at `c35806d24` and
+the accompanying benchmark changes. See the [measurement audit](receiver-resolution-audit.md)
+for commands, target checks, exclusions and test limits. Historical reports below
+remain separate from freshly measured receiver cases; broader ingestion is not
+exhaustively assessed.
 
 ## Receiver shape snapshot
 
 States below come from [baseline.json](../../gitnexus/bench/receiver-resolution/baseline.json).
 The [harness](../../gitnexus/bench/receiver-resolution/measure.mjs) defines each
-spelling and its N/A reason. RESOLVES checks caller/member names, not exact owners.
+spelling and its N/A reason. RESOLVES requires the exact expected declaration ID
+and no same-named call to a different owner. WRONG-TARGET records incorrect edges.
 
 No row exists in the checked-in receiver shape arm. Add a measurement contract before comparing this language with measured rows.
 
@@ -33,3 +35,10 @@ Objective-C is registered but has no row in this receiver benchmark. Its dedicat
 
 Evidence details: [receiver baseline notes](../../gitnexus/bench/receiver-resolution/BASELINE.md) and
 [current roadmap](../../type-resolution-roadmap.md#current-backlog).
+
+## Additional validation
+
+The focused provider suite passed its static ingestion checks. One persisted
+query/context and incremental-versus-force test timed out at 180 seconds in the
+combined run and passed on an isolated retry, as recorded in the audit receipt. This
+is separate from the absent receiver shape row.

@@ -5,14 +5,13 @@ These inventories are the starting point for language-specific plans. There is o
 [SCOPE_RESOLVERS](../../gitnexus/src/core/ingestion/scope-resolution/pipeline/registry.ts).
 Names match provider directories; `jvm` is shared infrastructure, not another language.
 
-Reviewed on 2026-10-23 against
-[`bbbc1b49e`](https://github.com/abhigyanpatwari/GitNexus/commit/bbbc1b49e3427c467b8ac83a112f7793109e279b).
-The receiver snapshots transcribe the checked-in
-[baseline](../../gitnexus/bench/receiver-resolution/baseline.json) at that revision;
-this documentation update did not rerun ingestion. These files seed a broader audit,
-not an exhaustive language feature matrix. Parsing, symbol extraction, imports,
-visibility, inheritance, reference resolution and incremental behavior need separate
-evidence; receiver results alone say nothing about CFG/PDG or rename completeness.
+Freshly audited on 2026-10-23 with production sources at `c35806d24` and the
+accompanying benchmark changes. The [measurement receipt](receiver-resolution-audit.md)
+records the commands, exact-target checks, newly executed exclusions and test limits.
+The [baseline](../../gitnexus/bench/receiver-resolution/baseline.json) now covers
+110 executable cases and 58 explicit N/A declarations. Parsing, imports, visibility,
+inheritance and incremental behavior still need separate evidence; these fixed
+receiver examples do not establish whole-language, CFG/PDG or rename completeness.
 
 ## Inventories
 
@@ -22,7 +21,7 @@ evidence; receiver results alone say nothing about CFG/PDG or rename completenes
 | [COBOL](cobol-ingestion-gaps.md)             | Measure procedure-pointer and structural-call paths separately.          |
 | [C++](cpp-ingestion-gaps.md)                 | Substitute explicit template arguments into proven return types.         |
 | [C#](csharp-ingestion-gaps.md)               | Trace typed array receivers and qualified nullable fields.               |
-| [Dart](dart-ingestion-gaps.md)               | Expose indexed-receiver drops and trace non-null assertions.             |
+| [Dart](dart-ingestion-gaps.md)               | Correct awaited-call ownership; trace indexed and generic receivers.     |
 | [Go](go-ingestion-gaps.md)                   | Expand ownership coverage beyond the passing receiver matrix.            |
 | [Java](java-ingestion-gaps.md)               | Trace array-element receiver typing.                                     |
 | [JavaScript](javascript-ingestion-gaps.md)   | Preserve JSDoc container evidence for indexed receivers.                 |
@@ -34,7 +33,7 @@ evidence; receiver results alone say nothing about CFG/PDG or rename completenes
 | [Rust](rust-ingestion-gaps.md)               | Measure conservative smart-pointer limits before widening them.          |
 | [Swift](swift-ingestion-gaps.md)             | Type indexed receivers, then revalidate historical reports.              |
 | [TypeScript](typescript-ingestion-gaps.md)   | Revalidate deferred narrowing contracts.                                 |
-| [Vue](vue-ingestion-gaps.md)                 | Measure receivers through actual SFC script blocks.                      |
+| [Vue](vue-ingestion-gaps.md)                 | Type indexed receivers in SFC script blocks.                             |
 | [Zig](zig-ingestion-gaps.md)                 | Add matrix coverage for the delivered receiver forms.                    |
 
 ## Reading the evidence
@@ -49,13 +48,14 @@ evidence; receiver results alone say nothing about CFG/PDG or rename completenes
 
 The receiver harness has separate states:
 
-- **RESOLVES:** a caller/member-name match exists. Add exact-owner assertions before treating it as proof of correct resolution.
+- **RESOLVES:** the terminal call reaches its full expected declaration ID, with no same-named edge to a different owner. This proves only the supplied fixture.
+- **WRONG-TARGET:** at least one same-named call reaches another declaration, including any guessed edge from an untyped control.
 - **VISIBLE-GAP:** no matching edge, with a recorded receiver-unresolved drop. Some cells intentionally represent untyped negative controls.
 - **INVISIBLE-GAP:** neither the edge nor the receiver drop is recorded; drop counts cannot reveal this loss.
 - **N/A:** the harness declares this spelling inapplicable to its measurement. Read its reason before interpreting language support.
 - **GRAMMAR-UNAVAILABLE:** the parser did not load. No behavior was measured; this is not a product-gap verdict.
 
-An all-N/A row (C, COBOL or Vue) does not mean complete ingestion. Zig and
+An all-N/A row (C or COBOL) does not mean complete ingestion. Vue now has an executable SFC row. Zig and
 Objective-C have dedicated tests but no row in this shape arm. A fully resolving
 row also proves only its fixed examples. The baseline's count arm includes
 external and unknown receivers, so total drops are not an actionable bug count.
@@ -83,6 +83,8 @@ language, add its inventory here; when refreshing a snapshot, update its source 
 and explain intended baseline changes. Do not copy old green results as fresh runs.
 
 ## Related documentation
+
+- [Receiver measurement audit](receiver-resolution-audit.md): fresh results and corrected classifications.
 
 - [Type Resolution System](../../type-resolution-system.md): active layers and lifecycle.
 - [Type Resolution Roadmap](../../type-resolution-roadmap.md): shared priorities and delivered work.
