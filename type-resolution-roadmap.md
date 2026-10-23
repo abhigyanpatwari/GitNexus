@@ -62,7 +62,9 @@ language coverage, rename correctness or a performance proof.
 ## Current backlog
 
 These are proposed follow-up slices, not claims that implementation has started.
-Reproduce each gap on its chosen base before changing code.
+Reproduce each gap on its chosen base before changing code. Use the
+[per-language ingestion inventories](docs/languages/README.md) to select a bounded
+case and link its gap ID from the implementation plan.
 
 ### 1. Isolate Ruby YARD parameter bindings
 
@@ -139,7 +141,7 @@ current implementation plan.
 
 Older descriptions are available in the
 [pre-update roadmap](https://github.com/abhigyanpatwari/GitNexus/blob/bbbc1b49e3427c467b8ac83a112f7793109e279b/type-resolution-roadmap.md).
-The [Swift inventory](swift-ingestion-gaps.md) distinguishes measured support from
+The [Swift inventory](docs/languages/swift-ingestion-gaps.md) distinguishes measured support from
 historical reports that still need reproduction.
 
 ## Completion criteria for follow-up work

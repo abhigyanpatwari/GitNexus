@@ -255,7 +255,7 @@ The baseline and targeted review tests retain these limits:
   the conservative receiver-resolution contract.
 
 See the [current backlog](type-resolution-roadmap.md#current-backlog) and
-[Swift gap inventory](swift-ingestion-gaps.md) for scope and validation boundaries.
+[language gap inventories](docs/languages/README.md) for scope and validation boundaries.
 
 ## Contributor Notes
 

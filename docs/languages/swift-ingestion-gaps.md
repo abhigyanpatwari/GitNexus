@@ -1,11 +1,33 @@
 # Swift Ingestion Gaps
 
-Reviewed on 2026-10-23 against merged main `bbbc1b49e`. Swift is registered in
-`SCOPE_RESOLVERS`; optional grammar availability is an environment condition, not
-a global Node 22 blocker. See the [type-resolution roadmap](type-resolution-roadmap.md)
-for the current execution path and follow-up priorities.
+Reviewed on 2026-10-23 against source `bbbc1b49e`. This inventory uses
+checked-in evidence; no new ingestion or benchmark run was performed for this update.
+See the [inventory guide](README.md) for evidence definitions, the source pin and
+planning requirements. Broader ingestion coverage remains unassessed unless noted.
+
+## Receiver shape snapshot
+
+States below come from [baseline.json](../../gitnexus/bench/receiver-resolution/baseline.json).
+The [harness](../../gitnexus/bench/receiver-resolution/measure.mjs) defines each
+spelling and its N/A reason. RESOLVES checks caller/member names, not exact owners.
+
+| Shape                   | Recorded state |
+| ----------------------- | -------------- |
+| `plainChain`            | RESOLVES       |
+| `plainDeepChain`        | RESOLVES       |
+| `optionalChain`         | RESOLVES       |
+| `nonNullAssert`         | RESOLVES       |
+| `awaitParen`            | RESOLVES       |
+| `explicitTypeArgs`      | N/A            |
+| `indexElement`          | VISIBLE-GAP    |
+| `fieldReceiverCall`     | RESOLVES       |
+| `decoratedReceiverBase` | N/A            |
+| `decoratedFieldType`    | RESOLVES       |
 
 ## Verified receiver coverage
+
+Swift is registered in `SCOPE_RESOLVERS`. Optional grammar availability is an
+environment condition, not a global Node 22 blocker.
 
 The combined #3666/#3667 implementation resolves the typed Swift benchmark cells
 `plainChain`, `plainDeepChain`, `optionalChain`, `nonNullAssert` and `awaitParen`.
@@ -17,9 +39,25 @@ argument-label or generic-aware overload completeness.
 Swift has no `elementTypeOf` hook. Argument-aware inherited-overload selection and
 associated/generic type handling remain bounded follow-up work.
 
-Sources: [receiver baseline](gitnexus/bench/receiver-resolution/BASELINE.md),
-[Swift resolver](gitnexus/src/core/ingestion/languages/swift/scope-resolver.ts),
-[override replay tests](gitnexus/test/integration/swift-parameterized-override-replay.test.ts).
+Sources: [receiver baseline](../../gitnexus/bench/receiver-resolution/BASELINE.md),
+[Swift resolver](../../gitnexus/src/core/ingestion/languages/swift/scope-resolver.ts),
+[override replay tests](../../gitnexus/test/integration/swift-parameterized-override-replay.test.ts).
+
+## Planning candidates
+
+| ID       | Evidence           | Gap or boundary                                                                                                          | Next planning step and acceptance                                                                                                           |
+| -------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| SWIFT-01 | Measured gap       | `indexElement` is visible but Swift has no elementTypeOf hook.                                                           | Carry a proven element type through the provider and assert its exact member owner; preserve unsupported-container and same-name negatives. |
+| SWIFT-02 | Recorded boundary  | Inherited overload selection is bounded; fixed/variadic positives do not prove argument-label or generic-aware dispatch. | Specify one callable identity rule at a time and retain the current override replay positives and owner-mismatch negatives.                 |
+| SWIFT-03 | Historical reports | The extraction, inheritance and module items below have not all been revalidated.                                        | Reproduce each item on a pinned base before assigning implementation priority. Record both reference resolution and extraction evidence.    |
+
+## Code and regression entry points
+
+- [Language provider directory](../../gitnexus/src/core/ingestion/languages/swift/).
+- [Scope resolver](../../gitnexus/src/core/ingestion/languages/swift/scope-resolver.ts).
+- [swift-hoisted-return-ownership.test.ts](../../gitnexus/test/integration/swift-hoisted-return-ownership.test.ts).
+- [swift-parameterized-override-replay.test.ts](../../gitnexus/test/integration/swift-parameterized-override-replay.test.ts).
+- [swift.test.ts](../../gitnexus/test/integration/resolvers/swift.test.ts).
 
 ## Historical reports requiring revalidation
 
@@ -105,3 +143,6 @@ receiver or cross-file form is covered by the current pipeline.
 | `self` / `super` resolution       | `lookupInEnv` handles `self`/`super` via AST walk                                                        | `16b1a63` |
 | Optional chaining `obj?.method()` | Handled via `optional_chaining_expression`                                                               | `16b1a63` |
 | Initial inheritance capture       | First-specifier capture was added; this does not establish complete protocol-list coverage               | `16b1a63` |
+
+Evidence details: [receiver baseline notes](../../gitnexus/bench/receiver-resolution/BASELINE.md) and
+[current roadmap](../../type-resolution-roadmap.md#current-backlog).
