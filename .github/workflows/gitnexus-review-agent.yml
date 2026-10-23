@@ -1294,7 +1294,7 @@ jobs:
           steps.claude-recheck.outcome == 'success'
         # Use the low-level base action: the high-level GitHub action can restore
         # project configuration from a moving base branch before invoking Claude.
-        uses: anthropics/claude-code-action/base-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1
+        uses: anthropics/claude-code-action/base-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1
         env:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
           CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '0'
@@ -1447,7 +1447,7 @@ jobs:
         if: >-
           steps.precheck.outputs.repair_reason != '' &&
           steps.repair-recheck.outcome == 'success'
-        uses: anthropics/claude-code-action/base-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1
+        uses: anthropics/claude-code-action/base-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1
         env:
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
           CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '0'
