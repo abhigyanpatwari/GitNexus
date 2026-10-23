@@ -125,6 +125,8 @@
     "@babel/parser": "^8.0.0",
     "@babel/traverse": "^8.0.0",
     "@babel/types": "^8.0.0",
+    "@stryker-mutator/api": "10.0.0",
+    "@stryker-mutator/core": "10.0.0",
     "@types/busboy": "^1.5.4",
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
