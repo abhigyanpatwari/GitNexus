@@ -34,6 +34,10 @@ coverage/
 .vitest/
 .tmp-test/
 gitnexus/.tmp-test/
+# Mutation testing (gitnexus/tools/mutation). Prepared copies and run directories live
+# outside the checkout; these catch a Stryker run started inside it.
+.stryker-tmp/
+gitnexus/reports/mutation/
 
 # Misc
 *.local
