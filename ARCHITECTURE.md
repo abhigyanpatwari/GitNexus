@@ -336,8 +336,8 @@ owner differs from their scope-resolution owner. The dev validator
 requires provider ownership parity first.
 
 See [Type Resolution System](type-resolution-system.md) for execution details and
-[Type Resolution Roadmap](type-resolution-roadmap.md) for delivered work and the
-remaining backlog.
+[Type Resolution Roadmap](type-resolution-roadmap.md) for planned work and
+acceptance criteria.
 
 ---
 

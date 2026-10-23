@@ -6,8 +6,8 @@ and the scope-resolution pipeline uses those facts to resolve references. The
 
 This document describes the source merged at
 [`bbbc1b49e`](https://github.com/abhigyanpatwari/GitNexus/commit/bbbc1b49e3427c467b8ac83a112f7793109e279b),
-reviewed on 2026-10-23. The [roadmap](type-resolution-roadmap.md) separates delivered
-work, open gaps and historical implementation phases.
+reviewed on 2026-10-23. The [roadmap](type-resolution-roadmap.md) describes planned
+work and acceptance criteria.
 
 ## Purpose in the Pipeline
 

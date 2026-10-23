@@ -72,8 +72,9 @@ check reported ambiguity, index freshness and coverage limits.
 
 ## Editor setup
 
-`gitnexus setup` detects Claude Code, Cursor, Codex, Antigravity, Factory,
-OpenCode, CodeBuddy, Qoder and Windsurf. To select editors:
+`gitnexus setup` detects Claude Code, Cursor, Codex, Antigravity, Factory Droid,
+OpenCode, CodeBuddy and Qoder. Windsurf requires manual MCP configuration.
+To select editors:
 
 ```bash
 gitnexus setup -c cursor,codex
@@ -94,8 +95,8 @@ gitnexus list                    # List indexed repositories
 gitnexus serve                   # Serve indexed repositories to the web UI
 ```
 
-For multiple concurrent agents, use one `gitnexus mcp --http` server and connect
-clients to `http://127.0.0.1:3111/mcp`. See the
+For multiple concurrent agents, use one `gitnexus mcp --http --port 3111` server
+and connect clients to `http://127.0.0.1:3111/mcp`. See the
 [shared-server instructions](docs/cli-reference.md#multi-client-setups-use---http-not-stdio).
 
 ## Web UI

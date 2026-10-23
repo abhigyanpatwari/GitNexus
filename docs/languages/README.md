@@ -87,7 +87,7 @@ and explain intended baseline changes. Do not copy old green results as fresh ru
 - [Receiver measurement audit](receiver-resolution-audit.md): fresh results and corrected classifications.
 
 - [Type Resolution System](../../type-resolution-system.md): active layers and lifecycle.
-- [Type Resolution Roadmap](../../type-resolution-roadmap.md): shared priorities and delivered work.
+- [Type Resolution Roadmap](../../type-resolution-roadmap.md): planned work and acceptance criteria.
 - [Architecture](../../ARCHITECTURE.md#scope-resolution-pipeline-rfc-909-ring-3): provider contract and shared pipeline.
 - [Objective-C provider guide](objective-c-provider.md): supported static behavior and runtime limits.
 - [Local import scoping](local-import-scoping.md) and [Jupyter notebooks](jupyter-notebook.md).

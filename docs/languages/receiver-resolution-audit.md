@@ -110,8 +110,10 @@ hit the default five-second worker deadline before measuring any language; the
 60-second setting above changes only that local deadline. An initial diagnostic
 runner also inherited an invalid `--input-type` worker flag; rerunning from an
 ordinary `.mjs` file removed that runner error. Neither failed attempt is counted
-as language evidence. Each shape uses a fresh temporary directory, and the
-worktree's parse caches were cleared before the original run.
+as language evidence. Each language corpus uses a fresh temporary directory;
+its shapes share one generated main file and support files, so cells can interact
+(see the Ruby parameter-name note above). The worktree's parse caches were cleared
+before the original run.
 
 The full JSON evidence command is the same harness with
 `--shapes --corpus test/fixtures/lang-resolution`; it includes each expression,
