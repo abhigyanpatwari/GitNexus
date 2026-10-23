@@ -12,6 +12,11 @@
  *   5. the report gets global mutant ids and the span-map check (U2), and is joined with the run
  *      manifest and sidecars (normalise-results.ts) into `<out>/results.json`.
  *
+ * Programmatic callers may also pass `extraRoots` (mutation fixture project directories, see
+ * path-map.ts `buildPathMap`), `ignoredDirs` and a `vitest` config and project for the runner; the
+ * gate 2 conformance driver (tools/mutation/conformance) runs its fixture project this way. The
+ * CLI keeps the defaults.
+ *
  * The scope file format and the run layout are documented in stryker-config.ts, the results
  * schema in normalise-results.ts. The output directory must lie outside the checkout; an existing
  * non-empty one is replaced only when it holds a previous driver run's marker file.
@@ -38,6 +43,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { INSTRUMENTER_CONSTANTS } from '@stryker-mutator/api/core';
 import { identifyMutants, readMutationReport, readRepoFile } from '../prepare/mutant-identity.js';
+import { buildPathMap } from '../prepare/path-map.js';
 import { prepare } from '../prepare/prepare.js';
 import { assertSpanMap, checkSpanMap } from '../prepare/span-map-check.js';
 import { readRunManifest } from '../runner/run-manifest.js';
@@ -59,6 +65,7 @@ import {
   runLayout,
   type RunLayout,
   type Variant,
+  type VitestSelection,
 } from './stryker-config.js';
 
 /** Marks an output directory as created by this driver, so a re-run may replace it. */
@@ -83,6 +90,10 @@ export interface RunScopeOptions extends CliOptions {
   repoRoot: string;
   /** Defaults to {@link DEFAULT_IGNORED_DIRS}. */
   ignoredDirs?: readonly string[];
+  /** Mutation fixture project roots whose files may be mutated (path-map.ts `buildPathMap`). */
+  extraRoots?: readonly string[];
+  /** vitest5 only: the runner's Vitest config file and project; the runner defaults otherwise. */
+  vitest?: VitestSelection;
 }
 
 export class UsageError extends Error {
@@ -236,7 +247,8 @@ export class StrykerRunError extends Error {
 export async function runScope(
   options: RunScopeOptions,
 ): Promise<{ results: RunResults; exitCode: number }> {
-  const scope = parseDriverScope(readFileSync(options.scopeFile, 'utf8'));
+  const pathMap = buildPathMap(options.extraRoots);
+  const scope = parseDriverScope(readFileSync(options.scopeFile, 'utf8'), pathMap);
   const ignoredDirs = options.ignoredDirs ?? DEFAULT_IGNORED_DIRS;
   assertTestFilesInSandbox(scope.testFiles, ignoredDirs);
   const layout = runLayout(options.outDir);
@@ -249,6 +261,8 @@ export async function runScope(
     timeoutMS: options.timeoutMS,
     command: options.command,
     ignoredDirs,
+    pathMap,
+    vitest: options.vitest,
   });
 
   resetOutDir(options.repoRoot, layout.outDir);
@@ -256,6 +270,7 @@ export async function runScope(
     repoRoot: options.repoRoot,
     outDir: layout.preparedRoot,
     mutate: scope.mutate.map((entry) => entry.file),
+    pathMap,
   });
   if (prepared.failed.length > 0) {
     throw new UsageError(
@@ -264,6 +279,10 @@ export async function runScope(
   }
   const missing = scope.testFiles.filter((file) => !existsSync(path.join(layout.packageDir, file)));
   if (missing.length > 0) throw new UsageError(`test files not found: ${missing.join(', ')}`);
+  const vitestConfig = options.vitest?.configFile;
+  if (vitestConfig !== undefined && !existsSync(path.join(layout.packageDir, vitestConfig))) {
+    throw new UsageError(`Vitest config not found in the prepared copy: ${vitestConfig}`);
+  }
 
   const scopeText = `${JSON.stringify({ testFiles: scope.testFiles }, null, 2)}\n`;
   parseMutationScope(scopeText);
@@ -288,6 +307,7 @@ export async function runScope(
   const identities = identifyMutants(report, {
     packageDir: report.projectRoot ?? layout.packageDir,
     readOriginal: readRepoFile(options.repoRoot),
+    pathMap,
   });
   const spanMap = checkSpanMap(report, identities);
   const isVitest5 = options.variant === 'vitest5';

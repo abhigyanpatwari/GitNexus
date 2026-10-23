@@ -18,6 +18,7 @@ import {
   strykerMutatePattern,
   type StrykerConfigInput,
 } from '../../../tools/mutation/driver/stryker-config.js';
+import { buildPathMap } from '../../../tools/mutation/prepare/path-map.js';
 
 const OUT = path.resolve('/tmp/gitnexus-u10-config-test/out');
 const SHARED = 'gitnexus-shared/src/lbug/schema-constants.ts';
@@ -93,6 +94,31 @@ describe('parseMutateEntry and strykerMutatePattern', () => {
     [`${LOCAL}:4-`, /\.ts source file/],
   ])('rejects %s', (entry, message) => {
     expect(() => parseMutateEntry(entry)).toThrow(message);
+  });
+});
+
+describe('mutate entries under an extra root (fixture projects)', () => {
+  const FIXTURE_ROOT = 'gitnexus/test/fixtures/mutation-conformance';
+  const FIXTURE = `${FIXTURE_ROOT}/src/static-table.ts`;
+  const map = buildPathMap([FIXTURE_ROOT]);
+
+  it('accepts a fixture file and maps it to its package-relative pattern', () => {
+    expect(strykerMutatePattern(parseMutateEntry(`${FIXTURE}:3-9`, map), map)).toBe(
+      'test/fixtures/mutation-conformance/src/static-table.ts:3-9',
+    );
+  });
+
+  it('rejects the fixture file under the default map', () => {
+    expect(() => parseMutateEntry(FIXTURE)).toThrow(/outside the mapped roots/);
+  });
+
+  it('parses a driver scope with fixture files under the extended map only', () => {
+    const text = JSON.stringify({
+      testFiles: ['test/fixtures/mutation-conformance/a.case.ts'],
+      mutate: [FIXTURE],
+    });
+    expect(parseDriverScope(text, map).mutate).toEqual([{ file: FIXTURE, range: null }]);
+    expect(() => parseDriverScope(text)).toThrow(/outside the mapped roots/);
   });
 });
 
@@ -260,6 +286,56 @@ describe('buildStrykerConfig: input errors', () => {
   it('rejects an unknown variant that bypassed the type', () => {
     const variant = parseVariantUnchecked('karma');
     expect(() => buildStrykerConfig({ ...input(), variant })).toThrow(/unknown variant "karma"/);
+  });
+});
+
+describe('buildStrykerConfig: fixture projects', () => {
+  const FIXTURE_ROOT = 'gitnexus/test/fixtures/mutation-conformance';
+  const map = buildPathMap([FIXTURE_ROOT]);
+  const fixtureMutate = [parseMutateEntry(`${FIXTURE_ROOT}/src/runtime.ts`, map)];
+  const fixtureIgnored = DEFAULT_IGNORED_DIRS.filter((dir) => dir !== 'test/fixtures');
+  const vitest = {
+    configFile: 'test/fixtures/mutation-conformance/vitest.config.ts',
+    project: 'conformance',
+  };
+
+  it('passes the Vitest config file and project to the vitest5 runner', () => {
+    const config = buildStrykerConfig(input({ vitest }));
+    expect(config.vitest5).toEqual({
+      runDir: runLayout(OUT).runDir,
+      sidecarDir: runLayout(OUT).sidecarDir,
+      ...vitest,
+    });
+  });
+
+  it('maps fixture mutate entries through the given path map', () => {
+    const config = buildStrykerConfig(
+      input({ mutate: fixtureMutate, pathMap: map, ignoredDirs: fixtureIgnored }),
+    );
+    expect(config.mutate).toEqual(['test/fixtures/mutation-conformance/src/runtime.ts']);
+  });
+
+  it('rejects a mutate file that an ignored directory keeps out of the sandbox', () => {
+    expect(() => buildStrykerConfig(input({ mutate: fixtureMutate, pathMap: map }))).toThrow(
+      /mutate file .* lies under the ignored directory test\/fixtures\//,
+    );
+  });
+
+  it.each([
+    ['a Vitest config for the command variant', commandInput({ vitest }), /only for the vitest5/],
+    [
+      'an absolute Vitest config path',
+      input({ vitest: { ...vitest, configFile: '/abs/vitest.config.ts' } }),
+      /package-relative POSIX path/,
+    ],
+    [
+      'a Vitest config path that climbs out of the package',
+      input({ vitest: { ...vitest, configFile: '../vitest.config.ts' } }),
+      /package-relative POSIX path/,
+    ],
+    ['an empty project name', input({ vitest: { ...vitest, project: '' } }), /project name/],
+  ])('rejects %s', (_label, configInput, message) => {
+    expect(() => buildStrykerConfig(configInput)).toThrow(message);
   });
 });
 

@@ -7,6 +7,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  PATH_MAP,
+  buildPathMap,
   deriveSharedAliases,
   parseSharedPackageJson,
   toPreparedPath,
@@ -80,6 +82,63 @@ describe('toRepoPathFromPackageDir', () => {
     expect(() =>
       toRepoPathFromPackageDir(sandbox, path.join(path.sep, 'tmp', 'other', 'src', 'a.ts')),
     ).toThrow(/outside the mapped roots|not a relative path/);
+  });
+});
+
+describe('buildPathMap: extra roots for mutation fixture projects', () => {
+  const FIXTURE = 'gitnexus/test/fixtures/mutation-conformance';
+  const FIXTURE_FILE = `${FIXTURE}/src/static-table.ts`;
+  const map = buildPathMap([FIXTURE]);
+
+  it('is the default map when no extra root is given', () => {
+    expect(buildPathMap()).toEqual(PATH_MAP);
+  });
+
+  it('maps a file under an extra root to itself, in both directions', () => {
+    expect([toPreparedPath(FIXTURE_FILE, map), toRepoPath(FIXTURE_FILE, map)]).toEqual([
+      FIXTURE_FILE,
+      FIXTURE_FILE,
+    ]);
+  });
+
+  it('maps an absolute sandbox path under an extra root back to its repo path', () => {
+    const sandbox = path.join(path.sep, 'tmp', 'sandbox-2');
+    const absolute = path.join(sandbox, 'test', 'fixtures', 'mutation-conformance', 'src', 'a.ts');
+    expect(toRepoPathFromPackageDir(sandbox, absolute, map)).toBe(`${FIXTURE}/src/a.ts`);
+  });
+
+  it('keeps the default roots in an extended map', () => {
+    expect(toPreparedPath('gitnexus-shared/src/lbug/schema-constants.ts', map)).toBe(
+      RELOCATED_SCHEMA,
+    );
+  });
+
+  it('still rejects the fixture path under the default map', () => {
+    expect(() => toPreparedPath(FIXTURE_FILE)).toThrow(/outside the mapped roots/);
+  });
+
+  it('still rejects paths outside every root under an extended map', () => {
+    expect(() => toPreparedPath('gitnexus/test/unit/schema.test.ts', map)).toThrow(
+      /outside the mapped roots/,
+    );
+  });
+
+  it('accepts a trailing slash, Windows separators and a repeated root once', () => {
+    expect(buildPathMap([`${FIXTURE}/`, 'gitnexus\\test\\fixtures\\mutation-conformance'])).toEqual(
+      map,
+    );
+  });
+
+  it.each([
+    ['another test directory', 'gitnexus/test/unit'],
+    ['a fixture that is not a mutation fixture', 'gitnexus/test/fixtures/lang-resolution'],
+    ['a file inside a mutation fixture', 'gitnexus/test/fixtures/mutation-x/src'],
+    ['the fixtures directory itself', 'gitnexus/test/fixtures'],
+    ['a production root', 'gitnexus/src'],
+    ['a parent-relative path', '../gitnexus/test/fixtures/mutation-x'],
+    ['an absolute path', '/gitnexus/test/fixtures/mutation-x'],
+  ])('rejects %s as an extra root', (_label, root) => {
+    expect(() => buildPathMap([root])).toThrow(/path map/);
   });
 });
 

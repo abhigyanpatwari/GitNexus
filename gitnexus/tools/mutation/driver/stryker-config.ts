@@ -14,6 +14,11 @@
  * `:<startLine>:<startColumn>-<endLine>:<endColumn>`. Globs are not accepted: the prepare step must
  * blank the `as` assertions of every mutated file (KTD7), so it needs the concrete files.
  *
+ * Fixture projects (gate 2's conformance fixture) pass an extended path map (path-map.ts
+ * `buildPathMap`) so their `gitnexus/test/fixtures/mutation-<name>/` files are accepted as mutate
+ * entries, and their own Vitest config file and project (`vitest` input). With the default map
+ * every other path keeps being rejected.
+ *
  * Run layout: every artefact lives under one absolute output directory (see {@link RunLayout}).
  * Stryker runs with its working directory in the prepared `gitnexus/` copy, so mutate patterns are
  * relative to that directory and relocated `gitnexus-shared` files map through the path map (KTD8).
@@ -28,7 +33,7 @@
  */
 import path from 'node:path';
 import { parseMutationScope } from '../scope-file.js';
-import { PACKAGE_DIR, toPreparedPath } from '../prepare/path-map.js';
+import { PACKAGE_DIR, PATH_MAP, toPreparedPath, type PathMapEntry } from '../prepare/path-map.js';
 
 export const VARIANTS = ['vitest5', 'command'] as const;
 export type Variant = (typeof VARIANTS)[number];
@@ -131,13 +136,16 @@ export interface MutateEntry {
 const MUTATE_ENTRY = /^(.+?\.ts)(?::(\d+(?::\d+)?)-(\d+(?::\d+)?))?$/;
 
 /** Parses `<repo path>[:<range>]` and checks that the path maps into the prepared tree. */
-export function parseMutateEntry(entry: string): MutateEntry {
+export function parseMutateEntry(
+  entry: string,
+  pathMap: readonly PathMapEntry[] = PATH_MAP,
+): MutateEntry {
   const match = MUTATE_ENTRY.exec(entry);
   if (match === null || match[1].endsWith('.d.ts')) {
     return fail(`mutate entry ${JSON.stringify(entry)} must name a .ts source file`);
   }
   const [, file, start, end] = match;
-  toPreparedPath(file); // throws for a path outside gitnexus/src and gitnexus-shared/src
+  toPreparedPath(file, pathMap); // throws for a path outside the mapped roots
   if (start === undefined || end === undefined) return { file, range: null };
   const startLine = Number(start.split(':')[0]);
   const endLine = Number(end.split(':')[0]);
@@ -148,8 +156,11 @@ export function parseMutateEntry(entry: string): MutateEntry {
 }
 
 /** The entry as a Stryker mutate pattern, relative to the prepared `gitnexus/` package. */
-export function strykerMutatePattern(entry: MutateEntry): string {
-  const pattern = path.posix.relative(PACKAGE_DIR, toPreparedPath(entry.file));
+export function strykerMutatePattern(
+  entry: MutateEntry,
+  pathMap: readonly PathMapEntry[] = PATH_MAP,
+): string {
+  const pattern = path.posix.relative(PACKAGE_DIR, toPreparedPath(entry.file, pathMap));
   return entry.range === null ? pattern : `${pattern}:${entry.range}`;
 }
 
@@ -161,7 +172,10 @@ export interface DriverScope {
 const SCOPE_KEYS: ReadonlySet<string> = new Set(['testFiles', 'mutate']);
 
 /** Parses and validates a driver scope file (see the module comment). */
-export function parseDriverScope(text: string): DriverScope {
+export function parseDriverScope(
+  text: string,
+  pathMap: readonly PathMapEntry[] = PATH_MAP,
+): DriverScope {
   let data: unknown;
   try {
     data = JSON.parse(text);
@@ -187,7 +201,7 @@ export function parseDriverScope(text: string): DriverScope {
     if (typeof entry !== 'string') return fail('scope file: mutate entries must be strings');
     if (seen.has(entry)) fail(`scope file: mutate entry ${JSON.stringify(entry)} is listed twice`);
     seen.add(entry);
-    return parseMutateEntry(entry);
+    return parseMutateEntry(entry, pathMap);
   });
   return { testFiles, mutate: entries };
 }
@@ -205,6 +219,14 @@ export function assertTestFilesInSandbox(
   }
 }
 
+/** A Vitest config of the vitest5 runner other than the default mutation config. */
+export interface VitestSelection {
+  /** Package-relative POSIX path of the Vitest config file. */
+  configFile: string;
+  /** The single Vitest project to run. */
+  project: string;
+}
+
 export interface StrykerConfigInput {
   variant: Variant;
   /** Absolute output directory; see {@link runLayout}. */
@@ -219,6 +241,10 @@ export interface StrykerConfigInput {
   command?: string;
   /** Defaults to {@link DEFAULT_IGNORED_DIRS}. */
   ignoredDirs?: readonly string[];
+  /** Maps mutate entries into the prepared tree; defaults to {@link PATH_MAP}. */
+  pathMap?: readonly PathMapEntry[];
+  /** vitest5 only: the runner's Vitest config and project; the runner defaults apply without it. */
+  vitest?: VitestSelection;
 }
 
 /** The Stryker options this driver sets (a `PartialStrykerOptions` subset). */
@@ -226,7 +252,7 @@ export interface GeneratedStrykerConfig {
   testRunner: Variant;
   appendPlugins?: string[];
   commandRunner?: { command: string };
-  vitest5?: { runDir: string; sidecarDir: string };
+  vitest5?: { runDir: string; sidecarDir: string; configFile?: string; project?: string };
   /** vitest5 only: Stryker ignores (and warns about) test-runner node args for `command`. */
   testRunnerNodeArgs?: string[];
   checkerNodeArgs: string[];
@@ -251,6 +277,23 @@ const requireInteger = (value: number, name: string, minimum: number): void => {
   }
 };
 
+const isPackageRelative = (file: string): boolean =>
+  file !== '' &&
+  !file.includes('\\') &&
+  !path.posix.isAbsolute(file) &&
+  !file.split('/').some((segment) => segment === '' || segment === '.' || segment === '..');
+
+function checkVitestSelection(vitest: VitestSelection): VitestSelection {
+  if (!isPackageRelative(vitest.configFile)) {
+    fail(
+      `the Vitest config file ${JSON.stringify(vitest.configFile)} must be a package-relative ` +
+        'POSIX path',
+    );
+  }
+  if (vitest.project === '') fail('the Vitest project name must not be empty');
+  return { configFile: vitest.configFile, project: vitest.project };
+}
+
 /** The Stryker config of one run; pure. */
 export function buildStrykerConfig(input: StrykerConfigInput): GeneratedStrykerConfig {
   const variant = parseVariant(input.variant);
@@ -264,6 +307,17 @@ export function buildStrykerConfig(input: StrykerConfigInput): GeneratedStrykerC
   }
   if (variant === 'command' && (input.command === undefined || input.command === '')) {
     fail('the command variant needs a command');
+  }
+  if (variant === 'command' && input.vitest !== undefined) {
+    fail('a Vitest config and project are only for the vitest5 variant');
+  }
+  const ignoredDirs = input.ignoredDirs ?? DEFAULT_IGNORED_DIRS;
+  const mutate = input.mutate.map((entry) => strykerMutatePattern(entry, input.pathMap));
+  for (const pattern of mutate) {
+    const dir = ignoredDirs.find((ignored) => pattern.startsWith(`${ignored}/`));
+    if (dir !== undefined) {
+      fail(`mutate file ${pattern} lies under the ignored directory ${dir}/, outside the sandbox`);
+    }
   }
   const shared: Omit<
     GeneratedStrykerConfig,
@@ -279,8 +333,8 @@ export function buildStrykerConfig(input: StrykerConfigInput): GeneratedStrykerC
     disableBail: true,
     disableTypeChecks: false,
     tsconfigFile: layout.missingTsconfig,
-    mutate: input.mutate.map(strykerMutatePattern),
-    ignorePatterns: (input.ignoredDirs ?? DEFAULT_IGNORED_DIRS).map((dir) => `/${dir}`),
+    mutate,
+    ignorePatterns: ignoredDirs.map((dir) => `/${dir}`),
     concurrency: input.concurrency,
     maxTestRunnerReuse: input.maxTestRunnerReuse,
     timeoutMS: input.timeoutMS,
@@ -300,7 +354,11 @@ export function buildStrykerConfig(input: StrykerConfigInput): GeneratedStrykerC
   return {
     testRunner: 'vitest5',
     appendPlugins: [layout.pluginFile],
-    vitest5: { runDir: layout.runDir, sidecarDir: layout.sidecarDir },
+    vitest5: {
+      runDir: layout.runDir,
+      sidecarDir: layout.sidecarDir,
+      ...(input.vitest === undefined ? {} : checkVitestSelection(input.vitest)),
+    },
     testRunnerNodeArgs: [...TSX_NODE_ARGS],
     coverageAnalysis: 'perTest',
     cleanTempDir: true,

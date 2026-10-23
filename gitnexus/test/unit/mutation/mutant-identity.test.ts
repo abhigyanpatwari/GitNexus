@@ -12,6 +12,7 @@ import {
   type MutationReport,
   type ReportMutant,
 } from '../../../tools/mutation/prepare/mutant-identity.js';
+import { buildPathMap } from '../../../tools/mutation/prepare/path-map.js';
 
 const PACKAGE_DIR = path.join(path.sep, 'prepared', 'gitnexus');
 const SHARED_KEY = 'relocated/gitnexus-shared/src/lbug/schema-constants.ts';
@@ -140,6 +141,29 @@ describe('identifyMutants', () => {
     expect(() =>
       identify({ [SHARED_KEY]: [mutant({ id: '4' }), mutant({ id: '4', replacement: 'x' })] }),
     ).toThrow(/local id 4 appears twice/);
+  });
+});
+
+describe('identifyMutants: extra roots', () => {
+  const FIXTURE_KEY = 'test/fixtures/mutation-conformance/src/runtime.ts';
+  const FIXTURE_REPO = `gitnexus/${FIXTURE_KEY}`;
+  const fixtureReport = report({ [FIXTURE_KEY]: [mutant()] });
+  const readFixture = (repoPath: string): string =>
+    repoPath === FIXTURE_REPO ? ORIGINAL : missing(repoPath);
+
+  it('names a fixture mutant by its repo path when the path map has the fixture root', () => {
+    const [identified] = identifyMutants(fixtureReport, {
+      packageDir: PACKAGE_DIR,
+      readOriginal: readFixture,
+      pathMap: buildPathMap(['gitnexus/test/fixtures/mutation-conformance']),
+    }).mutants;
+    expect(identified.globalId.startsWith(`${FIXTURE_REPO}@`)).toBe(true);
+  });
+
+  it('rejects the fixture mutant under the default path map', () => {
+    expect(() =>
+      identifyMutants(fixtureReport, { packageDir: PACKAGE_DIR, readOriginal: readFixture }),
+    ).toThrow(/outside the mapped roots/);
   });
 });
 

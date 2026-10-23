@@ -68,6 +68,11 @@ export interface PrepareOptions {
   outDir: string;
   /** Repo-relative `.ts` files whose `as` assertions are blanked. */
   mutate: readonly string[];
+  /**
+   * Maps `mutate` into the prepared tree; defaults to {@link PATH_MAP}. A fixture project's
+   * extended map (`buildPathMap`) lets its files be blanked in place.
+   */
+  pathMap?: readonly PathMapEntry[];
 }
 
 export interface PrepareReport {
@@ -139,15 +144,26 @@ function checkMutatePath(file: string): void {
   }
 }
 
+/**
+ * The `--mutate` files as canonical repo paths (separators, `./`), each once, in first-seen
+ * order. Throws for a non-`.ts` file or a path outside the map's roots.
+ */
+export function canonicalMutatePaths(
+  mutate: readonly string[],
+  pathMap: readonly PathMapEntry[] = PATH_MAP,
+): string[] {
+  mutate.forEach(checkMutatePath);
+  return [...new Set(mutate.map((file) => toRepoPath(toPreparedPath(file, pathMap), pathMap)))];
+}
+
 /** Builds the prepared copy and returns its report (also written to `<out>/prepare-report.json`). */
 export function prepare(options: PrepareOptions): PrepareReport {
   const repoRoot = path.resolve(options.repoRoot);
   const outDir = path.resolve(options.outDir);
   const sourcePackage = path.join(repoRoot, PACKAGE_DIR);
   const sourceModules = path.join(sourcePackage, 'node_modules');
-  options.mutate.forEach(checkMutatePath);
-  // Canonical repo paths (separators, `./`), each once; throws for a path outside the map.
-  const mutate = [...new Set(options.mutate.map((file) => toRepoPath(toPreparedPath(file))))];
+  const pathMap = options.pathMap ?? PATH_MAP;
+  const mutate = canonicalMutatePaths(options.mutate, pathMap);
   if (!existsSync(sourceModules)) {
     throw new Error(`prepare: ${sourceModules} is missing; run npm ci in ${PACKAGE_DIR}/ first`);
   }
@@ -173,13 +189,13 @@ export function prepare(options: PrepareOptions): PrepareReport {
 
   const scope = blankScope(
     mutate.map((file) => {
-      const absolute = path.join(outDir, toPreparedPath(file));
+      const absolute = path.join(outDir, toPreparedPath(file, pathMap));
       if (!existsSync(absolute)) throw new Error(`prepare: --mutate ${file} not found`);
       return { path: file, source: readFileSync(absolute, 'utf8') };
     }),
   );
   for (const file of scope.written) {
-    writeFileSync(path.join(outDir, toPreparedPath(file.path)), file.text);
+    writeFileSync(path.join(outDir, toPreparedPath(file.path, pathMap)), file.text);
   }
 
   const report: PrepareReport = {
@@ -188,7 +204,7 @@ export function prepare(options: PrepareOptions): PrepareReport {
     outDir,
     packageDir: PACKAGE_DIR,
     relocatedShared: `${PACKAGE_DIR}/${RELOCATED_SHARED_DIR}`,
-    pathMap: PATH_MAP,
+    pathMap,
     copiedFiles,
     blanked: scope.written.map(({ path: file, assertions }) => ({ file, assertions })),
     failed: scope.failed.map(({ path: file, reason }) => ({ file, reason })),

@@ -8,6 +8,11 @@
  * identity and the relocated shared tree translates back to `gitnexus-shared/src/...`.
  * Any other path is rejected rather than passed through.
  *
+ * Fixture projects of the mutation tooling (the gate 2 conformance fixture) mutate their own
+ * production modules where they live, under `gitnexus/test/fixtures/mutation-<name>/`. A caller
+ * that needs one builds an extended map with {@link buildPathMap} and passes it explicitly; the
+ * translation functions default to {@link PATH_MAP}, which never maps a fixture path.
+ *
  * This module is imported by tools/mutation/vitest.mutation.config.ts, so it must stay free
  * of heavy dependencies.
  */
@@ -31,6 +36,9 @@ export const PATH_MAP: readonly PathMapEntry[] = Object.freeze([
   { prepared: `${PACKAGE_DIR}/src/`, repo: `${PACKAGE_DIR}/src/` },
 ]);
 
+/** The only directories {@link buildPathMap} accepts as extra roots. */
+const EXTRA_ROOT = /^gitnexus\/test\/fixtures\/mutation-[a-z0-9]+(?:-[a-z0-9]+)*\/$/;
+
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -45,41 +53,75 @@ function normalizeRelative(input: string): string {
   return normalized;
 }
 
-function translate(input: string, from: 'prepared' | 'repo', to: 'prepared' | 'repo'): string {
+/**
+ * {@link PATH_MAP} plus one identity entry per extra root. An extra root is a mutation fixture
+ * project directory, `gitnexus/test/fixtures/mutation-<name>` (repo-relative, `/` or `\`
+ * separators, trailing slash optional); its files keep their path in the prepared copy, which
+ * mirrors the package. Anything else throws. A root listed twice is mapped once.
+ */
+export function buildPathMap(extraRoots: readonly string[] = []): readonly PathMapEntry[] {
+  const roots = new Set<string>();
+  for (const root of extraRoots) {
+    const directory = `${normalizeRelative(root).replace(/\/+$/, '')}/`;
+    if (!EXTRA_ROOT.test(directory)) {
+      throw new Error(
+        `path map: extra root ${JSON.stringify(root)} is not a mutation fixture directory ` +
+          '(gitnexus/test/fixtures/mutation-<name>)',
+      );
+    }
+    roots.add(directory);
+  }
+  if (roots.size === 0) return PATH_MAP;
+  return Object.freeze([
+    ...PATH_MAP,
+    ...[...roots].map((root): PathMapEntry => ({ prepared: root, repo: root })),
+  ]);
+}
+
+function translate(
+  input: string,
+  from: 'prepared' | 'repo',
+  to: 'prepared' | 'repo',
+  map: readonly PathMapEntry[],
+): string {
   const relative = normalizeRelative(input);
-  for (const entry of PATH_MAP) {
+  for (const entry of map) {
     const prefix = entry[from];
     if (relative.startsWith(prefix) && relative.length > prefix.length) {
       return entry[to] + relative.slice(prefix.length);
     }
   }
   throw new Error(
-    `path map: ${JSON.stringify(input)} is outside the mapped roots (${PATH_MAP.map((e) => e[from]).join(', ')})`,
+    `path map: ${JSON.stringify(input)} is outside the mapped roots (${map.map((e) => e[from]).join(', ')})`,
   );
 }
 
 /** A path relative to the prepared root, translated to its repo-relative source path. */
-export function toRepoPath(preparedPath: string): string {
-  return translate(preparedPath, 'prepared', 'repo');
+export function toRepoPath(preparedPath: string, map: readonly PathMapEntry[] = PATH_MAP): string {
+  return translate(preparedPath, 'prepared', 'repo', map);
 }
 
 /** A repo-relative source path, translated to its location under the prepared root. */
-export function toPreparedPath(repoPath: string): string {
-  return translate(repoPath, 'repo', 'prepared');
+export function toPreparedPath(repoPath: string, map: readonly PathMapEntry[] = PATH_MAP): string {
+  return translate(repoPath, 'repo', 'prepared', map);
 }
 
 /**
  * An absolute path under a directory that plays the role of the prepared `gitnexus/` package
  * (the prepared copy itself or a Stryker sandbox of it), translated to its repo path.
  */
-export function toRepoPathFromPackageDir(packageDir: string, absolutePath: string): string {
+export function toRepoPathFromPackageDir(
+  packageDir: string,
+  absolutePath: string,
+  map: readonly PathMapEntry[] = PATH_MAP,
+): string {
   const relative = path.relative(packageDir, absolutePath);
   if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
     throw new Error(
       `path map: ${JSON.stringify(absolutePath)} is not a relative path inside the root`,
     );
   }
-  return toRepoPath(`${PACKAGE_DIR}/${relative}`);
+  return toRepoPath(`${PACKAGE_DIR}/${relative}`, map);
 }
 
 export interface SharedPackageJson {

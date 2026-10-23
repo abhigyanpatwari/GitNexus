@@ -21,7 +21,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { toRepoPathFromPackageDir } from './path-map.js';
+import { toRepoPathFromPackageDir, type PathMapEntry } from './path-map.js';
 
 /** A 1-based line and column, as in Stryker's mutation-testing report. */
 export interface ReportPosition {
@@ -110,6 +110,8 @@ export interface IdentifyOptions {
   packageDir: string;
   /** Reads an original source file by repo-relative path. */
   readOriginal: (repoPath: string) => string;
+  /** Translates report paths; defaults to path-map.ts `PATH_MAP`. */
+  pathMap?: readonly PathMapEntry[];
 }
 
 const SCHEMA_VERSION = /^1(\.\d+)*$/;
@@ -264,6 +266,7 @@ export function identifyMutants(report: MutationReport, options: IdentifyOptions
     const file = toRepoPathFromPackageDir(
       options.packageDir,
       path.resolve(options.packageDir, reportFile),
+      options.pathMap,
     );
     let fileHash = hashes.get(file);
     if (fileHash === undefined) {
