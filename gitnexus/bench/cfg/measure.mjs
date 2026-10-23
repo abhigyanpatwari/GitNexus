@@ -59,6 +59,8 @@ import {
   DEFAULT_PDG_MAX_TAINT_HOPS,
 } from '../../src/core/ingestion/taint/propagate.ts';
 import { encodeTaintPath } from '../../src/core/ingestion/taint/path-codec.ts';
+import { createMemoizedRefinement } from '../../src/core/ingestion/taint/guard-refinement.ts';
+import { harvestFunctionSummary } from '../../src/core/ingestion/taint/summary-harvest.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = path.resolve(__dirname, 'baselines.json');
@@ -114,6 +116,73 @@ function langToolkit(langId) {
 // ---- synthetic generators (one cost dimension each) ----
 
 const SCENARIOS = [
+  {
+    name: 'guarded-commands',
+    small: 60,
+    large: 240,
+    guard: { findingsPerFunction: 0 },
+    gen: (n) =>
+      Array.from(
+        { length: n },
+        (_, i) => `function guarded${i}(req: any) {
+      const value: string = req.query.ref;
+      if (!/^[0-9a-f]{7,40}$/.test(value)) return;
+      execSync('git show ' + value);
+    }`,
+      ).join('\n'),
+  },
+  {
+    name: 'guard-bypass',
+    small: 60,
+    large: 240,
+    guard: { findingsPerFunction: 1 },
+    gen: (n) =>
+      Array.from(
+        { length: n },
+        (_, i) => `function bypass${i}(req: any, flag: boolean) {
+      const value: string = req.query.ref;
+      if (flag) { if (!/^[0-9a-f]{7,40}$/.test(value)) return; }
+      execSync('git show ' + value);
+    }`,
+      ).join('\n'),
+  },
+  {
+    name: 'guard-forwarders',
+    small: 60,
+    large: 240,
+    guard: { findingsPerFunction: 0, forwarding: true },
+    gen: (n) =>
+      Array.from(
+        { length: n },
+        (_, i) => `function forwarder${i}(value: string) {
+      if (!/^[0-9a-f]{7,40}$/.test(value)) return;
+      forward(value);
+    }`,
+      ).join('\n'),
+  },
+  {
+    name: 'guard-capped',
+    small: 80,
+    large: 320,
+    guard: { findingsPerFunction: 1, fallback: true },
+    gen: (n) =>
+      `function capped(req: any) { const value: string = req.query.ref;\n` +
+      Array.from({ length: n }, () => 'if (!/^[0-9a-f]{7,40}$/.test(value)) return;').join('\n') +
+      `\nexecSync('git show ' + value); }`,
+  },
+  {
+    name: 'guard-discriminants',
+    small: 100,
+    large: 400,
+    guard: { findingsPerFunction: 0 },
+    gen: (n) =>
+      Array.from(
+        { length: n },
+        (_, i) => `function discriminant${i}(kind: string) {
+      if (kind === 'read') return 1; return 2;
+    }`,
+      ).join('\n'),
+  },
   {
     name: 'straight-line',
     // One function, N coalescing simple statements → all fold into one basic
@@ -388,6 +457,7 @@ function measureReachingDefs(cfgs, reps, maxFacts, blockVisitsMul = 0) {
 function measureTaint(cfgs, reps, cap, taintModel) {
   const importIndex = buildTaintImportIndex([]); // bench callees are globals
   const pass = () => {
+    const refine = createMemoizedRefinement();
     let analyzed = 0;
     let kept = 0;
     let dropped = 0;
@@ -398,10 +468,16 @@ function measureTaint(cfgs, reps, cap, taintModel) {
       const du = computeReachingDefs(c, {
         maxFacts: DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
       });
-      const flows = computeTaintFlows(c, du, matches, {
-        maxFindingsPerFunction: cap,
-        maxHops: DEFAULT_PDG_MAX_TAINT_HOPS,
-      });
+      const flows = computeTaintFlows(
+        c,
+        du,
+        matches,
+        {
+          maxFindingsPerFunction: cap,
+          maxHops: DEFAULT_PDG_MAX_TAINT_HOPS,
+        },
+        refine(c),
+      );
       if (flows.status !== 'computed') continue;
       analyzed++;
       kept += flows.findings.length;
@@ -426,6 +502,61 @@ function measureTaint(cfgs, reps, cap, taintModel) {
     samples.push(Number(process.hrtime.bigint() - start) / 1e6);
   }
   return { ms: median(samples), ...out };
+}
+
+// Use the production policy and matching/solver path; only the fixture's global
+// spelling replaces import resolution, which is covered by integration tests.
+const GUARD_MODEL = {
+  ...TS_JS_TAINT_MODEL,
+  sinks: TS_JS_TAINT_MODEL.sinks
+    .filter((entry) => entry.name === 'execSync')
+    .map((entry) => ({ ...entry, module: undefined, global: true })),
+};
+
+function measureGuards(cfgs, reps) {
+  const imports = buildTaintImportIndex([]);
+  const pass = (input) => {
+    const refine = createMemoizedRefinement();
+    let visits = 0,
+      fallbacks = 0,
+      findings = 0,
+      forwardEffects = 0;
+    for (const cfg of input) {
+      const refinement = refine(cfg);
+      visits += refinement.guards.visits;
+      if (refinement.guards.status === 'fallback') fallbacks++;
+      const matches = matchFunctionSites(cfg, GUARD_MODEL, imports);
+      const du = computeReachingDefs(cfg);
+      if (matches.hasSource && matches.hasSink)
+        findings += computeTaintFlows(cfg, du, matches, undefined, refinement).findings.length;
+      forwardEffects += harvestFunctionSummary(
+        cfg,
+        du,
+        matches,
+        refinement,
+      ).facts.paramToCallArg.filter(
+        (edge) => edge.calleeName === 'forward' && edge.valueEffect?.kind === 'restrict',
+      ).length;
+    }
+    return { visits, fallbacks, findings, forwardEffects };
+  };
+  pass(cfgs);
+  const samples = [];
+  let result;
+  for (let i = 0; i < reps; i++) {
+    const start = process.hrtime.bigint();
+    result = pass(cfgs);
+    samples.push(Number(process.hrtime.bigint() - start) / 1e6);
+  }
+  const replay = JSON.parse(JSON.stringify(cfgs));
+  const start = process.hrtime.bigint();
+  const replayResult = pass(replay);
+  return {
+    ms: median(samples),
+    ...result,
+    replayMs: Number(process.hrtime.bigint() - start) / 1e6,
+    replayEqual: JSON.stringify(result) === JSON.stringify(replayResult),
+  };
 }
 
 // ---- memory growth: retained heap of the cfgSideChannel payload ----
@@ -559,7 +690,33 @@ function measureScenario(scenario) {
     };
   }
 
+  let guardMetrics = {};
+  if (scenario.guard) {
+    const guarded = measureGuards(large.cfgs, REPS);
+    guardMetrics = {
+      guard_ms_large: Number(guarded.ms.toFixed(3)),
+      guard_visits: guarded.visits,
+      guard_fallbacks: guarded.fallbacks,
+      guard_findings: guarded.findings,
+      guard_forward_effects: guarded.forwardEffects,
+      guard_replay_ms: Number(guarded.replayMs.toFixed(3)),
+      guard_replay_equal: guarded.replayEqual,
+      guard_functions: large.cfgs.length,
+    };
+    if (
+      guarded.findings !== large.cfgs.length * scenario.guard.findingsPerFunction ||
+      !guarded.replayEqual ||
+      (scenario.guard.fallback ? guarded.fallbacks !== large.cfgs.length : guarded.visits === 0) ||
+      (scenario.guard.forwarding && guarded.forwardEffects < large.cfgs.length) ||
+      guarded.visits > large.cfgs.length * 50_000
+    ) {
+      throw new Error(
+        `${scenario.name}: refinement correctness/budget/replay gate failed: ${JSON.stringify(guarded)}`,
+      );
+    }
+  }
   return {
+    ...guardMetrics,
     ...taintMetrics,
     scenario: scenario.name,
     elapsed_ms_small: Number(small.ms.toFixed(3)),

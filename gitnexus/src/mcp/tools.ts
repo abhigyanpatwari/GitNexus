@@ -7,6 +7,7 @@
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { REL_TYPES } from 'gitnexus-shared';
+import { GUARD_TAINT_LIMITATION } from './taint-limitations.js';
 import {
   CONTEXT_RELATION_TYPES,
   CONTEXT_RESPONSE_SECTIONS,
@@ -751,7 +752,8 @@ CONTRACT CAVEATS (absent flows are NOT proof of safety):
 - Cross-function matching is by callee NAME (context-insensitive): when one caller invokes two distinct same-named callees, a flow into one over-attributes to both — a cross-function finding does not prove the taint reached every same-named function (sound over-report, never a missed flow).
 - Sources read inside inline callbacks and returned handlers can flow through helper functions. Captured closure-variable flows are not modeled (e.g. const y = source(); arr.forEach(() => sink(y))).
 - Property/field flows are not tracked (obj.x = taint; sink(obj.y) has no chain).
-- Guard-style sanitizers (if (isValid(x))) and implicit/control-dependence flows are not modeled.
+- ${GUARD_TAINT_LIMITATION}
+- Implicit/control-dependence flows are not modeled.
 - CommonJS aliasing is partially modeled (require('<literal>') joins resolve; dynamic requires do not).
 - Exception-path over-approximation can produce false-positive noise.
 

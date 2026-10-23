@@ -38,6 +38,14 @@
  * NOTE: nothing serialized here may carry a field named `nodeId` — the durable
  * parsedfile-store reviver dedups objects keyed on that field name.
  */
+import {
+  hasDefaultShellArguments,
+  readPredicate,
+  readValueExpression,
+  type RefinementFileContext,
+} from './typescript-refinement.js';
+import type { FunctionCfg } from '../types.js';
+import type { StatementValueFacts } from '../../taint/value-refinement.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, SiteArgOccurrence, SiteRecord, StatementFacts } from '../types.js';
 
@@ -114,7 +122,34 @@ interface Scope {
   readonly table: Map<string, number>;
 }
 
+const UNSAFE_REFINEMENT_NODES = new Set([
+  'try_statement',
+  'await_expression',
+  'yield_expression',
+  'with_statement',
+]);
+const PREDICATE_NODES = new Set([
+  'parenthesized_expression',
+  'unary_expression',
+  'binary_expression',
+  'call_expression',
+]);
+
 export class TsHarvester {
+  private refinementSafe = true;
+  private primitiveBindings?: Set<number>;
+  private hasRefinementFacts = false;
+  private needsValueFacts = false;
+  private shapeCount = 0;
+  private predicateCount = 0;
+  private captureShapes = false;
+  private readonly checkDynamicNames: boolean;
+  private readonly hasGuardCandidate: boolean;
+  private activeShapes?: {
+    sites?: Map<number, number>;
+    definitions?: NonNullable<StatementValueFacts['definitions']>[number][];
+    calls?: NonNullable<StatementValueFacts['calls']>[number][];
+  };
   private readonly bindings: BindingEntry[] = [];
   /** Scope-opening node id → its scope. */
   private readonly scopeByNode = new Map<number, Scope>();
@@ -148,7 +183,20 @@ export class TsHarvester {
    */
   private readonly resultDefTargets = new Map<number, number[]>();
 
-  constructor(private readonly fnNode: SyntaxNode) {
+  constructor(
+    private readonly fnNode: SyntaxNode,
+    private readonly refinementContext?: RefinementFileContext,
+  ) {
+    const source = fnNode.text;
+    this.checkDynamicNames =
+      source.includes('eval') || source.includes('arguments') || source.includes('\\');
+    this.hasGuardCandidate =
+      source.includes('test') || source.includes('===') || source.includes('!==');
+    if (
+      fnNode.type.includes('generator') ||
+      (source.includes('async') && fnNode.children.some((child) => child.type === 'async'))
+    )
+      this.refinementSafe = false;
     this.fnId = fnNode.id;
     this.scopeByNode.set(fnNode.id, this.root);
     this.declareParams(fnNode);
@@ -160,6 +208,21 @@ export class TsHarvester {
   /** The completed binding table — pass to `CfgBuilder.finish`. */
   table(): readonly BindingEntry[] {
     return this.bindings;
+  }
+
+  decorate(cfg: FunctionCfg): FunctionCfg {
+    if (!this.refinementSafe) return { ...cfg, refinementSafe: false };
+    if (!this.hasRefinementFacts) return cfg;
+    return {
+      ...cfg,
+      refinementSafe: this.refinementSafe,
+      ...(this.primitiveBindings?.size ? { primitiveBindings: [...this.primitiveBindings] } : {}),
+    };
+  }
+
+  private addPrimitiveBinding(binding: number): void {
+    if ((this.primitiveBindings?.size ?? 0) >= 256) this.refinementSafe = false;
+    else (this.primitiveBindings ??= new Set()).add(binding);
   }
 
   // ── phase 1: declaration pre-scan ────────────────────────────────────────
@@ -227,6 +290,15 @@ export class TsHarvester {
       // `pattern`); plain JS puts the pattern directly in formal_parameters.
       const pattern = p.childForFieldName('pattern') ?? p;
       this.declarePattern(pattern, 'param', this.root, true, formalIndex);
+      if (
+        this.hasGuardCandidate &&
+        pattern.type === 'identifier' &&
+        p.type === 'required_parameter' &&
+        p.childForFieldName('type')?.text.replace(/\s/g, '') === ':string'
+      ) {
+        this.addPrimitiveBinding(this.root.table.get(pattern.text)!);
+      }
+      if (p.childForFieldName('value')) this.refinementSafe = false;
       formalIndex++;
     }
   }
@@ -282,7 +354,15 @@ export class TsHarvester {
   private prescan(node: SyntaxNode, scope: Scope): void {
     this.nearestScopeCache.set(node.id, scope);
     const t = node.type;
+    if (UNSAFE_REFINEMENT_NODES.has(t)) this.refinementSafe = false;
+    if (this.checkDynamicNames && t === 'identifier') {
+      const name = node.text;
+      // The legacy binding table does not canonicalize escaped identifier spellings.
+      if (name === 'arguments' || name === 'eval' || name.includes('\\'))
+        this.refinementSafe = false;
+    }
     if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) {
+      this.refinementSafe = false;
       // A nested function's NAME binds in the enclosing scope; its body is opaque.
       if (FUNCTION_DECL_TYPES.has(t)) {
         const name = node.childForFieldName('name');
@@ -297,6 +377,7 @@ export class TsHarvester {
     switch (t) {
       case 'lexical_declaration': {
         const kind = node.child(0)?.type === 'const' ? 'const' : 'let';
+        if (kind === 'const') this.needsValueFacts = true;
         this.declareDeclarators(node, kind, childScope, false);
         break;
       }
@@ -329,7 +410,9 @@ export class TsHarvester {
         break;
     }
 
-    for (let i = 0; i < node.namedChildCount; i++) {
+    const childCount = node.namedChildCount;
+    if (t === 'arguments' && childCount > 0) this.needsValueFacts = true;
+    for (let i = 0; i < childCount; i++) {
       const c = node.namedChild(i);
       if (c) this.prescan(c, childScope);
     }
@@ -357,8 +440,42 @@ export class TsHarvester {
    */
   facts(node: SyntaxNode): StatementFacts {
     const acc = new FactAccumulator(node.startPosition.row + 1);
-    this.walkValue(node, acc);
-    return acc.finish();
+    if (!this.refinementSafe || (!this.hasGuardCandidate && !this.needsValueFacts)) {
+      this.walkValue(node, acc);
+      return acc.finish();
+    }
+    const prior = this.activeShapes;
+    const priorCapture = this.captureShapes;
+    this.activeShapes = undefined;
+    this.captureShapes = true;
+    try {
+      this.walkValue(node, acc);
+      const shapes = this.activeShapes;
+      let predicate =
+        this.hasGuardCandidate && PREDICATE_NODES.has(node.type)
+          ? readPredicate(
+              node,
+              (identifier) => this.resolve(identifier),
+              this.refinementContext,
+              (call) => shapes?.sites?.get(call.id),
+            )
+          : undefined;
+      if (predicate && ++this.predicateCount > 64) {
+        this.refinementSafe = false;
+        predicate = undefined;
+      }
+      if (!predicate && !shapes?.definitions?.length && !shapes?.calls?.length) return acc.finish();
+      this.hasRefinementFacts = true;
+      const refinement: StatementValueFacts = {
+        ...(predicate ? { predicate } : {}),
+        ...(shapes?.definitions?.length ? { definitions: shapes.definitions } : {}),
+        ...(shapes?.calls?.length ? { calls: shapes.calls } : {}),
+      };
+      return { ...acc.finish(), ...(Object.keys(refinement).length ? { refinement } : {}) };
+    } finally {
+      this.activeShapes = prior;
+      this.captureShapes = priorCapture;
+    }
   }
 
   /**
@@ -505,6 +622,7 @@ export class TsHarvester {
           if (d?.type !== 'variable_declarator') continue;
           const name = d.childForFieldName('name');
           const value = d.childForFieldName('value');
+          let declaredBinding: number | undefined;
           // A bare `var x;` mid-function is hoisted and writes NOTHING at
           // runtime — harvesting it as a def would fabricate a kill of the
           // live def (`x = source(); var x; sink(x)` must keep source→sink;
@@ -512,9 +630,33 @@ export class TsHarvester {
           if (name && (value || t === 'lexical_declaration')) {
             const snap = acc.defSnapshot();
             this.walkDefPattern(name, acc);
-            if (value) this.registerResultDefs(value, acc.defsSince(snap));
+            if (value) {
+              const defs = acc.defsSince(snap);
+              this.registerResultDefs(value, defs);
+              if (defs.length === 1) declaredBinding = defs[0];
+            }
           }
           if (value) this.walkValue(value, acc);
+          if (
+            this.captureShapes &&
+            value &&
+            declaredBinding !== undefined &&
+            this.bindings[declaredBinding]?.kind === 'const' &&
+            name?.type === 'identifier'
+          ) {
+            const shapes = (this.activeShapes ??= {});
+            if (++this.shapeCount > 256) this.refinementSafe = false;
+            else
+              (shapes.definitions ??= []).push({
+                binding: declaredBinding,
+                value: readValueExpression(value, (identifier) => this.resolve(identifier)),
+              });
+            if (
+              this.hasGuardCandidate &&
+              d.childForFieldName('type')?.text.replace(/\s/g, '') === ':string'
+            )
+              this.addPrimitiveBinding(declaredBinding);
+          }
         }
         return;
       case 'assignment_expression': {
@@ -736,6 +878,23 @@ export class TsHarvester {
     // `node` IS the call_expression/new_expression — the SAME node the
     // scope-extractor anchors `@reference.call.*` (its `atRange`) on (KTD7).
     const siteIdx = acc.openCallSite(kind, [node.startPosition.row + 1, node.startPosition.column]);
+    if (argsNode?.type === 'arguments' && argsNode.namedChildCount > 0 && this.captureShapes) {
+      const shapes = (this.activeShapes ??= {});
+      (shapes.sites ??= new Map()).set(node.id, siteIdx);
+      if (++this.shapeCount > 256) this.refinementSafe = false;
+      else {
+        const args = argsNode.namedChildren.filter((argument) => argument.type !== 'comment');
+        if (args.length > 32) this.refinementSafe = false;
+        else
+          (shapes.calls ??= []).push({
+            site: siteIdx,
+            arguments: args.map((argument) =>
+              readValueExpression(argument, (identifier) => this.resolve(identifier)),
+            ),
+            ...(hasDefaultShellArguments(args) ? { defaultShell: true } : {}),
+          });
+      }
+    }
     acc.pushFrame(siteIdx);
     let calleePath: string | undefined;
     if (calleeNode) {

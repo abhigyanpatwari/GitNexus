@@ -64,6 +64,7 @@
  */
 
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
+import { createFunctionRefinement, type RefinementSolver } from './guard-refinement.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { generateId } from '../../../lib/utils.js';
 import {
@@ -154,6 +155,7 @@ const pushExample = (list: string[], anchor: string): void => {
  * re-validated (`hasTaintSafeSites`). Never throws on well-formed input;
  * the caller's per-file try isolates the rest.
  */
+
 export function emitFileTaint(
   graph: KnowledgeGraph,
   cfgs: readonly FunctionCfg[],
@@ -166,6 +168,7 @@ export function emitFileTaint(
   // functions request it, hitting the cache the call-summary harvest warmed.
   solve: ReachingDefsSolver = computeReachingDefs,
   parsed?: ParsedFile,
+  refine: RefinementSolver = createFunctionRefinement,
 ): TaintEmitResult {
   const result: TaintEmitResult = {
     functionsAnalyzed: 0,
@@ -215,7 +218,13 @@ export function emitFileTaint(
     }
 
     const defUse = solve(cfg, { maxFacts });
-    const flows = computeTaintFlows(cfg, defUse, matches, { maxFindingsPerFunction, maxHops });
+    const flows = computeTaintFlows(
+      cfg,
+      defUse,
+      matches,
+      { maxFindingsPerFunction, maxHops },
+      refine(cfg),
+    );
     if (flows.status === 'coverage-gap') {
       // R4: skipped entirely, counted by reason; aggregate-warned by the
       // caller (the RD layer already per-function-warned this solver status).
