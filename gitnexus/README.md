@@ -135,6 +135,11 @@ Add to `~/.cursor/mcp.json` (global — works for all projects):
 
 ### OpenCode
 
+`gitnexus setup -c opencode` writes the MCP entry plus skills and the hooks
+plugin (`~/.config/opencode/plugins/gitnexus.js`, auto-loaded by OpenCode —
+search augmentation via `tool.execute.after` and a stale-index hint after git
+mutations). Manual equivalent:
+
 Add to `~/.config/opencode/config.json`:
 
 ```json
