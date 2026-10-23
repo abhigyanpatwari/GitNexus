@@ -1,0 +1,16 @@
+# Stryker Vitest 5 runner — probe findings and upstream deltas
+
+Versions probed: Vitest 5.0.5, Stryker 10.0.0 (`@stryker-mutator/core`, `@stryker-mutator/api`), tsx 4.23.15, Node v22.23.3. Probed on 2026-10-23 in a scratch directory outside the repo.
+
+## Probe findings (U11)
+
+1. Name filter separator: **yes.** `vitest run test/unit/shared-type-extractors.test.ts -t 'extractElementTypeFromString returns undefined for empty string'` gives "Tests 108 skipped (108)" with exit 0. The same name joined with `' > '` gives "1 passed | 107 skipped". `-t` is a regular expression, so titles that contain `|`, `(`, `[` or `?` also need escaping.
+2. Per-spec task ids: **yes.** `project.createSpecification(file, { testIds: ['-1575855114_0_5', '-1575855114_1_15'] })`, passed to `vitest.runTestSpecifications([spec])`, gives `{"skipped":106,"passed":2}`, and the 2 tests that ran are exactly the selected ids. Task ids were the same across runs. A spec with only unknown ids silently skips every test and reports no error.
+3. Mutant active from module load, unfiltered run: **yes.** A copy of `shared.ts` was instrumented with Stryker 10's `Instrumenter` (1232 mutants, 245 hit at load). Static mutant 4 (`new Set(['Keys'])` to `[]`) was activated by `__STRYKER_ACTIVE_MUTANT__=4` (CLI, and the Node API with the env set between runs) or by `provide` plus a setup file that sets `globalThis.__stryker__.activeMutant`. Each run executed all 108 tests and gave "1 failed | 107 passed" (AssertionError). With no mutant active, all 108 tests passed.
+4. TypeScript plugin in child processes: **yes.** A `.ts` plugin exports `strykerPlugins` built with `declareClassPlugin(PluginKind.TestRunner, ...)` and `strykerValidationSchema`, and imports a `.ts` enum through a `.js` specifier. It is loaded through `appendPlugins` with `testRunnerNodeArgs: ["--import", "tsx"]`, and the main process is started as `node --import tsx stryker.js run`. The dry run and mutant runs passed in a child with `execArgv ["--import","tsx"]` and `NODE_OPTIONS` null. Controls: with no tsx in the main process, the plugin fails to load in the main process. With `testRunnerNodeArgs: []`, the child fails with "Cannot find TestRunner plugin".
+5. Setup-file task meta and `afterAll` suite: **yes, with a constraint.** Meta written in a setup file reaches the main process through `testCase.meta()` and `testModule.meta()`: from `beforeEach` and `afterEach`, on finished tests from `afterAll`, and on the file task. `afterAll` receives the file task as its second argument. Vitest 5 parses the first argument as a fixture pattern, so the hook must be written `afterAll(({}, suite) => ...)`. Writing `(ctx, suite) =>` throws a FixtureParseError at registration, which fails the file and skips every test.
+6. Suite `beforeAll` has no current test, and the setup-file `beforeAll` runs first: **yes.** The observed order is setup `beforeAll` (file task), then `Outer.beforeAll`. In both, `TestRunner.getCurrentTest()` is undefined and `expect.getState().currentTestName` is undefined. In a later describe's `beforeAll` and in `afterAll`, `expect.getState().currentTestName` still holds the previous test's name ("Outer > t2"). Only `TestRunner.getCurrentTest()` can therefore tell that no test is running.
+
+## Residual deltas against upstream
+
+U9 fills in this section.
