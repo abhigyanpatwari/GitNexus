@@ -1,5 +1,11 @@
 import type { FetchWrapperDef } from '../workers/parse-worker.js';
-import type { CalleeTarget, FetchWrapperCall, FetchWrapperReexport } from './fetch-wrapper.js';
+import type {
+  CalleeTarget,
+  FetchWrapperCall,
+  FetchWrapperReexport,
+  ForwardedCallee,
+} from './fetch-wrapper.js';
+import { evaluateFetchUrlExpression, type FetchUrlExpression } from './fetch-url-expression.js';
 
 interface NameGroup {
   remainingCarriers: number;
@@ -19,6 +25,7 @@ export function buildFetchWrapperIndex(
   configuredNames: readonly string[] = [],
 ): {
   isWrapperCall(call: Pick<FetchWrapperCall, 'filePath' | 'functionName' | 'target'>): boolean;
+  urlsForCall(call: FetchWrapperCall): string[];
 } {
   const configured = new Set(configuredNames);
   const seen = new Set<string>();
@@ -93,7 +100,10 @@ export function buildFetchWrapperIndex(
   for (let index = 0; index < defs.length; index++) {
     const definition = defs[index];
     if (definition.forwardsUrl) activate(index);
-    for (const forwarded of definition.forwardsTo) {
+    for (const forwarded of [
+      ...definition.forwardsTo,
+      ...(definition.urlArguments ?? []).map((flow) => flow.callee),
+    ]) {
       if (configured.has(forwarded.callee)) {
         activate(index);
       } else if (forwarded.target.kind === 'member') {
@@ -117,12 +127,91 @@ export function buildFetchWrapperIndex(
     }
   }
 
+  const isWrapperCall = ({
+    filePath,
+    functionName,
+    target,
+  }: Pick<FetchWrapperCall, 'filePath' | 'functionName' | 'target'>) => {
+    if (configured.has(functionName)) return true;
+    if (target.kind === 'member') return names.get(functionName)?.hasWrapper ?? false;
+    const index = targetDefinition(filePath, functionName, target);
+    return index !== undefined && index !== null && (defs[index].seed || carriers.has(index));
+  };
+  const urlsForDefinition = (
+    index: number,
+    input: string,
+    active: Set<number>,
+    budget: { remaining: number },
+  ): string[] => {
+    if (active.has(index) || active.size >= 32 || --budget.remaining < 0) return [];
+    const definition = defs[index];
+    // Existing/configured wrappers without string-operation evidence retain
+    // their literal path. New facts with an empty list explicitly prove none.
+    if (definition.urlArguments === undefined) return [input];
+    active.add(index);
+    const evaluate = (expression: FetchUrlExpression): string | undefined =>
+      evaluateFetchUrlExpression(expression, input, (callee, argument) =>
+        returnedUrl(index, callee, argument, active, budget),
+      );
+    const urls = new Set<string>();
+    for (const flow of definition.urlArguments) {
+      if (--budget.remaining < 0) break;
+      const argument = evaluate(flow.argument);
+      if (argument === undefined) continue;
+      if (flow.fetch || configured.has(flow.callee.callee)) urls.add(argument);
+      else {
+        const target = targetDefinition(
+          definition.filePath,
+          flow.callee.callee,
+          flow.callee.target,
+        );
+        if (target !== undefined && target !== null && (defs[target].seed || carriers.has(target)))
+          for (const url of urlsForDefinition(target, argument, active, budget)) urls.add(url);
+      }
+    }
+    active.delete(index);
+    return [...urls];
+  };
+  const returnedUrl = (
+    from: number,
+    callee: ForwardedCallee,
+    input: string,
+    active: Set<number>,
+    budget: { remaining: number },
+  ): string | undefined => {
+    const target = targetDefinition(defs[from].filePath, callee.callee, callee.target);
+    if (
+      target === undefined ||
+      target === null ||
+      active.has(target) ||
+      active.size >= 32 ||
+      --budget.remaining < 0
+    )
+      return undefined;
+    const expression = defs[target].urlReturn;
+    if (expression === undefined) return undefined;
+    active.add(target);
+    const result = evaluateFetchUrlExpression(expression, input, (nested, value) =>
+      returnedUrl(target, nested, value, active, budget),
+    );
+    active.delete(target);
+    return result;
+  };
   return {
-    isWrapperCall: ({ filePath, functionName, target }) => {
-      if (configured.has(functionName)) return true;
-      if (target.kind === 'member') return names.get(functionName)?.hasWrapper ?? false;
-      const index = targetDefinition(filePath, functionName, target);
-      return index !== undefined && index !== null && (defs[index].seed || carriers.has(index));
+    isWrapperCall,
+    urlsForCall: (call) => {
+      if (!isWrapperCall(call)) return [];
+      const index = targetDefinition(call.filePath, call.functionName, call.target);
+      // Configuration explicitly establishes an opaque HTTP sink, including
+      // custom clients whose internals are outside auto-detection's evidence.
+      if (
+        configured.has(call.functionName) &&
+        (index === undefined || index === null || (!defs[index].seed && !carriers.has(index)))
+      )
+        return [call.fetchURL];
+      return index === undefined || index === null
+        ? [call.fetchURL]
+        : urlsForDefinition(index, call.fetchURL, new Set(), { remaining: 256 });
     },
   };
 }
@@ -273,17 +362,59 @@ export function resolveFetchWrapperTargets(
       }
     );
   };
+  const resolveExpression = (
+    filePath: string,
+    expression: FetchUrlExpression,
+  ): FetchUrlExpression => {
+    if (typeof expression === 'string' || expression.kind === 'parameter') return expression;
+    if (expression.kind === 'call')
+      return {
+        ...expression,
+        callee: { ...expression.callee, target: resolve(filePath, expression.callee.target) },
+        argument: resolveExpression(filePath, expression.argument),
+      };
+    if (expression.kind === 'concat')
+      return {
+        ...expression,
+        parts: expression.parts.map((part) => resolveExpression(filePath, part)),
+      };
+    return {
+      ...expression,
+      value: resolveExpression(filePath, expression.value),
+      consequence: resolveExpression(filePath, expression.consequence),
+      alternative: resolveExpression(filePath, expression.alternative),
+    };
+  };
   // Aggregates share facts with the parse cache. Keep its raw specifiers intact
   // so a warm parse resolves imports against the current project configuration.
   return {
     definitions: definitions.map((definition) =>
-      definition.forwardsTo.some((forwarded) => forwarded.target.kind === 'import')
+      definition.forwardsTo.some((forwarded) => forwarded.target.kind === 'import') ||
+      definition.urlArguments !== undefined ||
+      definition.urlReturn !== undefined
         ? {
             ...definition,
             forwardsTo: definition.forwardsTo.map((forwarded) => ({
               ...forwarded,
               target: resolve(definition.filePath, forwarded.target),
             })),
+            ...(definition.urlArguments !== undefined
+              ? {
+                  urlArguments: definition.urlArguments.map((flow) => ({
+                    ...flow,
+                    callee: {
+                      ...flow.callee,
+                      target: resolve(definition.filePath, flow.callee.target),
+                    },
+                    argument: resolveExpression(definition.filePath, flow.argument),
+                  })),
+                }
+              : {}),
+            ...(definition.urlReturn !== undefined
+              ? {
+                  urlReturn: resolveExpression(definition.filePath, definition.urlReturn),
+                }
+              : {}),
           }
         : definition,
     ),

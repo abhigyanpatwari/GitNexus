@@ -3218,7 +3218,11 @@ const processFileGroup = (
             // nested non-wrapper can neither be imported nor carry a URL.
             if (
               facts &&
-              (facts.seed || facts.forwardsUrl || facts.forwardsTo.length > 0 || facts.moduleScope)
+              (facts.seed ||
+                facts.forwardsUrl ||
+                facts.forwardsTo.length > 0 ||
+                facts.moduleScope ||
+                facts.urlReturn !== undefined)
             )
               wrapperDefs.push({ filePath: file.path, functionName: nodeName, ...facts });
           } catch (err) {

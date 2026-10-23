@@ -1,12 +1,23 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
+import { loadParseCache, saveParseCache } from '../../../src/storage/parse-cache.js';
+import {
+  getDurableParsedFileDir,
+  pruneAndSaveDurableParsedFileStore,
+} from '../../../src/storage/parsedfile-store.js';
 import {
   FIXTURES,
   getRelationships,
   getNodesByLabel,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 describe('Fetch wrapper consumer FETCHES edge extraction', () => {
   let result: PipelineResult;
@@ -41,6 +52,101 @@ describe('Fetch wrapper consumer FETCHES edge extraction', () => {
     const edges = getRelationships(result, 'FETCHES');
     expect(edges.length).toBe(2);
   });
+});
+
+describe('Mount-prefixed wrapper consumers (#2858)', () => {
+  let root: string;
+  let cacheDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'consumer-mount-prefix-'));
+    writeFixtureRepo(root, {
+      'backend/main.py': `from fastapi import FastAPI
+app = FastAPI()
+@app.get('/api/models')
+def models(): return []
+@app.get('/api/agents/{id}')
+def agent(id: str): return {}
+@app.get('/models')
+def other_models(): return []
+`,
+      'web/config.ts': `declare const VITE_API_BASE_URL: string;
+export function getApiUrl(path: string) {
+  const base = VITE_API_BASE_URL || '';
+  const prefix = '/api';
+  const normalized = path.startsWith('/') ? path : '/' + path;
+  return \`\${base}\${prefix}\${normalized}\`;
+}`,
+      'web/request.ts': `import { getApiUrl } from './config';
+export function request(path: string) {
+  const url = getApiUrl(path);
+  return fetch(url);
+}
+export function direct(path: string) { return fetch('/api' + path); }
+export function versioned(path: string) { return fetch(\`/api\${path}\`); }
+export function forward(path: string) { return direct(path); }
+`,
+      'web/clients/models.ts': `import { request } from '../request';
+export function models() { return request('/models'); }`,
+      'web/clients/direct.ts': `import { direct } from '../request';
+export function models() { return direct('/models'); }`,
+      'web/clients/agents.ts': `import { versioned } from '../request';
+export function agent(id: string) { return versioned(\`/agents/\${id}\`); }`,
+      'web/clients/forward.ts': `import { forward } from '../request';
+export function models() { return forward('/models'); }`,
+      'web/decoy.ts': `function request(channel: string) { return channel; }
+request('/models');
+const cache = new Map(); cache.get('/models');`,
+    });
+    cacheDir = await mkdtemp(path.join(tmpdir(), 'consumer-mount-cache-'));
+    const parseCache = await loadParseCache(cacheDir, parseIdentity, cacheDir);
+    result = await runPipelineFromRepo(root, () => {}, { parseCache });
+    await saveParseCache(cacheDir, parseCache);
+    await pruneAndSaveDurableParsedFileStore(
+      getDurableParsedFileDir(cacheDir),
+      parseIdentity.base,
+      parseCache.usedKeys,
+    );
+  }, 60_000);
+
+  afterAll(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+    if (cacheDir) await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  it('links the runtime URL through literals, forwarding, and an imported URL builder', () => {
+    expect(
+      getRelationships(result, 'FETCHES')
+        .filter((edge) => edge.sourceFilePath.startsWith('web/clients/'))
+        .map((edge) => `${edge.sourceFilePath} -> ${edge.target}`)
+        .sort(),
+    ).toEqual([
+      'web/clients/agents.ts -> /api/agents/{id}',
+      'web/clients/direct.ts -> /api/models',
+      'web/clients/forward.ts -> /api/models',
+      'web/clients/models.ts -> /api/models',
+    ]);
+  });
+
+  it('does not link the caller literal to an unrelated unprefixed route', () => {
+    expect(getRelationships(result, 'FETCHES').filter((edge) => edge.target === '/models')).toEqual(
+      [],
+    );
+  });
+
+  it('preserves composed consumers when replaying a persisted parse cache', async () => {
+    const warm = await runPipelineFromRepo(root, () => {}, {
+      parseCache: await loadParseCache(cacheDir, parseIdentity, cacheDir),
+    });
+    expect(warm.reparsedFileCount).toBe(0);
+    expect(warm.parseCacheHitFileCount).toBeGreaterThan(0);
+    const consumers = (value: PipelineResult) =>
+      getRelationships(value, 'FETCHES')
+        .map((edge) => `${edge.sourceFilePath} -> ${edge.target}`)
+        .sort();
+    expect(consumers(warm)).toEqual(consumers(result));
+  }, 60_000);
 });
 
 // GitNexus's own web client (#3488): `fetchWithTimeout(`${_backendUrl}/api/repos`)`

@@ -30,6 +30,26 @@ function call(target: CalleeTarget, functionName = 'request'): FetchWrapperCall 
 }
 
 describe('fetch wrapper target classification', () => {
+  it('preserves configured opaque clients when their bodies have no proven HTTP sink', () => {
+    const index = buildFetchWrapperIndex(
+      [
+        definition('custom', {
+          urlArguments: [
+            {
+              callee: { callee: 'axios.get', target: { kind: 'member' } },
+              argument: { kind: 'parameter' },
+              fetch: false,
+            },
+          ],
+        }),
+      ],
+      ['request'],
+    );
+    expect(index.urlsForCall(call({ kind: 'binding', bindingId: 'custom' }))).toEqual([
+      '/api/items',
+    ]);
+  });
+
   it('uses the local binding rather than a same-named wrapper elsewhere', () => {
     const index = buildFetchWrapperIndex([
       definition('wrapper', { seed: true }),
