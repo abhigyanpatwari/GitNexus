@@ -274,6 +274,7 @@ export function createFetchWrapperContext(
   // Native parent lookup descends from the tree root, so the walk records the
   // ancestor facts that later queries need.
   const storedNames = new Map<number, Node | null>();
+  const directReturns = new Set<number>();
   const defaultExports = new Set<number>();
   const declarators = new Map<number, Node>();
   const region = (node: Node): Region => {
@@ -571,6 +572,8 @@ export function createFetchWrapperContext(
       if (name) exported(name, node.childForFieldName('alias')?.text ?? name.text);
     } else if (type === 'return_statement') {
       active.returns.push(node);
+      if (parent.type === 'statement_block' && frames[frames.length - 2]?.children === 'callable')
+        directReturns.add(node.id);
     } else if (type === 'call_expression' && !node.hasError) {
       active.calls.push(node);
       allCalls.push(node);
@@ -855,7 +858,7 @@ export function createFetchWrapperContext(
     const returnNode =
       body?.type !== 'statement_block'
         ? body
-        : explicitReturn?.parent?.id === body.id
+        : explicitReturn && directReturns.has(explicitReturn.id)
           ? firstNamed(explicitReturn)
           : undefined;
     const returnsString =
