@@ -232,7 +232,7 @@ Use source-pinned fixtures instead of the former broad Yes/No matrix:
 The merged receiver series adds package-qualified factories, ownership and
 visibility corrections, C# nullable fields, selected Rust smart-pointer fields,
 Swift/Dart hoisted returns and additional receiver-chain spellings. The
-[roadmap](type-resolution-roadmap.md#delivered-receiver-series) links each merged PR.
+[delivery record](https://github.com/abhigyanpatwari/GitNexus/blob/31241bfe510752aad06462a20d2b877759d49e6e/type-resolution-roadmap.md#delivered-receiver-series) links each merged PR.
 
 For the merged source, the receiver baseline records 138 call drops, 168 total
 drops, 30 reads and no writes. These are measurements, not proof that remaining
