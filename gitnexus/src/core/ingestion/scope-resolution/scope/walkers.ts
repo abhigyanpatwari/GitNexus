@@ -946,6 +946,13 @@ export type ClassBindingLookup = IndexedNameLookupOptions & {
    * pass it is unchanged.
    */
   readonly namespaceMemberVisible?: (def: SymbolDefinition) => boolean;
+  /**
+   * `ScopeResolver.resolveQualifiedTypeSpellings`. When true,
+   * {@link resolveClassBindingForName} answers a QUALIFIED spelling that bound
+   * nothing (`rp::C`, `a::Config`) through {@link resolveQualifiedClassSpelling}.
+   * Read by nothing else; absent (the default) leaves every lookup unchanged.
+   */
+  readonly qualifiedTypeSpellings?: boolean;
 };
 
 export function findClassBindingInScope(
@@ -1384,7 +1391,8 @@ export function resolveClassBindingForName(
   //
   // If a future case genuinely needs it, it must be gated on
   // `bindsTypeParameter` and land with a test that fails without it.
-  if (!rawClassName.includes('<')) return undefined;
+  if (!rawClassName.includes('<'))
+    return qualifiedSpellingFallback(scopeId, rawClassName, scopes, lookup);
   const baseName = stripTemplateArguments(rawClassName).replace(/\s+/g, '');
   if (baseName.length === 0) return undefined;
 
@@ -1425,8 +1433,61 @@ export function resolveClassBindingForName(
   // ── Base-name route ────────────────────────────────────────────────────────
   // Nothing matched the arguments as written, so what is left to find is the
   // declaration written against its PARAMETERS — the one instantiation-agnostic
-  // declaration the erasure is entitled to reach.
-  return resolveErasedBaseName(scopeId, baseName, scopes, lexical);
+  // declaration the erasure is entitled to reach. A qualified base
+  // (`ns::Repo<User>`) is tried only after both, so a specialization the
+  // argument match can reach is never bypassed by the argument-blind
+  // qualified route.
+  return (
+    resolveErasedBaseName(scopeId, baseName, scopes, lexical) ??
+    qualifiedSpellingFallback(scopeId, rawClassName, scopes, lookup)
+  );
+}
+
+/** {@link resolveQualifiedClassSpelling}, for the providers that opted in. */
+function qualifiedSpellingFallback(
+  scopeId: string,
+  rawClassName: string,
+  scopes: ScopeResolutionIndexes,
+  lookup: ClassBindingLookup | undefined,
+): SymbolDefinition | undefined {
+  return lookup?.qualifiedTypeSpellings === true
+    ? resolveQualifiedClassSpelling(scopeId, rawClassName, scopes)
+    : undefined;
+}
+
+/**
+ * The class a QUALIFIED declared-type spelling names — `rp::C`, `a::Config`,
+ * `rp::Box<int>` — through {@link resolveQualifiedInheritanceBase}, the route a
+ * qualified inheritance base and a qualified type reference already take.
+ *
+ * The receiver-typing lookups above understand a qualifier only as a `.`
+ * namespace-import handle, and a language whose qualifier is a namespace path
+ * (an include binds no handle, and the index keys `rp::C` under `C`) never
+ * has one, so a qualified local, parameter or factory result typed nothing.
+ * Reducing the spelling to its tail is NOT the fix: the tail binds the nearest
+ * same-named class, which is exactly the class the qualifier was written to
+ * rule out (`a::Config` inside a `namespace b` that declares its own Config).
+ * The qualified route matches the qualifier against each candidate's
+ * namespace and refuses on a tie, so it binds the named class or nothing.
+ *
+ * Declines for an unqualified spelling and for a qualifier that is a type
+ * parameter in scope (`T::type` is a dependent name, not a namespace path).
+ */
+export function resolveQualifiedClassSpelling(
+  scopeId: string,
+  rawClassName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const normalized = stripTrailingTypeArguments(normalizeQualifiedName(rawClassName));
+  const dot = normalized.indexOf('.');
+  if (dot <= 0) return undefined;
+  if (bindsTypeParameter(scopeId, normalized.slice(0, dot), scopes)) return undefined;
+  return resolveQualifiedInheritanceBase(
+    scopeId,
+    rawClassName,
+    scopes,
+    findEnclosingClassDef(scopeId, scopes),
+  );
 }
 
 /**
@@ -1773,6 +1834,57 @@ export function resolveAmbiguousInheritanceBaseViaImports(
 function dirnameOf(filePath: string): string {
   const idx = filePath.lastIndexOf('/');
   return idx === -1 ? '' : filePath.slice(0, idx);
+}
+
+/**
+ * The class-like def named `baseName` that `derivingClass` sees through an
+ * implicit same-namespace rule — the shared body of
+ * `ScopeResolver.resolveImplicitInheritanceBase`. `namespaceOf` is the
+ * provider's namespace fact for a def (`undefined` = unknown, never matches).
+ *
+ * Candidates must share the deriving class's namespace. Several can when one
+ * namespace is declared under more than one source root (a multi-module
+ * build), so the nearest by shared leading path segments wins — the order the
+ * sibling hooks inject them in — and a tie at that distance refuses: a missing
+ * edge is recoverable, a wrong EXTENDS edge silently corrupts impact analysis.
+ */
+export function resolveSameNamespaceInheritanceBase(
+  baseName: string,
+  derivingClass: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+  namespaceOf: (def: SymbolDefinition) => string | undefined,
+  acceptsCandidate?: (def: SymbolDefinition) => boolean,
+): SymbolDefinition | undefined {
+  const namespace = namespaceOf(derivingClass);
+  if (namespace === undefined) return undefined;
+  const ownSegments = derivingClass.filePath.split('/');
+  let nearest: SymbolDefinition | undefined;
+  let nearestShared = -1;
+  let tied = false;
+  for (const id of scopes.qualifiedNames.get(baseName)) {
+    const def = scopes.defs.get(id);
+    if (def === undefined || def.nodeId === derivingClass.nodeId || !isClassLike(def.type)) {
+      continue;
+    }
+    if (namespaceOf(def) !== namespace || acceptsCandidate?.(def) === false) continue;
+    const segments = def.filePath.split('/');
+    let shared = 0;
+    while (
+      shared < segments.length &&
+      shared < ownSegments.length &&
+      segments[shared] === ownSegments[shared]
+    ) {
+      shared++;
+    }
+    if (shared > nearestShared) {
+      nearest = def;
+      nearestShared = shared;
+      tied = false;
+    } else if (shared === nearestShared) {
+      tied = true;
+    }
+  }
+  return tied ? undefined : nearest;
 }
 
 /**

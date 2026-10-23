@@ -1937,6 +1937,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@import.publishes',
   '@type-binding.name',
   '@type-binding.type',
+  '@type-binding.nullable-field',
   '@reference.name',
   '@reference.qualified-name',
   // The generic arguments a heritage base was written with, when the emitter's

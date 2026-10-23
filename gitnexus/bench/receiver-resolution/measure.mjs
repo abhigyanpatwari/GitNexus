@@ -21,7 +21,9 @@
  *                      Measurable by the count arm below.
  *       INVISIBLE-GAP  no edge, and NO drop was recorded. The call is lost and
  *                      the instrument cannot see it.
- *       N/A            the language's grammar does not admit this spelling.
+ *       N/A            the language's grammar does not admit this spelling,
+ *                      or the spelling has no static callee an edge could
+ *                      point at (a C call through a function-pointer field).
  *                      Carries a REQUIRED reason — an omitted cell and a
  *                      genuinely inapplicable one look identical in a diff
  *                      otherwise, and that is how coverage silently rots.
@@ -260,6 +262,9 @@ export function fourHopChain(root: Root): void {
     // `arrowCallChain` / `arrowPropertyPath` discriminate an unannotated return
     // type from a property-path receiver — neither is expressible on the
     // canonical axis, and both are load-bearing for the PHP diagnosis.
+    // `arrowCallChain` is also the row's ONE untyped control: every canonical
+    // chain cell goes through the annotated `getUserTyped()`, so each measures
+    // its own spelling rather than the missing return type.
     extraShapeIds: ['arrowCallChain', 'arrowPropertyPath'],
     support: {
       'models.php': `<?php
@@ -273,16 +278,17 @@ class User {
 }
 
 class Service {
-    // Deliberately UNANNOTATED. \`arrowCallChain\` measures this one, and the
-    // missing return type is the suspected cause of its gap — annotating it
-    // here would erase the signal instead of explaining it.
+    // Deliberately UNANNOTATED. Only \`arrowCallChain\` measures this one: it
+    // is the row's untyped control, and annotating it here would erase the
+    // signal instead of explaining it.
     public function getUser() {
         return new User();
     }
 
-    // The annotated twin. \`plainChain\` measures this one, so the two cells
-    // together discriminate "PHP cannot chain" from "PHP cannot infer an
-    // unannotated return type".
+    // The annotated twin. \`plainChain\`, \`plainDeepChain\` and
+    // \`optionalChain\` all go through this one, so each cell measures its own
+    // spelling. \`plainChain\` against \`arrowCallChain\` discriminates "PHP
+    // cannot chain" from "PHP cannot infer an unannotated return type".
     public function getUserTyped(): User {
         return new User();
     }
@@ -292,8 +298,9 @@ class Service {
     header: `<?php\nrequire_once 'models.php';\n`,
     // TYPED parameter. An untyped `$svc` has no type binding to resolve the
     // chain's base against, which would make this row report a language gap
-    // that is really a fixture defect. `$repos` is typed as an array for the
-    // subscript row for the same reason.
+    // that is really a fixture defect. `$repos` is a native `array`, which says
+    // nothing about its elements, so `indexElement` adds the PHPDoc
+    // `@param User[] $repos` that PHP code uses to type an array's elements.
     wrap: (entry, body) => `function ${entry}(Service $svc, array $repos) {\n    ${body}\n}\n`,
     shapes: [
       {
@@ -329,10 +336,15 @@ class Service {
       {
         id: 'plainDeepChain',
         member: 'save',
-        body: '$svc->getUser()->address->save();',
+        body: '$svc->getUserTyped()->address->save();',
         note: 'deep arrow chain',
       },
-      { id: 'optionalChain', member: 'save', body: '$svc?->getUser()->save();', note: 'nullsafe' },
+      {
+        id: 'optionalChain',
+        member: 'save',
+        body: '$svc?->getUserTyped()->save();',
+        note: 'nullsafe',
+      },
       {
         id: 'nonNullAssert',
         na: 'PHP has no non-null assertion operator.',
@@ -342,7 +354,19 @@ class Service {
         id: 'explicitTypeArgs',
         na: 'PHP has no generic type-argument syntax at a call site.',
       },
-      { id: 'indexElement', member: 'save', body: '$repos[0]->save();', note: 'array subscript' },
+      {
+        id: 'indexElement',
+        member: 'save',
+        body: '$repos[0]->save();',
+        raw: `/**
+ * @param User[] $repos
+ */
+function indexElement(Service $svc, array $repos) {
+    $repos[0]->save();
+}
+`,
+        note: 'array subscript, element type from PHPDoc',
+      },
       {
         id: 'fieldReceiverCall',
         na: 'Covered by `arrowPropertyPath` above — the same undecorated field-receiver shape.',
@@ -560,6 +584,16 @@ func (h HostVP) decoratedFieldType() {
   {
     lang: 'javascript',
     ext: '.js',
+    // Plain JavaScript carries types in JSDoc, so every canonical cell is typed
+    // that way — `@param` on the entry, `@returns` on the support methods — and
+    // the row measures the receiver SPELLING, like every other row. Untyped,
+    // each cell measured "the code has no types" instead, and could only flip by
+    // guessing from a method name. `untypedChain` keeps one untyped cell as the
+    // control: `save` exists on both `User` and `Address`, so an edge there is a
+    // guess, and the cell must stay a gap. It deliberately reuses the name
+    // `svc`. JSDoc `@param` bindings stay on their own function, unlike Ruby's
+    // YARD below, so the control also catches a binding that starts leaking.
+    extraShapeIds: ['untypedChain'],
     support: {
       'models.js': `export class Address {
   save() {}
@@ -573,9 +607,11 @@ export class User {
 }
 
 export class Service {
+  /** @returns {User} */
   getUser() {
     return new User();
   }
+  /** @returns {Promise<User>} */
   async getUserAsync() {
     return new User();
   }
@@ -583,15 +619,27 @@ export class Service {
 `,
     },
     header: `import { Service, User } from './models.js';\n`,
-    wrap: (entry, body) => `export async function ${entry}(svc, repos) {\n  ${body}\n}\n`,
+    wrap: (entry, body) =>
+      `/**\n * @param {Service} svc\n * @param {User[]} repos\n */\n` +
+      `export async function ${entry}(svc, repos) {\n  ${body}\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.getUser().save();' },
+      { id: 'plainChain', member: 'save', body: 'svc.getUser().save();', note: 'control' },
+      {
+        id: 'untypedChain',
+        member: 'save',
+        body: 'svc.getUser().save();',
+        raw: `export async function untypedChain(svc) {
+  svc.getUser().save();
+}
+`,
+        note: 'untyped control — no JSDoc on `svc`; expected to stay a gap',
+      },
       { id: 'plainDeepChain', member: 'save', body: 'svc.getUser().address.save();' },
       { id: 'optionalChain', member: 'save', body: 'svc?.getUser().save();' },
       { id: 'nonNullAssert', na: 'JavaScript has no non-null assertion operator.' },
       { id: 'awaitParen', member: 'save', body: '(await svc.getUserAsync()).save();' },
       { id: 'explicitTypeArgs', na: 'JavaScript has no type-argument syntax.' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save();' },
+      { id: 'indexElement', member: 'save', body: 'repos[0].save();', note: 'JSDoc `User[]`' },
       {
         id: 'fieldReceiverCall',
         member: 'save',
@@ -804,6 +852,15 @@ public class Service {
   {
     lang: 'ruby',
     ext: '.rb',
+    // Typed with YARD for the same reason the JavaScript row uses JSDoc, with
+    // `untypedChain` as the one untyped control.
+    //
+    // Each function names its parameter after its own cell. YARD `@param`
+    // bindings are anchored on the method but land on the Module scope, so
+    // every function in the file shares ONE binding per parameter name. With a
+    // shared `svc`, a cell would resolve through a sibling's tag and the
+    // untyped control would borrow one, so neither would measure itself.
+    extraShapeIds: ['untypedChain'],
     support: {
       'models.rb': `class Address
   def save; end
@@ -818,6 +875,7 @@ class User
 end
 
 class Service
+  # @return [User]
   def get_user
     User.new
   end
@@ -825,15 +883,65 @@ end
 `,
     },
     header: `require_relative 'models'\n`,
+    // Unused: every cell below supplies `raw` for its per-cell parameter name.
     wrap: (entry, body) => `def ${entry}(svc, repos)\n  ${body}\nend\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.get_user.save' },
-      { id: 'plainDeepChain', member: 'save', body: 'svc.get_user.address.save' },
-      { id: 'optionalChain', member: 'save', body: 'svc&.get_user.save', note: 'safe navigation' },
+      {
+        id: 'plainChain',
+        member: 'save',
+        body: 'plain_svc.get_user.save',
+        raw: `# @param plain_svc [Service]
+def plainChain(plain_svc)
+  plain_svc.get_user.save
+end
+`,
+        note: 'control',
+      },
+      {
+        id: 'untypedChain',
+        member: 'save',
+        body: 'untyped_svc.get_user.save',
+        raw: `def untypedChain(untyped_svc)
+  untyped_svc.get_user.save
+end
+`,
+        note: 'untyped control — no YARD on `untyped_svc`; expected to stay a gap',
+      },
+      {
+        id: 'plainDeepChain',
+        member: 'save',
+        body: 'deep_svc.get_user.address.save',
+        raw: `# @param deep_svc [Service]
+def plainDeepChain(deep_svc)
+  deep_svc.get_user.address.save
+end
+`,
+      },
+      {
+        id: 'optionalChain',
+        member: 'save',
+        body: 'opt_svc&.get_user.save',
+        raw: `# @param opt_svc [Service]
+def optionalChain(opt_svc)
+  opt_svc&.get_user.save
+end
+`,
+        note: 'safe navigation',
+      },
       { id: 'nonNullAssert', na: 'Ruby has no non-null assertion operator.' },
       { id: 'awaitParen', na: 'Ruby has no await expression in the core language.' },
       { id: 'explicitTypeArgs', na: 'Ruby has no type-argument syntax.' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save' },
+      {
+        id: 'indexElement',
+        member: 'save',
+        body: 'idx_repos[0].save',
+        raw: `# @param idx_repos [Array<User>]
+def indexElement(idx_repos)
+  idx_repos[0].save
+end
+`,
+        note: 'YARD `Array<User>`',
+      },
       {
         id: 'fieldReceiverCall',
         member: 'save',
@@ -956,10 +1064,23 @@ impl RsBoxHolder {
   {
     lang: 'c',
     ext: '.c',
-    support: {
-      'models.h': `#pragma once
-
-typedef struct Address {
+    // C has no method dispatch. Its only receiver-shaped call goes through a
+    // struct function-pointer field, and that has no static callee: the field
+    // produces no graph node, and the function it points at is chosen at run
+    // time. So every cell is N/A, including the three that used to be
+    // measured (`u->address->save()`, `repos[0].save()`, `u->save()`). They
+    // could never resolve, so their gaps measured nothing. Re-checked with the
+    // structs below: the receivers now type (`u->address` reaches
+    // `User.address`), but neither `save` field has a node to call.
+    //
+    // The structs live in `main.c`, not in a header. A `.h` file belongs to the
+    // C++ provider (`languages/c-cpp.ts`), so structs declared there are
+    // invisible to the C resolver. That is a product gap in its own right,
+    // rather than something this row should measure by accident. They stay so
+    // the dispatch cells can be measured again by swapping each `na` back to
+    // its body, if function-pointer fields are ever modelled as callable.
+    support: {},
+    header: `typedef struct Address {
     void (*save)(void);
 } Address;
 
@@ -968,24 +1089,28 @@ typedef struct User {
     void (*save)(void);
 } User;
 `,
-    },
-    header: `#include "models.h"\n`,
     wrap: (entry, body) => `void ${entry}(User* u, User* repos) {\n    ${body}\n}\n`,
-    // C has no method dispatch. The only receiver-shaped construct is a call
-    // through a struct function-pointer field, so the chain shapes that assume a
-    // method on a returned value are inapplicable rather than gaps.
     shapes: [
       {
         id: 'plainChain',
         na: 'C has no method call on a returned value; dispatch is through struct function-pointer fields only.',
       },
-      { id: 'plainDeepChain', member: 'save', body: 'u->address->save();' },
+      {
+        id: 'plainDeepChain',
+        na: '`u->address->save()`: dispatch through a function-pointer field has no static callee in the graph.',
+      },
       { id: 'optionalChain', na: 'C has no optional-chaining operator.' },
       { id: 'nonNullAssert', na: 'C has no non-null assertion operator.' },
       { id: 'awaitParen', na: 'C has no await expression.' },
       { id: 'explicitTypeArgs', na: 'C has no generics.' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save();' },
-      { id: 'fieldReceiverCall', member: 'save', body: 'u->save();' },
+      {
+        id: 'indexElement',
+        na: '`repos[0].save()`: dispatch through a function-pointer field has no static callee in the graph.',
+      },
+      {
+        id: 'fieldReceiverCall',
+        na: '`u->save()`: dispatch through a function-pointer field has no static callee in the graph.',
+      },
       {
         id: 'decoratedReceiverBase',
         na: 'C has no method receiver, so there is no receiver decoration.',
@@ -1070,6 +1195,7 @@ class Service {
 
 class User {
     var address: Address = Address()
+    var optionalAddress: Address? = Address()
     func save() {}
 }
 
@@ -1084,8 +1210,8 @@ class Service {
     shapes: [
       { id: 'plainChain', member: 'save', body: 'svc.getUser().save()' },
       { id: 'plainDeepChain', member: 'save', body: 'svc.getUser().address.save()' },
-      { id: 'optionalChain', member: 'save', body: 'svc.getUser().address?.save()' },
-      { id: 'nonNullAssert', member: 'save', body: 'svc.getUser().address!.save()' },
+      { id: 'optionalChain', member: 'save', body: 'svc.getUser().optionalAddress?.save()' },
+      { id: 'nonNullAssert', member: 'save', body: 'svc.getUser().optionalAddress!.save()' },
       { id: 'awaitParen', member: 'save', body: '(await svc.getUserAsync()).save()' },
       {
         id: 'explicitTypeArgs',
@@ -1191,8 +1317,9 @@ function assertMatrixComplete(corpora) {
   for (const corpus of corpora) {
     // A language may carry EXTRA cells beyond the canonical axis when they
     // discriminate something the axis cannot — PHP's annotated/unannotated
-    // return-type pair, C++'s pointer/value base pair. They must be declared, so
-    // an extra stays a deliberate diagnostic rather than a typo'd canonical id.
+    // return-type pair, C++'s pointer/value base pair, the JavaScript and Ruby
+    // untyped controls. They must be declared, so an extra stays a deliberate
+    // diagnostic rather than a typo'd canonical id.
     const known = new Set([...SHAPE_IDS, ...(corpus.extraShapeIds ?? [])]);
     const seen = new Set();
     for (const shape of corpus.shapes) {
