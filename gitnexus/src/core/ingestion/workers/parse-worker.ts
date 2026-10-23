@@ -3214,15 +3214,14 @@ const processFileGroup = (
               parsedFile,
               lineOffset,
             );
-            // Keep possible wrappers and the functions other files can name; a
-            // nested non-wrapper can neither be imported nor carry a URL.
             if (
               facts &&
               (facts.seed ||
                 facts.forwardsUrl ||
                 facts.forwardsTo.length > 0 ||
                 facts.moduleScope ||
-                facts.urlReturn !== undefined)
+                facts.urlReturn !== undefined ||
+                (facts.urlArguments?.length ?? 0) > 0)
             )
               wrapperDefs.push({ filePath: file.path, functionName: nodeName, ...facts });
           } catch (err) {

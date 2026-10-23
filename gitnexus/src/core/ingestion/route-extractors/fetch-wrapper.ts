@@ -811,6 +811,23 @@ export function createFetchWrapperContext(
           return bindings.isGlobal(value, value.text) || (!!key && !invalid.has(key));
         },
       );
+    const dependsOnParameter = (expression: FetchUrlExpression): boolean => {
+      if (typeof expression === 'string') return false;
+      switch (expression.kind) {
+        case 'parameter':
+          return true;
+        case 'concat':
+          return expression.parts.some(dependsOnParameter);
+        case 'call':
+          return dependsOnParameter(expression.argument);
+        case 'leading-slash':
+          return (
+            dependsOnParameter(expression.value) ||
+            dependsOnParameter(expression.consequence) ||
+            dependsOnParameter(expression.alternative)
+          );
+      }
+    };
     const urlArguments: FetchUrlArgument[] = [];
     const recordUrl = (
       callee: Node | null,
@@ -820,7 +837,7 @@ export function createFetchWrapperContext(
       const name = calleeName(callee);
       if (!name) return;
       const argument = readUrl(argumentNode);
-      if (argument !== undefined)
+      if (argument !== undefined && dependsOnParameter(argument))
         urlArguments.push({ callee: { callee: name, target: targetOf(callee) }, argument, fetch });
     };
     for (const call of root.calls) {

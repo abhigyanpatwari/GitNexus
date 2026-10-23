@@ -47,6 +47,24 @@ for (const [name, grammar, provider] of grammars) {
 
     it.each([
       {
+        shape: 'a parameter-independent refresh alongside a URL fetch',
+        source: `function request(path) { fetch('/api/refresh'); return fetch('/api' + path); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a literal-only call that must not activate a URL carrier',
+        source: `function send(path) { return fetch(path); }
+          function request(event) { return send('/api/telemetry'); }`,
+        expected: [],
+      },
+      {
+        shape: 'an unknown-leading caller URL through slash normalization',
+        source: `function build(path) { return '/api' + (path.startsWith('/') ? path : '/' + path); }
+          function request(path) { return fetch(build(path)); }`,
+        input: '${BASE}/models',
+        expected: [],
+      },
+      {
         shape: 'literal concatenation',
         source: `function request(path) { return fetch('/api' + path); }`,
         expected: ['/api/models'],
@@ -119,8 +137,8 @@ for (const [name, grammar, provider] of grammars) {
           function request(path) { return fetch(build(path)); }`,
         expected: [],
       },
-    ])('resolves the actual URL for $shape (#2858)', ({ source, expected }) => {
-      const { root, context: wrapper } = context(`${source}\nrequest('/models');`);
+    ])('resolves the actual URL for $shape (#2858)', ({ source, expected, input = '/models' }) => {
+      const { root, context: wrapper } = context(`${source}\nrequest('${input}');`);
       const definitions = root.namedChildren.flatMap((node) => {
         const facts = wrapper.facts(node);
         const name = node.childForFieldName('name')?.text;

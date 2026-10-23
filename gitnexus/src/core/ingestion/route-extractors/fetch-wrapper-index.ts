@@ -137,12 +137,48 @@ export function buildFetchWrapperIndex(
     const index = targetDefinition(filePath, functionName, target);
     return index !== undefined && index !== null && (defs[index].seed || carriers.has(index));
   };
+  // Collapse identity forwarding iteratively so long wrapper chains retain
+  // the carrier pass's linear behavior without consuming transformation depth.
+  const identityRoots = new Map<number, number>();
+  const identityRoot = (start: number): number => {
+    const path: number[] = [];
+    const visiting = new Set<number>();
+    let index = start;
+    while (!identityRoots.has(index)) {
+      if (visiting.has(index)) return start;
+      visiting.add(index);
+      path.push(index);
+      const flows = defs[index].urlArguments;
+      const flow = flows?.length === 1 ? flows[0] : undefined;
+      if (
+        !flow ||
+        flow.fetch ||
+        typeof flow.argument === 'string' ||
+        flow.argument.kind !== 'parameter' ||
+        (flow.callee.target.kind !== 'binding' && flow.callee.target.kind !== 'resolved-import')
+      )
+        break;
+      const target = targetDefinition(defs[index].filePath, flow.callee.callee, flow.callee.target);
+      if (
+        target === undefined ||
+        target === null ||
+        (!defs[target].seed && !carriers.has(target)) ||
+        configured.has(defs[index].functionName)
+      )
+        break;
+      index = target;
+    }
+    const root = identityRoots.get(index) ?? index;
+    for (const entry of path) identityRoots.set(entry, root);
+    return root;
+  };
   const urlsForDefinition = (
     index: number,
     input: string,
     active: Set<number>,
     budget: { remaining: number },
   ): string[] => {
+    index = identityRoot(index);
     if (active.has(index) || active.size >= 32 || --budget.remaining < 0) return [];
     const definition = defs[index];
     // Existing/configured wrappers without string-operation evidence retain
@@ -158,19 +194,36 @@ export function buildFetchWrapperIndex(
       if (--budget.remaining < 0) break;
       const argument = evaluate(flow.argument);
       if (argument === undefined) continue;
-      if (flow.fetch || configured.has(flow.callee.callee)) urls.add(argument);
-      else {
+      if (flow.fetch) urls.add(argument);
+      else if (flow.callee.target.kind === 'member') {
+        const group = names.get(flow.callee.callee);
+        if (
+          configured.has(flow.callee.callee) ||
+          (group?.hasWrapper && group.remainingCarriers === 0)
+        )
+          urls.add(argument);
+      } else {
         const target = targetDefinition(
           definition.filePath,
           flow.callee.callee,
           flow.callee.target,
         );
-        if (target !== undefined && target !== null && (defs[target].seed || carriers.has(target)))
-          for (const url of urlsForDefinition(target, argument, active, budget)) urls.add(url);
+        if (
+          target !== undefined &&
+          target !== null &&
+          (defs[target].seed || carriers.has(target))
+        ) {
+          if (
+            flow.callee.target.kind === 'binding' ||
+            flow.callee.target.kind === 'resolved-import'
+          )
+            for (const url of urlsForDefinition(target, argument, active, budget)) urls.add(url);
+          else urls.add(argument); // Legacy name-only classification cannot prove a transformation.
+        } else if (configured.has(flow.callee.callee)) urls.add(argument);
       }
     }
     active.delete(index);
-    return [...urls];
+    return urls.size === 0 && configured.has(definition.functionName) ? [input] : [...urls];
   };
   const returnedUrl = (
     from: number,
@@ -179,6 +232,8 @@ export function buildFetchWrapperIndex(
     active: Set<number>,
     budget: { remaining: number },
   ): string | undefined => {
+    if (callee.target.kind !== 'binding' && callee.target.kind !== 'resolved-import')
+      return undefined;
     const target = targetDefinition(defs[from].filePath, callee.callee, callee.target);
     if (
       target === undefined ||
@@ -209,7 +264,9 @@ export function buildFetchWrapperIndex(
         (index === undefined || index === null || (!defs[index].seed && !carriers.has(index)))
       )
         return [call.fetchURL];
-      return index === undefined || index === null
+      return index === undefined ||
+        index === null ||
+        (call.target.kind !== 'binding' && call.target.kind !== 'resolved-import')
         ? [call.fetchURL]
         : urlsForDefinition(index, call.fetchURL, new Set(), { remaining: 256 });
     },

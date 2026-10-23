@@ -135,7 +135,7 @@ export function evaluateFetchUrlExpression(
   }
   if (expression.kind === 'leading-slash') {
     const value = evaluate(expression.value);
-    return value === undefined
+    return value === undefined || value.startsWith('${')
       ? undefined
       : evaluate(value.startsWith('/') ? expression.consequence : expression.alternative);
   }

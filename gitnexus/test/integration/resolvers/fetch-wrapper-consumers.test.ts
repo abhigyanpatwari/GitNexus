@@ -93,6 +93,11 @@ export function models() { return request('/models'); }`,
 export function models() { return direct('/models'); }`,
       'web/clients/agents.ts': `import { versioned } from '../request';
 export function agent(id: string) { return versioned(\`/agents/\${id}\`); }`,
+      'web/clients/nested.ts': `import { forward } from '../request';
+export function models() {
+  function request(path: string) { forward(path + ''); return 1; }
+  return request('/models');
+}`,
       'web/clients/forward.ts': `import { forward } from '../request';
 export function models() { return forward('/models'); }`,
       'web/decoy.ts': `function request(channel: string) { return channel; }
@@ -126,6 +131,7 @@ const cache = new Map(); cache.get('/models');`,
       'web/clients/direct.ts -> /api/models',
       'web/clients/forward.ts -> /api/models',
       'web/clients/models.ts -> /api/models',
+      'web/clients/nested.ts -> /api/models',
     ]);
   });
 
