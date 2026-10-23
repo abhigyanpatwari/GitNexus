@@ -44,7 +44,11 @@ function extensionReceiverType(fnNode: SyntaxNode): string | null {
     const child = fnNode.namedChild(i);
     if (child === null) continue;
     if (child.type === 'simple_identifier') return null;
-    if (child.type === 'user_type' || child.type === 'nullable_type') {
+    if (
+      child.type === 'receiver_type' ||
+      child.type === 'user_type' ||
+      child.type === 'nullable_type'
+    ) {
       return normalizeKotlinType(child.text);
     }
   }

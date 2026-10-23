@@ -906,6 +906,43 @@ interface LanguageProviderConfig {
    *  Default: undefined (no language-specific filtering). */
   readonly builtInNames?: ReadonlySet<string>;
 
+  // ── Program boundary (receiver-origin classification only) ───────────
+  /**
+   * Values, namespaces and types the language's RUNTIME or STANDARD LIBRARY
+   * supplies without the program declaring them — `document`, `process`,
+   * `System`, `Dictionary` — matched against a bare identifier: a dropped
+   * receiver's chain base, or the head of the type a receiver chain ends at.
+   *
+   * Read ONLY by `classifyReceiverOrigin`, which labels a call it could not
+   * resolve `external` (nothing in the program could have been the target)
+   * instead of `unknown`. Kept apart from `builtInNames` on purpose: that set
+   * also filters CALLEE names out of the call graph (`parse-worker.ts`,
+   * `type-env.ts`, the free-call fallback), so `process` there would drop every
+   * call to an in-program function named `process`. Nothing here can change an
+   * edge.
+   *
+   * A name only counts where the program binds nothing by it at the site and
+   * declares no type or value by it, so a local `document` parameter or an
+   * in-program `class System` still wins. The failure is asymmetric — a wrong
+   * entry hides a real resolver gap behind `epistemic: 'exact'`, a missing one
+   * only costs a hedge — so a set should under-include. Default: undefined (no
+   * name is evidence).
+   */
+  readonly externalReceiverNames?: ReadonlySet<string>;
+  /**
+   * Does this import SPECIFIER name a module the language reserves for its
+   * runtime or standard library (Python `os`, Zig `std`, Java `java.util`)?
+   *
+   * Read ONLY by `classifyReceiverOrigin`, and only for an import that also
+   * resolved to no file in the program: a name bound by such an import is
+   * rooted outside the program however it is spelled locally
+   * (`const s = @import("std")`). Third-party packages are NOT answered here —
+   * an unresolved `fastapi` or `express` import cannot be told apart from an
+   * in-program module the resolver missed, so it stays `unknown`. Default:
+   * undefined (no import is evidence).
+   */
+  readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
+
   // ══════════════════════════════════════════════════════════════════════════
   //  Scope-based resolution hooks (RFC #909 — Ring 1 #911)
   //

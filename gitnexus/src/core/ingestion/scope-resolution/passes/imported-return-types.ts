@@ -246,6 +246,8 @@ export function namespaceCallReturnType(
 export type QualifiedCalleeResolver = (
   calleeText: string,
   inScope: ScopeId,
+  lookupPosition?: TypeRef['lookupPosition'],
+  argumentsText?: string,
 ) => SymbolDefinition | undefined;
 
 /** Bind the provider's qualified-callee hook to this pass's indexes, or
@@ -260,9 +262,9 @@ export function bindQualifiedCalleeResolver(
 ): QualifiedCalleeResolver | undefined {
   if (hook === undefined) return undefined;
   let allFilePaths = filePaths;
-  return (calleeText, inScope) => {
+  return (calleeText, inScope, _lookupPosition, argumentsText) => {
     allFilePaths ??= new Set(parsedFiles.map((parsed) => parsed.filePath));
-    return hook(calleeText, inScope, scopes, workspaceIndex, allFilePaths);
+    return hook(calleeText, inScope, scopes, workspaceIndex, allFilePaths, argumentsText);
   };
 }
 
@@ -277,8 +279,9 @@ export function qualifiedCalleeReturnType(
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   resolveCallee: QualifiedCalleeResolver | undefined,
+  argumentsText?: string,
 ): TypeRef | undefined {
-  const callee = resolveCallee?.(calleeText, inScope);
+  const callee = resolveCallee?.(calleeText, inScope, undefined, argumentsText);
   if (callee === undefined) return undefined;
   const returned = producerTypeRef(callee.nodeId, scopes);
   return returned?.source === 'return-annotation' ? returned : undefined;
@@ -300,12 +303,11 @@ export function followChainPostFinalize(
   for (let depth = 0; depth < RECHAIN_MAX_DEPTH; depth++) {
     const lookupScope = current.declaredAtScope ?? fromScopeId;
     if (current.rawName.includes('.')) {
-      const returned = namespaceCallReturnType(
-        current.rawName,
-        lookupScope,
-        scopes,
-        current.lookupPosition,
-      );
+      // A namespace import's function (`ns.make`), else a dotted callee path
+      // only the provider can read (`com.acme.mod.make`, #3498).
+      const returned =
+        namespaceCallReturnType(current.rawName, lookupScope, scopes, current.lookupPosition) ??
+        qualifiedCalleeReturnType(current.rawName, lookupScope, scopes, resolveCallee);
       // A qualified return type (`-> models.Order`) names a namespace of the
       // producer's module, which the consumer's receiver lookup would read
       // against its own imports. Stop at the call rather than hand it over.

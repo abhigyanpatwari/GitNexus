@@ -23,7 +23,13 @@
  * Plan: `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
-import type { ParsedFile, ReferenceSite, RegistryProviders, Scope } from 'gitnexus-shared';
+import type {
+  ParsedFile,
+  ReferenceSite,
+  RegistryProviders,
+  Scope,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
@@ -103,12 +109,19 @@ import {
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
-import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
+import {
+  findEnclosingClassDef,
+  hasExplicitNameClaim,
+  lookupNameClaim,
+  resolveInheritanceBaseInScope,
+} from '../scope/walkers.js';
+import { normalizeQualifiedName, stripTrailingTypeArguments } from '../../utils/qualified-name.js';
 import {
   heritageTypeArgumentsKey,
   type HeritageTypeArgumentSink,
 } from '../utils/generic-instantiation.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
+import { narrowOverloadCandidates } from '../passes/overload-narrowing.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 import { withdrawAnsweredReceiverDrops } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
@@ -127,20 +140,31 @@ export function applyPreciseCallResultBindings(
   workspaceIndex: ReturnType<typeof buildWorkspaceResolutionIndex>,
   calleeIds: CalleeIdAccumulator,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
+  model: SemanticModel,
+  requireOwnedHoistedReturn = false,
 ): number {
   let updated = 0;
-  const returnTypeByGraphId = new Map<string, TypeRef>();
+  const returnTypeByGraphId = new Map<string, { type: TypeRef; def: SymbolDefinition }>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       const returnType = workspaceIndex.declaredReturnTypeByCallableId.get(def.nodeId);
       if (returnType === undefined) continue;
       const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
-      if (graphId !== undefined) returnTypeByGraphId.set(graphId, returnType);
+      if (graphId !== undefined) returnTypeByGraphId.set(graphId, { type: returnType, def });
     }
   }
   for (const parsed of parsedFiles) {
     const resolvedByPosition = calleeIds.get(parsed.filePath);
     if (resolvedByPosition === undefined) continue;
+    let callsByPosition: Map<string, ReferenceSite | null> | undefined;
+    if (requireOwnedHoistedReturn) {
+      callsByPosition = new Map();
+      for (const site of parsed.referenceSites) {
+        if (site.kind !== 'call') continue;
+        const key = calleeIdPosKey(site.atRange.startLine, site.atRange.startCol);
+        callsByPosition.set(key, callsByPosition.has(key) ? null : site);
+      }
+    }
     for (const assignment of parsed.callResultAssignmentSites ?? []) {
       const targets = resolvedByPosition.get(
         calleeIdPosKey(assignment.callSite.startLine, assignment.callSite.startCol),
@@ -148,8 +172,59 @@ export function applyPreciseCallResultBindings(
       if (targets === undefined || targets.size !== 1) continue;
       const targetId = targets.values().next().value as string | undefined;
       if (targetId === undefined) continue;
-      const returnType = returnTypeByGraphId.get(targetId);
-      if (returnType === undefined) continue;
+      const returned = returnTypeByGraphId.get(targetId);
+      if (returned === undefined) continue;
+      if (requireOwnedHoistedReturn) {
+        const site = callsByPosition?.get(
+          calleeIdPosKey(assignment.callSite.startLine, assignment.callSite.startCol),
+        );
+        if (site == null || site.arity === undefined) continue;
+        const def = returned.def;
+        const candidates =
+          def.ownerId === undefined
+            ? [def]
+            : [def.ownerId, ...indexes.methodDispatch.mroFor(def.ownerId)].flatMap((owner) =>
+                model.methods.lookupAllByOwner(owner, site.name),
+              );
+        const narrowed = [
+          ...new Map(
+            narrowOverloadCandidates(candidates, site.arity, site.argumentTypes).map(
+              (candidate) => [candidate.nodeId, candidate],
+            ),
+          ).values(),
+        ];
+        // The exact selected declaration may shadow distinct ancestors only
+        // with equivalent, fully known parameter metadata. Numeric counts may
+        // both be absent (variadics); an empty type slot is still unknown.
+        const ancestors = new Set(
+          def.ownerId === undefined ? [] : indexes.methodDispatch.mroFor(def.ownerId),
+        );
+        const owners = new Set(narrowed.map((candidate) => candidate.ownerId));
+        const parameters = def.parameterTypes;
+        if (
+          narrowed[0]?.nodeId !== def.nodeId ||
+          owners.size !== narrowed.length ||
+          narrowed
+            .slice(1)
+            .some(
+              (candidate) =>
+                candidate.ownerId === undefined ||
+                !ancestors.has(candidate.ownerId) ||
+                candidate.parameterCount !== def.parameterCount ||
+                (def.parameterCount !== 0 &&
+                  (parameters === undefined ||
+                    parameters.length === 0 ||
+                    (def.parameterCount !== undefined &&
+                      parameters.length !== def.parameterCount) ||
+                    candidate.parameterTypes?.length !== parameters.length ||
+                    parameters.some(
+                      (type, index) => type === '' || type !== candidate.parameterTypes?.[index],
+                    ))),
+            )
+        )
+          continue;
+      }
+      const returnType = returned.type;
       const scope = indexes.scopeTree.getScope(assignment.inScope);
       if (scope === undefined) continue;
       (scope.typeBindings as Map<string, TypeRef>).set(assignment.lhs, {
@@ -209,6 +284,57 @@ function emitInheritanceEdgeDirect(
 }
 
 /**
+ * Whether an `inherits` site's base was written as a bare name, with no
+ * qualifier (`a.b.Base`, `Ns::Base`). Captures that keep only the simple tail
+ * carry no `rawQualifiedName`, so the name capture must also start where the
+ * base expression does: `Base<T>` and `Base(args)` lead with the name,
+ * `pkg.Base` does not. A site whose anchor is not the base expression at all
+ * fails the same test, which only costs it the implicit-namespace fallback.
+ */
+function isBareInheritanceBase(site: ReferenceSite): boolean {
+  if (
+    site.rawQualifiedName !== undefined &&
+    stripTrailingTypeArguments(normalizeQualifiedName(site.rawQualifiedName)).includes('.')
+  ) {
+    return false;
+  }
+  const name = site.nameRange;
+  return (
+    name !== undefined &&
+    name.startLine === site.atRange.startLine &&
+    name.startCol === site.atRange.startCol
+  );
+}
+
+/**
+ * The provider's implicit same-namespace base for an `inherits` site the shared
+ * chain left unbound. That visibility (`populateNamespaceSiblings`) is only
+ * populated after the inheritance pre-pass, so without this a base it alone
+ * makes visible reaches nothing but the workspace-unique name fallback. Bare,
+ * unclaimed bases only: for a written qualifier or a shadowing import the
+ * chain has already decided, and its miss stands.
+ */
+function resolveImplicitInheritanceBaseAtSite(
+  site: ReferenceSite,
+  derivingClass: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+  resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
+): SymbolDefinition | undefined {
+  if (
+    resolveImplicitBase === undefined ||
+    derivingClass.isSynthetic === true ||
+    !isBareInheritanceBase(site)
+  )
+    return undefined;
+  const claim = lookupNameClaim(site.lookupScope ?? site.inScope, site.name, scopes, {
+    position: site.atRange,
+    purpose: site.lookupPurpose ?? 'type',
+  });
+  if (hasExplicitNameClaim(claim, site.name)) return undefined;
+  return resolveImplicitBase(site.name, derivingClass, scopes, site);
+}
+
+/**
  * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
  * before MRO construction. This lets template-base captures contribute to the
  * graph in time for `buildMro`, while `handledSites` prevents the generic
@@ -232,6 +358,7 @@ function preEmitInheritanceEdges(
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
   recordTypeArguments: HeritageTypeArgumentSink,
   unresolvedInheritanceByClass: Set<string>,
+  resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
   recordSourceBinding?: SourceBindingRecorder,
 ): Set<string> {
   const handledSites = new Set<string>();
@@ -266,14 +393,15 @@ function preEmitInheritanceEdges(
     const callerClass = findEnclosingClassDef(site.inScope, scopes);
     if (callerClass === undefined) continue;
 
-    const targetDef = resolveInheritanceBaseInScope(
-      site.lookupScope ?? site.inScope,
-      site.name,
-      scopes,
-      site.rawQualifiedName,
-      callerClass,
-      { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
-    );
+    const targetDef =
+      resolveInheritanceBaseInScope(
+        site.lookupScope ?? site.inScope,
+        site.name,
+        scopes,
+        site.rawQualifiedName,
+        callerClass,
+        { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
+      ) ?? resolveImplicitInheritanceBaseAtSite(site, callerClass, scopes, resolveImplicitBase);
     if (targetDef === undefined || targetDef.nodeId === callerClass.nodeId) {
       // Static lookup can mistake the current declaration for an earlier
       // same-named base. A self-edge is not inheritance evidence and would
@@ -944,6 +1072,7 @@ export function runScopeResolution(
         nodeLookup,
         recordHeritageTypeArguments,
         unresolvedInheritanceByClass,
+        provider.resolveImplicitInheritanceBase,
         recordSourceBinding,
       );
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
@@ -1251,10 +1380,13 @@ export function runScopeResolution(
           recordSourceBinding,
           allFilePaths,
           calleeIdSink: calleeIdAccumulator,
-          // The pass's only source of positive EXTERNAL evidence for a dropped
-          // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
-          // the `emitFreeCallFallback` wiring below.
+          // The pass's sources of positive EXTERNAL evidence for a dropped
+          // receiver (`console.log`, `document.body`, `import os`). The first is
+          // the same hook, same spelling as the `emitFreeCallFallback` wiring
+          // below; the other two are read by nothing but the origin label.
           isBuiltInName: provider.languageProvider.isBuiltInName,
+          externalReceiverNames: provider.languageProvider.externalReceiverNames,
+          isExternalModuleSpecifier: provider.languageProvider.isExternalModuleSpecifier,
           // What each heritage clause instantiated its base with, so the
           // interface-dispatch fan-out can refuse an incompatible instantiation
           // (#2912). Empty under `callableFlowOnly`, which emits no dispatch.
@@ -1338,6 +1470,8 @@ export function runScopeResolution(
           workspaceIndex,
           calleeIdAccumulator,
           postHeritageNodeLookup,
+          readonlyModel,
+          provider.hoistedTypeBindingsRequireOwner === true,
         );
   if (replayedCallResultBindings > 0) {
     const handledBeforeReplay = new Set(handledSites);
@@ -1354,6 +1488,8 @@ export function runScopeResolution(
         calleeIdSink: calleeIdAccumulator,
         recordSourceBinding,
         isBuiltInName: provider.languageProvider.isBuiltInName,
+        externalReceiverNames: provider.languageProvider.externalReceiverNames,
+        isExternalModuleSpecifier: provider.languageProvider.isExternalModuleSpecifier,
         allFilePaths,
         heritageTypeArguments,
         unresolvedInheritanceByClass,

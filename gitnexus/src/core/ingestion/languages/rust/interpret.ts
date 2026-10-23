@@ -11,7 +11,7 @@ const ENUM_VARIANT_NAMES = new Set(['Some', 'None', 'Ok', 'Err']);
 // the principal trait name. Reference/pointer sigils are stripped by the
 // caller first; wrapper unwrapping (Box<T> etc.) runs before this so the
 // unwrapped inner text still gets the same treatment.
-function stripDynBound(t: string): string {
+export function stripDynBound(t: string): string {
   if (!DYN_PREFIX_RE.test(t)) return t;
   t = t.replace(DYN_PREFIX_RE, '');
   const plus = t.indexOf('+');

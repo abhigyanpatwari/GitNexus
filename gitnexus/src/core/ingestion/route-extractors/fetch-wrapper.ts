@@ -4,6 +4,11 @@ import type { ParsedFile } from 'gitnexus-shared';
 import type { ExtractedFetchCall } from '../workers/parse-worker.js';
 import { stripLeadingTemplatePrefix } from './route-path.js';
 import {
+  readFetchUrlExpression,
+  type FetchUrlArgument,
+  type FetchUrlExpression,
+} from './fetch-url-expression.js';
+import {
   bindingKey,
   createLexicalBindings,
   importBindingKey,
@@ -42,6 +47,10 @@ export interface FetchWrapperFacts {
   seed: boolean;
   forwardsUrl: boolean;
   forwardsTo: ForwardedCallee[];
+  /** Proven direct URL operations, retained through worker/cache serialization. */
+  urlArguments?: FetchUrlArgument[];
+  /** A single returned string expression, for helpers such as getApiUrl(path). */
+  urlReturn?: FetchUrlExpression;
 }
 /** A module export relevant to barrel resolution. */
 export interface FetchWrapperReexport {
@@ -115,6 +124,7 @@ const INSPECTED_TYPES: ReadonlySet<string> = new Set([
   'export_statement',
   'export_specifier',
   'call_expression',
+  'return_statement',
 ]);
 /** Fetch implementations imported from packages, by module specifier and export name.
  * A namespace or `require` value is recorded under the specifier itself. */
@@ -130,6 +140,7 @@ interface Region {
   node: Node;
   edges: Set<Region>;
   calls: Node[];
+  returns: Node[];
 }
 /** A visited ancestor of the cursor. */
 interface Frame {
@@ -245,6 +256,7 @@ export function createFetchWrapperContext(
   const aliases = new Set<string>();
   const invalid = new Set<string>();
   const initialized = new Map<string, number>();
+  const bindingValues = new Map<string, Node>();
   const parameters = new Set<string>();
   const exports = new Map<string, Set<string>>();
   const boundNames = new Set<string>();
@@ -262,6 +274,7 @@ export function createFetchWrapperContext(
   // Native parent lookup descends from the tree root, so the walk records the
   // ancestor facts that later queries need.
   const storedNames = new Map<number, Node | null>();
+  const directReturns = new Set<number>();
   const defaultExports = new Set<number>();
   const declarators = new Map<number, Node>();
   const region = (node: Node): Region => {
@@ -269,6 +282,7 @@ export function createFetchWrapperContext(
       node,
       edges: new Set<Region>(),
       calls: [] as Node[],
+      returns: [] as Node[],
     };
     regions.push(result);
     return result;
@@ -303,6 +317,7 @@ export function createFetchWrapperContext(
       if (!value) continue;
       initialized.set(id, (initialized.get(id) ?? 0) + 1);
       if (!parameter && parameters.has(id)) invalid.add(id);
+      if (!parameter && pattern?.type === 'identifier') bindingValues.set(id, value);
       if (pattern?.type === 'identifier' && namesFetch(value)) aliases.add(id);
     }
   };
@@ -555,6 +570,10 @@ export function createFetchWrapperContext(
     ) {
       const name = node.childForFieldName('name');
       if (name) exported(name, node.childForFieldName('alias')?.text ?? name.text);
+    } else if (type === 'return_statement') {
+      active.returns.push(node);
+      if (parent.type === 'statement_block' && frames[frames.length - 2]?.children === 'callable')
+        directReturns.add(node.id);
     } else if (type === 'call_expression' && !node.hasError) {
       active.calls.push(node);
       allCalls.push(node);
@@ -775,6 +794,77 @@ export function createFetchWrapperContext(
     // A rebound binding no longer names this function, so it proves no wrapper
     // across files either; its names are kept so they still collide.
     const rebound = !!id && invalid.has(id);
+    const readUrl = (node: Node | null | undefined) =>
+      readFetchUrlExpression(
+        node,
+        url,
+        (value) => {
+          const key = stableBinding(value);
+          return key && !invalid.has(key) ? key : undefined;
+        },
+        (key) => bindingValues.get(key),
+        (callee) => {
+          const name = calleeName(callee);
+          return name ? { callee: name, target: targetOf(callee) } : undefined;
+        },
+        (value) => {
+          if (value.type !== 'identifier') return false;
+          const key = stableBinding(value);
+          return bindings.isGlobal(value, value.text) || (!!key && !invalid.has(key));
+        },
+      );
+    const dependsOnParameter = (expression: FetchUrlExpression): boolean => {
+      if (typeof expression === 'string') return false;
+      switch (expression.kind) {
+        case 'parameter':
+          return true;
+        case 'concat':
+          return expression.parts.some(dependsOnParameter);
+        case 'call':
+          return dependsOnParameter(expression.argument);
+        case 'leading-slash':
+          return (
+            dependsOnParameter(expression.value) ||
+            dependsOnParameter(expression.consequence) ||
+            dependsOnParameter(expression.alternative)
+          );
+      }
+    };
+    const urlArguments: FetchUrlArgument[] = [];
+    const recordUrl = (
+      callee: Node | null,
+      argumentNode: Node | null | undefined,
+      fetch: boolean,
+    ) => {
+      const name = calleeName(callee);
+      if (!name) return;
+      const argument = readUrl(argumentNode);
+      if (argument !== undefined && dependsOnParameter(argument))
+        urlArguments.push({ callee: { callee: name, target: targetOf(callee) }, argument, fetch });
+    };
+    for (const call of root.calls) {
+      const callee = unwrap(call.childForFieldName('function'));
+      const name = calleeName(callee);
+      if (!name) continue;
+      const alias = callee?.type === 'identifier' ? stableBinding(callee) : undefined;
+      const fetch = platformFetch(callee) || !!(alias && aliases.has(alias));
+      recordUrl(callee, firstNamed(call.childForFieldName('arguments')), fetch);
+    }
+    for (const call of url ? (parameterCalls.get(url) ?? []) : [])
+      if (call.region !== root && reaches(call.region))
+        recordUrl(call.callee, call.argument, call.seed);
+    const body = fn.childForFieldName('body');
+    const explicitReturn = root.returns.length === 1 ? root.returns[0] : undefined;
+    const returnNode =
+      body?.type !== 'statement_block'
+        ? body
+        : explicitReturn && directReturns.has(explicitReturn.id)
+          ? firstNamed(explicitReturn)
+          : undefined;
+    const returnsString =
+      !fn.type.startsWith('generator_') &&
+      !fn.children.some((child) => child.type === 'async' || child.type === '*');
+    const urlReturn = !rebound && url && returnsString ? readUrl(returnNode) : undefined;
     const result: FetchWrapperFacts = {
       definitionId: `${filePath}:${fn.startPosition.row + lineOffset + 1}:${fn.startPosition.column}:${fn.endPosition.row + lineOffset + 1}:${fn.endPosition.column}`,
       ...(id ? { bindingId: id } : {}),
@@ -792,6 +882,8 @@ export function createFetchWrapperContext(
       seed: seed && !rebound,
       forwardsUrl: forwardsUrl && !rebound,
       forwardsTo: rebound ? [] : [...forwardsTo.values()],
+      ...(!rebound && (seed || urlArguments.length > 0) ? { urlArguments } : {}),
+      ...(urlReturn !== undefined ? { urlReturn } : {}),
     };
     factsCache.set(key, result);
     return result;
