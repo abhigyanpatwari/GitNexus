@@ -14,13 +14,10 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
+import type { ExtractedFetchCall } from '../workers/parse-worker.js';
 import { isTemplateRouteCandidate } from '../utils/template-file.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
-import {
-  moduleStem,
-  type FetchWrapperCall,
-  type ForwardedCallee,
-} from '../route-extractors/fetch-wrapper.js';
+import { buildFetchWrapperIndex } from '../route-extractors/fetch-wrapper-index.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
 import {
@@ -33,7 +30,7 @@ import {
   compileMatcher,
   compiledMatcherMatchesRoute,
 } from '../route-extractors/middleware.js';
-import { processNextjsFetchRoutes } from '../call-processor.js';
+import { matchFetchRouteKeys, processNextjsFetchRoutes } from '../call-processor.js';
 import { reconcileDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import {
@@ -82,6 +79,56 @@ export interface TemplateFetchCall {
   filePath: string;
   fetchURL: string;
   lineNumber: number;
+}
+
+/** Route node key → files whose calls pass a URL that links to that route. */
+function filesByRouteKey(
+  calls: readonly ExtractedFetchCall[],
+  routeUrlToKeys: Map<string, string[]>,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  // The match depends only on the URL, and one URL recurs across call sites.
+  const routeKeysByUrl = new Map<string, string[] | undefined>();
+  for (const call of calls) {
+    if (!routeKeysByUrl.has(call.fetchURL)) {
+      const normalized = normalizeFetchURL(call.fetchURL);
+      routeKeysByUrl.set(
+        call.fetchURL,
+        normalized ? matchFetchRouteKeys(normalized, routeUrlToKeys) : undefined,
+      );
+    }
+    for (const routeKey of routeKeysByUrl.get(call.fetchURL) ?? []) {
+      const files = out.get(routeKey) ?? new Set<string>();
+      files.add(call.filePath);
+      out.set(routeKey, files);
+    }
+  }
+  return out;
+}
+
+/**
+ * A file that passes a route's URL to a function not proven to send requests
+ * may still consume it, so `api_impact` reports its consumer count as a lower
+ * bound (#3488). Proven consumers and the route's own file are not counted.
+ */
+function markUnverifiedConsumers(
+  graph: PipelineContext['graph'],
+  routeUrlToKeys: Map<string, string[]>,
+  provenCalls: readonly ExtractedFetchCall[],
+  unprovenCalls: readonly ExtractedFetchCall[],
+): void {
+  const unproven = filesByRouteKey(unprovenCalls, routeUrlToKeys);
+  if (unproven.size === 0) return;
+  const proven = filesByRouteKey(provenCalls, routeUrlToKeys);
+  for (const [routeKey, files] of unproven) {
+    const route = graph.getNode(generateId('Route', routeKey));
+    if (!route) continue;
+    let count = 0;
+    for (const file of files) {
+      if (file !== route.properties.filePath && !proven.get(routeKey)?.has(file)) count++;
+    }
+    if (count > 0) route.properties.unverifiedConsumers = count;
+  }
 }
 
 function handlerSymbolContent(
@@ -351,6 +398,9 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         ctx.repoPath,
         routes.map(({ handlerPath }) => handlerPath),
       );
+      const routeCountByPath = new Map<string, number>();
+      for (const { handlerPath } of routes)
+        routeCountByPath.set(handlerPath, (routeCountByPath.get(handlerPath) ?? 0) + 1);
 
       for (const { routeKey, entry, handlerSymbol, handlerPath } of routes) {
         const { source: routeSource, method: routeMethod, url } = entry;
@@ -361,10 +411,18 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
             ? handlerSymbolContent(content, handlerSymbol?.node)
             : content;
 
-        const { responseKeys, errorKeys } = analysisContent
+        // A file-wide scan gives every route in a multi-route file the union of
+        // its handlers' keys (#3488). Middleware stays file-level.
+        const shapeContent =
+          content &&
+          handlerSymbol?.node.properties.filePath === handlerPath &&
+          (routeCountByPath.get(handlerPath) ?? 0) > 1
+            ? (handlerSymbolContent(content, handlerSymbol.node) ?? analysisContent)
+            : analysisContent;
+        const { responseKeys, errorKeys } = shapeContent
           ? handlerPath.endsWith('.php')
-            ? extractPHPResponseShapes(analysisContent)
-            : extractResponseShapes(analysisContent)
+            ? extractPHPResponseShapes(shapeContent)
+            : extractResponseShapes(shapeContent)
           : { responseKeys: undefined, errorKeys: undefined };
 
         const mwResult = analysisContent ? extractMiddlewareChain(analysisContent) : undefined;
@@ -510,68 +568,31 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     const configuredWrappers = (ctx.options?.fetchWrappers ?? []).filter(
       (n): n is string => typeof n === 'string' && n.trim().length > 0,
     );
-    const wrapperDefs = allFetchWrapperDefs ?? [];
-    const wrapperNames = new Set<string>([
-      ...wrapperDefs.filter((d) => d.seed).map((d) => d.functionName),
-      ...configuredWrappers,
-    ]);
-    // A function that forwards its own first parameter to a URL-carrying
-    // wrapper is one too (`fetchWithTimeout(url)` → `resilientFetch(url)` →
-    // fetch, #3488). A callee the caller's file declares or imports from a
-    // relative module must be a URL carrier in exactly that module; otherwise
-    // (a package import) the name is followed only when every recorded
-    // function of that name carries a URL. So a same-named function elsewhere
-    // (an IPC `request(channel)`) or a fetch caller whose first parameter is
-    // not the URL (`track(event)`) lends nothing. The set only grows, so this
-    // reaches a fixed point.
-    const carriers = new Set(wrapperDefs.filter((d) => d.forwardsUrl));
-    const defsByName = new Map<string, typeof wrapperDefs>();
-    const defsByModule = new Map<string, typeof wrapperDefs>();
-    for (const def of wrapperDefs) {
-      const key = `${moduleStem(def.filePath)}\0${def.functionName}`;
-      defsByName.set(def.functionName, [...(defsByName.get(def.functionName) ?? []), def]);
-      defsByModule.set(key, [...(defsByModule.get(key) ?? []), def]);
-    }
-    const carriesUrl = ({ callee, module }: ForwardedCallee): boolean =>
-      configuredWrappers.includes(callee) ||
-      (module === null
-        ? (defsByName.get(callee)?.every((def) => carriers.has(def)) ?? false)
-        : (defsByModule.get(`${module}\0${callee}`)?.some((def) => carriers.has(def)) ?? false));
-    for (let grew = true; grew; ) {
-      grew = false;
-      for (const def of wrapperDefs) {
-        if (carriers.has(def) || !def.forwardsTo.some(carriesUrl)) continue;
-        carriers.add(def);
-        wrapperNames.add(def.functionName);
-        grew = true;
+    // The index is only worth building when a candidate call can match a route.
+    const wrapperCalls = allFetchWrapperCalls ?? [];
+    const unprovenCalls: ExtractedFetchCall[] = [];
+    if (routeRegistry.size > 0 && wrapperCalls.length > 0) {
+      const wrappers = buildFetchWrapperIndex(allFetchWrapperDefs ?? [], configuredWrappers);
+      for (const call of wrapperCalls) {
+        const urls = wrappers.urlsForCall(call);
+        if (urls.length === 0 && !wrappers.isWrapperCall(call)) unprovenCalls.push(call);
+        for (const fetchURL of urls) allFetchCalls.push({ ...call, fetchURL });
       }
     }
-    // A call whose callee the file declares or imports relatively must reach a
-    // wrapper in exactly that module; a package or member callee keeps the
-    // name match.
-    const isWrapperCall = ({ functionName, module, declaredName }: FetchWrapperCall): boolean =>
-      configuredWrappers.includes(functionName) ||
-      (module === undefined
-        ? wrapperNames.has(functionName)
-        : (defsByModule
-            .get(`${module}\0${declaredName ?? functionName}`)
-            ?.some((def) => def.seed || carriers.has(def)) ?? false));
-    if (wrapperNames.size > 0 && routeRegistry.size > 0) {
-      for (const call of allFetchWrapperCalls ?? []) {
-        if (isWrapperCall(call)) allFetchCalls.push(call);
-      }
+
+    // url → [route node keys at that url] (one per verb). A verb-less fetch()
+    // consumer matches by URL and connects to every Route node at that URL.
+    const routeUrlToKeys = new Map<string, string[]>();
+    for (const [routeKey, entry] of routeRegistry) {
+      const existing = routeUrlToKeys.get(entry.url);
+      if (existing) existing.push(routeKey);
+      else routeUrlToKeys.set(entry.url, [routeKey]);
+    }
+    if (unprovenCalls.length > 0) {
+      markUnverifiedConsumers(ctx.graph, routeUrlToKeys, allFetchCalls, unprovenCalls);
     }
 
     if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
-      // url → [route node keys at that url] (one per verb). A verb-less fetch()
-      // consumer matches by URL and connects to every Route node at that URL.
-      const routeUrlToKeys = new Map<string, string[]>();
-      for (const [routeKey, entry] of routeRegistry) {
-        const existing = routeUrlToKeys.get(entry.url);
-        if (existing) existing.push(routeKey);
-        else routeUrlToKeys.set(entry.url, [routeKey]);
-      }
-
       const consumerPaths = [...new Set(allFetchCalls.map((c) => c.filePath))];
       const consumerContents = await readFileContents(ctx.repoPath, consumerPaths);
 

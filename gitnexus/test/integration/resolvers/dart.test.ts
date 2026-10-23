@@ -6,15 +6,19 @@
  * All Dart pipeline features are covered: Property nodes, HAS_PROPERTY edges,
  * CALLS chain resolution, IMPORTS, call attribution, and ACCESSES field reads.
  */
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'path';
 import {
   FIXTURES,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
 import {
@@ -146,6 +150,47 @@ describe.skipIf(!dartAvailable)('Dart field-type resolution', () => {
     expect(addressReads.length).toBe(1);
     expect(addressReads[0]!.source).toBe('processUser');
     expect(addressReads[0]!.targetLabel).toBe('Property');
+  });
+});
+
+// ── Prefixed-import factory results (#3498) ─────────────────────────────
+
+describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'dart-prefixed-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  const methodCalls = (source: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === source && edge.target === 'm')
+      .map((edge) => edge.rel.targetId);
+
+  it.each(['finalCall', 'varCall', 'inlineCall'])('resolves %s to C.m', (source) => {
+    expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+  });
+
+  // An awaited `Future<C>` is captured like a direct call, but no Dart path
+  // unwraps the Future of an awaited result yet, named imports included.
+  it.each(['untypedCall', 'awaitedCall'])('does not guess a receiver type for %s', (source) => {
+    expect(methodCalls(source)).toEqual([]);
+  });
+
+  it('records the untyped and awaited factory results as dropped sites', () => {
+    expect(
+      getResolutionOutcomes(result)
+        .filter((outcome) => outcome.kind === 'suppressed')
+        .filter(
+          (outcome) =>
+            outcome.reason === 'receiver-unresolved' && outcome.filePath === 'lib/callers.dart',
+        )
+        .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+        .sort(),
+    ).toEqual(['17:m', '22:m']);
   });
 });
 
@@ -922,3 +967,179 @@ describe('CF3 — Dart class accessors keep their class owner', () => {
     expect(owned).toContain('normalField');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3498 RC2: `dartBindingScopeFor` hoists every method's return-type binding
+// onto the Module scope, so `svc.getUser().save()` types its receiver only if
+// the receiver cascade walks up there (`hoistTypeBindingsToModule`). The
+// hoisted entries are keyed by bare method name, so the walk must also refuse
+// a same-named method of ANOTHER class — the second describe pins that.
+// ---------------------------------------------------------------------------
+
+/** Every CALLS target id emitted by `source` in `filePath`, sorted. */
+function dartCallTargets(result: PipelineResult, filePath: string, source: string): string[] {
+  return getRelationships(result, 'CALLS')
+    .filter((edge) => edge.source === source && edge.sourceFilePath === filePath)
+    .map((edge) => edge.rel.targetId)
+    .sort();
+}
+
+describe.skipIf(!dartAvailable)(
+  'Dart chained receivers through hoisted return types (#3498)',
+  () => {
+    let root: string;
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-dart-hoisted-return-'));
+      writeFixtureRepo(root, {
+        'models.dart': `class Address {
+  void save() {}
+}
+
+class User {
+  Address address = Address();
+  void save() {}
+}
+
+class Service {
+  User getUser() => User();
+}
+
+class ChildService extends Service {}
+`,
+        'callers.dart': `import 'models.dart';
+
+void plainChain(Service svc) {
+  svc.getUser().save();
+}
+
+void plainDeepChain(Service svc) {
+  svc.getUser().address.save();
+}
+
+void optionalChain(Service svc) {
+  svc.getUser().address?.save();
+}
+
+void inheritedChain(ChildService child) {
+  child.getUser().save();
+}
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    }, 60000);
+
+    afterAll(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it.each([
+      {
+        source: 'plainChain',
+        targets: ['Method:models.dart:Service.getUser#0', 'Method:models.dart:User.save#0'],
+      },
+      {
+        source: 'plainDeepChain',
+        targets: ['Method:models.dart:Address.save#0', 'Method:models.dart:Service.getUser#0'],
+      },
+      {
+        source: 'optionalChain',
+        targets: ['Method:models.dart:Address.save#0', 'Method:models.dart:Service.getUser#0'],
+      },
+      {
+        // The owner itself declares nothing; the walk refuses the binding for
+        // `ChildService` and accepts it for the `Service` it inherits from.
+        source: 'inheritedChain',
+        targets: ['Method:models.dart:Service.getUser#0', 'Method:models.dart:User.save#0'],
+      },
+    ])('resolves every call in $source to $targets', ({ source, targets }) => {
+      expect(dartCallTargets(result, 'callers.dart', source)).toEqual(targets);
+    });
+  },
+);
+
+describe.skipIf(!dartAvailable)(
+  'Dart same-named methods on two classes do not share a hoisted return type (#3498)',
+  () => {
+    let root: string;
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-dart-hoisted-collision-'));
+      // One Module-scope entry per method NAME: in each file the later class's
+      // `getUser` overwrites the earlier one's. Both orders are covered so the
+      // test does not depend on which one happens to win.
+      writeFixtureRepo(root, {
+        'accounts.dart': `class User {
+  void save() {}
+}
+
+class Admin {
+  void save() {}
+}
+
+class A {
+  User getUser() => User();
+}
+
+class B {
+  Admin getUser() => Admin();
+}
+`,
+        'reversed.dart': `import 'accounts.dart';
+
+class C {
+  Admin getUser() => Admin();
+}
+
+class D {
+  User getUser() => User();
+}
+`,
+        'callers.dart': `import 'accounts.dart';
+import 'reversed.dart';
+
+void viaA(A a) {
+  a.getUser().save();
+}
+
+void viaB(B b) {
+  b.getUser().save();
+}
+
+void viaC(C c) {
+  c.getUser().save();
+}
+
+void viaD(D d) {
+  d.getUser().save();
+}
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    }, 60000);
+
+    afterAll(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    // `viaA` and `viaC` are the guard: their class's own binding was overwritten
+    // by the other class's, so the walk finds a binding it must refuse. The safe
+    // answer is no `save` edge at all — never the other class's return type.
+    it.each([
+      { source: 'viaA', targets: ['Method:accounts.dart:A.getUser#0'] },
+      {
+        source: 'viaB',
+        targets: ['Method:accounts.dart:Admin.save#0', 'Method:accounts.dart:B.getUser#0'],
+      },
+      { source: 'viaC', targets: ['Method:reversed.dart:C.getUser#0'] },
+      {
+        source: 'viaD',
+        targets: ['Method:accounts.dart:User.save#0', 'Method:reversed.dart:D.getUser#0'],
+      },
+    ])('resolves every call in $source to $targets', ({ source, targets }) => {
+      expect(dartCallTargets(result, 'callers.dart', source)).toEqual(targets);
+    });
+  },
+);

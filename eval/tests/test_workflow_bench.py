@@ -164,6 +164,31 @@ def test_runner_requires_a_named_model_and_supports_expensive_opt_in():
         normalized_model_identifier("   ")
 
 
+def test_default_sweep_includes_no_gitnexus_comparison_and_repeated_measurements():
+    args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "pinned-model"])
+    assert args.runs == 3
+    assert args.arms == ["workflow", "workflow_direct", "baseline", "baseline_nomcp"]
+    assert args.include_expensive is False
+
+
+def test_explicit_smoke_sweep_can_limit_the_model_budget():
+    args = build_parser().parse_args(
+        [
+            "--tasks",
+            "tasks.yaml",
+            "--model",
+            "pinned-model",
+            "--runs",
+            "1",
+            "--arms",
+            "baseline_nomcp",
+            "baseline",
+        ]
+    )
+    assert args.runs == 1
+    assert args.arms == ["baseline_nomcp", "baseline"]
+
+
 @pytest.mark.parametrize(
     "alias",
     ["Auto", "AUTO", "latest", "provider/latest", "provider:Latest", "provider@LATEST"],
@@ -185,7 +210,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         step for step in containment["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@")
     )
     claude_lock = json.loads((repo_root / ".github" / "claude-canary-runtime" / "package-lock.json").read_text())
-    setup_uv = "astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7"
+    setup_uv = "astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884"
     assert workflow.count(setup_uv) >= 3
     assert workflow.count("version: '0.11.23'") >= 3
     assert workflow.count("uv run --locked --extra dev python -m pytest") >= 3

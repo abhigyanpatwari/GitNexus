@@ -6,10 +6,14 @@
  * canonical shape.
  */
 
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, ScopeId } from 'gitnexus-shared';
 import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
-import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import {
+  populateClassOwnedMembers,
+  resolveSameNamespaceInheritanceBase,
+  lookupNameClaim,
+} from '../../scope-resolution/scope/walkers.js';
 import { populateCsharpNamespacePrefixes } from './qualified-type-names.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import {
@@ -118,6 +122,41 @@ const csharpScopeResolver: ScopeResolver = {
   // same namespace, without any `using` directive. See
   // `namespace-siblings.ts` for the implementation.
   populateNamespaceSiblings: populateCsharpNamespaceSiblings,
+
+  // The inheritance pre-pass runs before those siblings exist, so a base
+  // declared in another file of the SAME named namespace binds here. Exact
+  // namespace only (the `namespacePrefix` sidecar from `populateOwners`):
+  // enclosing-namespace and global visibility stay with the shared chain.
+  resolveImplicitInheritanceBase: (baseName, derivingClass, scopes, site) =>
+    resolveSameNamespaceInheritanceBase(
+      baseName,
+      derivingClass,
+      scopes,
+      (def) => def.namespacePrefix,
+      // This provider captures type parameters for every class-like declaration.
+      (def) =>
+        site !== undefined &&
+        (def.typeParameters?.length ?? 0) === (site.typeArguments?.length ?? 0),
+    ),
+  isBareClassReceiverCandidate: ({ candidate, spelling, inScope, scopes }) => {
+    if (candidate.typeParameters === undefined || candidate.typeParameters.length === 0)
+      return true;
+    if (spelling.includes('.') || spelling.includes('<') || spelling.includes('::')) return true;
+    if (candidate.qualifiedName?.split('.').at(-1) !== spelling) return true;
+    const claim = lookupNameClaim(inScope, spelling, scopes, { purpose: 'value' });
+    if (claim.imports.some((edge) => edge.kind === 'alias')) return true;
+    const visited = new Set<ScopeId>();
+    let current: ScopeId | null = inScope;
+    while (current !== null && !visited.has(current)) {
+      visited.add(current);
+      const scope = scopes.scopeTree.getScope(current);
+      if (scope === undefined) break;
+      if (scope.kind === 'Class' && scope.ownedDefs.some((def) => def.nodeId === candidate.nodeId))
+        return true;
+      current = scope.parent;
+    }
+    return false;
+  },
 
   // C# is statically typed — type information is reliable. Field-
   // fallback heuristic stays off (the type-binding layer already

@@ -1,17 +1,5 @@
 {
   "shapeArm": {
-    "vue": {
-      "plainChain": "N/A",
-      "plainDeepChain": "N/A",
-      "optionalChain": "N/A",
-      "nonNullAssert": "N/A",
-      "awaitParen": "N/A",
-      "explicitTypeArgs": "N/A",
-      "indexElement": "N/A",
-      "fieldReceiverCall": "N/A",
-      "decoratedReceiverBase": "N/A",
-      "decoratedFieldType": "N/A"
-    },
     "cobol": {
       "plainChain": "N/A",
       "plainDeepChain": "N/A",
@@ -38,27 +26,27 @@
       "decoratedFieldType": "RESOLVES"
     },
     "php": {
-      "arrowCallChain": "INVISIBLE-GAP",
+      "arrowCallChain": "VISIBLE-GAP",
       "arrowPropertyPath": "RESOLVES",
       "plainChain": "RESOLVES",
-      "plainDeepChain": "INVISIBLE-GAP",
-      "optionalChain": "INVISIBLE-GAP",
+      "plainDeepChain": "RESOLVES",
+      "optionalChain": "RESOLVES",
       "nonNullAssert": "N/A",
       "awaitParen": "N/A",
       "explicitTypeArgs": "N/A",
       "indexElement": "VISIBLE-GAP",
-      "fieldReceiverCall": "N/A",
+      "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "RESOLVES"
     },
     "cpp": {
       "pointerArrowChain": "RESOLVES",
       "valueDotChain": "RESOLVES",
-      "plainChain": "N/A",
+      "plainChain": "RESOLVES",
       "plainDeepChain": "RESOLVES",
       "optionalChain": "N/A",
       "nonNullAssert": "N/A",
-      "awaitParen": "N/A",
+      "awaitParen": "VISIBLE-GAP",
       "explicitTypeArgs": "VISIBLE-GAP",
       "indexElement": "RESOLVES",
       "fieldReceiverCall": "RESOLVES",
@@ -78,11 +66,12 @@
       "decoratedFieldType": "RESOLVES"
     },
     "javascript": {
-      "plainChain": "VISIBLE-GAP",
-      "plainDeepChain": "VISIBLE-GAP",
-      "optionalChain": "VISIBLE-GAP",
+      "plainChain": "RESOLVES",
+      "untypedChain": "VISIBLE-GAP",
+      "plainDeepChain": "RESOLVES",
+      "optionalChain": "RESOLVES",
       "nonNullAssert": "N/A",
-      "awaitParen": "VISIBLE-GAP",
+      "awaitParen": "RESOLVES",
       "explicitTypeArgs": "N/A",
       "indexElement": "VISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",
@@ -116,23 +105,24 @@
     "csharp": {
       "plainChain": "RESOLVES",
       "plainDeepChain": "RESOLVES",
-      "optionalChain": "INVISIBLE-GAP",
-      "nonNullAssert": "VISIBLE-GAP",
+      "optionalChain": "RESOLVES",
+      "nonNullAssert": "RESOLVES",
       "awaitParen": "RESOLVES",
-      "explicitTypeArgs": "VISIBLE-GAP",
+      "explicitTypeArgs": "RESOLVES",
       "indexElement": "VISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
-      "decoratedFieldType": "VISIBLE-GAP"
+      "decoratedFieldType": "RESOLVES"
     },
     "ruby": {
-      "plainChain": "VISIBLE-GAP",
+      "plainChain": "RESOLVES",
+      "untypedChain": "VISIBLE-GAP",
       "plainDeepChain": "VISIBLE-GAP",
-      "optionalChain": "VISIBLE-GAP",
+      "optionalChain": "RESOLVES",
       "nonNullAssert": "N/A",
       "awaitParen": "N/A",
       "explicitTypeArgs": "N/A",
-      "indexElement": "INVISIBLE-GAP",
+      "indexElement": "VISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "N/A"
@@ -142,22 +132,22 @@
       "plainDeepChain": "RESOLVES",
       "optionalChain": "N/A",
       "nonNullAssert": "N/A",
-      "awaitParen": "N/A",
-      "explicitTypeArgs": "INVISIBLE-GAP",
+      "awaitParen": "RESOLVES",
+      "explicitTypeArgs": "RESOLVES",
       "indexElement": "RESOLVES",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "RESOLVES",
-      "decoratedFieldType": "INVISIBLE-GAP"
+      "decoratedFieldType": "RESOLVES"
     },
     "c": {
       "plainChain": "N/A",
-      "plainDeepChain": "VISIBLE-GAP",
+      "plainDeepChain": "N/A",
       "optionalChain": "N/A",
       "nonNullAssert": "N/A",
       "awaitParen": "N/A",
       "explicitTypeArgs": "N/A",
-      "indexElement": "VISIBLE-GAP",
-      "fieldReceiverCall": "INVISIBLE-GAP",
+      "indexElement": "N/A",
+      "fieldReceiverCall": "N/A",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "N/A"
     },
@@ -174,64 +164,77 @@
       "decoratedFieldType": "RESOLVES"
     },
     "swift": {
-      "plainChain": "INVISIBLE-GAP",
-      "plainDeepChain": "INVISIBLE-GAP",
-      "optionalChain": "INVISIBLE-GAP",
-      "nonNullAssert": "INVISIBLE-GAP",
-      "awaitParen": "VISIBLE-GAP",
+      "plainChain": "RESOLVES",
+      "plainDeepChain": "RESOLVES",
+      "optionalChain": "RESOLVES",
+      "nonNullAssert": "RESOLVES",
+      "awaitParen": "RESOLVES",
       "explicitTypeArgs": "N/A",
-      "indexElement": "INVISIBLE-GAP",
+      "indexElement": "VISIBLE-GAP",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "RESOLVES"
     },
     "dart": {
-      "plainChain": "VISIBLE-GAP",
-      "plainDeepChain": "VISIBLE-GAP",
-      "optionalChain": "VISIBLE-GAP",
+      "plainChain": "RESOLVES",
+      "plainDeepChain": "RESOLVES",
+      "optionalChain": "RESOLVES",
       "nonNullAssert": "VISIBLE-GAP",
-      "awaitParen": "RESOLVES",
-      "explicitTypeArgs": "N/A",
+      "awaitParen": "WRONG-TARGET",
+      "explicitTypeArgs": "VISIBLE-GAP",
       "indexElement": "INVISIBLE-GAP",
+      "fieldReceiverCall": "RESOLVES",
+      "decoratedReceiverBase": "N/A",
+      "decoratedFieldType": "RESOLVES"
+    },
+    "vue": {
+      "plainChain": "RESOLVES",
+      "plainDeepChain": "RESOLVES",
+      "optionalChain": "RESOLVES",
+      "nonNullAssert": "RESOLVES",
+      "awaitParen": "RESOLVES",
+      "explicitTypeArgs": "RESOLVES",
+      "indexElement": "VISIBLE-GAP",
+      "fourHopChain": "RESOLVES",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "RESOLVES"
     }
   },
   "countArm": {
-    "callDrops": 128,
-    "totalDropsAllKinds": 190,
+    "callDrops": 138,
+    "totalDropsAllKinds": 168,
     "bySiteKind": {
-      "call": 128,
-      "read": 43,
-      "write": 19
+      "call": 138,
+      "read": 30
     },
     "callDropsByExtension": {
       ".java": 49,
-      ".py": 20,
+      ".py": 24,
       ".ts": 16,
-      ".zig": 11,
-      ".cs": 8,
+      ".zig": 10,
+      ".kt": 8,
       ".tsx": 6,
-      ".go": 5,
-      ".php": 4,
-      ".kt": 4,
-      ".rs": 3,
+      ".php": 6,
+      ".rs": 6,
+      ".cs": 5,
+      ".go": 4,
+      ".dart": 2,
       ".js": 1,
       ".swift": 1
     },
     "callDropsByShape": {
-      "chain-field": 57,
-      "chain-call": 30,
-      "no-chain": 27,
-      "<<unclassified>>": 11,
-      "chain-mixed": 2,
+      "chain-field": 56,
+      "no-chain": 36,
+      "chain-call": 32,
+      "<<unclassified>>": 13,
       "chain-unwrap": 1
     },
     "callDropsByOrigin": {
-      "in-program": 55,
-      "external": 44,
-      "unknown": 29
+      "in-program": 57,
+      "unknown": 49,
+      "external": 30,
+      "<<unclassified>>": 2
     }
   }
 }

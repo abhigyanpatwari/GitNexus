@@ -651,6 +651,18 @@
     "captureGroups": 13,
     "digest": "84d0e3980d4f725f8e0831b753a2570ddace613ebf6847ee1a5e86b9fcd4148b"
   },
+  "rust-qualified-factory-return/src/main.rs": {
+    "captureGroups": 83,
+    "digest": "9983071279163d36e0a14bbf913db27942d6e4a634b44b24c5943b4f3fea26b5"
+  },
+  "rust-qualified-factory-return/src/modx.rs": {
+    "captureGroups": 31,
+    "digest": "f83d9262f14ed04035419b9ff1a1f4fb6e7189b528474ab9d72a0ebcf09e5845"
+  },
+  "rust-qualified-factory-return/src/shadow.rs": {
+    "captureGroups": 17,
+    "digest": "60d8b27fe58f6e18f736a1d66c2a092fe48aaeab1dfdbc689fdb5bb555fb95cc"
+  },
   "rust-qualified-trait/src/main.rs": {
     "captureGroups": 8,
     "digest": "8c71cad628449f8c770fffe66f0aa1c33fc84c82de86fdb770887e00a937adcd"

@@ -54,6 +54,42 @@ describe('Express registrations forwarded through helper parameters', () => {
   });
 });
 
+// Inline handlers are anonymous Function nodes. Without a handler symbol the
+// route took every handler's response keys in its file and every flow that
+// starts there. A file passing the URL to an unproven function is counted as
+// a possible consumer (#3488).
+describe('Express inline handlers', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'express-inline-handlers'), () => {});
+  }, 60000);
+
+  it.each([
+    {
+      url: '/api/repos',
+      keys: ['repos', 'total'],
+      flows: ['Fn_17_24 → ReadIndex'],
+      unverified: 1,
+    },
+    {
+      url: '/api/file',
+      keys: ['content', 'path'],
+      flows: ['Fn_20_23 → ReadDisk'],
+      unverified: undefined,
+    },
+  ])('$url keeps its own response keys and flows', ({ url, keys, flows, unverified }) => {
+    const route = getNodesByLabelFull(result, 'Route').find((node) => node.name === url);
+    expect(route?.properties.responseKeys).toEqual(keys);
+    expect(route?.properties.unverifiedConsumers).toBe(unverified);
+    expect(
+      getRelationships(result, 'ENTRY_POINT_OF')
+        .filter((edge) => edge.source === url)
+        .map((edge) => edge.target),
+    ).toEqual(flows);
+  });
+});
+
 describe('Express/Hono route detection', () => {
   let result: PipelineResult;
 

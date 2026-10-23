@@ -1,7 +1,7 @@
 import {
-  fetchWrapperFacts,
   type FetchWrapperCall,
-  type ForwardedCallee,
+  type FetchWrapperFacts,
+  type FetchWrapperReexport,
 } from '../route-extractors/fetch-wrapper.js';
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
@@ -348,15 +348,9 @@ export interface ExtractedFetchCall {
   lineNumber: number;
 }
 
-export interface FetchWrapperDef {
+export interface FetchWrapperDef extends FetchWrapperFacts {
   filePath: string;
   functionName: string;
-  /** Calls fetch itself; otherwise a wrapper only through `forwardsTo`. */
-  seed: boolean;
-  /** Its first parameter reaches the URL argument of that fetch call. */
-  forwardsUrl: boolean;
-  /** Callees given this function's own first parameter as their first argument. */
-  forwardsTo: ForwardedCallee[];
 }
 
 /** See {@link ExtractedDecoratorRoute.handlerReceiver}. */
@@ -513,6 +507,7 @@ export interface ParseWorkerResult {
   fetchWrapperDefs: FetchWrapperDef[];
   /** URL-bearing candidates, kept separate from confirmed outward-call sinks. */
   fetchWrapperCalls?: FetchWrapperCall[];
+  fetchWrapperReexports?: FetchWrapperReexport[];
   decoratorRoutes: ExtractedDecoratorRoute[];
   /** JSON-safe per-file provider facts; relationships are resolved on every run. */
   routeFacts?: { filePath: string; facts: unknown; routePosition: number }[];
@@ -672,7 +667,7 @@ const clearCaches = (): void => {
 // Keyed by class node startIndex (unique per AST node within a file).
 // ============================================================================
 
-const fieldInfoCache = new Map<number, Map<string, FieldInfo>>();
+const fieldInfoCache = new Map<number, Map<string, FieldInfo[]>>();
 
 /**
  * Walk up from a definition node to find the nearest enclosing class/struct/interface
@@ -801,14 +796,14 @@ const NOOP_SYMBOL_TABLE: SymbolTableReader = {
 
 /**
  * Get (or extract and cache) field info for a class node.
- * Returns a name→FieldInfo map, or undefined if the provider has no field extractor
+ * Returns a name→declarations map, or undefined if the provider has no field extractor
  * or the class yielded no fields.
  */
 function getFieldInfo(
   classNode: SyntaxNode,
   provider: LanguageProvider,
   context: FieldExtractorContext,
-): Map<string, FieldInfo> | undefined {
+): Map<string, FieldInfo[]> | undefined {
   if (!provider.fieldExtractor) return undefined;
 
   const cacheKey = classNode.startIndex;
@@ -818,12 +813,50 @@ function getFieldInfo(
   const result = provider.fieldExtractor.extract(classNode, context);
   if (!result?.fields?.length) return undefined;
 
-  cached = new Map<string, FieldInfo>();
+  cached = new Map<string, FieldInfo[]>();
   for (const field of result.fields) {
-    cached.set(field.name, field);
+    const declarations = cached.get(field.name);
+    if (declarations !== undefined) declarations.push(field);
+    else cached.set(field.name, [field]);
+  }
+  for (const declarations of cached.values()) {
+    if (declarations.length > 1) {
+      declarations.sort((a, b) => a.line - b.line || (a.column ?? -1) - (b.column ?? -1));
+    }
   }
   fieldInfoCache.set(cacheKey, cached);
   return cached;
+}
+
+function fieldInfoLowerBound(
+  declarations: readonly FieldInfo[],
+  line: number,
+  column: number,
+): number {
+  let lo = 0;
+  let hi = declarations.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    const field = declarations[mid]!;
+    if (field.line < line || (field.line === line && (field.column ?? -1) < column)) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function selectFieldInfo(
+  declarations: readonly FieldInfo[] | undefined,
+  line: number,
+  column?: number,
+): FieldInfo | undefined {
+  if (declarations === undefined || declarations.length === 0) return undefined;
+  if (declarations.length === 1) return declarations[0];
+  const start = fieldInfoLowerBound(declarations, line, -1);
+  const end = fieldInfoLowerBound(declarations, line + 1, -1);
+  if (end - start === 1) return declarations[start];
+  if (column === undefined) return undefined;
+  const index = fieldInfoLowerBound(declarations, line, column);
+  return index < end && declarations[index]?.column === column ? declarations[index] : undefined;
 }
 
 // ============================================================================
@@ -1862,6 +1895,19 @@ const processFileGroup = (
     // patterns overlap with the same source range.
     const processedDefinitionNodes = new Set<string>();
     const variableInfoCache = new Map<number, Map<string, VariableInfo>>();
+    // HTTP facts are all or nothing per file. A throwing hook must not escape to
+    // the language-group catch, which would drop every remaining file of the
+    // group; it drops only this file's HTTP facts.
+    const wrapperDefs: FetchWrapperDef[] = [];
+    const wrapperFunctions: { name: string; node: SyntaxNode }[] = [];
+    let httpFailed = false;
+    const httpFailure = (err: unknown) => {
+      if (!httpFailed)
+        reportWarning(
+          `HTTP fact extraction failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      httpFailed = true;
+    };
 
     for (const match of matches) {
       const captureMap: Record<string, SyntaxNode> = {};
@@ -2091,7 +2137,7 @@ const processFileGroup = (
                 const propEnclosingClassId =
                   propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
                 // Enrich routed properties with FieldExtractor metadata
-                let routedFieldMap: Map<string, FieldInfo> | undefined;
+                let routedFieldMap: Map<string, FieldInfo[]> | undefined;
                 if (provider.fieldExtractor && typeEnv) {
                   const classNode = findEnclosingClassNode(captureMap['call']);
                   if (classNode) {
@@ -2104,7 +2150,11 @@ const processFileGroup = (
                   }
                 }
                 for (const item of routed.items) {
-                  const routedFieldInfo = routedFieldMap?.get(item.propName);
+                  const routedFieldInfo = selectFieldInfo(
+                    routedFieldMap?.get(item.propName),
+                    captureMap['call'].startPosition.row + 1,
+                    captureMap['call'].startPosition.column,
+                  );
                   const propQualifiedName = propEnclosingInfo
                     ? `${propEnclosingInfo.className}.${item.propName}`
                     : item.propName;
@@ -2948,13 +2998,20 @@ const processFileGroup = (
               filePath: file.path,
               language,
             });
-            const info = fieldMap?.get(nodeName);
+            const info = selectFieldInfo(
+              fieldMap?.get(nodeName),
+              definitionNode.startPosition.row + 1,
+              definitionNode.startPosition.column,
+            );
             if (info) {
               declaredType = info.type ?? undefined;
               // Mutate methodProps BEFORE the `{...methodProps}` spread below —
               // rawDeclaredType is the verbatim generic type text (U1, PR #2200).
               if (info.rawDeclaredType !== undefined) {
                 methodProps.rawDeclaredType = info.rawDeclaredType;
+              }
+              if (info.initializerType !== undefined) {
+                methodProps.initializerType = info.initializerType;
               }
               // Field annotations ('@Name' strings, U2 PR #2200) — omit when empty.
               if (info.annotations !== undefined && info.annotations.length > 0) {
@@ -3147,19 +3204,29 @@ const processFileGroup = (
       }
 
       // ── Fetch wrapper detection: functions that call fetch() or forward their URL ──
-      if (
-        nodeLabel === 'Function' &&
-        definitionNode &&
-        nameNode &&
-        (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript)
-      ) {
-        const facts = fetchWrapperFacts(definitionNode, file.path);
-        if (facts.seed || facts.forwardsTo.length > 0) {
-          result.fetchWrapperDefs.push({
-            filePath: file.path,
-            functionName: nameNode.text,
-            ...facts,
-          });
+      if (nodeLabel === 'Function' && definitionNode && provider.extractFetchWrapperFacts) {
+        wrapperFunctions.push({ name: nodeName, node: definitionNode });
+        if (parsedFile && !httpFailed) {
+          try {
+            const facts = provider.extractFetchWrapperFacts(
+              definitionNode,
+              nameNode,
+              parsedFile,
+              lineOffset,
+            );
+            if (
+              facts &&
+              (facts.seed ||
+                facts.forwardsUrl ||
+                facts.forwardsTo.length > 0 ||
+                facts.moduleScope ||
+                facts.urlReturn !== undefined ||
+                (facts.urlArguments?.length ?? 0) > 0)
+            )
+              wrapperDefs.push({ filePath: file.path, functionName: nodeName, ...facts });
+          } catch (err) {
+            httpFailure(err);
+          }
         }
       }
     }
@@ -3237,18 +3304,40 @@ const processFileGroup = (
       }
     }
 
-    if (provider.extractFetchWrapperCalls) {
-      const candidates = provider.extractFetchWrapperCalls(tree, file.path, lineOffset);
-      for (const candidate of candidates) (result.fetchWrapperCalls ??= []).push(candidate);
+    if (parsedFile && !httpFailed) {
+      try {
+        const calls = provider.extractFetchWrapperCalls?.(tree, parsedFile, lineOffset);
+        const reexports = provider.extractFetchWrapperReexports?.(tree, parsedFile, lineOffset);
+        const routeFacts = provider.extractRouteFacts?.(tree, parsedFile, lineOffset);
+        for (const call of calls ?? []) (result.fetchWrapperCalls ??= []).push(call);
+        for (const reexport of reexports ?? [])
+          (result.fetchWrapperReexports ??= []).push(reexport);
+        if (routeFacts)
+          (result.routeFacts ??= []).push({
+            filePath: file.path,
+            facts: routeFacts,
+            routePosition,
+          });
+      } catch (err) {
+        httpFailure(err);
+      }
     }
-
-    if (parsedFile && provider.extractRouteFacts) {
-      (result.routeFacts ??= []).push({
-        filePath: file.path,
-        facts: provider.extractRouteFacts(tree, parsedFile, lineOffset),
-        routePosition,
-      });
-    }
+    if (parsedFile && !httpFailed) for (const def of wrapperDefs) result.fetchWrapperDefs.push(def);
+    else
+      // These records stand for unknown facts. With `seed` false and nothing
+      // forwarded they never prove a wrapper; they only make a name-only
+      // match, a barrel or an import that may reach this file decline.
+      for (const { name, node } of wrapperFunctions)
+        result.fetchWrapperDefs.push({
+          filePath: file.path,
+          functionName: name,
+          definitionId: `${file.path}:${node.startPosition.row + lineOffset + 1}:${node.startPosition.column}`,
+          moduleScope: true,
+          exportedNames: [name],
+          seed: false,
+          forwardsUrl: false,
+          forwardsTo: [],
+        });
 
     // Language-specific decorator route extraction via provider hook.
     // The provider's extractDecoratorRoutes walks the AST for framework-specific

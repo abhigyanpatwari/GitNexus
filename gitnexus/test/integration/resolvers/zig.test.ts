@@ -3,16 +3,21 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   edgeSet,
   FIXTURES,
   getNodesByLabel,
   getNodesByLabelFull,
   getRelationships,
+  getResolutionOutcomes,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
+import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 import { describeGrammarPresence, optionalGrammarGate } from '../../helpers/optional-grammar.js';
 
 // Vendored `tree-sitter-zig`: on a platform without a prebuild the grammar
@@ -24,6 +29,48 @@ const zig = optionalGrammarGate(SupportedLanguages.Zig);
 const zigAvailable = zig.available;
 
 describeGrammarPresence(zig);
+
+/** The CALLS / ACCESSES / USES edges the reference site at `file:line:col`
+ *  produced, as `<TYPE> <source id> -> <target id> | <reason>`. A site edge's
+ *  id ends with the site's `:<line>:<col>` (see `tryEmitEdge`). */
+function edgesAtSite(result: PipelineResult, file: string, line: number, col: number): string[] {
+  return ['CALLS', 'ACCESSES', 'USES']
+    .flatMap((type) => getRelationships(result, type))
+    .filter((e) => e.sourceFilePath === file && e.rel.id.endsWith(`:${line}:${col}`))
+    .map((e) => `${e.rel.type} ${e.rel.sourceId} -> ${e.rel.targetId} | ${e.rel.reason}`)
+    .sort();
+}
+
+/** Every CALLS / ACCESSES / USES edge into `targetId`, as
+ *  `<TYPE> <source id> | <reason>`. */
+function referencesInto(result: PipelineResult, targetId: string): string[] {
+  return ['CALLS', 'ACCESSES', 'USES']
+    .flatMap((type) => getRelationships(result, type))
+    .filter((e) => e.rel.targetId === targetId)
+    .map((e) => `${e.rel.type} ${e.rel.sourceId} | ${e.rel.reason}`)
+    .sort();
+}
+
+/** The `receiver-unresolved` drops recorded at `file:line:col`, as
+ *  `<site kind> <member>` — the rows of the #3498 drop triage. */
+function receiverDropsAt(
+  result: PipelineResult,
+  file: string,
+  line: number,
+  col: number,
+): string[] {
+  return getResolutionOutcomes(result)
+    .filter(
+      (o): o is Extract<ResolutionOutcome, { kind: 'suppressed' }> =>
+        o.kind === 'suppressed' &&
+        o.reason === 'receiver-unresolved' &&
+        o.filePath === file &&
+        o.range.startLine === line &&
+        o.range.startCol === col,
+    )
+    .map((o) => `${o.siteKind} ${o.name}`)
+    .sort();
+}
 
 describe.skipIf(!zigAvailable)('Zig basic resolution', () => {
   let result: PipelineResult;
@@ -675,6 +722,59 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     expect(calls).toContain('viaAlias → get');
     expect(calls).toContain('viaAlias → twice');
   });
+
+  // #3498 drop triage, F-A: `const X = @import("f.zig").X;` reads `X` off the
+  // module it names. The `@import(…)` receiver had no namespace binding (the
+  // named-import rule claims the builtin), so every such read was recorded as
+  // a receiver drop, and a renaming alias (`const Gauge = ….DEFAULT_NS;`)
+  // emitted nothing at all. `Element.zig:35` is the `Gauge` shadow case above:
+  // `Gauge` stays an import binding, only the `.DEFAULT_NS` read resolves.
+  it.each([
+    ['src/holder.zig', 6, 16, 'File:src/holder.zig', 'Struct:src/counter.zig:Counter'],
+    ['src/main.zig', 6, 14, 'File:src/main.zig', 'Struct:src/counter.zig:Stack'],
+    [
+      'src/webapi/Element.zig',
+      35,
+      14,
+      'Struct:src/webapi/Element.zig:Element',
+      'Const:src/webapi/dom_utils.zig:DEFAULT_NS',
+    ],
+    [
+      'src/webapi/hub.zig',
+      9,
+      18,
+      'File:src/webapi/hub.zig',
+      'Function:src/webapi/dom_utils.zig:scale',
+    ],
+    [
+      'src/webapi/hub.zig',
+      10,
+      23,
+      'File:src/webapi/hub.zig',
+      'Const:src/webapi/dom_utils.zig:DEFAULT_NS',
+    ],
+  ])(
+    'reads the member of a one-member `@import(…).X` alias at %s:%i:%i through the module',
+    (file, line, col, source, target) => {
+      expect(receiverDropsAt(result, file, line, col)).toEqual([]);
+      expect(edgesAtSite(result, file, line, col)).toEqual([
+        `ACCESSES ${source} -> ${target} | import-resolved`,
+      ]);
+    },
+  );
+
+  it('types a type-constructor call used as a receiver (`Stack(u8).init()`) as the type it instantiates (#3498 F-D)', () => {
+    // `Stack` is a function returning `type`, so the inline call has no
+    // return-type binding to read and Zig declares no construction syntax:
+    // the receiver typed nothing and the call was dropped, while the bound
+    // form (`var t = Stack(u8).init(); t.top()`) resolved. Zig's
+    // `isTypeApplicationCall` hook says a TitleCase callee applies a type
+    // constructor, so the receiver is the class `Stack` names.
+    expect(receiverDropsAt(result, 'src/main.zig', 42, 12)).toEqual([]);
+    expect(edgesAtSite(result, 'src/main.zig', 42, 12)).toEqual([
+      'CALLS Function:src/main.zig:main -> Method:src/counter.zig:Stack.init#0 | import-resolved',
+    ]);
+  });
 });
 
 /**
@@ -871,6 +971,23 @@ describe.skipIf(!zigAvailable)('Zig type aliases (zig-filestruct fixture, aliase
 
   it('a VALUE alias (`var cur = orig; cur.go()`) chains to the value’s type, as Rust’s `let x = y`', () => {
     expect(calls).toContain('b11 → go');
+  });
+
+  it('types through a FORWARDING type constructor, in the scope that declared it (`Bridge(T)` is `Builder(T)`, #3498 F-B)', () => {
+    // `fn Bridge(comptime T: type) type { return Builder(T); }` names no
+    // container, and a `type` return binds nothing, so `Bridge(Local)` typed a
+    // Function that owns no members. The forwarding binding `Bridge ↦ Builder`
+    // is declared in generic.zig, which is where `Builder` is visible — not in
+    // aliases.zig. Bound (`const bound = Bridge(Local)`) and inline
+    // (`Bridge(Local).prototypeChain()`) spellings both reach Builder.
+    const fromB12 = getRelationships(result, 'CALLS')
+      .filter((e) => e.source === 'b12' && e.targetLabel === 'Method')
+      .map((e) => e.rel.targetId)
+      .sort();
+    expect(fromB12).toEqual([
+      'Method:src/generic.zig:Builder.accessor#1',
+      'Method:src/generic.zig:Builder.prototypeChain#0',
+    ]);
   });
 
   it('a value const / value call is not a type alias and gains no edge', () => {
@@ -1095,6 +1212,47 @@ describe.skipIf(!zigAvailable)('Zig function-local and anonymous containers (F8)
       'Function:src/Sorter.zig:Sorter."Sorter: local state" → Method:src/Sorter.zig:Sorter.test@L41$State.kill#0',
     );
   });
+
+  // #3498 drop triage, F-C: `struct { fn lessThan … }.lessThan` (the comparator
+  // handed to `std.sort.pdq`) and `const byteSize = struct { fn it … }.it;`
+  // read a fn VALUE off an anonymous container. Its receiver text was the
+  // container's whole body, which names nothing, so each read was a receiver
+  // drop — and the only edge came from the read's position, which lies inside
+  // the container, so the container "accessed" its own fn. The receiver is the
+  // identity the container is minted under, and the read is attributed to the
+  // scope it is evaluated in. A value, so a reference: never CALLS.
+  it.each([
+    [
+      16,
+      17,
+      'Method:src/Sorter.zig:Sorter$2.it#1',
+      ['ACCESSES Struct:src/Sorter.zig:Sorter | read'],
+    ],
+    [
+      23,
+      38,
+      'Method:src/Sorter.zig:Sorter.sortBoth$1.lessThan#3',
+      [
+        'ACCESSES Method:src/Sorter.zig:Sorter.sortBoth#0 | read',
+        'USES Method:src/Sorter.zig:Sorter.sortBoth#0 | scope-resolution: value-ref',
+      ],
+    ],
+    [
+      28,
+      38,
+      'Method:src/Sorter.zig:Sorter.sortBoth$2.lessThan#3',
+      [
+        'ACCESSES Method:src/Sorter.zig:Sorter.sortBoth#0 | read',
+        'USES Method:src/Sorter.zig:Sorter.sortBoth#0 | scope-resolution: value-ref',
+      ],
+    ],
+  ])(
+    'reads the fn value of an anonymous container (Sorter.zig:%i:%i) from where it is evaluated',
+    (line, col, target, expected) => {
+      expect(receiverDropsAt(result, 'src/Sorter.zig', line, col)).toEqual([]);
+      expect(referencesInto(result, target)).toEqual(expected);
+    },
+  );
 });
 
 describe.skipIf(!zigAvailable)(
@@ -1227,6 +1385,23 @@ describe.skipIf(!zigAvailable)('Zig hub modules (`pub const X = @import(…)` re
     const intoUtil = calls.filter((c) => c.endsWith('@ src/stdx/util.zig'));
     expect(intoUtil).toEqual(['c11_hub_reexported_fn → helper @ src/stdx/util.zig']);
   });
+
+  // #3498 drop triage, F-A: the hub's own `pub const X = @import("x.zig").X;`
+  // reads `X` off the module it names, through that module — not by the
+  // lexical accident that the alias happens to share the member's name.
+  it.each([
+    [2, 18, 'Struct:src/stdx/thing.zig:Thing'],
+    [3, 29, 'Struct:src/stdx/bounded_array.zig:BoundedArrayType'],
+    [4, 19, 'Function:src/stdx/util.zig:helper'],
+  ])(
+    'reads the re-exported member at src/stdx/stdx.zig:%i:%i through its module',
+    (line, col, target) => {
+      expect(receiverDropsAt(result, 'src/stdx/stdx.zig', line, col)).toEqual([]);
+      expect(edgesAtSite(result, 'src/stdx/stdx.zig', line, col)).toEqual([
+        `ACCESSES File:src/stdx/stdx.zig -> ${target} | import-resolved`,
+      ]);
+    },
+  );
 });
 
 describe.skipIf(!zigAvailable)(
@@ -1330,6 +1505,13 @@ describe.skipIf(!zigAvailable)(
           'use_this_receiver → release',
         ]),
       );
+    });
+
+    it('reads the member of `pub const X = @import("x.zig").X;` through its module (#3498 F-A)', () => {
+      expect(receiverDropsAt(result, 'src/stdx/stdx.zig', 2, 29)).toEqual([]);
+      expect(edgesAtSite(result, 'src/stdx/stdx.zig', 2, 29)).toEqual([
+        'ACCESSES File:src/stdx/stdx.zig -> Struct:src/stdx/bounded_array.zig:BoundedArrayType | import-resolved',
+      ]);
     });
   },
 );
@@ -1588,5 +1770,127 @@ describe.skipIf(!zigAvailable)('Zig monorepo package resolution', () => {
       'packages/tool/src/core.zig',
     );
     expect(fromTool.map((e) => e.targetFilePath).join('\n')).not.toContain('packages/core/');
+  });
+});
+
+// #3498: an inline `rp.make().m()` on a namespace module takes `make`'s return
+// type; file-struct handles, including a lowercase file with fields, keep
+// naming the struct. A bound `const x = rp.make()` is not typed yet: the
+// importing file cannot see whether the target is a namespace or a struct.
+describe.skipIf(!zigAvailable)('Zig namespace factory result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'zig-namespace-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  it.each([
+    { source: 'aliasCall', member: 'm', targets: [] },
+    { source: 'inlineCall', member: 'm', targets: ['Method:mod.zig:C.m#0'] },
+    { source: 'fileStructCall', member: 'm', targets: ['Method:Page.zig:Page.m#0'] },
+    { source: 'lowercaseFileStructCall', member: 'm', targets: ['Method:Page.zig:Page.m#0'] },
+    {
+      source: 'lowercaseFileStructFileCall',
+      member: 'listen',
+      targets: ['Method:config.zig:config.listen#0'],
+    },
+  ])('resolves $member called from $source to $targets', ({ source, member, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === member)
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(targets);
+  });
+});
+
+describe.skipIf(!zigAvailable)('Zig type-constructor receiver boundaries', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-zig-type-boundaries-'));
+    try {
+      writeFixtureRepo(root, {
+        'src/Math.zig': `count: u32 = 0,
+
+pub fn Wrapper(comptime T: type) type {
+    return if (@sizeOf(T) == 0) struct {} else struct {
+        pub fn get() void {}
+    };
+}
+pub fn Bridge(comptime T: type) type { return Wrapper(T); }
+pub fn use() void { Wrapper(u8).get(); }
+pub fn use2() void { const b = Bridge(u8); b.get(); }
+`,
+        'src/other.zig': 'pub const Wrapper = struct { pub fn get() void {} };\n',
+        'src/third.zig': 'pub const Unrelated = struct { pub fn get() void {} };\n',
+        'src/lib.zig': 'pub const Counter = struct {};\npub fn work() void {}\n',
+        'src/other_work.zig': 'pub fn work() void {}\n',
+        'src/typed.zig': `pub fn typedImport() void {
+    const Counter: type = @import("lib.zig").Counter;
+    _ = Counter;
+}
+`,
+        'src/other_local.zig': 'pub const Local = struct { pub fn get() void {} };\n',
+        'src/namespaced.zig': `const local = @import("local.zig");
+pub fn namespacePositive() void { local.Local(u8).get(); }
+`,
+        'src/whitespace.zig': `pub fn entry() void {
+    const Counter = @import("lib.zig").Counter;
+    _ = Counter;
+    @import( "lib.zig" ).work();
+}
+`,
+        'src/local.zig': `pub fn Local(comptime T: type) type {
+    _ = T;
+    return struct { pub fn get() void {} };
+}
+pub fn positive() void { Local(u8).get(); }
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 120000);
+
+  it.each(['use', 'use2'])('%s cannot borrow a class from an unimported file', (caller) => {
+    const externalTargets = getRelationships(result, 'CALLS')
+      .filter(
+        (edge) =>
+          edge.source === caller && edge.target === 'get' && edge.targetFilePath !== 'src/Math.zig',
+      )
+      .map((edge) => edge.rel.targetId);
+    expect(externalTargets).toEqual([]);
+  });
+
+  it('keeps the lexically bound type-application receiver', () => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'positive' && edge.target === 'get')
+      .map((edge) => edge.targetFilePath);
+    expect(targets).toEqual(['src/local.zig']);
+  });
+
+  it('resolves a differently spaced inline import after a member alias', () => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'entry' && edge.target === 'work')
+      .map((edge) => ({ file: edge.targetFilePath, reason: edge.rel.reason }));
+    expect(targets).toEqual([{ file: 'src/lib.zig', reason: 'import-resolved' }]);
+  });
+
+  it('reads a member through an explicitly typed import alias initializer', () => {
+    const targets = getRelationships(result, 'ACCESSES')
+      .filter((edge) => edge.source === 'typedImport' && edge.target === 'Counter')
+      .map((edge) => ({ file: edge.targetFilePath, reason: edge.rel.reason }));
+    expect(targets).toEqual([{ file: 'src/lib.zig', reason: 'import-resolved' }]);
+  });
+
+  it('keeps a namespace-qualified type application despite an unrelated namesake', () => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'namespacePositive' && edge.target === 'get')
+      .map((edge) => ({ file: edge.targetFilePath, reason: edge.rel.reason }));
+    expect(targets).toEqual([{ file: 'src/local.zig', reason: 'import-resolved' }]);
   });
 });

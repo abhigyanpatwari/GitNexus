@@ -620,6 +620,33 @@ function findDirectCallValue(initVarDef: SyntaxNode): SyntaxNode | null {
 }
 
 /**
+ * `prefix.member(…)` as the whole initializer, written directly or awaited: the
+ * dotted callee. The shared chain follow types a namespace function from its
+ * return annotation, and a member call through the receiver's class (#3498).
+ * An awaited `Future<C>` is not unwrapped yet, so that receiver records a drop.
+ * Longer chains (`rp.make().other`) are left alone.
+ */
+function qualifiedCallValue(initVarDef: SyntaxNode): string | null {
+  let head = initVarDef.childForFieldName('value');
+  if (head?.type === 'unary_expression') head = head.namedChild(0);
+  if (head?.type === 'await_expression') head = head.namedChild(0);
+  if (head?.type !== 'identifier') return null;
+  const member = head.nextNamedSibling;
+  const call = member?.nextNamedSibling;
+  const inner = member?.type === 'selector' ? member.namedChild(0) : null;
+  const name = inner?.type === 'unconditional_assignable_selector' ? selectorName(inner) : null;
+  if (
+    name === null ||
+    call?.type !== 'selector' ||
+    call.namedChild(0)?.type !== 'argument_part' ||
+    call.nextNamedSibling !== null
+  ) {
+    return null;
+  }
+  return `${head.text}.${name.text}`;
+}
+
+/**
  * Callee identifier of a class field initialized by a direct constructor call —
  * `var b = Outer();` / `final b = Outer();` — or `null` for anything else.
  *
@@ -644,13 +671,13 @@ function dartFieldConstructorCallee(nameNode: SyntaxNode): SyntaxNode | null {
 function emitVarTypeBinding(initVarDef: SyntaxNode, out: CaptureMatch[]): void {
   const nameNode = initVarDef.childForFieldName('name');
   if (nameNode === null) return;
-  const calleeId = findDirectCallValue(initVarDef);
-  if (calleeId === null) return;
+  const callee = findDirectCallValue(initVarDef)?.text ?? qualifiedCallValue(initVarDef);
+  if (callee === null) return;
 
   out.push({
     '@type-binding.constructor': nodeToCapture('@type-binding.constructor', initVarDef),
     '@type-binding.name': syntheticCapture('@type-binding.name', initVarDef, nameNode.text),
-    '@type-binding.type': syntheticCapture('@type-binding.type', initVarDef, calleeId.text),
+    '@type-binding.type': syntheticCapture('@type-binding.type', initVarDef, callee),
   });
 }
 

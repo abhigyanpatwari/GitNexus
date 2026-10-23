@@ -35,7 +35,6 @@ import type { ExportChecker } from './export-detection.js';
 import type { FieldExtractor } from './field-extractor.js';
 import type { MethodExtractor } from './method-types.js';
 import type { VariableExtractor } from './variable-types.js';
-import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
 import type { CollectedCfgs } from './cfg/collect.js';
@@ -49,7 +48,11 @@ import type {
   RepoConstants,
 } from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
-import type { FetchWrapperCall } from './route-extractors/fetch-wrapper.js';
+import type {
+  FetchWrapperCall,
+  FetchWrapperFacts,
+  FetchWrapperReexport,
+} from './route-extractors/fetch-wrapper.js';
 import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
@@ -350,8 +353,6 @@ interface LanguageProviderConfig {
   readonly typeConfig: LanguageTypeConfig;
   /** Export detection: is this AST node a public/exported symbol? */
   readonly exportChecker: ExportChecker;
-  /** Import resolution: resolves raw import path to file system path */
-  readonly importResolver: ImportResolverFn;
 
   // ── Calls & Imports (optional) ────────────────────────────────────
   /** Call routing for languages that express imports/heritage as calls (e.g., Ruby).
@@ -627,9 +628,24 @@ interface LanguageProviderConfig {
    * are known across files. Routes selects known wrappers after parsing. */
   readonly extractFetchWrapperCalls?: (
     tree: Parser.Tree,
-    filePath: string,
+    parsedFile: ParsedFile,
     lineOffset: number,
   ) => FetchWrapperCall[];
+
+  /** Module exports that forward another module's export, so barrels resolve to definitions. */
+  readonly extractFetchWrapperReexports?: (
+    tree: Parser.Tree,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => FetchWrapperReexport[];
+
+  /** Scope-aware evidence for every callable declaration, including non-wrappers. */
+  readonly extractFetchWrapperFacts?: (
+    definition: Parser.SyntaxNode,
+    nameNode: Parser.SyntaxNode | undefined,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => FetchWrapperFacts | undefined;
 
   /**
    * Name of the function a route decorator captured by the worker's generic
@@ -853,6 +869,43 @@ interface LanguageProviderConfig {
   /** Built-in/stdlib names that should be filtered from the call graph for this language.
    *  Default: undefined (no language-specific filtering). */
   readonly builtInNames?: ReadonlySet<string>;
+
+  // ── Program boundary (receiver-origin classification only) ───────────
+  /**
+   * Values, namespaces and types the language's RUNTIME or STANDARD LIBRARY
+   * supplies without the program declaring them — `document`, `process`,
+   * `System`, `Dictionary` — matched against a bare identifier: a dropped
+   * receiver's chain base, or the head of the type a receiver chain ends at.
+   *
+   * Read ONLY by `classifyReceiverOrigin`, which labels a call it could not
+   * resolve `external` (nothing in the program could have been the target)
+   * instead of `unknown`. Kept apart from `builtInNames` on purpose: that set
+   * also filters CALLEE names out of the call graph (`parse-worker.ts`,
+   * `type-env.ts`, the free-call fallback), so `process` there would drop every
+   * call to an in-program function named `process`. Nothing here can change an
+   * edge.
+   *
+   * A name only counts where the program binds nothing by it at the site and
+   * declares no type or value by it, so a local `document` parameter or an
+   * in-program `class System` still wins. The failure is asymmetric — a wrong
+   * entry hides a real resolver gap behind `epistemic: 'exact'`, a missing one
+   * only costs a hedge — so a set should under-include. Default: undefined (no
+   * name is evidence).
+   */
+  readonly externalReceiverNames?: ReadonlySet<string>;
+  /**
+   * Does this import SPECIFIER name a module the language reserves for its
+   * runtime or standard library (Python `os`, Zig `std`, Java `java.util`)?
+   *
+   * Read ONLY by `classifyReceiverOrigin`, and only for an import that also
+   * resolved to no file in the program: a name bound by such an import is
+   * rooted outside the program however it is spelled locally
+   * (`const s = @import("std")`). Third-party packages are NOT answered here —
+   * an unresolved `fastapi` or `express` import cannot be told apart from an
+   * in-program module the resolver missed, so it stays `unknown`. Default:
+   * undefined (no import is evidence).
+   */
+  readonly isExternalModuleSpecifier?: (specifier: string) => boolean;
 
   // ══════════════════════════════════════════════════════════════════════════
   //  Scope-based resolution hooks (RFC #909 — Ring 1 #911)

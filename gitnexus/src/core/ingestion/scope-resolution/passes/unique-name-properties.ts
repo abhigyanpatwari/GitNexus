@@ -63,13 +63,14 @@
  * rather than through `tryEmitEdge`, whose target side takes a def.
  */
 
-import type { ImportEdge, ParsedFile, ScopeId } from 'gitnexus-shared';
+import type { ImportEdge, ParsedFile, ReferenceSite, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
 import { callableFlowSiteKey } from './callable-value-flow.js';
 import { isTestFile } from '../../entry-point-scoring.js';
+import { answeredSiteKey } from '../resolution-outcome.js';
 import { getLanguageFromFilename } from 'gitnexus-shared';
 
 /** Language a definition lives in, for reporting which anchor a reader cannot reach. */
@@ -299,21 +300,6 @@ function buildDirectImportMap(
   return byFile;
 }
 
-/** Is this Property id qualified by `<owner>.`, allowing a position suffix? */
-function idOwnedBy(id: string, owner: string): boolean {
-  const at = id.indexOf(`:${owner}.`);
-  if (at === -1) return false;
-  const rest = id.slice(at + owner.length + 2);
-  return !rest.includes('.') || rest.indexOf('@') < rest.indexOf('.');
-}
-
-/** Trailing symbol name of a graph id (`Function:a/b.js:buildB` -> `buildB`). */
-function simpleNameOfGraphId(graphId: string): string {
-  const tail = graphId.slice(graphId.lastIndexOf(':') + 1);
-  const at = tail.indexOf('@');
-  return at === -1 ? tail : tail.slice(0, at);
-}
-
 /**
  * Pick the single candidate a read in `readingFile` can plausibly mean.
  *
@@ -327,8 +313,7 @@ function narrowToSingleCandidate(
   candidatesIn: readonly PropertyCandidate[],
   readingFile: string,
   importedFiles: ReadonlySet<string> | undefined,
-  /** Simple name of the callable the site sits in, when it could be resolved. */
-  ownerName?: string,
+  site: ReferenceSite,
 ): { readonly id: string; readonly tier: string } | null {
   // DECLARED ANCHORS FIRST. A return shape is a real definition but a weaker
   // one: it says "some function builds an object with this key", where a named
@@ -338,20 +323,13 @@ function narrowToSingleCandidate(
   // return shapes were indexed at all.
   let candidates = candidatesIn;
 
-  // A SITE INSIDE ITS OWN RETURN SHAPE BINDS TO ITS OWN KEY.
-  //
-  // `export function buildB(row) { return { tickIntervalMs: row.b } }` writes
-  // the key that IS `buildB.tickIntervalMs`. Ranking declared anchors above
-  // return shapes is right for a READ through a receiver, but applied here it
-  // handed that write to a same-named module const (`fnSettings.tickIntervalMs`)
-  // that `buildB` never touches — a wrong edge, reported at the confident tier,
-  // and the node the key actually defines was left with no writer at all.
-  //
-  // Checked before every other rule because it is evidence rather than ranking:
-  // the owner qualifier on the candidate id and the enclosing callable are the
-  // same symbol. Nothing else can outrank that.
-  if (ownerName !== undefined && ownerName.length > 0) {
-    const own = candidates.filter((c) => c.fromReturnShape && idOwnedBy(c.id, ownerName));
+  // Only the key's declaration WRITE proves ownership. Other accesses inside
+  // the producer still use ordinary ranking, even when they share its key name.
+  if (site.kind === 'write') {
+    const position = `@${site.atRange.startLine - 1}:${site.atRange.startCol}`;
+    const own = candidates.filter(
+      (c) => c.fromReturnShape && c.filePath === readingFile && c.id.endsWith(position),
+    );
     if (own.length === 1) return { id: own[0]!.id, tier: 'own-return-shape' };
   }
 
@@ -427,6 +405,13 @@ export function emitUniqueNamePropertyAccesses(
    * asserts nothing about what it means.
    */
   reportOnly = false,
+  /**
+   * Receives the {@link answeredSiteKey} of every site this pass emitted an edge
+   * for, so the caller can withdraw a `receiver-unresolved` drop the
+   * receiver-bound pass recorded for it earlier. Never written in `reportOnly`
+   * mode: a site that was only counted still has no edge.
+   */
+  answeredSink?: Set<string>,
 ): UniqueNamePropertyStats {
   const byName = prebuiltPropertyNameIndex ?? buildPropertyNameIndex(graph);
   const ownFilePaths = new Set(parsedFiles.map((p) => p.filePath));
@@ -489,8 +474,6 @@ export function emitUniqueNamePropertyAccesses(
         continue;
       }
 
-      // Resolved BEFORE narrowing: the enclosing callable is evidence the
-      // ranking needs, not just the edge's source.
       const callerGraphId = resolveCallerGraphId(
         site.callerScope ?? site.inScope,
         indexes,
@@ -503,7 +486,7 @@ export function emitUniqueNamePropertyAccesses(
         candidates,
         parsed.filePath,
         directImports.get(parsed.filePath),
-        simpleNameOfGraphId(callerGraphId),
+        site,
       );
       if (choice === null) {
         ambiguous++;
@@ -532,6 +515,7 @@ export function emitUniqueNamePropertyAccesses(
         reason: `${EDGE_REASON} (${choice.tier}): ${site.kind}`,
         evidence: [],
       });
+      answeredSink?.add(answeredSiteKey(parsed.filePath, site.atRange, site.kind, site.name));
       emitted++;
     }
   }

@@ -348,6 +348,8 @@ const WORKER_THREADS = [
   // local-import ownership on each platform's native grammar/runtime pair.
   'test/integration/local-import-worker-parity.test.ts',
   'test/integration/resolvers/local-import-persistence.test.ts',
+  // The same worker and store path for fetch-wrapper facts and their resolution.
+  'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
 ];
 
 // Tree-sitter native addon smoke tests — verify that native grammars

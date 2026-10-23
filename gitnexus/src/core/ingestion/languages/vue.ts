@@ -12,16 +12,18 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { isBuiltin } from 'node:module';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { vueClassConfig } from '../class-extractors/configs/typescript-javascript.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { vueImportConfig } from '../import-resolvers/configs/typescript-javascript.js';
 import { TYPESCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
-import { BUILT_INS as TS_BUILT_INS } from './typescript.js';
+import {
+  BUILT_INS as TS_BUILT_INS,
+  EXTERNAL_RECEIVER_NAMES as TS_EXTERNAL_RECEIVER_NAMES,
+} from './typescript.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { typescriptVariableConfig } from '../variable-extractors/configs/typescript-javascript.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
@@ -86,12 +88,14 @@ export const vueProvider = defineLanguage({
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
-  importResolver: createImportResolver(vueImportConfig),
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: vueClassExtractor,
   builtInNames: VUE_BUILT_INS,
+  // A `<script>` block runs on the same host as any other module.
+  externalReceiverNames: TS_EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isBuiltin,
   // Vue SFC <script> blocks use the TypeScript or TSX grammar,
   // so the TS CFG visitor builds CFGs for the script's functions verbatim —
   // no Vue-specific visitor needed (#2195).

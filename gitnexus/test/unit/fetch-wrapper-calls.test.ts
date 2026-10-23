@@ -2,21 +2,164 @@ import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
-import {
-  extractFetchWrapperCalls,
-  fetchWrapperFacts,
-} from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
+import { createFetchWrapperContext } from '../../src/core/ingestion/route-extractors/fetch-wrapper.js';
+import { buildFetchWrapperIndex } from '../../src/core/ingestion/route-extractors/fetch-wrapper-index.js';
+import { normalizeFetchURL } from '../../src/core/ingestion/route-extractors/nextjs.js';
 
-for (const [name, grammar] of [
-  ['JavaScript', JavaScript],
-  ['TypeScript', TypeScript.typescript],
-  ['TSX', TypeScript.tsx],
-] as const) {
+import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
+import {
+  typescriptProvider,
+  javascriptProvider,
+} from '../../src/core/ingestion/languages/typescript.js';
+
+const grammars = [
+  ['JavaScript', JavaScript, javascriptProvider],
+  ['TypeScript', TypeScript.typescript, typescriptProvider],
+  ['TSX', TypeScript.tsx, typescriptProvider],
+] as const;
+
+function harness(grammar: (typeof grammars)[number][1], provider: (typeof grammars)[number][2]) {
+  const parser = new Parser();
+  parser.setLanguage(grammar);
+  const context = (source: string, filePath = 'consumer.ts', lineOffset = 0) => {
+    const fullSource = '\n'.repeat(lineOffset) + source;
+    const tree = parser.parse(source);
+    const parsedFile = extractParsedFile(
+      provider,
+      fullSource,
+      filePath,
+      undefined,
+      parser.parse(fullSource),
+    )!;
+    return {
+      root: tree.rootNode,
+      context: createFetchWrapperContext(tree, parsedFile, lineOffset),
+    };
+  };
+  const extract = (source: string, lineOffset = 0) =>
+    context(source, 'consumer.ts', lineOffset).context.calls();
+  return { context, extract };
+}
+
+for (const [name, grammar, provider] of grammars) {
   describe(`${name} fetch wrapper calls`, () => {
-    const parser = new Parser();
-    parser.setLanguage(grammar);
-    const extract = (source: string, lineOffset = 0) =>
-      extractFetchWrapperCalls(parser.parse(source), 'consumer.ts', lineOffset);
+    const { context, extract } = harness(grammar, provider);
+
+    it.each([
+      {
+        shape: 'a parameter-independent refresh alongside a URL fetch',
+        source: `function request(path) { fetch('/api/refresh'); return fetch('/api' + path); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a literal-only call that must not activate a URL carrier',
+        source: `function send(path) { return fetch(path); }
+          function request(event) { return send('/api/telemetry'); }`,
+        expected: [],
+      },
+      {
+        shape: 'an unknown-leading caller URL through slash normalization',
+        source: `function build(path) { return '/api' + (path.startsWith('/') ? path : '/' + path); }
+          function request(path) { return fetch(build(path)); }`,
+        input: '${BASE}/models',
+        expected: [],
+      },
+      {
+        shape: 'a conditional-only URL-builder return with fallthrough',
+        source: `function build(path) { if (runtime()) return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'a URL builder with an early bare return',
+        source: `function build(path) { if (runtime()) return; return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'literal concatenation',
+        source: `function request(path) { return fetch('/api' + path); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a stable local prefix and URL alias',
+        source: `function request(path) { const prefix = '/api'; const url = prefix + path; return fetch(url); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a returned URL through a helper chain',
+        source: `function prefix(path) { return '/api' + path; }
+          function build(path) { return prefix(path); }
+          function request(path) { const url = build(path); return fetch(url); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a transformed argument forwarded to another wrapper',
+        source: `function send(path) { return fetch(path); }
+          function request(path) { return send('/api' + path); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'a mount prefix inside a reachable retry callback',
+        source: `function request(path) { return retry(() => fetch('/api' + path)); }`,
+        expected: ['/api/models'],
+      },
+      {
+        shape: 'an unused nested fetch helper',
+        source: `function request(path) { const unused = () => fetch('/api' + path); return path; }`,
+        expected: [],
+      },
+      {
+        shape: 'startsWith with an explicit offset',
+        source: `function build(path) { const normalized = path.startsWith('/', 1) ? path : '/' + path; return '/api' + normalized; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'a rebound prefix',
+        source: `function request(path) { let prefix = '/api'; prefix = runtime(); return fetch(prefix + path); }`,
+        expected: [],
+      },
+      {
+        shape: 'a rebound URL parameter',
+        source: `function request(path) { path = runtime(); return fetch('/api' + path); }`,
+        expected: [],
+      },
+      {
+        shape: 'a URL builder with different branch returns',
+        source: `function build(path) { if (runtime()) return '/private' + path; return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'a recursive URL builder',
+        source: `function build(path) { return build(path); }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'an async URL builder returning a Promise',
+        source: `async function build(path) { return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+      {
+        shape: 'a generator URL builder returning an iterator',
+        source: `function* build(path) { return '/api' + path; }
+          function request(path) { return fetch(build(path)); }`,
+        expected: [],
+      },
+    ])('resolves the actual URL for $shape (#2858)', ({ source, expected, input = '/models' }) => {
+      const { root, context: wrapper } = context(`${source}\nrequest('${input}');`);
+      const definitions = root.namedChildren.flatMap((node) => {
+        const facts = wrapper.facts(node);
+        const name = node.childForFieldName('name')?.text;
+        return facts && name ? [{ ...facts, filePath: 'consumer.ts', functionName: name }] : [];
+      });
+      const index = buildFetchWrapperIndex(definitions);
+      const call = wrapper.calls().find((candidate) => candidate.functionName === 'request')!;
+      expect(index.urlsForCall(call).map(normalizeFetchURL)).toEqual(expected);
+    });
 
     it('preserves exact callee names and source lines, including comments and optional calls', () => {
       expect(
@@ -35,24 +178,28 @@ for (const [name, grammar] of [
           functionName: 'doRequest',
           fetchURL: '/api/one',
           lineNumber: 12,
+          target: { kind: 'unresolved' },
         },
         {
           filePath: 'consumer.ts',
           functionName: 'client.doRequest',
           fetchURL: '/api/two',
           lineNumber: 13,
+          target: { kind: 'member' },
         },
         {
           filePath: 'consumer.ts',
           functionName: 'api.client.doRequest',
           fetchURL: '/api/three',
           lineNumber: 14,
+          target: { kind: 'member' },
         },
         {
           filePath: 'consumer.ts',
           functionName: 'cafédoRequest',
           fetchURL: '/api/four',
           lineNumber: 15,
+          target: { kind: 'unresolved' },
         },
       ]);
     });
@@ -66,12 +213,20 @@ for (const [name, grammar] of [
         source: `async function load(url) {
           try { for (;;) { if (url) { const r = await fetch(url); return r; } } } catch (e) {}
         }`,
-        facts: { seed: true, forwardsUrl: true, forwardsTo: [{ callee: 'fetch', module: null }] },
+        facts: {
+          seed: true,
+          forwardsUrl: true,
+          forwardsTo: [{ callee: 'fetch', kind: 'unresolved' }],
+        },
       },
       {
         shape: 'an exported arrow const',
         source: 'export const load = async (url) => { const r = await fetch(url); return r; };',
-        facts: { seed: true, forwardsUrl: true, forwardsTo: [{ callee: 'fetch', module: null }] },
+        facts: {
+          seed: true,
+          forwardsUrl: true,
+          forwardsTo: [{ callee: 'fetch', kind: 'unresolved' }],
+        },
       },
       {
         shape: 'an alias of globalThis.fetch',
@@ -82,7 +237,7 @@ for (const [name, grammar] of [
         facts: {
           seed: true,
           forwardsUrl: true,
-          forwardsTo: [{ callee: 'fetchImpl', module: null }],
+          forwardsTo: [{ callee: 'fetchImpl', kind: 'binding' }],
         },
       },
       {
@@ -91,7 +246,7 @@ for (const [name, grammar] of [
         facts: {
           seed: true,
           forwardsUrl: true,
-          forwardsTo: [{ callee: 'window.fetch', module: null }],
+          forwardsTo: [{ callee: 'window.fetch', kind: 'member' }],
         },
       },
       {
@@ -107,7 +262,7 @@ for (const [name, grammar] of [
         facts: {
           seed: true,
           forwardsUrl: false,
-          forwardsTo: [{ callee: 'JSON.stringify', module: null }],
+          forwardsTo: [{ callee: 'JSON.stringify', kind: 'member' }],
         },
       },
       {
@@ -118,7 +273,7 @@ for (const [name, grammar] of [
         facts: {
           seed: false,
           forwardsUrl: false,
-          forwardsTo: [{ callee: 'resilientFetch', module: null }],
+          forwardsTo: [{ callee: 'resilientFetch', kind: 'unresolved' }],
         },
       },
       {
@@ -145,7 +300,7 @@ for (const [name, grammar] of [
         facts: {
           seed: false,
           forwardsUrl: false,
-          forwardsTo: [{ callee: 'fetchImpl', module: null }],
+          forwardsTo: [{ callee: 'fetchImpl', kind: 'binding' }],
         },
       },
       {
@@ -157,7 +312,7 @@ for (const [name, grammar] of [
         facts: {
           seed: false,
           forwardsUrl: false,
-          forwardsTo: [{ callee: 'send', module: null }],
+          forwardsTo: [{ callee: 'send', kind: 'unresolved' }],
         },
       },
       {
@@ -170,7 +325,7 @@ for (const [name, grammar] of [
         facts: {
           seed: false,
           forwardsUrl: false,
-          forwardsTo: [{ callee: 'fetchImpl', module: null }],
+          forwardsTo: [{ callee: 'fetchImpl', kind: 'binding' }],
         },
       },
       {
@@ -187,7 +342,7 @@ for (const [name, grammar] of [
         facts: {
           seed: false,
           forwardsUrl: false,
-          forwardsTo: [{ callee: 'window.fetch', module: null }],
+          forwardsTo: [{ callee: 'window.fetch', kind: 'member' }],
         },
       },
       {
@@ -199,7 +354,7 @@ for (const [name, grammar] of [
         facts: {
           seed: false,
           forwardsUrl: false,
-          forwardsTo: [{ callee: 'register', module: null }],
+          forwardsTo: [{ callee: 'register', kind: 'unresolved' }],
         },
       },
       {
@@ -214,7 +369,7 @@ for (const [name, grammar] of [
         facts: {
           seed: false,
           forwardsUrl: false,
-          forwardsTo: [{ callee: 'request', module: 'src/desktop/ipc' }],
+          forwardsTo: [{ callee: 'send', kind: 'import' }],
         },
       },
       {
@@ -224,29 +379,31 @@ for (const [name, grammar] of [
         facts: {
           seed: false,
           forwardsUrl: false,
-          forwardsTo: [{ callee: 'request', module: 'src/web/client' }],
+          forwardsTo: [{ callee: 'request', kind: 'binding' }],
         },
       },
     ])('reads wrapper facts from $shape', ({ source, facts }) => {
-      const root = parser.parse(source).rootNode;
-      expect(fetchWrapperFacts(root.namedChildren.at(-1)!, 'src/web/client.ts')).toEqual(facts);
+      const { root, context: wrapper } = context(source, 'src/web/client.ts');
+      const actual = wrapper.facts(root.namedChildren[root.namedChildren.length - 1]);
+      // Exact facts, with each forwarded callee's target kind.
+      expect({
+        seed: actual?.seed,
+        forwardsUrl: actual?.forwardsUrl,
+        forwardsTo: actual?.forwardsTo.map(({ callee, target }) => ({ callee, kind: target.kind })),
+      }).toEqual(facts);
     });
 
-    it('records the module declaring a bare callee', () => {
-      expect(
-        extractFetchWrapperCalls(
-          parser.parse(`import { request as send } from './api';
-          send('/api/one');
-          local('/api/two');
-          api.request('/api/three');
-          function local(u) {}`),
-          'src/web/page.ts',
-          0,
-        ).map(({ functionName, module, declaredName }) => ({ functionName, module, declaredName })),
-      ).toEqual([
-        { functionName: 'send', module: 'src/web/api', declaredName: 'request' },
-        { functionName: 'local', module: 'src/web/page', declaredName: undefined },
-        { functionName: 'api.request', module: undefined, declaredName: undefined },
+    it('records lexical and import identity of bare callees', () => {
+      const source = `import { request as send } from './api';
+        send('/api/one'); local('/api/two'); api.request('/api/three'); function local(u) {}`;
+      const calls = context(source, 'src/web/page.ts').context.calls();
+      expect(calls.map(({ functionName, target }) => ({ functionName, target }))).toEqual([
+        {
+          functionName: 'send',
+          target: { kind: 'import', specifier: './api', importedName: 'request' },
+        },
+        { functionName: 'local', target: { kind: 'binding', bindingId: expect.any(String) } },
+        { functionName: 'api.request', target: { kind: 'member' } },
       ]);
     });
 
@@ -290,40 +447,45 @@ for (const [name, grammar] of [
     ])('does not invent a candidate for %s', (source) => {
       expect(extract(source)).toEqual([]);
     });
+  });
+}
 
-    if (name !== 'JavaScript') {
-      it.each([
-        'Array<{ result: Promise<string> }>',
-        '(value: string) => Promise<{ kind: "thing" }>',
-        '{ compare: ">"; callback: () => void }',
-        '[string, number]',
-        'T extends string ? Array<T> : never',
-      ])('accepts type arguments %s', (types) => {
-        expect(extract(`doRequest<${types}>('/api/things')`)).toMatchObject([
-          { functionName: 'doRequest', fetchURL: '/api/things' },
-        ]);
-      });
+// Type arguments exist only in the TypeScript grammars.
+for (const [name, grammar, provider] of grammars.slice(1)) {
+  describe(`${name} typed fetch wrapper calls`, () => {
+    const { extract } = harness(grammar, provider);
 
-      it('handles awaited generic calls in the installed grammar', () => {
-        expect(
-          extract(`async function load() {
-          await /* request */ doRequest<string[]>('/api/one');
-          await client.doRequest<() => void>('/api/two');
-        }`).map((call) => [call.functionName, call.fetchURL]),
-        ).toEqual([
-          ['doRequest', '/api/one'],
-          ['client.doRequest', '/api/two'],
-        ]);
-      });
+    it.each([
+      'Array<{ result: Promise<string> }>',
+      '(value: string) => Promise<{ kind: "thing" }>',
+      '{ compare: ">"; callback: () => void }',
+      '[string, number]',
+      'T extends string ? Array<T> : never',
+    ])('accepts type arguments %s', (types) => {
+      expect(extract(`doRequest<${types}>('/api/things')`)).toMatchObject([
+        { functionName: 'doRequest', fetchURL: '/api/things' },
+      ]);
+    });
 
-      it('captures only the actual callee after generic references', () => {
-        expect(
-          extract(`
-          const typed = doRequest<string>;
-          const load: typeof doRequest<string> = makeLoader<string>('/api/things');
-        `).map((call) => call.functionName),
-        ).toEqual(['makeLoader']);
-      });
-    }
+    it('handles awaited generic calls in the installed grammar', () => {
+      expect(
+        extract(`async function load() {
+        await /* request */ doRequest<string[]>('/api/one');
+        await client.doRequest<() => void>('/api/two');
+      }`).map((call) => [call.functionName, call.fetchURL]),
+      ).toEqual([
+        ['doRequest', '/api/one'],
+        ['client.doRequest', '/api/two'],
+      ]);
+    });
+
+    it('captures only the actual callee after generic references', () => {
+      expect(
+        extract(`
+        const typed = doRequest<string>;
+        const load: typeof doRequest<string> = makeLoader<string>('/api/things');
+      `).map((call) => call.functionName),
+      ).toEqual(['makeLoader']);
+    });
   });
 }

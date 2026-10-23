@@ -118,6 +118,8 @@ export type NodeProperties = {
   runtimeSource?: string;
   /** Runtime result such as runtime-confirmed or handler-conflict. */
   runtimeStatus?: string;
+  /** Files passing the route's URL to a function not proven to send requests. */
+  unverifiedConsumers?: number;
   // Destination (async messaging overlay). See the `Destination` label above.
   /** The RESOLVED broker address. Together with `broker` it is the key a
    *  cross-repository pass joins on. Present only when the address resolved:
