@@ -29,7 +29,8 @@
  *    installed packages of its `dependencies`/`optionalDependencies`. `vitest` and `@vitest/*` are
  *    the harness and exempt.
  *  - `native binding: <path>`: an import resolves to a `.node` file.
- *  - `spawns processes: child_process|cluster`: the closure imports that builtin.
+ *  - `spawns processes: child_process|cluster`: the closure imports that builtin, or a package on
+ *    {@link KNOWN_PROCESS_PACKAGES} (its own code loads `child_process` when imported).
  *  - `spawns workers: worker_threads`: the closure imports `Worker` from `worker_threads`, or the
  *    whole module (default/namespace binding, non-destructured `require`/`import()`).
  *  - `imports outside gitnexus/`, `imports from ignored dir: <dir>/`: a relative import leaves the
@@ -53,8 +54,9 @@
  * Limits: paths built by helper functions or passed through parameters are not followed, and a
  * production function reading a path the test hands it is not seen; an unknown suffix is assumed
  * not to contain `..`; package internals are not walked for child_process or worker use (gate 1
- * sees them); `vi.mock` factories do not neutralise a module other imports load (conservative);
- * Babel parse failures reject the file; hook and test counts look at the test file only.
+ * sees them, and the packages it finds go on {@link KNOWN_PROCESS_PACKAGES}); `vi.mock` factories
+ * do not neutralise a module other imports load (conservative); Babel parse failures reject the
+ * file; hook and test counts look at the test file only.
  *
  * CLI (from gitnexus/):
  *   node --import tsx tools/mutation/classify/classify.ts [--root test/unit] [--file <path>]...
@@ -98,6 +100,14 @@ export const KNOWN_NATIVE_PACKAGES: readonly RegExp[] = Object.freeze([
   /^node-gyp-build$/,
   /^bindings$/,
 ]);
+
+/**
+ * Pure-JS packages whose own code loads `child_process` when imported. The walk does not enter
+ * package code, so gate 1's runtime load check (tools/mutation/fidelity) finds them; each entry
+ * names its evidence. `commander`: lib/command.js requires `node:child_process` at the top (for
+ * executable subcommands); gate 1 saw it load in test/unit/cli-command-banner.test.ts.
+ */
+export const KNOWN_PROCESS_PACKAGES: readonly RegExp[] = Object.freeze([/^commander$/]);
 
 /** The test harness itself: always loaded, never a reason to reject. */
 const isHarnessPackage = (name: string): boolean =>
@@ -1468,6 +1478,12 @@ export class Classifier {
     if (isHarnessPackage(name)) return { kind: 'package', name };
     if (KNOWN_NATIVE_PACKAGES.some((pattern) => pattern.test(name))) {
       return reject(`native package: ${name}`, `imports ${specifier} (known native package)`);
+    }
+    if (KNOWN_PROCESS_PACKAGES.some((pattern) => pattern.test(name))) {
+      return reject(
+        'spawns processes: child_process',
+        `imports ${specifier} (the package loads node:child_process when imported)`,
+      );
     }
     const dir = this.findPackageDir(fromDir, name);
     if (dir === null) {

@@ -30,6 +30,8 @@ const REAL_REJECTED: readonly (readonly [file: string, reason: string])[] = [
   ['test/unit/receiver-twin-list-drift.test.ts', 'reads source outside gitnexus/'],
   ['test/unit/type-env.test.ts', 'native package: tree-sitter'],
   ['test/unit/node-module-compat.test.ts', 'spawns processes: child_process'],
+  // Found by gate 1's runtime load check: commander loads node:child_process when imported.
+  ['test/unit/cli-command-banner.test.ts', 'spawns processes: child_process'],
 ];
 
 let realResult: Classification | undefined;
@@ -284,6 +286,12 @@ const REJECTIONS: readonly (readonly [
     withTest("import gyp from 'gyp-addon';\nconsole.log(gyp);"),
     {},
     'native package: gyp-addon',
+  ],
+  [
+    'imports a package known to load child_process when imported',
+    withTest("import { Command } from 'commander';\nconsole.log(new Command());"),
+    {},
+    'spawns processes: child_process',
   ],
   [
     'imports a known native package that is not installed',
