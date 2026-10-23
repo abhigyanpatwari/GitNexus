@@ -132,6 +132,31 @@ const BUILT_INS: ReadonlySet<string> = new Set([
   'ThrowIfNull',
 ]);
 
+/**
+ * Program-boundary names for `LanguageProvider.externalReceiverNames`, read
+ * against a dropped receiver's base (`System.Console.WriteLine(...)`) and
+ * against the type a receiver chain ends at (`this.data.Keys` with
+ * `Dictionary<string, User> data`). Kept out of `BUILT_INS`, which also
+ * filters callee names.
+ *
+ * `System` is the BCL's root namespace. These two-argument collection types
+ * retain their outer name at capture rather than reducing to one element type,
+ * so they reach a receiver position spelled as themselves. `string`
+ * is a keyword alias of `System.String` and cannot be declared by a program.
+ * A program type or binding by any of these names still wins.
+ */
+const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set([
+  'System',
+  'Dictionary',
+  'SortedDictionary',
+  'SortedList',
+  'ConcurrentDictionary',
+  'ReadOnlyDictionary',
+  'IDictionary',
+  'IReadOnlyDictionary',
+  'string',
+]);
+
 export const csharpProvider = defineLanguage({
   rename: csharpRenameProvider,
   id: SupportedLanguages.CSharp,
@@ -202,6 +227,7 @@ export const csharpProvider = defineLanguage({
   // ── XML doc comments (`///`) → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),
   builtInNames: BUILT_INS,
+  externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
   // C# is the second migration after Python. See ./csharp/index.ts for

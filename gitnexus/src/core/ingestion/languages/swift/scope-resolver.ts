@@ -157,6 +157,15 @@ const swiftScopeResolver: ScopeResolver = {
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
 
+  // `swiftBindingScopeFor` hoists every method's return-type binding out of
+  // its class body onto the Module scope (as C# does), so the receiver fold
+  // must walk up there to type `svc.getUser().save()`. Those bindings are
+  // keyed by bare name, so the walk only accepts one a member of the
+  // receiver's own class declared: a same-named method of another class in
+  // the file, or an imported top-level function, must not answer.
+  hoistTypeBindingsToModule: true,
+  hoistedTypeBindingsRequireOwner: true,
+
   // Unqualified methods need a reachable owner; retain the full lexical
   // candidate set so the shared resolver also narrows free overloads by arity.
   freeCallsRequireInstanceOwnership: true,

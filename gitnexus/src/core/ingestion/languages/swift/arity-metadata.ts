@@ -10,7 +10,8 @@
  *     unknown" — the candidate stays eligible at `argCount >= required`.
  *   - Defaulted params (`= expr`) contribute to `optionalCount`;
  *     `requiredParameterCount = total − optionalCount`.
- *   - `parameterTypes` collects declared type names for narrowing; a
+ *   - `parameterTypes` retains one slot per parameter, with an empty string
+ *     for an unknown type so signature comparisons cannot compress it away; a
  *     literal `'variadic'` marker is appended for variadic methods so
  *     `swiftArityCompatibility` can detect them without re-reading AST.
  */
@@ -33,7 +34,7 @@ export function computeSwiftArityMetadata(fnNode: SyntaxNode): SwiftArityMetadat
   for (const p of params) {
     if (p.isVariadic) hasVariadic = true;
     else if (p.isOptional) optionalCount++;
-    if (p.type !== null) types.push(p.type);
+    types.push(p.type ?? '');
   }
   if (hasVariadic) types.push('variadic');
 
