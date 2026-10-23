@@ -31,8 +31,10 @@
  * then attempt number; every attempt is listed. Without a record: NoCoverage is `survived`
  * (KTD13 treats them as one class), a Stryker Timeout is `timeout` (Stryker killed the process
  * before it could write, KTD6), anything else has no class. The command variant joins no sidecar.
- * `assertionKilledBy` lists the latest record's `killed-by-test:assertion` rows: the only kills
- * gates 3 and 4 count.
+ * `assertionKilledBy` lists the latest record's `killed-by-test:assertion` rows when that run was
+ * a kill (status killed): the only kills gates 3 and 4 count. A run classified timeout,
+ * inconclusive, invalid or infrastructure can still hold assertion rows (a test that failed after
+ * the hit-limit error was swallowed, or under a retry), but its kills cannot be trusted.
  *
  * Flags (vitest5 only, except unmapped test ids):
  *   dry-run-missing            no dry-run record
@@ -505,9 +507,12 @@ export function normaliseRun(input: NormaliseInput): NormalisedRun {
       outcomeSource,
       killedBy,
       coveredBy,
-      assertionKilledBy: (latest?.record.result.tests ?? [])
-        .filter((test) => test.outcome === 'killed-by-test:assertion')
-        .map((test) => test.id),
+      assertionKilledBy:
+        latest?.record.result.status === 'killed'
+          ? latest.record.result.tests
+              .filter((test) => test.outcome === 'killed-by-test:assertion')
+              .map((test) => test.id)
+          : [],
       sidecar: latest === undefined ? null : toSummary(latest),
       attempts: attempts.map(toAttempt),
       flags: flags.slice(before).map((entry) => entry.kind),

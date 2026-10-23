@@ -185,6 +185,36 @@ describe('normaliseRun: sidecar join through the local id map', () => {
   });
 });
 
+describe('normaliseRun: assertion kills come only from killed runs (KTD17)', () => {
+  const assertionRow = { id: T_ONE, outcome: 'killed-by-test:assertion', message: 'x' } as const;
+  // Found by the gate 2 conformance fixture (U4): a hit-limit timeout whose swallowed error made
+  // the test fail its assertion, and inconclusive runs of a scope with a `retry: 1` test.
+  const notKilled = [
+    ['a hit-limit timeout', 'Timeout', classification({ status: 'timeout', outcome: 'timeout' })],
+    [
+      'an inconclusive run',
+      'RuntimeError',
+      classification({ status: 'error', outcome: 'inconclusive' }),
+    ],
+    ['an invalid run', 'RuntimeError', classification({ status: 'error', outcome: 'invalid' })],
+  ] as const;
+
+  it.each(notKilled)('lists no assertion killer for %s', (_label, status, result) => {
+    const normalised = normaliseRun(
+      run([mutant('5', { status })], [sidecar('5', { ...result, tests: [assertionRow] })]),
+    );
+    expect(normalised.mutants[0].assertionKilledBy).toEqual([]);
+    expect(normalised.tests.find((test) => test.id === T_ONE)?.assertionKilled).toEqual([]);
+  });
+
+  it('still lists the assertion killers of a killed run', () => {
+    const normalised = normaliseRun(
+      run([mutant('6', { status: 'Killed', killedBy: ['0'] })], [sidecar('6', killedByOne)]),
+    );
+    expect(normalised.mutants[0].assertionKilledBy).toEqual([T_ONE]);
+  });
+});
+
 describe('normaliseRun: integrity flags', () => {
   it('flags a killedBy entry with no sidecar record, and the Killed mutant without one', () => {
     const result = normaliseRun(run([mutant('3', { status: 'Killed', killedBy: ['1'] })], []));
