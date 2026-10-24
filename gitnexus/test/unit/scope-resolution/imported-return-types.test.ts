@@ -27,6 +27,7 @@
 import { describe, it, expect } from 'vitest';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
+import { javaScopeResolver } from '../../../src/core/ingestion/languages/java/scope-resolver.js';
 import { finalizeScopeModel } from '../../../src/core/ingestion/finalize-orchestrator.js';
 import { buildWorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
 import { propagateImportedReturnTypes } from '../../../src/core/ingestion/scope-resolution/passes/imported-return-types.js';
@@ -45,6 +46,73 @@ interface InMemoryFile {
   readonly path: string;
   readonly content: string;
 }
+
+function runJavaPropagation(files: readonly InMemoryFile[]): ParsedFile[] {
+  javaScopeResolver.loadResolutionConfig?.('');
+  const parsedFiles = files.map((file) => {
+    const parsed = extractParsedFile(javaScopeResolver.languageProvider, file.content, file.path);
+    if (parsed === undefined) throw new Error(`scope extraction failed for ${file.path}`);
+    javaScopeResolver.populateOwners(parsed);
+    return parsed;
+  });
+  const paths = new Set(files.map((file) => file.path));
+  const indexes = finalizeScopeModel(parsedFiles, {
+    hooks: {
+      resolveImportTarget: (target, fromFile) =>
+        javaScopeResolver.resolveImportTarget(target, fromFile, paths, undefined, { parsedFiles }),
+      mergeBindings: javaScopeResolver.mergeBindings,
+    },
+  });
+  propagateImportedReturnTypes(parsedFiles, indexes, buildWorkspaceResolutionIndex(parsedFiles));
+  const populate = javaScopeResolver.populateRangeBindings;
+  if (populate === undefined) throw new Error('Java return-type hook is missing');
+  populate(parsedFiles, indexes, { fileContents: new Map() });
+  return parsedFiles;
+}
+
+function moduleTypeBindings(file: ParsedFile): Scope['typeBindings'] {
+  const module = file.scopes.find((scope) => scope.id === file.moduleScope);
+  if (module === undefined) throw new Error(`no module scope for ${file.filePath}`);
+  return module.typeBindings;
+}
+
+describe('Java imported method return types', () => {
+  const chain = (count: number): InMemoryFile[] =>
+    Array.from({ length: count }, (_, i) => ({
+      path: `p${i}/C${i}.java`,
+      content: `package p${i};
+${i > 0 ? `import p${i - 1}.C${i - 1};` : ''}
+public class C${i} { public C${i} create${i}() { return this; } }`,
+    }));
+
+  it('keeps return-type storage proportional to direct imports along a long import chain', () => {
+    const files = runJavaPropagation(chain(64));
+    let bindingCount = 0;
+    for (const [i, file] of files.entries()) {
+      const types = moduleTypeBindings(file);
+      expect(types.get(`create${i}`)?.rawName).toBe(`C${i}`);
+      if (i > 0) expect(types.get(`create${i - 1}`)?.rawName).toBe(`C${i - 1}`);
+      bindingCount += types.size;
+    }
+    // Re-copying previously imported methods makes this n * (n + 1) / 2.
+    expect(bindingCount).toBe(2 * files.length - 1);
+  });
+
+  it('does not change imported return-type visibility with file traversal order', () => {
+    const input = chain(4);
+    const forward = runJavaPropagation(input);
+    const reversed = runJavaPropagation([...input].reverse());
+    const bindings = (files: ParsedFile[]) =>
+      files
+        .map((file) => ({
+          path: file.filePath,
+          names: [...moduleTypeBindings(file).keys()].sort(),
+        }))
+        .sort((a, b) => a.path.localeCompare(b.path));
+    expect(bindings(forward)).toEqual(bindings(reversed));
+    expect(moduleTypeBinding(forward, 'p3/C3.java', 'create0')).toBeUndefined();
+  });
+});
 
 function parseAll(files: readonly InMemoryFile[]): ParsedFile[] {
   const parsed: ParsedFile[] = [];

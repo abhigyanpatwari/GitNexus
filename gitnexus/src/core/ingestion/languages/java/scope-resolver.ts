@@ -110,10 +110,20 @@ function populateJavaCrossFileReturnTypes(
   indexes: ScopeResolutionIndexes,
 ): void {
   const moduleScopeByFile = new Map<string, ParsedFile['scopes'][number]>();
+  const moduleReturnTypesByFile = new Map<string, [string, TypeRef][]>();
   const classScopesByFile = new Map<string, ParsedFile['scopes'][number][]>();
   for (const parsed of parsedFiles) {
     const ms = parsed.scopes.find((s) => s.kind === 'Module');
-    if (ms !== undefined) moduleScopeByFile.set(parsed.filePath, ms);
+    if (ms !== undefined) {
+      moduleScopeByFile.set(parsed.filePath, ms);
+      // Read the pre-pass surface: copying from a module we already expanded
+      // re-exports its imported methods, making an import chain quadratic in
+      // memory and changing visibility with file traversal order (#3695).
+      moduleReturnTypesByFile.set(
+        parsed.filePath,
+        [...ms.typeBindings].filter(([, ref]) => ref.source === 'return-annotation'),
+      );
+    }
     const cs = parsed.scopes.filter((s) => s.kind === 'Class');
     if (cs.length > 0) classScopesByFile.set(parsed.filePath, cs);
   }
@@ -133,8 +143,7 @@ function populateJavaCrossFileReturnTypes(
         if (sourceModule === undefined) continue;
 
         const tb = importerModule.typeBindings as Map<string, TypeRef>;
-        for (const [srcName, srcRef] of sourceModule.typeBindings) {
-          if (srcRef.source !== 'return-annotation') continue;
+        for (const [srcName, srcRef] of moduleReturnTypesByFile.get(ref.def.filePath) ?? []) {
           if (ambiguousMirrors.has(srcName)) continue;
           const existing = tb.get(srcName);
           if (existing !== undefined && existing.rawName !== srcRef.rawName) {
