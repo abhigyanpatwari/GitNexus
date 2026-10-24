@@ -566,3 +566,82 @@ withTestLbugDB('embedding-row-dml-vector-gate', (handle) => {
     }, 120_000);
   });
 });
+
+/**
+ * Delete-all-then-recopy of a table that spans more than one native vector.
+ *
+ * @ladybugdb/core 0.21.0 and 0.21.1 returned every row of such a table twice
+ * once the incremental writeback had DETACH DELETEd it and a COPY into an
+ * earlier table had run: `NodeGroup::scan` let a morsel that ended before the
+ * group's first live row wrap an unsigned subtraction and rescan to the end of
+ * the group (LadybugDB #1085, fixed in 0.21.2). No primary-key error fires, so
+ * the only symptom was `Graph identity reconciliation failed … duplicate ID`
+ * on repos with more than 2048 symbols of one label (Swift structs in the
+ * report that found it), and 2×-inflated counts for anything that scanned.
+ *
+ * The statement order below is the one `runFullAnalysisInner` issues: delete the
+ * write set's rows, then COPY File before the symbol tables.
+ */
+withTestLbugDB('delete-recopy-multi-vector-table', (handle) => {
+  describe('deleteNodesForFiles then loadGraphToLbug on a multi-vector table', () => {
+    // One native vector holds 2048 rows; 2049 is the smallest table that spans two.
+    const STRUCT_COUNT = 2049;
+    const STRUCTS_PER_FILE = 64;
+    const fileOf = (i: number): string => `Sources/S${Math.floor(i / STRUCTS_PER_FILE)}.swift`;
+
+    const buildStructGraph = () => {
+      const nodes: TestNodeInput[] = [];
+      const rels: TestRelInput[] = [];
+      const files = new Set<string>();
+      for (let i = 0; i < STRUCT_COUNT; i++) {
+        const fp = fileOf(i);
+        if (!files.has(fp)) {
+          files.add(fp);
+          nodes.push({ id: `File:${fp}`, label: 'File', name: path.basename(fp), filePath: fp });
+        }
+        const id = `Struct:${fp}:S${i}`;
+        nodes.push({
+          id,
+          label: 'Struct',
+          name: `S${i}`,
+          filePath: fp,
+          startLine: 1,
+          endLine: 3,
+        });
+        rels.push({ sourceId: `File:${fp}`, targetId: id, type: 'CONTAINS' });
+      }
+      return { graph: buildTestGraph(nodes, rels), filePaths: [...files] };
+    };
+
+    it('returns each struct and its edge exactly once after the rows were deleted and re-copied', async () => {
+      const { loadGraphToLbug, deleteNodesForFiles, executeQuery } =
+        await import('../../src/core/lbug/lbug-adapter.js');
+      const storagePath = path.dirname(handle.dbPath);
+      const structIds = async (): Promise<string[]> =>
+        ((await executeQuery('MATCH (n:Struct) RETURN n.id AS id')) as Array<{ id: string }>).map(
+          (r) => String(r.id),
+        );
+      const containsEdges = async (): Promise<number> => {
+        const rows = (await executeQuery(
+          `MATCH (:File)-[r:CodeRelation]->(:Struct) WHERE r.type = 'CONTAINS' RETURN count(r) AS c`,
+        )) as Array<{ c: number | bigint }>;
+        return Number(rows[0]?.c ?? 0);
+      };
+
+      const { graph, filePaths } = buildStructGraph();
+      await loadGraphToLbug(graph, '/tmp/repo', storagePath);
+      expect(new Set(await structIds()).size).toBe(STRUCT_COUNT);
+
+      // Every file is in the write set, as when a Swift edit pulls in all importers.
+      await deleteNodesForFiles(filePaths);
+      expect(await structIds()).toEqual([]);
+
+      await loadGraphToLbug(graph, '/tmp/repo', storagePath);
+
+      const ids = await structIds();
+      expect(ids).toHaveLength(STRUCT_COUNT);
+      expect(new Set(ids).size).toBe(STRUCT_COUNT);
+      expect(await containsEdges()).toBe(STRUCT_COUNT);
+    }, 120_000);
+  });
+});
