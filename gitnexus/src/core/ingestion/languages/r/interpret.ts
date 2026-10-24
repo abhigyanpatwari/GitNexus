@@ -38,5 +38,10 @@ export function interpretRTypeBinding(captures: CaptureMatch): ParsedTypeBinding
   const type = captures['@type-binding.type']?.text;
   if (name === undefined || type === undefined) return null;
 
+  // `self` in an R6 method, typed as its class by `emitRScopeCaptures` (the shared `self` source,
+  // as Ruby's interpreter reads it).
+  if (captures['@type-binding.self'] !== undefined) {
+    return { boundName: name, rawTypeName: type, source: 'self' };
+  }
   return { boundName: name, rawTypeName: type, source: 'constructor-inferred' };
 }

@@ -5,6 +5,7 @@ import { getRParser, getRScopeQuery } from './query.js';
 import { isRNonNamingScopeMatch } from './naming-argument.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { createSelfOwnerClassifier, fileBindsSelf, rR6MethodClassName } from './r6-self.js';
 
 /**
  * Emit R scope captures — a single tree-sitter query run against the R
@@ -28,6 +29,11 @@ export function emitRScopeCaptures(
 
   const rawMatches = getRScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
+  // A file that binds `self` itself (`self <- Foo$new()` at top level) has a variable of that name
+  // for its free functions to read, so they do not own `self`.
+  const bindsSelf = fileBindsSelf(tree.rootNode);
+  const functionOwnsSelf = createSelfOwnerClassifier();
+  const typedMethods = new Set<number>();
 
   for (const m of rawMatches) {
     // The scope query captures every candidate argument of setClass/library/require/
@@ -36,12 +42,17 @@ export function emitRScopeCaptures(
     const grouped: Record<string, Capture> = {};
     let hasRealCapture = false;
     let functionNode: SyntaxNode | undefined;
+    let methodNode: SyntaxNode | undefined;
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
       grouped[tag] = nodeToCapture(tag, c.node);
       hasRealCapture = true;
       if (tag === '@scope.function' && c.node.type === 'function_definition') functionNode = c.node;
+      if (tag === '@scope.function' && c.node.type === 'argument') methodNode = c.node;
+      if (tag === '@scope.module' && c.node.type === 'program' && !bindsSelf) {
+        grouped['@receiver-owner.self'] = syntheticCapture('@receiver-owner.self', c.node, 'self');
+      }
     }
     if (!hasRealCapture) continue;
     // The function's own scope names what its formals and loop variables bind, so that a call
@@ -56,8 +67,30 @@ export function emitRScopeCaptures(
           JSON.stringify(names),
         );
       }
+      if (!bindsSelf && functionOwnsSelf(functionNode)) {
+        grouped['@receiver-owner.self'] = syntheticCapture(
+          '@receiver-owner.self',
+          functionNode,
+          'self',
+        );
+      }
     }
     out.push(grouped);
+    // An R6 method types `self` as its class. The binding is anchored on the method's name, so it
+    // lands in the method's own scope (an anchor that spans the whole scope would hoist it to the
+    // class scope, which every method of the class shares).
+    if (methodNode !== undefined && !typedMethods.has(methodNode.id)) {
+      typedMethods.add(methodNode.id);
+      const className = rR6MethodClassName(methodNode);
+      const methodName = methodNode.childForFieldName('name');
+      if (className !== null && methodName !== null) {
+        out.push({
+          '@type-binding.self': syntheticCapture('@type-binding.self', methodName, 'self'),
+          '@type-binding.name': syntheticCapture('@type-binding.name', methodName, 'self'),
+          '@type-binding.type': syntheticCapture('@type-binding.type', methodName, className),
+        });
+      }
+    }
   }
 
   return out;
@@ -99,4 +132,16 @@ export function rFunctionLexicalNames(fn: SyntaxNode): string[] {
     }
   }
   return [...names];
+}
+
+/**
+ * `LanguageProvider.scopeOwnsReceivers` for R: the module scope and each function frame that is
+ * not an R6 method (and not nested in a function) bind `self` themselves, with no type, which
+ * makes a `self$m()` call there a definitive negative. The tag is written by
+ * `emitRScopeCaptures`, where the tree is at hand.
+ */
+const R_SELF_OWNER: ReadonlySet<string> = Object.freeze(new Set(['self']));
+
+export function rScopeOwnsReceivers(match: CaptureMatch): ReadonlySet<string> | undefined {
+  return match['@receiver-owner.self'] !== undefined ? R_SELF_OWNER : undefined;
 }

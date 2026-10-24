@@ -35,6 +35,7 @@ Imports:
 Calls:
 
 - Free calls, `obj$method()` calls (receiver typed as above), R6 `self$method()` calls, and calls inside native pipe (`|>`) chains.
+- `self` in an R6 method is typed as the class: `self$m()` resolves through the class and its parents (`inherit =`) at the receiver-call confidence (0.85), never to a free function of that name. The class is the name the `R6Class` call is assigned to (`Child <- R6::R6Class(...)`, bare or `R6::`), and the method is a function in its `public`, `private` or `active` list. A closure inside a method sees the method's `self`. Where `self` is no R6 instance (a free function, a parameter called `self`, an `R6Class` call that is assigned to nothing, a `setRefClass` method) a `self$m()` call gets no edge and the resolution outcome is `receiver-owned-but-unbound`; a method that neither the class nor a parent defines (or a parent that is not indexed, as in `inherit = pkg::Base`) gets no edge and the outcome `member-lookup-ambiguous` (the closest label the shared pass offers for "member not found"). A file that binds `self` itself (`self <- Foo$new()` at top level) is exempt: its free functions read that object.
 - A call through a name that a function's formal or one of its `for` variables binds (`function(data, transform) transform(data)`) gets no edge, not even to a top-level function of that name. The scope publishes those names as lexical names: they stop the lookup and the unique-name fallback. Every named formal is a lexical name, whatever its default: a default (`n = 2`, `helper = NULL`) proves nothing about the argument a caller passes, which may be a function, so a call through the formal is never bound to a function of that name outside. A `for` loop outside every function binds nothing, and a variable assigned by `<-` in the body (`helper <- identity; helper(x)`) still does not shadow.
 - Named nested functions (closures) are indexed, and calls inside attribute to the nested function, which can shadow a top-level name. Top-level script calls outside any function are attributed to the File node.
 - `pkg::fn()` and `pkg:::fn()`, decided by the qualifier (see [Resolution model](#resolution-model)).
@@ -69,7 +70,7 @@ The scope query (`languages/r/query.ts`) captures three call shapes only: `f(x)`
 Not edges or nodes:
 
 - A function passed as a value (`lapply(x, f)`, `Map`, `lapply(x, pkg::f)`), dynamic calls (`do.call("f", ...)`, `match.fun()`, `get()`) and dispatch through a registry (`handlers[["a"]]()`) create no CALLS edge, because only the three call shapes above are captured; the cross-language callable-value analysis classifies R as not applicable.
-- R6 `super$method()` and `private$method()` calls, S4 slot access (`obj@slot`), and `UseMethod()` / `NextMethod()` create no edge.
+- R6 `super$method()` and `private$method()` calls (nothing binds `super` or `private` to a class), S4 slot access (`obj@slot`), and `UseMethod()` / `NextMethod()` create no edge.
 - Anonymous functions (`function(x)`, `\(x)`) passed as arguments are not indexed as definitions; calls inside are attributed to the enclosing function, or to the File at top level.
 - Infix operators (`a %op% b`) are not linked to their definitions.
 - A replacement-function call, `foo(x) <- value`, is captured as a call of `foo`: the `CALLS` edge goes to a function named `foo` (the getter), although R runs `` `foo<-` ``. A function defined as `` `foo<-` <- function(x, value) ... `` therefore has no callers in the graph, and `impact` on it reports none. `rename` refuses both halves of such a pair (see Rename).
@@ -78,7 +79,8 @@ Not edges or nodes:
 
 Known gaps in call resolution and class handling (each was reproduced and is left as is):
 
-- `self$m()` in an R6 method resolves by the lexical walk, because `self` has no type binding. It finds a method of the same class, but not one inherited from a parent class: there it binds a top-level function of that name when one exists (confidence 0.49) and otherwise gives no edge.
+- `self$m()` in a method of an R6 class whose name contains a dot (`My.Class <- R6Class(...)`) keeps the generic lexical route: the shared receiver pass reads a dotted type name as a qualified one and does not walk the class's parents, so an inherited method gets no edge and a top-level function of that name can still be bound (confidence 0.49). An own method resolves.
+- A free function in a file that does not bind `self` is treated as owning `self` (no edge for `self$m()`), so a global `self` object defined in another file is not followed.
 - RefClass methods that call a sibling or an inherited method by bare name (`log_it(x)`) or through `.self$log_it(x)` get no edge.
 - A call to an S4 generic (`area(x)` after `setGeneric("area", ...)`), to a `setClass` generator (`Person(name = "x")`), `new("Class")` or `Class$new()` gets no edge, neither to the class nor to its `initialize`.
 - `source()` paths are matched by suffix: leading directories that do not exist are dropped until a file matches, so `source("secrets/config.R")` binds `R/config.R`, and the first of several matches wins. Backslash paths and absolute paths resolve to nothing.

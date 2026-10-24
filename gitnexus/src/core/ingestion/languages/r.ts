@@ -16,7 +16,7 @@ import { typeConfig as rTypeConfig } from '../type-extractors/r.js';
 import { R_QUERIES } from '../tree-sitter-queries.js';
 import { RFieldExtractor } from '../field-extractors/r.js';
 import { rMethodExtractor } from '../method-extractors/r.js';
-import { emitRScopeCaptures } from './r/captures.js';
+import { emitRScopeCaptures, rScopeOwnsReceivers } from './r/captures.js';
 import { interpretRImport, interpretRTypeBinding } from './r/interpret.js';
 import { rPostParse } from './r/post-parse.js';
 import {
@@ -193,6 +193,7 @@ export const rProvider = defineLanguage({
   methodExtractor: rMethodExtractor,
   builtInNames: R_BUILT_INS,
   emitScopeCaptures: emitRScopeCaptures,
+  scopeOwnsReceivers: rScopeOwnsReceivers,
   interpretImport: interpretRImport,
   interpretTypeBinding: interpretRTypeBinding,
   postParse: rPostParse,
