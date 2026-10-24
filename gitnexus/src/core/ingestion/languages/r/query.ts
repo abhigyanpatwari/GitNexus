@@ -328,7 +328,8 @@ export const R_SCOPE_QUERY = `
 
 ;; ── References — calls ────────────────────────────────────────────────────
 
-;; Free calls: foo(x)
+;; Free calls: foo(x). emitRScopeCaptures renames the call to its setter (foo<-) when it sits in
+;; an assignment target (foo(x) <- v), see isRReplacementCall in assignment.ts.
 (call
   function: (identifier) @reference.name) @reference.call.free
 

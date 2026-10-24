@@ -5,7 +5,7 @@ import { getRParser, getRScopeQuery } from './query.js';
 import { isRNonNamingScopeMatch } from './naming-argument.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
-import { rLexicalAssignedNames } from './assignment.js';
+import { isRReplacementCall, rLexicalAssignedNames, rSetterName } from './assignment.js';
 import { createSelfOwnerClassifier, fileBindsSelf, rR6MethodClassName } from './r6-self.js';
 
 /**
@@ -44,6 +44,7 @@ export function emitRScopeCaptures(
     let hasRealCapture = false;
     let functionNode: SyntaxNode | undefined;
     let methodNode: SyntaxNode | undefined;
+    let freeCallNode: SyntaxNode | undefined;
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
@@ -51,11 +52,15 @@ export function emitRScopeCaptures(
       hasRealCapture = true;
       if (tag === '@scope.function' && c.node.type === 'function_definition') functionNode = c.node;
       if (tag === '@scope.function' && c.node.type === 'argument') methodNode = c.node;
+      if (tag === '@reference.call.free') freeCallNode = c.node;
       if (tag === '@scope.module' && c.node.type === 'program' && !bindsSelf) {
         grouped['@receiver-owner.self'] = syntheticCapture('@receiver-owner.self', c.node, 'self');
       }
     }
     if (!hasRealCapture) continue;
+    if (freeCallNode !== undefined && isRReplacementCall(freeCallNode)) {
+      recordAsSetterCall(grouped, freeCallNode);
+    }
     // The function's own scope names what its formals and loop variables bind, so that a call
     // through one of them stops the lexical walk there instead of reaching a top-level function
     // of the same name.
@@ -95,6 +100,34 @@ export function emitRScopeCaptures(
   }
 
   return out;
+}
+
+/**
+ * Rewrites the captures of a call in a replacement position (`foo(x) <- v`) so that the site names
+ * the setter: `@reference.name` becomes `` `foo<-` `` and a qualified `pkg::foo` becomes
+ * ``pkg::`foo<-` ``. The identifier node keeps its range, so the site stays at one anchor: the getter
+ * half of a nested form (`foo(bar(x)) <- 1` also reads `bar(x)`) is not recorded as a second site.
+ * Explicit `` `foo<-`(x, 1) `` is a plain call of that name and never reaches here.
+ */
+function recordAsSetterCall(grouped: Record<string, Capture>, call: SyntaxNode): void {
+  const callee = call.childForFieldName('function');
+  if (callee === null) return;
+  if (callee.type === 'identifier') {
+    grouped['@reference.name'] = syntheticCapture(
+      '@reference.name',
+      callee,
+      rSetterName(callee.text),
+    );
+    return;
+  }
+  const name = callee.type === 'namespace_operator' ? callee.childForFieldName('rhs') : null;
+  if (name?.type !== 'identifier') return;
+  grouped['@reference.name'] = syntheticCapture('@reference.name', name, rSetterName(name.text));
+  grouped['@reference.qualified-name'] = syntheticCapture(
+    '@reference.qualified-name',
+    callee,
+    callee.text.slice(0, name.startIndex - callee.startIndex) + rSetterName(name.text),
+  );
 }
 
 /**

@@ -3,7 +3,7 @@ import type { NameClaim } from 'gitnexus-shared';
 import type { RenameIssue, RenameProvider } from '../../rename-provider.js';
 import { unescapeRString } from './export-pattern.js';
 import { rBareName } from './bare-name.js';
-import { rBoundName, rLexicalAssignedNames } from './assignment.js';
+import { assignmentTarget, isCallee, rBoundName, rLexicalAssignedNames } from './assignment.js';
 import { rOwningPackageDir } from './namespace-imports.js';
 import {
   rExportPatternsIncomplete,
@@ -140,12 +140,6 @@ function hasEnclosingParameter(node: Parser.SyntaxNode, name: string): boolean {
   return false;
 }
 
-/** Whether `node` is the callee of a call: `f(x)`, `x |> f()`. */
-function isCallee(node: Parser.SyntaxNode): boolean {
-  const call = node.parent;
-  return call?.type === 'call' && call.childForFieldName('function')?.id === node.id;
-}
-
 /** The name a `<<-` or `->>` assignment writes to (backticks removed), or null for any other node. */
 function superassignedName(node: Parser.SyntaxNode): string | null {
   if (node.type !== 'binary_operator') return null;
@@ -153,16 +147,6 @@ function superassignedName(node: Parser.SyntaxNode): string | null {
   if (operator !== '<<-' && operator !== '->>') return null;
   const target = node.childForFieldName(operator === '<<-' ? 'lhs' : 'rhs');
   return target?.type === 'identifier' ? rBareName(target.text) : null;
-}
-
-/** The left-hand side of `<-`, `=`, `<<-`, or the right-hand side of `->`, `->>`; null for any other node. */
-function assignmentTarget(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  if (node.type !== 'binary_operator') return null;
-  const operator = node.childForFieldName('operator')?.text;
-  if (operator === '<-' || operator === '=' || operator === '<<-')
-    return node.childForFieldName('lhs');
-  if (operator === '->' || operator === '->>') return node.childForFieldName('rhs');
-  return null;
 }
 
 /**

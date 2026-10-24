@@ -193,3 +193,66 @@ export function rLexicalAssignedNames(fn: SyntaxNode): ReadonlySet<string> {
   byFunction.set(fn.id, names);
   return names;
 }
+
+/** Whether `node` is the callee of a call: `f(x)`, `x |> f()`. */
+export function isCallee(node: SyntaxNode): boolean {
+  const call = node.parent;
+  return call?.type === 'call' && call.childForFieldName('function')?.id === node.id;
+}
+
+/** The left-hand side of `<-`, `=`, `<<-`, or the right-hand side of `->`, `->>`; null for any other node. */
+export function assignmentTarget(node: SyntaxNode): SyntaxNode | null {
+  if (node.type !== 'binary_operator') return null;
+  const operator = node.childForFieldName('operator')?.text;
+  if (operator === '<-' || operator === '=' || operator === '<<-')
+    return node.childForFieldName('lhs');
+  if (operator === '->' || operator === '->>') return node.childForFieldName('rhs');
+  return null;
+}
+
+/**
+ * Whether the call node `call` lies in the target chain of an assignment, which makes it a call of
+ * the replacement function: `foo(x) <- v` runs `` `foo<-` ``, not `foo`. The chain is reached from the
+ * assignment target (`assignmentTarget`) only through a call's first argument and the base of `$`,
+ * `@`, `[` and `[[`, the same walk `assignmentBase` makes to find the variable written. Any other
+ * argument (`foo(x, bar(1)) <- v`, the index of `x[bar(1)]`) and the value being assigned are
+ * ordinary reads.
+ */
+export function isRReplacementCall(call: SyntaxNode): boolean {
+  for (let node = call; ;) {
+    const parent: SyntaxNode | null = node.parent;
+    if (parent === null) return false;
+    switch (parent.type) {
+      case 'binary_operator':
+        return assignmentTarget(parent)?.id === node.id;
+      case 'extract_operator':
+        if (parent.childForFieldName('lhs')?.id !== node.id) return false;
+        node = parent;
+        break;
+      case 'subset':
+      case 'subset2':
+        if (parent.childForFieldName('function')?.id !== node.id) return false;
+        node = parent;
+        break;
+      case 'argument': {
+        const list = parent.parent;
+        const owner = list?.parent;
+        if (parent.childForFieldName('value')?.id !== node.id) return false;
+        if (list?.type !== 'arguments' || owner?.type !== 'call') return false;
+        if (owner.childForFieldName('arguments')?.id !== list.id) return false;
+        if (list.namedChildren.find((child) => child.type === 'argument')?.id !== parent.id) {
+          return false;
+        }
+        node = owner;
+        break;
+      }
+      default:
+        return false;
+    }
+  }
+}
+
+/** The name of the replacement function a getter name stands for: `foo` -> `` `foo<-` ``. */
+export function rSetterName(name: string): string {
+  return '`' + rBareName(name) + '<-`';
+}
