@@ -59,7 +59,7 @@
       "gitnexus/src/core/ingestion/scope-resolution/graph-bridge/node-lookup.ts": "b94d6612a30ec6314791f0bb2fc28612fb4b152e6ab430c7fabf837f5833ee80",
       "gitnexus/src/core/ingestion/utils/callable-labels.ts": "a81d5b15bb810632d7f04550f5203ae6e15fa0c00c9b1a2a50cf299e5988dcb8",
       "gitnexus/src/core/ingestion/utils/method-props.ts": "827ede5ea1f9fb79bbbe85ad51064a36d74d1c3d01243658a904f777d97c1fa6",
-      "gitnexus/src/core/ingestion/utils/template-arguments.ts": "9cdd046ca2ca58dae2d0a99a0dc35ce24838c4e2e651cfb2142187ba91097b2e",
+      "gitnexus/src/core/ingestion/utils/template-arguments.ts": "1cd981b2666c68e3215df9f3b29ea5edefce6bab85b5c5d2afea939404ffcbda",
       "gitnexus/src/core/lbug/rel-pair-routing.ts": "83a6d374d129eaa2685a3e98c94d8da24818321e6f86626727af00f2a468741e",
       "gitnexus/src/core/lbug/schema.ts": "289aa7b015e5c9a40fe5a58b7cef06c9bdb2d9165373e3ecae0ffe0e9f46dfdf",
       "gitnexus/src/lib/utils.ts": "5c0f6b00074f239adf99d4a760a62efba80b6ba6ff309de616c99d0a36d09276",
@@ -88,7 +88,7 @@
     }
   },
   "sample": {
-    "seed": "u7-gate3-1",
+    "seed": "u7-gate3-2",
     "method": "sha256(seed + \"\\n\" + globalId) ascending; the size lowest ranks, then strata top-ups",
     "size": 100,
     "topUpMin": 3,
@@ -288,21 +288,49 @@
   ],
   "sampled": [
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:87:3-87:12:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:80:3-80:13:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
-      "outcomes": [[5,"killed-by-test:assertion"]],
+      "outcomes": [[8,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:73:3-73:12:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:13:3-13:11:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[0,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:18:3-18:14:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[0,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:70:3-70:18:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static","survived"],
       "covering": 42,
       "outcomes": [],
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:26:3-26:10:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:64:3-64:13:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:25:3-25:9:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:30:3-30:10:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
       "outcomes": [[1,"killed-by-test:assertion"]],
@@ -316,258 +344,24 @@
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:24:3-24:11:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:15:3-15:10:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","multi-killer"],
-      "covering": 42,
-      "outcomes": [[0,"killed-by-test:assertion"],[28,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:72:3-72:18:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:37:3-37:11:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:69:3-69:20:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[4,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:70:3-70:18:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:21:3-21:14:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:20:3-20:16:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
       "outcomes": [[0,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:53:31-53:45:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:30:3-30:10:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:26:3-26:10:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
       "outcomes": [[1,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:33:3-33:10:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:86:3-86:17:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:11:28-49:2:ArrayDeclaration:4f53cda18c2baa0c",
-      "strata": ["static","multi-killer"],
-      "covering": 42,
-      "outcomes": [
-        [0,"killed-by-test:assertion"],
-        [1,"killed-by-test:assertion"],
-        [2,"killed-by-test:assertion"],
-        [3,"killed-by-test:assertion"],
-        [28,"killed-by-test:assertion"],
-        [29,"killed-by-test:assertion"]
-      ],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:61:3-61:15:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[4,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:18:3-18:14:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[0,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:78:3-78:12:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[7,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:31:3-31:9:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:74:3-74:17:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:75:3-75:19:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:34:3-34:11:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:68:3-68:14:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[4,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:42:3-42:11:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:76:3-76:10:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:59:3-59:10:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[4,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:60:3-60:12:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[4,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:64:3-64:13:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:35:3-35:13:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:43:3-43:10:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:29:3-29:14:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:80:3-80:13:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[8,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:55:26-96:2:ArrayDeclaration:4f53cda18c2baa0c",
-      "strata": ["static","multi-killer"],
-      "covering": 42,
-      "outcomes": [
-        [4,"killed-by-test:assertion"],
-        [5,"killed-by-test:assertion"],
-        [6,"killed-by-test:assertion"],
-        [7,"killed-by-test:assertion"],
-        [8,"killed-by-test:assertion"]
-      ],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:38:3-38:13:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:14:3-14:13:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","multi-killer"],
-      "covering": 42,
-      "outcomes": [
-        [0,"killed-by-test:assertion"],
-        [28,"killed-by-test:assertion"],
-        [29,"killed-by-test:assertion"]
-      ],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:66:3-66:14:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:77:3-77:12:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:28:3-28:10:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
+      "outcomes": [[5,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
@@ -578,59 +372,10 @@
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:36:3-36:13:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:89:3-89:15:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[5,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:56:3-56:13:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[4,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:17:3-17:13:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:20:3-20:16:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:22:3-22:12:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
       "outcomes": [[0,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:88:3-88:14:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[5,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:13:3-13:11:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[0,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:41:3-41:13:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
@@ -641,17 +386,24 @@
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:39:3-39:15:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:17:3-17:13:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
       "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
+      "outcomes": [],
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:58:3-58:12:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:57:3-57:12:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
       "outcomes": [[4,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:94:3-94:8:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[6,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
@@ -662,10 +414,31 @@
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:94:3-94:8:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:69:3-69:20:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
-      "outcomes": [[6,"killed-by-test:assertion"]],
+      "outcomes": [[4,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:56:3-56:13:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[4,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:72:3-72:18:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:60:3-60:12:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[4,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
@@ -683,28 +456,7 @@
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:100:37-100:52:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:57:3-57:12:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[4,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:25:3-25:9:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[1,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:32:3-32:14:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:24:3-24:11:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
       "outcomes": [[1,"killed-by-test:assertion"]],
@@ -718,52 +470,31 @@
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:27:3-27:12:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:28:3-28:10:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
       "outcomes": [[1,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:79:3-79:19:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:35:3-35:13:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
-      "outcomes": [[8,"killed-by-test:assertion"]],
+      "outcomes": [[1,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:95:3-95:18:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:39:3-39:15:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
-      "outcomes": [[6,"killed-by-test:assertion"]],
+      "outcomes": [[1,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:67:3-67:22:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
-      "covering": 42,
-      "outcomes": [],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:22:3-22:12:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:68:3-68:14:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
-      "outcomes": [[0,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:12:3-12:9:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[0,"killed-by-test:assertion"]],
-      "invalid": []
-    },
-    {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:86:3-86:17:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static"],
-      "covering": 42,
-      "outcomes": [[5,"killed-by-test:assertion"]],
+      "outcomes": [[4,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
@@ -774,10 +505,70 @@
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:46:3-46:16:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","survived"],
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:19:3-19:11:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","multi-killer"],
       "covering": 42,
-      "outcomes": [],
+      "outcomes": [[0,"killed-by-test:assertion"],[29,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:11:28-49:2:ArrayDeclaration:4f53cda18c2baa0c",
+      "strata": ["static","multi-killer"],
+      "covering": 42,
+      "outcomes": [
+        [0,"killed-by-test:assertion"],
+        [1,"killed-by-test:assertion"],
+        [2,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"],
+        [28,"killed-by-test:assertion"],
+        [29,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:33:3-33:10:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:38:3-38:13:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:89:3-89:15:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[5,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:14:3-14:13:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","multi-killer"],
+      "covering": 42,
+      "outcomes": [
+        [0,"killed-by-test:assertion"],
+        [28,"killed-by-test:assertion"],
+        [29,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:21:3-21:14:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[0,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:40:3-40:16:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
       "invalid": []
     },
     {
@@ -788,10 +579,59 @@
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:19:3-19:11:StringLiteral:12ae32cb1ec02d01",
-      "strata": ["static","multi-killer"],
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:100:37-100:52:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
       "covering": 42,
-      "outcomes": [[0,"killed-by-test:assertion"],[29,"killed-by-test:assertion"]],
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:37:3-37:11:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:66:3-66:14:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:27:3-27:12:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:53:31-53:45:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:75:3-75:19:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:76:3-76:10:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:77:3-77:12:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
       "invalid": []
     },
     {
@@ -802,10 +642,170 @@
       "invalid": []
     },
     {
-      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:40:3-40:16:StringLiteral:12ae32cb1ec02d01",
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:34:3-34:11:StringLiteral:12ae32cb1ec02d01",
       "strata": ["static"],
       "covering": 42,
       "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:46:3-46:16:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:41:3-41:13:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:59:3-59:10:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[4,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:73:3-73:12:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:79:3-79:19:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[8,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:67:3-67:22:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:42:3-42:11:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:29:3-29:14:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:55:26-96:2:ArrayDeclaration:4f53cda18c2baa0c",
+      "strata": ["static","multi-killer"],
+      "covering": 42,
+      "outcomes": [
+        [4,"killed-by-test:assertion"],
+        [5,"killed-by-test:assertion"],
+        [6,"killed-by-test:assertion"],
+        [7,"killed-by-test:assertion"],
+        [8,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:88:3-88:14:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[5,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:61:3-61:15:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[4,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:87:3-87:12:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[5,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:36:3-36:13:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:31:3-31:9:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:74:3-74:17:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:15:3-15:10:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","multi-killer"],
+      "covering": 42,
+      "outcomes": [[0,"killed-by-test:assertion"],[28,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:78:3-78:12:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[7,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:43:3-43:10:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 42,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:12:3-12:9:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[0,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:32:3-32:14:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[1,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:58:3-58:12:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[4,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:95:3-95:18:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static"],
+      "covering": 42,
+      "outcomes": [[6,"killed-by-test:assertion"]],
       "invalid": []
     }
   ],
