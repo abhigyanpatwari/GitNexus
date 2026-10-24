@@ -5,8 +5,9 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding } from 'gitnexus-sha
  * binds no name (cross-file free calls into a `source()`d file resolve via
  * `rScopeResolver.allowGlobalFreeCallFallback` instead).
  *
- * `library()`/`require()` are wildcard imports — every top-level name of the
- * named local package becomes visible (`rScopeResolver.expandsWildcardTo`).
+ * `library()`/`require()` are wildcard imports — the exported names of the named
+ * local package (every top-level name when it has no NAMESPACE) become visible
+ * (`rScopeResolver.expandsWildcardTo`).
  *
  * `resolveRImportTarget` (`languages/r/import-target.ts`) guards on
  * `context.parsedImport.kind === 'wildcard'` specifically to refuse a

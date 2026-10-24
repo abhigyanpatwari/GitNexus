@@ -15,9 +15,14 @@
  *   - two or more definitions in that package (same-file redefinition or across files)
  *     -> the site is dropped, no edge (every valid target is inside the named package);
  *   - certainly external package (discovery complete, not local) -> dropped, no edge;
- *   - local package with ZERO definitions (re-export), or UNKNOWN locality -> the site is
- *     kept: today's behaviour, unchanged;
+ *   - local package with ZERO definitions: a re-export (`export(name)` plus
+ *     `importFrom(origin, name)`, origin local and defining the name once) binds the origin's
+ *     definition (0.85); anything else is dropped;
+ *   - UNKNOWN locality (discovery truncated) -> dropped, no edge: no qualified site may reach
+ *     the scope-chain or name-guess tiers;
  *   - the global-name-fallback veto allows a candidate inside the named package.
+ *
+ * Export rules (`pkg::name()` needs `pkg` to export `name`) are in `r-qualified-exports.test.ts`.
  *
  * Six tests assert the qualifier-aware result rather than a name-only guess (each is marked
  * "qualifier flip"): five in the integration suite `r.test.ts` and one in the unit suite
@@ -154,13 +159,14 @@ describe('R qualified calls: discovery completes (r-qualified-calls)', () => {
     });
   }
 
-  describe('local package with zero definitions of the name (re-export): site kept', () => {
-    // locallib re-exports reexp_fn from provlib. The design keeps the site, and the global-name-fallback veto
-    // must keep allowing a candidate outside the named package when that package defines
-    // nothing of that name (same allowance the importFrom veto already has). Permanent.
-    it('keeps the 0.5 fallback edge to the origin package', () => {
+  describe('local package with zero definitions of the name (re-export)', () => {
+    // locallib re-exports reexp_fn from provlib (`export` + `importFrom`) and defines nothing of
+    // that name itself. The caller file also defines a `reexp_fn` decoy. The qualifier decides:
+    // the edge goes to the origin, never to the decoy. Reverses the former "Permanent" pin
+    // (`global-name-fallback 0.5` to provlib), which left the decoy reachable for other shapes.
+    it('binds the origin package definition precisely, not the same-file decoy', () => {
       expect(summaries(result, 'reexport_user', L)).toEqual([
-        'reexp_fn:provlib/R/prov.R:global-name-fallback:0.5',
+        'reexp_fn:provlib/R/prov.R:import-resolved:0.85',
       ]);
     });
   });
@@ -191,17 +197,16 @@ describe('R qualified calls: discovery truncated (r-qualified-calls-truncated)',
 
   const F = 'caller/R/calls.R';
 
-  // Permanent: locality is UNKNOWN, so the sites are kept and today's edges must not change.
-  it('keeps the same-file edge of a qualifier naming a package invisible to discovery', () => {
+  // Locality is UNKNOWN: the site is dropped. It could not be bound to a definition of the named
+  // package, and leaving it would let the scope chain bind a same-file decoy of that name.
+  it('drops a qualifier naming a package invisible to discovery (no same-file decoy edge)', () => {
     // invisiblepkg lives in deep/a/b/c/impl (depth 5, directory name != Package:). Nothing shows
-    // it is local, and nothing shows it is external: today's scope-chain edge stays.
-    expect(summaries(result, 'unknown_user', F)).toEqual([`unk_fn:${F}:local-call:0.85`]);
+    // it is local, and nothing shows it is external; the same-file `unk_fn` is a decoy.
+    expect(summaries(result, 'unknown_user', F)).toEqual([]);
   });
 
-  it('does not treat a qualifier as certainly external while discovery is truncated', () => {
-    expect(summaries(result, 'truncated_external_user', F)).toEqual([
-      `filter:${F}:local-call:0.85`,
-    ]);
+  it('drops a qualifier that discovery cannot prove external (no same-file decoy edge)', () => {
+    expect(summaries(result, 'truncated_external_user', F)).toEqual([]);
   });
 
   describe('package without DESCRIPTION whose files sit under <pkg>/R/', () => {
@@ -268,11 +273,9 @@ describe('R qualified calls: no package found and discovery truncated (r-no-desc
     result = await runPipelineFromRepo(path.join(FIXTURES, 'r-no-description-truncated'), () => {});
   }, 60000);
 
-  // Permanent guard: zero packages found, but a skipped subtree hides one, so the
-  // qualifier is not provably external and today's name guess must stay.
-  it('keeps the name-guess edge while discovery is truncated', () => {
-    expect(summaries(result, 'run_ext', 'R/b.R')).toEqual([
-      'filter:R/a.R:global-name-fallback:0.5',
-    ]);
+  // Zero packages found, but a skipped subtree hides one, so the qualifier is not provably
+  // external: its locality is unknown and the site is dropped (the name guess is gone).
+  it('drops the site instead of guessing a name while discovery is truncated', () => {
+    expect(summaries(result, 'run_ext', 'R/b.R')).toEqual([]);
   });
 });

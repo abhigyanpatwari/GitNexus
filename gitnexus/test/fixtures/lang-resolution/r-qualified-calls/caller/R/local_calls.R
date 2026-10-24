@@ -46,6 +46,9 @@ importfrom_decoy_user <- function(d) {
 }
 
 # locallib re-exports `reexp_fn` from provlib and defines nothing of that name itself.
+# Same-file decoy: the qualifier must never bind to it.
+reexp_fn <- function(d) d
+
 reexport_user <- function(d) {
   locallib::reexp_fn(d)
 }

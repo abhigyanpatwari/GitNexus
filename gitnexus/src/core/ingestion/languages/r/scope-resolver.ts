@@ -33,7 +33,12 @@ import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
-import { loadRPackageConfig, recordRPackageConfig } from './package-config.js';
+import {
+  loadRPackageConfig,
+  recordedRPackageConfig,
+  recordRPackageConfig,
+  rSymbolVisibility,
+} from './package-config.js';
 import { rBareName } from './bare-name.js';
 import { perFileSet } from '../../utils/per-file-set.js';
 import { resolveRImportTarget } from './import-target.js';
@@ -141,14 +146,21 @@ const parsedFileByModuleScope = perFileSet(
 );
 
 /**
- * Enumerate all top-level names exported from a target module scope's file
- * (module-scope function and class bindings; functions nested in another function are not).
- * `library()`/`require()` are R's wildcard imports — every top-level name of
- * the named local package becomes visible, UNFILTERED by NAMESPACE (a
- * `library()`/`require()` call brings the whole package's namespace into
- * scope regardless of what NAMESPACE declares as exported — confirmed by a
- * fixture where `pkgA/NAMESPACE` does not export `ResultSet`, yet
- * `require("pkgA")` must still resolve it).
+ * Enumerate the top-level names a `library()`/`require()` of a target module scope's file brings
+ * into scope (module-scope function and class bindings; functions nested in another function are
+ * not). `library()`/`require()` are R's wildcard imports, and R attaches only a package's
+ * EXPORTS: a name is kept when the target's package has no NAMESPACE, or the NAMESPACE provably
+ * exports it (`rSymbolVisibility` is `public`). A name the NAMESPACE does not export, or may
+ * export but cannot be proven to (unreadable NAMESPACE, a dropped or cut-short
+ * `exportPattern()`), is left out: strict, because the edge this binding yields is a precise
+ * 0.85 one. A bare call of such a name is not lost to the other tiers: the 0.5 unique-name guess
+ * skips it only when it is proven private (`isRGlobalNameFallbackPlausible`).
+ *
+ * The package config is read from the target's `ParsedFile` (`recordedRPackageConfig`); without
+ * one (hand-built input) nothing is filtered. The hook has no importer, so a `library(ownpkg)`
+ * issued from inside the package loses the package's private names as well (a documented gap).
+ * This reverses the earlier `load_all()` reading ("every name visible"): see
+ * docs/languages/r-provider.md.
  *
  * A bare name is dropped when the same file also defines a dotted top-level
  * name with that tail (`foo` next to `print.foo`). The shared finalize indexes
@@ -166,6 +178,7 @@ export function expandRWildcardNames(
   const target = parsedFileByModuleScope(parsedFiles).get(targetModuleScope);
   if (target === undefined) return [];
   const { names: topLevel, dottedTails } = rFileTopLevel(target);
+  const cfg = recordedRPackageConfig(target);
   const seen = new Set<string>();
   const names: string[] = [];
   for (const def of target.localDefs) {
@@ -176,6 +189,9 @@ export function expandRWildcardNames(
     // `topLevel` holds symbols and `qn` is the name as written, backticks included.
     if (!topLevel.has(rBareName(qn))) continue;
     if (dottedTails.has(qn)) continue; // shares its tail with an S3 method: see above (as written, as finalize keys it)
+    if (cfg !== undefined && rSymbolVisibility(cfg, target.filePath, rBareName(qn)) !== 'public') {
+      continue; // not an export of the package (or not provably one)
+    }
     if (seen.has(qn)) continue;
     seen.add(qn);
     names.push(qn);

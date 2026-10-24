@@ -87,7 +87,6 @@ exports[`unbackticked R import and name lookups (characterisation) > answers exa
     "kept": [
       "helper",
       "tidy",
-      "nothing",
     ],
     "precise": [
       "corelib/R/a.R",

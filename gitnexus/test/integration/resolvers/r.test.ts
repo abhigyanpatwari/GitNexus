@@ -1020,7 +1020,6 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
     it('resolves every imported name from the one calling function, and nothing else', () => {
       expect(callsFrom('run_all', USE)).toEqual([
         'dup_fn',
-        'hidden_helper',
         'normalise_scores',
         'quoted_fn',
         'rank_scores',
@@ -1074,12 +1073,15 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       expect(callsFrom('run_all', USE)).not.toContain('own_dup');
     });
 
-    it('does not bind a name the provider defines but does not export, and keeps the fallback edge', () => {
+    it('binds no edge to a name the provider defines but does not export (not even the name guess)', () => {
+      // `hidden_helper` is in scorelib/R/internal.R and not in scorelib's NAMESPACE, which is
+      // readable and complete: the caller (analytics) is outside scorelib's tree, so the 0.5 guess
+      // is vetoed too. Positive control: the exported names above still bind (import-resolved).
       expect(
         callEdges('run_all', USE)
           .filter((e) => e.target === 'hidden_helper')
           .map((e) => `${e.targetFilePath}:${e.rel.reason}:${e.rel.confidence}`),
-      ).toEqual(['scorelib/R/internal.R:global-name-fallback:0.5']);
+      ).toEqual([]);
     });
 
     it('emits no edge for an exported name that no package defines', () => {
@@ -1241,7 +1243,8 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       );
       // Qualifier flip: the qualified `legacyscore::mutate()` is no longer refused (it binds to
       // legacyscore); only the bare `mutate_user()` refusal remains. Was ['dup_ext', 'mutate', 'mutate'].
-      expect(refused.map((o) => o.name).sort()).toEqual(['dup_ext', 'mutate']);
+      // `hidden_helper` is the private-name veto (scorelib's NAMESPACE does not export it).
+      expect(refused.map((o) => o.name).sort()).toEqual(['dup_ext', 'hidden_helper', 'mutate']);
     });
   });
 

@@ -146,7 +146,7 @@ function parseArgs(text: string, openIdx: number): { args: string[]; end: number
   const args: string[] = [];
   let current = '';
   let depth = 0;
-  for (let i = openIdx; i < text.length; ) {
+  for (let i = openIdx; i < text.length;) {
     if (i > openIdx && isDirectiveLineStart(text, i)) return null;
     const ch = text[i];
     if (ch === '#') {
@@ -288,7 +288,7 @@ class BraceBlocks {
     const { text } = this;
     const ends = new Map<number, number>();
     const open: number[] = [];
-    for (let i = 0; i < text.length; ) {
+    for (let i = 0; i < text.length;) {
       const ch = text[i];
       if (ch === '#') {
         i = skipLineComment(text, i);
@@ -589,6 +589,34 @@ export function rOwningPackageDir(
   let best: string | undefined;
   const consider = (dir: string): void => {
     if (!normalized.startsWith(rRDirPrefix(dir))) return;
+    if (best === undefined || dir.length > best.length) best = dir;
+  };
+  for (const dir of cfg.packages.values()) consider(dir);
+  for (const dir of cfg.namespaceInfoByPackageDir.keys()) consider(dir);
+  return best;
+}
+
+/**
+ * The directory of the package whose TREE contains `filePath`, or `undefined`: the same
+ * candidate directories as {@link rOwningPackageDir} (registered packages and NAMESPACE
+ * directories), but a file counts as inside a directory when it sits anywhere under it (prefix
+ * `dir + '/'`, every path when `dir` is `''`), so `tests/`, `inst/` and `vignettes/` belong to
+ * the package too. The longest matching directory wins, so a nested package claims its own files
+ * and the enclosing package the rest. For a root-level package every file outside a nested
+ * package is inside, so what the caller-inside-the-package exemption covers is broad there.
+ *
+ * A caller is "inside package P" iff this equals P's directory. {@link rOwningPackageDir}, which
+ * decides whose NAMESPACE governs a DEFINITION (only `R/` files), is unchanged.
+ */
+export function rEnclosingPackageDir(
+  filePath: string,
+  cfg: RPackageConfig | null | undefined,
+): string | undefined {
+  if (cfg === null || cfg === undefined) return undefined;
+  const normalized = filePath.replace(/\\/g, '/');
+  let best: string | undefined;
+  const consider = (dir: string): void => {
+    if (dir !== '' && !normalized.startsWith(`${dir}/`)) return;
     if (best === undefined || dir.length > best.length) best = dir;
   };
   for (const dir of cfg.packages.values()) consider(dir);
@@ -916,6 +944,94 @@ export function parseRQualifier(raw: string): string | undefined {
 }
 
 /**
+ * The namespace operator of an `@reference.qualified-name` capture: `:::` when the first `::`
+ * is followed by a third colon (`pkg:::f`, `pkg ::: f`), `::` otherwise, `undefined` when the
+ * text has no `::` at all. {@link parseRQualifier} reads the package from the same text.
+ */
+export function parseRQualifierOperator(raw: string): '::' | ':::' | undefined {
+  const colons = raw.indexOf('::');
+  if (colons === -1) return undefined;
+  return raw[colons + 2] === ':' ? ':::' : '::';
+}
+
+/**
+ * The package a package's NAMESPACE imports `symbol` from (`importFrom(origin, symbol)`; the
+ * LAST such entry wins, as the synthesised imports and the fallback veto read it), or
+ * `undefined` when there is none or the package imports from itself. One hop: the origin's own
+ * imports are not followed. Whether the package also exports the name is the caller's question.
+ */
+export function rReexportOrigin(
+  cfg: RPackageConfig,
+  pkgDir: string,
+  pkgName: string,
+  symbol: string,
+): string | undefined {
+  const importFrom = cfg.namespaceInfoByPackageDir.get(pkgDir)?.importFrom;
+  if (importFrom === undefined) return undefined;
+  let last: RNamespaceImportFromEntry | undefined;
+  for (const entry of importFrom) if (rBareName(entry.name) === symbol) last = entry;
+  return last === undefined || last.pkg === pkgName ? undefined : last.pkg;
+}
+
+/** Whether a name is reachable through a package's NAMESPACE (see {@link rSymbolVisibility}). */
+export type RSymbolVisibility = 'public' | 'private' | 'unknown';
+
+/**
+ * Per package directory, the visibility of each top-level name (and each name the package
+ * imports, i.e. may re-export), decided once per pass by `rBuildSymbolVisibilityMemo`
+ * (`package-config.ts`) so that it does not depend on the order sites are judged in: whether a
+ * name is `private` or `unknown` reads the export-pattern budget, which every pattern match
+ * spends. Keyed by the `resolutionConfig` object, like the other per-pass registries here.
+ */
+const symbolVisibilityMemo = new WeakMap<
+  object,
+  ReadonlyMap<string, ReadonlyMap<string, RSymbolVisibility>>
+>();
+
+/** Record (replacing any earlier record) the visibility memo for `resolutionConfig`. */
+export function rRecordSymbolVisibilityMemo(
+  resolutionConfig: object,
+  memo: ReadonlyMap<string, ReadonlyMap<string, RSymbolVisibility>>,
+): void {
+  symbolVisibilityMemo.set(resolutionConfig, memo);
+}
+
+/**
+ * Visibility of `symbol` (the name without backticks) for a package-level reader, in the package
+ * whose directory is `pkgDir`:
+ *
+ *  - `public`: the package has no NAMESPACE file (nothing is declared, so every name stays
+ *    visible), or its NAMESPACE exports the name;
+ *  - `private`: the NAMESPACE is present, readable and complete, and does not export the name;
+ *  - `unknown`: not exported, but the NAMESPACE is unreadable or an `exportPattern()` was dropped
+ *    or cut short, so the name may still be exported; also any name the memo does not hold.
+ */
+export function rPackageSymbolVisibility(
+  cfg: RPackageConfig,
+  pkgDir: string,
+  symbol: string,
+): RSymbolVisibility {
+  const info = cfg.namespaceInfoByPackageDir.get(pkgDir);
+  if (info === undefined || !info.hasNamespaceFile) return 'public';
+  return symbolVisibilityMemo.get(cfg)?.get(pkgDir)?.get(symbol) ?? 'unknown';
+}
+
+/**
+ * Visibility of the definition of `symbol` in `filePath`. Only a definition under a package's
+ * `R/` directory is judged ({@link rOwningPackageDir}; R loads nothing else into a namespace),
+ * so a file outside every package reads `public`.
+ */
+export function rSymbolVisibility(
+  cfg: RPackageConfig | null | undefined,
+  filePath: string,
+  symbol: string,
+): RSymbolVisibility {
+  if (cfg === null || cfg === undefined) return 'public';
+  const dir = rOwningPackageDir(filePath, cfg);
+  return dir === undefined ? 'public' : rPackageSymbolVisibility(cfg, dir, rBareName(symbol));
+}
+
+/**
  * Per local package, how many top-level definitions of each symbol (the name without its
  * backticks) it has in its
  * `R/` files, recorded by `populateRQualifiedCalls` for the packages that some
@@ -986,8 +1102,19 @@ function isClosureLocalCandidate(ctx: RGlobalNameFallbackContext): boolean {
 
 /**
  * Refuse a `global-name-fallback` guess that R cannot make. Returns `false` (veto) when the
- * candidate is a function or class bound inside another function (not at top level), or when
- * the caller package's NAMESPACE contradicts the guess. The NAMESPACE veto applies only when
+ * candidate is a function or class bound inside another function (not at top level), when its
+ * package's NAMESPACE proves it private to a caller outside that package's directory tree, or
+ * when the caller package's NAMESPACE contradicts the guess.
+ *
+ * The private-candidate veto applies when the candidate is a top-level function or class under
+ * package P's `R/`, {@link rSymbolVisibility} says `private` (P has a readable, complete
+ * NAMESPACE that does not export the name), and the caller is outside P's tree
+ * ({@link rEnclosingPackageDir}: `tests/` and `inst/` of P count as inside). `unknown`
+ * (unreadable NAMESPACE, a cut-short `exportPattern()`) is not vetoed: a guess is vetoed only
+ * when impossible. A `source()` of the private file is not honoured (R puts sourced names in
+ * the global environment); that is a documented gap.
+ *
+ * The NAMESPACE veto applies only when
  * ALL of these hold:
  *
  *  - the caller file lives under `<pkgDir>/R/**` of a package with a NAMESPACE
@@ -1008,9 +1135,10 @@ function isClosureLocalCandidate(ctx: RGlobalNameFallbackContext): boolean {
  * A qualified call `pkg::name()` (site carries `rawQualifiedName`) is judged
  * by its qualifier first: with `pkg` a local package, a candidate
  * inside `pkg` is plausible whatever the NAMESPACE says, and a candidate
- * elsewhere is vetoed when `pkg` itself defines `name`. A `pkg` that defines
- * nothing of that name (re-export), or that is not a local package, falls
- * through to the NAMESPACE rules above.
+ * elsewhere is vetoed when `pkg` itself defines `name`, or when its NAMESPACE proves `name`
+ * private (a re-export is an `export()` entry plus an `importFrom()`). A `pkg` that is not a
+ * local package falls through to the NAMESPACE rules above. (`populateRQualifiedCalls` resolves or
+ * drops every qualified site before the fallback runs, so this branch is a second line.)
  *
  * Known unsound shape, pinned by a characterisation test: `import(pkg)` is not
  * tokenised, so a later `import(pkg)` that R would prefer is invisible.
@@ -1046,6 +1174,25 @@ export function isRGlobalNameFallbackPlausible(ctx: RGlobalNameFallbackContext):
   if (qualifier !== undefined && cfg.packages.has(qualifier)) {
     if (rPackageDirForFile(ctx.candidate.filePath, cfg)?.name === qualifier) return true;
     if ((rQualifiedDefinitionCount(cfg, qualifier, symbol) ?? 0) > 0) return false;
+    const qualifierDir = cfg.packages.get(qualifier);
+    if (
+      qualifierDir !== undefined &&
+      rPackageSymbolVisibility(cfg, qualifierDir, symbol) === 'private'
+    ) {
+      return false;
+    }
+  }
+
+  // A candidate a readable, complete NAMESPACE proves private is not reachable by its bare name
+  // from outside its package's tree.
+  if (
+    ctx.candidate.type !== undefined &&
+    TOP_LEVEL_BINDABLE_TYPES.has(ctx.candidate.type) &&
+    rSymbolVisibility(cfg, ctx.candidate.filePath, symbol) === 'private' &&
+    rEnclosingPackageDir(ctx.callerParsed.filePath, cfg) !==
+      rOwningPackageDir(ctx.candidate.filePath, cfg)
+  ) {
+    return false;
   }
 
   const caller = rPackageDirForFile(ctx.callerParsed.filePath, cfg);

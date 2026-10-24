@@ -4,10 +4,16 @@ import path from 'path';
 import {
   parseRNamespaceExports,
   parseRNamespaceImportFrom,
+  rFileTopLevel,
+  rOwningPackageDir,
+  rRecordSymbolVisibilityMemo,
   type RNamespaceImportFromEntry,
+  type RSymbolVisibility,
 } from './namespace-imports.js';
+import { rBareName } from './bare-name.js';
 import { compileRExportPatternDetailed, type RExportMatcher } from './export-pattern.js';
 import { SharedWorkBudget } from './linear-regex.js';
+import type { ParsedFile } from 'gitnexus-shared';
 import { isDev } from '../../utils/env.js';
 import { isHardcodedIgnoredDirectory } from '../../../../config/ignore-service.js';
 import { logger } from '../../../logger.js';
@@ -190,6 +196,66 @@ export function rExportPatternsIncomplete(
     info.exportPatternBudget?.cutShort === true ||
     info.exportPatterns.some((matcher) => matcher.exhausted === true)
   );
+}
+
+export { rSymbolVisibility, type RSymbolVisibility } from './namespace-imports.js';
+
+/**
+ * Decide, once for the whole pass, the {@link RSymbolVisibility} of every top-level name of every
+ * package that has a NAMESPACE (and of every name that package imports, which it may re-export),
+ * and record the result for `rSymbolVisibility`.
+ *
+ * Determinism: `rNamespaceExports` spends the package's `exportPattern()` budget, and
+ * {@link rExportPatternsIncomplete} reads that budget, so judging a name at the moment a site asks
+ * could give a different answer depending on which site (or file) came first. Here every name is
+ * tested in one batch, packages in directory order and names in code-unit order, and completeness
+ * is read only AFTER the whole batch: a name no pattern matched is `private` when no pattern was
+ * dropped or cut short and the NAMESPACE was fully read, `unknown` otherwise. A name outside the
+ * memo reads `unknown`. Replaces any earlier memo for `cfg`.
+ */
+export function rBuildSymbolVisibilityMemo(
+  parsedFiles: readonly ParsedFile[],
+  cfg: RPackageConfig,
+): void {
+  const namesByDir = new Map<string, Set<string>>();
+  const namesOf = (dir: string): Set<string> => {
+    let names = namesByDir.get(dir);
+    if (names === undefined) namesByDir.set(dir, (names = new Set()));
+    return names;
+  };
+  for (const parsed of parsedFiles) {
+    const dir = rOwningPackageDir(parsed.filePath, cfg);
+    if (dir === undefined || cfg.namespaceInfoByPackageDir.get(dir)?.hasNamespaceFile !== true) {
+      continue;
+    }
+    const names = namesOf(dir);
+    for (const name of rFileTopLevel(parsed).names) names.add(name);
+  }
+  for (const [dir, info] of cfg.namespaceInfoByPackageDir) {
+    if (!info.hasNamespaceFile) continue;
+    const names = namesOf(dir);
+    for (const entry of info.importFrom) names.add(rBareName(entry.name));
+  }
+
+  // Pass 1 (the batch): test every name, packages in directory order, names in code-unit order.
+  const verdicts: { info: RNamespaceInfo; dir: string; name: string; exported: boolean }[] = [];
+  for (const dir of [...namesByDir.keys()].sort()) {
+    const info = cfg.namespaceInfoByPackageDir.get(dir);
+    if (info === undefined) continue;
+    for (const name of [...namesOf(dir)].sort()) {
+      verdicts.push({ info, dir, name, exported: rNamespaceExports(info, name) });
+    }
+  }
+
+  // Pass 2: completeness is read only now, after the whole batch has spent what it will spend.
+  const memo = new Map<string, Map<string, RSymbolVisibility>>();
+  for (const { info, dir, name, exported } of verdicts) {
+    const notProvenPrivate = info.exportsUnreadable === true || rExportPatternsIncomplete(info);
+    let byName = memo.get(dir);
+    if (byName === undefined) memo.set(dir, (byName = new Map()));
+    byName.set(name, exported ? 'public' : notProvenPrivate ? 'unknown' : 'private');
+  }
+  rRecordSymbolVisibilityMemo(cfg, memo);
 }
 
 /**

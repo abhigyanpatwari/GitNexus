@@ -102,14 +102,15 @@ describe('R dotted (S3) names vs same-tailed bare names', () => {
 
   describe('backticked names (characterisation, unchanged by this fix)', () => {
     it('a backticked def keeps its backticks in the name and still resolves like any bare name', () => {
-      // The qualifiedName keeps the backticks, so the wildcard binds the literal name and a
+      // The qualifiedName keeps the backticks, so the wildcard would bind the literal name, and a
       // same-package call falls back to a unique-name guess. There is no dotted tail involved;
-      // pinned so a future change to backtick handling is a deliberate decision.
+      // pinned so a future change to backtick handling is a deliberate decision. prov's NAMESPACE
+      // does not export `odd name`, so `library(prov)` no longer binds it (no edge from cons).
       expect({
         cons: edges('use_odd', 'cons/R/cons.R'),
         samePkg: edges('same_pkg_odd', 'prov/R/other.R'),
       }).toEqual({
-        cons: [`\`odd name\`:${PROV}:import-resolved:0.85`],
+        cons: [],
         samePkg: [`\`odd name\`:${PROV}:global-name-fallback:0.5`],
       });
     });

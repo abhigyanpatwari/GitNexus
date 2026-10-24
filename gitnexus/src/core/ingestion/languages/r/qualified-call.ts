@@ -17,17 +17,30 @@
  *  - `local` with exactly one top-level definition of the name in the
  *    package's `R/` files: that definition is recorded per call site and
  *    returned by {@link resolveRQualifiedFreeCall}, which the free-call
- *    fallback consults before the lexical tiers (a precise 0.85 edge). The
- *    fallback's earlier same-name check still wins when the caller has a
+ *    fallback consults before the lexical tiers (a precise 0.85 edge), when
+ *    the operator is `:::`, or `::` and the name is public (the package has no
+ *    NAMESPACE, or exports the name) or the caller is inside the package's
+ *    directory tree ({@link rEnclosingPackageDir}). A `::` site naming a
+ *    private or not-provably-exported name from outside is dropped (R errors
+ *    there). The fallback's earlier same-name check still wins when the caller has a
  *    non-callable binding of that name (a parameter or `for` variable named
  *    like the target): that site gets no edge (see the limits in
  *    docs/languages/r-provider.md);
  *  - `local` with two or more such definitions (same file or across files):
  *    the site is dropped (every valid target is inside the named package, so
  *    any edge would be provably wrong);
- *  - `local` with no definition (a re-export, or a name defined some other
- *    way) and `unknown` locality: the site is left untouched, i.e. today's
- *    behaviour.
+ *  - `local` with no definition: a re-export is the one case that resolves. When
+ *    the package's NAMESPACE exports the name and has `importFrom(origin, name)` for
+ *    a local `origin` that defines the name exactly once, the site is recorded against
+ *    that definition (one hop). Anything else drops the site: a name not exported,
+ *    no `importFrom`, an external or multiply-defining origin, or `:::`;
+ *  - `unknown` locality (discovery truncated, or no config): the site is dropped.
+ *
+ * Invariant: after this pass no qualified call site survives without a recorded
+ * precise target. The free-call fallback never reads `rawQualifiedName` between its
+ * explicit-path hook and the scope-chain walk, so a kept site without a target would
+ * walk the lexical scope on the bare tail and bind a caller-local decoy
+ * (`pkg::missing()` to the caller's own `missing`).
  *
  * The per-package definition counts are also recorded for the
  * global-name-fallback veto (`isRGlobalNameFallbackPlausible`).
@@ -38,13 +51,19 @@
  */
 
 import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-shared';
-import type { RPackageConfig } from './package-config.js';
+import { rBuildSymbolVisibilityMemo, type RPackageConfig } from './package-config.js';
 import { rBareName } from './bare-name.js';
 import {
   parseRQualifier,
+  parseRQualifierOperator,
+  rEnclosingPackageDir,
   rFileBelongsToDiscoveredPackage,
+  rOwningPackageDir,
   rPackageDirForFile,
+  rPackageSymbolVisibility,
   rRecordQualifiedDefinitionCounts,
+  rReexportOrigin,
+  rSymbolVisibility,
   TOP_LEVEL_BINDABLE_TYPES,
 } from './namespace-imports.js';
 
@@ -179,10 +198,10 @@ function collectTopLevelDefinitions(files: readonly ParsedFile[]): Map<string, S
 
 /**
  * Decide every qualified call site of `parsedFiles` as described in the file
- * header: drop external and duplicate-definition sites (in place, through
- * frozen `ParsedFile` copies), record the precise target of single-definition
- * sites, leave every other site untouched. Resets all module state first, so a
- * run never sees the previous run's answers.
+ * header: drop external, unknown-locality, duplicate-definition and not-reachable sites (in
+ * place, through frozen `ParsedFile` copies), record the precise target of every other site.
+ * Resets all module state first, so a run never sees the previous run's answers, and builds
+ * the pass's export-visibility memo (`rBuildSymbolVisibilityMemo`) before judging any site.
  */
 export function populateRQualifiedCalls(
   parsedFiles: ParsedFile[],
@@ -190,56 +209,56 @@ export function populateRQualifiedCalls(
 ): void {
   preciseBySite = new Map();
   const cfg = (ctx.resolutionConfig as RPackageConfig | null | undefined) ?? null;
-  if (cfg !== null) rRecordQualifiedDefinitionCounts(cfg, new Map());
+  if (cfg !== null) {
+    rRecordQualifiedDefinitionCounts(cfg, new Map());
+    rBuildSymbolVisibilityMemo(parsedFiles, cfg);
+  }
 
   // Packages named by some qualified call, and how local each one is.
   let filePaths: Set<string> | undefined;
   let unownedDirNames: ReadonlySet<string> | undefined;
   const localityByPackage = new Map<string, RQualifierLocality>();
+  const localityOf = (pkg: string): RQualifierLocality => {
+    let locality = localityByPackage.get(pkg);
+    if (locality === undefined) {
+      filePaths ??= new Set(parsedFiles.map((p) => p.filePath));
+      unownedDirNames ??= rUnownedPackageDirNames(filePaths, cfg);
+      locality = rQualifierLocality(pkg, cfg, filePaths, unownedDirNames);
+      localityByPackage.set(pkg, locality);
+    }
+    return locality;
+  };
+  let hasQualifiedSite = false;
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
       if (!isQualifiedCall(site)) continue;
+      hasQualifiedSite = true;
       const pkg = parseRQualifier(site.rawQualifiedName);
-      if (pkg === undefined || localityByPackage.has(pkg)) continue;
-      filePaths ??= new Set(parsedFiles.map((p) => p.filePath));
-      unownedDirNames ??= rUnownedPackageDirNames(filePaths, cfg);
-      localityByPackage.set(pkg, rQualifierLocality(pkg, cfg, filePaths, unownedDirNames));
+      if (pkg !== undefined) localityOf(pkg);
     }
   }
-  if (localityByPackage.size === 0) return;
+  if (!hasQualifiedSite) return;
 
-  // Top-level definitions of each named local package, by name.
-  const localPackages = [...localityByPackage].filter(([, l]) => l === 'local').map(([p]) => p);
-  const definitions = new Map<string, Map<string, SymbolDefinition[]>>();
-  if (localPackages.length > 0) {
-    const filesByPackage = localPackages.map((pkg) => ({ pkg, files: [] as ParsedFile[] }));
-    for (const parsed of parsedFiles) {
-      const owner = rPackageDirForFile(parsed.filePath, cfg)?.name;
-      for (const { pkg, files } of filesByPackage) {
+  // Top-level definitions of a local package, by name (computed on first use, once per package).
+  const definitionsByPackage = new Map<string, Map<string, SymbolDefinition[]>>();
+  const definitionsOf = (pkg: string): Map<string, SymbolDefinition[]> => {
+    let byName = definitionsByPackage.get(pkg);
+    if (byName === undefined) {
+      const files: ParsedFile[] = [];
+      for (const parsed of parsedFiles) {
         // In the config a package owns its `R/` files (longest-dir wins); otherwise
         // it is local only through the `<pkg>/R/` path, as `rQualifierLocality` decided.
         const inPackage =
           cfg?.packages.has(pkg) === true
-            ? owner === pkg
+            ? rPackageDirForFile(parsed.filePath, cfg)?.name === pkg
             : isUnderPackageRDir(pkg, parsed.filePath, cfg);
         if (inPackage) files.push(parsed);
       }
+      byName = collectTopLevelDefinitions(files);
+      definitionsByPackage.set(pkg, byName);
     }
-    for (const { pkg, files } of filesByPackage) {
-      definitions.set(pkg, collectTopLevelDefinitions(files));
-    }
-    if (cfg !== null) {
-      rRecordQualifiedDefinitionCounts(
-        cfg,
-        new Map(
-          [...definitions].map(([pkg, byName]) => [
-            pkg,
-            new Map([...byName].map(([name, defs]) => [name, defs.length])),
-          ]),
-        ),
-      );
-    }
-  }
+    return byName;
+  };
 
   // Decide each site.
   for (let i = 0; i < parsedFiles.length; i++) {
@@ -251,18 +270,68 @@ export function populateRQualifiedCalls(
         continue;
       }
       const pkg = parseRQualifier(site.rawQualifiedName);
-      const locality = pkg === undefined ? 'unknown' : localityByPackage.get(pkg);
-      if (locality === 'external') continue;
-      if (locality === 'local' && pkg !== undefined) {
-        const found = definitions.get(pkg)?.get(rBareName(site.name)) ?? [];
-        if (found.length >= 2) continue;
-        if (found.length === 1) preciseBySite.set(siteKey(parsed.filePath, site.atRange), found[0]);
-      }
+      const target =
+        pkg === undefined || localityOf(pkg) !== 'local'
+          ? undefined
+          : resolveLocalQualifiedSite(
+              pkg,
+              rBareName(site.name),
+              parseRQualifierOperator(site.rawQualifiedName) === ':::',
+              parsed.filePath,
+            );
+      if (target === undefined) continue;
+      preciseBySite.set(siteKey(parsed.filePath, site.atRange), target);
       kept.push(site);
     }
     if (kept.length !== parsed.referenceSites.length) {
       parsedFiles[i] = Object.freeze({ ...parsed, referenceSites: Object.freeze(kept) });
     }
+  }
+
+  if (cfg !== null) {
+    rRecordQualifiedDefinitionCounts(
+      cfg,
+      new Map(
+        [...definitionsByPackage].map(([pkg, byName]) => [
+          pkg,
+          new Map([...byName].map(([name, defs]) => [name, defs.length])),
+        ]),
+      ),
+    );
+  }
+
+  /**
+   * The definition `pkg::symbol` (or `pkg:::symbol`) reaches from `callerPath`, or `undefined`
+   * when the site must be dropped: no definition and no resolvable re-export, several
+   * definitions, or a `::` to a name the package does not make public that the caller, outside
+   * the package's tree, cannot reach.
+   */
+  function resolveLocalQualifiedSite(
+    pkg: string,
+    symbol: string,
+    internal: boolean,
+    callerPath: string,
+  ): SymbolDefinition | undefined {
+    const found = definitionsOf(pkg).get(symbol) ?? [];
+    if (found.length >= 2) return undefined;
+    if (found.length === 1) {
+      if (internal) return found[0];
+      const visibility = rSymbolVisibility(cfg, found[0].filePath, symbol);
+      if (visibility === 'public') return found[0];
+      const owner = rOwningPackageDir(found[0].filePath, cfg);
+      return owner !== undefined && rEnclosingPackageDir(callerPath, cfg) === owner
+        ? found[0]
+        : undefined;
+    }
+    // No definition: only a `::` re-export (`export(name)` + `importFrom(origin, name)`) resolves.
+    const pkgDir = cfg?.packages.get(pkg);
+    if (internal || cfg === null || pkgDir === undefined) return undefined;
+    if (rPackageSymbolVisibility(cfg, pkgDir, symbol) !== 'public') return undefined;
+    if (cfg.namespaceInfoByPackageDir.get(pkgDir)?.hasNamespaceFile !== true) return undefined;
+    const origin = rReexportOrigin(cfg, pkgDir, pkg, symbol);
+    if (origin === undefined || localityOf(origin) !== 'local') return undefined;
+    const originDefs = definitionsOf(origin).get(symbol) ?? [];
+    return originDefs.length === 1 ? originDefs[0] : undefined;
   }
 }
 

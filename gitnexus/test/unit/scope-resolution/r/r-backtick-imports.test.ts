@@ -217,7 +217,8 @@ describe('expandRWildcardNames with backtick-quoted definitions', () => {
 
 describe('populateRQualifiedCalls with backtick-quoted definitions', () => {
   const run = (defSrc: string, callName: string) => {
-    const cfg = config({ prov: {} });
+    // prov exports f: a private name is not reachable through `::` from a script.
+    const cfg = config({ prov: { namedExports: new Set(['f']) } });
     const site = {
       kind: 'call',
       name: callName,

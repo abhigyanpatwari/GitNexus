@@ -3,10 +3,12 @@
  * `undefined` means "unknown" (finalization then keeps its prior behaviour); R's export checker
  * says "public" for every graph node and the NAMESPACE refinement later flips graph nodes to
  * private, but neither writes a verdict onto a scope definition. That is deliberate: a
- * `library()` of a local package makes every top-level name visible, as `devtools::load_all()`
- * does (docs/languages/r-provider.md, Resolution model), so resolution must not treat a name
- * NAMESPACE omits as module-private. A verdict of `false` would make finalization drop it from
- * wildcard providers.
+ * verdict of `false` would make finalization drop the name from wildcard providers and from
+ * every other lookup, with no way to tell a caller inside the package from one outside.
+ * Resolution instead derives a per-name visibility from the NAMESPACE (`rSymbolVisibility`,
+ * `package-config.ts`): `library()` is filtered by name in `expandRWildcardNames`, `pkg::name`
+ * and the unique-name guess consult the same verdicts (docs/languages/r-provider.md, Export
+ * status). Earlier, a `library()` attached every top-level name, as `devtools::load_all()` does.
  */
 import { describe, expect, it } from 'vitest';
 import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';

@@ -1,8 +1,9 @@
 /**
  * R language provider.
  *
- * `library()` / `require()` of a local package are wildcard imports: every top-level
- * name of the package becomes visible. `source()` binds no name; it only records a file
+ * `library()` / `require()` of a local package are wildcard imports: the package's
+ * exported names become visible (every top-level name when it has no NAMESPACE file).
+ * `source()` binds no name; it only records a file
  * dependency. Named imports come from NAMESPACE `importFrom()` entries, which
  * `populateRNamespaceImports` turns into `named` imports before resolution. No special
  * call routing is needed (unlike Ruby); `emitRScopeCaptures` (`r/captures.ts`) produces
