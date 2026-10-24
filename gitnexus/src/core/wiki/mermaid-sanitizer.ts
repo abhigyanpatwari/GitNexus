@@ -16,11 +16,12 @@ const LINE_PREFIX_RE = /^(\s*(?:(?:[-A-Za-z0-9_]+)\s*:\s*)?)(.*)$/;
 //
 // A labelled link opens with a bare `--`, `==` or `-.` followed by its text,
 // with or without a space (`-- text -->`, `--text-->`). A complete link never
-// opens one: `---`, `-->`, `-.-`, `--o`, `--x` are links on their own, so
-// `A --- file.ts --- B` is a chain of three nodes and `file.ts` reaches the
-// node sanitizer like any other reference.
+// opens one. Mermaid's lexer takes the longer match, so `--` followed by
+// `-`, `>`, `x` or `o` is a link with a tail (`---`, `-->`, `--x`, `--o`),
+// whatever comes after it: `A --xfile.ts --> B` is a chain of three nodes,
+// and `file.ts` reaches the node sanitizer like any other reference.
 const LINK_HEAD = '(?:--+|==+|-\\.+-?)';
-const LABEL_OPENER = '(?:--|==|-\\.)(?![-=.>|])(?![ox](?:\\s|$))';
+const LABEL_OPENER = '(?:--|==|-\\.)(?![-=.>|xo])';
 const EDGE_RE = new RegExp(
   '(' +
     [
@@ -172,8 +173,10 @@ function quoteUnsafeEdgeLabels(line: string): string {
 }
 
 // A masked, empty pair of parentheses right after an id: `doc()`, a
-// call-shaped id the sanitizer has always repaired, not a round node.
+// call-shaped id the sanitizer has always repaired, not a round node. The
+// member chain that may follow (`foo().bar`) belongs to the same id.
 const EMPTY_PARENS_RE = /^\(\u0000(\d+)\u0000\)/;
+const MEMBER_CHAIN_RE = /^[A-Za-z0-9_.:/-]+/;
 
 function sanitizeNodeReference(
   segment: string,
@@ -189,10 +192,16 @@ function sanitizeNodeReference(
   const trailing = match[4];
   let id = match[2];
   let suffix = match[3];
-  const emptyParens = suffix.match(EMPTY_PARENS_RE);
-  if (emptyParens && labels[Number(emptyParens[1])] === '') {
+  for (;;) {
+    const emptyParens = suffix.match(EMPTY_PARENS_RE);
+    if (!emptyParens || labels[Number(emptyParens[1])] !== '') break;
     id += '()';
     suffix = suffix.slice(emptyParens[0].length);
+    const members = suffix.match(MEMBER_CHAIN_RE);
+    if (members) {
+      id += members[0];
+      suffix = suffix.slice(members[0].length);
+    }
   }
   if (!NODE_ID_RE.test(id) || !UNSAFE_NODE_ID_RE.test(id)) return segment;
   const hasInlineLabel =

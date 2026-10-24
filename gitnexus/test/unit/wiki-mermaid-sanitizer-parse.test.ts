@@ -78,11 +78,34 @@ describe('sanitizeMermaidDiagram, checked with the Mermaid parser', () => {
     expect((await parseFlowchart(heads)).edges).toEqual(['A->B', 'B->C', 'C->D', 'D->E']);
   });
 
+  it('reads a compact cross or circle link as a link, so the node after it is aliased too', async () => {
+    const cross = ['flowchart LR', '    A --xfile.ts --> B', '    file.ts --> C'].join('\n');
+    const circle = ['flowchart LR', '    A --ofile.ts --> B', '    file.ts --> C'].join('\n');
+
+    for (const diagram of [cross, circle]) {
+      const graph = await parseFlowchart(sanitizeMermaidDiagram(diagram));
+      expect(graph.nodes).toEqual(['A', 'file_ts', 'B', 'C']);
+      expect(graph.edges).toEqual(['A->file_ts', 'file_ts->B', 'file_ts->C']);
+    }
+  });
+
   it('still repairs a call-shaped node id', async () => {
     const sanitized = sanitizeMermaidDiagram('flowchart LR\n    doc() --> B');
 
     expect(sanitized).toBe('flowchart LR\n    doc["doc()"] --> B');
     expect((await parseFlowchart(sanitized)).edges).toEqual(['doc->B']);
+  });
+
+  it('repairs a qualified call-shaped id as one node, at either end of a link', async () => {
+    const diagram = ['flowchart LR', '    foo().bar --> B', '    A --> foo().bar'].join('\n');
+
+    const sanitized = sanitizeMermaidDiagram(diagram);
+    const graph = await parseFlowchart(sanitized);
+
+    expect(sanitized).toContain('foo___bar["foo().bar"] --> B');
+    expect(sanitized).toContain('A --> foo___bar["foo().bar"]');
+    expect(graph.nodes).toEqual(['foo___bar', 'B', 'A']);
+    expect(graph.edges).toEqual(['foo___bar->B', 'A->foo___bar']);
   });
 
   it('keeps the text of a labelled link and the graph around it', async () => {
