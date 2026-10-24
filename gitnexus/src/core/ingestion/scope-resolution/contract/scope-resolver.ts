@@ -332,7 +332,8 @@ export type { ConstraintContext } from 'gitnexus-shared';
 
 /** How a container's element was reached in the source. */
 export type ElementAccessRoute =
-  { readonly kind: 'index' } | { readonly kind: 'accessor'; readonly name: string };
+  | { readonly kind: 'index' }
+  | { readonly kind: 'accessor'; readonly name: string };
 
 /** One structurally-detected implementor plus the receiver form in which it
  *  satisfies the interface (see `detectInterfaceImplementations`). */

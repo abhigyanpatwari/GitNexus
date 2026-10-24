@@ -40,7 +40,7 @@ import {
   rSymbolVisibility,
 } from './package-config.js';
 import { rBareName } from './bare-name.js';
-import { rResolveSelfMember } from './r6-self.js';
+import { applyRCaptureSideChannel, rResolveSelfMember } from './r6-self.js';
 import { perFileSet } from '../../utils/per-file-set.js';
 import { resolveRImportTarget } from './import-target.js';
 import {
@@ -242,9 +242,11 @@ export const rScopeResolver: ScopeResolver = {
   emitHeritageEdges: (graph, parsedFiles, nodeLookup, scopes) =>
     emitRVirtualHeritageEdges(graph, parsedFiles, nodeLookup, scopes),
 
-  // `self$m()` where neither the class nor a parent defines `m` is unresolved, not a call of a
-  // free function `m`.
+  // `self$m()` reaches the public members of the class and its parents; where none defines `m`
+  // the call is unresolved, not a call of a free function `m`.
   resolveReceiverMember: rResolveSelfMember,
+  // Restores which R6 members are private for a file reused from a worker or the parse cache.
+  applyCaptureSideChannel: applyRCaptureSideChannel,
 
   // R6's `super$method()` is not resolved: nothing binds `super` to the parent class, so there
   // is no receiver type to walk from. Off, rather than answering a wrong parent. (`self` is

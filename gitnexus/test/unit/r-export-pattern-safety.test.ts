@@ -84,43 +84,8 @@ const CHARACTERISATION: ReadonlyArray<readonly [string, readonly string[] | null
       'ab',
     ],
   ],
-  [
-    '^[^\\.]',
-    [
-      'tidy_scores',
-      'foo_bar',
-      'bar_baz',
-      'foo',
-      'bar',
-      'a',
-      'aa',
-      'aaa',
-      'aaaa',
-      'abc',
-      'ac',
-      'Abc',
-      'A1_b',
-      'print.foo',
-      'getX',
-      'setY',
-      'x',
-      '_x',
-      '1a',
-      'foo.',
-      'a.c',
-      'a{,2}',
-      'a{',
-      'a|b',
-      '[',
-      'a]',
-      ']',
-      'foo$',
-      'my_internal',
-      'x.y',
-      'aaab',
-      'ab',
-    ],
-  ],
+  // A backslash inside a bracket expression is refused (null): TRE reads it as a literal member.
+  ['^[^\\.]', null],
   ['^(foo|bar)_', ['foo_bar', 'bar_baz']],
   [
     '.',
@@ -497,7 +462,7 @@ const CHARACTERISATION: ReadonlyArray<readonly [string, readonly string[] | null
   // Leading `]` and `{,n}` are refused (null); see 'unsupported TRE constructs fail closed'.
   ['[]a]', null],
   ['[^]a]', null],
-  ['^[\\]]', [']']],
+  ['^[\\]]', null],
   [
     'a+?',
     [
@@ -652,7 +617,8 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
   // parser): a mismatch fails loudly and is fixed in whichever side is wrong. Refused: `\<` `\>`
   // `\a` `\e` `\Q` `\E` `\u` `\x{` anywhere; `{,n}` outside a bracket expression; and inside
   // one, a `]` straight after `[` or `[^`, `[.` / `[=` elements and a letter class escape
-  // (`\d \D \w \W \s \S \b`). A `[` inside a bracket expression is a plain member.
+  // (`\d \D \w \W \s \S \b`), or any other backslash: TRE reads it there as a literal member. A
+  // `[` inside a bracket expression is a plain member.
   const ALWAYS_REFUSED_ESCAPES = /^\\(?:[<>aeQEu]|x\{)/;
   function c2Refused(source: string): boolean {
     let inClass = false;
@@ -660,7 +626,7 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
       const ch = source[i];
       if (ch === '\\') {
         if (ALWAYS_REFUSED_ESCAPES.test(source.slice(i, i + 3))) return true;
-        if (inClass && /^\\[dDwWsSb]/.test(source.slice(i, i + 2))) return true;
+        if (inClass) return true;
         i++;
       } else if (inClass) {
         if (ch === ']') inClass = false;
@@ -674,7 +640,7 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
     }
     return false;
   }
-  // Hand-checked: `[\d-z]` -> true, `^[^\\.]` -> false, `\bfoo\b` -> false, `[[]` -> false.
+  // Hand-checked: `[\d-z]` -> true, `^[^\\.]` -> true, `\bfoo\b` -> false, `[[]` -> false.
   const NAME_ALPHABET = ['a', 'b', '1', '_', '.', ' ', 'c', '\t'];
 
   function lcg(seed: number): () => number {
@@ -768,16 +734,37 @@ describe('compileRExportPattern: unsupported TRE constructs fail closed', () => 
     '[[.a.]]',
     '[[=a=]]',
     '[a[.x.]]',
+    // Any backslash inside a bracket expression: TRE reads it as a literal member, so `[a\-z]` is
+    // a range from `\` to `z`, `[\n]` holds `n` and `[\]]` ends at the first `]`.
+    '^[a\\-z]',
+    '^[^\\.]',
+    '[\\.]',
+    '[ab\\n]',
+    '[\\t]',
+    '^[\\]]',
+    '[\\\\]',
+    '^[[:alpha:]\\-_]',
+    '[[:digit:]\\.]',
+    '[]\\.]',
+    '[^]\\.]',
   ])('%s compiles to null', (source) => {
     expect(compileRExportPattern(source)).toBeNull();
   });
 
-  it.each(['^[[:alpha:]]', '\\d+', '\\bfoo\\b', '^[^\\\\.]', '\\D\\w\\W\\s\\S\\B', 'a{1,2}'])(
-    '%s still compiles',
-    (source) => {
-      expect(compileRExportPattern(source)).not.toBeNull();
-    },
-  );
+  it.each([
+    '^[[:alpha:]]',
+    '\\d+',
+    '\\bfoo\\b',
+    '^[^.]',
+    '^\\.',
+    '\\[a]',
+    '[a]\\.',
+    '\\D\\w\\W\\s\\S\\B',
+    'a{1,2}',
+    '^[[:space:][:punct:]]',
+  ])('%s still compiles', (source) => {
+    expect(compileRExportPattern(source)).not.toBeNull();
+  });
 
   it('keeps the POSIX-translated leading ] (a literal member, as in TRE)', () => {
     expect(compileRExportPattern('[]a[:digit:]]')).not.toBeNull();

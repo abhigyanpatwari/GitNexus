@@ -20,9 +20,9 @@ import { compileLinearRegexDetailed, type SharedWorkBudget } from './linear-rege
  * pattern such as `^(a+)+$` hang the analyzer (R itself uses the non-backtracking
  * TRE). See `linear-regex.ts` for the supported subset; a pattern outside it
  * (including one that uses a construct TRE reads differently from JavaScript, such as
- * `\<`, `{,n}` or a leading `]`) compiles to null and therefore matches nothing. A
- * leading `]` is a literal member when the pattern also has a POSIX class, because the
- * translation below escapes it. Callers that care why use
+ * `\<`, `{,n}`, a leading `]` or any backslash inside `[...]`) compiles to null and therefore
+ * matches nothing. A leading `]` is a literal member when the pattern also has a POSIX class,
+ * because the translation below escapes it. Callers that care why use
  * {@link compileRExportPatternDetailed}, so that a dropped pattern is reported
  * rather than silently treated as an empty export list.
  *
@@ -92,6 +92,40 @@ function translateBracket(src: string, start: number): { text: string; end: numb
   return null;
 }
 
+/**
+ * Whether `src` has a backslash inside a bracket expression. TRE (POSIX) reads a backslash there
+ * as a literal member; JavaScript, the translation above and `linear-regex.ts` read it as an
+ * escape. The readings differ for more than names that contain a backslash (`[a\-z]` is a range
+ * from `\` to `z` in TRE, `[\n]` holds `n`, `[\]]` ends at the first `]`), so such a pattern is
+ * refused. Brackets are found as TRE finds them: a `[` opens one unless it is escaped, a `]`
+ * straight after `[` or `[^` is a member, and the `]` that ends a `[:name:]`, `[.x.]` or `[=x=]`
+ * element does not close it. This checks the pattern as written, before the translation adds
+ * escapes of its own.
+ */
+function hasBackslashInBracket(src: string): boolean {
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] === '\\') {
+      i++;
+      continue;
+    }
+    if (src[i] !== '[') continue;
+    let j = i + 1;
+    if (src[j] === '^') j++;
+    if (src[j] === ']') j++;
+    for (; j < src.length && src[j] !== ']'; j++) {
+      if (src[j] === '\\') return true;
+      const kind = src[j + 1];
+      if (src[j] === '[' && (kind === ':' || kind === '.' || kind === '=')) {
+        const close = src.indexOf(kind + ']', j + 2);
+        if (close === -1) return false; // unterminated: refused by the parser instead
+        j = close + 1;
+      }
+    }
+    i = j;
+  }
+  return false;
+}
+
 function translatePosixClasses(src: string): string | null {
   let out = '';
   let i = 0;
@@ -129,7 +163,8 @@ export interface RExportMatcher {
 
 /** The outcome of {@link compileRExportPatternDetailed}: a matcher, or why there is none. */
 export type RExportPatternResult =
-  { readonly matcher: RExportMatcher } | { readonly matcher: null; readonly reason: string };
+  | { readonly matcher: RExportMatcher }
+  | { readonly matcher: null; readonly reason: string };
 
 /**
  * Compile an `exportPattern()` argument, saying why when it cannot be compiled safely.
@@ -142,6 +177,12 @@ export function compileRExportPatternDetailed(
   shared?: SharedWorkBudget,
 ): RExportPatternResult {
   try {
+    if (hasBackslashInBracket(source)) {
+      return {
+        matcher: null,
+        reason: 'backslash inside a bracket expression (TRE reads it as a literal member)',
+      };
+    }
     let translated = source;
     if (source.includes('[:')) {
       const posix = translatePosixClasses(source);

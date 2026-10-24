@@ -146,7 +146,7 @@ function parseArgs(text: string, openIdx: number): { args: string[]; end: number
   const args: string[] = [];
   let current = '';
   let depth = 0;
-  for (let i = openIdx; i < text.length;) {
+  for (let i = openIdx; i < text.length; ) {
     if (i > openIdx && isDirectiveLineStart(text, i)) return null;
     const ch = text[i];
     if (ch === '#') {
@@ -288,7 +288,7 @@ class BraceBlocks {
     const { text } = this;
     const ends = new Map<number, number>();
     const open: number[] = [];
-    for (let i = 0; i < text.length;) {
+    for (let i = 0; i < text.length; ) {
       const ch = text[i];
       if (ch === '#') {
         i = skipLineComment(text, i);

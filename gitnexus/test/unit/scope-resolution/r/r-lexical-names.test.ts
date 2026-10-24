@@ -106,6 +106,18 @@ describe('rFunctionLexicalNames: ordinary assignments', () => {
     ).toEqual(['w', 'x', 'y', 'z']);
   });
 
+  it('does not read a write through self as a binding of self; a plain rebinding is one', () => {
+    // An R6 method that sets a field (`self$count <- 1`) keeps self the instance: only `self <- v`
+    // replaces it. Other bases keep the rule above (`z$a <- v` binds `z`).
+    expect(
+      namesOf(
+        'f <- function(v) { self$a <- v; self[["b"]] <- v; self$c[[1]] <- v; names(self$d) <- v; self@e <- v }',
+      ),
+    ).toEqual(['v']);
+    expect(namesOf('f <- function() { self <- other() }')).toEqual(['self']);
+    expect(namesOf('f <- function() { other() -> self }')).toEqual(['self']);
+  });
+
   it('does not read `<<-` or `->>`: they assign outward', () => {
     expect(namesOf('f <- function() { a <<- identity; identity ->> b }')).toEqual([]);
   });

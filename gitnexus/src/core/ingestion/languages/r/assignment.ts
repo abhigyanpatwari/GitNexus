@@ -62,30 +62,6 @@ export function rBoundName(node: SyntaxNode): string | null {
   return target?.type === 'identifier' ? rBareName(target.text) : null;
 }
 
-const ownAssignments = new WeakMap<SyntaxNode['tree'], Map<number, ReadonlySet<string>>>();
-
-/**
- * Names bound by an assignment or `for` loop in a function's own body, one entry per function.
- * A nested function's assignments bind its own variables and are not included.
- */
-export function rOwnAssignedNames(fn: SyntaxNode): ReadonlySet<string> {
-  let byFunction = ownAssignments.get(fn.tree);
-  if (byFunction === undefined) ownAssignments.set(fn.tree, (byFunction = new Map()));
-  const known = byFunction.get(fn.id);
-  if (known !== undefined) return known;
-  const names = new Set<string>();
-  const body = fn.childForFieldName('body');
-  const pending = body === null ? [] : [body];
-  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
-    if (node.type === 'function_definition') continue;
-    const bound = rBoundName(node);
-    if (bound !== null) names.add(bound);
-    for (const child of node.namedChildren) pending.push(child);
-  }
-  byFunction.set(fn.id, names);
-  return names;
-}
-
 /**
  * Whether assigning `value` to a name binds something a call of that name may reach.
  *
@@ -115,7 +91,7 @@ function firstArgumentValue(call: SyntaxNode): SyntaxNode | null {
  * the called name). Null for a target with no identifier at its base (`f()$a`, a string).
  */
 function assignmentBase(target: SyntaxNode): SyntaxNode | null {
-  for (let node: SyntaxNode | null = target; node !== null;) {
+  for (let node: SyntaxNode | null = target; node !== null; ) {
     switch (node.type) {
       case 'identifier':
         return node;
@@ -157,9 +133,12 @@ function lexicalAssignmentOf(node: SyntaxNode): string | null {
     return isLexicalAssignment(value) && target.text.length > 0 ? target.text : null;
   }
   // `x$a <- v`, `names(x) <- v`: R evaluates `x`, modifies it and binds the result to `x` here,
-  // whatever the value.
+  // whatever the value. Not for `self`: writing a field of an R6 instance (`self$count <- 1`,
+  // `self$items[[i]] <- v`) leaves `self` the same instance, so it stays the method's typed
+  // receiver. Only a plain `self <- v` (above) rebinds it.
   const base = assignmentBase(target);
-  return base !== null && base.text.length > 0 ? base.text : null;
+  if (base === null || base.text.length === 0 || base.text === 'self') return null;
+  return base.text;
 }
 
 const lexicalAssigned = new WeakMap<SyntaxNode['tree'], Map<number, ReadonlySet<string>>>();
@@ -168,7 +147,8 @@ const lexicalAssigned = new WeakMap<SyntaxNode['tree'], Map<number, ReadonlySet<
  * The names a function's own body binds by ordinary assignment to a value that may be a function
  * (`isLexicalAssignment`), as written (backticks included, like a formal): `x <- v`, `x = v`,
  * `v -> x`, and the base identifier of a complex target (`x$a <- v`, `names(x) <- v`, never the
- * called name, so `foo(x) <- 1` binds `x`). Flow-insensitive: a name counts when ANY assignment
+ * called name, so `foo(x) <- 1` binds `x`; a complex target based on `self` binds nothing, see
+ * `lexicalAssignmentOf`). Flow-insensitive: a name counts when ANY assignment
  * of it in the body does. A nested function binds its own variables and is not read; `<<-` and
  * `->>` assign outward; `assign()`, `delayedAssign()`, `list2env()`, `local()` and `with()` are not
  * modelled (`local({ x <- f })` is read as an assignment in this frame, which only costs an edge).
@@ -219,7 +199,7 @@ export function assignmentTarget(node: SyntaxNode): SyntaxNode | null {
  * ordinary reads.
  */
 export function isRReplacementCall(call: SyntaxNode): boolean {
-  for (let node = call; ;) {
+  for (let node = call; ; ) {
     const parent: SyntaxNode | null = node.parent;
     if (parent === null) return false;
     switch (parent.type) {

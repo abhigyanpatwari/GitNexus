@@ -55,7 +55,10 @@ interface Cell {
   readonly target: string | null;
   /** Reasons recorded at the call, or `none`. */
   readonly outcome:
-    'none' | 'receiver-unresolved' | 'receiver-owned-but-unbound' | 'member-lookup-ambiguous';
+    | 'none'
+    | 'receiver-unresolved'
+    | 'receiver-owned-but-unbound'
+    | 'member-lookup-ambiguous';
   readonly kind: Kind;
   /** The `resolves` row (by caller) that shows the shape works nearby. Required unless it resolves. */
   readonly control?: string;
@@ -149,6 +152,37 @@ const RECEIVER_CELLS: readonly Cell[] = [
     kind: 'unresolved',
     control: 'self_own',
     note: 'a free nothere() exists and is not reached; the label is the shared pass closest one',
+  },
+  {
+    shape: 'self$x <- v, then self$inherited() in an R6 method',
+    file: M,
+    caller: 'self_field_write',
+    site: 'self$greet()',
+    target: 'Method:R/models.R:Base.greet#0',
+    outcome: 'none',
+    kind: 'resolves',
+    note: 'writing a field keeps self the instance (not a rebinding); a free greet() exists',
+  },
+  {
+    shape: 'self$m() where the parent has a public m and the class a private one',
+    file: M,
+    caller: 'self_public_over_private',
+    site: 'self$hello()',
+    target: 'Method:R/models.R:Base.hello#0',
+    outcome: 'none',
+    kind: 'resolves',
+    note: 'Child.hello is private, so not on self; a free hello() exists',
+  },
+  {
+    shape: 'self$private() in an R6 method: a private method is not on self',
+    file: M,
+    caller: 'self_private',
+    site: 'self$secret()',
+    target: null,
+    outcome: 'member-lookup-ambiguous',
+    kind: 'unresolved',
+    control: 'self_own',
+    note: 'Child.secret is reached through private$, not self$; a free secret() exists and is not reached',
   },
   {
     shape: 'self$m() in a free function',

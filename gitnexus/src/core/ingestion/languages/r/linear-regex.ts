@@ -1081,7 +1081,8 @@ function inSet(set: CharSet, c: number): boolean {
 
 /** The outcome of {@link compileLinearRegexDetailed}: a matcher, or why there is none. */
 export type LinearRegexResult =
-  { readonly regex: LinearRegex } | { readonly regex: null; readonly reason: string };
+  | { readonly regex: LinearRegex }
+  | { readonly regex: null; readonly reason: string };
 
 /**
  * Compile a JavaScript-syntax pattern to a linear-time matcher. When the pattern is

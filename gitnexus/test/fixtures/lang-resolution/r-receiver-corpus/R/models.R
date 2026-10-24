@@ -21,7 +21,8 @@ Address <- R6Class("Address",
 
 Base <- R6Class("Base",
   public = list(
-    greet = function() "Base.greet"
+    greet = function() "Base.greet",
+    hello = function() "Base.hello"
   )
 )
 
@@ -34,10 +35,17 @@ Child <- R6Class("Child",
     self_inherited = function() self$greet(),
     self_missing = function() self$nothere(),
     super_call = function() super$greet(),
-    private_call = function() private$secret()
+    private_call = function() private$secret(),
+    self_field_write = function() {
+      self$visits <- 1
+      self$greet()
+    },
+    self_private = function() self$secret(),
+    self_public_over_private = function() self$hello()
   ),
   private = list(
-    secret = function() "Child.secret"
+    secret = function() "Child.secret",
+    hello = function() "Child.hello"
   )
 )
 

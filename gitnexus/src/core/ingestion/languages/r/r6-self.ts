@@ -8,9 +8,17 @@
  * Anywhere else `self` is no R6 instance: a free function, an `R6Class` call that is assigned to
  * nothing, a `setRefClass` method (which uses `.self`). The scope there owns `self` without a
  * type, and a `self$m()` call is left unresolved rather than matched to a free function `m`.
+ *
+ * `self` is the public interface of the instance: a member of the `private` list is reached
+ * through `private$m()`, never through `self$m()`. The definitions carry no section, so the
+ * capture pass records where the private members are (`recordRR6PrivateMembers`), per file, and
+ * the record crosses the worker boundary as the file's capture side channel.
  */
+import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { definitionIdPosition } from '../../scope-resolution/utils/definition-id.js';
+import { assertCloneable } from '../../workers/clone-safety.js';
 import { isRLeftAssignment, rBoundName } from './assignment.js';
 
 const R6_SECTIONS: ReadonlySet<string> = new Set(['public', 'private', 'active']);
@@ -45,6 +53,13 @@ const callOf = (argument: SyntaxNode): SyntaxNode | null => {
  * the `Class` definition keeps it.
  */
 export function rR6MethodClassName(argument: SyntaxNode): string | null {
+  return rR6Method(argument)?.className ?? null;
+}
+
+/** {@link rR6MethodClassName} and the section (`public`, `private`, `active`) the method is in. */
+export function rR6Method(
+  argument: SyntaxNode,
+): { readonly className: string; readonly section: string } | null {
   if (argument.type !== 'argument') return null;
   if (argument.childForFieldName('name')?.type !== 'identifier') return null;
   if (argument.childForFieldName('value')?.type !== 'function_definition') return null;
@@ -67,7 +82,8 @@ export function rR6MethodClassName(argument: SyntaxNode): string | null {
   if (assignment === null || !isRLeftAssignment(assignment)) return null;
   if (assignment.childForFieldName('rhs')?.id !== r6Call.id) return null;
   const target = assignment.childForFieldName('lhs');
-  return target?.type === 'identifier' && target.text.length > 0 ? target.text : null;
+  if (target?.type !== 'identifier' || target.text.length === 0) return null;
+  return { className: target.text, section: sectionName };
 }
 
 /**
@@ -119,17 +135,68 @@ export function createSelfOwnerClassifier(): (fn: SyntaxNode) => boolean {
   };
 }
 
+/** The capture side channel of an R file: where its R6 private members are defined. */
+interface RCaptureSideChannel {
+  readonly kind: 'r';
+  /** `line:column` of each private member's definition anchor, as its definition id encodes it. */
+  readonly r6PrivateMembers: readonly string[];
+}
+
+const r6PrivateMembersByFile = new Map<string, ReadonlySet<string>>();
+
+/** The `line:column` key of a node, as `nodeToCapture` and the definition id write it. */
+export const rDefinitionPositionKey = (node: SyntaxNode): string =>
+  `${node.startPosition.row + 1}:${node.startPosition.column}`;
+
 /**
- * `ScopeResolver.resolveReceiverMember` for R, for a typed `self` only: when neither the class nor
- * a parent defines the member, report an ambiguous lookup with no candidate.
+ * Record the private R6 members of `filePath` (keys from {@link rDefinitionPositionKey}),
+ * replacing what an earlier parse of a file at that path recorded.
+ */
+export function recordRR6PrivateMembers(filePath: string, keys: ReadonlySet<string>): void {
+  if (keys.size === 0) r6PrivateMembersByFile.delete(filePath);
+  else r6PrivateMembersByFile.set(filePath, keys);
+}
+
+/** `LanguageProvider.collectCaptureSideChannel` for R. */
+export function collectRCaptureSideChannel(filePath: string): RCaptureSideChannel | undefined {
+  const keys = r6PrivateMembersByFile.get(filePath);
+  if (keys === undefined) return undefined;
+  return assertCloneable<RCaptureSideChannel>({ kind: 'r', r6PrivateMembers: [...keys] });
+}
+
+/** `ScopeResolver.applyCaptureSideChannel` for R: restore the record of a reused file. */
+export function applyRCaptureSideChannel(parsed: ParsedFile): void {
+  const facts = parsed.captureSideChannel as RCaptureSideChannel | undefined;
+  recordRR6PrivateMembers(
+    parsed.filePath,
+    new Set(facts?.kind === 'r' ? facts.r6PrivateMembers : []),
+  );
+}
+
+/** Whether `def` is a member of an R6 class's `private` list. */
+function isRR6PrivateMember(def: SymbolDefinition): boolean {
+  const position = definitionIdPosition(def.nodeId, def.filePath);
+  if (position === undefined) return false;
+  const keys = r6PrivateMembersByFile.get(def.filePath);
+  return keys?.has(`${position.line}:${position.column}`) === true;
+}
+
+/**
+ * `ScopeResolver.resolveReceiverMember` for R, for a typed `self` only.
+ *
+ * `self$m()` reads `m` off the public interface of the instance: the public (and active) members
+ * of the class and its parents. A private member is not on `self`, so it is skipped, and a
+ * parent's public member of that name is the answer even when the class has a private one. When
+ * no public member is found, the lookup is reported ambiguous with no candidate.
  *
  * The generic lookup keeps a lexical route for `self` (a class body binds its own members, so the
  * name is also looked up in the enclosing scopes), and in R that walk reaches a free function of
  * the same name: `self$nothere()` would bind a top-level `nothere`. R reads `nothere` off the
  * instance, so a free function is never the answer. Answering `ambiguous` makes the pass record a
  * suppressed outcome and mark the site handled, which stops that fallback; the outcome reason is
- * `member-lookup-ambiguous`, where `member-not-found` would be more exact. A member that the
- * class or a parent does define is left to the generic MRO walk (`undefined`).
+ * `member-lookup-ambiguous`, where `member-not-found` would be more exact. A member found before
+ * any private one was skipped is left to the generic MRO walk (`undefined`), which finds the same
+ * one; past a skipped private member the answer is given here, because that walk would stop at it.
  */
 export const rResolveSelfMember: NonNullable<ScopeResolver['resolveReceiverMember']> = (
   owner,
@@ -139,9 +206,21 @@ export const rResolveSelfMember: NonNullable<ScopeResolver['resolveReceiverMembe
   model,
 ) => {
   if (site.kind !== 'call' || site.explicitReceiver?.name !== 'self') return undefined;
+  let skippedPrivate = false;
   for (const ownerId of [owner.nodeId, ...scopes.methodDispatch.mroFor(owner.nodeId)]) {
-    if (model.methods.lookupAllByOwner(ownerId, name).length > 0) return undefined;
-    if (model.fields.lookupAllByOwner(ownerId, name).length > 0) return undefined;
+    const methods = model.methods.lookupAllByOwner(ownerId, name);
+    const visible = methods.filter((def) => !isRR6PrivateMember(def));
+    if (visible.length < methods.length) skippedPrivate = true;
+    if (visible.length > 0) {
+      if (!skippedPrivate) return undefined;
+      const [only] = visible;
+      return visible.length === 1 && only !== undefined
+        ? { kind: 'resolved', definition: only }
+        : { kind: 'ambiguous', candidateIds: visible.map((def) => def.nodeId) };
+    }
+    if (model.fields.lookupAllByOwner(ownerId, name).length > 0) {
+      return skippedPrivate ? { kind: 'ambiguous', candidateIds: [] } : undefined;
+    }
   }
   return { kind: 'ambiguous', candidateIds: [] };
 };

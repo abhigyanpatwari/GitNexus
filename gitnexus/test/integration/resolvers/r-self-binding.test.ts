@@ -19,6 +19,10 @@
  *   - c11 the argument count differs from the method's formals
  *   - c12 a class name in backticks, an R6Class call inside a function, a dotted class name
  *   - c13 a file that binds self itself; c13b a file that reads a self bound in another file
+ *   - c14 a method that writes through self (`self$x <- v` and its element and replacement forms)
+ *     before calling through it, and one that rebinds self plainly (`self <- other()`)
+ *   - c15 self$ reaches public members only: a private method of the class or a parent is not on
+ *     self, and a child's private method does not hide a parent's public one
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
@@ -93,6 +97,34 @@ describe('R6 self$method() binds the enclosing class and its parents', () => {
       'R/c13.R',
       'Method:R/c13.R:C13Global.c13_global_m#0',
     ],
+    [
+      'c14 self$x <- v, then an own method',
+      'c14_run_own',
+      'R/c14.R',
+      'Method:R/c14.R:C14Child.c14_own#0',
+    ],
+    [
+      'c14 self$x <- v, then an inherited method',
+      'c14_run_inherited',
+      'R/c14.R',
+      'Method:R/c14.R:C14Base.c14_greet#0',
+    ],
+    ['c14 self$x[[i]] <- v', 'c14_run_elem', 'R/c14.R', 'Method:R/c14.R:C14Child.c14_own#0'],
+    ['c14 self[["x"]] <- v', 'c14_run_dbl', 'R/c14.R', 'Method:R/c14.R:C14Child.c14_own#0'],
+    ['c14 names(self$x) <- v', 'c14_run_repl', 'R/c14.R', 'Method:R/c14.R:C14Child.c14_own#0'],
+    ['c15 a public method', 'c15_call_pub', 'R/c15.R', 'Method:R/c15.R:C15Child.c15_pub#0'],
+    [
+      'c15 a public parent method, not the private one of the same name in the child',
+      'c15_call_shared',
+      'R/c15.R',
+      'Method:R/c15.R:C15Base.c15_shared#0',
+    ],
+    [
+      'c15 a private method calling a public one through self',
+      'c15_from_private',
+      'R/c15.R',
+      'Method:R/c15.R:C15Child.c15_pub#0',
+    ],
   ])('%s', (_label, source, file, expected) => {
     expect(targets(source, file)).toEqual([expected]);
   });
@@ -103,6 +135,21 @@ describe('R6 self$method(): the edge it gets', () => {
     expect(callsFrom('c1_run', 'R/c1.R')).toEqual(['Method:R/c1.R:C1Base.c1_greet#0:global:0.85']);
     expect(callsFrom('c1b_run', 'R/c1b_child.R')).toEqual([
       'Method:R/c1b_base.R:C1bBase.c1b_greet#0:import-resolved:0.85',
+    ]);
+  });
+
+  it('c14 a write through self keeps the receiver-call confidence', () => {
+    expect(callsFrom('c14_run_own', 'R/c14.R')).toEqual([
+      'Method:R/c14.R:C14Child.c14_own#0:global:0.85',
+    ]);
+    expect(callsFrom('c14_run_inherited', 'R/c14.R')).toEqual([
+      'Method:R/c14.R:C14Base.c14_greet#0:global:0.85',
+    ]);
+  });
+
+  it('c15 a public parent method is an in-file MRO hit, past the child private one', () => {
+    expect(callsFrom('c15_call_shared', 'R/c15.R')).toEqual([
+      'Method:R/c15.R:C15Base.c15_shared#0:global:0.85',
     ]);
   });
 });
@@ -134,6 +181,10 @@ describe('R6 self$method() never reaches a free function', () => {
     ['c9 a free function using self', 'c9_free', 'R/c9.R'],
     ['c9 a parameter named self', 'c9_param', 'R/c9.R'],
     ['c9 a method that does not exist', 'c9_missing', 'R/c9.R'],
+    ['c14 self$x <- v, then a method that does not exist', 'c14_run_missing', 'R/c14.R'],
+    ['c15 a private parent method through self', 'c15_call_hidden', 'R/c15.R'],
+    ['c15 a private own method through self', 'c15_call_mine', 'R/c15.R'],
+    ['c15 private$m() (private$ is not modelled)', 'c15_priv_mine', 'R/c15.R'],
   ])('%s: no edge', (_label, source, file) => {
     expect(callsFrom(source, file)).toEqual([]);
   });
@@ -156,6 +207,12 @@ describe('R6 self$method() never reaches a free function', () => {
       'c11_two',
       'c11_dots',
       'c11_none',
+      'c14_own',
+      'c14_greet',
+      'c14_nothere',
+      'c15_hidden',
+      'c15_mine',
+      'c15_shared',
     ]);
     expect(
       getRelationships(result, 'CALLS')
@@ -177,6 +234,15 @@ describe('R6 self$method() that cannot be bound is an outcome, not silence', () 
   it.each([
     ['c4', 'R/c4.R', 'c4_nothere', 4],
     ['c9 a method that does not exist', 'R/c9.R', 'c9_nothere', 12],
+    ['c14 self$x <- v, then a method that does not exist', 'R/c14.R', 'c14_nothere', 24],
+    [
+      'c14 self <- C14Base$new(): typed as the parent, which lacks the method',
+      'R/c14.R',
+      'c14_own',
+      44,
+    ],
+    ['c15 a private parent method is not on self', 'R/c15.R', 'c15_hidden', 16],
+    ['c15 a private own method is not on self', 'R/c15.R', 'c15_mine', 17],
   ])(
     '%s: a typed self whose class and parents lack the method is a suppressed lookup with no candidate',
     (_label, file, name, line) => {
@@ -199,6 +265,14 @@ describe('R6 self$method() that cannot be bound is an outcome, not silence', () 
       o.kind === 'suppressed' ? o.reason : o.kind,
     );
     expect(reasons).toEqual(['receiver-owned-but-unbound', 'receiver-owned-but-unbound']);
+  });
+
+  it('c14 a plain `self <- other()` in a method rebinds self: owned and untyped, no edge', () => {
+    expect(targets('c14_rebind', 'R/c14.R')).toEqual(['Function:R/c14.R:c14_other']);
+    const reasons = outcomesFor('R/c14.R', 'c14_own')
+      .filter((o) => 'range' in o && o.range.startLine === 40)
+      .map((o) => (o.kind === 'suppressed' ? o.reason : o.kind));
+    expect(reasons).toEqual(['receiver-owned-but-unbound']);
   });
 
   it('c13 a file that binds self records no suppression for its free function', () => {

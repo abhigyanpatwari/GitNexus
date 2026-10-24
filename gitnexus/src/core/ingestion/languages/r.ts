@@ -17,6 +17,7 @@ import { R_QUERIES } from '../tree-sitter-queries.js';
 import { RFieldExtractor } from '../field-extractors/r.js';
 import { rMethodExtractor } from '../method-extractors/r.js';
 import { emitRScopeCaptures, rScopeOwnsReceivers } from './r/captures.js';
+import { collectRCaptureSideChannel } from './r/r6-self.js';
 import { interpretRImport, interpretRTypeBinding } from './r/interpret.js';
 import { rPostParse } from './r/post-parse.js';
 import {
@@ -193,6 +194,8 @@ export const rProvider = defineLanguage({
   methodExtractor: rMethodExtractor,
   builtInNames: R_BUILT_INS,
   emitScopeCaptures: emitRScopeCaptures,
+  // Where the R6 private members are (`self$m()` never reaches one), carried to the main thread.
+  collectCaptureSideChannel: collectRCaptureSideChannel,
   scopeOwnsReceivers: rScopeOwnsReceivers,
   interpretImport: interpretRImport,
   interpretTypeBinding: interpretRTypeBinding,
