@@ -2,6 +2,11 @@
 
 interface Window {
   __GITNEXUS_CONFIG__?: {
+    /**
+     * Base URL of the API server, or a root-relative path (`/`, `/prefix`)
+     * meaning the origin that served the page. See DEFAULT_BACKEND_URL in
+     * config/ui-constants.ts and issue #3593.
+     */
     backendUrl?: string;
     /**
      * Node-count above which the WebUI connects in chat-only mode by default
