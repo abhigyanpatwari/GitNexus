@@ -315,7 +315,7 @@ gitnexus/test/unit/mutation/                   unit tests for pure functions
 3. For each `.ts` file in the mutate scope, blank every `TSAsExpression` per KTD7 and run the AST-equality check.
 4. The mutation config derives root test settings from `vitest.config.ts`, derives aliases from the `gitnexus-shared` package `exports`, and takes its include list from a scope file written by the caller.
 
-**Patterns to follow:** `gitnexus/scripts/test-dupes.ts` (exported pure functions plus a main guard); `/tmp/test-audit/v4proj/vitest.confirm.config.ts` (regex aliases).
+**Patterns to follow:** `gitnexus/tools/test-dupes/test-dupes.ts` (exported pure functions plus a main guard); `/tmp/test-audit/v4proj/vitest.confirm.config.ts` (regex aliases).
 
 **Test scenarios:**
 

@@ -5,7 +5,9 @@ name: Mutation Runner Validation
 #
 #   pull_request     gate 2: the conformance suite, one job per profile. Runs only when the
 #                    tooling, its fixtures, the gitnexus package manifest or lockfile (Vitest
-#                    and Stryker versions) or the base Vitest config change.
+#                    and Stryker versions), the base Vitest config, the gitnexus-shared package
+#                    manifest (its exports drive the mutation config's aliases) or the
+#                    setup-gitnexus action (the jobs' install path) change.
 #   workflow_dispatch  gate 2 plus gate 1 (fidelity), gate 3 (oracle), gate 4 (controls) and
 #                    the oracle cost benchmark, each selectable by an input.
 #
@@ -48,6 +50,8 @@ on:
       - 'gitnexus/package.json'
       - 'gitnexus/package-lock.json'
       - 'gitnexus/vitest.config.ts'
+      - 'gitnexus-shared/package.json'
+      - '.github/actions/setup-gitnexus/**'
   workflow_dispatch:
     inputs:
       fidelity:

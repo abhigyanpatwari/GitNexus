@@ -8,7 +8,11 @@
  *   4. Stryker runs as `node --import tsx <prepared>/gitnexus/node_modules/@stryker-mutator/core/
  *      bin/stryker.js run <config>` from `<prepared>/gitnexus`, with `GITNEXUS_MUTATION_SCOPE` set
  *      and the inherited `__STRYKER_ACTIVE_MUTANT__` and `STRYKER_MUTATOR_WORKER` removed; its
- *      output goes to `<out>/stryker.log`;
+ *      output goes to `<out>/stryker.log`. On POSIX it runs detached, as the leader of its own
+ *      process group: SIGINT and SIGTERM to the driver are forwarded to that whole group, and an
+ *      abnormal Stryker exit kills what is left of it, so no Stryker or Vitest worker outlives a
+ *      cancelled or failed run. Windows has no process groups to signal: the signal goes to the
+ *      Stryker process only;
  *   5. the report gets global mutant ids and the span-map check (U2), and is joined with the run
  *      manifest and sidecars (normalise-results.ts) into `<out>/results.json`.
  *
@@ -97,6 +101,13 @@ export interface RunScopeOptions extends CliOptions {
   extraRoots?: readonly string[];
   /** vitest5 only: the runner's Vitest config file and project; the runner defaults otherwise. */
   vitest?: VitestSelection;
+  /**
+   * Gate 2 conformance only: variables set in the Stryker process environment after
+   * {@link strykerChildEnv} scrubbed the inherited ones, so the environment case can hand Stryker
+   * an active mutant the vitest5 runner itself must remove (KTD5). Every other caller leaves it
+   * unset and keeps the default scrub.
+   */
+  childEnv?: Readonly<Record<string, string>>;
 }
 
 export class UsageError extends Error {
@@ -138,18 +149,32 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
   };
 }
 
-/** The Stryker process environment: the scope file named, Stryker's own variables removed. */
+/**
+ * The Stryker process environment: Stryker's own inherited variables removed, then `childEnv`
+ * (see {@link RunScopeOptions.childEnv}) applied, then the run's scope file named.
+ */
 export function strykerChildEnv(
   env: Readonly<Record<string, string | undefined>>,
   scopeFile: string,
+  childEnv: Readonly<Record<string, string>> = {},
 ): Record<string, string> {
   const scrubbed = new Set([INSTRUMENTER_CONSTANTS.ACTIVE_MUTANT_ENV_VARIABLE, WORKER_ENV]);
   const child: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined && !scrubbed.has(key)) child[key] = value;
   }
+  Object.assign(child, childEnv);
   child[MUTATION_SCOPE_ENV] = scopeFile;
   return child;
+}
+
+/**
+ * The pid that reaches the whole Stryker process tree: on POSIX the negative pid, which names the
+ * process group Stryker leads (it runs detached); on Windows, which has no process groups to
+ * signal, the Stryker process itself.
+ */
+export function signalTarget(pid: number, platform: NodeJS.Platform): number {
+  return platform === 'win32' ? pid : -pid;
 }
 
 export function strykerCommand(
@@ -199,27 +224,47 @@ export function readSidecarInputs(sidecarDir: string): SidecarInput[] {
   });
 }
 
-function runStryker(layout: RunLayout): Promise<{ exitCode: number; wallClockMs: number }> {
+function runStryker(
+  layout: RunLayout,
+  childEnv: Readonly<Record<string, string>> | undefined,
+): Promise<{ exitCode: number; wallClockMs: number }> {
   const { command, args, cwd } = strykerCommand(layout, process.execPath);
   const log = createWriteStream(layout.logFile);
   const started = performance.now();
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
-      env: strykerChildEnv(process.env, layout.scopeFile),
+      env: strykerChildEnv(process.env, layout.scopeFile, childEnv),
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Its own process group (POSIX), so one signal reaches every Stryker and Vitest worker.
+      detached: process.platform !== 'win32',
     });
-    const forward = (signal: NodeJS.Signals): void => {
-      child.kill(signal);
+    const signalTree = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(signalTarget(child.pid, process.platform), signal);
+      } catch (error) {
+        // ESRCH: the whole group is gone. Anything else: at least reach Stryker itself.
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') child.kill(signal);
+      }
     };
-    process.once('SIGINT', forward);
-    process.once('SIGTERM', forward);
+    // Detached workers no longer get the terminal's signals, so every signal is forwarded (a
+    // second SIGINT makes Stryker force its exit) until Stryker is gone.
+    process.on('SIGINT', signalTree);
+    process.on('SIGTERM', signalTree);
     child.stdout.pipe(log, { end: false });
     child.stderr.pipe(log, { end: false });
-    child.once('error', reject);
+    child.once('error', (error) => {
+      signalTree('SIGKILL');
+      reject(error);
+    });
+    // A cancelled or failed Stryker can leave workers behind: kill what is left of its group.
+    child.once('exit', (code, signal) => {
+      if (code !== 0 || signal !== null) signalTree('SIGKILL');
+    });
     child.once('close', (code, signal) => {
-      process.off('SIGINT', forward);
-      process.off('SIGTERM', forward);
+      process.off('SIGINT', signalTree);
+      process.off('SIGTERM', signalTree);
       log.end(() =>
         resolve({
           exitCode: code ?? (signal === null ? 1 : 128),
@@ -288,7 +333,7 @@ export async function runScope(
   }
 
   console.log(`mutation run: Stryker ${options.variant} running; log ${layout.logFile}`);
-  const stryker = await runStryker(layout);
+  const stryker = await runStryker(layout, options.childEnv);
   if (stryker.exitCode !== 0 || !existsSync(layout.reportFile)) {
     throw new StrykerRunError(
       `Stryker exited with ${stryker.exitCode} after ${stryker.wallClockMs} ms` +

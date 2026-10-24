@@ -1,7 +1,8 @@
 /**
- * Locks the scope driver's pure helpers (U10): CLI parsing, the Stryker command line, and the
- * child environment, which must name the scope file and must not inherit Stryker's own worker and
- * active-mutant variables (KTD5, KTD10).
+ * Locks the scope driver's pure helpers (U10): CLI parsing, the Stryker command line, the child
+ * environment, which must name the scope file and must not inherit Stryker's own worker and
+ * active-mutant variables (KTD5, KTD10) unless a caller sets them explicitly, and the pid that
+ * signals reach the whole Stryker process tree through.
  */
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -9,6 +10,7 @@ import { runLayout } from '../../../tools/mutation/driver/stryker-config.js';
 import {
   findSandboxes,
   parseCliArgs,
+  signalTarget,
   strykerChildEnv,
   strykerCommand,
 } from '../../../tools/mutation/driver/run-scope.js';
@@ -59,15 +61,13 @@ describe('parseCliArgs', () => {
 });
 
 describe('strykerChildEnv', () => {
-  const env = strykerChildEnv(
-    {
-      PATH: '/bin',
-      __STRYKER_ACTIVE_MUTANT__: '12',
-      STRYKER_MUTATOR_WORKER: '3',
-      GITNEXUS_MUTATION_SCOPE: 'stale.json',
-    },
-    '/out/scope.json',
-  );
+  const inherited = {
+    PATH: '/bin',
+    __STRYKER_ACTIVE_MUTANT__: '12',
+    STRYKER_MUTATOR_WORKER: '3',
+    GITNEXUS_MUTATION_SCOPE: 'stale.json',
+  };
+  const env = strykerChildEnv(inherited, '/out/scope.json');
 
   it('names the run scope file', () => {
     expect(env.GITNEXUS_MUTATION_SCOPE).toBe('/out/scope.json');
@@ -75,6 +75,34 @@ describe('strykerChildEnv', () => {
 
   it('scrubs inherited Stryker worker and active-mutant variables', () => {
     expect(Object.keys(env).sort()).toEqual(['GITNEXUS_MUTATION_SCOPE', 'PATH']);
+  });
+
+  // Gate 2's environment case hands Stryker an active mutant the runner itself must remove.
+  it('sets an explicit child environment after the scrub', () => {
+    expect(
+      strykerChildEnv(inherited, '/out/scope.json', { __STRYKER_ACTIVE_MUTANT__: '7' }),
+    ).toEqual({
+      PATH: '/bin',
+      __STRYKER_ACTIVE_MUTANT__: '7',
+      GITNEXUS_MUTATION_SCOPE: '/out/scope.json',
+    });
+  });
+
+  it('keeps the run scope file over a child environment that names another', () => {
+    const child = strykerChildEnv(inherited, '/out/scope.json', {
+      GITNEXUS_MUTATION_SCOPE: 'other.json',
+    });
+    expect(child.GITNEXUS_MUTATION_SCOPE).toBe('/out/scope.json');
+  });
+});
+
+describe('signalTarget', () => {
+  it.each([
+    ['linux', -4242],
+    ['darwin', -4242],
+    ['win32', 4242],
+  ] as const)('signals the Stryker process tree on %s through pid %i', (platform, target) => {
+    expect(signalTarget(4242, platform)).toBe(target);
   });
 });
 

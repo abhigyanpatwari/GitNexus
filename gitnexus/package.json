@@ -61,7 +61,7 @@
     "test:coverage": "vitest run --coverage",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
     "test:benchmarks": "node --import tsx scripts/run-benchmarks.ts",
-    "test:dupes": "node --import tsx scripts/test-dupes.ts",
+    "test:dupes": "node --import tsx tools/test-dupes/test-dupes.ts",
     "test:mutation:prepare": "node --import tsx tools/mutation/prepare/prepare.ts",
     "test:mutation:run": "node --import tsx tools/mutation/driver/run-scope.ts",
     "test:mutation:conformance": "node --import tsx tools/mutation/conformance/run-conformance.ts",

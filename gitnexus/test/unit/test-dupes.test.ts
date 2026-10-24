@@ -1,5 +1,5 @@
 /**
- * Locks the advisory duplicate-test scan (scripts/test-dupes.ts) that CI posts in the
+ * Locks the advisory duplicate-test scan (tools/test-dupes/test-dupes.ts) that CI posts in the
  * sticky PR comment. The false-positive table pins every case the 2026-10 audit found
  * where an identical `it` body tested something different.
  */
@@ -11,7 +11,7 @@ import {
   type Finding,
   type SourceFile,
   type Touched,
-} from '../../scripts/test-dupes.js';
+} from '../../tools/test-dupes/test-dupes.js';
 
 const UNIT = 'gitnexus/test/unit';
 const file = (path: string, ...lines: string[]): SourceFile => ({ path, source: lines.join('\n') });
@@ -234,6 +234,18 @@ describe('orphanBenchGates', () => {
     expect(summary(orphanBenchGates([bench, lib, workflow], touched))).toEqual([
       'orphan-bench-gate gitnexus/bench/foo/measure.mjs:2 -> ',
     ]);
+  });
+
+  it.each([
+    ['an unrelated line of the bench script', 1, []],
+    ['the --check line itself', 2, ['orphan-bench-gate gitnexus/bench/foo/measure.mjs:2 -> ']],
+  ])('reports an orphan gate only when the diff touches %s', (_label, line, expected) => {
+    const workflow = file(
+      '.github/workflows/ci-tests.yml',
+      'run: node bench/bar/measure.mjs --check',
+    );
+    const lines: Touched = new Map([[bench.path, new Set([line])]]);
+    expect(summary(orphanBenchGates([bench, lib, workflow], lines))).toEqual(expected);
   });
 
   it('accepts a gate a workflow runs and a library a sibling script imports', () => {

@@ -143,7 +143,7 @@ Four layers. Layers 0–2 run over every test in scope, and Layer 0 agreement is
 
 ### 5.1 Layer 0 — structural scan (exists, PR-time)
 
-`gitnexus/scripts/test-dupes.ts` from #3686 checks:
+`gitnexus/tools/test-dupes/test-dupes.ts` from #3686 checks:
 
 - same body + same setup
 - literal-assertion pins

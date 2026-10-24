@@ -14,8 +14,12 @@
  *   - Stryker's per-mutant timeout deviation at {@link TIMEOUT_MS}: far above any fixture run, so
  *     only the fixture's own limits (Vitest testTimeout and hookTimeout of 2000 ms, the hit
  *     limit) decide its timeout cases;
- *   - `__STRYKER_ACTIVE_MUTANT__` exported in this process's environment while a profile with an
- *     `environment` case runs.
+ *   - `__STRYKER_ACTIVE_MUTANT__` exported to the Stryker process (runScope `childEnv`, applied
+ *     after the driver's own scrub) while a profile with an `environment` case runs, so only the
+ *     vitest5 runner's removal of it (runner/plugin.ts init, runner/setup.ts) keeps it from the
+ *     instrumented code;
+ *   - the fingerprint of its inputs (fingerprint.ts) recorded in the run directory's
+ *     conformance-run.json.
  * Profiles and scopes run one after another.
  *
  * Usage (from gitnexus/):
@@ -24,9 +28,10 @@
  * `--out` defaults to `<os tmpdir>/gitnexus-mutation-conformance` (it must lie outside the
  * checkout); each run lands in `<out>/<profile>/<scope>/` and the observed facts of every run in
  * `<out>/observed.json`, in the shape of expected.json's mutant facts, for refreshing it.
- * `--compare-only` skips the runs and compares the results already in `<out>`.
- * Exit codes: 0 every pinned case holds; 1 a case differs (each difference names its case) or a
- * run failed; 2 usage or setup error.
+ * `--compare-only` skips the runs and compares the results already in `<out>`; a run whose
+ * recorded input fingerprint differs from the checkout's is reported as stale artefacts instead.
+ * Exit codes: 0 every pinned case holds; 1 a case differs (each difference names its case), a
+ * run failed or (`--compare-only`) a run is stale; 2 usage or setup error.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -51,17 +56,31 @@ import {
   type Profile,
   type ScopeSpec,
 } from './compare.js';
+import {
+  FIXTURE_ROOT,
+  currentFingerprint,
+  staleConformance,
+  type InputFingerprint,
+} from './fingerprint.js';
 
 /** The fixture project, relative to the `gitnexus/` package. */
-export const FIXTURE_ROOT = 'test/fixtures/mutation-conformance';
+export { FIXTURE_ROOT };
 const FIXTURE_REPO_ROOT = `gitnexus/${FIXTURE_ROOT}`;
 const VITEST = { configFile: `${FIXTURE_ROOT}/vitest.config.ts`, project: 'conformance' };
 /** Stryker `timeoutMS`; see the module comment. */
 export const TIMEOUT_MS = 60_000;
 const ACTIVE_MUTANT_ENV = INSTRUMENTER_CONSTANTS.ACTIVE_MUTANT_ENV_VARIABLE;
 const MARKER_FILE = '.gitnexus-mutation-conformance';
-/** Written into each run directory: what the driver exported while that run ran. */
+/**
+ * Written into each run directory: what the driver exported to Stryker while that run ran and
+ * the fingerprint of the run's inputs.
+ */
 const RUN_RECORD_FILE = 'conformance-run.json';
+
+interface RunRecord {
+  exportedActiveMutant: string | null;
+  inputs: InputFingerprint;
+}
 
 class UsageError extends Error {
   override name = 'UsageError';
@@ -128,10 +147,7 @@ function observeRun(layout: Layout, profile: Profile, scope: ScopeSpec): Observe
   }
   const dryRun =
     results.dryRun === null ? null : (readJsonFile(results.dryRun.file) as SidecarRecord);
-  const runRecord = path.join(runDir, RUN_RECORD_FILE);
-  const exported = existsSync(runRecord)
-    ? (readJsonFile(runRecord) as { exportedActiveMutant: string | null }).exportedActiveMutant
-    : null;
+  const exported = readRunRecord(runDir)?.exportedActiveMutant ?? null;
   return observeScopeRun({
     profile: profile.name,
     scope: scope.name,
@@ -141,6 +157,12 @@ function observeRun(layout: Layout, profile: Profile, scope: ScopeSpec): Observe
     exportedActiveMutant: exported,
     fixtureRoot: FIXTURE_ROOT,
   });
+}
+
+/** The run record of a run directory, or null; `inputs` is checked by staleConformance. */
+function readRunRecord(runDir: string): Partial<RunRecord> | null {
+  const file = path.join(runDir, RUN_RECORD_FILE);
+  return existsSync(file) ? (readJsonFile(file) as Partial<RunRecord>) : null;
 }
 
 async function runPair(
@@ -153,32 +175,28 @@ async function runPair(
   const scopeFile = layout.scopeFile(scope);
   mkdirSync(path.dirname(scopeFile), { recursive: true });
   writeFileSync(scopeFile, `${JSON.stringify(driverScope(scope), null, 2)}\n`);
-  const previous = process.env[ACTIVE_MUTANT_ENV];
-  if (exported === null) delete process.env[ACTIVE_MUTANT_ENV];
-  else process.env[ACTIVE_MUTANT_ENV] = exported;
-  try {
-    const fixtureEntries = readdirSync(path.join(repoRoot, 'gitnexus', path.dirname(FIXTURE_ROOT)));
-    await runScope({
-      repoRoot,
-      scopeFile,
-      outDir: layout.runDir(profile, scope),
-      variant: 'vitest5',
-      concurrency: profile.concurrency,
-      maxTestRunnerReuse: profile.maxTestRunnerReuse,
-      timeoutMS: TIMEOUT_MS,
-      command: undefined,
-      ignoredDirs: conformanceIgnoredDirs(fixtureEntries),
-      extraRoots: [FIXTURE_REPO_ROOT],
-      vitest: VITEST,
-    });
-    writeFileSync(
-      path.join(layout.runDir(profile, scope), RUN_RECORD_FILE),
-      `${JSON.stringify({ exportedActiveMutant: exported }, null, 2)}\n`,
-    );
-  } finally {
-    if (previous === undefined) delete process.env[ACTIVE_MUTANT_ENV];
-    else process.env[ACTIVE_MUTANT_ENV] = previous;
-  }
+  const inputs = currentFingerprint(path.join(repoRoot, 'gitnexus'));
+  const fixtureEntries = readdirSync(path.join(repoRoot, 'gitnexus', path.dirname(FIXTURE_ROOT)));
+  await runScope({
+    repoRoot,
+    scopeFile,
+    outDir: layout.runDir(profile, scope),
+    variant: 'vitest5',
+    concurrency: profile.concurrency,
+    maxTestRunnerReuse: profile.maxTestRunnerReuse,
+    timeoutMS: TIMEOUT_MS,
+    command: undefined,
+    ignoredDirs: conformanceIgnoredDirs(fixtureEntries),
+    extraRoots: [FIXTURE_REPO_ROOT],
+    vitest: VITEST,
+    // Past the driver's scrub: the runner itself must keep it from the instrumented code.
+    childEnv: exported === null ? undefined : { [ACTIVE_MUTANT_ENV]: exported },
+  });
+  const record: RunRecord = { exportedActiveMutant: exported, inputs };
+  writeFileSync(
+    path.join(layout.runDir(profile, scope), RUN_RECORD_FILE),
+    `${JSON.stringify(record, null, 2)}\n`,
+  );
 }
 
 function prepareOut(repoRoot: string, out: string, compareOnly: boolean): void {
@@ -237,6 +255,7 @@ async function main(): Promise<void> {
     };
     const layout = layoutOf(path.resolve(values.out));
     prepareOut(repoRoot, layout.out, values['compare-only']);
+    const current = values['compare-only'] ? currentFingerprint(packageDir) : null;
 
     const observed: ObservedScopeRun[] = [];
     const failures: Difference[] = [];
@@ -245,7 +264,21 @@ async function main(): Promise<void> {
       for (const scope of expected.scopes) {
         const runStarted = performance.now();
         try {
-          if (!values['compare-only']) {
+          if (current !== null) {
+            const stale = staleConformance(
+              readRunRecord(layout.runDir(profile, scope))?.inputs,
+              current,
+            );
+            if (stale !== null) {
+              failures.push({
+                profile: profile.name,
+                scope: scope.name,
+                case: 'stale',
+                detail: stale,
+              });
+              continue;
+            }
+          } else {
             console.log(
               `conformance: ${profile.name} / ${scope.name}: running (concurrency ` +
                 `${profile.concurrency}, maxTestRunnerReuse ${profile.maxTestRunnerReuse}` +

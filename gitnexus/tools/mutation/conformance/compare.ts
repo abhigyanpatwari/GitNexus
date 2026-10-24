@@ -14,8 +14,9 @@
  *     tests        tests of a scope with pinned ids and flags
  *     processes    a profile's process rule ({@link ProcessRule}), optionally with two mutant cases
  *                  that one process must run back to back (`consecutive`)
- *     environment  a profile that runs with `__STRYKER_ACTIVE_MUTANT__` exported in the driver's
- *                  environment, set to the pinned local id of another case's mutant
+ *     environment  a profile that runs with `__STRYKER_ACTIVE_MUTANT__` exported to the Stryker
+ *                  process (past the driver's scrub), set to the pinned local id of another
+ *                  case's mutant; only the runner's own removal keeps it from the Vitest workers
  *
  * Test ids and file paths are fixture-relative: `runtime.case.ts#doubles two` stands for the
  * runner id `test/fixtures/mutation-conformance/runtime.case.ts#doubles two`. Mutants Stryker

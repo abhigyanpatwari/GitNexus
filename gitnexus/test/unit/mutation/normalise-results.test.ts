@@ -255,6 +255,43 @@ describe('normaliseRun: integrity flags', () => {
     expect(result.flags).toEqual([]);
   });
 
+  // A loop turned endless at module load or in a beforeAll fixture hits the instrumenter's limit
+  // (or the hook timeout) before any requested test runs: a timeout, explained by its row.
+  it.each([
+    [
+      'a hit-limit timeout while collecting the file',
+      undefined,
+      'Stryker: Hit count limit reached',
+    ],
+    ['a beforeAll hook timeout', 'h_s0', 'Hook timed out in 2000ms'],
+  ])('does not flag zero tests explained by %s', (_label, suiteTaskId, message) => {
+    const timeout = classification({
+      status: 'timeout',
+      outcome: 'timeout',
+      nrOfTests: 0,
+      outsideTest: [
+        { file: 'test/unit/a.test.ts', suiteTaskId, outcome: 'timeout', attributedTo: [], message },
+      ],
+    });
+    const result = normaliseRun(run([mutant('4', { status: 'Timeout' })], [sidecar('4', timeout)]));
+    expect(result.flags).toEqual([]);
+    expect(result.summary.zeroTestRuns).toBe(0);
+  });
+
+  it.each([
+    ['an invalid run', 'RuntimeError', classification({ status: 'error', outcome: 'invalid' })],
+    [
+      'a timeout with no outside-test row',
+      'Timeout',
+      classification({ status: 'timeout', outcome: 'timeout' }),
+    ],
+  ] as const)('still flags zero tests for %s', (_label, status, result) => {
+    const normalised = normaliseRun(
+      run([mutant('4', { status })], [sidecar('4', { ...result, nrOfTests: 0 })]),
+    );
+    expect(normalised.flags.map((flag) => flag.kind)).toEqual(['zero-tests']);
+  });
+
   it('flags a sidecar status that disagrees with the Stryker status', () => {
     const result = normaliseRun(
       run([mutant('5', { status: 'Survived' })], [sidecar('5', killedByOne)]),

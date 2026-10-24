@@ -463,7 +463,7 @@ jobs:
             DUPES_FILE=$(find_first "$DIR/test-dupes" "test-dupes.json")
             if [ -n "$DUPES_FILE" ]; then
               jq -r '
-                def path_ok: type == "string" and test("^[A-Za-z0-9._/@+-]{1,300}$");
+                def path_ok: type == "string" and test("\\A[A-Za-z0-9._/@+-]{1,300}\\z");
                 def line_ok: type == "number" and . >= 1 and . <= 1000000 and floor == .;
                 def loc: "`\(.file):\(.line)`";
                 [ .findings[]?

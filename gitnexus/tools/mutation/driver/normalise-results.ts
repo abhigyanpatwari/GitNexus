@@ -46,8 +46,9 @@
  *   missing-sidecar            a Survived or RuntimeError mutant (the runner ran it) without a record
  *   killed-by-not-in-sidecar   a killedBy entry the latest record does not list
  *   status-mismatch            the latest record's status disagrees with Stryker's status
- *   zero-tests                 an attempt that ran zero tests, unless the file failed to collect
- *                              or a file-level hook failed (killed-outside-test rows)
+ *   zero-tests                 an attempt that ran zero tests, unless an outside-test row explains
+ *                              it: the file failed to collect or a file or suite hook failed, by
+ *                              a kill or a timeout (as runner/classify-outcome.ts decides)
  */
 import {
   MUTANT_STATUSES,
@@ -373,6 +374,16 @@ const toSummary = (input: SidecarInput): SidecarSummary => {
 const isOutsideTestKill = (outcome: OutcomeClass): boolean =>
   outcome === 'killed-outside-test:collection' || outcome === 'killed-outside-test:hook';
 
+/**
+ * Whether an attempt's zero tests are explained by a file-level row: a collection failure or a
+ * failed file or suite hook that killed or timed out (a hit limit while collecting, a beforeAll
+ * hook timeout). runner/classify-outcome.ts accepts the same rows before it calls a run that
+ * ran zero tests invalid.
+ */
+const zeroTestsExplained = (result: SidecarRecord['result']): boolean =>
+  isOutsideTestKill(result.outcome) ||
+  result.outsideTest.some((row) => isOutsideTestKill(row.outcome) || row.outcome === 'timeout');
+
 /** Joins report, manifest and sidecars; pure. See the module comment for every rule. */
 export function normaliseRun(input: NormaliseInput): NormalisedRun {
   const { identities, manifest, sidecars } = input;
@@ -486,7 +497,7 @@ export function normaliseRun(input: NormaliseInput): NormalisedRun {
     }
     for (const attempt of attempts) {
       const { nrOfTests, outcome: attemptOutcome } = attempt.record.result;
-      if (nrOfTests === 0 && !isOutsideTestKill(attemptOutcome)) {
+      if (nrOfTests === 0 && !zeroTestsExplained(attempt.record.result)) {
         zeroTestRuns++;
         flag('zero-tests', `${attempt.file} ran zero tests (${attemptOutcome})`, localId);
       }

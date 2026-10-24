@@ -17,7 +17,8 @@
  * split a group, never merge one, so the scan errs towards missing a dupe rather than
  * inventing one. Python tests are not scanned.
  *
- * Usage (from gitnexus/): node --import tsx scripts/test-dupes.ts [--base <ref>] [--all] [--json <file>]
+ * Usage (from gitnexus/; `npm run test:dupes` runs the same):
+ *   node --import tsx tools/test-dupes/test-dupes.ts [--base <ref>] [--all] [--json <file>]
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -576,7 +577,7 @@ function extract(files: SourceFile[]): Corpus {
 
 // ── Grouping and reporting ─────────────────────────────────────────────────
 
-const touches = (touched: Touched, it: Item): boolean => {
+const touches = (touched: Touched, it: Location & { endLine: number }): boolean => {
   if (touched === null) return true;
   const lines = touched.get(it.file);
   if (!lines) return false;
@@ -685,10 +686,11 @@ export function orphanBenchGates(files: SourceFile[], touched: Touched): Finding
   for (const f of files) {
     if (!/^gitnexus\/(bench|scripts\/bench)\/.+\.[mc]?[jt]s$/.test(f.path)) continue;
     if (f.path.startsWith('gitnexus/bench/lib/')) continue; // imported by benches, never run
-    if (touched !== null && !touched.has(f.path)) continue;
     const lines = f.source.split('\n');
     const idx = lines.findIndex((l) => l.includes('--check'));
     if (idx < 0 || suppressed(lines, idx + 1)) continue;
+    // Like every other kind: only a changed `--check` line is reported, not any edit to the file.
+    if (!touches(touched, { file: f.path, line: idx + 1, endLine: idx + 1 })) continue;
     const ref = f.path.replace(/^gitnexus\//, '');
     if (runners.some((s) => s.includes(ref))) continue;
     const dir = path.posix.dirname(f.path);
