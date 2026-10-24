@@ -487,12 +487,13 @@ describe('generateAIContextFiles', () => {
       });
     });
 
-    it('repairs a file the previous writer left with mixed endings, then leaves it alone', async () => {
+    it.each([false, true])('repairs mixed endings once with noStats=%s', async (noStats) => {
       await withRepo(async (dir, storage) => {
         // Build the block as the previous writer wrote it: LF, inside CRLF prose.
         const file = path.join(dir, 'CLAUDE.md');
         await fs.writeFile(file, '# Guide\n', 'utf-8');
-        await generateAIContextFiles(dir, storage, 'CrlfProject', stats);
+        const options = { noStats, skipSkills: true };
+        await generateAIContextFiles(dir, storage, 'CrlfProject', stats, undefined, options);
         const lfFile = await fs.readFile(file, 'utf-8');
         const block = lfFile.slice(lfFile.indexOf('<!-- gitnexus:start -->'));
         const mixed = crlf(['# Guide', '', 'Hand-written, kept as is.', '']) + block;
@@ -502,22 +503,96 @@ describe('generateAIContextFiles', () => {
 
         // Counts moved, so the block itself is left alone: the file is still
         // written once, uniformly in its own ending.
-        await generateAIContextFiles(dir, storage, 'CrlfProject', {
-          nodes: 11,
-          edges: 21,
-          processes: 4,
-        });
+        const first = await generateAIContextFiles(
+          dir,
+          storage,
+          'CrlfProject',
+          { nodes: 11, edges: 21, processes: 4 },
+          undefined,
+          options,
+        );
         const repaired = await fs.readFile(file, 'utf-8');
+        expect(first.files).toContain('CLAUDE.md (updated)');
         expect(loneLfCount(repaired)).toBe(0);
         expect(repaired).toContain('Hand-written, kept as is.\r\n');
         expect(repaired.replace(/\r\n/g, '\n')).toBe(mixed.replace(/\r\n/g, '\n'));
 
-        await generateAIContextFiles(dir, storage, 'CrlfProject', {
-          nodes: 12,
-          edges: 22,
-          processes: 5,
-        });
+        // A fixed old mtime proves the repeat does not rewrite identical bytes.
+        const oldTime = new Date('2000-01-01T00:00:00Z');
+        await fs.utimes(file, oldTime, oldTime);
+        const beforeRepeat = await fs.stat(file);
+        const second = await generateAIContextFiles(
+          dir,
+          storage,
+          'CrlfProject',
+          { nodes: 12, edges: 22, processes: 5 },
+          undefined,
+          options,
+        );
+        expect(second.files).toContain('CLAUDE.md (preserved)');
         expect(await fs.readFile(file, 'utf-8')).toBe(repaired);
+        expect((await fs.stat(file)).mtimeMs).toBe(beforeRepeat.mtimeMs);
+      });
+    });
+
+    it.each([
+      {
+        name: 'count-only change',
+        line: 'Indexed as **CrlfProject** (1 symbols, 2 relationships, 3 execution flows). Custom.',
+        noStats: false,
+      },
+      {
+        name: 'no stats line',
+        line: 'A custom block without a generated stats line.',
+        noStats: false,
+      },
+      { name: 'count-free stats line', line: 'Indexed as **CrlfProject**. Custom.', noStats: true },
+    ])('repairs a mixed keep block once: $name', async ({ line, noStats }) => {
+      await withRepo(async (dir, storage) => {
+        const block = [
+          '<!-- gitnexus:start -->',
+          '<!-- gitnexus:keep -->',
+          line,
+          '| query | Find flows |',
+          '<!-- gitnexus:end -->',
+          '',
+        ].join('\n');
+        const mixed =
+          crlf(['# Guide', '', 'Keep this prose.', '']) + block + crlf(['', 'Keep this footer.']);
+        const expected = mixed.replace(/\r?\n/g, '\r\n');
+        const files = ['AGENTS.md', 'CLAUDE.md'];
+        for (const name of files) await fs.writeFile(path.join(dir, name), mixed, 'utf-8');
+        const options = { noStats, skipSkills: true };
+        const first = await generateAIContextFiles(
+          dir,
+          storage,
+          'CrlfProject',
+          stats,
+          undefined,
+          options,
+        );
+        for (const name of files) {
+          expect(first.files).toContain(`${name} (updated)`);
+          expect(await fs.readFile(path.join(dir, name), 'utf-8')).toBe(expected);
+        }
+        const oldTime = new Date('2000-01-01T00:00:00Z');
+        for (const name of files) await fs.utimes(path.join(dir, name), oldTime, oldTime);
+        const mtimes = await Promise.all(
+          files.map(async (name) => (await fs.stat(path.join(dir, name))).mtimeMs),
+        );
+        const second = await generateAIContextFiles(
+          dir,
+          storage,
+          'CrlfProject',
+          { nodes: 11, edges: 21, processes: 4 },
+          undefined,
+          options,
+        );
+        for (const [i, name] of files.entries()) {
+          expect(second.files).toContain(`${name} (preserved)`);
+          expect(await fs.readFile(path.join(dir, name), 'utf-8')).toBe(expected);
+          expect((await fs.stat(path.join(dir, name))).mtimeMs).toBe(mtimes[i]);
+        }
       });
     });
 
@@ -1397,36 +1472,47 @@ Indexed as **Idem** (1 symbols, 2 relationships, 3 execution flows). Custom.
     }
   });
 
-  it('CRLF file with keep marker: stats line updates without corrupting content (#1508 review F5)', async () => {
-    // upsertGitNexusSection writes with .trim() + '\n', so the saved file uses LF
-    // line endings throughout — CRLF in the seed input is not preserved.
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-crlf-'));
-    try {
-      const claudePath = path.join(dir, 'CLAUDE.md');
-      const crlfContent =
-        '# Project\r\n' +
-        '\r\n' +
-        '<!-- gitnexus:start -->\r\n' +
-        '<!-- gitnexus:keep -->\r\n' +
-        'Indexed as **CRLFOldName** (5 symbols, 6 relationships, 7 execution flows). Custom CRLF.\r\n' +
-        '<!-- gitnexus:end -->\r\n';
-      await fs.writeFile(claudePath, crlfContent, 'utf-8');
+  it.each([false, true])(
+    'CRLF keep block updates preserve endings with noStats=%s (#1508)',
+    async (noStats) => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-crlf-'));
+      try {
+        const claudePath = path.join(dir, 'CLAUDE.md');
+        const crlfContent =
+          '# Project\r\n' +
+          '\r\n' +
+          '<!-- gitnexus:start -->\r\n' +
+          '<!-- gitnexus:keep -->\r\n' +
+          'Indexed as **CRLFOldName** (5 symbols, 6 relationships, 7 execution flows). Custom CRLF.\r\n' +
+          '<!-- gitnexus:end -->\r\n';
+        await fs.writeFile(claudePath, crlfContent, 'utf-8');
 
-      const stats = { nodes: 50, edges: 60, processes: 7 };
-      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'CRLFTest', stats);
+        const stats = { nodes: 50, edges: 60, processes: 7 };
+        const generated = await generateAIContextFiles(
+          dir,
+          path.join(dir, '.gitnexus'),
+          'CRLFTest',
+          stats,
+          undefined,
+          { noStats, skipSkills: true },
+        );
 
-      const result = await fs.readFile(claudePath, 'utf-8');
-      // Stats updated correctly
-      expect(result).toContain('50 symbols');
-      expect(result).toContain('60 relationships');
-      // Custom prose preserved
-      expect(result).toContain('Custom CRLF');
-      // No verbose template injected
-      expect(result).not.toContain('## Always Do');
-    } finally {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
-  });
+        const result = await fs.readFile(claudePath, 'utf-8');
+        const statsLine = noStats
+          ? 'Indexed as **CRLFTest**'
+          : 'Indexed as **CRLFTest** (50 symbols, 60 relationships, 7 execution flows)';
+        expect(generated.files).toContain('CLAUDE.md (updated)');
+        expect(result).toBe(
+          crlfContent.replace(
+            'Indexed as **CRLFOldName** (5 symbols, 6 relationships, 7 execution flows)',
+            statsLine,
+          ),
+        );
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('noStats + keep marker: stats line drops the volatile counts (#1706)', async () => {
     // #1706: --no-stats must win in the keep-marker path too. A lean block
