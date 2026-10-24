@@ -39,7 +39,6 @@ import { computeDartArityMetadata } from './arity-metadata.js';
 import { synthesizeDartReceiverBinding } from './receiver-binding.js';
 import { synthesizeDartSignatureBindings } from './signature-bindings.js';
 import { getDartParser, getDartScopeQuery } from './query.js';
-import { preprocessDartExtensionTypes } from './extension-type-preprocess.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -156,17 +155,13 @@ export function emitDartScopeCaptures(
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
-  // Idempotent re-application: `extractParsedFile` already preprocesses, but
-  // direct emitter callers (benchmarks, capture goldens) must see the same
-  // program the pipeline does.
-  const parseText = preprocessDartExtensionTypes(sourceText);
   let tree: Parser.Tree;
   if (cachedTree !== undefined && cachedTree !== null) {
     tree = cachedTree as Parser.Tree;
     recordCacheHit();
   } else {
-    tree = parseSourceSafe(getDartParser(), parseText, undefined, {
-      bufferSize: getTreeSitterBufferSize(parseText),
+    tree = parseSourceSafe(getDartParser(), sourceText, undefined, {
+      bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
   }
@@ -311,7 +306,7 @@ export function emitDartScopeCaptures(
       emitDartFieldAssignmentBindings(node, out, memo);
       return;
     }
-    if (node.type === 'extension_declaration') {
+    if (node.type === 'extension_declaration' || node.type === 'extension_type_declaration') {
       emitExtensionImplementsHeritage(node, out);
       return;
     }
@@ -625,6 +620,33 @@ function findDirectCallValue(initVarDef: SyntaxNode): SyntaxNode | null {
 }
 
 /**
+ * `prefix.member(…)` as the whole initializer, written directly or awaited: the
+ * dotted callee. The shared chain follow types a namespace function from its
+ * return annotation, and a member call through the receiver's class (#3498).
+ * An awaited `Future<C>` is not unwrapped yet, so that receiver records a drop.
+ * Longer chains (`rp.make().other`) are left alone.
+ */
+function qualifiedCallValue(initVarDef: SyntaxNode): string | null {
+  let head = initVarDef.childForFieldName('value');
+  if (head?.type === 'unary_expression') head = head.namedChild(0);
+  if (head?.type === 'await_expression') head = head.namedChild(0);
+  if (head?.type !== 'identifier') return null;
+  const member = head.nextNamedSibling;
+  const call = member?.nextNamedSibling;
+  const inner = member?.type === 'selector' ? member.namedChild(0) : null;
+  const name = inner?.type === 'unconditional_assignable_selector' ? selectorName(inner) : null;
+  if (
+    name === null ||
+    call?.type !== 'selector' ||
+    call.namedChild(0)?.type !== 'argument_part' ||
+    call.nextNamedSibling !== null
+  ) {
+    return null;
+  }
+  return `${head.text}.${name.text}`;
+}
+
+/**
  * Callee identifier of a class field initialized by a direct constructor call —
  * `var b = Outer();` / `final b = Outer();` — or `null` for anything else.
  *
@@ -649,13 +671,13 @@ function dartFieldConstructorCallee(nameNode: SyntaxNode): SyntaxNode | null {
 function emitVarTypeBinding(initVarDef: SyntaxNode, out: CaptureMatch[]): void {
   const nameNode = initVarDef.childForFieldName('name');
   if (nameNode === null) return;
-  const calleeId = findDirectCallValue(initVarDef);
-  if (calleeId === null) return;
+  const callee = findDirectCallValue(initVarDef)?.text ?? qualifiedCallValue(initVarDef);
+  if (callee === null) return;
 
   out.push({
     '@type-binding.constructor': nodeToCapture('@type-binding.constructor', initVarDef),
     '@type-binding.name': syntheticCapture('@type-binding.name', initVarDef, nameNode.text),
-    '@type-binding.type': syntheticCapture('@type-binding.type', initVarDef, calleeId.text),
+    '@type-binding.type': syntheticCapture('@type-binding.type', initVarDef, callee),
   });
 }
 
@@ -1129,8 +1151,11 @@ function emitExtensionImplementsHeritage(extensionNode: SyntaxNode, out: Capture
   const nameNode = extensionNode.childForFieldName('name');
   if (nameNode === null) return;
 
-  const bodyStart = extensionNode.text.indexOf('{');
-  const header = bodyStart === -1 ? extensionNode.text : extensionNode.text.slice(0, bodyStart);
+  const body = extensionNode.childForFieldName('body');
+  const header =
+    body === null
+      ? extensionNode.text
+      : extensionNode.text.slice(0, body.startIndex - extensionNode.startIndex);
   const implementsIndex = header.indexOf('implements');
   if (implementsIndex === -1) return;
 

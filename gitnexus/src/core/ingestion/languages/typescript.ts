@@ -7,7 +7,10 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { CaptureMatch, NodeLabel } from 'gitnexus-shared';
+import { isBuiltin } from 'node:module';
+import type Parser from 'tree-sitter';
+import { unboundCallableName } from './typescript/unbound-callables.js';
+import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
@@ -27,6 +30,7 @@ import {
   isModuleLevelThisExport,
   isShadowedCjsExportAssignmentNode,
 } from './typescript/cjs-export-assignment.js';
+import { collectCommonJsModuleKind, withCommonJsModuleKind } from './typescript/module-kind.js';
 
 const rootOf = (node: SyntaxNode): SyntaxNode | undefined =>
   (node as { tree?: { rootNode?: SyntaxNode } }).tree?.rootNode;
@@ -74,11 +78,6 @@ const memberAssignmentLabel = (node: SyntaxNode): NodeLabel | null => {
 import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import {
-  typescriptImportConfig,
-  javascriptImportConfig,
-} from '../import-resolvers/configs/typescript-javascript.js';
 import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -128,6 +127,12 @@ import {
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
 import { extractNestRoutes } from '../route-extractors/nest.js';
+import {
+  createFetchWrapperContext,
+  type FetchWrapperContext,
+} from '../route-extractors/fetch-wrapper.js';
+import { extractFrameworkRouteFacts } from '../route-extractors/framework-route-facts.js';
+import { resolveProjectFrameworkRouteFacts } from '../route-extractors/framework-route-paths.js';
 import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
 import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
 import { extractToolDefinitions } from './typescript/tool-definitions.js';
@@ -173,17 +178,25 @@ const pairKeyName = (keyNode: SyntaxNode | null | undefined): string | null => {
  *     applied to all `useCallback` / `useMemo` callbacks bound to a
  *     const — the sole way to give them a named caller anchor.
  *
- * Returns `null` for funcName when the arrow lives in a context that has
- * no static name — bare call arguments (not bound to a const), computed
- * keys, return-from-arrow positions. The parent walk in
+ * Bare expression-statement callbacks and returned function expressions get
+ * their own name or a position name. Other contexts without a static name
+ * (computed keys, return-from-arrow positions) return null. The parent walk in
  * findEnclosingFunctionId then continues up to the next named ancestor
  * (or to the file).
  */
 const tsExtractFunctionName = (
   node: SyntaxNode,
   filePath?: string,
-): { funcName: string | null; label: NodeLabel } | null => {
+): { funcName: string | null; label: NodeLabel; identityName?: string | null } | null => {
   if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
+
+  const unboundName = unboundCallableName(node);
+  if (unboundName !== undefined)
+    return {
+      funcName: unboundName,
+      label: 'Function',
+      ...(node.childForFieldName('name') === null ? { identityName: null } : {}),
+    };
 
   const parent = node.parent;
   if (!parent) return null;
@@ -390,6 +403,34 @@ export const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Host objects a JavaScript runtime supplies as globals, for
+ * `LanguageProvider.externalReceiverNames`: a dropped receiver rooted at one
+ * (`document.body.appendChild`, `process.env.API_BASE`,
+ * `Buffer.from(raw).toString()`) reached code no index contains.
+ *
+ * Separate from `BUILT_INS`, which also filters CALLEE names out of the call
+ * graph — `process` there would drop every call to a program function named
+ * `process`. Here a name counts only when the program binds nothing by it at
+ * the site and declares nothing by it anywhere, so a `document` parameter or a
+ * module-level `function process()` keeps the receiver hedged.
+ *
+ * Host objects only, and only ones an application does not name its own
+ * values after: `location`, `history`, `self` and `crypto` are ordinary local
+ * names, and reaching them through `window` is already covered.
+ */
+export const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set([
+  // Browser host.
+  'window',
+  'document',
+  'navigator',
+  'localStorage',
+  'sessionStorage',
+  // Node host.
+  'process',
+  'Buffer',
+]);
+
+/**
  * `this` is the only receiver keyword JavaScript and TypeScript bind, and it
  * is bound by every function form except an arrow (#2701). The query files
  * tag those forms with `@receiver-owner.this`; this hook just reads the tag,
@@ -400,6 +441,43 @@ const TS_OWNED_RECEIVERS: ReadonlySet<string> = new Set(['this']);
 
 const tsScopeOwnsReceivers = (match: CaptureMatch): ReadonlySet<string> | undefined =>
   match['@receiver-owner.this'] === undefined ? undefined : TS_OWNED_RECEIVERS;
+
+// Keyed by tree, not ParsedFile: workers retain ParsedFiles for the whole chunk,
+// while a file's tree, and with it this AST-holding context, is released per file.
+const httpContexts = new WeakMap<
+  Parser.Tree,
+  { parsedFile: ParsedFile; lineOffset: number; context: FetchWrapperContext }
+>();
+function httpContext(
+  tree: Parser.Tree,
+  parsedFile: ParsedFile,
+  lineOffset: number,
+): FetchWrapperContext {
+  const cached = httpContexts.get(tree);
+  if (cached?.parsedFile === parsedFile && cached.lineOffset === lineOffset) return cached.context;
+  const context = createFetchWrapperContext(tree, parsedFile, lineOffset);
+  httpContexts.set(tree, { parsedFile, lineOffset, context });
+  return context;
+}
+const httpExtraction = {
+  extractRouteFacts: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    extractFrameworkRouteFacts(
+      tree,
+      parsedFile,
+      lineOffset,
+      httpContext(tree, parsedFile, lineOffset).bindings,
+    ),
+  extractFetchWrapperCalls: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    httpContext(tree, parsedFile, lineOffset).calls(),
+  extractFetchWrapperReexports: (tree: Parser.Tree, parsedFile: ParsedFile, lineOffset: number) =>
+    httpContext(tree, parsedFile, lineOffset).reexports(),
+  extractFetchWrapperFacts: (
+    definition: Parser.SyntaxNode,
+    name: Parser.SyntaxNode | undefined,
+    parsedFile: ParsedFile,
+    lineOffset: number,
+  ) => httpContext(definition.tree, parsedFile, lineOffset).facts(definition, name),
+};
 
 export const typescriptProvider = defineLanguage({
   id: SupportedLanguages.TypeScript,
@@ -438,7 +516,6 @@ export const typescriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
-  importResolver: createImportResolver(typescriptImportConfig),
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   methodExtractor: createMethodExtractor({
@@ -454,6 +531,8 @@ export const typescriptProvider = defineLanguage({
     wrapperNodeTypes: ['export_statement'],
   }),
   builtInNames: BUILT_INS,
+  externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isBuiltin,
 
   // Member-assignment shapes are not free functions (#2723 follow-up). The
   // capture arrives anchored on the assignment, so the shape is decided from
@@ -475,7 +554,8 @@ export const typescriptProvider = defineLanguage({
   // ./typescript/index.ts for the full per-hook rationale and the
   // canonical capture vocabulary in ./typescript/query.ts
   // (TYPESCRIPT_SCOPE_QUERY constant).
-  emitScopeCaptures: emitTsScopeCaptures,
+  emitScopeCaptures: withCommonJsModuleKind(emitTsScopeCaptures),
+  collectCaptureSideChannel: collectCommonJsModuleKind,
   // CFG/PDG substrate (#2081 M1) — runs in the worker on a --pdg run.
   cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretTsImport,
@@ -494,6 +574,8 @@ export const typescriptProvider = defineLanguage({
   // to a literal; nothing else in this pipeline can see that shape. TS and JS
   // share the grammar, so they share the extractor.
   extractDecoratorRoutes: extractJsTsRoutes,
+  ...httpExtraction,
+  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   // Path-gate lives here (language provider), not in the shared parse worker.
   extractTextRoutes: extractJsTsTextRoutes,
@@ -537,7 +619,6 @@ export const javascriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
-  importResolver: createImportResolver(javascriptImportConfig),
   callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
@@ -553,6 +634,8 @@ export const javascriptProvider = defineLanguage({
     wrapperNodeTypes: ['export_statement'],
   }),
   builtInNames: BUILT_INS,
+  externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isBuiltin,
 
   // Member-assignment shapes — see the TypeScript provider above.
   labelOverride: (functionNode, defaultLabel) =>
@@ -568,7 +651,8 @@ export const javascriptProvider = defineLanguage({
   // semantics are identical; JS-specific additions (CJS require(),
   // JSDoc type bindings) live in ./javascript/captures.ts.
   // See ./javascript/index.ts for the full per-module rationale.
-  emitScopeCaptures: emitJsScopeCaptures,
+  emitScopeCaptures: withCommonJsModuleKind(emitJsScopeCaptures),
+  collectCaptureSideChannel: collectCommonJsModuleKind,
   // CFG/PDG substrate (#2081 M1) — TS and JS share the same grammar family.
   cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretJsImport,
@@ -580,6 +664,8 @@ export const javascriptProvider = defineLanguage({
   arityCompatibility: jsArityCompatibility,
   // See the TypeScript provider above.
   extractDecoratorRoutes: extractJsTsRoutes,
+  ...httpExtraction,
+  resolveRouteFacts: resolveProjectFrameworkRouteFacts,
   // Content-based (not AST): tRPC procedure routers are scanned from source text.
   extractTextRoutes: extractJsTsTextRoutes,
   extractToolDefinitions,

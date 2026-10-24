@@ -406,7 +406,12 @@ function extractDartAnnotations(node: SyntaxNode): string[] {
 
 export const dartMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.Dart,
-  typeDeclarationNodes: ['class_definition', 'mixin_declaration', 'extension_declaration'],
+  typeDeclarationNodes: [
+    'class_definition',
+    'mixin_declaration',
+    'extension_declaration',
+    'extension_type_declaration',
+  ],
   methodNodeTypes: ['method_signature', 'declaration'],
   bodyNodeTypes: ['class_body', 'extension_body'],
 

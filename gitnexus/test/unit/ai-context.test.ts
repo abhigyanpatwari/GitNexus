@@ -61,7 +61,7 @@ describe('generateAIContextFiles', () => {
     for (const file of ['CLAUDE.md', 'AGENTS.md']) {
       const content = await fs.readFile(path.join(tmpDir, file), 'utf-8');
       expect(content).toContain(
-        'use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false`',
+        'use `rename` with `dry_run: true`, review semantic spans and coverage, then apply with `dry_run: false` and its `plan_token`',
       );
       expect(content).not.toContain('rename_preview');
     }

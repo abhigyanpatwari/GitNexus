@@ -17,8 +17,6 @@ import { createGoCfgVisitor } from '../cfg/visitors/go.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as goConfig } from '../type-extractors/go.js';
 import { goExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { goImportConfig } from '../import-resolvers/configs/go.js';
 import { GO_QUERIES } from '../tree-sitter-queries.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -29,6 +27,7 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { goVariableConfig } from '../variable-extractors/configs/go.js';
 import { extractGoGinEchoRoutes } from '../route-extractors/go-gin-echo.js';
 import { resolveGoRouteHandler } from './go/route-handler.js';
+import { goPackageDir } from './go/package-clause.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { goCallConfig } from '../call-extractors/configs/go.js';
 import {
@@ -95,6 +94,9 @@ export const goProvider = defineLanguage({
   rename: goRenameProvider,
   id: SupportedLanguages.Go,
   extensions: ['.go'],
+  // Package members resolve without imports. Include internal/external test
+  // packages conservatively for invalidation, including when a file is gone.
+  incrementalResolutionGroup: goPackageDir,
   entryPointPatterns: [/Handler$/, /^Serve/, /^New[A-Z]/, /^Make[A-Z]/],
   astFrameworkPatterns: [
     {
@@ -137,10 +139,11 @@ export const goProvider = defineLanguage({
   treeSitterQueries: GO_QUERIES,
   typeConfig: goConfig,
   exportChecker: goExportChecker,
-  importResolver: createImportResolver(goImportConfig),
   callExtractor: createCallExtractor(goCallConfig),
   fieldExtractor: createFieldExtractor(goFieldConfig),
   methodExtractor: createMethodExtractor(goMethodConfig),
+  resolveDetachedOwnerName: (node) =>
+    node.type === 'method_declaration' ? goMethodConfig.extractOwnerName?.(node) : undefined,
   variableExtractor: createVariableExtractor(goVariableConfig),
   classExtractor: createClassExtractor(goClassConfig),
   // ── godoc (`//` leading comments) → description (issue #2270). Build/tool

@@ -5,7 +5,7 @@ import path from 'node:path';
 import {
   loadNodeWorkspacePackages,
   resolveNodeWorkspaceImport,
-} from '../../src/core/ingestion/import-resolvers/node-workspace-packages.js';
+} from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
 
 /**
  * C3 — a workspace declared BELOW the repo root (keycloak: `js/pnpm-workspace.yaml`).

@@ -4,6 +4,7 @@ import path from 'path';
 import { pathToFileURL } from 'url';
 import { describe, it, expect, vi } from 'vitest';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import { resolveParseCacheIdentity } from '../../src/core/parse-cache-identity.js';
 import {
   deriveEmbeddingMode,
   deriveEmbeddingCap,
@@ -34,6 +35,15 @@ const currentRunnerIdentity = () =>
   resolveAnalyzerRunnerIdentity(
     pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
   );
+
+const currentParserProvenance = () => {
+  const parser = resolveParseCacheIdentity(
+    pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
+  );
+  if (parser.ok === false)
+    throw new Error(`Cannot verify fixture parser artifacts: ${parser.reason}`);
+  return { base: parser.identity.base };
+};
 
 describe('run-analyze module', () => {
   it('exports runFullAnalysis as a function', async () => {
@@ -78,6 +88,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, meta);
 
@@ -122,6 +133,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
         capabilities: {
           graph: { provider: 'ladybugdb', status: 'available' },
           fts: {
@@ -183,6 +195,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'old' });
@@ -234,6 +247,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'kept' });
@@ -280,6 +294,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await registerRepo(tmpA.dbPath, metaA, { name: 'new' });
 
@@ -291,6 +306,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, metaB);
       await registerRepo(tmpB.dbPath, metaB, { name: 'old' });
@@ -331,6 +347,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'original' });
@@ -895,6 +912,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       };
       await saveMeta(flat.storagePath, flatMetaSeed);
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
@@ -906,6 +924,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
       // Register the repo in an isolated registry: the shadow cleanup only
       // runs for registered repos (#2364 review F2 — unregistered repos must
@@ -963,6 +982,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
       await saveMeta(path.dirname(branch.metaPath), {
@@ -973,6 +993,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
       // Deliberately NO registerRepo: the empty isolated registry makes this
       // repo unregistered, so the adopt must be a full no-op on disk
@@ -1022,6 +1043,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       // Detached HEAD → branchLabel is null → the restamp block must not
@@ -1074,6 +1096,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
       await saveMeta(path.dirname(branch.metaPath), {
@@ -1084,6 +1107,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1143,6 +1167,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1187,6 +1212,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1231,6 +1257,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1277,6 +1304,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1324,6 +1352,7 @@ describe('run-analyze module', () => {
         schemaFingerprint: SCHEMA_FINGERPRINT,
         analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
+        parseCacheIdentity: currentParserProvenance(),
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');

@@ -159,6 +159,7 @@ export function finalizeScopeModel(
     namespaceFqnBindings: new Map(),
     namespaceTypeBindings: new Map(),
     accessibleNamespacesByScope: new Map(),
+    namespaceLookupTiersByScope: new Map(),
     referenceSites: Object.freeze([...allReferenceSites]),
     sccs: finalizeOut.sccs,
     stats: finalizeOut.stats,

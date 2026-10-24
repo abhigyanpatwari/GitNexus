@@ -1,0 +1,46 @@
+{
+  "coreVersion": "0.21.1",
+  "filename": "libvector.lbug_extension",
+  "upstreamRepository": "https://github.com/LadybugDB/ladybug",
+  "upstreamTag": "v0.21.1",
+  "upstreamCommit": "17a70e51c31b50d30231da32154d9ff4bef0d95f",
+  "extensionsCommit": "bf74ab654af6bd40a0e3208ac4e8bcf5cb45a7a0",
+  "workflowRun": "https://github.com/LadybugDB/ladybug/actions/runs/36647903773",
+  "artifacts": [
+    {
+      "tuple": "linux-x64",
+      "artifactId": 11069747578,
+      "artifactName": "lbug-extensions-linux-x86_64",
+      "archiveSha256": "377be87f6cf0e56a38230a536e768a0914f273163f112b8101f69894a088777b",
+      "sha256": "571726cc2ea0d202df1909ae5a3b0528c9dea3ea8d40be6c16b310ec14aa8821"
+    },
+    {
+      "tuple": "linux-arm64",
+      "artifactId": 11069462823,
+      "artifactName": "lbug-extensions-linux-aarch64",
+      "archiveSha256": "bec0b8c5eb7f75b1f448b1a10360dbbd82c4553e3514418e90a37065468cb4cd",
+      "sha256": "583101f5bf2d0e5d40de2ee8966018a3bdf0fb8ad8951ef51ef46cd59169445f"
+    },
+    {
+      "tuple": "darwin-x64",
+      "artifactId": 11069679640,
+      "artifactName": "lbug-extensions-osx-x86_64",
+      "archiveSha256": "2ddd47cd3afb5a2bcdae37e928125a81a1aa73775bb2e5e9448033f51eb02c18",
+      "sha256": "7c0cea65d68c341453ce567e0d12897d0691b5f9ff01cff0fdf0db5756ab7851"
+    },
+    {
+      "tuple": "darwin-arm64",
+      "artifactId": 11069049174,
+      "artifactName": "lbug-extensions-osx-arm64",
+      "archiveSha256": "5d004e4bb9e3dd6f6da7248135eba64998adca283390c88e95f17d46224bbf5c",
+      "sha256": "6f878f3c0a2320a34967ff568fcf6bbe9065666e95035f0eddfe28bbc73b53f4"
+    },
+    {
+      "tuple": "win32-x64",
+      "artifactId": 11070343650,
+      "artifactName": "lbug-extensions-win-x86_64",
+      "archiveSha256": "cef691c45f28be517b703bfdfafdd66a7d30b7da236f96c4e57297f5e67cf9f2",
+      "sha256": "6a8878eb2c93400222187460f8fc20ffc9cda4fc2c382fcbdf88f72a350d5746"
+    }
+  ]
+}

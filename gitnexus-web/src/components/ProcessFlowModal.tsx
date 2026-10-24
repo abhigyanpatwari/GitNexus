@@ -24,6 +24,9 @@ mermaid.initialize({
   suppressErrorRendering: true, // Try to suppress if supported
   maxTextSize: 900000, // Increase from default 50000 to handle large combined diagrams
   theme: 'base',
+  // Preserve the diagram appearance across Mermaid 12's new defaults.
+  layout: 'dagre',
+  look: 'classic',
   themeVariables: {
     primaryColor: '#1e293b', // node bg
     primaryTextColor: '#f1f5f9',

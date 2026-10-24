@@ -7,6 +7,12 @@
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { REL_TYPES } from 'gitnexus-shared';
+import { GUARD_TAINT_LIMITATION } from './taint-limitations.js';
+import {
+  CONTEXT_RELATION_TYPES,
+  CONTEXT_RESPONSE_SECTIONS,
+  QUERY_RESPONSE_SECTIONS,
+} from './response-filter.js';
 
 export interface ToolDefinition {
   name: string;
@@ -20,7 +26,9 @@ export interface ToolDefinition {
         type: string;
         description?: string;
         default?: unknown;
-        items?: { type: string };
+        items?: { type: string; enum?: string[] };
+        minItems?: number;
+        maxItems?: number;
         enum?: string[];
         const?: boolean;
         minimum?: number;
@@ -204,6 +212,14 @@ ${HOT_READ_STALENESS_NOTE}`,
           minimum: 1,
           maximum: QUERY_MAX_MAX_SYMBOLS,
         },
+        response_sections: {
+          type: 'array',
+          items: { type: 'string', enum: [...QUERY_RESPONSE_SECTIONS] },
+          minItems: 1,
+          maxItems: QUERY_RESPONSE_SECTIONS.length,
+          description:
+            'Optional single-repo output view: select processes, process_symbols, and/or definitions. For symbol discovery use ["process_symbols", "definitions"] with include_content:false and chain_depth:0. Warnings and staleness always remain; response_filter identifies omitted sections, not absent evidence. Does not change ranking or existing search limits. Omit for existing full output. Not supported for @group routing.',
+        },
         include_content: {
           type: 'boolean',
           description:
@@ -354,6 +370,22 @@ ${HOT_READ_STALENESS_NOTE}`,
           type: 'string',
           description: 'Direct symbol UID from prior tool results (zero-ambiguity lookup)',
         },
+        response_sections: {
+          type: 'array',
+          items: { type: 'string', enum: [...CONTEXT_RESPONSE_SECTIONS] },
+          minItems: 1,
+          maxItems: CONTEXT_RESPONSE_SECTIONS.length,
+          description:
+            'Optional single-repo output view: select incoming, outgoing, processes, chain, routes, and/or typed_properties. The symbol and all warnings/completeness/staleness fields always remain. For callers only use ["incoming"] plus relationTypes:["CALLS"]. Omitted data is not evidence of absence; remove filters to expand. Does not change traversal or existing reference limits. Omit for existing full output. Not supported for @group routing.',
+        },
+        relationTypes: {
+          type: 'array',
+          items: { type: 'string', enum: [...CONTEXT_RELATION_TYPES] },
+          minItems: 1,
+          maxItems: CONTEXT_RELATION_TYPES.length,
+          description:
+            'Optional uppercase relationship categories to retain in the existing incoming/outgoing view, e.g. ["CALLS"] or ["CALLS", "USES"]. This filters the returned bounded reference window; it does not search for additional matches or filter chain. If response_sections is set, it must include incoming or outgoing. Omit for all existing categories. Single-repo MCP only, not @group routing.',
+        },
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
         file: {
           type: 'string',
@@ -478,15 +510,20 @@ A graph too large to analyze at all returns \`{ error, truncated: true }\` with 
   },
   {
     name: 'rename',
-    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default: dry_run omitted or true never writes; dry_run:false applies exact resolved name spans after checking source snapshots. Preview first, review semantic_edits and coverage, then re-call with dry_run:false.
+    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default: dry_run omitted or true never writes; dry_run:false requires the plan_token returned by a successful preview and applies exactly that captured edit set after checking source snapshots and targets. Preview first, review semantic_edits and coverage, then re-call with dry_run:false and plan_token.
 Pass symbol_uid from context() to select the declaration. Unsupported syntax, ambiguous bindings, and incomplete coverage fail closed; no compiler or text-search fallback is used.
-Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Legacy graph_edits and text_search_edits are zero. Partial writes are not transactional: changes lists only landed edits, failed_files the file that failed, and unattempted_files later files never touched; review before retrying. Separate preview/apply calls recompute the plan.
+Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Preview plan_token is single-use, expires after 15 minutes or a server restart, and can be evicted when retained previews reach 16 plans or 64 MiB. Apply rejects changed sources (including untracked files), source-file inventories, graph targets, repositories, and destination names; it never replans edits. Legacy graph_edits and text_search_edits are zero. Partial writes are not transactional: changes lists only landed edits, failed_files the file that failed, and unattempted_files later files never touched; reconcile and preview again before retrying.
 Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates verbatim; re-call with symbol_uid. After application, run tests and detect_changes().`,
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
         ...RENAME_PROPERTIES,
+        plan_token: {
+          type: 'string',
+          description:
+            'Opaque single-use token returned by the reviewed preview. Required with dry_run:false; keep the same repository, target, and new_name.',
+        },
         dry_run: {
           type: 'boolean',
           description:
@@ -713,9 +750,10 @@ ANCHORED ("target" = file path or symbol/function name): full hop detail for tha
 CONTRACT CAVEATS (absent flows are NOT proof of safety):
 - Cross-function flows ARE modeled (#2084 M4): a source flowing through helper functions into a sink is found, via summary composition over the call graph (context-insensitive — return/call-site merging is accepted).
 - Cross-function matching is by callee NAME (context-insensitive): when one caller invokes two distinct same-named callees, a flow into one over-attributes to both — a cross-function finding does not prove the taint reached every same-named function (sound over-report, never a missed flow).
-- Closure/callback flows are invisible in both directions (e.g. arr.forEach(() => sink(y))) — the largest false-negative class.
+- Sources read inside inline callbacks and returned handlers can flow through helper functions. Captured closure-variable flows are not modeled (e.g. const y = source(); arr.forEach(() => sink(y))).
 - Property/field flows are not tracked (obj.x = taint; sink(obj.y) has no chain).
-- Guard-style sanitizers (if (isValid(x))) and implicit/control-dependence flows are not modeled.
+- ${GUARD_TAINT_LIMITATION}
+- Implicit/control-dependence flows are not modeled.
 - CommonJS aliasing is partially modeled (require('<literal>') joins resolve; dynamic requires do not).
 - Exception-path over-approximation can produce false-positive noise.
 
@@ -870,7 +908,7 @@ Returns routes that have both detected response keys AND consumers. Shows top-le
 
 WHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend on, what response fields they access, what middleware protects the route, and what execution flows it triggers. Requires at least "route" or "file" parameter.
 
-Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate.
+Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate. When impactSummary.epistemic is "lower-bound", impactSummary.unverifiedConsumers more files pass the route's URL to a function not proven to send HTTP requests, so directConsumers is a floor; riskLevel counts proven consumers only.
 
 Response shape is keyed on how many routes match, not on the data: exactly one match returns a single route object; two or more return { routes: [...], total: N }. The same URL can expose multiple HTTP verbs (e.g. GET and POST /api/orders are distinct routes that share the URL), so a bare-URL lookup may return the wrapped form — every route object carries its own "method" so verbs are distinguishable. Pass "method" to narrow to one verb; the single-object shape is returned only when exactly one route remains after filtering — a substring route/file match spanning several URLs can still return the wrapped form. A URL/file that exists but has no route for the given verb returns an error. Each route's "method" is the literal "*" for method-agnostic routes (e.g. Django function views), which match any "method" selector, or null for method-less routes (filesystem, Laravel resource), which never match a selector. Every route also carries "runtimeEvidence"; treat it as authoritative only when runtimeEvidence.confirmed is true. Combines route_map, shape_check, and impact data.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,

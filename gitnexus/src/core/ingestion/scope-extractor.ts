@@ -115,6 +115,7 @@ import {
   typeApplicationArguments,
 } from './utils/template-arguments.js';
 import { parseTypeParameterList } from './utils/type-parameters.js';
+import { followedStep } from './utils/type-ref-chain.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -897,8 +898,11 @@ function parseJsonStringArrayCapture(
 }
 
 function deriveDeclarationName(match: CaptureMatch, def: SymbolDefinition): string | undefined {
+  // An explicit empty binding override retains the declaration's graph identity
+  // without inventing a source-level name (for example, an anonymous callable).
+  const bindingName = match['@declaration.binding-name'];
+  if (bindingName !== undefined) return bindingName.text || undefined;
   const nameCap =
-    match['@declaration.binding-name'] ??
     match['@declaration.name'] ??
     match[
       Object.keys(match).find((k) => k.startsWith('@declaration.') && k.endsWith('.name')) ?? ''
@@ -1309,7 +1313,7 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
     if (next === current) return current; // self-ref
     if (visited.has(next.rawName)) return current; // cycle guard
     visited.add(next.rawName);
-    current = { ...next, bindingRange: start.bindingRange };
+    current = followedStep(start, next);
   }
   return current;
 }
@@ -1933,6 +1937,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@import.publishes',
   '@type-binding.name',
   '@type-binding.type',
+  '@type-binding.nullable-field',
   '@reference.name',
   '@reference.qualified-name',
   // The generic arguments a heritage base was written with, when the emitter's

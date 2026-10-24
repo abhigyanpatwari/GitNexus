@@ -6,6 +6,9 @@ import {
 } from '../../scripts/install-duckdb-extension.mjs';
 import { FILE_CORRUPTION_SIGNATURES as classifierSignatures } from '../../src/core/lbug/extension-load-error.js';
 
+const { resolveVendoredFtsPath } = vi.hoisted(() => ({ resolveVendoredFtsPath: vi.fn() }));
+vi.mock('../../dist/core/lbug/vendored-extension-path.js', () => ({ resolveVendoredFtsPath }));
+
 /**
  * Offline, network-free regression guard for the install-verb decision (#2374,
  * PR #2375). A revert to unconditional INSTALL or unconditional FORCE INSTALL
@@ -80,6 +83,47 @@ describe('installDuckDbExtension issues the chosen SQL (#2374)', () => {
       /Invalid DuckDB extension name/,
     );
     expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('verifies the bundled FTS by path without downloading a mutable CDN artifact', async () => {
+    resolveVendoredFtsPath.mockReturnValue("/app/owner's copy/libfts.lbug_extension");
+    const factory = recordingConnect();
+    await installDuckDbExtension('fts', { verifyBundled: true, connect: () => factory });
+    expect(factory.conn.query.mock.calls).toEqual([
+      ["LOAD EXTENSION '/app/owner''s copy/libfts.lbug_extension'"],
+    ]);
+  });
+
+  it('fails before connecting when the bundled FTS artifact is missing', async () => {
+    resolveVendoredFtsPath.mockReturnValue(null);
+    const connect = vi.fn();
+    await expect(installDuckDbExtension('fts', { verifyBundled: true, connect })).rejects.toThrow(
+      /No packaged FTS artifact/,
+    );
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('rejects bundled verification for extensions that are not packaged', async () => {
+    const connect = vi.fn();
+    await expect(
+      installDuckDbExtension('vector', { verifyBundled: true, connect }),
+    ).rejects.toThrow(/Bundled verification only supports fts/);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('propagates a bundled ABI mismatch and closes the scratch connection', async () => {
+    resolveVendoredFtsPath.mockReturnValue('/app/libfts.lbug_extension');
+    const factory = recordingConnect();
+    factory.conn.query.mockRejectedValue(new Error('undefined symbol: ValueVector::setAllNull'));
+    const dispose = vi.fn(async () => undefined);
+    await expect(
+      installDuckDbExtension('fts', {
+        verifyBundled: true,
+        connect: () => ({ ...factory, dispose }),
+      }),
+    ).rejects.toThrow(/undefined symbol/);
+    expect(factory.conn.query).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledOnce();
   });
 });
 

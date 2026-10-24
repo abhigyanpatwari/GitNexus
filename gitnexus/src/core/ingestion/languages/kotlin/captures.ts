@@ -14,9 +14,10 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { computeKotlinArityMetadata } from './arity-metadata.js';
 import { splitKotlinImportHeader } from './import-decomposer.js';
 import { recordKotlinCacheHit, recordKotlinCacheMiss } from './cache-stats.js';
-import { normalizeKotlinType } from './interpret.js';
+import { KOTLIN_QUALIFIED_CALLEE_TAG, normalizeKotlinType } from './interpret.js';
 import { synthesizeKotlinReceiverBinding } from './receiver-binding.js';
 import { getKotlinParser, getKotlinScopeQuery } from './query.js';
+import { collectKotlinNameClaims } from './lexical-bindings.js';
 import { markCompanionScope } from './companion-scopes.js';
 import {
   setKotlinClassAnnotationFacts,
@@ -161,13 +162,22 @@ export function emitKotlinScopeCaptures(
   const springMemberCallNodeIds = new Set<number>();
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
-  out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
+  const typedLoopVariables = new Set<number>();
+  out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes, typedLoopVariables));
   out.push(...synthesizeKotlinSmartCastBindings(tree.rootNode));
   out.push(...synthesizeKotlinLambdaBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinInheritanceReferences(tree.rootNode));
   out.push(...synthesizeKotlinSecondaryConstructorDeclarations(tree.rootNode));
 
-  for (const match of getKotlinScopeQuery().matches(tree.rootNode)) {
+  const matches = getKotlinScopeQuery().matches(tree.rootNode);
+  const scopeNodes = new Set<number>();
+  for (const match of matches) {
+    for (const capture of match.captures) {
+      if (capture.name.startsWith('scope.')) scopeNodes.add(capture.node.id);
+    }
+  }
+  const nameClaims = collectKotlinNameClaims(tree.rootNode, scopeNodes, typedLoopVariables);
+  for (const match of matches) {
     const grouped: Record<string, Capture> = {};
     // Parallel tag -> captured SyntaxNode map. The query hands us each matched
     // node as capture.node, so anchors resolve via a type-guarded lookup
@@ -181,6 +191,16 @@ export function emitKotlinScopeCaptures(
       groupedNodes[tag] = capture.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+    const scopeTag = Object.keys(groupedNodes).find((tag) => tag.startsWith('@scope.'));
+    const scopeNode = scopeTag === undefined ? undefined : groupedNodes[scopeTag];
+    const claims = scopeNode === undefined ? undefined : nameClaims.get(scopeNode.id);
+    if (scopeNode !== undefined && claims !== undefined) {
+      grouped['@scope.name-claims'] = syntheticCapture(
+        '@scope.name-claims',
+        scopeNode,
+        JSON.stringify(claims),
+      );
+    }
 
     // One visit per member call node: the same invocation can back several
     // query matches, and both Spring call-shape captures must see it once.
@@ -255,7 +275,13 @@ export function emitKotlinScopeCaptures(
         range: grouped['@scope.companion']!.range,
         kind: 'Class',
       });
-      markCompanionScope(filePath, scopeId);
+      const companion = nodeIfType(groupedNodes['@scope.companion'], 'companion_object');
+      const hasNoSupertypes =
+        companion !== null &&
+        !companion.namedChildren.some(
+          (child) => child?.type === 'delegation_specifier' || child?.type === 'ERROR',
+        );
+      markCompanionScope(filePath, scopeId, hasNoSupertypes);
       continue;
     }
 
@@ -672,6 +698,7 @@ function kotlinUserTypeNameNode(userType: SyntaxNode): SyntaxNode | null {
 function synthesizeKotlinLoopBindings(
   rootNode: SyntaxNode,
   returnTypes: ReadonlyMap<string, string>,
+  typedVariables: Set<number>,
 ): CaptureMatch[] {
   const out: CaptureMatch[] = [];
   for (const fnNode of descendantsOfType(rootNode, 'function_declaration')) {
@@ -691,6 +718,7 @@ function synthesizeKotlinLoopBindings(
           ? null
           : inferKotlinIterableElementType(iterable, localTypes, returnTypes));
       if (rawType === null || rawType.trim() === '') continue;
+      typedVariables.add(variable.id);
 
       const anchor =
         forNode.namedChildren.find((child) => child.type === 'control_structure_body') ?? forNode;
@@ -1140,7 +1168,11 @@ function synthesizeKotlinLocalAssignmentBindings(
     const localTypes = new Map<string, string>();
     for (const prop of descendantsOfType(fnNode, 'property_declaration')) {
       const inferred = inferKotlinPropertyType(prop, localTypes, returnTypes, classMembers);
-      if (inferred === null) continue;
+      if (inferred === null) {
+        const qualified = kotlinPackageQualifiedCallBinding(prop);
+        if (qualified !== null) out.push(qualified);
+        continue;
+      }
       localTypes.set(inferred.name.text, inferred.rawType);
       if (inferred.synthetic) {
         out.push({
@@ -1160,6 +1192,55 @@ function synthesizeKotlinLocalAssignmentBindings(
     }
   }
   return out;
+}
+
+/** A package name by Kotlin's naming convention: lower-case first letter. Class
+ *  and object heads (`Logger.create()`, `Registry.build()`) never match. */
+const KOTLIN_PACKAGE_HEAD_RE = /^\p{Ll}/u;
+
+/**
+ * Capture a dotted, lower-case-headed call as a deferred value. The syntax
+ * alone cannot distinguish a package path from a member call; the semantic
+ * qualified-callee hook owns lexical and implicit-receiver visibility.
+ *
+ * The tag preserves the whole path through interpretation instead of reducing
+ * the function name to a constructor type. Existing typed-local and same-file
+ * class inference runs first, so its resolved values retain their meaning.
+ */
+function kotlinPackageQualifiedCallBinding(prop: SyntaxNode): CaptureMatch | null {
+  const variable = prop.namedChildren.find((child) => child.type === 'variable_declaration');
+  const name = variable?.namedChildren.find((child) => child.type === 'simple_identifier');
+  if (variable === undefined || name === undefined) return null;
+  const value = prop.namedChildren.find(
+    (child) => child.id !== variable.id && child.type !== 'binding_pattern_kind',
+  );
+  if (value?.type !== 'call_expression') return null;
+  const callee = namedNonComments(value)[0];
+  if (callee?.type !== 'navigation_expression') return null;
+  const path = kotlinDottedPath(callee);
+  const head = path?.[0];
+  if (path === null || head === undefined || !KOTLIN_PACKAGE_HEAD_RE.test(head)) return null;
+  return {
+    '@type-binding.constructor': nodeToCapture('@type-binding.constructor', prop),
+    '@type-binding.name': syntheticCapture('@type-binding.name', name, name.text),
+    '@type-binding.type': syntheticCapture('@type-binding.type', callee, path.join('.')),
+    [KOTLIN_QUALIFIED_CALLEE_TAG]: syntheticCapture(KOTLIN_QUALIFIED_CALLEE_TAG, callee, ''),
+  };
+}
+
+/** `a.b.c` as `['a', 'b', 'c']` when every segment is a plain name joined by
+ *  `.`; `null` for a safe call (`a?.b`), a call or index in the chain, `this`,
+ *  `super`, or anything else that is not a path. */
+function kotlinDottedPath(node: SyntaxNode): string[] | null {
+  if (node.type === 'simple_identifier') return [node.text];
+  if (node.type !== 'navigation_expression') return null;
+  const [receiver, suffix] = namedNonComments(node);
+  if (receiver === undefined || suffix?.type !== 'navigation_suffix') return null;
+  if (suffix.child(0)?.type !== '.') return null;
+  const member = namedNonComments(suffix)[0];
+  if (member?.type !== 'simple_identifier') return null;
+  const head = kotlinDottedPath(receiver);
+  return head === null ? null : [...head, member.text];
 }
 
 interface KotlinClassMembers {

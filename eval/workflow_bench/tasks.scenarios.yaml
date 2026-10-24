@@ -3,7 +3,7 @@
 # Task fields:
 #   id:      short slug used in reports
 #   class:   task class for cost/quality routing analysis. The suite spans:
-#            trivial → investigation-bug → investigation-feature → cross-module
+#            trivial → investigation-feature → cross-module
 #   repo:    path to a git repo that is GitNexus-indexed
 #   ref:     git ref benchmarked (fresh detached worktree per arm per run)
 #   setup:   optional shell command run in the fresh worktree first
@@ -29,7 +29,7 @@
 # prebuilt .gitnexus directory is never copied. Three declared dependency trees
 # are mounted read-only; missing assets fail before model execution.
 # Every task starts at the exact v1.6.12 commit, where all four tasks remain
-# unsolved. In particular, moving main already contains the C include fix.
+# unsolved. The C provenance feature replaces the invalid historical system-include task.
 
 tasks:
   # Overhead floor — measured 2026-07-11 (see README calibration): the
@@ -67,30 +67,39 @@ tasks:
         - source: trivial-status-json-alias.oracle.test.ts
           target: trivial-status-json-alias.oracle.test.ts
 
-  # Investigation-heavy bug (#2965): requires following the C import marker
-  # through the shared scope-resolution pipeline without breaking local
-  # quoted-header resolution.
-  - id: inv-bug-c-system-include
-    class: investigation-bug
+  # Investigation-heavy feature: retain literal include provenance through
+  # parsing and resolution without binding system headers to repository decoys.
+  - id: inv-feature-c-include-provenance
+    class: investigation-feature
     repo: ~/GitNexus
     ref: c4ecf398de637cf779ab2238e69958cfd5d601ce
     sandbox_dependencies: *gitnexus_sandbox_dependencies
     prompt: >
-      Fix the C scope resolver so a system include such as <stdio.h> never
-      resolves to an unrelated same-named header inside the repository, while
-      quoted/local includes still resolve. Remove C from the conformance
-      suite's KNOWN_GAPS and cover the negative and positive cases there.
-    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/scope-resolution/external-import-conformance.test.ts
+      Retain literal C #include records after parsing and interpretation, including
+      system includes such as <stdio.h>. Preserve each header's identity and enough
+      provenance to distinguish system from quoted includes. With no configured
+      system include roots, system includes must never resolve to unrelated
+      same-named repository headers; quoted sibling and relative includes must
+      still resolve. Computed macro includes remain unsupported and produce no
+      parsed import. Cover the real parser, include decomposition, interpretation
+      and resolver in test/unit/scope-resolution/c/c-include-provenance.test.ts.
+      Correct the C conformance fixture to distinguish system and quoted forms of
+      the same header, and remove C from KNOWN_GAPS. Choose the representation;
+      shared dependency declarations are immutable.
+    verify: >-
+      cd gitnexus && npx tsc --noEmit && npx vitest run
+      test/unit/scope-resolution/c/c-include-provenance.test.ts
+      test/unit/scope-resolution/external-import-conformance.test.ts
     oracle:
       command: >-
         cd gitnexus && ./node_modules/.bin/vitest run
         --config "$GITNEXUS_BENCH_ORACLE_ROOT/vitest.config.mts"
-        "$GITNEXUS_BENCH_ORACLE_ROOT/inv-bug-c-system-include.oracle.test.ts"
+        "$GITNEXUS_BENCH_ORACLE_ROOT/inv-feature-c-include-provenance.oracle.test.ts"
       files:
         - source: vitest.config.mts
           target: vitest.config.mts
-        - source: inv-bug-c-system-include.oracle.test.ts
-          target: inv-bug-c-system-include.oracle.test.ts
+        - source: inv-feature-c-include-provenance.oracle.test.ts
+          target: inv-feature-c-include-provenance.oracle.test.ts
 
   # Investigation-heavy feature: touches tool schema, backend filtering, and
   # pagination totals — three seams that must stay consistent.

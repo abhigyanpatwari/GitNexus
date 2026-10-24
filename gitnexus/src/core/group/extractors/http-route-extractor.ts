@@ -9,6 +9,7 @@ import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { toZeroBasedLine } from '../../ingestion/utils/line-base.js';
 import { logger } from '../../logger.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../../ingestion/route-extractors/data-route-table.js';
+import { stripLeadingTemplatePrefix } from '../../ingestion/route-extractors/route-path.js';
 import {
   getPluginForFile,
   HTTP_SCAN_GLOB,
@@ -292,34 +293,6 @@ export function normalizeHttpPath(p: string): string {
 }
 
 /**
- * Strip LEADING template interpolations from a consumer url as gateway/host
- * bindings — the enterprise wrapper shape `` `${serviceClient}/api/v1/x` ``
- * where `${serviceClient}` selects the gateway service, not a route segment.
- * This is consumer-path framework semantics (mirrors how an absolute
- * `https://host/path` url keeps only its path), so it lives here rather than
- * in any one language plugin:
- *   - `` `${c}/api/x` ``      → `/api/x`   (clean prefix; `${c}${d}/api/x` → `/api/x`)
- *   - `` `${c}/api/x/${id}` ``→ `/api/x/${id}` (mid/tail interpolations are left for the `{param}` pass)
- * Returns null when the stripped remainder is not a single-slash path:
- *   - remainder without `/` — relative fragment (`${c}api/x`) or scheme/host
- *     (`${scheme}://${host}/api/x`); whether it is a path depends on
- *     unverifiable runtime state, so it is dropped rather than guessed at;
- *   - remainder starting with `//` — protocol-relative (`${proto}//host/api/x`);
- *     keeping it would later collapse to `/host/api/x`.
- *
- * The `?` in a query string cannot leak into the brace matching: `${...}`
- * spans are matched by braces here (before any `{param}` replacement), and
- * `normalizeHttpPath` splits on `?` only after the whole `${...}` span —
- * including any `?` inside it — has been collapsed to `{param}`. So
- * `` `${c}/api/x?id=${id}` `` reduces to `/api/x` on both orderings.
- */
-function stripLeadingTemplatePrefix(url: string): string | null {
-  if (!url.startsWith('${')) return url;
-  const rest = url.replace(/^(?:\$\{[^}]*\})+/, '');
-  return rest.startsWith('/') && !rest.startsWith('//') ? rest : null;
-}
-
-/**
  * Placeholder substituted for `${...}` before WHATWG `URL` parsing so the
  * parser cannot percent-encode our own `{param}` markers. A genuine encoded
  * segment like `%7Bfoo%7D` then survives as a literal, instead of being
@@ -403,7 +376,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       { plugin: HttpLanguagePlugin; input: HttpScanInput; repoContext: unknown } | null
     >();
     const projectDetections = new Map<string, HttpDetection[]>();
-    let projectScanComplete = false;
+    const completedProjectScans = new Set<NonNullable<HttpLanguagePlugin['scanProject']>>();
 
     // Per-plugin cross-file context (e.g. Python's FastAPI router →
     // include_router(prefix=...) map). Built lazily on first
@@ -418,7 +391,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       if (!plugin || typeof plugin.prepareRepo !== 'function') return undefined;
       if (repoContextByPlugin.has(plugin.name)) return repoContextByPlugin.get(plugin.name);
       try {
-        const ctx = plugin.prepareRepo({
+        const ctx = await plugin.prepareRepo({
           repoPath,
           files: await getScannedFiles(),
           parser,
@@ -466,14 +439,21 @@ export class HttpRouteExtractor implements ContractExtractor {
     };
 
     const getDetections = async (rel: string): Promise<HttpDetection[]> => {
-      const cached = cachedDetections.get(rel);
+      // Graph enrichment needs composed providers too. Resolve only this
+      // project's plugin family; unrelated complete-coverage languages can
+      // still skip parsing when their graph handlers already resolved.
+      const projectScan = getPluginForFile(rel)?.scanProject;
+      if (projectScan && !completedProjectScans.has(projectScan))
+        await collectProjectDetections(await getScannedFiles(), projectScan);
+      const key = normalizeRepoRelPath(rel);
+      const cached = cachedDetections.get(key);
       if (cached) return cached;
       const scanInput = await getScanInput(rel);
       const ownDetections = scanInput
         ? scanInput.plugin.scan(scanInput.input.tree, scanInput.repoContext, rel)
         : [];
-      const detections = [...ownDetections, ...(projectDetections.get(rel) ?? [])];
-      cachedDetections.set(rel, detections);
+      const detections = [...ownDetections, ...(projectDetections.get(key) ?? [])];
+      cachedDetections.set(key, detections);
       return detections;
     };
 
@@ -486,27 +466,41 @@ export class HttpRouteExtractor implements ContractExtractor {
       return scannedFiles;
     };
 
-    const collectProjectDetections = async (files: string[]): Promise<void> => {
-      if (projectScanComplete) return;
-      projectScanComplete = true;
-      const byPlugin = new Map<HttpLanguagePlugin, HttpScanInput[]>();
+    const collectProjectDetections = async (
+      files: string[],
+      onlyScan?: NonNullable<HttpLanguagePlugin['scanProject']>,
+    ): Promise<void> => {
+      const byScan = new Map<
+        NonNullable<HttpLanguagePlugin['scanProject']>,
+        { inputs: HttpScanInput[]; repoContext: unknown }
+      >();
       for (const rel of files) {
+        const scanProject = getPluginForFile(rel)?.scanProject;
+        if (
+          !scanProject ||
+          completedProjectScans.has(scanProject) ||
+          (onlyScan && onlyScan !== scanProject)
+        )
+          continue;
         const scanInput = await getScanInput(rel);
-        if (!scanInput?.plugin.scanProject) continue;
-        const items = byPlugin.get(scanInput.plugin) ?? [];
-        items.push(scanInput.input);
-        byPlugin.set(scanInput.plugin, items);
+        if (!scanInput) continue;
+        const group = byScan.get(scanProject) ?? { inputs: [], repoContext: scanInput.repoContext };
+        group.inputs.push(scanInput.input);
+        byScan.set(scanProject, group);
       }
 
-      for (const [plugin, inputs] of byPlugin) {
-        const results = plugin.scanProject?.(inputs) ?? [];
+      // Shared function identity pools grammar variants without teaching the
+      // orchestrator which languages belong to the same project family.
+      for (const [scanProject, { inputs, repoContext }] of byScan) {
+        completedProjectScans.add(scanProject);
+        const results = scanProject(inputs, repoContext);
         for (const result of results) {
-          const existing = projectDetections.get(result.filePath) ?? [];
-          projectDetections.set(result.filePath, [...existing, ...result.detections]);
+          const key = normalizeRepoRelPath(result.filePath);
+          const existing = projectDetections.get(key) ?? [];
+          projectDetections.set(key, [...existing, ...result.detections]);
+          cachedDetections.delete(key);
         }
       }
-
-      cachedDetections.clear();
     };
 
     const files = await getScannedFiles();

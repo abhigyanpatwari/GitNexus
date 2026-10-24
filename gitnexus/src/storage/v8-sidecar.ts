@@ -19,7 +19,7 @@ import { logger } from '../core/logger.js';
 import { linkOrCopyFile, writeFileAtomicBytes, writeFileAtomicBytesSync } from './fs-atomic.js';
 
 const MAGIC = Buffer.from('GNXV8CF1', 'ascii');
-/** Envelope version — independent of PARSE_CACHE_VERSION / SCHEMA_BUMP. */
+/** Envelope version — independent of artifact-derived parser compatibility. */
 export const V8_CACHE_FORMAT = 5;
 const U32 = 4;
 const U16 = 2;

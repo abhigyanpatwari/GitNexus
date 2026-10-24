@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -1293,6 +1294,255 @@ def test_final_result_event_must_be_last(monkeypatch, tmp_path):
     assert rec["ok"] is False
     assert rec["error_kind"] == "session-error"
     assert "not the last event" in rec["error_detail"]["event_stream_error"]
+
+
+def background_completion_events():
+    first = json.loads(report_variant(uuid="first", subtype="success", is_error=False))
+    last = json.loads(report_variant(uuid="last", subtype="success", is_error=False, total_cost_usd=0.15))
+    return [
+        first,
+        {"type": "system", "subtype": "task_notification", "session_id": "s"},
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Task finished"}]}},
+        last,
+    ]
+
+
+def test_background_completion_sums_turn_usage_but_not_cumulative_cost(monkeypatch, tmp_path):
+    events = background_completion_events()
+    proc = replace(fake_cli_result("\n".join(map(json.dumps, events))), duration_s=12.5)
+    monkeypatch.setattr(runner_sessions, "run_managed", lambda *a, **k: proc)
+    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=30)
+
+    assert rec["ok"] is True, rec["error_detail"]
+    assert rec["cost_usd"] == 0.15  # The second result includes the first turn's $0.10.
+    assert rec["num_turns"] == 6
+    assert [rec[field] for field in runner_sessions.USAGE_FIELDS] == [2, 4, 6, 8]
+    assert rec["duration_s"] == 12.5  # Include background wait, not just the two 1s turns.
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda es: es[-1].update(session_id="different"),
+        lambda es: es[-1].update(uuid="first"),
+        lambda es: es[-1].update(total_cost_usd=0.05),
+        lambda es: es[0].update(is_error=True),
+        lambda es: es[0].update(subtype="error_max_turns"),
+        lambda es: es[0]["usage"].pop("input_tokens"),
+        lambda es: es[-1]["usage"].update(output_tokens=-1),
+        lambda es: es[-1]["usage"].update(output_tokens=True),
+        lambda es: es[-1].update(num_turns=-1),
+        lambda es: es[-1].update(total_cost_usd=None),
+        lambda es: es.pop(1),  # No background completion to explain another turn.
+        lambda es: es.pop(3),  # A second result without a new assistant turn is a replay.
+        lambda es: es[2].update(session_id="different"),
+        lambda es: es.append({"type": "assistant", "message": {"content": []}}),
+    ],
+)
+def test_unverifiable_background_continuation_stays_excluded(monkeypatch, tmp_path, mutate):
+    events = background_completion_events()
+    mutate(events)
+    monkeypatch.setattr(
+        runner_sessions, "run_managed", lambda *a, **k: fake_cli_result("\n".join(map(json.dumps, events)))
+    )
+    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=30, transcript_output_dir=tmp_path)
+    assert rec["ok"] is False
+    assert rec["error_kind"] == "session-error"
+    assert rec["cost_usd"] is None
+    assert rec["transcript_missing"] is True
+
+
+def test_background_notification_before_first_result_remains_pending(monkeypatch, tmp_path):
+    events = background_completion_events()
+    events.insert(0, events.pop(1))
+    proc = replace(fake_cli_result("\n".join(map(json.dumps, events))), duration_s=12.5)
+    monkeypatch.setattr(runner_sessions, "run_managed", lambda *a, **k: proc)
+
+    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=30, transcript_output_dir=tmp_path)
+
+    assert rec["ok"] is True, rec["error_detail"]
+    assert rec["transcript_missing"] is False
+    assert rec["cost_usd"] == 0.15
+    assert rec["num_turns"] == 6
+    assert [rec[field] for field in runner_sessions.USAGE_FIELDS] == [2, 4, 6, 8]
+    assert rec["duration_s"] == 12.5
+
+
+def test_background_notification_cannot_authorize_two_continuations(monkeypatch, tmp_path):
+    events = background_completion_events()
+    events.insert(0, events.pop(1))
+    events += [
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Another reply"}]}},
+        json.loads(report_variant(uuid="extra", subtype="success", is_error=False, total_cost_usd=0.2)),
+    ]
+    monkeypatch.setattr(
+        runner_sessions, "run_managed", lambda *a, **k: fake_cli_result("\n".join(map(json.dumps, events)))
+    )
+
+    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=30, transcript_output_dir=tmp_path)
+
+    assert rec["ok"] is False
+    assert rec["error_kind"] == "session-error"
+    assert rec["transcript_missing"] is True
+    assert rec["cost_usd"] is None
+
+
+def test_real_cli_notification_before_first_result_is_complete_evidence(monkeypatch, tmp_path):
+    from workflow_bench.mock_provider import MockProvider, Reply
+
+    claude = os.environ.get("CLAUDE_CANARY_BIN")
+    if not claude or not Path(claude).is_file():
+        if os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") == "1":
+            pytest.fail("required pinned CLAUDE_CANARY_BIN is missing")
+        pytest.skip("the containment job supplies the pinned CLAUDE_CANARY_BIN")
+    home = tmp_path / "home"
+    home.mkdir()
+    notification_seen = threading.Event()
+    observe_line = runner_sessions.SessionProgress._observe_line
+    captured = []
+
+    def observe_notification(self, line):
+        observe_line(self, line)
+        event = json.loads(line)
+        captured.append(event)
+        if event.get("type") == "system" and event.get("subtype") == "task_notification":
+            notification_seen.set()
+
+    class BoundaryProvider(MockProvider):
+        def next_reply(self):
+            if len(self.requests) == 2:
+                # Finish the real background command while the first foreground
+                # response is pending, and wait for its notification to arrive.
+                (home / "completion-ready").touch()
+                if not notification_seen.wait(10):
+                    raise AssertionError("CLI did not emit the background completion notification")
+            return super().next_reply()
+
+    monkeypatch.setattr(runner_sessions.SessionProgress, "_observe_line", observe_notification)
+    replies = [
+        Reply(
+            tools=[
+                {
+                    "name": "Bash",
+                    "input": {
+                        "command": "while [ ! -f completion-ready ]; do sleep 0.01; done; printf done",
+                        "run_in_background": True,
+                    },
+                }
+            ],
+            input_tokens=101,
+            output_tokens=11,
+        ),
+        Reply(text="First completion", input_tokens=102, output_tokens=12),
+        Reply(text="Background completion acknowledged", input_tokens=103, output_tokens=13),
+    ]
+    with BoundaryProvider(replies) as provider:
+        rec = runner.run_claude(
+            "Run the command",
+            home,
+            claude_bin=claude,
+            timeout=40,
+            env={
+                "PATH": os.environ["PATH"],
+                "HOME": str(home),
+                "ANTHROPIC_API_KEY": "offline-probe",
+                "ANTHROPIC_BASE_URL": provider.base_url,
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                "DISABLE_AUTOUPDATER": "1",
+                "HTTPS_PROXY": "http://127.0.0.1:9",
+                "HTTP_PROXY": "http://127.0.0.1:9",
+                "NO_PROXY": "127.0.0.1,localhost",
+            },
+            allowed_tools=["Bash"],
+            strict_mcp_config=True,
+            transcript_output_dir=tmp_path,
+            progress_label="offline-notification-boundary",
+        )
+
+    notification = next(i for i, e in enumerate(captured) if e.get("subtype") == "task_notification")
+    results = [i for i, e in enumerate(captured) if e.get("type") == "result"]
+    assert len(results) == 2 and notification < results[0]
+    assert rec["ok"] is True, rec["error_detail"]
+    assert rec["transcript_missing"] is False
+    assert len(provider.requests) == 3
+    assert rec["input_tokens"] == 306 and rec["output_tokens"] == 36
+    assert rec["num_turns"] == 3
+    assert rec["cost_usd"] == captured[results[-1]]["total_cost_usd"]
+
+
+def test_real_cli_background_completion_is_one_complete_measurement(monkeypatch, tmp_path):
+    """Only the provider is scripted; the pinned CLI performs a real background Bash task."""
+    from workflow_bench.mock_provider import MockProvider, Reply
+
+    claude = os.environ.get("CLAUDE_CANARY_BIN")
+    if not claude or not Path(claude).is_file():
+        if os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") == "1":
+            pytest.fail("required pinned CLAUDE_CANARY_BIN is missing")
+        pytest.skip("the containment job supplies the pinned CLAUDE_CANARY_BIN")
+    home = tmp_path / "home"
+    home.mkdir()
+    # Release the real background command only after the first result. A fixed
+    # sleep could finish before that result on a loaded runner and miss the bug.
+    observe_line = runner_sessions.SessionProgress._observe_line
+
+    def release_background_task(self, line):
+        observe_line(self, line)
+        if json.loads(line).get("type") == "result":
+            (home / "completion-ready").touch()
+
+    monkeypatch.setattr(runner_sessions.SessionProgress, "_observe_line", release_background_task)
+    replies = [
+        Reply(
+            tools=[
+                {
+                    "name": "Bash",
+                    "input": {
+                        "command": "while [ ! -f completion-ready ]; do sleep 0.01; done; printf done",
+                        "run_in_background": True,
+                    },
+                }
+            ],
+            input_tokens=101,
+            output_tokens=11,
+        ),
+        Reply(text="First completion", input_tokens=102, output_tokens=12),
+        Reply(text="Background completion acknowledged", input_tokens=103, output_tokens=13),
+    ]
+    with MockProvider(replies) as provider:
+        rec = runner.run_claude(
+            "Run the command",
+            home,
+            claude_bin=claude,
+            timeout=40,
+            env={
+                "PATH": os.environ["PATH"],
+                "HOME": str(home),
+                "ANTHROPIC_API_KEY": "offline-probe",
+                "ANTHROPIC_BASE_URL": provider.base_url,
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                "DISABLE_AUTOUPDATER": "1",
+                # Only loopback may be contacted; even CLI startup traffic
+                # cannot reach an external provider. No host credentials inherit.
+                "HTTPS_PROXY": "http://127.0.0.1:9",
+                "HTTP_PROXY": "http://127.0.0.1:9",
+                "NO_PROXY": "127.0.0.1,localhost",
+            },
+            allowed_tools=["Bash"],
+            strict_mcp_config=True,
+            transcript_output_dir=tmp_path,
+            progress_label="offline-background-completion",
+        )
+    assert rec["ok"] is True, rec["error_detail"]
+    assert len(provider.requests) == 3
+    assert rec["input_tokens"] == 306 and rec["output_tokens"] == 36
+    assert rec["num_turns"] == 3
+    artifacts = list((tmp_path / "transcripts").glob("*.jsonl"))
+    assert len(artifacts) == 1
+    results = [e for line in artifacts[0].read_text().splitlines() if (e := json.loads(line))["type"] == "result"]
+    assert len(results) == 2
+    assert rec["cost_usd"] == results[-1]["total_cost_usd"] > results[0]["total_cost_usd"]
 
 
 def test_background_task_teardown_after_the_result_stays_valid_evidence(monkeypatch, tmp_path):

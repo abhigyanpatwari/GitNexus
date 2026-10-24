@@ -42,6 +42,9 @@ export function tsBindingScopeFor(
   innermost: Scope,
   tree: ScopeTree,
 ): ScopeId | null {
+  // A named function expression binds only inside itself. Anonymous callables
+  // explicitly suppress their binding through @declaration.binding-name.
+  if (decl['@callable.unbound'] !== undefined) return innermost.id;
   // Method return type: hoist to Module (mirrors csharpBindingScopeFor).
   if (decl['@type-binding.return'] !== undefined) {
     return walkToScope(innermost, tree, 'Module');

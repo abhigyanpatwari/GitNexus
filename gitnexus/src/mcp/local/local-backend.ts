@@ -14,6 +14,8 @@ import {
   scoreImpactRisk,
   unusedAxesForImpactWalk,
   getLanguageFromFilename,
+  blockedRenameResult,
+  RenameFailure,
   type ImpactRiskResult,
   type GraphNode,
   type NodeLabel,
@@ -30,6 +32,7 @@ import {
   getLbugDbIdentity,
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
+import { GUARD_TAINT_LIMITATION } from '../taint-limitations.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
 import {
   SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
@@ -45,6 +48,7 @@ import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
 import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
+import type { BM25SearchResult } from '../../core/search/bm25-index.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
 import { isCobolFile, isJclFile } from '../../core/ingestion/cobol/file-types.js';
@@ -159,7 +163,6 @@ import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
-import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
 import { compareCodeUnits } from '../../lib/utils.js';
 import {
   lookupExternalCallCount,
@@ -298,21 +301,14 @@ function ambiguityReport(
   };
 }
 
-/** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
- *  excluding the empty entry and the `/index.*` forms — used to decide whether
- *  an `explain` target is a file path vs a (possibly dotted) symbol name. */
-const SOURCE_FILE_EXTENSIONS: readonly string[] = EXTENSIONS.filter(
-  (e) => e.startsWith('.') && !e.includes('/'),
-);
 /** Recognize indexed source files and existing import suffixes; a bare dotted
  *  symbol (`UserController.create`) remains a symbol target. */
-function looksLikeFilePath(target: string): boolean {
-  if (/[\\/]/.test(target)) return true;
+async function looksLikeFilePath(target: string): Promise<boolean> {
+  if (/[\\/]/.test(target) || getLanguageFromFilename(target) !== null) return true;
+  // Keep analyze-only language modules out of the MCP startup closure (#2802).
+  const { EXTENSIONS } = await import('../../core/ingestion/languages/import-candidates.js');
   const lower = target.toLowerCase();
-  return (
-    getLanguageFromFilename(target) !== null ||
-    SOURCE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))
-  );
+  return EXTENSIONS.some((ext) => ext.startsWith('.') && !ext.includes('/') && lower.endsWith(ext));
 }
 
 /**
@@ -1460,6 +1456,9 @@ interface ApiImpactRoute {
     affectedFlows: number;
     riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
     warning?: string;
+    epistemic?: 'lower-bound';
+    unverifiedConsumers?: number;
+    boundaries?: string[];
   };
 }
 
@@ -1475,10 +1474,11 @@ const routeRuntimeEvidence = (route: RouteRuntimeEvidence) => ({
   ...(route.runtimeStatus === null ? {} : { status: route.runtimeStatus }),
 });
 
-const isMissingRouteRuntimePropertyError = (error: unknown): boolean => {
+/** An index built before a Route column existed lacks it; the query retries without. */
+const isMissingRouteOptionalPropertyError = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error);
   return (
-    ['runtimeConfirmed', 'runtimeSource', 'runtimeStatus'].some((property) =>
+    ['runtimeConfirmed', 'runtimeSource', 'runtimeStatus', 'unverifiedConsumers'].some((property) =>
       message.includes(property),
     ) &&
     (/cannot find property/i.test(message) ||
@@ -3355,10 +3355,19 @@ export class LocalBackend {
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
     const vectorDegraded = { reason: undefined as string | undefined };
-    const [bm25SearchResult, semanticResults] = await Promise.all([
+    const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
       timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit, vectorDegraded)),
     ]);
+    // A rejected lane must not let the other lane outlive query(). In particular,
+    // semantic search may still be importing the embedder and can start its
+    // sidecar after a one-shot CLI has already run disconnect() in `finally`.
+    // Settle both lanes first, then preserve Promise.all's left-to-right error
+    // precedence for callers.
+    if (bm25Outcome.status === 'rejected') throw bm25Outcome.reason;
+    if (semanticOutcome.status === 'rejected') throw semanticOutcome.reason;
+    const bm25SearchResult = bm25Outcome.value;
+    const semanticResults = semanticOutcome.value;
 
     // Guard against undefined results (#1489) — when FTS is entirely
     // unavailable the search helper may return an unexpected shape.
@@ -4117,12 +4126,56 @@ export class LocalBackend {
 
     // Guard against unexpected response shape (#1489) — ftsResponse.results
     // could be undefined when the FTS extension is unavailable in the MCP process.
-    const bm25Results = ftsResponse?.results ?? [];
+    const bm25Results: BM25SearchResult[] = ftsResponse?.results ?? [];
     const ftsUsed = ftsResponse?.ftsAvailable ?? false;
     const nonBenignErrors = ftsResponse?.nonBenignErrors;
     const missingIndexes = ftsResponse?.missingIndexes;
 
     const results: any[] = [];
+
+    // FTS supplies at most three exact symbol IDs per file. Fetch a bounded
+    // batch of files together instead of scanning the graph once per file.
+    // Keep the database's ORDER BY for each file, including null line values.
+    const hydratedSymbols = new Map<BM25SearchResult, any[]>();
+    for (const hit of bm25Results) {
+      assertIdentityFields(hit.filePath);
+      for (const nodeId of hit.nodeIds ?? []) assertSymbolIdentity(nodeId);
+    }
+    for (const hits of chunk(
+      bm25Results.filter((hit) => hit.nodeIds?.length),
+      LBUG_QUERY_BATCH_SIZE,
+    )) {
+      const hitsByNodeId = new Map<string, Set<BM25SearchResult>>();
+      for (const hit of hits) {
+        for (const nodeId of hit.nodeIds!) {
+          if (!hitsByNodeId.has(nodeId)) hitsByNodeId.set(nodeId, new Set());
+          hitsByNodeId.get(nodeId)!.add(hit);
+        }
+      }
+      try {
+        const symbols = await executeParameterized(
+          repo.lbugPath,
+          `
+              MATCH (n)
+              WHERE n.id IN $nodeIds
+              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              ORDER BY startLine, id
+            `,
+          { nodeIds: [...hitsByNodeId.keys()] },
+        );
+        for (const sym of symbols) assertSymbolRowIdentity(sym);
+        for (const hit of hits) hydratedSymbols.set(hit, []);
+        for (const sym of symbols) {
+          for (const hit of hitsByNodeId.get(sym.id ?? sym[0]) ?? []) {
+            hydratedSymbols.get(hit)!.push(sym);
+          }
+        }
+      } catch (err) {
+        rethrowSymbolIdentityError(err);
+        // A batch failure must not downgrade otherwise-readable files. Retry
+        // those files individually through the existing fallback below.
+      }
+    }
 
     for (const bm25Result of bm25Results) {
       const fullPath = bm25Result.filePath;
@@ -4133,24 +4186,26 @@ export class LocalBackend {
         // Without this, LIMIT 3 on filePath returns arbitrary symbols rather than
         // the nodes that actually scored highest in the BM25 index.
         const nodeIds = bm25Result.nodeIds?.length ? bm25Result.nodeIds : null;
-        const symbols = nodeIds
-          ? await executeParameterized(
-              repo.lbugPath,
-              `
+        const symbols =
+          hydratedSymbols.get(bm25Result) ??
+          (nodeIds
+            ? await executeParameterized(
+                repo.lbugPath,
+                `
               MATCH (n)
               WHERE n.id IN $nodeIds
               RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
               ORDER BY startLine, id
             `,
-              { nodeIds },
-            )
-          : await executeParameterized(
-              repo.lbugPath,
-              // Same BasicBlock exclusion as detect_changes (#2082 U7): on a
-              // --pdg index a function-heavy file has far more BasicBlock rows
-              // than symbols, so an unfiltered LIMIT 3 would surface nameless
-              // substrate rows and displace the real symbols.
-              `
+                { nodeIds },
+              )
+            : await executeParameterized(
+                repo.lbugPath,
+                // Same BasicBlock exclusion as detect_changes (#2082 U7): on a
+                // --pdg index a function-heavy file has far more BasicBlock rows
+                // than symbols, so an unfiltered LIMIT 3 would surface nameless
+                // substrate rows and displace the real symbols.
+                `
               MATCH (n)
               WHERE n.filePath = $filePath
                 AND NOT n.id STARTS WITH 'BasicBlock:'
@@ -4158,8 +4213,8 @@ export class LocalBackend {
               ORDER BY startLine, id
               LIMIT 3
             `,
-              { filePath: fullPath },
-            );
+                { filePath: fullPath },
+              ));
 
         if (symbols.length > 0) {
           for (const sym of symbols) {
@@ -5858,7 +5913,7 @@ export class LocalBackend {
     anchor: { file: string; symbol?: string; startLine?: number; endLine?: number };
     early?: Record<string, unknown>;
   }> {
-    if (looksLikeFilePath(target)) {
+    if (await looksLikeFilePath(target)) {
       return {
         anchorClause:
           '(a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)',
@@ -6090,15 +6145,27 @@ export class LocalBackend {
       const total = Number((ipCountRows[0] as any)?.total ?? (ipCountRows[0] as any)?.[0] ?? 0);
       const findings = ipRows.map((r: any) => {
         const decoded = decodeTaintPath(r.reason ?? r[5]);
+        // Cross-function lines are the endpoints' and hops' 0-based symbol
+        // `startLine` (the Function node property, and what interproc-emit
+        // encodes into the path codec), unlike the intra-procedural rows
+        // above, whose PDG statement lines are already 1-based. Convert at
+        // the response boundary like `context`/`query`/`impact` (#2377), so
+        // both layers of one response agree with the editor (#3491).
         const hops = decoded.ok
-          ? decoded.hops.map((h) => ({ function: h.variable, line: h.line }))
+          ? decoded.hops.map((h) => ({ function: h.variable, line: toDisplayLine(h.line) }))
           : [];
         return {
           interprocedural: true,
           file: String(r.file ?? r[0] ?? ''),
           sinkKind: decoded.ok ? (decoded.kind ?? 'unknown') : 'unknown',
-          source: { function: String(r.sourceFn ?? r[1] ?? ''), line: r.sourceLine ?? r[2] },
-          sink: { function: String(r.sinkFn ?? r[3] ?? ''), line: r.sinkLine ?? r[4] },
+          source: {
+            function: String(r.sourceFn ?? r[1] ?? ''),
+            line: toDisplayLine(r.sourceLine ?? r[2]),
+          },
+          sink: {
+            function: String(r.sinkFn ?? r[3] ?? ''),
+            line: toDisplayLine(r.sinkLine ?? r[4]),
+          },
           hops,
           ...(decoded.ok && decoded.truncated ? { pathIncomplete: true } : {}),
         };
@@ -6213,7 +6280,10 @@ export class LocalBackend {
       findings: pageFindings,
       totalFindings: totalFindings + interprocTotal,
       ...(truncated ? { truncated: true } : {}),
-      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled. Closure/callback, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. SANITIZES (kill) edges are queryable via cypher.',
+      note:
+        'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled, including sources read inside inline callbacks and returned handlers. Captured closure-variable, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. ' +
+        GUARD_TAINT_LIMITATION +
+        ' Cross-function findings are context-insensitive and may over-attribute among same-named callees. All line numbers are 1-based; for cross-function findings, `source.line`, `sink.line` and `hops[].line` are the declaration lines of the functions, not statement lines. SANITIZES (kill) edges are queryable via cypher.',
     };
   }
 
@@ -6939,9 +7009,25 @@ export class LocalBackend {
       new_name: string;
       file_path?: string;
       dry_run?: boolean;
+      plan_token?: string;
     },
   ): Promise<any> {
     await this.ensureInitialized(repo);
+    if (params.dry_run === false && (typeof params.plan_token !== 'string' || !params.plan_token)) {
+      return blockedRenameResult(
+        {
+          uid: params.symbol_uid,
+          name: params.symbol_name ?? '',
+          filePath: params.file_path ?? '',
+          startLine: 0,
+        },
+        params.new_name,
+        new RenameFailure(
+          'plan_required',
+          'Apply requires plan_token from a successful rename preview. Preview and review the exact edits first.',
+        ),
+      );
+    }
     if (!params.symbol_name && !params.symbol_uid) {
       return { error: 'Either symbol_name or symbol_uid is required.' };
     }
@@ -9647,6 +9733,7 @@ export class LocalBackend {
       runtimeConfirmed: boolean;
       runtimeSource: string | null;
       runtimeStatus: string | null;
+      unverifiedConsumers: number;
       consumers: Array<{
         name: string;
         filePath: string;
@@ -9655,7 +9742,7 @@ export class LocalBackend {
       }>;
     }>
   > {
-    const routeQuery = (includeRuntimeEvidence: boolean) => `
+    const routeQuery = (optionalColumns: string) => `
       MATCH (n:Route)
       WHERE n.id STARTS WITH 'Route:' ${routeFilter}
       OPTIONAL MATCH (consumer)-[r:CodeRelation]->(n)
@@ -9663,18 +9750,27 @@ export class LocalBackend {
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
              n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
-             r.reason AS fetchReason, n.method AS method${
-               includeRuntimeEvidence
-                 ? ', n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus'
-                 : ''
-             }
+             r.reason AS fetchReason, n.method AS method${optionalColumns}
     `;
+    const runtimeColumns =
+      ', n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus';
+    // Newest columns first: an older index lacks `unverifiedConsumers`, an
+    // older one still the runtime evidence.
+    const queries = [
+      `${runtimeColumns}, n.unverifiedConsumers AS unverifiedConsumers`,
+      runtimeColumns,
+      '',
+    ].map(routeQuery);
     let rows;
-    try {
-      rows = await executeParameterized(repoId, routeQuery(true), params);
-    } catch (error) {
-      if (!isMissingRouteRuntimePropertyError(error)) throw error;
-      rows = await executeParameterized(repoId, routeQuery(false), params);
+    for (const [attempt, query] of queries.entries()) {
+      try {
+        rows = await executeParameterized(repoId, query, params);
+        break;
+      } catch (error) {
+        if (attempt === queries.length - 1 || !isMissingRouteOptionalPropertyError(error)) {
+          throw error;
+        }
+      }
     }
 
     // Strip wrapping quotes from DB array elements — CSV COPY stores ['key'] which
@@ -9695,6 +9791,7 @@ export class LocalBackend {
         runtimeConfirmed: boolean;
         runtimeSource: string | null;
         runtimeStatus: string | null;
+        unverifiedConsumers: number;
         consumers: Array<{
           name: string;
           filePath: string;
@@ -9721,6 +9818,7 @@ export class LocalBackend {
       const runtimeConfirmed = (row.runtimeConfirmed ?? row[10]) === true;
       const runtimeSource: string | null = row.runtimeSource ?? row[11] ?? null;
       const runtimeStatus: string | null = row.runtimeStatus ?? row[12] ?? null;
+      const unverifiedConsumers = Number(row.unverifiedConsumers ?? row[13] ?? 0);
 
       if (!routeMap.has(id)) {
         routeMap.set(id, {
@@ -9734,6 +9832,7 @@ export class LocalBackend {
           runtimeConfirmed,
           runtimeSource,
           runtimeStatus,
+          unverifiedConsumers,
           consumers: [],
         });
       }
@@ -10313,6 +10412,16 @@ export class LocalBackend {
           affectedFlows: flows.length,
           riskLevel,
           ...(warning ? { warning } : {}),
+          // No `exact` verdict: URLs the analyzer could not resolve are unseen.
+          ...(r.unverifiedConsumers > 0
+            ? {
+                epistemic: 'lower-bound' as const,
+                unverifiedConsumers: r.unverifiedConsumers,
+                boundaries: [
+                  `${r.unverifiedConsumers} more file${r.unverifiedConsumers === 1 ? '' : 's'} pass this route's URL to a function not proven to send HTTP requests; directConsumers is a lower bound.`,
+                ],
+              }
+            : {}),
         },
       };
     });

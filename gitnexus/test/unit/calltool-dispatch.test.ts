@@ -2576,54 +2576,63 @@ describe('LocalBackend.callTool', () => {
 
   it('rename: a first apply-edit write failure reports status:error + failed_files (#2283)', async () => {
     // Real graph/semantic resolution produces an edit; staging its replacement fails.
-    (executeParameterized as any)
-      .mockResolvedValueOnce([
-        {
-          id: 'Function:src/target.ts:oldName',
-          name: 'oldName',
-          type: 'Function',
-          filePath: 'src/target.ts',
-          startLine: 1,
-          endLine: 1,
-        },
-      ])
-      .mockResolvedValue([]);
-    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-'));
-    (listRegisteredRepos as any).mockResolvedValue([
-      { ...MOCK_REPO_ENTRY, path: repoDir, storagePath: path.join(repoDir, '.gitnexus') },
-    ]);
-    backend = new LocalBackend();
-    await backend.init();
-
-    // Graph lines are zero-based; context presents this declaration on line 2.
-    mkdirSync(path.join(repoDir, 'src'));
-    writeFileSync(path.join(repoDir, 'src/target.ts'), '\nfunction oldName() {}\n');
-    lbugMocks.executeQuery.mockResolvedValue([
-      { id: 'File:src/target.ts', name: 'target.ts', filePath: 'src/target.ts' },
+    mockSymbolRows([
       {
         id: 'Function:src/target.ts:oldName',
         name: 'oldName',
+        type: 'Function',
         filePath: 'src/target.ts',
         startLine: 1,
         endLine: 1,
       },
     ]);
-    const writeSpy = vi
-      .spyOn(fsPromises, 'writeFile')
-      .mockRejectedValue(new Error('EACCES: permission denied'));
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-'));
     try {
-      const result = await backend.callTool('rename', {
+      (listRegisteredRepos as any).mockResolvedValue([
+        { ...MOCK_REPO_ENTRY, path: repoDir, storagePath: path.join(repoDir, '.gitnexus') },
+      ]);
+      backend = new LocalBackend();
+      await backend.init();
+
+      // Graph lines are zero-based; context presents this declaration on line 2.
+      mkdirSync(path.join(repoDir, 'src'));
+      writeFileSync(path.join(repoDir, 'src/target.ts'), '\nfunction oldName() {}\n');
+      lbugMocks.executeQuery.mockResolvedValue([
+        { id: 'File:src/target.ts', name: 'target.ts', filePath: 'src/target.ts' },
+        {
+          id: 'Function:src/target.ts:oldName',
+          name: 'oldName',
+          filePath: 'src/target.ts',
+          startLine: 1,
+          endLine: 1,
+        },
+      ]);
+      const preview = await backend.callTool('rename', {
         symbol_name: 'oldName',
         new_name: 'newName',
-        dry_run: false,
+        dry_run: true,
       });
-      expect(result.status).toBe('error');
-      expect(result.failed_files).toContain('src/target.ts');
-      expect(result.applied).toBe(false);
-      expect(result.total_edits).toBe(0);
-      expect(result.application_status).toBe('failed');
+      expect(preview.status).toBe('success');
+      expect(preview.plan_token).toEqual(expect.any(String));
+      const writeSpy = vi
+        .spyOn(fsPromises, 'writeFile')
+        .mockRejectedValue(new Error('EACCES: permission denied'));
+      try {
+        const result = await backend.callTool('rename', {
+          symbol_name: 'oldName',
+          new_name: 'newName',
+          dry_run: false,
+          plan_token: preview.plan_token,
+        });
+        expect(result.status).toBe('error');
+        expect(result.failed_files).toContain('src/target.ts');
+        expect(result.applied).toBe(false);
+        expect(result.total_edits).toBe(0);
+        expect(result.application_status).toBe('failed');
+      } finally {
+        writeSpy.mockRestore();
+      }
     } finally {
-      writeSpy.mockRestore();
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
@@ -2847,17 +2856,23 @@ describe('LocalBackend.callTool', () => {
     expect(result.routes[0].method).toBeNull();
   });
 
-  it('route_map falls back for legacy Route schemas and reports unconfirmed evidence', async () => {
-    vi.mocked(executeParameterized)
-      .mockRejectedValueOnce(
-        new Error('Binder exception: Cannot find property runtimeConfirmed for n.'),
-      )
-      .mockResolvedValueOnce([verbRow('GET', '/legacy', 'LegacyController.java')]);
+  it.each([
+    { missing: ['unverifiedConsumers'], calls: 3 },
+    { missing: ['unverifiedConsumers', 'runtimeConfirmed'], calls: 4 },
+  ])('route_map falls back for Route schemas without $missing', async ({ missing, calls }) => {
+    for (const property of missing) {
+      vi.mocked(executeParameterized).mockRejectedValueOnce(
+        new Error(`Binder exception: Cannot find property ${property} for n.`),
+      );
+    }
+    vi.mocked(executeParameterized).mockResolvedValueOnce([
+      verbRow('GET', '/legacy', 'LegacyController.java'),
+    ]);
 
     const result = await backend.callTool('route_map', { route: '/legacy' });
 
-    // Modern Route query, legacy retry, then the linked-flow batch.
-    expect(executeParameterized).toHaveBeenCalledTimes(3);
+    // One Route query per older schema, then the linked-flow batch.
+    expect(executeParameterized).toHaveBeenCalledTimes(calls);
     expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
   });
 

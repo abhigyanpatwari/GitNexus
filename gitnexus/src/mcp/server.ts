@@ -43,6 +43,11 @@ import {
 } from './repository-policy.js';
 import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
 import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-arguments.js';
+import {
+  applyMcpResponseFilter,
+  resolveMcpResponseFilter,
+  withoutMcpResponseFilterArgs,
+} from './response-filter.js';
 
 /**
  * Next-step hints appended to tool responses.
@@ -57,6 +62,7 @@ export function getNextStepHint(
   toolName: string,
   args: Record<string, any> | undefined,
   readOnly = false,
+  toolResult?: unknown,
 ): string {
   const repo = args?.repo;
   const repoParam = repo ? `, repo: "${repo}"` : '';
@@ -83,15 +89,23 @@ export function getNextStepHint(
       // is a preview (omitted defaults to true), so the next step is to apply it,
       // not to verify side effects that cannot exist yet.
       if (args?.dry_run === false) {
+        const result =
+          toolResult !== null && typeof toolResult === 'object'
+            ? (toolResult as Record<string, unknown>)
+            : undefined;
+        if (result?.status === 'partial' || result?.application_status === 'partial')
+          return '\n\n---\n**Next:** Reconcile landed changes, failed_files and unattempted_files, then re-analyze and review a fresh preview before applying again. The operation was partial.';
+        if (result?.applied !== true)
+          return '\n\n---\n**Next:** No successful apply was confirmed. Inspect code and error, then request and review a fresh rename preview and use its plan_token to apply.';
         return `\n\n---\n**Next:** Run detect_changes(${repoParam ? `{repo: "${repo}"}` : ''}) to verify no unexpected side effects from the rename.`;
       }
       if (readOnly) {
-        return `\n\n---\n**Next:** This is a preview; MCP read-only mode cannot apply it. Review semantic_edits and coverage, and apply from a client that is not read-only.`;
+        return `\n\n---\n**Next:** This is a preview; MCP read-only mode cannot apply it. To apply, request and review a fresh preview from a server that permits writes, then use that server's plan_token.`;
       }
       const target = args?.symbol_uid
         ? `symbol_uid: ${JSON.stringify(args.symbol_uid)}`
         : `symbol_name: ${JSON.stringify(args?.symbol_name ?? '<symbol_name>')}`;
-      return `\n\n---\n**Next:** Preview only; no files were changed. If status is "success", review semantic_edits and coverage, then apply with rename({${target}, new_name: ${JSON.stringify(args?.new_name ?? '<new_name>')}, dry_run: false${repoParam}}). If it failed closed, act on its code and error rather than retrying unchanged.`;
+      return `\n\n---\n**Next:** Preview only; no files were changed. If status is "success", review semantic_edits and coverage, then apply with rename({${target}, new_name: ${JSON.stringify(args?.new_name ?? '<new_name>')}, dry_run: false, plan_token: "<plan_token from this preview>"${repoParam}}). If it failed closed, act on its code and error rather than retrying unchanged.`;
     }
 
     case 'cypher':
@@ -260,10 +274,19 @@ export function createMCPServer(
         const listed = toolForReadOnlyMcp(repositoryPolicy.toolForMcp(advertisedTool), readOnly);
         assertKnownMcpToolArguments(name, typedArgs, listed.inputSchema.properties);
       }
+      const responseFilter = resolveMcpResponseFilter(schemaSource, typedArgs);
       maxTokens = resolveMcpMaxTokens(name, typedArgs);
-      const result = await scopedBackend.callTool(name, withoutMcpBudgetArg(typedArgs));
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-      const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly);
+      const backendArgs = withoutMcpResponseFilterArgs(
+        withoutMcpBudgetArg(typedArgs),
+        responseFilter,
+      );
+      const result = applyMcpResponseFilter(
+        await scopedBackend.callTool(name, backendArgs),
+        responseFilter,
+      );
+      // Formatting whitespace costs model input tokens; keep every value and hint.
+      const resultText = typeof result === 'string' ? result : JSON.stringify(result);
+      const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly, result);
 
       return {
         content: [

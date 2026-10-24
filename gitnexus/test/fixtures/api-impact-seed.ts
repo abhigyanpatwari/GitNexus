@@ -22,7 +22,7 @@ export const API_IMPACT_SEED_DATA = [
   // /api/grants: success keys = [data, pagination], error keys = [error, message]
   `CREATE (r:Route {id: 'Route:/api/grants', name: '/api/grants', filePath: 'app/api/grants/route.ts', responseKeys: ['data', 'pagination'], errorKeys: ['error', 'message'], middleware: []})`,
   // /api/secure: middleware wrapped, separate success keys per method
-  `CREATE (r:Route {id: 'Route:/api/secure', name: '/api/secure', filePath: 'app/api/secure/route.ts', responseKeys: ['items', 'count'], errorKeys: [], middleware: ['withAuth', 'withRateLimit']})`,
+  `CREATE (r:Route {id: 'Route:/api/secure', name: '/api/secure', filePath: 'app/api/secure/route.ts', responseKeys: ['items', 'count'], errorKeys: [], middleware: ['withAuth', 'withRateLimit'], unverifiedConsumers: 2})`,
 
   // ─── Functions (consumers) ─────────────────────────────────────────
   `CREATE (fn:Function {id: 'func:GrantsList', name: 'GrantsList', filePath: 'components/GrantsList.tsx', startLine: 1, endLine: 10, isExported: true, content: 'export async function GrantsList()', description: 'Grants list component'})`,

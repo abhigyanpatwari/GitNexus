@@ -14,6 +14,7 @@ import * as lbugAdapter from '../../src/core/lbug/lbug-adapter.js';
 import {
   checkpointOnce,
   isManualCheckpointEnabled,
+  readCheckpointActivity,
   runCheckpointWithRetry,
   startWalCheckpointDriver,
 } from '../../src/core/lbug/wal-checkpoint-driver.js';
@@ -183,5 +184,141 @@ describe('startWalCheckpointDriver — lifecycle', () => {
     const driver = startWalCheckpointDriver({ periodMs: 10 });
     await driver.stop();
     await expect(driver.stop()).resolves.toBeUndefined();
+  });
+});
+
+// Absolute counters are module-level and shared across this file's tests, so each
+// case asserts against a snapshot taken at its start.
+describe('readCheckpointActivity — checkpoint evidence for failure reports (#3530)', () => {
+  const COMPLETED_AT = 1_700_000_000_000;
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    originalEnv = process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
+    delete process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
+    vi.useFakeTimers();
+    vi.setSystemTime(COMPLETED_AT);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    if (originalEnv === undefined) delete process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
+    else process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT = originalEnv;
+  });
+
+  it('records a completed checkpoint and when it completed', async () => {
+    const before = readCheckpointActivity();
+
+    await runCheckpointWithRetry({ checkpointFn: vi.fn().mockResolvedValue(true) });
+
+    const after = readCheckpointActivity();
+    expect(after.completed).toBe(before.completed + 1);
+    expect(after.lastCompletedAt).toBe(COMPLETED_AT);
+    expect(after.inFlight).toBe(before.inFlight);
+  });
+
+  it('does not count a no-op checkpoint (flushed false, e.g. no open connection) as completed', async () => {
+    const before = readCheckpointActivity();
+
+    const result = await runCheckpointWithRetry({ checkpointFn: vi.fn().mockResolvedValue(false) });
+
+    expect(result.flushed).toBe(false);
+    expect(readCheckpointActivity()).toEqual(before);
+  });
+
+  it('counts a checkpoint that succeeds after a retry once', async () => {
+    const before = readCheckpointActivity();
+    const checkpointFn = vi
+      .fn()
+      .mockRejectedValueOnce(makeCheckpointError())
+      .mockResolvedValueOnce(true);
+
+    await runCheckpointWithRetry({
+      checkpointFn,
+      sleepFn: vi.fn().mockResolvedValue(undefined),
+      randomFn: () => 0,
+    });
+
+    expect(readCheckpointActivity().completed).toBe(before.completed + 1);
+  });
+
+  it('reports a running checkpoint as in flight, then settles back', async () => {
+    const before = readCheckpointActivity();
+    const inFlightDuring: number[] = [];
+    const checkpointFn = async (): Promise<boolean> => {
+      inFlightDuring.push(readCheckpointActivity().inFlight);
+      return true;
+    };
+
+    await runCheckpointWithRetry({ checkpointFn });
+
+    expect(inFlightDuring).toEqual([before.inFlight + 1]);
+    expect(readCheckpointActivity().inFlight).toBe(before.inFlight);
+  });
+
+  it.each([
+    ['a non-checkpoint error', new Error('Runtime exception: Corrupted wal file.')],
+    ['an exhausted retry budget', makeCheckpointError()],
+  ])('does not count a checkpoint that failed with %s, and releases in-flight', async (_n, err) => {
+    const before = readCheckpointActivity();
+
+    await expect(
+      runCheckpointWithRetry({
+        checkpointFn: vi.fn().mockRejectedValue(err),
+        sleepFn: vi.fn().mockResolvedValue(undefined),
+        randomFn: () => 0,
+      }),
+    ).rejects.toBe(err);
+
+    expect(readCheckpointActivity()).toEqual(before);
+  });
+
+  it('returns a snapshot that later checkpoints do not change', async () => {
+    const snapshot = readCheckpointActivity();
+    const frozen = { ...snapshot };
+
+    await runCheckpointWithRetry({ checkpointFn: vi.fn().mockResolvedValue(true) });
+
+    expect(snapshot).toEqual(frozen);
+  });
+
+  it('records the staged window-start checkpoint (checkpointOnce) when it flushed', async () => {
+    const before = readCheckpointActivity();
+    vi.spyOn(lbugAdapter, 'tryFlushWAL').mockResolvedValue(true);
+
+    await checkpointOnce();
+
+    const after = readCheckpointActivity();
+    expect(after.completed).toBe(before.completed + 1);
+    expect(after.lastCompletedAt).toBe(COMPLETED_AT);
+  });
+
+  it('does not record the staged window-start checkpoint (checkpointOnce) when it was a no-op', async () => {
+    const before = readCheckpointActivity();
+    vi.spyOn(lbugAdapter, 'tryFlushWAL').mockResolvedValue(false);
+
+    await checkpointOnce();
+
+    expect(readCheckpointActivity()).toEqual(before);
+  });
+
+  it('records nothing when the manual checkpoint is opted out', async () => {
+    process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT = '0';
+    const before = readCheckpointActivity();
+
+    await checkpointOnce();
+
+    expect(readCheckpointActivity()).toEqual(before);
+  });
+
+  it('records a periodic driver tick', async () => {
+    const before = readCheckpointActivity();
+    vi.spyOn(lbugAdapter, 'tryFlushWAL').mockResolvedValue(true);
+
+    const driver = startWalCheckpointDriver({ periodMs: 10 });
+    await vi.advanceTimersByTimeAsync(10);
+    await driver.stop();
+
+    expect(readCheckpointActivity().completed).toBe(before.completed + 1);
   });
 });

@@ -4,7 +4,9 @@ A cross-platform Dev Container that pre-installs Claude Code, OpenAI Codex CLI, 
 
 > ### ⚠️ Read this before using it on a work machine
 >
-> This devcontainer **does not write to your host AI-CLI config.** Your skills, agents, commands, plugins, memory, prompts, and rules are **copied once** from a read-only host stage into a per-container volume on first create; the container edits its own copy and can never write back. So a compromised workspace dependency running in the container **cannot** drop a malicious agent, command, skill, or plugin onto your host for your next host CLI session to load — the write-through vector earlier versions had is closed. Your **credentials** (Claude/Codex/Cursor logins, plus `gh`) likewise stay in per-container volumes and are never written back, and `~/.ssh`, `~/.aws`, `~/.azure`, and `~/.docker` are mounted **read-only**.
+> **The default 9p setup grants `SYS_ADMIN`, which can weaken read-only mount protections.** Remove that capability and disable tuning as described below to restore the boundary assumed in the following security notes.
+>
+> **With `SYS_ADMIN` removed**, this devcontainer **does not write to your host AI-CLI config.** Your skills, agents, commands, plugins, memory, prompts, and rules are **copied once** from a read-only host stage into a per-container volume on first create; the container edits its own copy and can never write back. So a compromised workspace dependency running in the container **cannot** drop a malicious agent, command, skill, or plugin onto your host for your next host CLI session to load — the write-through vector earlier versions had is closed. Your **credentials** (Claude/Codex/Cursor logins, plus `gh`) likewise stay in per-container volumes and are never written back, and `~/.ssh`, `~/.aws`, `~/.azure`, and `~/.docker` are mounted **read-only**.
 >
 > What is **still** exposed: the read-only host stages (`/host/.claude`, `/host/.codex`, `/host/.cursor`, `/host/.claude-mem`) and the read-only credential mounts are all **readable** inside the container. A compromised dependency can therefore READ your host CLI config, memory, SSH/cloud credentials, and GitHub token — and there is **no egress firewall yet**, so it has the network to exfiltrate what it reads. Read-only protects you from tampering and write-back, not from disclosure.
 >
@@ -18,7 +20,7 @@ A cross-platform Dev Container that pre-installs Claude Code, OpenAI Codex CLI, 
 2. Install [VS Code](https://code.visualstudio.com/) with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
 3. Install [Node.js](https://nodejs.org/) on the **host** (Node 18+). This is the only host-side toolchain dependency beyond Docker and VS Code — the devcontainer's `initializeCommand` runs `node .devcontainer/ensure-host-config-dirs.cjs` to set up the bind-mount source directories before container create. If you already use Claude Code or another Node-based CLI on the host, you're already set.
 4. Open the repo in VS Code → Command Palette → **Dev Containers: Reopen in Container**.
-5. Wait for the first build (~3–6 minutes) and `postCreateCommand` to finish installing workspace dependencies.
+5. Wait for the image build and lifecycle commands to finish preparing dependencies and AI CLI configuration.
 6. Authenticate the three CLIs once — see [First-time CLI authentication](#first-time-cli-authentication) below.
 
 ## Windows 11 setup
@@ -48,7 +50,7 @@ Windows-native works, but Docker Desktop's Windows bind-mount layer has rough ed
 
 - **File watchers can miss events.** Vite / jest `--watch` running inside the container watching workspace files mounted from `D:\...` may miss changes — chokidar polling (`CHOKIDAR_USEPOLLING=true`) is the usual workaround.
 - **`npm install` is 3-5× slower** through the Windows-to-Linux bind-mount translation than on a WSL2-native filesystem.
-- **Permission edge cases.** The husky `.husky/_/h` EPERM class we hit earlier in this PR is specific to Windows-side bind mounts changing UID ownership between container runs. `post-create.sh` clears the cache defensively to keep this from being fatal, but it's still a real source of friction.
+- **Permission edge cases.** The husky `.husky/_/h` EPERM class we hit earlier in this PR is specific to Windows-side bind mounts changing UID ownership between container runs. `install-deps.sh` rebuilds the generated cache and verifies the pre-commit hook, but it's still a real source of friction.
 
 If you hit any of those and want to migrate to WSL2 later, the steps are below.
 
@@ -84,11 +86,92 @@ Open the repo folder in VS Code → **Reopen in Container**. The image is multi-
 
 Same as macOS — open in VS Code and reopen in container. `updateRemoteUserUID: true` (default) shifts the container's `node` user UID/GID to match your host user, so bind-mounted files stay writable without extra setup.
 
+## Workspace and image profiles
+
+The main configuration keeps your existing host checkout bind-mounted at `/workspace`. For Windows hosts, the WSL2 filesystem setup above avoids the Windows filesystem translation. Additional profiles are generated from the main configuration, using host Node.js with no npm installation required:
+
+```bash
+# A separate checkout in a Docker-managed native filesystem volume.
+node .devcontainer/profile.cjs native --ref main
+
+# Bind-mounted checkout with Chromium system dependencies and browser cache.
+node .devcontainer/profile.cjs ui
+
+# Combine the native workspace and UI support.
+node .devcontainer/profile.cjs native --ui --ref main
+
+# Work on a branch pushed to your own fork (HTTPS or Git SSH).
+node .devcontainer/profile.cjs native --url https://github.com/YOUR-NAME/GitNexus.git --ref your-branch
+
+# Pull a published toolchain image instead of building locally.
+node .devcontainer/profile.cjs prebuilt
+node .devcontainer/profile.cjs prebuilt --ui
+```
+
+These commands overwrite the ignored `.devcontainer/generated/devcontainer.json`. Select that configuration when reopening the folder in Dev Containers, or pass `--config .devcontainer/generated/devcontainer.json` to the Dev Container CLI. Regenerate after changing the main configuration. Existing containers need recreation when switching workspace mounts.
+
+The native profile clones the selected **remote branch** of GitNexus into its volume before dependency setup. It does not copy uncommitted host edits. Push your branch first and use `--ref your-branch` to work on it; contributors using a fork must also pass `--url` for that fork. HTTPS, `git@host:owner/repo.git`, and `ssh://git@host/owner/repo.git` URLs are supported without embedded HTTPS credentials. Fresh checkouts track their remote branch, so ordinary `git pull` and `git push` work. Reused volumes keep their current branch and local changes; the bootstrap neither resets nor automatically pulls an existing checkout. The volume is the authoritative checkout: use Git to export changes before removing it. Host credentials/configuration still use the existing read-only staging mounts.
+
+`--ref` and `--url` apply only to `native`. `--image` selects an existing image for consumer profiles and preserves the configured Features, including GitHub CLI, so custom images need not bundle `gh`. Dev Containers applies those Features to the selected image. `image-build` accepts only `--ui`, since its build output is named by the publishing command.
+
+UI profiles install OS dependencies during the image build using the Playwright version in `gitnexus-web/package-lock.json`. Setup installs matching Chromium binaries into a persistent browser-cache volume. They also allocate 1 GiB of private shared memory. Prebuilt UI profiles require the `main-ui` image variant; explicit images passed with `--image` must include those OS dependencies.
+
+## Dependency reuse, storage and diagnostics
+
+Setup records completed installations inside each dependency volume. Fingerprints cover package manifests, lockfiles, local file-dependency manifests, Node version/ABI, npm version, architecture, and tracked native grammar/build inputs. The CLI receipt also includes the effective `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` setting. A matching receipt with all direct dependencies present skips `npm ci`. Missing dependencies or changed inputs cause a clean reinstall, with lifecycle scripts enabled. Failed installs leave no valid receipt.
+
+Husky preparation and verification **always run**, including cached setup. Shared and CLI source builds run independently of dependency reuse, so pulling source changes still refreshes compiled output. After pulling changes in a running container, run:
+
+```bash
+bash .devcontainer/install-deps.sh
+
+# Repair nested dependency damage, new untracked native build inputs, or
+# changed npm installation settings that are outside the fingerprint.
+GITNEXUS_FORCE_DEPS=1 bash .devcontainer/install-deps.sh
+```
+
+The shared GitNexus store and registry persist under `GITNEXUS_HOME=/home/node/.gitnexus` in a native named volume, retaining worktree sharing. Existing checkout-local `.gitnexus` directories stay in place; a new mount does not hide or replace them. The native workspace profile also places checkout-local indexes on its native filesystem. If moving an existing container whose shared store lives only in its writable layer, export that store before deleting the old container.
+
+Setup prints timings for ownership repair, dependency installation/reuse, builds, and browser provisioning. Inspect the environment at any time with:
+
+```bash
+node .devcontainer/doctor.cjs
+node .devcontainer/dev-test.cjs core test/unit/resolve-invocation.test.ts
+node .devcontainer/dev-test.cjs web
+GITNEXUS_DEV_TEST_WORKERS=2 node .devcontainer/dev-test.cjs core --watch
+```
+
+The diagnostic command reports CPU/memory allowance, cgroup memory events, memory/I/O pressure, disk space/inodes, file-descriptor and watcher limits, filesystem options, and hook status. The development test runner chooses up to four workers, respecting cgroup v2 CPU/memory limits and leaving interactive headroom. Its explicit override accepts 1–99 workers. The ordinary package test commands and CI test configuration remain available. Ownership repair still checks nested entries on each setup; timings can establish whether a more aggressive cache is worthwhile.
+
+## Prebuilt images
+
+`.github/workflows/devcontainer-publish.yml` verifies the tooling and publishes amd64/arm64 core and UI images to GHCR on relevant `main` pushes or manual dispatch on `main`. Pull requests do not publish images. Registry build caches are separate for the two variants. Consumers supply runtime mounts and lifecycle commands; published toolchain metadata excludes those settings to avoid duplicate lifecycle execution.
+
+The rolling tags are `ghcr.io/abhigyanpatwari/gitnexus-devcontainer:main` and `:main-ui`, available **after the first successful publication**. A fork publishes under its own repository-derived name. Each publication also records a unique `sha-COMMIT-run-RUN-ATTEMPT` tag in the workflow summary (with `-ui` for UI images). Pass that full reference or an image digest with `--image` to select a fixed build. Combine `native --image IMAGE` to use a prebuilt image with a native workspace. Local builds remain the default while the publishing workflow is reviewed and merged. New GHCR packages are [private by default](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry); a maintainer must enable public visibility for anonymous pulls, or developers must authenticate to GHCR. The workflow links the package to this repository using its OCI source label.
+
+## 9p workspace tuning
+
+`.devcontainer/tune-9p.sh` can attempt a larger 9p `msize` on each container start. It is **enabled by default**, with `SYS_ADMIN` granted to permit the remount attempt, and applies only when `/workspace` itself is a 9p mount. **Rebuild** an existing container to apply the capability. Check inside the container with:
+
+```bash
+findmnt -rn --mountpoint /workspace -o FSTYPE,OPTIONS
+```
+
+To disable the remount attempts, set `containerEnv.WORKSPACE_9P_TUNE` to `"0"` in `.devcontainer/devcontainer.json`. To also remove the broad mount privileges, remove `"SYS_ADMIN"` from `capAdd` and **rebuild**. Setting the flag alone does not remove the capability. The default target is 1 MiB (`1048576` bytes); change `containerEnv.WORKSPACE_9P_MSIZE` to choose another size. The existing defaults also accept these two variables from the host environment when creating the container.
+
+The helper uses `sudo -n` with a five-second timeout, skips other filesystems and mounts already at or above the target, and never fails startup. It reads the mount options again after a remount and distinguishes a verified target value from an unchanged or unknown value. To retry manually:
+
+```bash
+WORKSPACE_9P_TUNE=1 bash .devcontainer/tune-9p.sh /workspace
+```
+
+This is an experiment, with no measured speedup claimed. [`msize` sets the 9p packet payload size](https://www.kernel.org/doc/html/latest/filesystems/9p.html), but [upstream Linux's 9p implementation](https://github.com/torvalds/linux/blob/master/fs/9p/vfs_super.c) has no reconfigure handler to apply a new value. A successful remount command can therefore leave `msize` unchanged; Docker Desktop's kernel and server may also limit it. Increasing privileges alone does not guarantee tuning will work. For Windows development, keeping the checkout on the WSL2 filesystem remains the documented setup above.
+
 ## How CLI state flows from your host
 
 ### AI CLIs (Claude Code, Codex, Cursor): copy-once from a read-only host stage + per-container credentials
 
-The three AI CLIs use a **copy-from-read-only-stage topology**: the host's `~/.<cli>` folders (and `~/.claude-mem`) are mounted **read-only** at `/host/.<cli>`, and `post-create.sh` copies out of them into per-container named volumes. Credentials, identity, and single config files are copied on **every** create; the shareable subdirs (plugins, skills, agents, memory, commands, prompts, rules) are copied **once** on first create and then owned by the container. Nothing is bind-mounted read-write into the host's CLI config, so the container can never modify your host setup. Session sub-paths overlay the config volume via their own named volumes (Docker mount precedence — more specific path wins).
+The three AI CLIs use a **copy-from-read-only-stage topology**: the host's `~/.<cli>` folders (and `~/.claude-mem`) are mounted **read-only** at `/host/.<cli>`, and `post-create.sh` copies out of them into per-container named volumes. Credentials, identity, and single config files are copied on **every** create; the shareable subdirs (plugins, skills, agents, memory, commands, prompts, rules) are copied **once** on first create and then owned by the container. Lifecycle scripts and CLI tools edit the container copies. The default `SYS_ADMIN` capability means the read-only mounts are not a security boundary against privileged container code. Session sub-paths overlay the config volume via their own named volumes (Docker mount precedence — more specific path wins).
 
 | Mount                                              | Source                                                                                                                  | Target                                                    | Mode          | Purpose                                                                                                                             |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -133,7 +216,7 @@ On the **first** container-create, `post-create.sh` copies each of these out of 
 
 **Why CLAUDE_CONFIG_DIR is intentionally NOT set:** Claude's default `~/.claude` matches the named-volume mount target, so the env var added no behavior — but setting it changed which file Claude reads `hasCompletedOnboarding` from. With it set, Claude reads `$CLAUDE_CONFIG_DIR/.claude.json` (the small identity-only file) and re-onboards every container; without it, Claude reads `$HOME/.claude.json` (copied from the read-only `/host/.claude.json` stage on container-create via `seed-claude-config.cjs`, with `hasCompletedOnboarding: true`).
 
-**Host CLI config is protected from write-through.** The shareable dirs are copied out of a **read-only** stage into the container's own volume, so a compromised npm package in the workspace dep tree — running inside the container — **cannot** write a malicious agent, command, skill, or plugin back to `~/.claude/`, `~/.codex/`, or `~/.cursor/` on the host. The earlier design bind-mounted these read-write and accepted that write-through as the cost of live sync; this design closes it. An even earlier alternative (read-only stage + symlinks) made `/plugin marketplace add` inside the container fail with EROFS; copying into a writable volume avoids that, because the container writes to its own copy rather than a read-only mount. What a compromised dependency can still do is **read** the read-only host stages (`/host/.<cli>`, `/host/.claude-mem`) and the read-only credential mounts and exfiltrate them — there is [no egress firewall yet](#whats-not-included-yet). The cost of the copy model is **divergence**: host edits made after first create don't reach the container until you wipe the config volume and rebuild.
+**With `SYS_ADMIN` removed, host CLI config is protected from write-through.** The shareable dirs are copied out of a **read-only** stage into the container's own volume, so a compromised npm package in the workspace dep tree — running inside the container — **cannot** write a malicious agent, command, skill, or plugin back to `~/.claude/`, `~/.codex/`, or `~/.cursor/` on the host. The earlier design bind-mounted these read-write and accepted that write-through as the cost of live sync; this design closes it. An even earlier alternative (read-only stage + symlinks) made `/plugin marketplace add` inside the container fail with EROFS; copying into a writable volume avoids that, because the container writes to its own copy rather than a read-only mount. What a compromised dependency can still do is **read** the read-only host stages (`/host/.<cli>`, `/host/.claude-mem`) and the read-only credential mounts and exfiltrate them — there is [no egress firewall yet](#whats-not-included-yet). The cost of the copy model is **divergence**: host edits made after first create don't reach the container until you wipe the config volume and rebuild.
 
 **Refresh-token divergence between rebuilds.** Container's credentials match host's at container-create time; after that, container manages its own refresh until the next rebuild. Anthropic rotates refresh tokens on every use, so an unattended container that hasn't talked to the API in weeks can hit a silent 401 if the host has refreshed since. Re-run `claude login` inside the container, or rebuild, to recover.
 
@@ -214,7 +297,7 @@ The bind mount source directories are guaranteed to exist by the `initializeComm
 
 Host and container share a single trust boundary by design — fine for personal-dev, but the consequence is concrete. Any malicious npm package or `postinstall` script in the workspace dep tree, running inside the container, has direct **read** access to:
 
-- **Host AI CLI state** — the read-only stage at `/host/.claude`, `/host/.codex`, `/host/.cursor`, `/host/.claude-mem`, which exposes your **entire** host `~/.<cli>` tree (credentials, identity, AND the shareable skills/agents/plugins/memory/commands) for _reading_. The container copies what it needs out of this stage; a compromised dep can read all of it. It is read-only, so none of it can be written back
+- **Host AI CLI state** — the read-only stage at `/host/.claude`, `/host/.codex`, `/host/.cursor`, `/host/.claude-mem`, which exposes your **entire** host `~/.<cli>` tree (credentials, identity, AND the shareable skills/agents/plugins/memory/commands) for _reading_. The container copies what it needs out of this stage; a compromised dep can read all of it. It is mounted read-only; default `SYS_ADMIN` can weaken that protection
 - The **container's own credential snapshots** at `/home/node/.claude/.credentials.json` etc. (copied from host on container-create)
 - `~/.claude/memory/` / per-project memory (which may contain user-stored secrets if you've used the `/remember` skill)
 - The **current container's own session transcripts** (`~/.claude/projects`, `~/.codex/sessions`, `~/.cursor/chats`/`projects` — the group-6 volumes), which can hold anything pasted into or read during a session. These are container-private (see one-way note below), so this is read access to _this_ container's sessions only, not the host's or other projects'
@@ -223,9 +306,9 @@ Host and container share a single trust boundary by design — fine for personal
 - Docker registry tokens in **`~/.docker/config.json`** (if you've `docker login`-ed)
 - AWS/Azure CLI credentials if you've populated `~/.aws/` or `~/.azure/`
 
-It does **not** have write-through to the host's CLI config. The shareable dirs are copied out of the read-only stage into the container's own volume, so a compromised in-container dep **cannot** write into your host `~/.claude/{plugins,agents,skills,commands,memory}/`, `~/.codex/{plugins,prompts,memories,skills}/`, or `~/.cursor/{plugins,rules,commands,agents,skills}/`. The persistence vector earlier versions had — drop a malicious auto-loaded agent/command/skill/rule onto the host, have it run in your next **host** session — is closed: there is no writable path from the container to those host folders. (Cursor's `hooks.json` is still additionally withheld from even the _container's_ copy, because hooks fire without an agent invoking them.) The boundary is now one-way for **all** of the host CLI config, not just credentials.
+**With `SYS_ADMIN` removed**, it does **not** have write-through to the host's CLI config. The shareable dirs are copied out of the read-only stage into the container's own volume, so a compromised in-container dep **cannot** write into your host `~/.claude/{plugins,agents,skills,commands,memory}/`, `~/.codex/{plugins,prompts,memories,skills}/`, or `~/.cursor/{plugins,rules,commands,agents,skills}/`. The persistence vector earlier versions had — drop a malicious auto-loaded agent/command/skill/rule onto the host, have it run in your next **host** session — is closed: there is no writable path from the container to those host folders. (Cursor's `hooks.json` is still additionally withheld from even the _container's_ copy, because hooks fire without an agent invoking them.) The boundary is now one-way for **all** of the host CLI config, not just credentials.
 
-**What stays one-way (genuinely protected):** everything. Credentials never flow back to host — `.credentials.json` / `auth.json` / `cli-config.json` live only in the per-container named volumes, and the `/host/.<cli>` stage they're copied from is mounted **read-only**, so the snapshot can't be overwritten back. The shareable AI-CLI dirs (skills/agents/plugins/memory/commands/prompts/rules) are now copy-on-create from that same read-only stage, so they have the one-way property too — readable for the copy, never writable back. `~/.ssh`, `~/.config/git`, `~/.aws`, `~/.azure`, and **`~/.docker`** are read-only binds with the same property — a compromised dep can _read_ your registry tokens but cannot _rewrite_ them to hijack your future host auth. **`~/.config/gh`** is now a read-only _stage_ copied into a per-container volume, so it keeps that same one-way property: the container reads it once to seed its own writable copy, and the read-only stage means an in-container `gh auth login` can never overwrite your host token. **Session transcripts** live in per-workspace named volumes (mount group 6) and are never seeded from or written back to the host, and the container can't see any _other_ project's transcripts. The opt-in host-bind block in `devcontainer.json` reverses that for sessions only — enable it only if you accept transcripts on host disk; see [Session resume across container recreation](#session-resume-across-container-recreation).
+**With `SYS_ADMIN` removed, what stays one-way:** everything. Credentials never flow back to host — `.credentials.json` / `auth.json` / `cli-config.json` live only in the per-container named volumes, and the `/host/.<cli>` stage they're copied from is mounted **read-only**, so the snapshot can't be overwritten back. The shareable AI-CLI dirs (skills/agents/plugins/memory/commands/prompts/rules) are now copy-on-create from that same read-only stage, so they have the one-way property too — readable for the copy, never writable back. `~/.ssh`, `~/.config/git`, `~/.aws`, `~/.azure`, and **`~/.docker`** are read-only binds with the same property — a compromised dep can _read_ your registry tokens but cannot _rewrite_ them to hijack your future host auth. **`~/.config/gh`** is now a read-only _stage_ copied into a per-container volume, so it keeps that same one-way property: the container reads it once to seed its own writable copy, and the read-only stage means an in-container `gh auth login` can never overwrite your host token. **Session transcripts** live in per-workspace named volumes (mount group 6) and are never seeded from or written back to the host, and the container can't see any _other_ project's transcripts. The opt-in host-bind block in `devcontainer.json` reverses that for sessions only — enable it only if you accept transcripts on host disk; see [Session resume across container recreation](#session-resume-across-container-recreation).
 
 **The egress firewall is the key compensating control that is still missing.** It's deferred (see "What's not included (yet)" below), so a compromised package currently has unrestricted outbound network to exfiltrate anything in the read list above. Until it lands, treat that read surface as exposed to any code you run in the container — don't use this devcontainer on a machine whose host credentials you couldn't afford to rotate. The isolated-volume setup below removes host AI-CLI config/credentials from that surface entirely.
 
@@ -310,12 +393,15 @@ VS Code's Ports panel shows forwarded ports once their listener starts.
 
 ## Known gotchas
 
+- **Warm installs reuse the npm cache.** Lifecycle installs prefer cached packages and skip audit requests and funding notices; cache misses still download normally, and native addon/prepare scripts still run. Run `npm audit` in each package when checking vulnerabilities. Volume ownership repair changes only entries whose owner or group differs from `node`.
+- **VS Code skips generated indexes, build output, dependencies, and nested worktrees when watching/searching.** Open a sibling worktree as its own window when developing there. These exclusions do not change Vite or Vitest watchers.
+- **Memory follows the running workload.** The image leaves `NODE_OPTIONS` unset, so Node uses its defaults and `gitnexus analyze` uses its RAM-aware sizing. For a specific indexing run, use `gitnexus analyze --memory-budget 4096` to set a 4 GiB heap budget. Docker Desktop's VM memory allocation still bounds the container.
 - **LadybugDB integration tests may fail in containers** (file-locking, `AGENTS.md` § Testing). Default to `npm run test:unit` inside the container; run integration tests on the host. Tracking issue: documented as a known limitation.
 - **Single-writer LadybugDB constraint** (`GUARDRAILS.md` § LadybugDB lock). Don't run `gitnexus analyze` on the host and inside the container against the same `.gitnexus/` directory simultaneously — the second writer will get `database busy`.
-- **Native grammar builds add ~30s to first install.** Tree-sitter Dart/Proto/Swift/Kotlin are all vendored uniformly: `node-gyp-build` picks a committed GitNexus-built prebuilt `.node` at install time (no compile), and only falls back to compiling from the vendored source during `postinstall` if no prebuild matches the host (then a toolchain is needed). Set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` (in your shell or `remoteEnv`, then rebuild) to skip all four; each loses parsing for the affected language(s), and the install still succeeds.
+- **Native grammar builds add ~30s to first install.** Tree-sitter Dart/Proto/Swift/Kotlin/Zig are all vendored uniformly: `node-gyp-build` picks a committed GitNexus-built prebuilt `.node` at install time (no compile), and only falls back to compiling from the vendored source during `postinstall` if no prebuild matches the host (then a toolchain is needed). Set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` (in your shell or `remoteEnv`, then rebuild) to skip these optional grammars; each loses parsing for the affected language(s), and the install still succeeds. Changing this setting invalidates the CLI dependency receipt, including when it is removed to restore parsing.
 - **`tree-sitter-kotlin`/`tree-sitter-swift` warnings on install** only appear when no prebuild matches the platform-arch (per `AGENTS.md`); they are non-fatal — parsing for that language is simply unavailable.
 - **`.mcp.json` works inside the container**: `npx -y gitnexus@latest mcp` resolves cleanly because npm registry is reachable and the workspace bind mount exposes the same `.mcp.json` the host sees.
-- **Husky pre-commit fires inside the container** without extra setup. The root `npm install` (run automatically in `postCreateCommand`) installs the hook via `package.json` `prepare`.
+- **Husky pre-commit is verified during setup.** Root preparation always installs the hook, including cached dependency runs. Only its generated `.husky/_` cache is cleared for stale Windows permissions; the tracked `.husky/pre-commit` stays intact. Setup fails if the hook is missing, Git points elsewhere, or the environment or Husky's `init.sh` disables or skips it. Verification runs the installed Husky helper against a temporary sentinel hook without running the real formatter or changing staged files. Run `npm run prepare` at the repository root to restore the hook, and keep Husky enabled in its startup configuration.
 
 ## Rebuild / reset
 
@@ -341,22 +427,26 @@ VS Code's Ports panel shows forwarded ports once their listener starts.
 
 ## Bumping CLI versions
 
-Bump the version pins in `.devcontainer/devcontainer.json` `build.args` and rebuild — all three are real, fail-loud pins. Claude Code installs via `npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}` and Codex via `npm install -g @openai/codex@${CODEX_VERSION}`. **Cursor is pinned too:** bump `CURSOR_VERSION` **and** both `CURSOR_SHA256_X64` / `CURSOR_SHA256_ARM64` together — the Dockerfile downloads the pinned `downloads.cursor.com/lab/<version>/linux/<arch>/agent-cli-package.tar.gz` artifact directly (no remote install script) and fails the build on a sha256 mismatch. Re-hash each arch with `curl -fSL <url> | sha256sum`. To stop Cursor from auto-updating in the running container, don't call `cursor-agent update`.
+Claude Code, Codex, and Cursor install the latest available release at image build time using their official shell installers. Rebuild without the Docker cache to refresh those image layers. Bun's version is pinned by `BUN_VERSION` in `.devcontainer/devcontainer.json` `build.args`; the Node base image is pinned by digest in the Dockerfile.
+
+Codex uses the [official standalone installer](https://developers.openai.com/codex/cli/) (`curl -fsSL https://chatgpt.com/codex/install.sh | sh`) rather than npm. The build runs it non-interactively and checks `codex --version`. Its native packages normally live under `~/.codex/packages/standalone`, inside the persistent config volume. The image keeps a package seed outside that mount; `post-create.sh` restores it when Codex cannot run, including when rebuilding with a config volume created by the previous npm-based image. A working standalone release already in the volume is kept. This avoids another download during setup and leaves credentials, configuration, and sessions intact.
 
 ## What's not included (yet)
 
 - **Egress firewall — the most important hardening still outstanding.** The original plan included an opt-in iptables/ipset firewall adapted from Anthropic's reference devcontainer. It was deferred to a follow-up PR — `runArgs` is static in `devcontainer.json`, so toggling NET_ADMIN/NET_RAW capabilities cleanly requires either a separate `devcontainer-firewall.json` profile or an `initializeCommand`-generated overlay. Until it lands, the read surface in [§ Trust boundary](#trust-boundary-concretely) has no network containment — anything readable can be exfiltrated. Track at the project's issue tracker if you need this.
-- **Codespaces tuning.** The current config works in Codespaces incidentally (no privileged capabilities, no host-mount assumptions), but isn't actively tested there.
-- **Playwright e2e support.** `gitnexus-web`'s `npm run test:e2e` needs Chromium libs that the base image doesn't ship. Use the host for e2e until a Playwright layer is added.
+- **Codespaces tuning.** Host configuration mounts and `SYS_ADMIN` support are not actively tested there.
+- **Non-Chromium browsers.** The UI profile provisions Chromium. Firefox/WebKit need their own browser binaries and system dependencies.
 
 ## Troubleshooting
+
+If `[install-deps]` prints `npm warn EBADENGINE` with Node 22.16.0, run **Dev Containers: Rebuild Container** from the Command Palette after updating this checkout. The image now pins Node 22.23.3; workspace dependencies require at least 22.22.2 on the Node 22 line. Re-running `npm install` in the old container does not update its Node runtime.
 
 | Symptom                                                                                      | Likely cause                                                                                                                           | Fix                                                                                                                                                                                                                                                                         |
 | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GitNexus devcontainer one-time Windows setup` banner from `initializeCommand`               | First-time Windows-native Reopen-in-Container; `HOME` env var was missing                                                              | The script just ran `setx HOME "%USERPROFILE%"` for you. Close ALL VS Code windows (File → Exit) and reopen — see [Windows 11 setup](#windows-11-setup)                                                                                                                     |
 | `bind source path does not exist: /.claude` (or similar) from Docker                         | Windows-native `HOME` env var is still missing even after one rebuild — `setx` may have failed or VS Code wasn't fully restarted       | Run `setx HOME "%USERPROFILE%"` in a Windows shell manually, fully exit VS Code (check Task Manager that no `Code.exe` remains), reopen                                                                                                                                     |
 | `EACCES` / `EPERM` writing into `~/.claude`, `~/.codex`, or `~/.cursor` inside the container | Stale state from a previous container with a different effective UID                                                                   | Move the affected dir aside and let the CLI rebuild it (`mv ~/.claude ~/.claude.bak` and log in again). Long-term: WSL2 setup, which doesn't hit this class of issue                                                                                                        |
-| `EPERM: operation not permitted, copyfile ... '.husky/_/h'` in `postCreateCommand`           | Leftover `.husky/_/` from a previous container run on a Windows-side bind mount                                                        | `post-create.sh` already runs `rm -rf .husky/_` defensively. If you hit this on an older config, delete `.husky/_/` on the host and rebuild. Long-term: clone in WSL2                                                                                                       |
+| `EPERM: operation not permitted, copyfile ... '.husky/_/h'` in `postCreateCommand`           | Leftover `.husky/_/` from a previous container run on a Windows-side bind mount                                                        | `install-deps.sh` regenerates `.husky/_` and verifies the active hook. If you hit this on an older config, delete `.husky/_/` on the host and rebuild. Long-term: clone in WSL2                                                                                                       |
 | Vite never hot-reloads                                                                       | Repo cloned on Windows side, not WSL2                                                                                                  | Re-clone inside WSL2                                                                                                                                                                                                                                                        |
 | `gitnexus-web` can't reach the backend                                                       | `4747` was remapped or backend isn't running                                                                                           | Verify the Ports panel shows `4747` forwarded with no remap; start the backend with `cd gitnexus && npx gitnexus serve`                                                                                                                                                     |
 | `npm install` fails on tree-sitter-swift / proto / dart                                      | Native build toolchain missing                                                                                                         | This shouldn't happen in the devcontainer — verify the apt layer installed `python3 make g++`. If iterating, set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` to skip the vendored grammars                                                                                          |

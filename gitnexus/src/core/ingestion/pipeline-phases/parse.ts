@@ -31,6 +31,7 @@ import type {
 } from '../workers/parse-worker.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
 import type { MutableSemanticModel } from '../model/index.js';
+import type { FetchWrapperCall } from '../route-extractors/fetch-wrapper.js';
 import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
 
 export interface ParseOutput {
@@ -48,6 +49,7 @@ export interface ParseOutput {
   readonly exportedTypeMap: ReadonlyMap<string, ReadonlyMap<string, string>>;
   readonly allFetchCalls: readonly ExtractedFetchCall[];
   readonly allFetchWrapperDefs: readonly FetchWrapperDef[];
+  readonly allFetchWrapperCalls: readonly FetchWrapperCall[];
   readonly allExtractedRoutes: readonly ExtractedRoute[];
   readonly allDecoratorRoutes: readonly ExtractedDecoratorRoute[];
   /** Exact admitted declarations that own Route nodes and handler attribution. */

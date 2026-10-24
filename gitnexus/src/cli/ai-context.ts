@@ -259,7 +259,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 
 - NEVER edit a function, class, or method before MCP/CLI impact analysis.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read \`UNKNOWN\` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
-- NEVER rename symbols with find-and-replace — use \`rename\` with \`dry_run: true\` first, review the graph-backed semantic spans and coverage, then apply with \`dry_run: false\`.
+- NEVER rename symbols with find-and-replace — use \`rename\` with \`dry_run: true\`, review semantic spans and coverage, then apply with \`dry_run: false\` and its \`plan_token\`.
 - NEVER commit before MCP/CLI graph change analysis.
 
 ## Resources

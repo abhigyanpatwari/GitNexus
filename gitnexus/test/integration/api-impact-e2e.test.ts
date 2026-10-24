@@ -75,6 +75,29 @@ withTestLbugDB(
       });
     });
 
+    // #3488: files passing the URL to an unproven function make the count a floor.
+    describe('api_impact lower bound', () => {
+      it.each([
+        { route: '/api/grants', lowerBound: {} },
+        {
+          route: '/api/secure',
+          lowerBound: {
+            epistemic: 'lower-bound',
+            unverifiedConsumers: 2,
+            boundaries: [
+              "2 more files pass this route's URL to a function not proven to send HTTP requests; directConsumers is a lower bound.",
+            ],
+          },
+        },
+      ])('$route reports unverified consumers', async ({ route, lowerBound }) => {
+        const result = await backend.callTool('api_impact', { route });
+        const { epistemic, unverifiedConsumers, boundaries } = result.impactSummary;
+        expect(JSON.parse(JSON.stringify({ epistemic, unverifiedConsumers, boundaries }))).toEqual(
+          lowerBound,
+        );
+      });
+    });
+
     // ─── Test 2: Mismatch detection ────────────────────────────────────
 
     describe('mismatch detection e2e', () => {

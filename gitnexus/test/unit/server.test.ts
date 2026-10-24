@@ -309,7 +309,7 @@ describe('getNextStepHint (via tool call response)', () => {
 
 describe('getNextStepHint rename', () => {
   const apply =
-    'rename({symbol_uid: "Method:src/a.ts:A.run#0", new_name: "go", dry_run: false, repo: "demo"})';
+    'rename({symbol_uid: "Method:src/a.ts:A.run#0", new_name: "go", dry_run: false, plan_token: "<plan_token from this preview>", repo: "demo"})';
 
   it.each([
     ['omitted', { symbol_uid: 'Method:src/a.ts:A.run#0', new_name: 'go', repo: 'demo' }],
@@ -325,7 +325,12 @@ describe('getNextStepHint rename', () => {
   });
 
   it('shows the detect_changes hint only after an explicit dry_run:false', () => {
-    const hint = getNextStepHint('rename', { new_name: 'go', repo: 'demo', dry_run: false });
+    const hint = getNextStepHint(
+      'rename',
+      { new_name: 'go', repo: 'demo', dry_run: false },
+      false,
+      { status: 'success', applied: true, application_status: 'applied' },
+    );
     expect(hint).toContain('detect_changes({repo: "demo"})');
     expect(hint).not.toContain('dry_run: false');
   });
@@ -342,14 +347,38 @@ describe('getNextStepHint rename', () => {
   it('names symbol_name, quoted, when no symbol_uid was sent and omits repo when absent', () => {
     const hint = getNextStepHint('rename', { symbol_name: 'run "fast"', new_name: 'go' });
     expect(hint).toContain(
-      'rename({symbol_name: "run \\"fast\\"", new_name: "go", dry_run: false})',
+      'rename({symbol_name: "run \\"fast\\"", new_name: "go", dry_run: false, plan_token: "<plan_token from this preview>"})',
     );
   });
 
   it('never suggests applying from a read-only server', () => {
     const hint = getNextStepHint('rename', { new_name: 'go', dry_run: true }, true);
     expect(hint).toContain('MCP read-only mode cannot apply it');
+    expect(hint).toContain('fresh preview from a server that permits writes');
+    expect(hint).toContain("that server's plan_token");
     expect(hint).not.toContain('dry_run: false');
+    expect(hint).not.toContain('detect_changes');
+  });
+  it.each(['plan_required', 'invalid_plan', 'plan_mismatch', 'source_changed'])(
+    'requests a fresh preview when apply fails with %s',
+    (code) => {
+      const hint = getNextStepHint('rename', { dry_run: false }, false, {
+        status: 'error',
+        applied: false,
+        code,
+      });
+      expect(hint).toContain('fresh rename preview');
+      expect(hint).toContain('plan_token');
+      expect(hint).not.toContain('detect_changes');
+    },
+  );
+  it('directs partial operations to reconcile exact write lists before retrying', () => {
+    const hint = getNextStepHint('rename', { dry_run: false }, false, {
+      status: 'partial',
+      applied: true,
+      application_status: 'partial',
+    });
+    expect(hint).toContain('failed_files and unattempted_files');
     expect(hint).not.toContain('detect_changes');
   });
 });
@@ -366,7 +395,7 @@ describe('MCP output budgets', () => {
         search_query: 'auth',
       });
       expect(isError).toBe(false);
-      expect(text).toContain('"payload": "complete"');
+      expect(text).toContain('"payload":"complete"');
       expect(text).toContain('**Next:**');
       expect(text.endsWith('\n…')).toBe(false);
     } finally {
@@ -420,7 +449,7 @@ describe('MCP output budgets', () => {
         direction: 'upstream',
         maxTokens: 200,
       });
-      expect(text).toContain('"payload": "complete"');
+      expect(text).toContain('"payload":"complete"');
       expect(text).toContain('**Next:**');
       expect(text.endsWith('\n…')).toBe(false);
     } finally {
@@ -708,5 +737,138 @@ describe('installSignalShutdown (#1132)', () => {
     for (const code of received) {
       expect(typeof code).toBe('number');
     }
+  });
+});
+
+// Response filters are optional transport views. Backends and unfiltered bytes
+// retain their established contract, including hints and safety metadata.
+describe('MCP response filters', () => {
+  const payload = {
+    status: 'found',
+    symbol: { uid: 'Function:src/pay.ts:pay', name: 'pay' },
+    incoming: {
+      calls: [{ uid: 'Function:src/buy.ts:buy' }],
+      uses: [{ uid: 'Variable:src/ui.ts:handler' }],
+    },
+    outgoing: { calls: [{ uid: 'Function:src/db.ts:save' }] },
+    processes: [{ id: 'proc:checkout' }],
+    epistemic: 'lower-bound',
+    causes: { callableValueReferences: 1 },
+    warning: 'Dynamic dispatch unresolved',
+    staleness: { status: 'current', lastCommit: 'abc' },
+  };
+  it('returns compact JSON with all default evidence and hints', async () => {
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
+    const args = { uid: payload.symbol.uid };
+    const { text, isError } = await callToolThroughServer(backend, 'context', args);
+    expect(isError).toBe(false);
+    expect(text).toBe(JSON.stringify(payload) + getNextStepHint('context', args, false, payload));
+    expect(backend.callTool).toHaveBeenCalledWith('context', args);
+  });
+  it('preserves source whitespace, Unicode, nested values and incomplete-evidence diagnostics', async () => {
+    const result = {
+      ...payload,
+      content: 'function café() {\n  return "雪 😀 \\"quoted\\"";\n}\n',
+      nested: [null, false, 0, '', { lines: ['  leading', 'trailing  ', '\tindent'] }],
+      partial: true,
+      truncated: true,
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const args = { uid: payload.symbol.uid, include_content: true };
+    const { text, isError } = await callToolThroughServer(backend, 'context', args);
+    const hint = getNextStepHint('context', args, false, result);
+    expect(isError).toBe(false);
+    expect(text.endsWith(hint)).toBe(true);
+    expect(JSON.parse(text.slice(0, -hint.length))).toEqual(result);
+  });
+  it('keeps complete evidence when compact JSON and its hint fit the requested budget', async () => {
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
+    const args = { uid: payload.symbol.uid };
+    const hint = getNextStepHint('context', args, false, payload);
+    const complete = JSON.stringify(payload) + hint;
+    const maxTokens = Math.ceil(Buffer.byteLength(complete) / 4);
+    expect(Buffer.byteLength(JSON.stringify(payload, null, 2) + hint)).toBeGreaterThan(
+      maxTokens * 4,
+    );
+    const { text, isError } = await callToolThroughServer(backend, 'context', {
+      ...args,
+      maxTokens,
+    });
+    expect(isError).toBe(false);
+    expect(text).toBe(complete);
+    expect(JSON.parse(text.slice(0, -hint.length))).toEqual(payload);
+  });
+  it('passes plain-text backend results through byte-for-byte before the hint', async () => {
+    const result = 'name | count\n  雪 😀 | 1\t\n';
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const args = { statement: 'RETURN 1' };
+    const { text, isError } = await callToolThroughServer(backend, 'cypher', args);
+    expect(isError).toBe(false);
+    expect(text).toBe(result + getNextStepHint('cypher', args, false, result));
+  });
+  it.each(['context', 'explore'])(
+    'applies opt-in views for %s without sending filter options to the backend',
+    async (name) => {
+      const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
+      const { text, isError } = await callToolThroughServer(backend, name, {
+        uid: payload.symbol.uid,
+        response_sections: ['incoming'],
+        relationTypes: ['CALLS'],
+      });
+      expect(isError).toBe(false);
+      const result = JSON.parse(text.split('\n\n---')[0]);
+      expect(result.incoming).toEqual({ calls: payload.incoming.calls });
+      expect(result.symbol).toEqual(payload.symbol);
+      expect(result.epistemic).toBe('lower-bound');
+      expect(result.causes).toEqual(payload.causes);
+      expect(result.warning).toBe(payload.warning);
+      expect(result.staleness).toEqual(payload.staleness);
+      expect(result).not.toHaveProperty('outgoing');
+      expect(result).not.toHaveProperty('processes');
+      expect(result.response_filter.omitted_relations).toEqual({ incoming: ['uses'] });
+      expect(backend.callTool).toHaveBeenCalledWith(name, { uid: payload.symbol.uid });
+    },
+  );
+  it.each(['query', 'search'])('selects query result sections through %s', async (name) => {
+    const data = {
+      processes: [{ id: 'proc:checkout' }],
+      process_symbols: [{ id: payload.symbol.uid, process_id: 'proc:checkout' }],
+      definitions: [],
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(data) });
+    const { text, isError } = await callToolThroughServer(backend, name, {
+      search_query: 'pay',
+      response_sections: ['process_symbols', 'definitions'],
+    });
+    expect(isError).toBe(false);
+    const result = JSON.parse(text.split('\n\n---')[0]);
+    expect(result.process_symbols).toEqual(data.process_symbols);
+    expect(result.definitions).toEqual([]);
+    expect(result).not.toHaveProperty('processes');
+    expect(backend.callTool).toHaveBeenCalledWith(name, { search_query: 'pay' });
+  });
+  it.each([
+    { response_sections: ['risk'] },
+    { response_sections: [] },
+    { relationTypes: ['CALSL'] },
+    { response_sections: ['processes'], relationTypes: ['CALLS'] },
+    { response_sections: ['incoming'], repo: '@group' },
+  ])('rejects invalid filters before backend execution: %j', async (args) => {
+    const backend = createMockBackend();
+    const { isError } = await callToolThroughServer(backend, 'context', { name: 'pay', ...args });
+    expect(isError).toBe(true);
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+  it('applies the existing byte budget after filtering, without changing the cutoff contract', async () => {
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(payload) });
+    const { text, isError } = await callToolThroughServer(backend, 'context', {
+      uid: payload.symbol.uid,
+      response_sections: ['incoming'],
+      maxTokens: 8,
+    });
+    expect(isError).toBe(false);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(32);
+    expect(text.endsWith('\n…')).toBe(true);
+    expect(backend.callTool).toHaveBeenCalledWith('context', { uid: payload.symbol.uid });
   });
 });

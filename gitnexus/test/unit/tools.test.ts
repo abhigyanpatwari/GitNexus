@@ -35,7 +35,8 @@ describe('GITNEXUS_TOOLS', () => {
     expect(rename.inputSchema.properties.dry_run).toMatchObject({ type: 'boolean', default: true });
     expect(rename.inputSchema.required).toEqual(['new_name']);
     expect(rename.description).toMatch(/dry_run omitted or true never writes/);
-    expect(rename.description).toMatch(/dry_run:false applies/);
+    expect(rename.description).toMatch(/dry_run:false requires the plan_token/);
+    expect(rename.inputSchema.properties.plan_token).toMatchObject({ type: 'string' });
     expect(rename.description).not.toContain('rename_preview');
   });
 
@@ -483,9 +484,19 @@ describe('GITNEXUS_TOOLS', () => {
     expect(d).toContain('--pdg');
     expect(d).toContain('intra-procedural');
     // The named blind-spot classes (plan KTD10) must reach the consumer.
-    expect(d.toLowerCase()).toContain('closure/callback');
+    expect(d.toLowerCase()).toContain('captured closure-variable flows are not modeled');
+    expect(d.toLowerCase()).toContain(
+      'sources read inside inline callbacks and returned handlers can flow through helper functions',
+    );
     expect(d.toLowerCase()).toContain('property/field');
-    expect(d.toLowerCase()).toContain('guard-style');
+    expect(d.toLowerCase()).toContain(
+      'modeled guards can refine unchanged primitive-string values',
+    );
+    expect(d.toLowerCase()).toContain('imported and wrapper validators');
+    expect(d.toLowerCase()).toContain(
+      'unsupported predicates or sink uses remain conservative findings',
+    );
+    expect(d.toLowerCase()).toContain('declared string types are analysis assumptions');
     expect(d.toLowerCase()).toContain('cross-function');
     expect(d.toLowerCase()).toContain('commonjs');
     expect(d.toLowerCase()).toContain('exception');

@@ -276,7 +276,12 @@ function unrelated(req, value) {
     expect(harvested.gaps).toBe(0);
     expect(
       harvested.summaries.find((summary) => summary.fnId === 'function:0')?.paramToSink,
-    ).toContainEqual({ param: 1, sinkKind: 'command-injection' });
+    ).toContainEqual({
+      param: 1,
+      sinkKind: 'command-injection',
+      valueEffect: { kind: 'input' },
+      inertCommandPrefixes: ['git log -1 ', 'git log -1 --format=%s ', 'git show '],
+    });
     expect(
       harvested.summaries.find((summary) => summary.fnId === 'function:1')?.paramToSink,
     ).toEqual([]);
