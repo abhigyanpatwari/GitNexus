@@ -459,6 +459,46 @@ function scanTables(file: string, source: string): ScannedTable[] | null {
   return tables;
 }
 
+/**
+ * The module-level table bindings of a module (a top-level `const` holding an object literal,
+ * `new Set([...])` or `new Map([...])`), each with the constructs that make row deletion refuse
+ * it; an empty list is a table row deletion supports. The value-flow check (U10, value-flow/
+ * sinks.ts) classifies a key read of exactly these tables as a supported table read. A name bound
+ * to more than one table literal is `ambiguous`. Null when the module does not parse.
+ */
+export function scanSupportedTables(
+  file: string,
+  source: string,
+): Map<string, (UnsupportedConstruct | 'ambiguous')[]> | null {
+  const tables = scanTables(file, source);
+  if (tables === null) return null;
+  let topLevel: Set<string>;
+  try {
+    const ast = parse(source, { sourceType: 'module', plugins: PLUGINS });
+    topLevel = new Set(
+      ast.program.body.flatMap((statement) => {
+        const declaration =
+          t.isExportNamedDeclaration(statement) && statement.declaration !== null
+            ? statement.declaration
+            : statement;
+        if (!t.isVariableDeclaration(declaration) || declaration.kind !== 'const') return [];
+        return declaration.declarations.flatMap((declarator) =>
+          t.isIdentifier(declarator.id) ? [declarator.id.name] : [],
+        );
+      }),
+    );
+  } catch {
+    return null;
+  }
+  const out = new Map<string, (UnsupportedConstruct | 'ambiguous')[]>();
+  for (const table of tables) {
+    if (table.binding === null || !topLevel.has(table.binding)) continue;
+    const constructs = [...table.unsupported].sort(byText);
+    out.set(table.binding, out.has(table.binding) ? ['ambiguous'] : constructs);
+  }
+  return out;
+}
+
 // ── Plan ───────────────────────────────────────────────────────────────────
 
 /** The end of an entry's splice: after its trailing comma, past whitespace and comments. */
