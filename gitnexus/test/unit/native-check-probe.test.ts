@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resolveVendoredVectorPath } from '../../src/core/lbug/vendored-extension-path.js';
+import { escapeCypherString } from '../../src/core/lbug/cypher-escape.js';
 
 /**
  * Unit coverage for probeFtsExtensionLoad (#2374, PR #2375): the doctor FTS
@@ -136,12 +138,24 @@ describe('probeFtsExtensionLoad (#2374)', () => {
 });
 
 describe('probeVectorExtensionLoad (#2623 follow-up)', () => {
-  it('issues LOAD EXTENSION vector and reports loaded on success — no platform short-circuit', async () => {
+  it('probes the same packaged VECTOR artifact as the runtime', async () => {
     h.query.mockResolvedValue(closeable());
     await expect(probeVectorExtensionLoad()).resolves.toEqual({ loaded: true });
-    // The probe must really attempt the LOAD (the old code refused Windows
-    // before ever touching the engine; the artifact ships for win_amd64 too).
-    expect(h.query).toHaveBeenCalledWith('LOAD EXTENSION vector');
+    const vendoredPath = resolveVendoredVectorPath();
+    expect(h.query).toHaveBeenCalledWith(
+      vendoredPath
+        ? `LOAD EXTENSION '${escapeCypherString(path.resolve(vendoredPath))}'`
+        : 'LOAD EXTENSION vector',
+    );
+  });
+
+  it('falls back to named VECTOR when the packaged binary cannot load', async () => {
+    h.query.mockImplementation(async (sql) => {
+      if (sql !== 'LOAD EXTENSION vector') throw new Error('packaged binary unavailable');
+      return closeable();
+    });
+    await expect(probeVectorExtensionLoad()).resolves.toEqual({ loaded: true });
+    expect(h.query).toHaveBeenLastCalledWith('LOAD EXTENSION vector');
   });
 
   it('reports the collapsed reason when LOAD fails', async () => {
