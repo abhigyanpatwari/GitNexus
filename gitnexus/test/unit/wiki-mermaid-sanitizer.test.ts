@@ -34,12 +34,12 @@ describe('sanitizeMermaidMarkdown', () => {
     expect(sanitized).toContain('Client -->|HTTP params| Script');
   });
 
-  it('escapes backslashes and quotes in quoted edge labels', () => {
+  it('encodes quotes and preserves backslashes in quoted edge labels', () => {
     const diagram = ['graph LR', '    Script -->|doc("C:\\\\tmp")| Target'].join('\n');
 
     const sanitized = sanitizeMermaidDiagram(diagram);
 
-    expect(sanitized).toContain('Script -->|"doc(\\"C:\\\\\\\\tmp\\")"| Target');
+    expect(sanitized).toContain('Script -->|"doc(#quot;C:\\\\tmp#quot;)"| Target');
   });
 
   it('aliases bare node IDs that contain dots and keeps display labels', () => {
