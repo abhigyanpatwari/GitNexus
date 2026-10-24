@@ -95,3 +95,44 @@ describe('qualified calls inside a function that assigns the same name', () => {
     expect(targets('d12_f')).toEqual([]);
   });
 });
+
+describe('bindings the provider does not model keep the outer function as the target (R-02)', () => {
+  // In R each of these binds `helper` in the function's frame, so the call does not reach the
+  // outer function. The provider reads only `<-`, `=` and `->`: the edge below is a wrong target,
+  // pinned so that modelling any of them shows up here.
+  it.each([
+    ['d19 assign("helper", identity)', 'd19_f'],
+    ['d21 with(list(helper = identity), helper(x))', 'd21_f'],
+    ['d22 delayedAssign("helper", identity)', 'd22_f'],
+    ['d23 list2env(list(helper = identity), environment())', 'd23_f'],
+  ])('%s: still bound to the outer helper', (_label, caller) => {
+    expect(targets(caller)).toEqual([OUTER_HELPER]);
+  });
+
+  it('d20 local({ helper <- identity; helper(x) }): the braces are read as the function body, so no edge', () => {
+    expect(targets('d20_f')).toEqual([]);
+  });
+});
+
+describe('a top-level assignment in the caller file (r-assignment-locals-module, R-02)', () => {
+  let module: PipelineResult;
+  beforeAll(async () => {
+    module = await runPipelineFromRepo(path.join(FIXTURES, 'r-assignment-locals-module'), () => {});
+  }, 120000);
+
+  const guesses = (source: string, file: string): string[] =>
+    getRelationships(module, 'CALLS')
+      .filter((e) => e.source === source && e.sourceFilePath === file)
+      .map((e) => `${e.rel.targetId}:${e.rel.reason}:${e.rel.confidence}`);
+
+  it.each([
+    ['d10 helper <- identity', 'd10_f', 'R/d2.R'],
+    [
+      'd14 helper <- 5 (a constant: the outer function is the right target here)',
+      'd14_f',
+      'R/d3.R',
+    ],
+  ])('%s: the unique-name guess reaches the function of another file', (_label, caller, file) => {
+    expect(guesses(caller, file)).toEqual(['Function:R/d1.R:helper:global-name-fallback:0.5']);
+  });
+});

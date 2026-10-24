@@ -37,7 +37,8 @@ tests. No active shape corpus reported GRAMMAR-UNAVAILABLE.
 The visible-gap counts include the three deliberate controls: JavaScript and
 Ruby `untypedChain`, and PHP `arrowCallChain`. They must remain unresolved.
 Zig and Objective-C still lack shape-arm rows; their dedicated suites were run
-separately. C and COBOL's all-N/A rows do not measure their ordinary call paths;
+separately. R has no shape-arm row either; its receiver corpus
+(`r-receiver-corpus.test.ts`) is described in [r-ingestion-gaps.md](r-ingestion-gaps.md). C and COBOL's all-N/A rows do not measure their ordinary call paths;
 their focused integration suites were also run.
 
 The count arm is unchanged: **138 call drops, 168 total drops, 30 reads, no writes**.

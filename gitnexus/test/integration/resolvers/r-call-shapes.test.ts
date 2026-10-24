@@ -13,6 +13,7 @@ import {
   FIXTURES,
   getNodesByLabelFull,
   getRelationships,
+  getResolutionOutcomes,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -138,6 +139,12 @@ describe('R6: dispatch and heritage', () => {
       'BasePkgClass',
     );
     expect(callsFrom('again')).toEqual([]);
+    // The base is not indexed, so the member cannot be found: the shared pass's closest label.
+    expect(
+      getResolutionOutcomes(result)
+        .filter((o) => o.name === 'base_method')
+        .map((o) => (o.kind === 'suppressed' ? o.reason : o.kind)),
+    ).toEqual(['member-lookup-ambiguous']);
   });
 });
 

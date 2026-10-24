@@ -20,7 +20,13 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
-import { FIXTURES, getRelationships, type PipelineResult, runPipelineFromRepo } from './helpers.js';
+import {
+  FIXTURES,
+  getRelationships,
+  getResolutionOutcomes,
+  type PipelineResult,
+  runPipelineFromRepo,
+} from './helpers.js';
 
 beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
 afterAll(() => vi.unstubAllEnvs());
@@ -30,6 +36,12 @@ const summaries = (result: PipelineResult, source: string, file: string): string
     .filter((e) => e.source === source && e.sourceFilePath === file)
     .map((e) => `${e.target}:${e.targetFilePath}:${e.rel.reason}:${e.rel.confidence}`)
     .sort();
+
+/** `line:kind` of every resolution outcome recorded in `file`, in source order. */
+const outcomeKinds = (result: PipelineResult, file: string): string[] =>
+  getResolutionOutcomes(result).flatMap((o) =>
+    o.filePath === file && 'range' in o ? [`${o.range.startLine}:${o.kind}`] : [],
+  );
 
 const run = (sub: string): Promise<PipelineResult> =>
   runPipelineFromRepo(path.join(FIXTURES, 'r-qualified-exports', sub), () => {});
@@ -141,6 +153,18 @@ describe('R exports: packages with a NAMESPACE, without one, and with an unreada
       [`${HIDDEN}:global-name-fallback:0.5`],
     ],
     ['exp/inst: hidden()', 'tree_inst', 'exp/inst/x.R', [`${HIDDEN}:global-name-fallback:0.5`]],
+    // Known losses and gaps (docs/languages/r-ingestion-gaps.md): pinned as they are today.
+    // R-03: R puts the names of a sourced file in the global environment, so `hidden()` binds
+    // in R; the private-name veto does not know about source().
+    ['R-03 source() of a private package file; hidden()', 'src_hidden', 'scripts/src.R', []],
+    // R-12: the library() filter works on names; a class reached as a receiver type through the
+    // IMPORTS edge of library(exp) is not filtered, although ResultSet is not exported.
+    [
+      'R-12 library(exp); ResultSet$new() then rs$count() (private class)',
+      'rs_user',
+      'scripts/rs_user.R',
+      ['count:exp/R/rs.R:import-resolved:0.85'],
+    ],
   ];
 
   for (const [title, source, file, after] of cases) {
@@ -148,6 +172,12 @@ describe('R exports: packages with a NAMESPACE, without one, and with an unreada
       expect(summaries(result, source, file)).toEqual([...after]);
     });
   }
+
+  it('R-04 a dropped qualified site records no outcome (only the bare hidden() guess is refused, on line 3)', () => {
+    // exp::ghost(), exp:::ghost() (qual.R) and exp::hidden() (priv.R line 1) are dropped silently.
+    expect(outcomeKinds(result, 'scripts/qual.R')).toEqual([]);
+    expect(outcomeKinds(result, 'scripts/priv.R')).toEqual(['3:fallback-refused']);
+  });
 
   it('emits no edge to a private definition from outside the package tree, except through ":::"', () => {
     const toHidden = getRelationships(result, 'CALLS')
@@ -220,5 +250,14 @@ describe('R exports: qualified decoy ladder (decoy)', () => {
 
   it('(ii) an external qualifier: no edge (control)', () => {
     expect(summaries(result, 'l_external', F)).toEqual([]);
+  });
+
+  it('R-04 the dropped qualified sites (external, duplicate origin, external origin, two hops) record no outcome', () => {
+    expect(outcomeKinds(result, F)).toEqual([]);
+  });
+
+  it('R-11 a re-export of a re-export (two hops): no edge, one hop only', () => {
+    // pkgh re-exports fmt from pkga, which itself only re-exports it from other.
+    expect(summaries(result, 'l_two_hop', F)).toEqual([]);
   });
 });

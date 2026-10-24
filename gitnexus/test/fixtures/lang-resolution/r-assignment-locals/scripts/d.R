@@ -33,3 +33,10 @@ d16_f <- function(x) { helper <- identity; d16_g <- function() helper(x); d16_g(
 # d17/d18: a parameter or a `for` variable of the qualified name does not hide the qualified call
 d17_f <- function(x, helper) { pkga::helper(x) }
 d18_f <- function(xs) { for (helper in xs) pkga::helper(1) }
+# d19-d21: bindings the provider does not model (documented, R-02). In R each one binds `helper`
+# in the frame, so the call below does not reach the outer function; the provider still binds it.
+d19_f <- function(x) { assign("helper", identity); helper(x) }
+d20_f <- function(x) { local({ helper <- identity; helper(x) }) }
+d21_f <- function(x) { with(list(helper = identity), helper(x)) }
+d22_f <- function(x) { delayedAssign("helper", identity); helper(x) }
+d23_f <- function(x) { list2env(list(helper = identity), environment()); helper(x) }

@@ -83,10 +83,13 @@ including deliberate untyped controls, unsupported shapes and N/A entries.
 Optional grammar availability must be recorded separately from resolver results.
 
 R (experimental) is registered too. It has no inline type annotations: parameter
-types come only from roxygen2 `@param` tags, S4 slot types from
-`representation(...)` string literals, and receiver types from same-file R6, S4 and
-RefClass definitions. Coverage, limits and the roxygen2 rules are in
-[docs/languages/r-provider.md](docs/languages/r-provider.md).
+types come only from roxygen2 `@param` tags and S4 slot types from
+`representation(...)` string literals. A receiver is typed in the scope only by a
+constructor call in the same function (`x <- Cls$new()`, R6 and RefClass); the S4
+`new("Cls")` binding and the roxygen types live in the per-file type environment, which no
+R call edge reads, so S4 receiver typing is not scope-bound and types no receiver. Coverage, limits and the roxygen2 rules are in
+[docs/languages/r-provider.md](docs/languages/r-provider.md); wrong, lost and deferred
+results are in [docs/languages/r-ingestion-gaps.md](docs/languages/r-ingestion-gaps.md).
 
 ## Design Constraints
 

@@ -18,7 +18,7 @@
  *   - c10 an R6Class call that is not assigned, a RefClass method
  *   - c11 the argument count differs from the method's formals
  *   - c12 a class name in backticks, an R6Class call inside a function, a dotted class name
- *   - c13 a file that binds self itself
+ *   - c13 a file that binds self itself; c13b a file that reads a self bound in another file
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
@@ -203,5 +203,14 @@ describe('R6 self$method() that cannot be bound is an outcome, not silence', () 
 
   it('c13 a file that binds self records no suppression for its free function', () => {
     expect(outcomesFor('R/c13.R', 'c13_global_m')).toEqual([]);
+  });
+
+  it('c13b a self bound in another file is not followed (limit): no edge, self is owned but unbound', () => {
+    expect(targets('c13b_reads_global_self', 'R/c13b_reader.R')).toEqual([]);
+    expect(
+      outcomesFor('R/c13b_reader.R', 'c13_global_m').map((o) =>
+        o.kind === 'suppressed' ? o.reason : o.kind,
+      ),
+    ).toEqual(['receiver-owned-but-unbound']);
   });
 });
