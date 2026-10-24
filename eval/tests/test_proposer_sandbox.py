@@ -62,8 +62,44 @@ from workflow_bench.review_scoring import REVIEW_OUTPUT, parse_review_output
 from workflow_bench.task_assets import TaskAssetCache, stage_task_assets as stage_immutable_task_assets
 
 
+@pytest.fixture
+def mcp_socket_client(monkeypatch):
+    """Exercise a real connection attempt between bind() and listen()."""
+    bound, attempted = threading.Event(), threading.Event()
+    original_listen = socket.socket.listen
+
+    def delayed_listen(listener, backlog):
+        bound.set()
+        assert attempted.wait(5), "client never attempted to connect"
+        return original_listen(listener, backlog)
+
+    monkeypatch.setattr(socket.socket, "listen", delayed_listen)
+
+    def connect(endpoint):
+        assert bound.wait(5), "server never bound its socket"
+        deadline = time.monotonic() + 5
+        while True:
+            client = socket.socket(socket.AF_UNIX)
+            client.settimeout(5)
+            try:
+                client.connect(str(endpoint))
+                return client
+            except ConnectionRefusedError:
+                client.close()
+                if time.monotonic() >= deadline:
+                    raise
+            except Exception:
+                client.close()
+                raise
+            finally:
+                attempted.set()
+            time.sleep(0.01)
+
+    return connect
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Unix socket transport requires POSIX socket flags")
-def test_mcp_socket_transport_reconnects_and_reports_server_failure(tmp_path: Path) -> None:
+def test_mcp_socket_transport_reconnects_and_reports_server_failure(tmp_path: Path, mcp_socket_client) -> None:
     from workflow_bench.mcp_transport import serve_stdio
 
     endpoint = tmp_path / "mcp.sock"
@@ -79,14 +115,9 @@ def test_mcp_socket_transport_reconnects_and_reports_server_failure(tmp_path: Pa
 
     worker = threading.Thread(target=serve, daemon=True)
     worker.start()
-    deadline = time.monotonic() + 5
-    while not endpoint.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
     try:
         for message in (b"first\n", b"second\n", b"fail\n"):
-            with socket.socket(socket.AF_UNIX) as client:
-                client.settimeout(5)
-                client.connect(str(endpoint))
+            with mcp_socket_client(endpoint) as client:
                 client.sendall(message)
                 client.shutdown(socket.SHUT_WR)
                 assert client.recv(100) == message
@@ -98,7 +129,7 @@ def test_mcp_socket_transport_reconnects_and_reports_server_failure(tmp_path: Pa
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Unix socket transport requires POSIX socket flags")
-def test_mcp_socket_transport_rejects_premature_clean_server_exit(tmp_path):
+def test_mcp_socket_transport_rejects_premature_clean_server_exit(tmp_path, mcp_socket_client):
     from workflow_bench.mcp_transport import serve_stdio
 
     endpoint, failure = tmp_path / "mcp.sock", tmp_path / "failure"
@@ -112,11 +143,7 @@ def test_mcp_socket_transport_rejects_premature_clean_server_exit(tmp_path):
 
     worker = threading.Thread(target=serve, daemon=True)
     worker.start()
-    deadline = time.monotonic() + 5
-    while not endpoint.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    with socket.socket(socket.AF_UNIX) as client:
-        client.connect(str(endpoint))
+    with mcp_socket_client(endpoint):
         worker.join(timeout=2)
         assert errors and "before client EOF" in failure.read_text()
 
