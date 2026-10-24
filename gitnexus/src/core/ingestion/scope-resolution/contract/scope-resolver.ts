@@ -332,8 +332,7 @@ export type { ConstraintContext } from 'gitnexus-shared';
 
 /** How a container's element was reached in the source. */
 export type ElementAccessRoute =
-  | { readonly kind: 'index' }
-  | { readonly kind: 'accessor'; readonly name: string };
+  { readonly kind: 'index' } | { readonly kind: 'accessor'; readonly name: string };
 
 /** One structurally-detected implementor plus the receiver form in which it
  *  satisfies the interface (see `detectInterfaceImplementations`). */
@@ -1446,11 +1445,16 @@ export interface ScopeResolver {
    * risk LOW with 0 affected processes).
    *
    * `emitFreeCallFallback` invokes this BEFORE the implicit-`this` and
-   * scope-chain lookups, so an explicit path outranks a lexical shadow.
+   * scope-chain lookups, so an explicit path outranks a lexical shadow. That
+   * includes a lexical NAME CLAIM (`lexicalNames`, a parameter or a local of the
+   * same name): the contract left open whether such a claim blocks the call
+   * before the hook runs, and it does not — a defined result for a site with
+   * `rawQualifiedName` bypasses the block, because the written path names the
+   * module and a local binding of the bare tail cannot be what it means.
    * Returning `undefined` (unqualified call, unknown module, or no such
-   * member in the named module) falls through to the unchanged chain — the
-   * hook is strictly additive and never removes an edge the prior tiers
-   * would have produced.
+   * member in the named module) falls through to the unchanged chain, name-claim
+   * block included — the hook never removes an edge the prior tiers would have
+   * produced.
    *
    * Languages whose qualified calls carry a value/type receiver (`x.foo()`,
    * `Type::foo()`) are served by the receiver-bound-calls pass and leave

@@ -81,9 +81,14 @@ describe('controls: assignments that do not bind a callable local', () => {
 });
 
 describe('qualified calls inside a function that assigns the same name', () => {
-  // Needs the qualified hit to outrank the lexical name claim (the shared-pass step that follows).
-  it.fails('d11 `pkga::helper(x)` binds the package function and nothing else', () => {
+  // The qualified hit outranks the lexical name claim (shared pass: free-call-fallback).
+  it('d11 `pkga::helper(x)` binds the package function and nothing else', () => {
     expect(targets('d11_f')).toEqual([PKGA_HELPER]);
+  });
+
+  it('d17/d18 a parameter or a `for` variable of that name does not hide the qualified call either', () => {
+    expect(targets('d17_f')).toEqual([PKGA_HELPER]);
+    expect(targets('d18_f')).toEqual([PKGA_HELPER]);
   });
 
   it('d12 neither `pkga::missing(x)` (not exported) nor the shadowed bare `missing(x)` gets an edge', () => {

@@ -30,3 +30,6 @@ d13_f <- function(x) { helper <- 2; helper(x) }
 d15_f <- function(x) { helper <<- identity; helper(x) }
 # d16: a nested closure reads the enclosing function's local
 d16_f <- function(x) { helper <- identity; d16_g <- function() helper(x); d16_g() }
+# d17/d18: a parameter or a `for` variable of the qualified name does not hide the qualified call
+d17_f <- function(x, helper) { pkga::helper(x) }
+d18_f <- function(xs) { for (helper in xs) pkga::helper(1) }

@@ -85,8 +85,9 @@ describe('lockstep: the lexical names and the rename guard read the same assignm
       ? [{ name, fn, text: node.text }]
       : [];
   });
-  // Cases the guard refuses for a reason other than an assigned name: d9 has a parameter, d15 a `<<-`.
-  const otherRule = new Set(['d9_f', 'd15_f']);
+  // Cases bound or refused for a reason other than an assigned name: d9 and d17 have a parameter,
+  // d18 a `for` variable, d15 a `<<-`.
+  const otherRule = new Set(['d9_f', 'd15_f', 'd17_f', 'd18_f']);
 
   it('finds every caller of the fixture', () => {
     expect(callers.map((c) => c.name)).toEqual(

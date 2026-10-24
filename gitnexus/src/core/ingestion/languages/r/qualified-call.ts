@@ -22,10 +22,9 @@
  *    NAMESPACE, or exports the name) or the caller is inside the package's
  *    directory tree ({@link rEnclosingPackageDir}). A `::` site naming a
  *    private or not-provably-exported name from outside is dropped (R errors
- *    there). The fallback's earlier same-name check still wins when the caller has a
- *    non-callable binding of that name (a parameter or `for` variable named
- *    like the target): that site gets no edge (see the limits in
- *    docs/languages/r-provider.md);
+ *    there). The fallback resolves the hook before it applies a lexical name claim, so a
+ *    caller's parameter, `for` variable or local assignment of the same name does not
+ *    suppress the edge: `::` never consults local bindings;
  *  - `local` with two or more such definitions (same file or across files):
  *    the site is dropped (every valid target is inside the named package, so
  *    any edge would be provably wrong);
