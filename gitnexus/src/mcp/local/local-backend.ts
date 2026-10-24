@@ -32,6 +32,7 @@ import {
   getLbugDbIdentity,
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
+import { GUARD_TAINT_LIMITATION } from '../taint-limitations.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
 import {
   SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
@@ -6279,7 +6280,10 @@ export class LocalBackend {
       findings: pageFindings,
       totalFindings: totalFindings + interprocTotal,
       ...(truncated ? { truncated: true } : {}),
-      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled, including sources read inside inline callbacks and returned handlers. Captured closure-variable, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. All line numbers are 1-based; for cross-function findings, `source.line`, `sink.line` and `hops[].line` are the declaration lines of the functions, not statement lines. SANITIZES (kill) edges are queryable via cypher.',
+      note:
+        'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled, including sources read inside inline callbacks and returned handlers. Captured closure-variable, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. ' +
+        GUARD_TAINT_LIMITATION +
+        ' Cross-function findings are context-insensitive and may over-attribute among same-named callees. All line numbers are 1-based; for cross-function findings, `source.line`, `sink.line` and `hops[].line` are the declaration lines of the functions, not statement lines. SANITIZES (kill) edges are queryable via cypher.',
     };
   }
 
