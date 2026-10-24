@@ -117,6 +117,16 @@ function langToolkit(langId) {
 
 const SCENARIOS = [
   {
+    name: 'guard-free-arguments',
+    small: 1000,
+    large: 4000,
+    gen: (n) =>
+      Array.from(
+        { length: n },
+        (_, i) => `function f${i}(x: string) { const y = 'prefix ' + x; return consume${i}(y); }`,
+      ).join('\n'),
+  },
+  {
     name: 'guarded-commands',
     small: 60,
     large: 240,

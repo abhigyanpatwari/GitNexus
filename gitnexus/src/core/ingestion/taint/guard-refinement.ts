@@ -177,11 +177,16 @@ export function createFunctionRefinement(cfg: FunctionCfg): FunctionRefinement {
         calls.set(`${block.index}:${index}:${call.site}`, call);
       }
     }
-  const guards = computeGuardRefinements(cfg, {
-    eligible: cfg.refinementSafe === true,
-    primitiveBindings: cfg.primitiveBindings ?? [],
-    predicates,
-  });
+  const guards = computeGuardRefinements(
+    cfg,
+    {
+      eligible: cfg.refinementSafe === true,
+      primitiveBindings: cfg.primitiveBindings ?? [],
+      predicates,
+    },
+    undefined,
+    definitions,
+  );
   const active = cfg.refinementSafe === true && guards.status !== 'fallback';
   return {
     guards,
@@ -258,11 +263,16 @@ export function createMemoizedRefinement(
   };
 }
 
-/** Removing an accepted edge must make the use unreachable from ENTRY. */
+/**
+ * Removing an accepted edge must make the use unreachable from ENTRY.
+ * Definitions are the validated value expressions reconstructed by the caller.
+ * Expanding their uses shares the traversal cap; no certificates survive exhaustion.
+ */
 export function computeGuardRefinements(
   cfg: FunctionCfg,
   facts?: GuardFacts,
   limits?: { maxVisits?: number; maxGuards?: number; maxWords?: number },
+  definitions?: ReadonlyMap<number, ValueExpression>,
 ): GuardRefinements {
   if (!facts?.predicates?.length) return NO_GUARDS;
   let visits = 0;
@@ -344,11 +354,25 @@ export function computeGuardRefinements(
           if (!isInitial) written.add(binding);
         }
       for (const binding of statement.uses) {
-        if (++visits > maxVisits) return fallback();
-        if (!subjects.has(binding)) continue;
-        let blocks = uses.get(binding);
-        if (!blocks) uses.set(binding, (blocks = new Set()));
-        blocks.add(block.index);
+        // Argument reconstruction expands aliases at the sink. Certify the
+        // subjects reached through those same definitions at that use block.
+        const pending: ValueExpression[] = [{ kind: 'binding', binding }];
+        const seen = new Set<number>();
+        while (pending.length) {
+          if (++visits > maxVisits) return fallback();
+          const value = pending.pop()!;
+          if (value.kind === 'concat') pending.push(...value.parts);
+          else if (value.kind === 'binding' && !seen.has(value.binding)) {
+            seen.add(value.binding);
+            if (subjects.has(value.binding)) {
+              let blocks = uses.get(value.binding);
+              if (!blocks) uses.set(value.binding, (blocks = new Set()));
+              blocks.add(block.index);
+            }
+            const definition = definitions?.get(value.binding);
+            if (definition) pending.push(definition);
+          }
+        }
       }
     }
   }

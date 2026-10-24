@@ -290,6 +290,9 @@ export class TsHarvester {
       // `pattern`); plain JS puts the pattern directly in formal_parameters.
       const pattern = p.childForFieldName('pattern') ?? p;
       this.declarePattern(pattern, 'param', this.root, true, formalIndex);
+      // A formal index identifies the argument slot, not a value extracted
+      // from it. Extraction/default/rest effects are not modeled as identity.
+      if (pattern.type !== 'identifier') this.refinementSafe = false;
       if (
         this.hasGuardCandidate &&
         pattern.type === 'identifier' &&

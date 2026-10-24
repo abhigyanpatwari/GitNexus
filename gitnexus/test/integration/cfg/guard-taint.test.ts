@@ -7,6 +7,69 @@ import { createTempDirPool } from '../../helpers/temp-dir-pool.js';
 const repos = createTempDirPool('gn-guard-taint-');
 
 describe('guard-aware command taint (#3490)', () => {
+  it('preserves alias proofs across blocks and retains destructuring findings in real workers', async () => {
+    const repo = repos.dir();
+    fs.writeFileSync(
+      path.join(repo, 'aliases.ts'),
+      `
+import {execSync} from 'node:child_process';
+function indexed({9: command}: any) { execSync(command); }
+function defaulted(context: any, {command = context.query.command}: any) { execSync(command); }
+function forward(command: string, log: boolean) {
+  const alias = command;
+  if (log) console.log('validated');
+  execSync(alias);
+}
+export function handleIndexed(req: any) {
+  const ref: string = req.query.ref;
+  if (!/^[a-z]{1,40}$/.test(ref)) return;
+  indexed('git show ' + ref);
+}
+export function handleDefaulted(req: any) {
+  const ref: string = req.query.ref;
+  if (!/^[a-z]{1,40}$/.test(ref)) return;
+  defaulted(req, 'git show ' + ref);
+}
+export function handleAlias(req: any, log: boolean) {
+  const ref: string = req.query.ref;
+  if (!/^[0-9a-f]{7,40}$/.test(ref)) return;
+  const args = 'show ' + ref;
+  const command = 'git ' + args;
+  if (log) console.log('validated');
+  execSync(command);
+  forward(command, log);
+}
+export function handleBypass(req: any, log: boolean) {
+  const ref: string = req.query.ref;
+  if (log) { if (!/^[0-9a-f]{7,40}$/.test(ref)) return; }
+  const command = 'git show ' + ref;
+  if (log) console.log('unchecked');
+  execSync(command);
+  forward(command, log);
+}
+`,
+    );
+    const result = await runPipelineFromRepo(repo, () => {}, { pdg: true, workerPoolSize: 1 });
+    const paths = [...result.graph.iterRelationships()]
+      .filter((edge) => edge.type === 'TAINT_PATH')
+      .map((edge) => result.graph.getNode(edge.sourceId)?.properties.name);
+    expect(paths).toContain('handleIndexed');
+    expect(paths).toContain('handleDefaulted');
+    expect(paths).toContain('handleBypass');
+    expect(paths).not.toContain('handleAlias');
+    const localSources = [...result.graph.iterRelationships()]
+      .filter((edge) => edge.type === 'TAINTED')
+      .map((edge) => result.graph.getNode(edge.sourceId)?.properties.startLine);
+    const source = fs.readFileSync(path.join(repo, 'aliases.ts'), 'utf8').split('\n');
+    // TAINTED starts at the request read, immediately after the declaration.
+    const aliasLine =
+      source.findIndex((line) => line.startsWith('export function handleAlias')) + 2;
+    const bypassLine =
+      source.findIndex((line) => line.startsWith('export function handleBypass')) + 2;
+    expect(localSources).not.toContain(aliasLine);
+    expect(localSources).toContain(bypassLine);
+  }, 120_000);
+
   it('retains findings for bypasses, mutation, uncertain types and unsupported sink uses', async () => {
     const cases: Record<string, string> = {
       bypass:

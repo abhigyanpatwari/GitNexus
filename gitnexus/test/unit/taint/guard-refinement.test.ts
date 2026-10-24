@@ -109,6 +109,20 @@ describe('accepted-edge guard proof', () => {
     expect(computeGuardRefinements(cfg, facts).at(subject, sink)).toBeUndefined();
   });
 
+  it('charges transitive alias expansion to the same traversal budget', () => {
+    const { cfg, facts, subject } = fixture();
+    const aliases = new Map(
+      Array.from({ length: 200 }, (_, index) => [
+        subject + index,
+        { kind: 'binding' as const, binding: subject + index + 1 },
+      ]),
+    );
+    const proof = computeGuardRefinements(cfg, facts, { maxVisits: 128 }, aliases);
+    expect(proof.status).toBe('fallback');
+    expect(proof.visits).toBeLessThanOrEqual(129);
+    expect(proof.at(subject, cfg.entryIndex)).toBeUndefined();
+  });
+
   it('does not certify reassigned parameters or unknown primitive identity', () => {
     const { cfg, facts, subject, sink } = fixture(
       'if (!valid(x)) return; x = input(); consume(x);',

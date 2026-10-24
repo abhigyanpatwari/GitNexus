@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parse } from '../../helpers/ts-cfg-harness.js';
+import { cfgOf, parse } from '../../helpers/ts-cfg-harness.js';
 import {
   createRefinementFileContext,
   readPredicate,
@@ -38,6 +38,20 @@ function predicate(source: string) {
 }
 
 describe('normalized predicate and expression facts', () => {
+  it.each([
+    '{command}',
+    '{9: command}',
+    '[command]',
+    '[, command]',
+    '...command',
+    '{command = fallback()}',
+    '{nested: {command}}',
+  ])('keeps non-identity formal bindings conservative: %s', (pattern) => {
+    const cfg = cfgOf(`function f(${pattern}: any) { consume(command); }`);
+    expect(cfg.refinementSafe).toBe(false);
+    expect(createFunctionRefinement(cfg).guards.status).toBe('fallback');
+  });
+
   it('preserves guard and value identity through embedded coordinate mappings', () => {
     const root = parse(`const SHA_RE = /^[0-9a-f]{7,40}$/;
 function f(ref: string) {
