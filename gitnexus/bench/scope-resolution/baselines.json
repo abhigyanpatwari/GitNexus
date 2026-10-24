@@ -1,0 +1,290 @@
+{
+  "c/100/20": {
+    "fingerprint": "3c289f3c87de79d760e25b42eb7341796995d1bcb732909412cb28162cbf4f1b",
+    "nodes": 2399,
+    "edges": 2596,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 2099,
+    "typeBindings": 4198
+  },
+  "c/1000/20": {
+    "fingerprint": "74232bcf783b979e34479a8333e6bc87f812037b9500fb672b5dc8d416fbe08a",
+    "nodes": 23999,
+    "edges": 25996,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 20999,
+    "typeBindings": 41998
+  },
+  "cobol/100/20": {
+    "fingerprint": "36c3fe6374ed108ea36ecfa38ecf2ba625623b4aae6de9d74220243c31434376",
+    "nodes": 2598,
+    "edges": 2796,
+    "crossFileCalls": 99,
+    "moduleTypeBindings": 0,
+    "typeBindings": 0
+  },
+  "cobol/1000/20": {
+    "fingerprint": "6b76194c20ee0897a52ac21300c2e159db93997137c00b92dfb09db44cf7a54c",
+    "nodes": 25998,
+    "edges": 27996,
+    "crossFileCalls": 999,
+    "moduleTypeBindings": 0,
+    "typeBindings": 0
+  },
+  "cpp/100/20": {
+    "fingerprint": "10a7fdf36be1221ab73184a1900b90180c7a1cf1d45a4dc5584ea6c4c2418448",
+    "nodes": 2299,
+    "edges": 2694,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 197,
+    "typeBindings": 2296
+  },
+  "cpp/1000/20": {
+    "fingerprint": "2dfe2d47dfebec5fbee15a9e6cce1c8b254f3594efec9a28ad82a941d43f3b8d",
+    "nodes": 22999,
+    "edges": 26994,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 1997,
+    "typeBindings": 22996
+  },
+  "csharp/100/20": {
+    "fingerprint": "031987488f1dfbaf7d157c451a4b02fd679eed1f984212f74933d7d41c71bfd1",
+    "nodes": 2399,
+    "edges": 2596,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 2099,
+    "typeBindings": 4297
+  },
+  "csharp/1000/20": {
+    "fingerprint": "120f6cfec8eab8d476a5aa64b3d58b024005bf420911d2282153bdc1e1f980d4",
+    "nodes": 23999,
+    "edges": 25996,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 20999,
+    "typeBindings": 42997
+  },
+  "dart/100/20": {
+    "fingerprint": "133b7b9c3eb4229d9ff673069cddacba530e32cd9011e26d590b9627f7815196",
+    "nodes": 2299,
+    "edges": 2496,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 4079,
+    "typeBindings": 6277
+  },
+  "dart/1000/20": {
+    "fingerprint": "f8a78d11b836ea73a662236f2ae57cb607025ec5fd1ab2a7c96ac491850426fb",
+    "nodes": 22999,
+    "edges": 24996,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 40979,
+    "typeBindings": 62977
+  },
+  "go/100/20": {
+    "fingerprint": "33d0980b813bed5a8ac4a34ca44c50033b2517c966565f90f72057f422dc6a1f",
+    "nodes": 2299,
+    "edges": 4496,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 101099,
+    "typeBindings": 103198
+  },
+  "go/1000/20": {
+    "fingerprint": "7e0fff39a068ed15651614aa5df5baa1614a72014a0df2b2e926330d4fc9de42",
+    "nodes": 22999,
+    "edges": 44996,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 10010999,
+    "typeBindings": 10031998
+  },
+  "java/100/20": {
+    "fingerprint": "cbfe462b1ba57dba73b8aa81e536bd2441c0680725963b0e9f2007bab8e77695",
+    "nodes": 2697,
+    "edges": 3188,
+    "crossFileCalls": 493,
+    "moduleTypeBindings": 4277,
+    "typeBindings": 7069
+  },
+  "java/1000/20": {
+    "fingerprint": "5d1b01e266a3d22c3e11376fd8900b82ef2d6d28ca1737a5dd0c7e925ebb233b",
+    "nodes": 26997,
+    "edges": 31988,
+    "crossFileCalls": 4993,
+    "moduleTypeBindings": 42977,
+    "typeBindings": 70969
+  },
+  "javascript/100/20": {
+    "fingerprint": "c3c3cd272d2cbbe704bbb2bd3ce8b3b153c3156f812c946fd5a4c70ff7eaa39c",
+    "nodes": 2299,
+    "edges": 2496,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 0,
+    "typeBindings": 2099
+  },
+  "javascript/1000/20": {
+    "fingerprint": "959f154fe61efb1966389a36731c8aa051be96d385b950c75a77f9b323044bcc",
+    "nodes": 22999,
+    "edges": 24996,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 0,
+    "typeBindings": 20999
+  },
+  "kotlin/100/20": {
+    "fingerprint": "a27beaf18a1c48a93b1bee23a89de35e5afa4659980cbf30b1181c33d24cce0d",
+    "nodes": 2299,
+    "edges": 2496,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 2099,
+    "typeBindings": 4297
+  },
+  "kotlin/1000/20": {
+    "fingerprint": "f6b03d2de2fb25597c9f68f5f4ad821d1bcf7b52a2bada5923e8de1c620c84bc",
+    "nodes": 22999,
+    "edges": 24996,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 20999,
+    "typeBindings": 42997
+  },
+  "objective-c/100/20": {
+    "fingerprint": "3cebcee9eac578cfde569eef48e45ac4427f822f5a3b3e7291cb4ee40d894e48",
+    "nodes": 4996,
+    "edges": 7492,
+    "crossFileCalls": 99,
+    "moduleTypeBindings": 0,
+    "typeBindings": 0
+  },
+  "objective-c/1000/20": {
+    "fingerprint": "1cde787c33fc9f44bdb1d5f23291044b615f4d245df2beba1222aaf3435cd07f",
+    "nodes": 49996,
+    "edges": 74992,
+    "crossFileCalls": 999,
+    "moduleTypeBindings": 0,
+    "typeBindings": 0
+  },
+  "php/100/20": {
+    "fingerprint": "e2b9b779517483da80c4a32575e745a497b601a60fa374b4081dfacacc14a6c9",
+    "nodes": 2399,
+    "edges": 2596,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 101099,
+    "typeBindings": 103297
+  },
+  "php/1000/20": {
+    "fingerprint": "f7abaf180b0404e942f0d9d27d3e9f7c20a6e098c1cbe7d2221d615ecb6674eb",
+    "nodes": 23999,
+    "edges": 25996,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 10010999,
+    "typeBindings": 10032997
+  },
+  "python/100/20": {
+    "fingerprint": "58adb2bc6b7ac24ab3dcd500ec3cd577d3e6853fd1a8e84f658f423677d6df50",
+    "nodes": 2299,
+    "edges": 2397,
+    "crossFileCalls": 99,
+    "moduleTypeBindings": 0,
+    "typeBindings": 4099
+  },
+  "python/1000/20": {
+    "fingerprint": "cba608259275ea5a0b7ece3e9b76680afe2c0c385f482d8a7325164fc4b4f8f0",
+    "nodes": 22999,
+    "edges": 23997,
+    "crossFileCalls": 999,
+    "moduleTypeBindings": 0,
+    "typeBindings": 40999
+  },
+  "ruby/100/20": {
+    "fingerprint": "a2472fd7ca5b2493d24a354b65cd605946b19a00d65df9d5d9788d44da50865c",
+    "nodes": 2299,
+    "edges": 2397,
+    "crossFileCalls": 99,
+    "moduleTypeBindings": 0,
+    "typeBindings": 2099
+  },
+  "ruby/1000/20": {
+    "fingerprint": "9163eb4d316d339dc2169f9e60262019c4f81d31314b38e44f692e04baebf703",
+    "nodes": 22999,
+    "edges": 23997,
+    "crossFileCalls": 999,
+    "moduleTypeBindings": 0,
+    "typeBindings": 20999
+  },
+  "rust/100/20": {
+    "fingerprint": "c3221b201eedd52cf0d4a9bda609b7a4ff60033520cfec854dff47d185b0770d",
+    "nodes": 2500,
+    "edges": 4894,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 2099,
+    "typeBindings": 6698
+  },
+  "rust/1000/20": {
+    "fingerprint": "ec5d974b2ace8565d8946614b8da1246d8b5736415bbf48954289f52c01eb870",
+    "nodes": 25000,
+    "edges": 48994,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 20999,
+    "typeBindings": 66998
+  },
+  "swift/100/20": {
+    "fingerprint": "ce08be70302793b51c6816bc0842562565a9bb21bc87ff72eb01f6312bba2323",
+    "nodes": 2300,
+    "edges": 2497,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 2099,
+    "typeBindings": 4297
+  },
+  "swift/1000/20": {
+    "fingerprint": "87d6dc9bd2db62a716fdcfd347475c89561520e0eaafb456b3ae16720ac390d4",
+    "nodes": 23000,
+    "edges": 24997,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 20999,
+    "typeBindings": 42997
+  },
+  "typescript/100/20": {
+    "fingerprint": "48c3afe1d2e1e2750e0ed5d8139aa009f264a997de5a084e696b5175b5a4f2cd",
+    "nodes": 2299,
+    "edges": 4496,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 2000,
+    "typeBindings": 4099
+  },
+  "typescript/1000/20": {
+    "fingerprint": "f7efff0e855bc68220f4d19891dcade1c9d0df4bcb2b845a3310c83c212edca7",
+    "nodes": 22999,
+    "edges": 44996,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 20000,
+    "typeBindings": 40999
+  },
+  "vue/100/20": {
+    "fingerprint": "a619b08a4c7098f13bf4708d6fb56f49f7e3723efb2092b2f5d84d9a53668627",
+    "nodes": 2299,
+    "edges": 4397,
+    "crossFileCalls": 99,
+    "moduleTypeBindings": 2000,
+    "typeBindings": 4099
+  },
+  "vue/1000/20": {
+    "fingerprint": "fd95d70ec20fe0c15eb1a545d2648cf0df27c1e2f2fd0288a64229be6a598e60",
+    "nodes": 22999,
+    "edges": 43997,
+    "crossFileCalls": 999,
+    "moduleTypeBindings": 20000,
+    "typeBindings": 40999
+  },
+  "zig/100/20": {
+    "fingerprint": "b623955c7d86a6884abdba939ea4ad620446b268cffd0b101c9f96b1424cc236",
+    "nodes": 2299,
+    "edges": 2694,
+    "crossFileCalls": 198,
+    "moduleTypeBindings": 99,
+    "typeBindings": 4198
+  },
+  "zig/1000/20": {
+    "fingerprint": "812ed4d8f7a8cd3958950a55759cbc73e34fd134e8a02920e71e0c9e2211ed9f",
+    "nodes": 22999,
+    "edges": 26994,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 999,
+    "typeBindings": 41998
+  }
+}
