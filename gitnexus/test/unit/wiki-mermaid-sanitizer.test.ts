@@ -74,6 +74,51 @@ describe('sanitizeMermaidMarkdown', () => {
     expect(sanitized).toContain('file_name_ts[(eXist-db XML)] --> target_node["Target node"]');
   });
 
+  it('leaves an ellipsis or a dotted name inside a label alone', () => {
+    // #3705: these three diagrams are valid; sanitizing must not change them.
+    const diagrams = [
+      'flowchart TD\n    A["value.when(...)"] -->|data| B["data"]',
+      'flowchart TD\n    G["x = compute(...).result"] --> H["done"]',
+      'flowchart LR\n    N -- ref.invalidate --> A',
+    ];
+
+    for (const diagram of diagrams) {
+      expect(sanitizeMermaidDiagram(diagram)).toBe(diagram);
+    }
+  });
+
+  it('reads dots as a link only in the dotted link syntax', () => {
+    const diagram = [
+      'flowchart LR',
+      '    A -.-> B',
+      '    B -. later .-> C',
+      '    C -..- D',
+      '    file.ts -.-> E["x..y"]',
+    ].join('\n');
+
+    const sanitized = sanitizeMermaidDiagram(diagram);
+
+    expect(sanitized).toContain('A -.-> B');
+    expect(sanitized).toContain('B -. later .-> C');
+    expect(sanitized).toContain('C -..- D');
+    expect(sanitized).toContain('file_ts["file.ts"] -.-> E["x..y"]');
+  });
+
+  it('keeps the text of a labelled link while still aliasing the nodes around it', () => {
+    const diagram = [
+      'flowchart LR',
+      '    cache.ts -- ref.invalidate --> store.ts',
+      '    store.ts == on.save ==> db[(db)]',
+      '    a.b -- plain --> c[c --> d]',
+    ].join('\n');
+
+    const sanitized = sanitizeMermaidDiagram(diagram);
+
+    expect(sanitized).toContain('cache_ts["cache.ts"] -- ref.invalidate --> store_ts["store.ts"]');
+    expect(sanitized).toContain('store_ts["store.ts"] == on.save ==> db[(db)]');
+    expect(sanitized).toContain('a_b["a.b"] -- plain --> c[c --> d]');
+  });
+
   it('only rewrites fenced Mermaid blocks in markdown', () => {
     const markdown = [
       'Regular text with doc() and file.name.ts.',
