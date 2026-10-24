@@ -347,7 +347,15 @@ async function upsertGitNexusSection(
     return 'created';
   }
 
-  const existingContent = await fs.readFile(filePath, 'utf-8');
+  // The block is generated with LF. A file checked out with CRLF (Windows,
+  // `core.autocrlf`) used to get the block written in LF inside its CRLF
+  // prose, so git saw mixed endings and a dirty tree after every reindex
+  // (#3688). The file's own ending is kept: the content is normalised to LF
+  // for the marker search and the comparisons below, and written back in the
+  // ending it had.
+  const rawContent = await fs.readFile(filePath, 'utf-8');
+  const eol = detectLineEnding(rawContent);
+  const existingContent = rawContent.replace(/\r\n/g, '\n');
 
   // Check if GitNexus section already exists. Matching is restricted
   // to markers that occupy their own line so that inline prose
@@ -411,7 +419,7 @@ async function upsertGitNexusSection(
         }
         const before = existingContent.substring(0, startIdx);
         const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-        await fs.writeFile(filePath, (before + updatedSection + after).trim() + '\n', 'utf-8');
+        await writeWithLineEnding(filePath, (before + updatedSection + after).trim() + '\n', eol);
         return 'updated';
       }
       // Keep marker present but no stats line matched. Section is preserved
@@ -428,14 +436,29 @@ async function upsertGitNexusSection(
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
     const newContent = before + content + after;
-    await fs.writeFile(filePath, newContent.trim() + '\n', 'utf-8');
+    await writeWithLineEnding(filePath, newContent.trim() + '\n', eol);
     return 'updated';
   }
 
   // Append new section
   const newContent = existingContent.trim() + '\n\n' + content + '\n';
-  await fs.writeFile(filePath, newContent, 'utf-8');
+  await writeWithLineEnding(filePath, newContent, eol);
   return 'appended';
+}
+
+/** The line ending of the first line break in `content`; LF when there is none. */
+function detectLineEnding(content: string): '\n' | '\r\n' {
+  const firstBreak = content.indexOf('\n');
+  return firstBreak > 0 && content[firstBreak - 1] === '\r' ? '\r\n' : '\n';
+}
+
+/** Write LF text in the file's own line ending. */
+async function writeWithLineEnding(
+  filePath: string,
+  lfContent: string,
+  eol: '\n' | '\r\n',
+): Promise<void> {
+  await fs.writeFile(filePath, eol === '\n' ? lfContent : lfContent.replace(/\n/g, eol), 'utf-8');
 }
 
 /**

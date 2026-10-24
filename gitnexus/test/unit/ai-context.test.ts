@@ -406,6 +406,99 @@ describe('generateAIContextFiles', () => {
     expect(starts).toBe(1);
   });
 
+  describe('line endings (#3688)', () => {
+    const crlf = (lines: string[]) => lines.join('\r\n') + '\r\n';
+    const stats = { nodes: 10, edges: 20, processes: 3 };
+
+    async function withRepo(run: (dir: string, storage: string) => Promise<void>) {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-crlf-'));
+      const storage = path.join(dir, '.gitnexus');
+      await fs.mkdir(storage, { recursive: true });
+      try {
+        await run(dir, storage);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    }
+
+    const loneLfCount = (content: string) => content.replace(/\r\n/g, '').split('\n').length - 1;
+
+    it('writes the block in CRLF when it replaces a section in a CRLF file', async () => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'CLAUDE.md');
+        await fs.writeFile(
+          file,
+          crlf([
+            '# Hand-written guide',
+            '',
+            'Keep this paragraph.',
+            '',
+            '<!-- gitnexus:start -->',
+            'old block',
+            '<!-- gitnexus:end -->',
+            '',
+            'And this one.',
+          ]),
+          'utf-8',
+        );
+
+        await generateAIContextFiles(dir, storage, 'CrlfProject', stats);
+
+        const content = await fs.readFile(file, 'utf-8');
+        expect(content).toContain('Keep this paragraph.\r\n');
+        expect(content).toContain('And this one.');
+        expect(content).toContain('<!-- gitnexus:start -->\r\n');
+        expect(content).toContain('CrlfProject');
+        expect(content).not.toContain('old block');
+        expect(loneLfCount(content)).toBe(0);
+      });
+    });
+
+    it('appends the block in CRLF to a CRLF file that has no section yet', async () => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'AGENTS.md');
+        await fs.writeFile(file, crlf(['# Agents', '', 'Hand-written.']), 'utf-8');
+
+        await generateAIContextFiles(dir, storage, 'CrlfProject', stats);
+
+        const content = await fs.readFile(file, 'utf-8');
+        expect(content.startsWith('# Agents\r\n')).toBe(true);
+        expect(content).toContain('<!-- gitnexus:end -->');
+        expect(loneLfCount(content)).toBe(0);
+      });
+    });
+
+    it('leaves a CRLF file alone when only the counts moved', async () => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'CLAUDE.md');
+        await fs.writeFile(file, crlf(['# Guide', '', 'Hand-written.']), 'utf-8');
+        await generateAIContextFiles(dir, storage, 'CrlfProject', stats);
+        // As git hands the file back on a CRLF checkout: block included.
+        const committed = (await fs.readFile(file, 'utf-8')).replace(/\r?\n/g, '\r\n');
+        await fs.writeFile(file, committed, 'utf-8');
+
+        await generateAIContextFiles(dir, storage, 'CrlfProject', {
+          nodes: 11,
+          edges: 21,
+          processes: 4,
+        });
+
+        expect(await fs.readFile(file, 'utf-8')).toBe(committed);
+      });
+    });
+
+    it('keeps an LF file in LF', async () => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'CLAUDE.md');
+        await fs.writeFile(file, '# Guide\n\nHand-written.\n', 'utf-8');
+
+        await generateAIContextFiles(dir, storage, 'LfProject', stats);
+
+        expect(await fs.readFile(file, 'utf-8')).not.toContain('\r');
+      });
+    });
+  });
+
   it('preserves custom section when gitnexus:keep is present', async () => {
     const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
 
