@@ -30,6 +30,26 @@ function call(target: CalleeTarget, functionName = 'request'): FetchWrapperCall 
 }
 
 describe('fetch wrapper target classification', () => {
+  it('preserves configured opaque clients when their bodies have no proven HTTP sink', () => {
+    const index = buildFetchWrapperIndex(
+      [
+        definition('custom', {
+          urlArguments: [
+            {
+              callee: { callee: 'axios.get', target: { kind: 'member' } },
+              argument: { kind: 'parameter' },
+              fetch: false,
+            },
+          ],
+        }),
+      ],
+      ['request'],
+    );
+    expect(index.urlsForCall(call({ kind: 'binding', bindingId: 'custom' }))).toEqual([
+      '/api/items',
+    ]);
+  });
+
   it('uses the local binding rather than a same-named wrapper elsewhere', () => {
     const index = buildFetchWrapperIndex([
       definition('wrapper', { seed: true }),
@@ -512,5 +532,133 @@ describe('fetch wrapper barrel resolution depth', () => {
       filePath: `b${length}.ts`,
       importedName: 'request',
     });
+  });
+});
+
+describe('composed URL compatibility (#2858)', () => {
+  const parameter = { kind: 'parameter' } as const;
+  const sink = { callee: 'fetch', target: { kind: 'unresolved' } } as const;
+  const ref = (bindingId: string) => ({
+    callee: bindingId,
+    target: { kind: 'binding', bindingId } as const,
+  });
+  const prefixed = definition('request', {
+    seed: true,
+    forwardsUrl: true,
+    urlArguments: [
+      { callee: sink, fetch: true, argument: { kind: 'concat', parts: ['/api', parameter] } },
+    ],
+  });
+
+  it('resolves a configured wrapper prefix through a forwarder', () => {
+    const index = buildFetchWrapperIndex(
+      [
+        prefixed,
+        definition('outer', {
+          functionName: 'outer',
+          urlArguments: [{ callee: ref('request'), argument: parameter, fetch: false }],
+        }),
+      ],
+      ['request'],
+    );
+    expect(
+      index.urlsForCall({
+        ...call({ kind: 'binding', bindingId: 'outer' }, 'outer'),
+        fetchURL: '/items',
+      }),
+    ).toEqual(['/api/items']);
+  });
+
+  it('keeps explicitly configured seed wrappers opaque when their URL is unreadable', () => {
+    const index = buildFetchWrapperIndex(
+      [
+        definition('request', { seed: true, urlArguments: [] }),
+        definition('outer', {
+          functionName: 'outer',
+          urlArguments: [{ callee: ref('request'), argument: parameter, fetch: false }],
+        }),
+      ],
+      ['request'],
+    );
+    expect(index.urlsForCall(call({ kind: 'binding', bindingId: 'request' }))).toEqual([
+      '/api/items',
+    ]);
+    expect(index.urlsForCall(call({ kind: 'binding', bindingId: 'outer' }, 'outer'))).toEqual([
+      '/api/items',
+    ]);
+  });
+
+  it('retains member forwarding with serialized URL facts', () => {
+    const index = buildFetchWrapperIndex([
+      definition('send', { functionName: 'api.send', seed: true, forwardsUrl: true }),
+      definition('outer', {
+        functionName: 'outer',
+        urlArguments: [
+          {
+            callee: { callee: 'api.send', target: { kind: 'member' } },
+            argument: parameter,
+            fetch: false,
+          },
+        ],
+      }),
+    ]);
+    expect(index.urlsForCall(call({ kind: 'binding', bindingId: 'outer' }, 'outer'))).toEqual([
+      '/api/items',
+    ]);
+  });
+
+  it('substitutes only a precisely resolved URL-builder declaration', () => {
+    const builder = definition('builder', {
+      filePath: 'other.ts',
+      functionName: 'build',
+      exportedNames: ['build'],
+      urlReturn: { kind: 'concat', parts: ['/private', parameter] },
+    });
+    const make = (target: CalleeTarget) =>
+      definition('request', {
+        seed: true,
+        urlArguments: [
+          {
+            callee: sink,
+            fetch: true,
+            argument: { kind: 'call', callee: { callee: 'build', target }, argument: parameter },
+          },
+        ],
+      });
+    for (const target of [
+      { kind: 'import', specifier: 'external-http', importedName: 'build' },
+      { kind: 'unresolved' },
+    ] as const)
+      expect(
+        buildFetchWrapperIndex([builder, make(target)]).urlsForCall(
+          call({ kind: 'binding', bindingId: 'request' }),
+        ),
+      ).toEqual([]);
+    expect(
+      buildFetchWrapperIndex([
+        builder,
+        make({ kind: 'resolved-import', filePath: 'other.ts', importedName: 'build' }),
+      ]).urlsForCall(call({ kind: 'binding', bindingId: 'request' })),
+    ).toEqual(['/private/api/items']);
+  });
+
+  it('preserves deep identity forwarding without spending the transformation depth budget', () => {
+    const definitions = Array.from({ length: 5000 }, (_, i) =>
+      definition(`f${i}`, {
+        functionName: `f${i}`,
+        ...(i === 4999
+          ? {
+              seed: true,
+              forwardsUrl: true,
+              urlArguments: [{ callee: sink, fetch: true, argument: parameter }],
+            }
+          : { urlArguments: [{ callee: ref(`f${i + 1}`), fetch: false, argument: parameter }] }),
+      }),
+    );
+    expect(
+      buildFetchWrapperIndex(definitions).urlsForCall(
+        call({ kind: 'binding', bindingId: 'f0' }, 'f0'),
+      ),
+    ).toEqual(['/api/items']);
   });
 });
