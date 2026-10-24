@@ -130,7 +130,8 @@ export function summarizeUnresolvedReceivers(
     // auditable and reversible.
     //
     // `external` is a POSITIVE determination made by `classifyReceiverOrigin`
-    // from a language built-in match, never a fallthrough: a receiver the
+    // from provider evidence about built-ins, host names, library imports or
+    // library type roots, never a fallthrough: a receiver the
     // classifier could not place lands in `unknown`, which counts here WITH
     // `in-program`, because assuming a completeness we cannot demonstrate is
     // the unsafe direction.

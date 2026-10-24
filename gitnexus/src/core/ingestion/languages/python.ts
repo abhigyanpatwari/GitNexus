@@ -78,6 +78,117 @@ const BUILT_INS: ReadonlySet<string> = new Set([
   'abs',
 ]);
 
+/**
+ * Standard-library modules, for `LanguageProvider.isExternalModuleSpecifier`:
+ * a name bound by `import os` or `from pathlib import Path` — when the import
+ * resolved to no file in the program — is rooted in the interpreter's library,
+ * so `os.environ.setdefault(...)` lost no in-program edge.
+ *
+ * Matched against the specifier's FIRST segment (`os.path` → `os`); a relative
+ * specifier (`.compat`) has an empty one and never matches. Third-party
+ * packages are not listed and cannot be: an unresolved `fastapi` import looks
+ * exactly like an in-program module the resolver missed.
+ *
+ * Under-includes on purpose. The verdict already requires the import to have
+ * resolved nowhere, so a local `os.py` that the resolver finds wins; what this
+ * list guards against is a local module the resolver did NOT find. Generic
+ * nouns an application plausibly names its own modules after — `types`,
+ * `queue`, `signal`, `secrets`, `string`, `email`, `http`, `html`, `xml`,
+ * `operator`, `platform`, `test` — are therefore left out even though the
+ * standard library has them.
+ */
+const STDLIB_MODULES: ReadonlySet<string> = new Set([
+  '__future__',
+  'abc',
+  'argparse',
+  'ast',
+  'asyncio',
+  'atexit',
+  'base64',
+  'binascii',
+  'bisect',
+  'builtins',
+  'bz2',
+  'cmath',
+  'codecs',
+  'collections',
+  'concurrent',
+  'configparser',
+  'contextlib',
+  'contextvars',
+  'copy',
+  'csv',
+  'ctypes',
+  'dataclasses',
+  'datetime',
+  'decimal',
+  'difflib',
+  'enum',
+  'errno',
+  'fnmatch',
+  'fractions',
+  'functools',
+  'gc',
+  'getpass',
+  'glob',
+  'gzip',
+  'hashlib',
+  'heapq',
+  'hmac',
+  'importlib',
+  'inspect',
+  'io',
+  'ipaddress',
+  'itertools',
+  'json',
+  'keyword',
+  'linecache',
+  'locale',
+  'logging',
+  'lzma',
+  'math',
+  'mimetypes',
+  'multiprocessing',
+  'os',
+  'pathlib',
+  'pickle',
+  'pkgutil',
+  'pprint',
+  'random',
+  're',
+  'shlex',
+  'shutil',
+  'socket',
+  'sqlite3',
+  'ssl',
+  'stat',
+  'statistics',
+  'struct',
+  'subprocess',
+  'sys',
+  'sysconfig',
+  'tarfile',
+  'tempfile',
+  'textwrap',
+  'threading',
+  'time',
+  'timeit',
+  'traceback',
+  'typing',
+  'unicodedata',
+  'unittest',
+  'urllib',
+  'uuid',
+  'warnings',
+  'weakref',
+  'zipfile',
+  'zlib',
+  'zoneinfo',
+]);
+
+const isPythonStdlibModule = (specifier: string): boolean =>
+  STDLIB_MODULES.has(specifier.split('.', 1)[0] ?? '');
+
 function pythonDescriptionExtractor(
   nodeLabel: NodeLabel,
   _nodeName: string,
@@ -136,6 +247,7 @@ export const pythonProvider = defineLanguage({
   classExtractor: createClassExtractor(pythonClassConfig),
   descriptionExtractor: pythonDescriptionExtractor,
   builtInNames: BUILT_INS,
+  isExternalModuleSpecifier: isPythonStdlibModule,
   // Django routing is whole-repo and cross-file (manage.py → settings →
   // ROOT_URLCONF → root urls.py, then include()s across files), so it runs as
   // a main-thread pass (see parse-impl's cross-file route extraction) rather

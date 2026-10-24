@@ -116,8 +116,8 @@ function balancedTailList(text: string, start: number): string | undefined {
 }
 
 /** Split `string, Map<int, bool>` on the commas that are not inside a nested
- *  list. Tracks BOTH bracket families so a mixed spelling (`List<Dict[a, b]>`)
- *  does not split inside the inner one. */
+ *  list or parenthesized tuple. Both bracket families and parentheses protect
+ *  commas inside nested type expressions. */
 function splitTopLevelArguments(inner: string): string[] {
   const args: string[] = [];
   let depth = 0;
@@ -128,8 +128,8 @@ function splitTopLevelArguments(inner: string): string[] {
   };
   for (let i = 0; i < inner.length; i++) {
     const ch = inner[i];
-    if (ch === '<' || ch === '[') depth++;
-    else if (ch === '>' || ch === ']') depth--;
+    if (ch === '<' || ch === '[' || ch === '(') depth++;
+    else if (ch === '>' || ch === ']' || ch === ')') depth--;
     else if (ch === ',' && depth === 0) {
       push(i);
       tokenStart = i + 1;

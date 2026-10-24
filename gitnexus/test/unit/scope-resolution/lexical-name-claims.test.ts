@@ -43,12 +43,14 @@ function indexes(
   return {
     scopeTree: {
       getScope: (id: string) => [inner, outer].find((s) => s.id === id),
+      getChildren: (id: string) =>
+        [inner, outer].filter((entry) => entry.parent === id).map((entry) => entry.id),
       byId: new Map([
         [inner.id, inner],
         [outer.id, outer],
       ]),
     },
-    moduleScopes: new Map([['caller.ts', outer.id]]),
+    moduleScopes: { byFilePath: new Map([['caller.ts', outer.id]]) },
     bindings: new Map(),
     bindingAugmentations: new Map(),
     imports: new Map(),

@@ -28,7 +28,7 @@ import {
   resolveJavaImportTarget,
   type JavaResolveContext,
 } from './index.js';
-import { populateJavaPackageSiblings } from './package-siblings.js';
+import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
 import { attachSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachJavaSpringAopMetadata } from './spring-aop.js';
 import { attachJavaSpringConfigBindings } from './spring-config-bindings.js';
@@ -90,6 +90,7 @@ const javaScopeResolver: ScopeResolver = {
   freeCallsRequireInstanceOwnership: true,
 
   populateNamespaceSiblings: populateJavaPackageSiblings,
+  resolveImplicitInheritanceBase: resolveJavaSamePackageBase,
   populateRangeBindings: populateJavaCrossFileReturnTypes,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes, ctx) => {
     attachSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);

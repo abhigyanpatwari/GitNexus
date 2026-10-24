@@ -395,7 +395,33 @@ const SUBSCRIPT_NODE_TYPES = new Set([
   'element_access_expression', // C#
   'array_access', // Java
   'indexing_expression', // Kotlin
+  'element_reference', // Ruby
 ]);
+
+/**
+ * Call nodes that spell a SUBSCRIPT. Swift has no subscript node: `repos[0]`
+ * parses as `call_expression → call_suffix → value_arguments`, exactly like a
+ * call, except that the argument list is delimited by `[`/`]` rather than
+ * `(`/`)`. Walked as a call it named no member (or, for `svc.users[0]`, named
+ * `users` as if it were a method), so the subscript never became an index step.
+ *
+ * Keyed by the suffix node type; the value is the argument-list node type
+ * inside it. The opening `[` token is what tells a subscript from a call.
+ */
+const BRACKETED_CALL_SUFFIXES = new Map<string, string>([
+  ['call_suffix', 'value_arguments'], // Swift `repos[0]`
+]);
+
+/** Is `node` a call node that is really a subscript, `repos[0]`? */
+function isBracketedSubscriptCall(node: SyntaxNode): boolean {
+  if (!CALL_EXPRESSION_TYPES.has(node.type)) return false;
+  const suffix = node.lastNamedChild;
+  if (suffix === null) return false;
+  const argumentListType = BRACKETED_CALL_SUFFIXES.get(suffix.type);
+  if (argumentListType === undefined) return false;
+  const argumentList = suffix.firstNamedChild;
+  return argumentList?.type === argumentListType && argumentList.firstChild?.type === '[';
+}
 
 /**
  * Can the chain walk descend into this node, or is it the base?
@@ -413,7 +439,8 @@ function isChainableReceiverNode(node: SyntaxNode): boolean {
     CALL_EXPRESSION_TYPES.has(node.type) ||
     FIELD_ACCESS_NODE_TYPES.has(node.type) ||
     AWAIT_EXPRESSION_NODE_TYPES.has(node.type) ||
-    SUBSCRIPT_NODE_TYPES.has(node.type)
+    SUBSCRIPT_NODE_TYPES.has(node.type) ||
+    CONDITIONAL_ACCESS_NODE_TYPES.has(node.type)
   );
 }
 
@@ -427,6 +454,34 @@ const FIELD_ACCESS_NODE_TYPES = new Set([
   'navigation_expression', // Kotlin/Swift
   'member_binding_expression', // C# null-conditional (user?.Address)
 ]);
+
+/**
+ * Null-conditional access, which splits one member access across two nodes.
+ * C# parses `svc?.GetUser()` as
+ * `conditional_access_expression(condition: svc, member_binding_expression)`:
+ * the receiver sits in the outer node's `condition` field and the member name
+ * in the binding child. Read like any other callee, the step was named
+ * `.GetUser` and had no inner receiver, so no chain was built and the call was
+ * lost without a drop. As a receiver (`svc?.Address.Save()`) the node stopped
+ * the walk, and its whole text became the base.
+ *
+ * Keyed by node type; the value is the field that holds the receiver.
+ */
+const CONDITIONAL_ACCESS_NODE_TYPES = new Map<string, string>([
+  ['conditional_access_expression', 'condition'], // C# `svc?.GetUser()`, `svc?.Address`, `repos?[0]`
+]);
+
+/** The binding child of a conditional access that names a member: C# `?.Name`. */
+const MEMBER_BINDING_NODE_TYPES = new Set(['member_binding_expression']);
+
+/** The binding child of a conditional access that is a subscript: C# `?[0]`. */
+const ELEMENT_BINDING_NODE_TYPES = new Set(['element_binding_expression']);
+
+/** The receiver of a conditional access, or `null` for any other node. */
+function conditionalAccessReceiver(node: SyntaxNode): SyntaxNode | null {
+  const field = CONDITIONAL_ACCESS_NODE_TYPES.get(node.type);
+  return field === undefined ? null : node.childForFieldName(field);
+}
 
 /**
  * One step in a mixed receiver chain.
@@ -557,8 +612,9 @@ export function extractCallChain(
  * operand rather than as the cast target.
  *
  * Keyed by node type; the value is the operator text that has to TERMINATE the
- * node for the peel to apply, or `null` for a node type that is transparent
- * unconditionally.
+ * node for the peel to apply, `null` for a node type that is transparent
+ * unconditionally, or `SOLE_ELEMENT` for a tuple node that is transparent only
+ * when it holds exactly one element.
  *
  * The gated entry exists because Swift force-unwrap (`self.a!`) is the exact
  * semantic of TypeScript's `non_null_expression` — it yields the wrapped type —
@@ -567,8 +623,17 @@ export function extractCallChain(
  * node type unconditionally would type the receiver as the operand and could
  * produce a confidently wrong owner. Reading the operator keeps the peel to the
  * case that is provably type-preserving.
+ *
+ * The `SOLE_ELEMENT` entry exists because Swift has no parenthesized-expression
+ * node: `(await svc.getUserAsync())` parses as a `tuple_expression` with one
+ * element. Only that shape denotes its operand. Rust also emits
+ * `tuple_expression`, and there `(svc,)` is a real one-element tuple; the
+ * trailing comma is an extra child, so the gate leaves it alone, as it does
+ * Swift's labelled `(x: svc)` and every tuple of two or more.
  */
-const TRANSPARENT_RECEIVER_WRAPPERS = new Map<string, string | null>([
+const SOLE_ELEMENT = Symbol('sole-element');
+
+const TRANSPARENT_RECEIVER_WRAPPERS = new Map<string, string | null | typeof SOLE_ELEMENT>([
   ['non_null_expression', null], // TypeScript `svc!`
   ['parenthesized_expression', null], // `(svc)`
   // NOT Swift-only: Kotlin's `!!` non-null assertion parses as the same node type
@@ -578,6 +643,10 @@ const TRANSPARENT_RECEIVER_WRAPPERS = new Map<string, string | null>([
   // rather than assumed. Any other grammar emitting `postfix_expression` is
   // affected as well; the `!` gate, not the language, is what bounds this.
   ['postfix_expression', '!'], // Swift `self.a!`, Kotlin `a!!`
+  // C#'s null-forgiving `svc!`. The same node type carries `x++` and `x--`,
+  // which the `!` gate leaves alone.
+  ['postfix_unary_expression', '!'], // C# `svc!`
+  ['tuple_expression', SOLE_ELEMENT], // Swift `(await svc.getUserAsync())`
 ]);
 
 /** Is `node` a wrapper that denotes exactly what its operand denotes? */
@@ -591,6 +660,9 @@ function isTransparentReceiverWrapper(node: SyntaxNode): boolean {
   // `has` probe, and one crossing of the native `node.type` getter.
   if (operator === undefined) return false;
   if (operator === null) return true;
+  // `(`, the element, `)`: anything more is a comma, a label or a second
+  // element, and then the node is a real tuple.
+  if (operator === SOLE_ELEMENT) return node.childCount === 3 && node.namedChildCount === 1;
   // The operator is an anonymous token, so it is not in `namedChildren`; the
   // node's own text is the reliable place to read it. Deliberately NOT
   // `node.lastChild` — measured 3x SLOWER (the child wrapper allocation
@@ -620,6 +692,64 @@ function unwrapTransparentReceiver(node: SyntaxNode): SyntaxNode {
   return current;
 }
 
+/**
+ * Callee nodes that carry EXPLICIT TYPE ARGUMENTS inside them.
+ *
+ * TypeScript, Java and Kotlin put `<User>` beside the callee, in a sibling field,
+ * so the walk never sees it. These grammars put it inside the callee node:
+ * C# `svc.GetTyped<User>()` and C++ `svc->getTyped<User>()` wrap the member
+ * name, so the step was named `GetTyped<User>` and matched no member. Rust's
+ * `svc.get_typed::<User>()` wraps the whole field access, so the walk found no
+ * name and no inner receiver, and minted no chain at all.
+ *
+ * Type arguments can select an instantiation or overload. The chain stores
+ * only the member name; generic-arity overload selection is not represented
+ * here and remains a resolver limitation. Substituting type arguments into
+ * a generic return type is also a separate problem: C++
+ * `template <typename T> T* getTyped()` still has no return type to fold.
+ *
+ * Keyed by node type. The value is the field that holds the callee without its
+ * type arguments, or `null` where the grammar gives that child no field name
+ * (it is then the first named child).
+ */
+const TYPE_ARGUMENT_CALLEE_NODE_TYPES = new Map<string, string | null>([
+  ['generic_name', null], // C# `GetTyped<User>`
+  ['template_method', 'name'], // C++ `svc->getTyped<User>`
+  ['template_function', 'name'], // C++ `getTyped<User>`
+  ['dependent_name', null], // C++ `svc->template getTyped<User>`, wraps a template_method
+  ['generic_function', 'function'], // Rust `svc.get_typed::<User>`, wraps the field access
+]);
+
+/** Iteration bound for the type-argument peel. `dependent_name` nests a
+ *  `template_method`, so real code needs two. */
+const MAX_TYPE_ARGUMENT_PEEL_DEPTH = 3;
+
+/** `node` without the explicit type arguments it carries, if any. */
+function stripTypeArguments(node: SyntaxNode): SyntaxNode {
+  let current = node;
+  for (let i = 0; i < MAX_TYPE_ARGUMENT_PEEL_DEPTH; i++) {
+    const field = TYPE_ARGUMENT_CALLEE_NODE_TYPES.get(current.type);
+    if (field === undefined) break;
+    const inner = field === null ? current.firstNamedChild : current.childForFieldName(field);
+    if (inner === null) break;
+    current = inner;
+  }
+  return current;
+}
+
+/**
+ * The member a call's callee names, without type arguments. For a
+ * null-conditional callee (`svc?.GetUser`) that is the name inside its member
+ * binding; an element binding (`handlers?[0]()`) names no member.
+ */
+function calleeMemberName(funcNode: SyntaxNode): string | undefined {
+  const member = funcNode.lastNamedChild;
+  if (member === null) return funcNode.text;
+  if (!CONDITIONAL_ACCESS_NODE_TYPES.has(funcNode.type)) return stripTypeArguments(member).text;
+  const name = MEMBER_BINDING_NODE_TYPES.has(member.type) ? member.childForFieldName('name') : null;
+  return name === null ? undefined : stripTypeArguments(name).text;
+}
+
 export function extractMixedChain(
   receiverNode: SyntaxNode,
 ): { chain: MixedChainStep[]; baseReceiverName: string | undefined } | undefined {
@@ -633,17 +763,21 @@ export function extractMixedChain(
     // fell straight through to the base case with an empty chain and minted
     // nothing — the await step could never be reached.
     current = unwrapTransparentReceiver(current);
-    if (CALL_EXPRESSION_TYPES.has(current.type)) {
+    const subscriptCall = isBracketedSubscriptCall(current);
+    if (CALL_EXPRESSION_TYPES.has(current.type) && !subscriptCall) {
       // ── Call expression: extract method name + inner receiver ────────────
-      const funcNode =
+      const callee =
         current.childForFieldName?.('function') ??
         current.childForFieldName?.('name') ??
         current.childForFieldName?.('method');
+      // Rust's turbofish wraps the whole field access, so peel it before
+      // reading either the name or the receiver.
+      const funcNode = callee ? stripTypeArguments(callee) : null;
       let methodName: string | undefined;
       let innerReceiver: SyntaxNode | null = null;
 
       if (funcNode) {
-        methodName = funcNode.lastNamedChild?.text ?? funcNode.text;
+        methodName = calleeMemberName(funcNode);
       }
       // Kotlin/Swift: call_expression → navigation_expression
       if (!funcNode && current.type === 'call_expression') {
@@ -672,7 +806,7 @@ export function extractMixedChain(
           funcNode.childForFieldName?.('operand') ??
           funcNode.childForFieldName?.('argument') ?? // C/C++ field_expression
           funcNode.childForFieldName?.('expression') ??
-          null;
+          conditionalAccessReceiver(funcNode);
       }
       if (!innerReceiver && current.type === 'method_invocation') {
         innerReceiver = current.childForFieldName?.('object') ?? null;
@@ -764,7 +898,7 @@ export function extractMixedChain(
           baseReceiverName: unwrapTransparentReceiver(inner).text || undefined,
         };
       }
-    } else if (SUBSCRIPT_NODE_TYPES.has(current.type)) {
+    } else if (subscriptCall || SUBSCRIPT_NODE_TYPES.has(current.type)) {
       // Name-free: a subscript key is a VALUE, not an identifier the resolver
       // could look up, so there is no member name to record.
       chain.unshift({ kind: 'index' });
@@ -788,6 +922,28 @@ export function extractMixedChain(
         return {
           chain,
           baseReceiverName: unwrapTransparentReceiver(obj).text || undefined,
+        };
+      }
+    } else if (CONDITIONAL_ACCESS_NODE_TYPES.has(current.type)) {
+      // ── Null-conditional access as a receiver: `svc?.Address`, `repos?[0]` ──
+      const binding = current.lastNamedChild;
+      if (binding !== null && MEMBER_BINDING_NODE_TYPES.has(binding.type)) {
+        const name = binding.childForFieldName('name')?.text;
+        if (!name) break;
+        chain.unshift({ kind: 'field', name });
+      } else if (binding !== null && ELEMENT_BINDING_NODE_TYPES.has(binding.type)) {
+        chain.unshift({ kind: 'index' });
+      } else {
+        break;
+      }
+      const inner = conditionalAccessReceiver(current);
+      if (!inner) break;
+      if (isChainableReceiverNode(inner)) {
+        current = inner;
+      } else {
+        return {
+          chain,
+          baseReceiverName: unwrapTransparentReceiver(inner).text || undefined,
         };
       }
     } else if (current.type === 'selector') {
