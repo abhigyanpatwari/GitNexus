@@ -34,6 +34,9 @@ services:
     # (http://localhost:4747) works when both containers run locally.
     # Set GITNEXUS_BACKEND_URL in your .env or shell for remote/custom setups:
     #   GITNEXUS_BACKEND_URL=http://<server-ip>:4747
+    # Behind a reverse proxy that routes /api/* next to the UI, set it to `/`:
+    # the browser then calls the API on whichever hostname served the page
+    # (see "Same-origin API behind a reverse proxy" in the README).
     environment:
       - GITNEXUS_BACKEND_URL=${GITNEXUS_BACKEND_URL:-}
     depends_on:

@@ -1,5 +1,18 @@
 # Receiver-resolution baseline
 
+## Exact-target audit (2026-10-23)
+
+The [audit receipt](../../../docs/languages/receiver-resolution-audit.md) records a
+fresh build and both benchmark arms. The current shape gate requires each fixture's
+full expected target ID and reports WRONG-TARGET for another owner. It executes
+previously excluded C++, Rust, PHP and Dart cases plus a real Vue SFC row.
+The current matrix has 93 exact resolutions, 15 visible gaps (including three
+intentional untyped controls), one invisible gap, one wrong target and 58 N/A
+entries. The count arm remains 138 call drops and 168 total drops.
+
+Earlier entries below retain their original measurement contracts and source pins;
+member-name-only RESOLVES claims in those entries are historical.
+
 ## Typed shape bodies for JavaScript, Ruby, PHP and C (#3498)
 
 The JavaScript and Ruby rows had no type information anywhere, so every chain

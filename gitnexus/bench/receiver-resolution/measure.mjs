@@ -11,12 +11,10 @@
  *     every SHAPE_ID against every language — each cell classified by what the
  *     graph actually contains:
  *
- *       RESOLVES       edge emitted. A test written against this shape starts
- *                      green and proves nothing. Note this states only that an
- *                      edge EXISTS — not that it points at the right target. A
- *                      name-keyed fallback onto a same-named member reads as
- *                      RESOLVES here, so a shape whose receiver has no
- *                      well-defined type is not a usable control.
+ *       RESOLVES       the call reaches its declared expectedTarget node ID,
+ *                      with no same-named call to another declaration.
+ *       WRONG-TARGET   at least one same-named edge reaches a different owner,
+ *                      including an edge from an intentionally untyped control.
  *       VISIBLE-GAP    no edge, and a `receiver-unresolved` drop was recorded.
  *                      Measurable by the count arm below.
  *       INVISIBLE-GAP  no edge, and NO drop was recorded. The call is lost and
@@ -124,22 +122,21 @@ const SHAPE_IDS = [
 ];
 
 /**
- * Languages that carry no receiver-chain emission at all, recorded as
- * language-level rows so the language axis obeys the same no-omitted-cells rule
- * as the shape axis. Their capture emitters do not call
- * `synthesizeReceiverChainCapture`, so there is nothing to measure — but an
- * absent row and an inapplicable row must not look alike in a diff.
+ * Providers outside this method-receiver measurement domain. Their separate
+ * call-resolution integration tests remain necessary; N/A is not a passing
+ * runtime measurement and does not establish whole-language completeness.
  */
 const NA_LANGUAGES = {
-  vue: 'SFC templates delegate to the TypeScript/JavaScript emitters; no receiver chain is minted for the .vue file itself.',
-  cobol: 'No method-call receiver syntax; the emitter mints no receiver chains.',
+  cobol:
+    'The COBOL provider models structural/procedure-pointer calls, not object-oriented receiver chains; those calls have separate integration coverage.',
 };
 
 /**
  * Each entry is one receiver spelling. `entry` is the function that contains
- * it; `member` is the method it should reach. Classification asks only two
- * questions of the result — is there a CALLS edge from `entry` to `member`,
- * and was a drop recorded on that line — so it never guesses from an id shape.
+ * it; `member` selects the terminal call and `expectedTarget` names its full
+ * declaration ID (null for an intentional unresolved control). Classification
+ * checks every matching edge against that ID, and only a call-kind drop in the
+ * generated main file at that shape line can make a missing edge visible.
  *
  * An entry with `na` declares the shape inapplicable to this language and is
  * never compiled into the fixture.
@@ -187,23 +184,55 @@ export class Service {
     wrap: (entry, body) =>
       `export async function ${entry}(svc: Service, repos: User[]): Promise<void> {\n  ${body}\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.getUser().save();', note: 'control' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Method:models.ts:User.save#0',
+        member: 'save',
+        body: 'svc.getUser().save();',
+        note: 'control',
+      },
       {
         id: 'plainDeepChain',
+        expectedTarget: 'Method:models.ts:Address.save#0',
         member: 'save',
         body: 'svc.getUser().address.save();',
         note: 'control',
       },
-      { id: 'optionalChain', member: 'save', body: 'svc?.getUser().save();', note: 'PF1' },
-      { id: 'nonNullAssert', member: 'save', body: 'svc!.getUser().save();', note: 'PF2' },
+      {
+        id: 'optionalChain',
+        expectedTarget: 'Method:models.ts:User.save#0',
+        member: 'save',
+        body: 'svc?.getUser().save();',
+        note: 'PF1',
+      },
+      {
+        id: 'nonNullAssert',
+        expectedTarget: 'Method:models.ts:User.save#0',
+        member: 'save',
+        body: 'svc!.getUser().save();',
+        note: 'PF2',
+      },
       {
         id: 'awaitParen',
+        expectedTarget: 'Method:models.ts:User.save#0',
         member: 'save',
         body: '(await svc.getUserAsync()).save();',
         note: 'PF3',
       },
-      { id: 'explicitTypeArgs', member: 'save', body: 'svc.getTyped<User>().save();', note: 'PF4' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save();', note: 'PF5' },
+      {
+        id: 'explicitTypeArgs',
+        expectedTarget: 'Method:models.ts:User.save#0',
+        member: 'save',
+        body: 'svc.getTyped<User>().save();',
+        note: 'PF4',
+      },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Method:models.ts:User.save#0',
+        member: 'save',
+        body: 'repos[0].save();',
+        note: 'PF5',
+      },
       {
         // FOUR STEPS in the receiver of `save`: getSvc, getUser, address,
         // getCity. One more than the pre-U6 cap of 3, so the chain is DISCARDED
@@ -211,6 +240,7 @@ export class Service {
         // for choosing the number. (An earlier version of this fixture had only
         // three steps and therefore resolved at both depths, measuring nothing.)
         id: 'fourHopChain',
+        expectedTarget: 'Method:models.ts:City.save#0',
         member: 'save',
         body: 'root.getSvc().getUser().address.getCity().save();',
         raw: `class Root {
@@ -226,6 +256,7 @@ export function fourHopChain(root: Root): void {
       },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:models.ts:User.save#0',
         member: 'save',
         body: 'this.repo.save();',
         raw: `class TsHolder {
@@ -243,6 +274,7 @@ export function fourHopChain(root: Root): void {
       },
       {
         id: 'decoratedFieldType',
+        expectedTarget: 'Method:models.ts:User.save#0',
         member: 'save',
         body: 'this.repo!.save();',
         raw: `class TsNullableHolder {
@@ -305,6 +337,7 @@ class Service {
     shapes: [
       {
         id: 'arrowCallChain',
+        expectedTarget: null,
         member: 'save',
         body: '$svc->getUser()->save();',
         note: 'PF6 — recorded, because the receiver text contains `(`',
@@ -316,6 +349,7 @@ class Service {
         // recorded. "PHP records no drops" is too coarse: it is the
         // property-path receiver that is invisible, not the language.
         id: 'arrowPropertyPath',
+        expectedTarget: 'Method:models.php:User.save#0',
         member: 'save',
         body: '$this->repo->save();',
         raw: `class Holder {
@@ -329,18 +363,21 @@ class Service {
       },
       {
         id: 'plainChain',
+        expectedTarget: 'Method:models.php:User.save#0',
         member: 'save',
         body: '$svc->getUserTyped()->save();',
         note: 'discriminator for arrowCallChain — same chain, ANNOTATED return type',
       },
       {
         id: 'plainDeepChain',
+        expectedTarget: 'Method:models.php:Address.save#0',
         member: 'save',
         body: '$svc->getUserTyped()->address->save();',
         note: 'deep arrow chain',
       },
       {
         id: 'optionalChain',
+        expectedTarget: 'Method:models.php:User.save#0',
         member: 'save',
         body: '$svc?->getUserTyped()->save();',
         note: 'nullsafe',
@@ -356,6 +393,7 @@ class Service {
       },
       {
         id: 'indexElement',
+        expectedTarget: 'Method:models.php:User.save#0',
         member: 'save',
         body: '$repos[0]->save();',
         raw: `/**
@@ -369,7 +407,16 @@ function indexElement(Service $svc, array $repos) {
       },
       {
         id: 'fieldReceiverCall',
-        na: 'Covered by `arrowPropertyPath` above — the same undecorated field-receiver shape.',
+        expectedTarget: 'Method:models.php:User.save#0',
+        member: 'save',
+        body: '$this->repo->save();',
+        raw: `class PhpHolder {
+    public User $repo;
+    public function fieldReceiverCall() {
+        $this->repo->save();
+    }
+}
+`,
       },
       {
         id: 'decoratedReceiverBase',
@@ -377,6 +424,7 @@ function indexElement(Service $svc, array $repos) {
       },
       {
         id: 'decoratedFieldType',
+        expectedTarget: 'Method:models.php:User.save#0',
         member: 'save',
         body: '$this->repo->save();',
         raw: `class NullableHolder {
@@ -417,6 +465,23 @@ public:
     template <typename T>
     T* getTyped();
 };
+
+#include <coroutine>
+struct AwaitUser {
+    bool await_ready();
+    void await_suspend(std::coroutine_handle<>);
+    User await_resume();
+};
+struct Task {
+    struct promise_type {
+        Task get_return_object();
+        std::suspend_never initial_suspend();
+        std::suspend_never final_suspend() noexcept;
+        void return_void();
+        void unhandled_exception();
+    };
+};
+AwaitUser getUserAsync();
 `,
     },
     header: `#include "models.h"\n`,
@@ -425,35 +490,61 @@ public:
     shapes: [
       {
         id: 'pointerArrowChain',
+        expectedTarget: 'Method:models.h:User.save#0',
         member: 'save',
         body: 'svc->getUser()->save();',
-        note: 'PF7 — no fixture exists today; cpp-chain-call/ uses value `.`',
+        note: 'pointer base; measured separately from the value-base control',
       },
       {
         // The discriminating control for PF7. Same chain, same `->save()` tail,
-        // but a value `.` on the BASE receiver — and it resolves. So the defect
-        // is the `->` base specifically, not C++ chaining, and the existing
-        // `cpp-chain-call/` fixture cannot catch it because it uses this form.
+        // but a value `.` on the base receiver. Both now resolve; retaining
+        // both forms prevents a regression in either spelling from hiding.
         id: 'valueDotChain',
+        expectedTarget: 'Method:models.h:User.save#0',
         member: 'save',
         body: 'svc2.getUser()->save();',
         note: 'PF7-control — value `.` base resolves',
       },
       {
         id: 'plainChain',
-        na: 'C++ spells a chained call through `->` or `.`; both are measured above as pointerArrowChain and valueDotChain.',
+        expectedTarget: 'Method:models.h:User.save#0',
+        member: 'save',
+        body: 'svc->getUser()->save();',
       },
-      { id: 'plainDeepChain', member: 'save', body: 'svc->getUser()->addr.save();' },
+      {
+        id: 'plainDeepChain',
+        expectedTarget: 'Method:models.h:Address.save#0',
+        member: 'save',
+        body: 'svc->getUser()->addr.save();',
+      },
       { id: 'optionalChain', na: 'C++ has no optional-chaining operator.' },
       { id: 'nonNullAssert', na: 'C++ has no non-null assertion operator.' },
       {
         id: 'awaitParen',
-        na: 'co_await is a coroutine feature the emitter does not model as an async container.',
+        expectedTarget: 'Method:models.h:User.save#0',
+        member: 'save',
+        body: '(co_await getUserAsync()).save();',
+        raw: `Task awaitParen() {
+    (co_await getUserAsync()).save();
+    co_return;
+}
+`,
       },
-      { id: 'explicitTypeArgs', member: 'save', body: 'svc->getTyped<User>()->save();' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save();' },
+      {
+        id: 'explicitTypeArgs',
+        expectedTarget: 'Method:models.h:User.save#0',
+        member: 'save',
+        body: 'svc->getTyped<User>()->save();',
+      },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Method:models.h:User.save#0',
+        member: 'save',
+        body: 'repos[0].save();',
+      },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:models.h:User.save#0',
         member: 'save',
         body: 'this->repo.save();',
         raw: `struct CppHolder {
@@ -471,6 +562,7 @@ public:
       },
       {
         id: 'decoratedFieldType',
+        expectedTarget: 'Method:models.h:User.save#0',
         member: 'save',
         body: 'this->repo->save();',
         raw: `struct CppPtrHolder {
@@ -520,9 +612,16 @@ func (t Tgt) ValM() {}
     header: `package main\n`,
     wrap: (entry, body) => `func ${entry}(svc *Service, repos []*User) {\n\t${body}\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'Save', body: 'svc.GetUser().Save()', note: 'control' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Method:models.go:User.Save#0',
+        member: 'Save',
+        body: 'svc.GetUser().Save()',
+        note: 'control',
+      },
       {
         id: 'plainDeepChain',
+        expectedTarget: 'Method:models.go:Address.Save#0',
         member: 'Save',
         body: 'svc.GetUser().Address.Save()',
         note: 'control',
@@ -534,11 +633,18 @@ func (t Tgt) ValM() {}
         id: 'explicitTypeArgs',
         na: 'Go methods cannot declare type parameters, so there is no call-site type-argument spelling on a method.',
       },
-      { id: 'indexElement', member: 'Save', body: 'repos[0].Save()', note: 'slice subscript' },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Method:models.go:User.Save#0',
+        member: 'Save',
+        body: 'repos[0].Save()',
+        note: 'slice subscript',
+      },
       {
         // VALUE receiver + VALUE field. Neither side carries decoration, so this
         // is the control that isolates the two rows below.
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:models.go:Tgt.ValM#0',
         member: 'ValM',
         body: 'h.f.ValM()',
         raw: `type HostVV struct{ f Tgt }
@@ -554,6 +660,7 @@ func (h HostVV) fieldReceiverCall() {
         // the class lookup misses every branch (no dot, so the dotted-tail
         // fallback never fires). THE root cause this plan fixes.
         id: 'decoratedReceiverBase',
+        expectedTarget: 'Method:models.go:Tgt.ValM#0',
         member: 'ValM',
         body: 'h.f.ValM()',
         raw: `type HostPV struct{ f Tgt }
@@ -569,6 +676,7 @@ func (h *HostPV) decoratedReceiverBase() {
         // bindings through normalizeGoTypeName, so this resolves today and
         // proves the step lookup is NOT the defect.
         id: 'decoratedFieldType',
+        expectedTarget: 'Method:models.go:Tgt.PtrM#0',
         member: 'PtrM',
         body: 'h.f.PtrM()',
         raw: `type HostVP struct{ f *Tgt }
@@ -623,9 +731,16 @@ export class Service {
       `/**\n * @param {Service} svc\n * @param {User[]} repos\n */\n` +
       `export async function ${entry}(svc, repos) {\n  ${body}\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.getUser().save();', note: 'control' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Method:models.js:User.save#0',
+        member: 'save',
+        body: 'svc.getUser().save();',
+        note: 'control',
+      },
       {
         id: 'untypedChain',
+        expectedTarget: null,
         member: 'save',
         body: 'svc.getUser().save();',
         raw: `export async function untypedChain(svc) {
@@ -634,14 +749,36 @@ export class Service {
 `,
         note: 'untyped control — no JSDoc on `svc`; expected to stay a gap',
       },
-      { id: 'plainDeepChain', member: 'save', body: 'svc.getUser().address.save();' },
-      { id: 'optionalChain', member: 'save', body: 'svc?.getUser().save();' },
+      {
+        id: 'plainDeepChain',
+        expectedTarget: 'Method:models.js:Address.save#0',
+        member: 'save',
+        body: 'svc.getUser().address.save();',
+      },
+      {
+        id: 'optionalChain',
+        expectedTarget: 'Method:models.js:User.save#0',
+        member: 'save',
+        body: 'svc?.getUser().save();',
+      },
       { id: 'nonNullAssert', na: 'JavaScript has no non-null assertion operator.' },
-      { id: 'awaitParen', member: 'save', body: '(await svc.getUserAsync()).save();' },
+      {
+        id: 'awaitParen',
+        expectedTarget: 'Method:models.js:User.save#0',
+        member: 'save',
+        body: '(await svc.getUserAsync()).save();',
+      },
       { id: 'explicitTypeArgs', na: 'JavaScript has no type-argument syntax.' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save();', note: 'JSDoc `User[]`' },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Method:models.js:User.save#0',
+        member: 'save',
+        body: 'repos[0].save();',
+        note: 'JSDoc `User[]`',
+      },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:models.js:User.save#0',
         member: 'save',
         body: 'this.repo.save();',
         raw: `class JsHolder {
@@ -692,12 +829,23 @@ class Service:
     header: `from typing import List, Optional\nfrom models import Address, Service, User\n`,
     wrap: (entry, body) => `def ${entry}(svc: Service, repos: List[User]) -> None:\n    ${body}\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.get_user().save()' },
-      { id: 'plainDeepChain', member: 'save', body: 'svc.get_user().address.save()' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Method:models.py:User.save#0',
+        member: 'save',
+        body: 'svc.get_user().save()',
+      },
+      {
+        id: 'plainDeepChain',
+        expectedTarget: 'Method:models.py:Address.save#0',
+        member: 'save',
+        body: 'svc.get_user().address.save()',
+      },
       { id: 'optionalChain', na: 'Python has no optional-chaining operator.' },
       { id: 'nonNullAssert', na: 'Python has no non-null assertion operator.' },
       {
         id: 'awaitParen',
+        expectedTarget: 'Method:models.py:User.save#0',
         member: 'save',
         body: '(await svc.get_user_async()).save()',
         raw: `async def awaitParen(svc: Service) -> None:
@@ -706,9 +854,15 @@ class Service:
         note: 'annotated coroutine — the declared return type IS the awaited type',
       },
       { id: 'explicitTypeArgs', na: 'Python has no call-site type-argument syntax.' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save()' },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Method:models.py:User.save#0',
+        member: 'save',
+        body: 'repos[0].save()',
+      },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:models.py:User.save#0',
         member: 'save',
         body: 'self.repo.save()',
         raw: `class PyHolder:
@@ -722,6 +876,7 @@ class Service:
       { id: 'decoratedReceiverBase', na: 'Python `self` carries no type decoration.' },
       {
         id: 'decoratedFieldType',
+        expectedTarget: 'Method:models.py:User.save#0',
         member: 'save',
         body: 'self.repo.save()',
         raw: `class PyOptionalHolder:
@@ -762,15 +917,36 @@ public class Service {
     wrap: (entry, body) =>
       `class Cap_${entry} {\n    void ${entry}(Service svc, User[] repos) {\n        ${body}\n    }\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.getUser().save();' },
-      { id: 'plainDeepChain', member: 'save', body: 'svc.getUser().address.save();' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Method:User.java:User.save#0',
+        member: 'save',
+        body: 'svc.getUser().save();',
+      },
+      {
+        id: 'plainDeepChain',
+        expectedTarget: 'Method:Address.java:Address.save#0',
+        member: 'save',
+        body: 'svc.getUser().address.save();',
+      },
       { id: 'optionalChain', na: 'Java has no optional-chaining operator.' },
       { id: 'nonNullAssert', na: 'Java has no non-null assertion operator.' },
       { id: 'awaitParen', na: 'Java has no await expression in the core language.' },
-      { id: 'explicitTypeArgs', member: 'save', body: 'svc.<User>getTyped().save();' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save();' },
+      {
+        id: 'explicitTypeArgs',
+        expectedTarget: 'Method:User.java:User.save#0',
+        member: 'save',
+        body: 'svc.<User>getTyped().save();',
+      },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Method:User.java:User.save#0',
+        member: 'save',
+        body: 'repos[0].save();',
+      },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:User.java:User.save#0',
         member: 'save',
         body: 'this.repo.save();',
         raw: `class JavaHolder {
@@ -814,15 +990,51 @@ public class Service {
     wrap: (entry, body) =>
       `class Cap_${entry} {\n    async Task ${entry}(Service svc, User[] repos) {\n        ${body}\n    }\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'Save', body: 'svc.GetUser().Save();' },
-      { id: 'plainDeepChain', member: 'Save', body: 'svc.GetUser().Address.Save();' },
-      { id: 'optionalChain', member: 'Save', body: 'svc?.GetUser().Save();' },
-      { id: 'nonNullAssert', member: 'Save', body: 'svc!.GetUser().Save();' },
-      { id: 'awaitParen', member: 'Save', body: '(await svc.GetUserAsync()).Save();' },
-      { id: 'explicitTypeArgs', member: 'Save', body: 'svc.GetTyped<User>().Save();' },
-      { id: 'indexElement', member: 'Save', body: 'repos[0].Save();' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Method:Models.cs:User.Save#0',
+        member: 'Save',
+        body: 'svc.GetUser().Save();',
+      },
+      {
+        id: 'plainDeepChain',
+        expectedTarget: 'Method:Models.cs:Address.Save#0',
+        member: 'Save',
+        body: 'svc.GetUser().Address.Save();',
+      },
+      {
+        id: 'optionalChain',
+        expectedTarget: 'Method:Models.cs:User.Save#0',
+        member: 'Save',
+        body: 'svc?.GetUser().Save();',
+      },
+      {
+        id: 'nonNullAssert',
+        expectedTarget: 'Method:Models.cs:User.Save#0',
+        member: 'Save',
+        body: 'svc!.GetUser().Save();',
+      },
+      {
+        id: 'awaitParen',
+        expectedTarget: 'Method:Models.cs:User.Save#0',
+        member: 'Save',
+        body: '(await svc.GetUserAsync()).Save();',
+      },
+      {
+        id: 'explicitTypeArgs',
+        expectedTarget: 'Method:Models.cs:User.Save#0',
+        member: 'Save',
+        body: 'svc.GetTyped<User>().Save();',
+      },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Method:Models.cs:User.Save#0',
+        member: 'Save',
+        body: 'repos[0].Save();',
+      },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:Models.cs:User.Save#0',
         member: 'Save',
         body: 'this.repo.Save();',
         raw: `class CsHolder {
@@ -836,6 +1048,7 @@ public class Service {
       { id: 'decoratedReceiverBase', na: 'C# `this` carries no type decoration.' },
       {
         id: 'decoratedFieldType',
+        expectedTarget: 'Method:Models.cs:User.Save#0',
         member: 'Save',
         body: 'this.repo.Save();',
         raw: `class CsNullableHolder {
@@ -888,6 +1101,7 @@ end
     shapes: [
       {
         id: 'plainChain',
+        expectedTarget: 'Method:models.rb:User.save#0',
         member: 'save',
         body: 'plain_svc.get_user.save',
         raw: `# @param plain_svc [Service]
@@ -899,6 +1113,7 @@ end
       },
       {
         id: 'untypedChain',
+        expectedTarget: null,
         member: 'save',
         body: 'untyped_svc.get_user.save',
         raw: `def untypedChain(untyped_svc)
@@ -909,6 +1124,7 @@ end
       },
       {
         id: 'plainDeepChain',
+        expectedTarget: 'Method:models.rb:Address.save#0',
         member: 'save',
         body: 'deep_svc.get_user.address.save',
         raw: `# @param deep_svc [Service]
@@ -919,6 +1135,7 @@ end
       },
       {
         id: 'optionalChain',
+        expectedTarget: 'Method:models.rb:User.save#0',
         member: 'save',
         body: 'opt_svc&.get_user.save',
         raw: `# @param opt_svc [Service]
@@ -933,6 +1150,7 @@ end
       { id: 'explicitTypeArgs', na: 'Ruby has no type-argument syntax.' },
       {
         id: 'indexElement',
+        expectedTarget: 'Method:models.rb:User.save#0',
         member: 'save',
         body: 'idx_repos[0].save',
         raw: `# @param idx_repos [Array<User>]
@@ -944,6 +1162,7 @@ end
       },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:models.rb:User.save#0',
         member: 'save',
         body: '@repo.save',
         raw: `class RbHolder
@@ -985,6 +1204,9 @@ impl User {
 pub struct Service;
 
 impl Service {
+    pub async fn get_user_async(&self) -> User {
+        User { address: Address }
+    }
     pub fn get_user(&self) -> User {
         User { address: Address }
     }
@@ -997,8 +1219,18 @@ impl Service {
     header: `mod models;\nuse models::{Address, Service, User};\n`,
     wrap: (entry, body) => `fn ${entry}(svc: &Service, repos: &Vec<User>) {\n    ${body}\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.get_user().save();' },
-      { id: 'plainDeepChain', member: 'save', body: 'svc.get_user().address.save();' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Function:models.rs:User.save#0',
+        member: 'save',
+        body: 'svc.get_user().save();',
+      },
+      {
+        id: 'plainDeepChain',
+        expectedTarget: 'Function:models.rs:Address.save#0',
+        member: 'save',
+        body: 'svc.get_user().address.save();',
+      },
       {
         id: 'optionalChain',
         na: 'Rust `?` is error propagation, not optional chaining on a receiver.',
@@ -1006,12 +1238,29 @@ impl Service {
       { id: 'nonNullAssert', na: 'Rust has no non-null assertion operator.' },
       {
         id: 'awaitParen',
-        na: 'Rust `async fn` declares the AWAITED type; `.await` is postfix and mints no wrapper the emitter models as an async container.',
+        expectedTarget: 'Function:models.rs:User.save#0',
+        member: 'save',
+        body: '(svc.get_user_async().await).save();',
+        raw: `async fn awaitParen(svc: &Service) {
+    (svc.get_user_async().await).save();
+}
+`,
       },
-      { id: 'explicitTypeArgs', member: 'save', body: 'svc.get_typed::<User>().save();' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save();' },
+      {
+        id: 'explicitTypeArgs',
+        expectedTarget: 'Function:models.rs:User.save#0',
+        member: 'save',
+        body: 'svc.get_typed::<User>().save();',
+      },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Function:models.rs:User.save#0',
+        member: 'save',
+        body: 'repos[0].save();',
+      },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Function:models.rs:User.save#0',
         member: 'save',
         body: 'self.repo.save();',
         raw: `struct RsHolder {
@@ -1029,6 +1278,7 @@ impl RsHolder {
         // Rust is the one language besides Go whose method receiver carries
         // written decoration: `&self` / `&mut self` rather than a bare `self`.
         id: 'decoratedReceiverBase',
+        expectedTarget: 'Function:models.rs:User.save#0',
         member: 'save',
         body: 'self.repo.save();',
         raw: `struct RsMutHolder {
@@ -1045,6 +1295,7 @@ impl RsMutHolder {
       },
       {
         id: 'decoratedFieldType',
+        expectedTarget: 'Function:models.rs:User.save#0',
         member: 'save',
         body: 'self.repo.save();',
         raw: `struct RsBoxHolder {
@@ -1150,15 +1401,51 @@ class Service {
     wrap: (entry, body) =>
       `suspend fun ${entry}(svc: Service, repos: List<User>) {\n    ${body}\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.getUser().save()' },
-      { id: 'plainDeepChain', member: 'save', body: 'svc.getUser().address.save()' },
-      { id: 'optionalChain', member: 'save', body: 'svc?.getUser()?.save()' },
-      { id: 'nonNullAssert', member: 'save', body: 'svc!!.getUser().save()' },
-      { id: 'awaitParen', member: 'save', body: '(svc.getUserAsync()).save()' },
-      { id: 'explicitTypeArgs', member: 'save', body: 'svc.getTyped<User>().save()' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save()' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Method:models.kt:User.save#0',
+        member: 'save',
+        body: 'svc.getUser().save()',
+      },
+      {
+        id: 'plainDeepChain',
+        expectedTarget: 'Method:models.kt:Address.save#0',
+        member: 'save',
+        body: 'svc.getUser().address.save()',
+      },
+      {
+        id: 'optionalChain',
+        expectedTarget: 'Method:models.kt:User.save#0',
+        member: 'save',
+        body: 'svc?.getUser()?.save()',
+      },
+      {
+        id: 'nonNullAssert',
+        expectedTarget: 'Method:models.kt:User.save#0',
+        member: 'save',
+        body: 'svc!!.getUser().save()',
+      },
+      {
+        id: 'awaitParen',
+        expectedTarget: 'Method:models.kt:User.save#0',
+        member: 'save',
+        body: '(svc.getUserAsync()).save()',
+      },
+      {
+        id: 'explicitTypeArgs',
+        expectedTarget: 'Method:models.kt:User.save#0',
+        member: 'save',
+        body: 'svc.getTyped<User>().save()',
+      },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Method:models.kt:User.save#0',
+        member: 'save',
+        body: 'repos[0].save()',
+      },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:models.kt:User.save#0',
         member: 'save',
         body: 'this.repo.save()',
         raw: `class KtHolder {
@@ -1172,6 +1459,7 @@ class Service {
       { id: 'decoratedReceiverBase', na: 'Kotlin `this` carries no type decoration.' },
       {
         id: 'decoratedFieldType',
+        expectedTarget: 'Method:models.kt:User.save#0',
         member: 'save',
         body: 'this.repo?.save()',
         raw: `class KtNullableHolder {
@@ -1208,18 +1496,49 @@ class Service {
     header: '',
     wrap: (entry, body) => `func ${entry}(svc: Service, repos: [User]) async {\n    ${body}\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.getUser().save()' },
-      { id: 'plainDeepChain', member: 'save', body: 'svc.getUser().address.save()' },
-      { id: 'optionalChain', member: 'save', body: 'svc.getUser().optionalAddress?.save()' },
-      { id: 'nonNullAssert', member: 'save', body: 'svc.getUser().optionalAddress!.save()' },
-      { id: 'awaitParen', member: 'save', body: '(await svc.getUserAsync()).save()' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Function:models.swift:User.save#0',
+        member: 'save',
+        body: 'svc.getUser().save()',
+      },
+      {
+        id: 'plainDeepChain',
+        expectedTarget: 'Function:models.swift:Address.save#0',
+        member: 'save',
+        body: 'svc.getUser().address.save()',
+      },
+      {
+        id: 'optionalChain',
+        expectedTarget: 'Function:models.swift:Address.save#0',
+        member: 'save',
+        body: 'svc.getUser().optionalAddress?.save()',
+      },
+      {
+        id: 'nonNullAssert',
+        expectedTarget: 'Function:models.swift:Address.save#0',
+        member: 'save',
+        body: 'svc.getUser().optionalAddress!.save()',
+      },
+      {
+        id: 'awaitParen',
+        expectedTarget: 'Function:models.swift:User.save#0',
+        member: 'save',
+        body: '(await svc.getUserAsync()).save()',
+      },
       {
         id: 'explicitTypeArgs',
         na: 'Swift infers generic parameters; there is no call-site type-argument spelling on a method.',
       },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save()' },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Function:models.swift:User.save#0',
+        member: 'save',
+        body: 'repos[0].save()',
+      },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Function:models.swift:User.save#0',
         member: 'save',
         body: 'self.repo.save()',
         raw: `class SwHolder {
@@ -1233,6 +1552,7 @@ class Service {
       { id: 'decoratedReceiverBase', na: 'Swift `self` carries no type decoration.' },
       {
         id: 'decoratedFieldType',
+        expectedTarget: 'Function:models.swift:User.save#0',
         member: 'save',
         body: 'self.repo?.save()',
         raw: `class SwOptionalHolder {
@@ -1261,6 +1581,7 @@ class User {
 
 class Service {
   User getUser() => User();
+  User getTyped<T>() => User();
   Future<User> getUserAsync() async => User();
 }
 `,
@@ -1269,15 +1590,51 @@ class Service {
     wrap: (entry, body) =>
       `Future<void> ${entry}(Service svc, List<User> repos) async {\n  ${body}\n}\n`,
     shapes: [
-      { id: 'plainChain', member: 'save', body: 'svc.getUser().save();' },
-      { id: 'plainDeepChain', member: 'save', body: 'svc.getUser().address.save();' },
-      { id: 'optionalChain', member: 'save', body: 'svc.getUser().address?.save();' },
-      { id: 'nonNullAssert', member: 'save', body: 'svc.getUser().address!.save();' },
-      { id: 'awaitParen', member: 'save', body: '(await svc.getUserAsync()).save();' },
-      { id: 'explicitTypeArgs', na: 'Dart infers generic parameters at a method call site.' },
-      { id: 'indexElement', member: 'save', body: 'repos[0].save();' },
+      {
+        id: 'plainChain',
+        expectedTarget: 'Method:models.dart:User.save#0',
+        member: 'save',
+        body: 'svc.getUser().save();',
+      },
+      {
+        id: 'plainDeepChain',
+        expectedTarget: 'Method:models.dart:Address.save#0',
+        member: 'save',
+        body: 'svc.getUser().address.save();',
+      },
+      {
+        id: 'optionalChain',
+        expectedTarget: 'Method:models.dart:Address.save#0',
+        member: 'save',
+        body: 'svc.getUser().address?.save();',
+      },
+      {
+        id: 'nonNullAssert',
+        expectedTarget: 'Method:models.dart:Address.save#0',
+        member: 'save',
+        body: 'svc.getUser().address!.save();',
+      },
+      {
+        id: 'awaitParen',
+        expectedTarget: 'Method:models.dart:User.save#0',
+        member: 'save',
+        body: '(await svc.getUserAsync()).save();',
+      },
+      {
+        id: 'explicitTypeArgs',
+        expectedTarget: 'Method:models.dart:User.save#0',
+        member: 'save',
+        body: 'svc.getTyped<User>().save();',
+      },
+      {
+        id: 'indexElement',
+        expectedTarget: 'Method:models.dart:User.save#0',
+        member: 'save',
+        body: 'repos[0].save();',
+      },
       {
         id: 'fieldReceiverCall',
+        expectedTarget: 'Method:models.dart:User.save#0',
         member: 'save',
         body: 'this.repo.save();',
         raw: `class DartHolder {
@@ -1291,6 +1648,7 @@ class Service {
       { id: 'decoratedReceiverBase', na: 'Dart `this` carries no type decoration.' },
       {
         id: 'decoratedFieldType',
+        expectedTarget: 'Method:models.dart:User.save#0',
         member: 'save',
         body: 'this.repo?.save();',
         raw: `class DartNullableHolder {
@@ -1305,6 +1663,17 @@ class Service {
     ],
   },
 ];
+
+// Exercise the same typed declarations through a real SFC, including extraction
+// and source remapping. The template half of Vue is a separate coverage surface.
+const typescriptCorpus = CORPORA.find((corpus) => corpus.lang === 'typescript');
+CORPORA.push({
+  ...typescriptCorpus,
+  lang: 'vue',
+  ext: '.vue',
+  header: `<script lang="ts">\n${typescriptCorpus.header}`,
+  footer: '</script>\n',
+});
 
 /**
  * Every corpus declares a cell for every SHAPE_ID, every `na` carries a reason,
@@ -1333,6 +1702,17 @@ function assertMatrixComplete(corpora) {
       if (shape.na !== undefined && String(shape.na).trim() === '') {
         problems.push(`${corpus.lang}.${shape.id}: N/A with no reason`);
       }
+      if (
+        shape.na === undefined &&
+        !(
+          shape.expectedTarget === null ||
+          (typeof shape.expectedTarget === 'string' && shape.expectedTarget.length > 0)
+        )
+      ) {
+        problems.push(
+          `${corpus.lang}.${shape.id}: needs an exact expectedTarget or null for an untyped control`,
+        );
+      }
       if (shape.na === undefined && shape.body === undefined) {
         problems.push(`${corpus.lang}.${shape.id}: neither a body nor an N/A reason`);
       }
@@ -1348,26 +1728,39 @@ function assertMatrixComplete(corpora) {
   }
 }
 
-function classify(corpus, result) {
+export function classify(corpus, result) {
   const calls = [];
+  const mainFile = `main${corpus.ext}`;
   for (const rel of result.graph.iterRelationships()) {
     if (rel.type !== 'CALLS') continue;
+    const caller = result.graph.getNode(rel.sourceId);
+    if (caller?.properties.filePath !== mainFile) continue;
     calls.push({
-      from: result.graph.getNode(rel.sourceId)?.properties.name ?? '',
+      from: caller.properties.name,
       to: result.graph.getNode(rel.targetId)?.properties.name ?? '',
+      targetId: rel.targetId,
     });
   }
   const drops = (result.resolutionOutcomes ?? []).filter(
-    (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
+    (outcome) =>
+      outcome.kind === 'suppressed' &&
+      outcome.reason === 'receiver-unresolved' &&
+      outcome.siteKind === 'call' &&
+      outcome.filePath === mainFile,
   );
 
   return corpus.shapes.map((shape) => {
     if (shape.na !== undefined) {
       return { shape: null, id: shape.id, note: shape.na, state: 'N/A', siteKind: null };
     }
-    const hasEdge = calls.some((call) => call.from === shape.id && call.to === shape.member);
-    // A drop belongs to this shape when it names the shape's member and sits on
-    // the shape's own line — matched on the generated source, not on an id.
+    const actualTargets = [
+      ...new Set(
+        calls
+          .filter((call) => call.from === shape.id && call.to === shape.member)
+          .map((call) => call.targetId),
+      ),
+    ].sort();
+    const wrongTarget = actualTargets.some((target) => target !== shape.expectedTarget);
     const drop = drops.find(
       (candidate) => candidate.name === shape.member && candidate.shapeId === shape.id,
     );
@@ -1375,7 +1768,15 @@ function classify(corpus, result) {
       shape: shape.body,
       id: shape.id,
       note: shape.note,
-      state: hasEdge ? 'RESOLVES' : drop ? 'VISIBLE-GAP' : 'INVISIBLE-GAP',
+      expectedTarget: shape.expectedTarget,
+      actualTargets,
+      state: wrongTarget
+        ? 'WRONG-TARGET'
+        : actualTargets.length
+          ? 'RESOLVES'
+          : drop
+            ? 'VISIBLE-GAP'
+            : 'INVISIBLE-GAP',
       siteKind: drop?.siteKind ?? null,
     };
   });
@@ -1447,6 +1848,7 @@ async function runShapeArm() {
         lineOfShape.set(shape.id, blockStartLine + offset);
         text += block;
       }
+      text += corpus.footer ?? '';
       fs.writeFileSync(path.join(root, `main${corpus.ext}`), text, 'utf8');
 
       let result;
@@ -1680,56 +2082,61 @@ function drift(expected, actual, prefix = '') {
   return out;
 }
 
-const args = process.argv.slice(2);
-const corpusIndex = args.indexOf('--corpus');
-const check = args.includes('--check');
-const updateBaseline = args.includes('--update-baseline');
-// `--update-baseline` defaults the corpus for the same reason `--check` does:
-// the two must measure the SAME thing or the gate can never be satisfied. It
-// previously did not, so a bare `--update-baseline` skipped the count arm and
-// then crashed dereferencing `output.countArm` in `projection` — which is the
-// command the `--check` failure message tells you to run. Writing a baseline
-// with no count arm would have been worse: the gate would go green while
-// silently measuring nothing.
-const corpusPath =
-  corpusIndex === -1
-    ? check || updateBaseline
-      ? DEFAULT_CORPUS
-      : undefined
-    : path.resolve(args[corpusIndex + 1]);
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2);
+  const corpusIndex = args.indexOf('--corpus');
+  const check = args.includes('--check');
+  const updateBaseline = args.includes('--update-baseline');
+  // `--update-baseline` defaults the corpus for the same reason `--check` does:
+  // the two must measure the SAME thing or the gate can never be satisfied. It
+  // previously did not, so a bare `--update-baseline` skipped the count arm and
+  // then crashed dereferencing `output.countArm` in `projection` — which is the
+  // command the `--check` failure message tells you to run. Writing a baseline
+  // with no count arm would have been worse: the gate would go green while
+  // silently measuring nothing.
+  const corpusPath =
+    corpusIndex === -1
+      ? check || updateBaseline
+        ? DEFAULT_CORPUS
+        : undefined
+      : path.resolve(args[corpusIndex + 1]);
 
-const output = { knownBlind: KNOWN_BLIND };
-// `--update-baseline` needs BOTH arms, because `projection` writes both and
-// `--check` compares both. Running one arm would write a baseline missing the
-// other, and the next `--check` would then crash rather than fail a comparison.
-if (corpusPath === undefined || check || updateBaseline || args.includes('--shapes')) {
-  output.shapeArm = await runShapeArm();
-}
-if (corpusPath !== undefined) {
-  output.countArm = await runCountArm(corpusPath);
-}
-const perfIndex = args.indexOf('--perf');
-if (perfIndex !== -1) {
-  const reps = Number(args[perfIndex + 1] ?? '3');
-  output.perfArm = await runPerfArm(corpusPath ?? DEFAULT_CORPUS, Number.isFinite(reps) ? reps : 3);
-}
-
-if (updateBaseline) {
-  fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(projection(output), null, 2)}\n`, 'utf8');
-  console.error(`[receiver-resolution] wrote ${BASELINE_PATH}`);
-} else if (check) {
-  const expected = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
-  const diffs = drift(expected, projection(output));
-  if (diffs.length > 0) {
-    console.error('[receiver-resolution] FAIL — drift against the committed baseline:');
-    for (const line of diffs) console.error(`  ${line}`);
-    console.error(
-      '\nIf this is intended (a fixture was added, or a shape genuinely changed state),' +
-        '\nre-run with --update-baseline and explain the movement in the commit message.',
-    );
-    process.exit(1);
+  const output = { knownBlind: KNOWN_BLIND };
+  // `--update-baseline` needs BOTH arms, because `projection` writes both and
+  // `--check` compares both. Running one arm would write a baseline missing the
+  // other, and the next `--check` would then crash rather than fail a comparison.
+  if (corpusPath === undefined || check || updateBaseline || args.includes('--shapes')) {
+    output.shapeArm = await runShapeArm();
   }
-  console.error('[receiver-resolution] OK — shape states and call-drop counts match baseline.');
-} else {
-  console.log(JSON.stringify(output, null, 2));
+  if (corpusPath !== undefined) {
+    output.countArm = await runCountArm(corpusPath);
+  }
+  const perfIndex = args.indexOf('--perf');
+  if (perfIndex !== -1) {
+    const reps = Number(args[perfIndex + 1] ?? '3');
+    output.perfArm = await runPerfArm(
+      corpusPath ?? DEFAULT_CORPUS,
+      Number.isFinite(reps) ? reps : 3,
+    );
+  }
+
+  if (updateBaseline) {
+    fs.writeFileSync(BASELINE_PATH, `${JSON.stringify(projection(output), null, 2)}\n`, 'utf8');
+    console.error(`[receiver-resolution] wrote ${BASELINE_PATH}`);
+  } else if (check) {
+    const expected = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
+    const diffs = drift(expected, projection(output));
+    if (diffs.length > 0) {
+      console.error('[receiver-resolution] FAIL — drift against the committed baseline:');
+      for (const line of diffs) console.error(`  ${line}`);
+      console.error(
+        '\nIf this is intended (a fixture was added, or a shape genuinely changed state),' +
+          '\nre-run with --update-baseline and explain the movement in the commit message.',
+      );
+      process.exit(1);
+    }
+    console.error('[receiver-resolution] OK — shape states and call-drop counts match baseline.');
+  } else {
+    console.log(JSON.stringify(output, null, 2));
+  }
 }
