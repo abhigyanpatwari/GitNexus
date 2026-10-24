@@ -30,7 +30,7 @@ errors always exit nonzero. `--check` additionally enforces the regression gate.
 
 | Fixture / checks                             | Public repro                                                                                                                                                                                         | Fixed-answer contract                                                                                                                                                                        |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rename/`                                    | [#3486](https://github.com/abhigyanpatwari/GitNexus/issues/3486)                                                                                                                                     | All three Writer.close references; zero edits to comments, strings or unrelated homonyms; typed DeferredWriter.flush parameters refuse without edits or source changes.                                                                                                    |
+| `rename/`                                    | [#3486](https://github.com/abhigyanpatwari/GitNexus/issues/3486)                                                                                                                                     | All three Writer.close references; zero edits to comments, strings or unrelated homonyms; typed DeferredWriter.flush parameters refuse without edits or source changes.                      |
 | `src/server/`, `test/stub.test.ts`           | [#3487](https://github.com/abhigyanpatwari/GitNexus/issues/3487)                                                                                                                                     | Server beats a same-path test stub; `app.all` has method `*`; Map.get is absent; helper-registered literal route is present.                                                                 |
 | `src/web/`                                   | [#3488](https://github.com/abhigyanpatwari/GitNexus/issues/3488)                                                                                                                                     | Both the base-URL template passed to a configured wrapper and a direct literal fetch link their consumer files.                                                                              |
 | `src/security.ts`, `src/server/inline.ts`    | [#3489](https://github.com/abhigyanpatwari/GitNexus/issues/3489), [#3490](https://github.com/abhigyanpatwari/GitNexus/issues/3490), [#3491](https://github.com/abhigyanpatwari/GitNexus/issues/3491) | Named and inline unsafe handlers reach the sink; guarded and constant commands have zero taint; statement and function-hop lines are 1-based.                                                |
@@ -66,7 +66,10 @@ checks and all four #3499 checks, and their allowances were removed: **18/31
 pass, 13 fail**.
 The JSON report records every desired and actual answer independently of gate
 status. Inline-callback taint now passes and its allowance is removed. Guard
-taint remains a documented limitation and a visible known gap.
+taint now passes for the modeled immutable SHA predicate and Git data-argument
+use (#3490), and its allowance is removed. The current corpus passes **32/32**
+fixed answers with no known-gap allowances. Unsupported guard forms remain
+conservative findings; this does not claim complete guard coverage.
 
 `known-gaps.json` is an explicit, reviewed list of failing check IDs with issue,
 reason and observed baseline answers. There is no wildcard, skip, automatic

@@ -1,3 +1,5 @@
+import type { StatementValueFacts } from '../taint/value-refinement.js';
+
 /**
  * CFG data model — plain, JSON-serializable types (issue #2081, M1).
  *
@@ -199,6 +201,8 @@ export interface StatementFacts {
   readonly uses: readonly number[];
   readonly mayDefs?: readonly number[];
   readonly sites?: readonly SiteRecord[];
+  /** Optional normalized value/predicate structure; absent on legacy channels. */
+  readonly refinement?: StatementValueFacts;
 }
 
 /** A basic block: a maximal straight-line run of statements between leaders. */
@@ -278,6 +282,10 @@ export interface FunctionCfg {
    * {@link BasicBlockData.statements}. Present iff statement facts are.
    */
   readonly bindings?: readonly BindingEntry[];
+  /** Provider checked unsupported effects, including invisible closure writes. */
+  readonly refinementSafe?: boolean;
+  /** Exact primitive-string declaration contracts, never assertion-derived. */
+  readonly primitiveBindings?: readonly number[];
 }
 
 /**
@@ -287,6 +295,8 @@ export interface FunctionCfg {
  * `undefined` when the node is not a CFG-bearing function (the caller skips it).
  */
 export interface CfgVisitor<TNode = unknown> {
+  /** File-bound worker context, released after collection. Existing providers need no hook. */
+  forFile?(root: TNode, filePath: string): CfgVisitor<TNode>;
   buildFunctionCfg(fnNode: TNode, filePath: string): FunctionCfg | undefined;
 
   /**

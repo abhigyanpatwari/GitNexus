@@ -45,7 +45,8 @@
     "vendor/**/README.md",
     "vendor/leiden/index.cjs",
     "vendor/leiden/utils.cjs",
-    "vendor/lbug-fts/manifest.json"
+    "vendor/lbug-fts/manifest.json",
+    "vendor/lbug-vector/manifest.json"
   ],
   "scripts": {
     "build": "node scripts/build.js",

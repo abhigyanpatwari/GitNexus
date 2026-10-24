@@ -40,8 +40,20 @@ export const TS_JS_TAINT_MODEL: SourceSinkSanitizerSpec = {
   sinks: [
     // Command execution — shell strings are arg 0; argv-form APIs also treat
     // the argv array at arg 1 as command/option injection surface.
-    { name: 'exec', kind: 'command-injection', args: [0], module: 'child_process' },
-    { name: 'execSync', kind: 'command-injection', args: [0], module: 'child_process' },
+    {
+      name: 'exec',
+      kind: 'command-injection',
+      args: [0],
+      module: 'child_process',
+      inertCommandPrefixes: ['git log -1 ', 'git log -1 --format=%s ', 'git show '],
+    },
+    {
+      name: 'execSync',
+      kind: 'command-injection',
+      args: [0],
+      module: 'child_process',
+      inertCommandPrefixes: ['git log -1 ', 'git log -1 --format=%s ', 'git show '],
+    },
     { name: 'spawn', kind: 'command-injection', args: [0, 1], module: 'child_process' },
     { name: 'spawnSync', kind: 'command-injection', args: [0, 1], module: 'child_process' },
     { name: 'execFile', kind: 'command-injection', args: [0, 1], module: 'child_process' },
