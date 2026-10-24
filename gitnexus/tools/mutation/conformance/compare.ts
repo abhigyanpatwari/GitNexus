@@ -5,8 +5,10 @@
  *
  * `test/fixtures/mutation-conformance/expected.json` ({@link ExpectedConformance}):
  *   profiles[]  {name, concurrency, maxTestRunnerReuse}: one Stryker run per scope each
- *   scopes[]    {name, testFiles, mutate, tests}: fixture-relative case and production files, and
- *               the complete pinned test inventory {id, skipped, notOracleValidated}
+ *   scopes[]    {name, testFiles, mutate, testIds, tests}: fixture-relative case and production
+ *               files, the fixture-relative test ids the run selects (the driver scope's `testIds`,
+ *               Phase 1 KTD2; null runs every test) and the complete pinned test inventory {id,
+ *               skipped, notOracleValidated}
  *   cases[]     one entry per pinned case, by `kind`:
  *     mutant       a planted mutant, selected by {file, location "L:C-L:C", mutatorName,
  *                  replacement}, with every pinned fact ({@link MutantFacts}); the same in every
@@ -28,6 +30,9 @@
  * that record other than `survived`, so `{}` means every selected test passed. `reason` is a
  * substring the record's reason must contain, or null when it must have none. `selected`, `tests`,
  * `outsideTest` and `reason` are null for a mutant without a sidecar record (NoCoverage).
+ * `hookAttributedTests` is the results' hook marker (the tests a suite hook attributed the mutant
+ * to in the dry run, null without a dry-run record) and `attemptsDisagree` the results' flag for
+ * attempts whose classes differ (normalise-results.ts).
  */
 import type {
   FlagKind,
@@ -104,6 +109,8 @@ export interface ScopeSpec {
   testFiles: string[];
   /** Fixture-relative production files. */
   mutate: string[];
+  /** Fixture-relative ids of the only tests the run selects; null runs every test. */
+  testIds: string[] | null;
   /** The complete test inventory of the scope's run manifest. */
   tests: TestPin[];
 }
@@ -136,6 +143,8 @@ export interface MutantFacts {
   outsideTest: OutsideTestFact[] | null;
   reason: string | null;
   flags: FlagKind[];
+  hookAttributedTests: string[] | null;
+  attemptsDisagree: boolean;
 }
 
 export interface MutantCase {
@@ -312,6 +321,8 @@ const FACT_KEYS: readonly (keyof MutantFacts)[] = [
   'outsideTest',
   'reason',
   'flags',
+  'hookAttributedTests',
+  'attemptsDisagree',
 ];
 
 function parseFacts(value: unknown, where: string): MutantFacts {
@@ -349,6 +360,10 @@ function parseFacts(value: unknown, where: string): MutantFacts {
     ),
     reason: nullable(data.reason, (entry) => text(entry, at('reason'))),
     flags: list(data.flags, at('flags'), (flag, flagAt) => oneOf(flag, flagAt, FLAG_KINDS)),
+    hookAttributedTests: nullable(data.hookAttributedTests, (entry) =>
+      texts(entry, at('hookAttributedTests')),
+    ),
+    attemptsDisagree: bool(data.attemptsDisagree, at('attemptsDisagree')),
   };
 }
 
@@ -471,11 +486,16 @@ export function parseExpected(source: string): ExpectedConformance {
       };
     }),
     scopes: list(root.scopes, 'scopes', (value, where) => {
-      const data = object(value, where, ['name', 'testFiles', 'mutate', 'tests']);
+      const data = object(value, where, ['name', 'testFiles', 'mutate', 'testIds', 'tests']);
       return {
         name: text(data.name, `${where}.name`),
         testFiles: texts(data.testFiles, `${where}.testFiles`),
         mutate: texts(data.mutate, `${where}.mutate`),
+        testIds: nullable(data.testIds, (entry) => {
+          const ids = texts(entry, `${where}.testIds`);
+          if (ids.length === 0) fail(`${where}.testIds`, 'must be null or a non-empty array');
+          return ids;
+        }),
         tests: list(data.tests, `${where}.tests`, parseTestPin),
       };
     }),
@@ -561,6 +581,9 @@ function observeMutant(
             })),
       reason: record === undefined ? null : (record.result.reason ?? null),
       flags: sorted(mutant.flags),
+      hookAttributedTests:
+        mutant.hookAttributedTests === null ? null : ids(mutant.hookAttributedTests),
+      attemptsDisagree: mutant.attemptsDisagree,
     },
     runs: mutant.attempts.map(({ pid, writtenAtMs }) => ({ pid, writtenAtMs })),
   };
@@ -633,6 +656,11 @@ const FACT_CHECKS: readonly {
   { key: 'outsideTest', same: (e, o) => outsideKey(e.outsideTest) === outsideKey(o.outsideTest) },
   { key: 'reason', same: (e, o) => reasonMatches(e.reason, o.reason) },
   { key: 'flags', same: (e, o) => sameList(e.flags, o.flags) },
+  {
+    key: 'hookAttributedTests',
+    same: (e, o) => sameNullableList(e.hookAttributedTests, o.hookAttributedTests),
+  },
+  { key: 'attemptsDisagree', same: (e, o) => e.attemptsDisagree === o.attemptsDisagree },
 ];
 
 const selects = (selector: MutantSelector, mutant: MutantSelector): boolean =>

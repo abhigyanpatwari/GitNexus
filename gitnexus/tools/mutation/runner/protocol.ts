@@ -4,7 +4,7 @@
  * writes on the file task when the file's run ends. Both sides import this module, so it holds
  * types and constants only.
  */
-import type { MutantCoverage } from '@stryker-mutator/api/core';
+import type { CoverageData, MutantCoverage } from '@stryker-mutator/api/core';
 import type { MutantActivation } from '@stryker-mutator/api/test-runner';
 
 /** `provide`/`inject` key and task-meta key. */
@@ -33,6 +33,12 @@ export interface FileMeta {
   hitCount: number | null;
   /** Dry run only: coverage keyed by Vitest task id, hook hits already attributed. */
   coverage: MutantCoverage | null;
+  /**
+   * Dry run only: the raw hook bucket, attributed: the part of `coverage.perTest` that came from
+   * suite hooks (`beforeAll`, `afterAll`), keyed by Vitest task id. The runner turns it into the
+   * per-mutant hook marker of the dry-run sidecar record.
+   */
+  hookCoverage: Record<string, CoverageData> | null;
   /** Task id to the hooks that started for that test or suite and did not finish. */
   failedHooks: Record<string, HookName[]>;
 }

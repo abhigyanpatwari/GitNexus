@@ -2,8 +2,9 @@
  * Normalised results of one scope-driver run (U10): Stryker's report, the vitest5 run manifest
  * (KTD16) and the sidecar records (KTD6), joined per mutant through U2's local-to-global id map.
  *
- * `<out>/results.json` ({@link RunResults}, schemaVersion 1):
- *   variant, scope {testFiles, mutate}       what ran (`mutate` as given in the scope file)
+ * `<out>/results.json` ({@link RunResults}, schemaVersion 2):
+ *   variant, scope {testFiles, mutate,       what ran (`mutate` as given in the scope file;
+ *     testIds}                               `testIds` null when every test ran)
  *   paths                                    output dir, prepared copy, config, report, log,
  *                                            runDir/sidecarDir (null for command), sandboxDirs
  *                                            (kept Stryker sandboxes; empty once cleaned)
@@ -36,6 +37,18 @@
  * inconclusive, invalid or infrastructure can still hold assertion rows (a test that failed after
  * the hit-limit error was swallowed, or under a retry), but its kills cannot be trusted.
  *
+ * Every attempt's per-test rows (Phase 1 KTD2, KTD8). `perTest` keeps the `result.tests` rows of
+ * every attempt, oldest first, as `{testId, outcome, attempt}`, where `attempt` is the attempt's
+ * index in `attempts`. `attemptsDisagree` is true when two attempts differ in their run outcome
+ * class, their per-test rows or their outside-test rows (file, suite and class): such a mutant is
+ * inconclusive for Phase 1, whichever attempt is latest. A missing record is unknown and is not
+ * compared.
+ *
+ * Hook marker (Phase 1 KTD2, KTD9). `hookAttributedTests` lists the runner ids of the tests a
+ * suite hook (`beforeAll`, `afterAll`) attributed the mutant's dry-run hits to, from the latest
+ * dry-run record; `[]` when no hook hit it, null when there is no dry-run record (the command
+ * variant, a missing record, or a record of schema 1, which had no marker).
+ *
  * Flags (vitest5 only, except unmapped test ids):
  *   dry-run-missing            no dry-run record
  *   unmapped-test-id           a report test that pairs with no manifest test, a manifest test
@@ -62,7 +75,8 @@ import type { RunManifest } from '../runner/run-manifest.js';
 import type { SidecarRecord } from '../runner/sidecar.js';
 import type { Variant } from './stryker-config.js';
 
-export const RESULTS_SCHEMA_VERSION = 1;
+/** 2: per mutant `perTest`, `attemptsDisagree` and `hookAttributedTests`; `scope.testIds`. */
+export const RESULTS_SCHEMA_VERSION = 2;
 
 export interface ReportTest {
   /** The report's renumbered test id. */
@@ -92,6 +106,15 @@ export interface SidecarAttempt {
   status: RunnerStatus;
   outcome: OutcomeClass;
   nrOfTests: number;
+}
+
+/** One per-test row of one attempt's sidecar record. */
+export interface PerTestRow {
+  /** Runner Stryker id (KTD3). */
+  testId: string;
+  outcome: OutcomeClass;
+  /** Index of the attempt in the mutant's `attempts` (oldest first). */
+  attempt: number;
 }
 
 export interface SidecarSummary extends SidecarAttempt {
@@ -145,6 +168,15 @@ export interface NormalisedMutant {
   sidecar: SidecarSummary | null;
   /** Every attempt, oldest first. */
   attempts: SidecarAttempt[];
+  /** The per-test rows of every attempt, oldest attempt first. */
+  perTest: PerTestRow[];
+  /** True when two attempts differ in outcome class, per-test rows or outside-test rows. */
+  attemptsDisagree: boolean;
+  /**
+   * Runner ids of the tests a suite hook attributed this mutant to in the dry run, sorted; null
+   * when no dry-run record carries the marker.
+   */
+  hookAttributedTests: string[] | null;
   flags: FlagKind[];
 }
 
@@ -206,7 +238,8 @@ export interface NormalisedRun {
 export interface RunResults extends NormalisedRun {
   schemaVersion: typeof RESULTS_SCHEMA_VERSION;
   variant: Variant;
-  scope: { testFiles: string[]; mutate: string[] };
+  /** `testIds` is null when every test of `testFiles` ran. */
+  scope: { testFiles: string[]; mutate: string[]; testIds: string[] | null };
   paths: {
     outDir: string;
     preparedRoot: string;
@@ -371,6 +404,16 @@ const toSummary = (input: SidecarInput): SidecarSummary => {
   };
 };
 
+/** What attempts must agree on: the run class, per-test rows and outside-test rows. */
+const attemptKey = ({ record: { result } }: SidecarInput): string =>
+  JSON.stringify([
+    result.outcome,
+    result.tests.map((row) => `${row.id}\u0000${row.outcome}`).sort(),
+    result.outsideTest
+      .map((row) => `${row.file}\u0000${row.suiteTaskId ?? ''}\u0000${row.outcome}`)
+      .sort(),
+  ]);
+
 const isOutsideTestKill = (outcome: OutcomeClass): boolean =>
   outcome === 'killed-outside-test:collection' || outcome === 'killed-outside-test:hook';
 
@@ -404,6 +447,8 @@ export function normaliseRun(input: NormaliseInput): NormalisedRun {
     byMutant.set(mutantId, [...(byMutant.get(mutantId) ?? []), entry]);
   }
   const latestDryRun = dryRuns.at(-1);
+  // A schema 1 record has no marker: unknown, never "no hook".
+  const hookMarker = latestDryRun?.record.hookAttributedTests ?? null;
   if (sidecars !== null && latestDryRun === undefined) {
     flag('dry-run-missing', 'the run wrote no dry-run sidecar record');
   }
@@ -526,6 +571,11 @@ export function normaliseRun(input: NormaliseInput): NormalisedRun {
           : [],
       sidecar: latest === undefined ? null : toSummary(latest),
       attempts: attempts.map(toAttempt),
+      perTest: attempts.flatMap((entry, attempt) =>
+        entry.record.result.tests.map((row) => ({ testId: row.id, outcome: row.outcome, attempt })),
+      ),
+      attemptsDisagree: new Set(attempts.map(attemptKey)).size > 1,
+      hookAttributedTests: hookMarker === null ? null : [...(hookMarker[localId] ?? [])].sort(),
       flags: flags.slice(before).map((entry) => entry.kind),
     };
     return normalised;

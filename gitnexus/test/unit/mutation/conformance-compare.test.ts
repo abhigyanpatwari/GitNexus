@@ -18,13 +18,18 @@ import {
   type ObservedMutant,
   type ObservedScopeRun,
   type ObserveInput,
+  type ScopeSpec,
 } from '../../../tools/mutation/conformance/compare.js';
+import { driverScope } from '../../../tools/mutation/conformance/run-conformance.js';
 import type {
   NormalisedMutant,
   NormalisedTest,
 } from '../../../tools/mutation/driver/normalise-results.js';
 import type { RunClassification } from '../../../tools/mutation/runner/classify-outcome.js';
-import type { SidecarRecord } from '../../../tools/mutation/runner/sidecar.js';
+import {
+  SIDECAR_SCHEMA_VERSION,
+  type SidecarRecord,
+} from '../../../tools/mutation/runner/sidecar.js';
 
 const TWO = 'runtime.case.ts#doubles two';
 const THREE = 'runtime.case.ts#doubles three';
@@ -58,6 +63,8 @@ const FACTS: MutantFacts = {
   outsideTest: [],
   reason: null,
   flags: [],
+  hookAttributedTests: [],
+  attemptsDisagree: false,
 };
 const TICKET_FACTS: MutantFacts = {
   ...FACTS,
@@ -82,16 +89,17 @@ const mutantCase = (name: string, mutant: MutantSelector, facts: MutantFacts): E
 });
 
 /** The expected document, round-tripped through the parser like expected.json. */
-const MAIN_SCOPE = {
+const MAIN_SCOPE: ScopeSpec = {
   name: 'main',
   testFiles: ['runtime.case.ts'],
   mutate: ['src/runtime.ts'],
+  testIds: null,
   tests: TESTS,
 };
 
 const expectedWith = (
   cases: readonly ExpectedCase[],
-  scopes: readonly (typeof MAIN_SCOPE)[] = [MAIN_SCOPE],
+  scopes: readonly ScopeSpec[] = [MAIN_SCOPE],
 ): ExpectedConformance =>
   parseExpected(
     JSON.stringify({
@@ -161,6 +169,8 @@ describe('compareConformance', () => {
     ['outsideTest', { outsideTest: null }],
     ['reason', { reason: 'Hit limit reached' }],
     ['flags', { flags: ['zero-tests'] }],
+    ['hookAttributedTests', { hookAttributedTests: [TWO] }],
+    ['attemptsDisagree', { attemptsDisagree: true }],
   ];
 
   it('has an alteration for every pinned fact', () => {
@@ -251,7 +261,13 @@ describe('compareConformance', () => {
   });
 
   it('checks a consecutive pair only in the scope of its mutant cases', () => {
-    const other = { name: 'other', testFiles: ['o.case.ts'], mutate: ['src/o.ts'], tests: [] };
+    const other: ScopeSpec = {
+      name: 'other',
+      testFiles: ['o.case.ts'],
+      mutate: ['src/o.ts'],
+      testIds: null,
+      tests: [],
+    };
     const otherRun = observedRun({ scope: 'other', mutants: [], tests: [] });
     const differences = compareConformance(expectedWith(BASE_CASES, [MAIN_SCOPE, other]), [
       observedRun(),
@@ -316,7 +332,9 @@ describe('parseExpected', () => {
   const valid = {
     schemaVersion: 1,
     profiles: [{ name: PROFILE, concurrency: 1, maxTestRunnerReuse: 0 }],
-    scopes: [{ name: 'main', testFiles: ['a.case.ts'], mutate: ['src/a.ts'], tests: [] }],
+    scopes: [
+      { name: 'main', testFiles: ['a.case.ts'], mutate: ['src/a.ts'], testIds: null, tests: [] },
+    ],
     cases: [
       { kind: 'mutant', name: CASE, scope: 'main', mutant: DOUBLE, expect: FACTS },
     ] satisfies readonly ExpectedCase[],
@@ -366,6 +384,16 @@ describe('parseExpected', () => {
       /location: must look like/,
     ],
     ['another schema version', { ...valid, schemaVersion: 2 }, /schemaVersion: must be 1/],
+    [
+      'an empty test selection',
+      { ...valid, scopes: [{ ...valid.scopes[0], testIds: [] }] },
+      /testIds: must be null or a non-empty array/,
+    ],
+    [
+      'a scope without its testIds key',
+      { ...valid, scopes: [{ name: 'main', testFiles: ['a.case.ts'], mutate: [], tests: [] }] },
+      /missing key "testIds"/,
+    ],
   ])('rejects %s', (_label, document, message) => {
     expect(() => parseExpected(JSON.stringify(document))).toThrow(message);
   });
@@ -389,7 +417,7 @@ describe('observeScopeRun', () => {
     outsideTest: [],
   };
   const record: SidecarRecord = {
-    schemaVersion: 1,
+    schemaVersion: SIDECAR_SCHEMA_VERSION,
     kind: 'mutant',
     mutantId: '32',
     worker: '0',
@@ -398,6 +426,7 @@ describe('observeScopeRun', () => {
     mutantActivation: 'static',
     hitLimit: 100,
     requestedTestIds: [ID_THREE, ID_TWO],
+    hookAttributedTests: null,
     result: classification,
   };
   const normalised = (overrides: Partial<NormalisedMutant>): NormalisedMutant => ({
@@ -444,6 +473,12 @@ describe('observeScopeRun', () => {
         nrOfTests: 2,
       },
     ],
+    perTest: [
+      { testId: ID_TWO, outcome: 'killed-by-test:assertion', attempt: 0 },
+      { testId: ID_THREE, outcome: 'survived', attempt: 0 },
+    ],
+    attemptsDisagree: false,
+    hookAttributedTests: [ID_THREE, ID_TWO],
     flags: [],
     ...overrides,
   });
@@ -493,6 +528,21 @@ describe('observeScopeRun', () => {
     expect(run.mutants[0].location).toBe('7:10-7:19');
   });
 
+  it('reports the hook marker fixture-relative and sorted, and whether attempts disagree', () => {
+    expect([
+      run.mutants[0].facts.hookAttributedTests,
+      run.mutants[0].facts.attemptsDisagree,
+    ]).toEqual([[THREE, TWO], false]);
+  });
+
+  it('keeps a missing hook marker as null', () => {
+    const unknown = observeScopeRun({
+      ...input,
+      results: { ...input.results, mutants: [normalised({ hookAttributedTests: null })] },
+    });
+    expect(unknown.mutants[0].facts.hookAttributedTests).toBeNull();
+  });
+
   it('throws when the latest sidecar record was not read', () => {
     expect(() => observeScopeRun({ ...input, records: new Map() })).toThrow(/was not read/);
   });
@@ -503,5 +553,27 @@ describe('observeScopeRun', () => {
         fixtureRelative(value, ROOT),
       ),
     ).toEqual(['a.case.ts#x', 'src/a.ts', 'test/unit/a.test.ts#y']);
+  });
+});
+
+describe('driverScope (run-conformance.ts)', () => {
+  const scope: ScopeSpec = {
+    name: 'selection',
+    testFiles: ['selection.case.ts'],
+    mutate: ['src/selection.ts'],
+    testIds: ['selection.case.ts#scales two'],
+    tests: [],
+  };
+
+  it('passes a scope test selection to the driver with package-relative ids', () => {
+    expect(driverScope(scope)).toEqual({
+      testFiles: [`${ROOT}/selection.case.ts`],
+      mutate: [`gitnexus/${ROOT}/src/selection.ts`],
+      testIds: [`${ROOT}/selection.case.ts#scales two`],
+    });
+  });
+
+  it('writes no testIds key for a scope that runs every test', () => {
+    expect(driverScope({ ...scope, testIds: null })).not.toHaveProperty('testIds');
   });
 });

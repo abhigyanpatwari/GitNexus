@@ -17,7 +17,8 @@ import path from 'node:path';
 import type { MutantActivation } from '@stryker-mutator/api/test-runner';
 import type { RunClassification } from './classify-outcome.js';
 
-export const SIDECAR_SCHEMA_VERSION = 1;
+/** 2: the dry-run record carries the hook marker ({@link SidecarRecord.hookAttributedTests}). */
+export const SIDECAR_SCHEMA_VERSION = 2;
 
 export type SidecarKind = 'dry-run' | 'mutant';
 
@@ -34,6 +35,12 @@ export interface SidecarRecord {
   hitLimit: number | null;
   /** Stryker ids the run requested (the manifest's full set for a static mutant or the dry run). */
   requestedTestIds: string[];
+  /**
+   * Dry run only (null for a mutant run): the hook marker. Stryker's local mutant id to the
+   * Stryker ids of the tests a suite hook (`beforeAll`, `afterAll`) attributed its hits to; a
+   * mutant no hook hit is absent.
+   */
+  hookAttributedTests: Record<string, string[]> | null;
   result: RunClassification;
 }
 

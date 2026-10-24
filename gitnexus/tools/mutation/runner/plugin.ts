@@ -4,6 +4,17 @@
  * forks pool with fresh workers and no shared caches (KTD5), KTD17 outcome classes in sidecar
  * files (KTD6) and a run manifest shared by every runner process (KTD16).
  *
+ * Single-test selection (Phase 1 KTD2): with `vitest5.testIds` the dry run first collects the
+ * scope's files, assigns KTD3 ids and maps the requested ids to Vitest task ids. An id that no
+ * collected test has fails the dry run, naming it, before any mutant run. It then runs one
+ * task-id specification per file that holds a requested test and checks that the tests that ran
+ * are exactly the requested ones. The run manifest then lists only those tests as the expected
+ * test set (the others of a run file as skipped), so mutant runs, static ones included, never
+ * run another test. Without `testIds` every test of the scope runs, as before.
+ *
+ * The dry-run sidecar record also carries the hook marker: per mutant, the tests a suite hook
+ * attributed it to (coverage-attribution.ts `hookCoverage`).
+ *
  * Load it with `appendPlugins: ['<prepared>/gitnexus/tools/mutation/runner/plugin.ts']`,
  * `testRunner: 'vitest5'`, `testRunnerNodeArgs: ['--import', 'tsx']`, and start Stryker itself
  * under `node --import tsx`. The plugin options live under the `vitest5` key (see
@@ -44,7 +55,7 @@ import {
   type SuiteHook,
   type TestHook,
 } from './classify-outcome.js';
-import { mergeCoverage, rekeyCoverage } from './coverage-attribution.js';
+import { hookAttributedTests, mergeCoverage, rekeyCoverage } from './coverage-attribution.js';
 import { PROTOCOL_KEY, type FileMeta, type WorkerContext } from './protocol.js';
 import {
   readRunManifest,
@@ -54,7 +65,15 @@ import {
   type RunManifest,
 } from './run-manifest.js';
 import { writeSidecar, type SidecarDraft } from './sidecar.js';
-import { assignTestIds, type IdentifiedTest } from './test-ids.js';
+import {
+  assignTestIds,
+  parseTestId,
+  selectRequestedTests,
+  selectionProblems,
+  type CollectedTest,
+  type FileTestSelection,
+  type IdentifiedTest,
+} from './test-ids.js';
 import { assertSupportedVitest } from './version-guard.js';
 
 export const PLUGIN_NAME = 'vitest5';
@@ -71,6 +90,8 @@ export interface Vitest5RunnerOptions {
   configFile: string;
   /** The single Vitest project to run; task ids depend on its name. */
   project: string;
+  /** Stryker ids (KTD3) of the only tests to run; null runs every test of the scope. */
+  testIds: string[] | null;
 }
 
 export const DEFAULT_CONFIG_FILE = 'tools/mutation/vitest.mutation.config.ts';
@@ -103,6 +124,14 @@ export const strykerValidationSchema = {
           type: 'string',
           default: DEFAULT_PROJECT,
         },
+        testIds: {
+          description:
+            'Stryker test ids (<file>#<full name>) of the only tests to run; absent runs every test.',
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          uniqueItems: true,
+        },
       },
       required: ['runDir', 'sidecarDir'],
       additionalProperties: false,
@@ -129,6 +158,7 @@ export function parseRunnerOptions(value: unknown): Vitest5RunnerOptions {
     sidecarDir: text('sidecarDir'),
     configFile: text('configFile', DEFAULT_CONFIG_FILE),
     project: text('project', DEFAULT_PROJECT),
+    testIds: parseTestIdsOption(value.testIds),
   };
   for (const key of ['runDir', 'sidecarDir'] as const) {
     if (!path.isAbsolute(options[key])) {
@@ -136,6 +166,32 @@ export function parseRunnerOptions(value: unknown): Vitest5RunnerOptions {
     }
   }
   return options;
+}
+
+const isTestId = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false;
+  try {
+    parseTestId(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+function parseTestIdsOption(value: unknown): string[] | null {
+  if (value === undefined) return null;
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    !value.every(isTestId) ||
+    new Set(value).size !== value.length
+  ) {
+    throw new Error(
+      `${PLUGIN_NAME} runner: vitest5.testIds must be a non-empty array of distinct test ids ` +
+        '(<file>#<full name>)',
+    );
+  }
+  return [...value];
 }
 
 const toObservedError = (error: unknown): ObservedError => {
@@ -156,6 +212,17 @@ const relativeFile = (root: string, moduleId: string): string =>
 
 const pick = <T extends string>(hooks: readonly string[] | undefined, names: readonly T[]): T[] =>
   names.filter((name) => hooks?.includes(name) ?? false);
+
+/** A module's tests in collection order, as test-ids.ts reads them. */
+const collectedTests = (module: TestModule): CollectedTest[] =>
+  [...module.children.allTests()].map((test) => ({
+    taskId: test.id,
+    fullName: test.fullName,
+    location: test.location,
+  }));
+
+const describeObservedErrors = (errors: readonly ObservedError[]): string =>
+  errors.map((error) => `${error.name}: ${error.message}`).join('; ');
 
 const TEST_HOOKS: readonly TestHook[] = ['beforeEach', 'afterEach'];
 const SUITE_HOOKS: readonly SuiteHook[] = ['beforeAll', 'afterAll'];
@@ -334,6 +401,47 @@ export class Vitest5TestRunner implements TestRunner {
     });
   }
 
+  /**
+   * The `testIds` dry run's first step: collects every scope file, assigns KTD3 ids and maps the
+   * requested ids to task ids per file. Unknown ids and collection failures are problems.
+   */
+  async #collectSelection(
+    vitest: Vitest,
+    specs: readonly TestSpecification[],
+    testIds: readonly string[],
+  ): Promise<{ files: FileTestSelection[]; problems: string[] }> {
+    const collected = await vitest.collectTests([...specs]);
+    const wanted = new Set(specs.map((spec) => spec.moduleId));
+    const modules = collected.testModules.filter(
+      (module) => wanted.has(module.moduleId) && !this.#earlierModules.has(module),
+    );
+    for (const module of collected.testModules) this.#earlierModules.add(module);
+    const identified = new Map(
+      modules
+        .map((module) => ({ module, file: relativeFile(this.#root, module.moduleId) }))
+        .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
+        .map(({ module, file }) => [file, assignTestIds(file, collectedTests(module))] as const),
+    );
+    const selection = selectRequestedTests(identified, testIds);
+    const problems = [
+      ...modules
+        .filter((module) => module.errors().length > 0)
+        .map(
+          (module) =>
+            `${relativeFile(this.#root, module.moduleId)}: collection failed: ` +
+            describeObservedErrors(module.errors().map(toObservedError)),
+        ),
+      ...collected.unhandledErrors.map(
+        (error) =>
+          `unhandled error while collecting: ${describeObservedErrors([toObservedError(error)])}`,
+      ),
+      ...selection.unknown.map(
+        (id) => `requested test ${JSON.stringify(id)} was not collected (vitest5.testIds)`,
+      ),
+    ];
+    return { files: selection.files, problems };
+  }
+
   async dryRun(options: DryRunOptions): Promise<DryRunResult> {
     if (options.testFiles !== undefined && options.testFiles.length > 0) {
       throw new Error(
@@ -350,37 +458,44 @@ export class Vitest5TestRunner implements TestRunner {
     const specs = (await vitest.globTestSpecifications()).filter(
       (spec) => spec.project.name === project.name,
     );
-    const result = await this.#run(vitest, specs, true);
+    const testIds = this.#options.testIds;
+    let runSpecs: readonly TestSpecification[] = specs;
+    if (testIds !== null) {
+      const selection = await this.#collectSelection(vitest, specs, testIds);
+      if (selection.problems.length > 0) {
+        return { status: DryRunStatus.Error, errorMessage: selection.problems.join('\n') };
+      }
+      runSpecs = selection.files.map((file) =>
+        project.createSpecification(path.resolve(this.#root, file.file), {
+          testIds: file.taskIds,
+        }),
+      );
+    }
+    const result = await this.#run(vitest, runSpecs, testIds === null);
     const reports = result.modules
       .map((module) => reportModule(this.#root, module))
       .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
 
     const identified = new Map<string, IdentifiedTest[]>();
     for (const report of reports) {
-      identified.set(
-        report.file,
-        assignTestIds(
-          report.file,
-          [...report.module.children.allTests()].map((test) => ({
-            taskId: test.id,
-            fullName: test.fullName,
-            location: test.location,
-          })),
-        ),
-      );
+      identified.set(report.file, assignTestIds(report.file, collectedTests(report.module)));
     }
     const stateOf = new Map(
       reports.flatMap((report) => report.observed.tests.map((test) => [test.taskId, test.state])),
     );
     const ran = (test: IdentifiedTest): boolean =>
       stateOf.get(test.taskId) === 'passed' || stateOf.get(test.taskId) === 'failed';
+    // Without testIds the tests that ran are the request; with them, the selection is.
+    const wanted = testIds === null ? null : new Set(testIds);
     const requested: RequestedTest[] = reports.flatMap((report) =>
-      (identified.get(report.file) ?? []).filter(ran).map((test) => ({
-        id: test.id,
-        taskId: test.taskId,
-        fullName: test.fullName,
-        file: report.file,
-      })),
+      (identified.get(report.file) ?? [])
+        .filter((test) => (wanted === null ? ran(test) : wanted.has(test.id)))
+        .map((test) => ({
+          id: test.id,
+          taskId: test.taskId,
+          fullName: test.fullName,
+          file: report.file,
+        })),
     );
     const classification = classifyRun({
       requested,
@@ -388,21 +503,39 @@ export class Vitest5TestRunner implements TestRunner {
       unhandledErrors: result.unhandledErrors.map(toObservedError),
       hitLimit: undefined,
     });
+    const idByTaskId = new Map(requested.map((test) => [test.taskId, test.id]));
+    const hookCoverage: MutantCoverage = { static: {}, perTest: {} };
+    for (const report of reports) {
+      if (report.meta?.hookCoverage) {
+        mergeCoverage(
+          hookCoverage,
+          rekeyCoverage({ static: {}, perTest: report.meta.hookCoverage }, idByTaskId),
+        );
+      }
+    }
     this.#writeSidecar({
       kind: 'dry-run',
       mutantId: null,
       mutantActivation: null,
       hitLimit: null,
       requestedTestIds: requested.map((test) => test.id),
+      hookAttributedTests: hookAttributedTests(hookCoverage.perTest),
       result: classification,
     });
 
     const missingSetup = reports.filter(
       (report) => report.meta === undefined && report.observed.errors.length === 0,
     );
+    const executed = [...identified.values()].flat().filter(ran);
     const problems = [
       specs.length === 0 ? 'the scope has no test files' : '',
       requested.length === 0 ? 'no test ran' : '',
+      ...(testIds === null
+        ? []
+        : selectionProblems(
+            testIds,
+            executed.map((test) => test.id),
+          )),
       ...missingSetup.map((report) => `the runner setup file did not finish in ${report.file}`),
       ...classification.outsideTest.map((row) => `${row.file}: ${row.outcome}: ${row.message}`),
       classification.outcome === 'infrastructure' || classification.outcome === 'invalid'
@@ -438,7 +571,6 @@ export class Vitest5TestRunner implements TestRunner {
     writeRunManifest(this.#options.runDir, manifest);
     this.#manifest = manifest;
 
-    const idByTaskId = new Map(requested.map((test) => [test.taskId, test.id]));
     const mutantCoverage: MutantCoverage = { static: {}, perTest: {} };
     for (const report of reports) {
       if (report.meta?.coverage) {
@@ -520,6 +652,7 @@ export class Vitest5TestRunner implements TestRunner {
       mutantActivation: options.mutantActivation,
       hitLimit: options.hitLimit ?? null,
       requestedTestIds: requested.map((test) => test.id),
+      hookAttributedTests: null,
       result: classification,
     });
     return toMutantRunResult(classification);

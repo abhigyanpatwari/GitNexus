@@ -12,6 +12,10 @@
  * `:<line>:<column>:<row>`, where `<row>` is the 0-based index (Vitest's `$index`) among all tests
  * declared at that location. Rows that needed the ordinal are not oracle-validated (origin §5.4a
  * gate 3). Per-test coverage keys and the run manifest use exactly these ids.
+ *
+ * Single-test selection (Phase 1 KTD2): a dry run given `vitest5.testIds` first collects the
+ * scope's files, assigns these ids, and maps the requested ids to Vitest task ids with
+ * {@link selectRequestedTests}; it then runs one task-id specification per file.
  */
 
 export const TEST_ID_SEPARATOR = '#';
@@ -112,4 +116,54 @@ export function assignTestIds(file: string, tests: readonly CollectedTest[]): Id
     seen.add(test.id);
   }
   return identified;
+}
+
+export interface FileTestSelection {
+  /** Package-relative POSIX path of the test file. */
+  file: string;
+  /** Vitest task ids of the requested tests of the file, in collection order. */
+  taskIds: string[];
+}
+
+export interface RequestedTestSelection {
+  /** Files with at least one requested test, in the order of `identified`. */
+  files: FileTestSelection[];
+  /** Requested ids that no collected test has, in request order. */
+  unknown: string[];
+}
+
+/** Maps requested Stryker ids to the task ids of the collected tests, per file; pure. */
+export function selectRequestedTests(
+  identified: ReadonlyMap<string, readonly IdentifiedTest[]>,
+  testIds: readonly string[],
+): RequestedTestSelection {
+  const wanted = new Set(testIds);
+  const found = new Set<string>();
+  const files: FileTestSelection[] = [];
+  for (const [file, tests] of identified) {
+    const selected = tests.filter((test) => wanted.has(test.id));
+    for (const test of selected) found.add(test.id);
+    if (selected.length > 0) files.push({ file, taskIds: selected.map((test) => test.taskId) });
+  }
+  return { files, unknown: testIds.filter((id) => !found.has(id)) };
+}
+
+/**
+ * Problems of a `testIds` dry run whose tests did not run exactly as requested: a requested id
+ * that did not run and a test that ran without being requested, each named; pure.
+ */
+export function selectionProblems(
+  requested: readonly string[],
+  executed: readonly string[],
+): string[] {
+  const asked = new Set(requested);
+  const ran = new Set(executed);
+  return [
+    ...requested
+      .filter((id) => !ran.has(id))
+      .map((id) => `requested test ${JSON.stringify(id)} did not run (vitest5.testIds)`),
+    ...executed
+      .filter((id) => !asked.has(id))
+      .map((id) => `test ${JSON.stringify(id)} ran but vitest5.testIds does not request it`),
+  ];
 }

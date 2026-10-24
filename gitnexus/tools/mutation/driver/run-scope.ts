@@ -4,7 +4,8 @@
  *
  *   1. prepare.ts builds `<out>/prepared` with the mutate files' `as` assertions blanked (KTD7);
  *   2. `<out>/scope.json` names the test files for tools/mutation/vitest.mutation.config.ts;
- *   3. `<out>/stryker.config.json` comes from stryker-config.ts (never with `testFiles`, KTD4);
+ *   3. `<out>/stryker.config.json` comes from stryker-config.ts (never with `testFiles`, KTD4; a
+ *      scope's `testIds` become the runner's `vitest5.testIds`, Phase 1 KTD2);
  *   4. Stryker runs as `node --import tsx <prepared>/gitnexus/node_modules/@stryker-mutator/core/
  *      bin/stryker.js run <config>` from `<prepared>/gitnexus`, with `GITNEXUS_MUTATION_SCOPE` set
  *      and the inherited `__STRYKER_ACTIVE_MUTANT__` and `STRYKER_MUTATOR_WORKER` removed; its
@@ -302,6 +303,7 @@ export async function runScope(
     ignoredDirs,
     pathMap,
     vitest: options.vitest,
+    testIds: scope.testIds,
   });
 
   resetOutDir(options.repoRoot, layout.outDir);
@@ -359,7 +361,11 @@ export async function runScope(
   const results: RunResults = {
     schemaVersion: RESULTS_SCHEMA_VERSION,
     variant: options.variant,
-    scope: { testFiles: scope.testFiles, mutate: scope.mutate.map(formatMutateEntry) },
+    scope: {
+      testFiles: scope.testFiles,
+      mutate: scope.mutate.map(formatMutateEntry),
+      testIds: scope.testIds ?? null,
+    },
     paths: {
       outDir: layout.outDir,
       preparedRoot: layout.preparedRoot,

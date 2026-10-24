@@ -2,12 +2,15 @@
  * Locks the Stryker test identity of the vitest5 runner (KTD3): `<relative file>#<fullTestName>`,
  * parsed on the first `#`, with a `:<line>:<column>` suffix for duplicate full names and a
  * `:<line>:<column>:<row>` suffix for rows of one `it.each`/`test.for` call that still collide.
+ * The dry run's `testIds` selection maps requested ids to task ids and checks the executed set.
  */
 import { describe, expect, it } from 'vitest';
 import {
   assignTestIds,
   formatTestId,
   parseTestId,
+  selectRequestedTests,
+  selectionProblems,
   type CollectedTest,
 } from '../../../tools/mutation/runner/test-ids.js';
 
@@ -136,5 +139,52 @@ describe('assignTestIds', () => {
     expect(() =>
       assignTestIds(FILE, [collected('f_0', 'A > one', 3, 5), collected('f_0', 'A > two', 4, 5)]),
     ).toThrow(/task id f_0/);
+  });
+});
+
+describe('selectRequestedTests (dry-run selection by testIds)', () => {
+  const OTHER = 'test/unit/other.test.ts';
+  const identified = new Map([
+    [
+      FILE,
+      assignTestIds(FILE, [
+        collected('f_0', 'A > one', 3, 5),
+        collected('f_1', 'A > two', 4, 5),
+        collected('f_2', 'A > three', 5, 5),
+      ]),
+    ],
+    [OTHER, assignTestIds(OTHER, [collected('g_0', 'B > one', 3, 5)])],
+  ]);
+
+  it('maps the requested ids to task ids per file, in collection order, and leaves out files with none', () => {
+    expect(selectRequestedTests(identified, [`${FILE}#A > three`, `${FILE}#A > one`])).toEqual({
+      files: [{ file: FILE, taskIds: ['f_0', 'f_2'] }],
+      unknown: [],
+    });
+  });
+
+  it('reports every requested id that no collected test has', () => {
+    expect(
+      selectRequestedTests(identified, [`${OTHER}#B > one`, `${FILE}#A > four`, 'x.test.ts#y']),
+    ).toEqual({
+      files: [{ file: OTHER, taskIds: ['g_0'] }],
+      unknown: [`${FILE}#A > four`, 'x.test.ts#y'],
+    });
+  });
+});
+
+describe('selectionProblems (the executed set must equal the request)', () => {
+  const ONE = `${FILE}#A > one`;
+  const TWO = `${FILE}#A > two`;
+
+  it('accepts a run that executed exactly the requested tests, in any order', () => {
+    expect(selectionProblems([ONE, TWO], [TWO, ONE])).toEqual([]);
+  });
+
+  it('names a requested test that did not run and a test that ran unrequested', () => {
+    expect(selectionProblems([ONE], [TWO])).toEqual([
+      `requested test ${JSON.stringify(ONE)} did not run (vitest5.testIds)`,
+      `test ${JSON.stringify(TWO)} ran but vitest5.testIds does not request it`,
+    ]);
   });
 });

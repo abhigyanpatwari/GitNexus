@@ -2,7 +2,9 @@
  * Locks the scope driver's generated Stryker config (U10, KTD4, KTD6, KTD10, KTD16, KTD18): mutate
  * patterns point inside the prepared tree (relocated gitnexus-shared included), the vitest5 variant
  * carries absolute run and sidecar directories, the command variant keeps its sandbox, and no
- * generated config ever sets `testFiles`.
+ * generated config ever sets `testFiles`. A scope's `testIds` (Phase 1 KTD2) are validated against
+ * its test files, reach the runner as `vitest5.testIds`, and select exactly those tests in the dry
+ * run; an empty selection is rejected everywhere.
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -20,6 +22,12 @@ import {
   type StrykerConfigInput,
 } from '../../../tools/mutation/driver/stryker-config.js';
 import { buildPathMap } from '../../../tools/mutation/prepare/path-map.js';
+import { parseRunnerOptions } from '../../../tools/mutation/runner/plugin.js';
+import {
+  assignTestIds,
+  selectRequestedTests,
+  type CollectedTest,
+} from '../../../tools/mutation/runner/test-ids.js';
 
 const OUT = path.resolve('/tmp/gitnexus-u10-config-test/out');
 const SHARED = 'gitnexus-shared/src/lbug/schema-constants.ts';
@@ -167,6 +175,97 @@ describe('parseDriverScope', () => {
 
   it('rejects text that is not JSON', () => {
     expect(() => parseDriverScope('{')).toThrow(/not valid JSON/);
+  });
+});
+
+describe('parseDriverScope: testIds (single-test selection, KTD2)', () => {
+  const FILE = 'test/unit/a.test.ts';
+  const OTHER = 'test/unit/b.test.ts';
+  /** Five collected tests of one file, in collection order. */
+  const FIVE: readonly CollectedTest[] = ['one', 'two', 'three', 'four', 'five'].map(
+    (name, index) => ({
+      taskId: `h_${index}`,
+      fullName: `A > ${name}`,
+      location: { line: index + 3, column: 3 },
+    }),
+  );
+  const PICKED = [`${FILE}#A > two`, `${FILE}#A > four`];
+  const scopeText = (testIds: unknown): string =>
+    JSON.stringify({ testFiles: [FILE, OTHER], mutate: [LOCAL], testIds });
+
+  it('keeps the requested ids of two of five tests in one file', () => {
+    expect(parseDriverScope(scopeText(PICKED)).testIds).toEqual(PICKED);
+  });
+
+  it('leaves testIds out when the scope file has none', () => {
+    const scope = parseDriverScope(JSON.stringify({ testFiles: [FILE], mutate: [LOCAL] }));
+    expect('testIds' in scope).toBe(false);
+  });
+
+  it('carries the ids into the generated config, whose dry-run selection holds exactly those two tests', () => {
+    const scope = parseDriverScope(scopeText(PICKED));
+    const config = buildStrykerConfig(input({ testIds: scope.testIds }));
+    const options = parseRunnerOptions(config.vitest5);
+    const selection = selectRequestedTests(
+      new Map([[FILE, assignTestIds(FILE, FIVE)]]),
+      options.testIds ?? [],
+    );
+    expect([config.vitest5?.testIds, selection]).toEqual([
+      PICKED,
+      { files: [{ file: FILE, taskIds: ['h_1', 'h_3'] }], unknown: [] },
+    ]);
+  });
+
+  it.each([
+    ['an empty array', [], /testIds must be a non-empty array/],
+    ['a non-array', `${FILE}#A > two`, /testIds must be a non-empty array/],
+    ['a non-string entry', [3], /testIds entries must be strings/],
+    ['a repeated id', [PICKED[0], PICKED[0]], /listed twice/],
+    ['an id without a file part', ['A > two'], /"A > two" is not a test id/],
+  ])('rejects %s', (_label, testIds, message) => {
+    expect(() => parseDriverScope(scopeText(testIds))).toThrow(message);
+  });
+
+  it('rejects an id of a file outside the scope, naming the id', () => {
+    const stray = 'test/unit/c.test.ts#C > three';
+    expect(() => parseDriverScope(scopeText([PICKED[0], stray]))).toThrow(
+      `test id "${stray}" names no test file of the scope`,
+    );
+  });
+});
+
+describe('buildStrykerConfig: testIds', () => {
+  const ids = ['test/unit/a.test.ts#A > two'];
+
+  it('passes no testIds to the runner when the scope selects none', () => {
+    expect(buildStrykerConfig(input()).vitest5).not.toHaveProperty('testIds');
+  });
+
+  it.each([
+    ['an empty selection', input({ testIds: [] }), /testIds must not be empty/],
+    ['a selection for the command variant', commandInput({ testIds: ids }), /only for the vitest5/],
+  ])('rejects %s', (_label, configInput, message) => {
+    expect(() => buildStrykerConfig(configInput)).toThrow(message);
+  });
+});
+
+describe('parseRunnerOptions: testIds', () => {
+  const base = { runDir: '/run', sidecarDir: '/sidecars' };
+
+  it('reads no selection as null', () => {
+    expect(parseRunnerOptions(base).testIds).toBeNull();
+  });
+
+  it.each([
+    ['an empty array', []],
+    ['a non-array', 'test/unit/a.test.ts#A > two'],
+    ['a non-string entry', [7]],
+    ['an id without a file part', ['A > two']],
+    ['a repeated id', ['test/unit/a.test.ts#A', 'test/unit/a.test.ts#A']],
+  ])('rejects %s', (_label, testIds) => {
+    expect(() => parseRunnerOptions({ ...base, testIds })).toThrow(
+      /vitest5\.testIds must be a non-empty array of distinct test ids/,
+    );
   });
 });
 

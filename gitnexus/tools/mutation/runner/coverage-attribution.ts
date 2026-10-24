@@ -15,6 +15,10 @@
  * Buckets are keyed by Vitest task id here; the main process translates them to Stryker ids
  * ({@link rekeyCoverage}). This module is imported by the worker setup file, so it imports types
  * only.
+ *
+ * The hook bucket is also kept apart ({@link hookCoverage}): the dry run records, per mutant, the
+ * tests a suite hook attributed it to ({@link hookAttributedTests}), the hook marker that caps a
+ * Phase 1 pair at weak (Phase 1 KTD2, KTD9).
  */
 import type { CoverageData, MutantCoverage } from '@stryker-mutator/api/core';
 
@@ -85,8 +89,26 @@ const addInto = (into: CoverageData, from: CoverageData): void => {
 };
 
 /**
- * Adds every hook bucket to the per-test coverage of each test below that suite. `testsBySuite`
- * maps a suite (or file) task id to the task ids of all tests below it.
+ * The hook bucket alone, attributed: every hook bucket added to each test below that suite, keyed
+ * by test task id. `testsBySuite` maps a suite (or file) task id to the task ids of all tests
+ * below it.
+ */
+export function hookCoverage(
+  raw: RawCoverage,
+  testsBySuite: Readonly<Record<string, readonly string[]>>,
+): Record<string, CoverageData> {
+  const perTest: Record<string, CoverageData> = {};
+  for (const [suiteId, data] of Object.entries(raw.hooks)) {
+    const tests = testsBySuite[suiteId];
+    if (tests === undefined) throw new Error(`coverage: hook hits for unknown suite ${suiteId}`);
+    for (const testId of tests) addInto(bucketIn(perTest, testId), data);
+  }
+  return perTest;
+}
+
+/**
+ * Adds every hook bucket to the per-test coverage of each test below that suite
+ * ({@link hookCoverage}).
  */
 export function attributeHookHits(
   raw: RawCoverage,
@@ -95,12 +117,21 @@ export function attributeHookHits(
   const perTest: Record<string, CoverageData> = {};
   for (const [testId, data] of Object.entries(raw.perTest))
     addInto(bucketIn(perTest, testId), data);
-  for (const [suiteId, data] of Object.entries(raw.hooks)) {
-    const tests = testsBySuite[suiteId];
-    if (tests === undefined) throw new Error(`coverage: hook hits for unknown suite ${suiteId}`);
-    for (const testId of tests) addInto(bucketIn(perTest, testId), data);
+  for (const [testId, data] of Object.entries(hookCoverage(raw, testsBySuite))) {
+    addInto(bucketIn(perTest, testId), data);
   }
   return { static: { ...raw.static }, perTest };
+}
+
+/** Per mutant id, the sorted keys of the per-test buckets that hold it (the hook marker). */
+export function hookAttributedTests(
+  perTest: Readonly<Record<string, CoverageData>>,
+): Record<string, string[]> {
+  const byMutant: Record<string, string[]> = {};
+  for (const testId of Object.keys(perTest).sort()) {
+    for (const mutantId of Object.keys(perTest[testId])) (byMutant[mutantId] ??= []).push(testId);
+  }
+  return byMutant;
 }
 
 /** Translates per-test keys through `idByTaskId`; tests outside the map (skipped) are dropped. */

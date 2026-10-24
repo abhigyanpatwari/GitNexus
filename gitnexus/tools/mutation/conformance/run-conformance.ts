@@ -102,11 +102,21 @@ export function conformanceIgnoredDirs(fixtureEntries: readonly string[]): strin
   ];
 }
 
-/** The scope-driver scope file of one expected scope: package- and repo-relative paths. */
-export function driverScope(scope: ScopeSpec): { testFiles: string[]; mutate: string[] } {
+/**
+ * The scope-driver scope file of one expected scope: package- and repo-relative paths, and the
+ * package-relative test ids of a scope that selects tests (no `testIds` key otherwise).
+ */
+export function driverScope(scope: ScopeSpec): {
+  testFiles: string[];
+  mutate: string[];
+  testIds?: string[];
+} {
   return {
     testFiles: scope.testFiles.map((file) => `${FIXTURE_ROOT}/${file}`),
     mutate: scope.mutate.map((file) => `${FIXTURE_REPO_ROOT}/${file}`),
+    ...(scope.testIds === null
+      ? {}
+      : { testIds: scope.testIds.map((id) => `${FIXTURE_ROOT}/${id}`) }),
   };
 }
 

@@ -30,6 +30,7 @@
         "src/counter.ts",
         "src/rows.ts"
       ],
+      "testIds": null,
       "tests": [
         {
           "id": "hooks.case.ts#records loaded in beforeAll > loads one record",
@@ -146,6 +147,7 @@
       "mutate": [
         "src/retry.ts"
       ],
+      "testIds": null,
       "tests": [
         {
           "id": "retry.case.ts#waits ten milliseconds per attempt",
@@ -154,6 +156,30 @@
         },
         {
           "id": "retry.case.ts#uses the linear policy",
+          "skipped": false,
+          "notOracleValidated": false
+        }
+      ]
+    },
+    {
+      "name": "selection",
+      "testFiles": [
+        "selection.case.ts"
+      ],
+      "mutate": [
+        "src/selection.ts"
+      ],
+      "testIds": [
+        "selection.case.ts#scaling > scales two"
+      ],
+      "tests": [
+        {
+          "id": "selection.case.ts#scaling > scales one",
+          "skipped": true,
+          "notOracleValidated": false
+        },
+        {
+          "id": "selection.case.ts#scaling > scales two",
           "skipped": false,
           "notOracleValidated": false
         }
@@ -189,7 +215,9 @@
         },
         "outsideTest": [],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -220,7 +248,9 @@
         },
         "outsideTest": [],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -245,7 +275,9 @@
         "tests": {},
         "outsideTest": [],
         "reason": "has full name \"row \", the run manifest expects \"row beta\"",
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -282,7 +314,12 @@
         },
         "outsideTest": [],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [
+          "hooks.case.ts#records loaded in beforeAll > loads one record",
+          "hooks.case.ts#records loaded in beforeAll > names the record"
+        ],
+        "attemptsDisagree": false
       }
     },
     {
@@ -322,7 +359,9 @@
         },
         "outsideTest": [],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -362,7 +401,9 @@
         },
         "outsideTest": [],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -395,7 +436,9 @@
         },
         "outsideTest": [],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -441,7 +484,12 @@
           }
         ],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs a second test after the opening check",
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs after the opening check"
+        ],
+        "attemptsDisagree": false
       }
     },
     {
@@ -476,7 +524,11 @@
           }
         ],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [
+          "hooks.case.ts#a suite whose afterAll checks the connection > runs before the closing check"
+        ],
+        "attemptsDisagree": false
       }
     },
     {
@@ -507,7 +559,9 @@
           }
         ],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -538,7 +592,9 @@
         },
         "outsideTest": [],
         "reason": "Hit limit reached (301/300)",
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -567,7 +623,9 @@
         "tests": {},
         "outsideTest": [],
         "reason": "unhandled error during the run: Error: runtime: the audit failed",
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -592,7 +650,9 @@
         "tests": null,
         "outsideTest": null,
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -623,7 +683,9 @@
         },
         "outsideTest": [],
         "reason": "Test timed out in 2000ms",
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -658,7 +720,9 @@
         },
         "outsideTest": [],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -687,7 +751,9 @@
         "tests": {},
         "outsideTest": [],
         "reason": null,
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -718,7 +784,9 @@
         "reason": "did not run (state skipped); zero tests ran",
         "flags": [
           "zero-tests"
-        ]
+        ],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -749,7 +817,9 @@
         },
         "outsideTest": [],
         "reason": "retry.case.ts#waits ten milliseconds per attempt has retry 1",
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
       }
     },
     {
@@ -776,7 +846,81 @@
         },
         "outsideTest": [],
         "reason": "retry.case.ts#waits ten milliseconds per attempt has retry 1",
-        "flags": []
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "selection: with testIds set to one of two covering tests, only the selected test covers, runs and kills the mutant",
+      "scope": "selection",
+      "mutant": {
+        "file": "src/selection.ts",
+        "location": "8:10-8:19",
+        "mutatorName": "ArithmeticOperator",
+        "replacement": "value / 3"
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "selected": "all",
+        "killedBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "assertionKilledBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "tests": {
+          "selection.case.ts#scaling > scales two": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "selection: a mutant hit only in the suite beforeAll carries the hook marker for the selected test only",
+      "scope": "selection",
+      "mutant": {
+        "file": "src/selection.ts",
+        "location": "14:10-14:13",
+        "mutatorName": "StringLiteral",
+        "replacement": "\"\""
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "selected": "all",
+        "killedBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "assertionKilledBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "tests": {
+          "selection.case.ts#scaling > scales two": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "attemptsDisagree": false
       }
     },
     {
@@ -793,6 +937,23 @@
           "id": "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:1",
           "skipped": false,
           "notOracleValidated": true
+        }
+      ]
+    },
+    {
+      "kind": "tests",
+      "name": "selection: a dry run with testIds runs the selected test and lists the other one as skipped",
+      "scope": "selection",
+      "tests": [
+        {
+          "id": "selection.case.ts#scaling > scales one",
+          "skipped": true,
+          "notOracleValidated": false
+        },
+        {
+          "id": "selection.case.ts#scaling > scales two",
+          "skipped": false,
+          "notOracleValidated": false
         }
       ]
     },

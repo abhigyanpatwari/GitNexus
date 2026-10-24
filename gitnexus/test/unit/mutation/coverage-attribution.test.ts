@@ -2,13 +2,16 @@
  * Locks how the vitest5 runner's setup file buckets instrumenter hits (KTD4): load- and
  * collection-time hits stay static, hits inside a test are per-test coverage, and a hit with no
  * current test after collection is a hook hit, attributed to every test of the suite whose hook
- * ran. Per-test coverage keys are then translated from Vitest task ids to Stryker ids (KTD3).
+ * ran. Per-test coverage keys are then translated from Vitest task ids to Stryker ids (KTD3). The
+ * hook bucket is also kept apart, as the per-mutant hook marker (Phase 1 KTD2).
  */
 import { describe, expect, it } from 'vitest';
 import {
   CoverageRecorder,
   attributeHookHits,
   bucketForHit,
+  hookAttributedTests,
+  hookCoverage,
   mergeCoverage,
   rekeyCoverage,
   type HitContext,
@@ -108,6 +111,61 @@ describe('CoverageRecorder with attributeHookHits', () => {
     instrumenterHit(recorder, '1');
 
     expect(() => attributeHookHits(recorder.snapshot(), testsBySuite)).toThrow(/unknown/);
+  });
+});
+
+describe('hookCoverage and hookAttributedTests (the hook marker, KTD2)', () => {
+  const testsBySuite = {
+    f: ['f_0_0', 'f_0_1', 'f_1_0'],
+    f_0: ['f_0_0', 'f_0_1'],
+    f_1: ['f_1_0'],
+  };
+
+  /** Mutant 2 is hit only in suite f_0's beforeAll, mutant 3 only inside test f_1_0. */
+  const recorded = (): CoverageRecorder => {
+    let context: HitContext = { phase: 'collection' };
+    const recorder = new CoverageRecorder(() => context);
+    instrumenterHit(recorder, '1');
+    context = { phase: 'run', testId: undefined, runningSuiteIds: ['f', 'f_0'] };
+    instrumenterHit(recorder, '2');
+    context = { phase: 'run', testId: 'f_1_0', runningSuiteIds: ['f', 'f_1'] };
+    instrumenterHit(recorder, '3');
+    context = { phase: 'run', testId: undefined, runningSuiteIds: ['f', 'f_1'] };
+    instrumenterHit(recorder, '3');
+    return recorder;
+  };
+
+  it('keeps the hook bucket apart: only hook hits, attributed to every test of the suite', () => {
+    expect(hookCoverage(recorded().snapshot(), testsBySuite)).toEqual({
+      f_0_0: { '2': 1 },
+      f_0_1: { '2': 1 },
+      f_1_0: { '3': 1 },
+    });
+  });
+
+  it('lists, per mutant, every test that a suite hook attributed it to', () => {
+    expect(hookAttributedTests(hookCoverage(recorded().snapshot(), testsBySuite))).toEqual({
+      '2': ['f_0_0', 'f_0_1'],
+      '3': ['f_1_0'],
+    });
+  });
+
+  it('leaves the attributed per-test coverage unchanged', () => {
+    expect(attributeHookHits(recorded().snapshot(), testsBySuite)).toEqual({
+      static: { '1': 1 },
+      perTest: { f_0_0: { '2': 1 }, f_0_1: { '2': 1 }, f_1_0: { '3': 2 } },
+    });
+  });
+
+  it('refuses a hook hit for a suite it does not know', () => {
+    const recorder = new CoverageRecorder(() => ({
+      phase: 'run',
+      testId: undefined,
+      runningSuiteIds: ['unknown'],
+    }));
+    instrumenterHit(recorder, '1');
+
+    expect(() => hookCoverage(recorder.snapshot(), testsBySuite)).toThrow(/unknown/);
   });
 });
 

@@ -9,7 +9,8 @@
  *   becomes active when collection has ended. The hit count starts at module load either way.
  * - Dry run: coverage is recorded through {@link CoverageRecorder} (KTD4): load and collection
  *   hits stay static, test hits are per test, and a hit with no current test after collection is
- *   a hook hit of the deepest running suite.
+ *   a hook hit of the deepest running suite. The hook hits are also kept apart, attributed, as
+ *   the file's hook coverage (the hook marker, Phase 1 KTD2).
  *
  * The file-level `aroundAll` marks the end of collection when it starts (it runs before every
  * `beforeAll` hook) and writes the {@link FileMeta} after the suite finished, after every
@@ -26,7 +27,12 @@ import {
   type RunnerTestFile,
   type RunnerTestSuite,
 } from 'vitest';
-import { CoverageRecorder, attributeHookHits, type HitContext } from './coverage-attribution.js';
+import {
+  CoverageRecorder,
+  attributeHookHits,
+  hookCoverage,
+  type HitContext,
+} from './coverage-attribution.js';
 import { HOOK_NAMES, PROTOCOL_KEY, type FileMeta, type HookName } from './protocol.js';
 
 const context = inject(PROTOCOL_KEY);
@@ -103,9 +109,11 @@ function buildFileMeta(root: RunnerTestFile): FileMeta {
     }
   };
   visit(root, []);
+  const raw = recorder?.snapshot();
   return {
     hitCount: context.mode === 'mutant' ? (ns.hitCount ?? 0) : null,
-    coverage: recorder === undefined ? null : attributeHookHits(recorder.snapshot(), testsBySuite),
+    coverage: raw === undefined ? null : attributeHookHits(raw, testsBySuite),
+    hookCoverage: raw === undefined ? null : hookCoverage(raw, testsBySuite),
     failedHooks,
   };
 }

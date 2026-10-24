@@ -8,6 +8,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RunClassification } from '../../../tools/mutation/runner/classify-outcome.js';
 import {
+  SIDECAR_SCHEMA_VERSION,
   readSidecars,
   sidecarFileName,
   writeSidecar,
@@ -33,6 +34,7 @@ const draft = (worker: string): SidecarDraft => ({
   mutantActivation: 'runtime',
   hitLimit: 100,
   requestedTestIds: ['test/unit/a.test.ts#A > one'],
+  hookAttributedTests: null,
   result: survived,
 });
 
@@ -114,11 +116,28 @@ describe('writeSidecar', () => {
     const written = writeSidecar(dir, draft('5'));
 
     expect(JSON.parse(readFileSync(written.file, 'utf8'))).toEqual({
-      schemaVersion: 1,
+      schemaVersion: SIDECAR_SCHEMA_VERSION,
       attempt: 1,
       pid: process.pid,
       ...draft('5'),
     });
+  });
+
+  it('keeps the dry-run hook marker: per mutant, the tests a suite hook attributed it to', () => {
+    const marker = { '3': ['test/unit/a.test.ts#A > one', 'test/unit/a.test.ts#A > two'] };
+    const written = writeSidecar(dir, {
+      ...draft('1'),
+      kind: 'dry-run',
+      mutantId: null,
+      mutantActivation: null,
+      hitLimit: null,
+      hookAttributedTests: marker,
+    });
+
+    expect(readSidecars(dir)).toEqual([
+      expect.objectContaining({ schemaVersion: 2, kind: 'dry-run', hookAttributedTests: marker }),
+    ]);
+    expect(path.basename(written.file)).toBe('dry-run.worker-1.attempt-1.json');
   });
 
   it('refuses a relative sidecar directory', () => {

@@ -1,7 +1,9 @@
 /**
  * Locks the scope driver's result normalisation (U10, KTD6, KTD16, KTD17): report test ids map to
  * the runner's Stryker ids through the run manifest, sidecar records join their mutant through the
- * local id map (latest attempt wins), and integrity problems are flagged instead of hidden.
+ * local id map (latest attempt wins), and integrity problems are flagged instead of hidden. Every
+ * attempt's per-test rows are kept and a class change between attempts is marked (Phase 1 KTD8),
+ * and the dry run's hook marker is exposed per mutant (Phase 1 KTD2, KTD9).
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -20,7 +22,17 @@ import {
 } from '../../../tools/mutation/prepare/mutant-identity.js';
 import type { RunClassification } from '../../../tools/mutation/runner/classify-outcome.js';
 import type { RunManifest } from '../../../tools/mutation/runner/run-manifest.js';
-import type { SidecarRecord } from '../../../tools/mutation/runner/sidecar.js';
+import {
+  CoverageRecorder,
+  hookAttributedTests,
+  hookCoverage,
+  rekeyCoverage,
+  type HitContext,
+} from '../../../tools/mutation/runner/coverage-attribution.js';
+import {
+  SIDECAR_SCHEMA_VERSION,
+  type SidecarRecord,
+} from '../../../tools/mutation/runner/sidecar.js';
 
 const PACKAGE_DIR = '/prepared/gitnexus';
 const SOURCE = 'export const a = 1 + 2;\nexport const b = a > 0;\n';
@@ -110,10 +122,15 @@ const killedByOne = classification({
 const sidecar = (
   mutantId: string | null,
   result: RunClassification,
-  where: { worker?: string; attempt?: number; at?: number } = {},
+  where: {
+    worker?: string;
+    attempt?: number;
+    at?: number;
+    hookAttributedTests?: Record<string, string[]>;
+  } = {},
 ): SidecarInput => {
   const record: SidecarRecord = {
-    schemaVersion: 1,
+    schemaVersion: SIDECAR_SCHEMA_VERSION,
     kind: mutantId === null ? 'dry-run' : 'mutant',
     mutantId,
     worker: where.worker ?? '1',
@@ -122,6 +139,7 @@ const sidecar = (
     mutantActivation: mutantId === null ? null : 'runtime',
     hitLimit: null,
     requestedTestIds: [T_ONE, T_TWO],
+    hookAttributedTests: mutantId === null ? (where.hookAttributedTests ?? {}) : null,
     result,
   };
   return {
@@ -373,6 +391,102 @@ describe('normaliseRun: attempts', () => {
     expect(
       orderAttempts(records).map(({ record }) => `${record.worker}/${record.attempt}`),
     ).toEqual(['2/1', '9/1', '9/2', '10/1']);
+  });
+});
+
+describe('normaliseRun: per-test classes of every attempt (KTD8)', () => {
+  const runtimeByOne = classification({
+    status: 'killed',
+    outcome: 'killed-by-test:runtime',
+    killedBy: [T_ONE],
+    tests: [
+      { id: T_ONE, outcome: 'killed-by-test:runtime', message: 'x is undefined' },
+      { id: T_TWO, outcome: 'survived', message: undefined },
+    ],
+  });
+
+  it('keeps the rows of both attempts and marks a class change between them', () => {
+    const result = normaliseRun(
+      run(
+        [mutant('9', { status: 'Killed', killedBy: ['0'] })],
+        [
+          sidecar('9', killedByOne, { worker: '1', at: 10 }),
+          sidecar('9', runtimeByOne, { worker: '2', at: 20 }),
+        ],
+      ),
+    );
+    expect([result.mutants[0].perTest, result.mutants[0].attemptsDisagree]).toEqual([
+      [
+        { testId: T_ONE, outcome: 'killed-by-test:assertion', attempt: 0 },
+        { testId: T_TWO, outcome: 'survived', attempt: 0 },
+        { testId: T_ONE, outcome: 'killed-by-test:runtime', attempt: 1 },
+        { testId: T_TWO, outcome: 'survived', attempt: 1 },
+      ],
+      true,
+    ]);
+  });
+
+  it.each([
+    ['one attempt', [sidecar('9', killedByOne)]],
+    [
+      'two attempts with the same classes',
+      [sidecar('9', killedByOne, { at: 1 }), sidecar('9', killedByOne, { worker: '2', at: 2 })],
+    ],
+  ])('does not mark %s as disagreeing', (_label, records) => {
+    const result = normaliseRun(run([mutant('9', { status: 'Killed', killedBy: ['0'] })], records));
+    expect(result.mutants[0].attemptsDisagree).toBe(false);
+  });
+
+  it('keeps no rows and no disagreement for a mutant without a record', () => {
+    const result = normaliseRun(run([mutant('8', { status: 'NoCoverage' })], []));
+    expect([result.mutants[0].perTest, result.mutants[0].attemptsDisagree]).toEqual([[], false]);
+  });
+});
+
+describe('normaliseRun: hook marker from the dry-run record (KTD2, KTD9)', () => {
+  /** The dry run's hook bucket: mutant 7 is hit only in suite `h`'s beforeAll. */
+  const dryRunMarker = (): Record<string, string[]> => {
+    let context: HitContext = { phase: 'collection' };
+    const recorder = new CoverageRecorder(() => context);
+    context = { phase: 'run', testId: undefined, runningSuiteIds: ['f', 'h'] };
+    const coverage = recorder.instrumenterView;
+    coverage.static['7'] = (coverage.static['7'] ?? 0) + 1;
+    const byTask = hookCoverage(recorder.snapshot(), { f: ['h_0', 'h_1'], h: ['h_0', 'h_1'] });
+    const byId = rekeyCoverage(
+      { static: {}, perTest: byTask },
+      new Map([
+        ['h_0', T_ONE],
+        ['h_1', T_TWO],
+      ]),
+    );
+    return hookAttributedTests(byId.perTest);
+  };
+
+  it('lists every test of the suite for a mutant covered only through a beforeAll hit', () => {
+    const result = normaliseRun({
+      identities: identities([
+        mutant('7', { status: 'Killed', killedBy: ['0'], coveredBy: ['0', '1'] }),
+        mutant('8', { status: 'NoCoverage' }),
+      ]),
+      testFiles,
+      manifest,
+      sidecars: [
+        sidecar(null, classification({}), { hookAttributedTests: dryRunMarker() }),
+        sidecar('7', killedByOne),
+      ],
+    });
+    expect(result.mutants.map((entry) => [entry.localId, entry.hookAttributedTests])).toEqual([
+      ['7', [T_ONE, T_TWO]],
+      ['8', []],
+    ]);
+  });
+
+  it('has no marker when no dry-run record names one', () => {
+    const result = normaliseRun({
+      ...run([mutant('8', { status: 'NoCoverage' })], []),
+      sidecars: [],
+    });
+    expect(result.mutants[0].hookAttributedTests).toBeNull();
   });
 });
 

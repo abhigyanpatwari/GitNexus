@@ -1,11 +1,13 @@
 /**
  * Scope file, run layout and generated Stryker config of the scope driver (U10).
  *
- * Driver scope file (JSON, every key required, no other key allowed):
+ * Driver scope file (JSON; `testFiles` and `mutate` required, `testIds` optional, no other key
+ * allowed):
  *   {
  *     "testFiles": ["test/unit/shared-type-extractors.test.ts"],
  *     "mutate": ["gitnexus/src/core/ingestion/type-extractors/shared.ts:545-660",
- *                "gitnexus-shared/src/lbug/schema-constants.ts"]
+ *                "gitnexus-shared/src/lbug/schema-constants.ts"],
+ *     "testIds": ["test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > ..."]
  *   }
  * `testFiles` are package-relative POSIX paths, validated like the mutation scope file
  * (scope-file.ts) that the driver writes for tools/mutation/vitest.mutation.config.ts. `mutate`
@@ -13,6 +15,13 @@
  * optionally followed by a Stryker range `:<startLine>-<endLine>` or
  * `:<startLine>:<startColumn>-<endLine>:<endColumn>`. Globs are not accepted: the prepare step must
  * blank the `as` assertions of every mutated file (KTD7), so it needs the concrete files.
+ *
+ * `testIds` (Phase 1 KTD2) selects single tests: a non-empty list of distinct Stryker test ids
+ * (runner/test-ids.ts, KTD3) whose file part is one of `testFiles`. It reaches the vitest5 runner
+ * as its `vitest5.testIds` option: the dry run runs only those tests (it fails before any mutant
+ * run when one was not collected), so they are the run's whole test set. Without the key every
+ * test of `testFiles` runs; an empty list is rejected so that "every test" never happens by
+ * accident. The command variant cannot select tests and rejects it.
  *
  * Fixture projects (gate 2's conformance fixture) pass an extended path map (path-map.ts
  * `buildPathMap`) so their `gitnexus/test/fixtures/mutation-<name>/` files are accepted as mutate
@@ -34,6 +43,7 @@
 import path from 'node:path';
 import { parseMutationScope } from '../scope-file.js';
 import { PACKAGE_DIR, PATH_MAP, toPreparedPath, type PathMapEntry } from '../prepare/path-map.js';
+import { parseTestId } from '../runner/test-ids.js';
 import { errorMessage } from '../shared/cli.js';
 
 export const VARIANTS = ['vitest5', 'command'] as const;
@@ -172,9 +182,36 @@ export function strykerMutatePattern(
 export interface DriverScope {
   testFiles: string[];
   mutate: MutateEntry[];
+  /** Stryker ids of the only tests to run; absent when every test of `testFiles` runs. */
+  testIds?: string[];
 }
 
-const SCOPE_KEYS: ReadonlySet<string> = new Set(['testFiles', 'mutate']);
+const SCOPE_KEYS: ReadonlySet<string> = new Set(['testFiles', 'mutate', 'testIds']);
+
+/** Validates a scope's `testIds`: distinct test ids of the scope's test files. */
+function parseScopeTestIds(value: unknown, testFiles: readonly string[]): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    return fail(
+      'scope file: testIds must be a non-empty array; leave the key out to run every test',
+    );
+  }
+  const files = new Set(testFiles);
+  const seen = new Set<string>();
+  return value.map((id: unknown): string => {
+    if (typeof id !== 'string') return fail('scope file: testIds entries must be strings');
+    if (seen.has(id)) fail(`scope file: test id ${JSON.stringify(id)} is listed twice`);
+    seen.add(id);
+    let file: string;
+    try {
+      file = parseTestId(id).file;
+    } catch {
+      return fail(`scope file: ${JSON.stringify(id)} is not a test id (<test file>#<full name>)`);
+    }
+    if (!files.has(file))
+      fail(`scope file: test id ${JSON.stringify(id)} names no test file of the scope`);
+    return id;
+  });
+}
 
 /** Parses and validates a driver scope file (see the module comment). */
 export function parseDriverScope(
@@ -206,7 +243,8 @@ export function parseDriverScope(
     seen.add(entry);
     return parseMutateEntry(entry, pathMap);
   });
-  return { testFiles, mutate: entries };
+  if (!('testIds' in data)) return { testFiles, mutate: entries };
+  return { testFiles, mutate: entries, testIds: parseScopeTestIds(data.testIds, testFiles) };
 }
 
 /** Throws when a scope test file lies under an ignored directory: the sandbox would lack it. */
@@ -248,6 +286,8 @@ export interface StrykerConfigInput {
   pathMap?: readonly PathMapEntry[];
   /** vitest5 only: the runner's Vitest config and project; the runner defaults apply without it. */
   vitest?: VitestSelection;
+  /** vitest5 only: the scope's `testIds`, passed as `vitest5.testIds`; every test runs without. */
+  testIds?: readonly string[];
 }
 
 /** The Stryker options this driver sets (a `PartialStrykerOptions` subset). */
@@ -255,7 +295,13 @@ export interface GeneratedStrykerConfig {
   testRunner: Variant;
   appendPlugins?: string[];
   commandRunner?: { command: string };
-  vitest5?: { runDir: string; sidecarDir: string; configFile?: string; project?: string };
+  vitest5?: {
+    runDir: string;
+    sidecarDir: string;
+    configFile?: string;
+    project?: string;
+    testIds?: string[];
+  };
   /** vitest5 only: Stryker ignores (and warns about) test-runner node args for `command`. */
   testRunnerNodeArgs?: string[];
   checkerNodeArgs: string[];
@@ -314,6 +360,12 @@ export function buildStrykerConfig(input: StrykerConfigInput): GeneratedStrykerC
   if (variant === 'command' && input.vitest !== undefined) {
     fail('a Vitest config and project are only for the vitest5 variant');
   }
+  if (variant === 'command' && input.testIds !== undefined) {
+    fail('testIds (single-test selection) are only for the vitest5 variant');
+  }
+  if (input.testIds !== undefined && input.testIds.length === 0) {
+    fail('testIds must not be empty; leave them out to run every test');
+  }
   const ignoredDirs = input.ignoredDirs ?? DEFAULT_IGNORED_DIRS;
   const mutate = input.mutate.map((entry) => strykerMutatePattern(entry, input.pathMap));
   for (const pattern of mutate) {
@@ -361,6 +413,7 @@ export function buildStrykerConfig(input: StrykerConfigInput): GeneratedStrykerC
       runDir: layout.runDir,
       sidecarDir: layout.sidecarDir,
       ...(input.vitest === undefined ? {} : checkVitestSelection(input.vitest)),
+      ...(input.testIds === undefined ? {} : { testIds: [...input.testIds] }),
     },
     testRunnerNodeArgs: [...TSX_NODE_ARGS],
     coverageAnalysis: 'perTest',
