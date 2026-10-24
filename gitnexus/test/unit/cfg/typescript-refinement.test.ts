@@ -129,7 +129,7 @@ function f(ref: string) {
     String.raw`\u0067lobalThis.RegExp.prototype.test = () => true; function f(ref: string) { if (!/^[0-9a-f]{7,40}$/.test(ref)) return; }`,
     'globalThis.RegExp.prototype.test = () => true; function f(ref: string) { if (!/^[0-9a-f]{7,40}$/.test(ref)) return; }',
     'eval("RegExp.prototype.test = () => true"); function f(ref: string) { if (!/^[0-9a-f]{7,40}$/.test(ref)) return; }',
-  ])('retains unknown validator identity, mutation and unsupported flags', (source) => {
+  ])('retains unknown validator identity, mutation and unsupported flags: %s', (source) => {
     expect(predicate(source)).toBeUndefined();
   });
 
