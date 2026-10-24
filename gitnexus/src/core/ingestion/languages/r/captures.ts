@@ -1,8 +1,10 @@
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, MixedChainStep } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { getRParser, getRScopeQuery } from './query.js';
 import { isRNonNamingScopeMatch } from './naming-argument.js';
+import { MAX_CHAIN_DEPTH } from '../../utils/call-analysis.js';
+import { encodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { isRReplacementCall, rLexicalAssignedNames, rSetterName } from './assignment.js';
@@ -45,6 +47,7 @@ export function emitRScopeCaptures(
     let functionNode: SyntaxNode | undefined;
     let methodNode: SyntaxNode | undefined;
     let freeCallNode: SyntaxNode | undefined;
+    let chainedReceiver: SyntaxNode | undefined;
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
@@ -53,6 +56,7 @@ export function emitRScopeCaptures(
       if (tag === '@scope.function' && c.node.type === 'function_definition') functionNode = c.node;
       if (tag === '@scope.function' && c.node.type === 'argument') methodNode = c.node;
       if (tag === '@reference.call.free') freeCallNode = c.node;
+      if (tag === '@reference.receiver' && c.node.type !== 'identifier') chainedReceiver = c.node;
       if (tag === '@scope.module' && c.node.type === 'program' && !bindsSelf) {
         grouped['@receiver-owner.self'] = syntheticCapture('@receiver-owner.self', c.node, 'self');
       }
@@ -60,6 +64,17 @@ export function emitRScopeCaptures(
     if (!hasRealCapture) continue;
     if (freeCallNode !== undefined && isRReplacementCall(freeCallNode)) {
       recordAsSetterCall(grouped, freeCallNode);
+    }
+    // A member call whose receiver is itself a `$` access or a call (`a$b$m()`): mint the
+    // truncated chain, or drop the match when the chain has no variable base.
+    if (chainedReceiver !== undefined) {
+      const chain = rReceiverChain(chainedReceiver);
+      if (chain === undefined) continue;
+      grouped['@reference.receiver-chain'] = syntheticCapture(
+        '@reference.receiver-chain',
+        chainedReceiver,
+        chain,
+      );
     }
     // The function's own scope names what its formals and loop variables bind, so that a call
     // through one of them stops the lexical walk there instead of reaching a top-level function
@@ -100,6 +115,43 @@ export function emitRScopeCaptures(
   }
 
   return out;
+}
+
+/**
+ * The receiver chain of a chained member call (`a$b$m()`, `Cls$new()$m()`), encoded with the
+ * shared codec's `truncated` marker, or `undefined` when the receiver has no variable base.
+ *
+ * The walk goes down `extract_operator` (`x$f`, `x@f`: a field step) and `call(function:
+ * extract_operator)` (`x$f()`: a call step) to an identifier, which is the base. R6 fields and
+ * method results carry no declared type, so a chain is never typed; the marker makes the shared
+ * fold refuse it, and the site ends as an unresolved receiver (an outcome, no edge) instead of
+ * falling to a free function or a method of the same name elsewhere.
+ *
+ * `undefined` (the caller drops the match, so the call is invisible: no edge, no outcome) when
+ * the base is not a variable (a call of a function or of `pkg::f`, `x[[1]]`, `x[1]`, `(x)`), a
+ * step is not an identifier (`a$"b"$m()`), or the codec cannot
+ * encode the chain (more steps than it allows, a name with a space). No honest outcome exists
+ * for a receiver that is not a variable, and the walk is bounded so a pathological chain costs
+ * a constant amount of work.
+ */
+export function rReceiverChain(receiverNode: SyntaxNode): string | undefined {
+  const outerToInner: MixedChainStep[] = [];
+  let node: SyntaxNode = receiverNode;
+  while (outerToInner.length <= MAX_CHAIN_DEPTH) {
+    if (node.type === 'identifier') {
+      const steps = outerToInner.reverse();
+      return encodeReceiverChain(node.text, steps, { truncated: true });
+    }
+    const isCall = node.type === 'call';
+    const access = isCall ? node.childForFieldName('function') : node;
+    if (access?.type !== 'extract_operator') return undefined;
+    const lhs = access.childForFieldName('lhs');
+    const rhs = access.childForFieldName('rhs');
+    if (lhs === null || rhs?.type !== 'identifier') return undefined;
+    outerToInner.push({ kind: isCall ? 'call' : 'field', name: rhs.text });
+    node = lhs;
+  }
+  return undefined;
 }
 
 /**

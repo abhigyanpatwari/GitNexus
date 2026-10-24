@@ -76,6 +76,13 @@
  *     `Type$new(...)` is R6's constructor spelling: captured separately as
  *     `@type-binding.constructor` so `x <- Type$new(...)` types `x`.
  *
+ *   - `a$b$m()` and `Cls$new()$m()` (the receiver is itself an `extract_operator` or a `call`)
+ *     are chained member calls. R never types through a chain (R6 fields and results carry no
+ *     declared type), so `emitRScopeCaptures` mints `@reference.receiver-chain` with the shared
+ *     codec's `truncated` marker: the shared fold refuses it and the call ends as an unresolved
+ *     receiver (an outcome, no edge) instead of reaching a same-named free function. A chain
+ *     with no variable base mints nothing at all (an invisible gap, see `rReceiverChain`).
+ *
  * Exposes lazy `Parser` and `Query` singletons so callers don't pay
  * tree-sitter init cost per file.
  */
@@ -343,6 +350,15 @@ export const R_SCOPE_QUERY = `
 (call
   function: (extract_operator
     lhs: (identifier) @reference.receiver
+    rhs: (identifier) @reference.name)) @reference.call.member
+
+;; Chained member calls: a$b$m(), Cls$new()$m(). The receiver is itself an extract_operator or a
+;; call; the pattern is disjoint from the one above (an identifier receiver), so no call is
+;; matched twice. emitRScopeCaptures turns the receiver into a truncated chain, or drops the match
+;; when the chain has no variable base (get_user()$m(), pkg::Cls$new()$m(), x[[1]]$f$m()).
+(call
+  function: (extract_operator
+    lhs: [(extract_operator) (call)] @reference.receiver
     rhs: (identifier) @reference.name)) @reference.call.member
 `;
 
