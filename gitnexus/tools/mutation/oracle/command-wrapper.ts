@@ -37,6 +37,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { INSTRUMENTER_CONSTANTS } from '@stryker-mutator/api/core';
+import type { Vite } from 'vitest/node';
 import {
   ORACLE_RECORD_SCHEMA_VERSION,
   isMutantId,
@@ -133,6 +134,12 @@ export interface OracleVitestOptions {
   reportDir: string;
   kind: RecordKind;
   mutantId: string | null;
+  /** CLI filters, e.g. `<file>:<line>` for a single-test launch (launch-single.ts); none here. */
+  filters?: readonly string[];
+  /** Vitest's `-t` pattern for a single-test launch. */
+  testNamePattern?: string;
+  /** Extra Vite plugins, e.g. one whose `configureVitest` hook adds the oracle setup file. */
+  plugins?: readonly Vite.Plugin[];
 }
 
 /** Runs Vitest once as described in the module comment; returns the record it wrote. */
@@ -155,7 +162,7 @@ export async function runOracleVitest(options: OracleVitestOptions): Promise<Ora
     try {
       const { startVitest } = await import('vitest/node');
       const vitest = await startVitest(
-        [],
+        [...(options.filters ?? [])],
         {
           root,
           config: configFile,
@@ -164,8 +171,14 @@ export async function runOracleVitest(options: OracleVitestOptions): Promise<Ora
           cache: false,
           fsModuleCache: false,
           reporters: [['json', { outputFile: vitestJsonFile }], reporter],
+          ...(options.testNamePattern === undefined
+            ? {}
+            : { testNamePattern: options.testNamePattern }),
         },
-        { cacheDir: path.join(root, ORACLE_CACHE_DIR, `cache-${process.pid}`) },
+        {
+          cacheDir: path.join(root, ORACLE_CACHE_DIR, `cache-${process.pid}`),
+          ...(options.plugins === undefined ? {} : { plugins: [...options.plugins] }),
+        },
       );
       vitestVersion = vitest.version;
       exitCode = Number(process.exitCode ?? 0);
