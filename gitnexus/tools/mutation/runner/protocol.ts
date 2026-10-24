@@ -8,7 +8,7 @@ import type { MutantCoverage } from '@stryker-mutator/api/core';
 import type { MutantActivation } from '@stryker-mutator/api/test-runner';
 
 /** `provide`/`inject` key and task-meta key. */
-export const PROTOCOL_KEY = 'gitnexusStrykerVitest5';
+export const PROTOCOL_KEY = 'gitnexusStrykerVitest5'; // gitleaks:allow -- a provide/inject key, not a credential
 
 export type WorkerMode = 'dry-run' | 'mutant';
 
