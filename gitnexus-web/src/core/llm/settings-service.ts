@@ -34,7 +34,8 @@ const mergeMiniMaxSettings = (
     ...stored,
   };
 
-  if (!(MINIMAX_MODEL_IDS as readonly string[]).includes(merged.model ?? '')) {
+  // Preset changes must not replace an explicitly saved or custom model ID.
+  if (!merged.model?.trim()) {
     return {
       ...merged,
       model: DEFAULT_LLM_SETTINGS.minimax?.model,
