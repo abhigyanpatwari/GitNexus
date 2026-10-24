@@ -32,6 +32,7 @@ ROW_FIELDS = (
     "task_base_sha",
     "oracle_digest",
     "sandbox_backend",
+    "runtime_exposure",
     DEPENDENCY_CONTENT_BINDING_FIELD,
     "ok",
     "resolved",
@@ -126,6 +127,7 @@ def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | N
             and row.get("model") == report["model"]
             and row.get("effort") == report["effort"]
             and row.get("sandbox_backend") == "bwrap"
+            and row.get("runtime_exposure") == ("none" if arm == "baseline_nomcp" else "stdio-only")
             and row.get("ok") is True
             and type(row.get("resolved")) is bool
             and type(row.get("authored_tests_passed")) is bool
@@ -192,7 +194,14 @@ def render_markdown(report: dict[str, Any]) -> str:
     lines += [
         "",
         "Negative agent outcomes remain in the denominator. Indexing and grading are excluded from agent cost/time.",
-        "The MCP arm also has readable compiled runtime code; this comparison includes that access and cannot isolate tool assistance from access to later fixes.",
+        (
+            "The MCP arm receives a stdio connection; the candidate runtime and registry are absent from the agent filesystem."
+            if report["complete"] and report.get("per_run") and all(
+                row.get("runtime_exposure") == ("none" if row.get("arm") == "baseline_nomcp" else "stdio-only")
+                for row in report["per_run"]
+            )
+            else "Runtime isolation is unproven. Historical MCP cells had readable compiled runtime code and cannot isolate tool assistance from access to later fixes."
+        ),
         "This small pinned task set is release evidence; it does not establish general gains or statistical significance.",
         "",
     ]
