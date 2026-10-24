@@ -333,11 +333,12 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
         for shard in range(1, total + 1)
     }
     assert names.isdisjoint(native_names)
-    assert set(gate["needs"]) == {"cross-platform", "test-completeness"}
+    assert set(gate["needs"]) == {"cross-platform", "test-completeness", "scope-resolution-benchmark"}
     assert gate["if"] == "always()"
     assert not gate.get("continue-on-error", False)
     assert not jobs["cross-platform"].get("continue-on-error", False)
     assert not jobs["test-completeness"].get("continue-on-error", False)
+    assert not jobs["scope-resolution-benchmark"].get("continue-on-error", False)
     assert gate["permissions"] == {}
     assert len(gate["steps"]) == 1
     step = gate["steps"][0]
@@ -347,22 +348,31 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
     assert step["env"] == {
         "NATIVE_RESULT": "${{ needs.cross-platform.result }}",
         "EXECUTION_RESULT": "${{ needs.test-completeness.result }}",
+        "SCOPE_BENCH_RESULT": "${{ needs.scope-resolution-benchmark.result }}",
     }
 
 
 @pytest.mark.parametrize("native_result", ["success", "failure", "cancelled", "skipped", ""])
 @pytest.mark.parametrize("execution_result", ["success", "failure", "cancelled", "skipped", ""])
-def test_required_platform_check_fails_unless_every_dependency_passed(ci_test_jobs, native_result, execution_result):
+@pytest.mark.parametrize("scope_bench_result", ["success", "failure", "cancelled", "skipped", ""])
+def test_required_platform_check_fails_unless_every_dependency_passed(
+    ci_test_jobs, native_result, execution_result, scope_bench_result
+):
     step = ci_test_jobs["protected-platform-checks"]["steps"][0]
     result = subprocess.run(
         ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
-        env={**os.environ, "NATIVE_RESULT": native_result, "EXECUTION_RESULT": execution_result},
+        env={
+            **os.environ,
+            "NATIVE_RESULT": native_result,
+            "EXECUTION_RESULT": execution_result,
+            "SCOPE_BENCH_RESULT": scope_bench_result,
+        },
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
     )
-    expected = 0 if native_result == execution_result == "success" else 1
+    expected = 0 if native_result == execution_result == scope_bench_result == "success" else 1
     assert result.returncode == expected, result.stdout + result.stderr
 
 
