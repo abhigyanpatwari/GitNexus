@@ -2,3 +2,5 @@
 c9fdab17f25ebaf332fba6e6ba55ee328f20fe66:README.md:curl-auth-header:348
 # Synthetic Kotlin Actuator fixture value from PR #3107; no credential was present.
 3951079300a18b14e79f5b5f5dd778ae19ced6e3:gitnexus/test/integration/spring-actuator-kotlin-runtime-pipeline.test.ts:generic-api-key:8
+# Vitest provide/inject key name from PR #3686 (PROTOCOL_KEY = 'gitnexusStrykerVitest5'); no credential was present.
+bf4fe7666212c1e2a82aea8309095f63e4b23dcc:gitnexus/tools/mutation/runner/protocol.ts:generic-api-key:11

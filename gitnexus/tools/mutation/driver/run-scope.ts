@@ -1,0 +1,449 @@
+/**
+ * Scope driver (U10): turns a scope file into a prepared copy, a generated Stryker config, a
+ * Stryker run and normalised results.
+ *
+ *   1. prepare.ts builds `<out>/prepared` with the mutate files' `as` assertions blanked (KTD7);
+ *   2. `<out>/scope.json` names the test files for tools/mutation/vitest.mutation.config.ts;
+ *   3. `<out>/stryker.config.json` comes from stryker-config.ts (never with `testFiles`, KTD4);
+ *   4. Stryker runs as `node --import tsx <prepared>/gitnexus/node_modules/@stryker-mutator/core/
+ *      bin/stryker.js run <config>` from `<prepared>/gitnexus`, with `GITNEXUS_MUTATION_SCOPE` set
+ *      and the inherited `__STRYKER_ACTIVE_MUTANT__` and `STRYKER_MUTATOR_WORKER` removed; its
+ *      output goes to `<out>/stryker.log`. On POSIX it runs detached, as the leader of its own
+ *      process group: SIGINT and SIGTERM to the driver are forwarded to that whole group, and an
+ *      abnormal Stryker exit kills what is left of it, so no Stryker or Vitest worker outlives a
+ *      cancelled or failed run. Windows has no process groups to signal: the signal goes to the
+ *      Stryker process only;
+ *   5. the report gets global mutant ids and the span-map check (U2), and is joined with the run
+ *      manifest and sidecars (normalise-results.ts) into `<out>/results.json`.
+ *
+ * Programmatic callers may also pass `extraRoots` (mutation fixture project directories, see
+ * path-map.ts `buildPathMap`), `ignoredDirs` and a `vitest` config and project for the runner; the
+ * gate 2 conformance driver (tools/mutation/conformance) runs its fixture project this way. The
+ * CLI keeps the defaults.
+ *
+ * The scope file format and the run layout are documented in stryker-config.ts, the results
+ * schema in normalise-results.ts. The output directory must lie outside the checkout; an existing
+ * non-empty one is replaced only when it holds a previous driver run's marker file.
+ *
+ * Usage (from gitnexus/):
+ *   npm run test:mutation:run -- --scope <scope.json> --out <dir> [--variant vitest5|command]
+ *     [--command <cmd>] [--concurrency <n>] [--max-test-runner-reuse <n>] [--timeout-ms <n>]
+ * Exit codes: 0 clean run; 1 results written but with integrity flags or span-map failures;
+ * 2 usage, setup or Stryker failure.
+ */
+import { spawn } from 'node:child_process';
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
+import { INSTRUMENTER_CONSTANTS } from '@stryker-mutator/api/core';
+import { identifyMutants, readMutationReport, readRepoFile } from '../prepare/mutant-identity.js';
+import { buildPathMap } from '../prepare/path-map.js';
+import { prepare } from '../prepare/prepare.js';
+import { assertSpanMap, checkSpanMap } from '../prepare/span-map-check.js';
+import { readRunManifest } from '../runner/run-manifest.js';
+import { readSidecars, sidecarFileName } from '../runner/sidecar.js';
+import { MUTATION_SCOPE_ENV, parseMutationScope } from '../scope-file.js';
+import { errorMessage, isMainModule } from '../shared/cli.js';
+import { isInside } from '../shared/fs.js';
+import {
+  RESULTS_SCHEMA_VERSION,
+  normaliseRun,
+  parseReportTestFiles,
+  type RunResults,
+  type SidecarInput,
+} from './normalise-results.js';
+import {
+  DEFAULT_IGNORED_DIRS,
+  assertTestFilesInSandbox,
+  buildStrykerConfig,
+  formatMutateEntry,
+  parseDriverScope,
+  parseVariant,
+  runLayout,
+  type RunLayout,
+  type Variant,
+  type VitestSelection,
+} from './stryker-config.js';
+
+/** Marks an output directory as created by this driver, so a re-run may replace it. */
+export const RUN_MARKER_FILE = '.gitnexus-mutation-run';
+
+/** Stryker's worker id variable: an inherited value would override each worker's own id. */
+const WORKER_ENV = 'STRYKER_MUTATOR_WORKER';
+const LOG_TAIL_LINES = 40;
+
+export interface CliOptions {
+  scopeFile: string;
+  outDir: string;
+  variant: Variant;
+  concurrency: number;
+  maxTestRunnerReuse: number;
+  timeoutMS: number;
+  command: string | undefined;
+}
+
+export interface RunScopeOptions extends CliOptions {
+  /** Absolute repo checkout. */
+  repoRoot: string;
+  /** Defaults to {@link DEFAULT_IGNORED_DIRS}. */
+  ignoredDirs?: readonly string[];
+  /** Mutation fixture project roots whose files may be mutated (path-map.ts `buildPathMap`). */
+  extraRoots?: readonly string[];
+  /** vitest5 only: the runner's Vitest config file and project; the runner defaults otherwise. */
+  vitest?: VitestSelection;
+  /**
+   * Gate 2 conformance only: variables set in the Stryker process environment after
+   * {@link strykerChildEnv} scrubbed the inherited ones, so the environment case can hand Stryker
+   * an active mutant the vitest5 runner itself must remove (KTD5). Every other caller leaves it
+   * unset and keeps the default scrub.
+   */
+  childEnv?: Readonly<Record<string, string>>;
+}
+
+export class UsageError extends Error {
+  override name = 'UsageError';
+}
+
+const parseInteger = (value: string | undefined, name: string, fallback: number): number => {
+  if (value === undefined) return fallback;
+  if (!/^\d+$/.test(value)) throw new UsageError(`--${name} must be an integer, got ${value}`);
+  return Number(value);
+};
+
+/** Parses the CLI arguments; relative paths resolve against `cwd`. */
+export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
+  const { values } = parseArgs({
+    args: [...argv],
+    options: {
+      scope: { type: 'string' },
+      out: { type: 'string' },
+      variant: { type: 'string', default: 'vitest5' },
+      command: { type: 'string' },
+      concurrency: { type: 'string' },
+      'max-test-runner-reuse': { type: 'string' },
+      'timeout-ms': { type: 'string' },
+    },
+    strict: true,
+    allowPositionals: false,
+  });
+  if (values.scope === undefined) throw new UsageError('--scope is required');
+  if (values.out === undefined) throw new UsageError('--out is required');
+  return {
+    scopeFile: path.resolve(cwd, values.scope),
+    outDir: path.resolve(cwd, values.out),
+    variant: parseVariant(values.variant),
+    concurrency: parseInteger(values.concurrency, 'concurrency', 2),
+    maxTestRunnerReuse: parseInteger(values['max-test-runner-reuse'], 'max-test-runner-reuse', 0),
+    timeoutMS: parseInteger(values['timeout-ms'], 'timeout-ms', 10000),
+    command: values.command,
+  };
+}
+
+/**
+ * The Stryker process environment: Stryker's own inherited variables removed, then `childEnv`
+ * (see {@link RunScopeOptions.childEnv}) applied, then the run's scope file named.
+ */
+export function strykerChildEnv(
+  env: Readonly<Record<string, string | undefined>>,
+  scopeFile: string,
+  childEnv: Readonly<Record<string, string>> = {},
+): Record<string, string> {
+  const scrubbed = new Set([INSTRUMENTER_CONSTANTS.ACTIVE_MUTANT_ENV_VARIABLE, WORKER_ENV]);
+  const child: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && !scrubbed.has(key)) child[key] = value;
+  }
+  Object.assign(child, childEnv);
+  child[MUTATION_SCOPE_ENV] = scopeFile;
+  return child;
+}
+
+/**
+ * The pid that reaches the whole Stryker process tree: on POSIX the negative pid, which names the
+ * process group Stryker leads (it runs detached); on Windows, which has no process groups to
+ * signal, the Stryker process itself.
+ */
+export function signalTarget(pid: number, platform: NodeJS.Platform): number {
+  return platform === 'win32' ? pid : -pid;
+}
+
+export function strykerCommand(
+  layout: RunLayout,
+  nodePath: string,
+): { command: string; args: string[]; cwd: string } {
+  return {
+    command: nodePath,
+    args: ['--import', 'tsx', layout.strykerBin, 'run', layout.configFile],
+    cwd: layout.packageDir,
+  };
+}
+
+/** Kept Stryker sandboxes among the entries of its temp dir, sorted. */
+export function findSandboxes(tempDir: string, entries: readonly string[]): string[] {
+  return entries
+    .filter((entry) => entry.startsWith('sandbox-'))
+    .sort()
+    .map((entry) => path.join(tempDir, entry));
+}
+
+function resetOutDir(repoRoot: string, outDir: string): void {
+  if (isInside(repoRoot, outDir) || isInside(outDir, repoRoot)) {
+    throw new UsageError(`--out ${outDir} must lie outside the checkout ${repoRoot}`);
+  }
+  if (existsSync(outDir) && readdirSync(outDir).length > 0) {
+    if (!existsSync(path.join(outDir, RUN_MARKER_FILE))) {
+      throw new UsageError(
+        `${outDir} is not empty and was not created by this driver; choose another --out`,
+      );
+    }
+    rmSync(outDir, { recursive: true, force: true });
+  }
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(path.join(outDir, RUN_MARKER_FILE), '');
+}
+
+/** Every published sidecar record with its file path and modification time. */
+export function readSidecarInputs(sidecarDir: string): SidecarInput[] {
+  if (!existsSync(sidecarDir)) return [];
+  return readSidecars(sidecarDir).map((record) => {
+    const file = path.join(
+      sidecarDir,
+      sidecarFileName(record.kind, record.mutantId, record.worker, record.attempt),
+    );
+    return { record, file, writtenAtMs: statSync(file).mtimeMs };
+  });
+}
+
+function runStryker(
+  layout: RunLayout,
+  childEnv: Readonly<Record<string, string>> | undefined,
+): Promise<{ exitCode: number; wallClockMs: number }> {
+  const { command, args, cwd } = strykerCommand(layout, process.execPath);
+  const log = createWriteStream(layout.logFile);
+  const started = performance.now();
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: strykerChildEnv(process.env, layout.scopeFile, childEnv),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Its own process group (POSIX), so one signal reaches every Stryker and Vitest worker.
+      detached: process.platform !== 'win32',
+    });
+    const signalTree = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) return;
+      try {
+        process.kill(signalTarget(child.pid, process.platform), signal);
+      } catch (error) {
+        // ESRCH: the whole group is gone. Anything else: at least reach Stryker itself.
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') child.kill(signal);
+      }
+    };
+    // Detached workers no longer get the terminal's signals, so every signal is forwarded (a
+    // second SIGINT makes Stryker force its exit) until Stryker is gone.
+    process.on('SIGINT', signalTree);
+    process.on('SIGTERM', signalTree);
+    child.stdout.pipe(log, { end: false });
+    child.stderr.pipe(log, { end: false });
+    child.once('error', (error) => {
+      signalTree('SIGKILL');
+      reject(error);
+    });
+    // A cancelled or failed Stryker can leave workers behind: kill what is left of its group.
+    child.once('exit', (code, signal) => {
+      if (code !== 0 || signal !== null) signalTree('SIGKILL');
+    });
+    child.once('close', (code, signal) => {
+      process.off('SIGINT', signalTree);
+      process.off('SIGTERM', signalTree);
+      log.end(() =>
+        resolve({
+          exitCode: code ?? (signal === null ? 1 : 128),
+          wallClockMs: Math.round(performance.now() - started),
+        }),
+      );
+    });
+  });
+}
+
+const logTail = (file: string): string =>
+  existsSync(file) ? readFileSync(file, 'utf8').split('\n').slice(-LOG_TAIL_LINES).join('\n') : '';
+
+export class StrykerRunError extends Error {
+  override name = 'StrykerRunError';
+}
+
+/** Runs one scope end to end; returns the results and the exit code they imply. */
+export async function runScope(
+  options: RunScopeOptions,
+): Promise<{ results: RunResults; exitCode: number }> {
+  const pathMap = buildPathMap(options.extraRoots);
+  const scope = parseDriverScope(readFileSync(options.scopeFile, 'utf8'), pathMap);
+  const ignoredDirs = options.ignoredDirs ?? DEFAULT_IGNORED_DIRS;
+  assertTestFilesInSandbox(scope.testFiles, ignoredDirs);
+  const layout = runLayout(options.outDir);
+  const config = buildStrykerConfig({
+    variant: options.variant,
+    outDir: layout.outDir,
+    mutate: scope.mutate,
+    concurrency: options.concurrency,
+    maxTestRunnerReuse: options.maxTestRunnerReuse,
+    timeoutMS: options.timeoutMS,
+    command: options.command,
+    ignoredDirs,
+    pathMap,
+    vitest: options.vitest,
+  });
+
+  resetOutDir(options.repoRoot, layout.outDir);
+  const prepared = prepare({
+    repoRoot: options.repoRoot,
+    outDir: layout.preparedRoot,
+    mutate: scope.mutate.map((entry) => entry.file),
+    pathMap,
+  });
+  if (prepared.failed.length > 0) {
+    throw new UsageError(
+      `prepare rejected ${prepared.failed.map((f) => `${f.file} (${f.reason})`).join(', ')}`,
+    );
+  }
+  const missing = scope.testFiles.filter((file) => !existsSync(path.join(layout.packageDir, file)));
+  if (missing.length > 0) throw new UsageError(`test files not found: ${missing.join(', ')}`);
+  const vitestConfig = options.vitest?.configFile;
+  if (vitestConfig !== undefined && !existsSync(path.join(layout.packageDir, vitestConfig))) {
+    throw new UsageError(`Vitest config not found in the prepared copy: ${vitestConfig}`);
+  }
+
+  const scopeText = `${JSON.stringify({ testFiles: scope.testFiles }, null, 2)}\n`;
+  parseMutationScope(scopeText);
+  writeFileSync(layout.scopeFile, scopeText);
+  writeFileSync(layout.configFile, `${JSON.stringify(config, null, 2)}\n`);
+  if (options.variant === 'vitest5') {
+    mkdirSync(layout.runDir, { recursive: true });
+    mkdirSync(layout.sidecarDir, { recursive: true });
+  }
+
+  console.log(`mutation run: Stryker ${options.variant} running; log ${layout.logFile}`);
+  const stryker = await runStryker(layout, options.childEnv);
+  if (stryker.exitCode !== 0 || !existsSync(layout.reportFile)) {
+    throw new StrykerRunError(
+      `Stryker exited with ${stryker.exitCode} after ${stryker.wallClockMs} ms` +
+        `${existsSync(layout.reportFile) ? '' : ' and wrote no report'}; last lines of ` +
+        `${layout.logFile}:\n${logTail(layout.logFile)}`,
+    );
+  }
+
+  const report = readMutationReport(layout.reportFile);
+  const identities = identifyMutants(report, {
+    packageDir: report.projectRoot ?? layout.packageDir,
+    readOriginal: readRepoFile(options.repoRoot),
+    pathMap,
+  });
+  const spanMap = checkSpanMap(report, identities);
+  const isVitest5 = options.variant === 'vitest5';
+  const normalised = normaliseRun({
+    identities,
+    testFiles: parseReportTestFiles(readFileSync(layout.reportFile, 'utf8')),
+    manifest: isVitest5 ? readRunManifest(layout.runDir) : null,
+    sidecars: isVitest5 ? readSidecarInputs(layout.sidecarDir) : null,
+  });
+  const results: RunResults = {
+    schemaVersion: RESULTS_SCHEMA_VERSION,
+    variant: options.variant,
+    scope: { testFiles: scope.testFiles, mutate: scope.mutate.map(formatMutateEntry) },
+    paths: {
+      outDir: layout.outDir,
+      preparedRoot: layout.preparedRoot,
+      packageDir: layout.packageDir,
+      configFile: layout.configFile,
+      reportFile: layout.reportFile,
+      logFile: layout.logFile,
+      runDir: isVitest5 ? layout.runDir : null,
+      sidecarDir: isVitest5 ? layout.sidecarDir : null,
+      sandboxDirs: existsSync(layout.tempDir)
+        ? findSandboxes(layout.tempDir, readdirSync(layout.tempDir))
+        : [],
+    },
+    stryker,
+    spanMap: { checked: spanMap.checked, failures: spanMap.failures },
+    ...normalised,
+  };
+  writeFileSync(layout.resultsFile, `${JSON.stringify(results, null, 2)}\n`);
+  const clean = spanMap.failures.length === 0 && normalised.flags.length === 0;
+  return { results, exitCode: clean ? 0 : 1 };
+}
+
+export const formatDuration = (ms: number): string => {
+  const seconds = Math.round(ms / 1000);
+  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
+};
+
+const formatCounts = (counts: Readonly<Record<string, number>>): string =>
+  Object.entries(counts)
+    .filter(([, count]) => count > 0)
+    .map(([key, count]) => `${count} ${key}`)
+    .join(', ');
+
+/** A short human summary of a results document. */
+export function formatSummary(results: RunResults): string {
+  const { summary, spanMap, stryker, tests } = results;
+  const ran = tests.filter((test) => !test.skipped).length;
+  return [
+    `mutation run (${results.variant}): ${summary.mutants} mutants: ${formatCounts(summary.byStatus)}`,
+    `  outcome classes: ${formatCounts(summary.byOutcome)}`,
+    `  tests with kills: ${summary.testsWithKills}/${ran} ` +
+      `(assertion kills: ${summary.testsWithAssertionKills}); zero-test runs: ${summary.zeroTestRuns}`,
+    `  mutants with a sidecar record: ${summary.mutantsWithSidecar}; with an outcome class: ` +
+      `${summary.mutantsWithOutcome}`,
+    `  span map: ${spanMap.checked} checked, ${spanMap.failures.length} failed; ` +
+      `flags: ${summary.flags}`,
+    ...results.flags
+      .slice(0, 10)
+      .map((flag) => `    ${flag.kind} ${flag.localId ?? '-'}: ${flag.detail}`),
+    `  Stryker: exit ${stryker.exitCode} in ${formatDuration(stryker.wallClockMs)}`,
+    ...results.paths.sandboxDirs.map((dir) => `  kept sandbox: ${dir}`),
+    `  results: ${path.join(results.paths.outDir, 'results.json')}`,
+  ].join('\n');
+}
+
+// ── CLI ────────────────────────────────────────────────────────────────────
+
+async function main(): Promise<void> {
+  const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+  const started = performance.now();
+  try {
+    const options = parseCliArgs(process.argv.slice(2), process.cwd());
+    const { results, exitCode } = await runScope({ ...options, repoRoot });
+    console.log(formatSummary(results));
+    console.log(`  total wall clock: ${formatDuration(performance.now() - started)}`);
+    try {
+      assertSpanMap({ ...results.spanMap, mapped: [] });
+    } catch (error) {
+      console.error(errorMessage(error));
+    }
+    process.exitCode = exitCode;
+  } catch (error) {
+    console.error(errorMessage(error));
+    if (error instanceof TypeError || error instanceof UsageError) {
+      console.error(
+        'usage: npm run test:mutation:run -- --scope <scope.json> --out <dir> ' +
+          '[--variant vitest5|command] [--command <cmd>] [--concurrency <n>] ' +
+          '[--max-test-runner-reuse <n>] [--timeout-ms <n>]',
+      );
+    }
+    process.exitCode = 2;
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  void main();
+}

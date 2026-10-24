@@ -26,6 +26,7 @@ From `gitnexus/`:
 | `npm run test:parity`         | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
 | `npm run test:cross-platform` | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
 | `npm run test:watch`          | Vitest in watch mode                               | Active development                    |
+| `npm run test:dupes`          | Duplicate-test scan of lines changed vs `main`     | Before adding tests or benchmarks     |
 
 Vitest transpiles TypeScript without checking types. Run `npm run typecheck:tests`
 in `gitnexus/` to check test code and helpers against the production types. This
@@ -159,11 +160,76 @@ The PR report shows the reconciled result as **Unverified**. Zero means every te
 has execution evidence; individual OS logs still show tests that require another
 OS as skipped. Failed executions remain failures even if another job passes.
 
+### Duplicate-test scan (advisory)
+
+The `Duplicate test scan` job in `ci.yml` runs `npm run test:dupes` on the lines a PR
+changes, and the PR report lists what it finds under **Possible duplicate tests**. It
+never fails a build. It reports:
+
+| Kind                 | Meaning                                                                    |
+| -------------------- | -------------------------------------------------------------------------- |
+| `same-test`          | Same body and same setup as an existing test                               |
+| `assertions-pinned`  | Every assertion is a literal `fn(...)` → matcher another test already makes |
+| `same-fixture-setup` | A `before*` hook builds a fixture another describe already builds          |
+| `copied-helper`      | A top-level helper identical to one in another file or `test/helpers`      |
+| `orphan-bench-gate`  | A bench script with `--check` that no workflow or npm script runs          |
+
+"Same setup" includes enclosing hooks, describe-level statements, wrapper arguments,
+loop heads, `each` tables, referenced file-local declarations and resolved imports, so
+identical bodies that run against different fixtures are not reported. Mark an
+intentional repeat with `// dupe-ok: <reason>` on the reported line or the line above.
+Locally, `npm run test:dupes` compares against `origin/main`; pass `--base <ref>` to
+change that, or `--all` to scan every test. Python tests are not scanned.
+
 `npm run test:benchmarks` discovers all tests gated by `GITNEXUS_BENCH` and runs
 them serially. Keep timing measurements out of parallel coverage workers. The
 `eval-tests` job installs the locked Python dependencies and runs the workflow
 preflight Vitest tests as well as pytest; those tests must exercise real Python
 validation, never a stubbed success.
+
+## Mutation testing tooling (Phase 0)
+
+`gitnexus/tools/mutation/` holds a Stryker test runner for Vitest 5 (`vitest5`) and the tools
+that validate it. The runner supports Vitest `5.0.x` only and refuses any other version. Its
+validated scope is the pure-JS category: 246 unit test files (4,541 tests) that load no native
+code, workers or child processes and read no fixtures. The gates stay out of the main suite
+(only the tools' unit tests in `test/unit/mutation/` run there), and nothing ships in the npm
+package.
+
+Every run works in a prepared copy outside the checkout (`--out`/`--work` must lie outside it).
+The copy blanks each `as` type assertion in the mutated files with spaces of equal length,
+because Stryker never mutates code under one, and relocates `gitnexus-shared/src` into the
+package. From `gitnexus/` (each tool documents its options in its file header):
+
+| Command                                | What it does                                                          |
+| -------------------------------------- | --------------------------------------------------------------------- |
+| `npm run test:mutation:run`            | One Stryker run over a scope file with the `vitest5` runner           |
+| `npm run test:mutation:classify`       | Lists the pure-JS unit test files                                     |
+| `npm run test:mutation:fidelity`       | Gate 1: the unmutated run matches plain Vitest; records the envelope  |
+| `npm run test:mutation:conformance`    | Gate 2: pinned outcomes of the conformance fixture project            |
+| `npm run test:mutation:oracle`         | Gate 3: compares runner runs with the frozen oracle manifests         |
+| `npm run test:mutation:oracle:freeze`  | Freezes (or re-freezes) one oracle manifest                           |
+| `npm run test:mutation:oracle:command` | The oracle's own Stryker run, with Stryker's `command` runner         |
+| `npm run test:mutation:controls`       | Gate 4: planted positive controls and determinism across two profiles |
+| `npm run test:mutation:bench`          | Oracle cost benchmark                                                 |
+| `npm run test:mutation:prepare`        | Builds a prepared copy on its own                                     |
+
+Frozen artifacts live in `gitnexus/test/fixtures/`: `mutation-conformance/` (the gate 2
+fixture project and `expected.json`), `mutation-oracle/` (the gate 1 envelope and one gate 3
+manifest per oracle scope: `shared`, `schema-constants`, `middleware`) and
+`mutation-controls/planted.json` (gate 4).
+
+Re-freeze a manifest when gate 3 reports "re-freeze required", that is after a change to a
+scope's tests or their imports, the Vitest configs, the prepare tool, or the Stryker, Vitest or
+Node major version. Use the `refreeze` command recorded in the manifest, with a new seed.
+Re-select the controls when gate 4 reports "re-select required". After a Vitest, Stryker or Node
+upgrade, re-run all four gates. Refresh `expected.json` from the conformance `observed.json`
+only for an intended change.
+
+`.github/workflows/mutation-runner-validation.yml` runs gate 2 on PRs that touch the tooling,
+its fixtures, `gitnexus/package.json`, the lockfile or `gitnexus/vitest.config.ts`. A manual
+dispatch also runs gates 1, 3 and 4 and the benchmark, or re-freezes oracle manifests sharded
+by scope and uploads them for a maintainer to commit. The workflow is advisory.
 
 ## Regression testing
 
