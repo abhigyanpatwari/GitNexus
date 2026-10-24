@@ -487,6 +487,40 @@ describe('generateAIContextFiles', () => {
       });
     });
 
+    it('repairs a file the previous writer left with mixed endings, then leaves it alone', async () => {
+      await withRepo(async (dir, storage) => {
+        // Build the block as the previous writer wrote it: LF, inside CRLF prose.
+        const file = path.join(dir, 'CLAUDE.md');
+        await fs.writeFile(file, '# Guide\n', 'utf-8');
+        await generateAIContextFiles(dir, storage, 'CrlfProject', stats);
+        const lfFile = await fs.readFile(file, 'utf-8');
+        const block = lfFile.slice(lfFile.indexOf('<!-- gitnexus:start -->'));
+        const mixed = crlf(['# Guide', '', 'Hand-written, kept as is.', '']) + block;
+        await fs.writeFile(file, mixed, 'utf-8');
+        expect(mixed).toContain('\r\n');
+        expect(mixed.replace(/\r\n/g, '')).toContain('\n');
+
+        // Counts moved, so the block itself is left alone: the file is still
+        // written once, uniformly in its own ending.
+        await generateAIContextFiles(dir, storage, 'CrlfProject', {
+          nodes: 11,
+          edges: 21,
+          processes: 4,
+        });
+        const repaired = await fs.readFile(file, 'utf-8');
+        expect(loneLfCount(repaired)).toBe(0);
+        expect(repaired).toContain('Hand-written, kept as is.\r\n');
+        expect(repaired.replace(/\r\n/g, '\n')).toBe(mixed.replace(/\r\n/g, '\n'));
+
+        await generateAIContextFiles(dir, storage, 'CrlfProject', {
+          nodes: 12,
+          edges: 22,
+          processes: 5,
+        });
+        expect(await fs.readFile(file, 'utf-8')).toBe(repaired);
+      });
+    });
+
     it('keeps an LF file in LF', async () => {
       await withRepo(async (dir, storage) => {
         const file = path.join(dir, 'CLAUDE.md');
