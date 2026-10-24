@@ -16,6 +16,10 @@
  *    `TestRunner.getCurrentTest()` names one, and hook otherwise.
  * 4. The `aroundAll` teardown, which runs after every `afterAll` hook and `beforeAll` cleanup,
  *    failing ones included, rewrites the probe file with the hits.
+ * 5. Coverage: it gives Stryker's namespace its own `mutantCoverage` before any instrumented code
+ *    runs. The instrumenter's coverage counter reads `mutantCoverage.static` on every call (this
+ *    file never sets `currentTestId`), and a getter returns the record of the current bucket
+ *    (the same three as the hits), so the probe lists which mutant sites ran where.
  *
  * It imports nothing from the vitest5 runner. Vitest parses the second parameter of `aroundAll`
  * as a fixture pattern, so it must be written `{}`.
@@ -35,10 +39,19 @@ import {
   type ProbeTestHits,
 } from './probe.js';
 
+/** Stryker's coverage record: counts per mutant id, read by the instrumenter's `stryCov`. */
+type CoverageCounts = Record<string, number>;
+
+interface CoverageView {
+  static: CoverageCounts;
+  perTest: Record<string, CoverageCounts>;
+}
+
 interface Namespace {
   activeMutant?: string;
   hitCount?: number;
   hitLimit?: number;
+  mutantCoverage?: CoverageView;
 }
 
 const probeFile = process.env[PROBE_FILE_ENV];
@@ -88,6 +101,21 @@ let total = 0;
 let loadAndCollection = 0;
 let hook = 0;
 const perTest = new Map<string, { task: RunnerTestCase; count: number }>();
+const covered: Record<'loadAndCollection' | 'hook' | 'test', CoverageCounts> = {
+  loadAndCollection: {},
+  hook: {},
+  test: {},
+};
+
+ns.mutantCoverage = {
+  perTest: {},
+  get static(): CoverageCounts {
+    if (!runStarted) return covered.loadAndCollection;
+    return TestRunner.getCurrentTest<RunnerTestCase | undefined>() === undefined
+      ? covered.hook
+      : covered.test;
+  },
+};
 
 const recordHit = (): void => {
   if (!runStarted) {
@@ -123,6 +151,9 @@ const testHits = (task: RunnerTask, count: number): ProbeTestHits => ({
   count,
 });
 
+const coveredIds = (counts: CoverageCounts): string[] =>
+  Object.keys(counts).sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+
 const snapshot = (): ProbeHits => ({
   loadAndCollection,
   hook,
@@ -141,6 +172,11 @@ aroundAll(async (runSuite, {}) => {
       activation,
       hits: snapshot(),
       complete: true,
+      coverage: {
+        loadAndCollection: coveredIds(covered.loadAndCollection),
+        hook: coveredIds(covered.hook),
+        test: coveredIds(covered.test),
+      },
     });
   }
 });

@@ -24,6 +24,13 @@
  *     perTest[]               {taskId, fullName, location, count} while a test is current: its
  *                             body, its `beforeEach`/`afterEach` hooks and fixtures
  *   complete                  true once `hits` is written
+ *   coverage                  written with `hits` (absent in older probes): the ids of the mutants
+ *                             whose coverage counter (the instrumenter's `stryCov`) ran, sorted
+ *                             numerically, in the same three buckets: `loadAndCollection`, `hook`
+ *                             and `test` (while any test was current). The instrumenter calls the
+ *                             counter on every executed mutant site except the active mutant's own,
+ *                             so an unmutated baseline launch records the test's full coverage;
+ *                             the oracle freeze (freeze.ts) derives its strata populations from it.
  * A hit is one evaluation of the installed mutant's switch that selected the mutated code
  * (Stryker's instrumenter counts it in `hitCount`). The baseline launch has no hits.
  */
@@ -58,12 +65,21 @@ export interface ProbeHits {
   perTest: ProbeTestHits[];
 }
 
+/** Mutant ids whose coverage counter ran, per bucket; sorted numerically. */
+export interface ProbeCoverage {
+  loadAndCollection: string[];
+  hook: string[];
+  test: string[];
+}
+
 export interface OracleProbe {
   schemaVersion: typeof PROBE_SCHEMA_VERSION;
   pid: number;
   activation: ProbeActivation;
   hits: ProbeHits | null;
   complete: boolean;
+  /** Absent until the run ends, and in probes written before coverage was recorded. */
+  coverage?: ProbeCoverage;
 }
 
 /** An environment value as a mutant id: unset and empty mean no mutant. */
@@ -147,6 +163,22 @@ function parseTestHits(value: unknown, at: string): ProbeTestHits {
   };
 }
 
+function ids(data: JsonObject, key: string, at: string): string[] {
+  const value = get(data, key, at);
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+    ? value.map(String)
+    : fail(`${at}.${key}`, 'must be an array of strings');
+}
+
+function parseCoverage(value: unknown, at: string): ProbeCoverage {
+  const data = object(value, at);
+  return {
+    loadAndCollection: ids(data, 'loadAndCollection', at),
+    hook: ids(data, 'hook', at),
+    test: ids(data, 'test', at),
+  };
+}
+
 /** Parses and validates the text of a probe file. */
 export function parseOracleProbe(text: string): OracleProbe {
   const data = object(JSON.parse(text), 'root');
@@ -178,5 +210,6 @@ export function parseOracleProbe(text: string): OracleProbe {
               : fail('root.hits.perTest', 'must be an array'),
           },
     complete: bool(data, 'complete', 'root'),
+    ...('coverage' in data ? { coverage: parseCoverage(data.coverage, 'root.coverage') } : {}),
   };
 }

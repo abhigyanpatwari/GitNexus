@@ -109,6 +109,11 @@ export class LaunchUsageError extends Error {
   override name = 'LaunchUsageError';
 }
 
+/** The launch's `signal` aborted it: its process group was killed and no launch.json written. */
+export class LaunchAbortedError extends Error {
+  override name = 'LaunchAbortedError';
+}
+
 // ── test selection ─────────────────────────────────────────────────────────
 
 export interface LaunchTarget {
@@ -529,6 +534,11 @@ export interface LaunchOptions {
   wallClockMs?: number;
   /** Absolute launch directory; created, and must be empty. */
   launchDir: string;
+  /**
+   * Aborting kills the launch's process group; the launch then rejects with
+   * {@link LaunchAbortedError} and writes no launch.json, so the directory stays unfinished.
+   */
+  signal?: AbortSignal;
 }
 
 /** What the child reports about its own Vitest run (`child.json`). */
@@ -633,6 +643,7 @@ export async function launchSingle(options: LaunchOptions): Promise<LaunchResult
     }
   }
   if (!path.isAbsolute(launchDir)) throw new LaunchUsageError('the launch dir must be absolute');
+  if (options.signal?.aborted === true) throw new LaunchAbortedError('the launch was aborted');
   mkdirSync(launchDir, { recursive: true });
   if (readdirSync(launchDir).length > 0) {
     throw new LaunchUsageError(`the launch dir ${launchDir} is not empty`);
@@ -677,6 +688,7 @@ export async function launchSingle(options: LaunchOptions): Promise<LaunchResult
   const err = openSync(files.stderr, 'w');
   const started = performance.now();
   let killedByWallClock = false;
+  let aborted = false;
   const { exitCode, signal } = await new Promise<{
     exitCode: number | null;
     signal: string | null;
@@ -690,12 +702,19 @@ export async function launchSingle(options: LaunchOptions): Promise<LaunchResult
       killedByWallClock = true;
       killGroup(child.pid);
     }, wallClockLimitMs);
+    const onAbort = (): void => {
+      aborted = true;
+      killGroup(child.pid);
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
     child.once('error', (error) => {
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
       reject(error);
     });
     child.once('exit', (code, exitSignal) => {
       clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
       killGroup(child.pid);
       resolve({ exitCode: code, signal: exitSignal });
     });
@@ -703,6 +722,7 @@ export async function launchSingle(options: LaunchOptions): Promise<LaunchResult
     closeSync(out);
     closeSync(err);
   });
+  if (aborted) throw new LaunchAbortedError(`the launch in ${launchDir} was aborted`);
   const wallClockMs = Math.round(performance.now() - started);
 
   const kind = mutantId === null ? 'dry-run' : 'mutant';

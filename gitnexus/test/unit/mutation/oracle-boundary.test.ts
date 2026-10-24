@@ -131,6 +131,8 @@ describe('oracle boundary (KTD15)', () => {
       expect.arrayContaining([
         'command-run.ts',
         'command-wrapper.ts',
+        'compare.ts',
+        'freeze.ts',
         'launch-single.ts',
         'oracle-classify.ts',
         'oracle-reporter.ts',
