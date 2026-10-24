@@ -298,7 +298,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   // ── Phase 2: Tarjan SCC → reverse-topological list of SCCs.
   const sccs = tarjanSccs(graph);
 
-  // ── Phase 2.5: precompute the per-file re-export closure (iterative,
+  // ── Phase 2.5: prepare the per-file re-export closure (iterative,
   // SCC-condensed). Eliminates the recursive crawl that the per-edge
   // `tryFinalize` call site used to do; lookups are O(1) afterwards.
   // See `buildReexportClosures` for the algorithm.
@@ -322,15 +322,20 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     ambiguousByFile.set(filePath, new Set(byName.keys()));
   }
   const topLevelOnly = hooks.namedImportsBindTopLevelOnly === true;
-  const reexportClosures = buildReexportClosures(
-    input.files,
-    byFilePath,
-    moduleEdgeIndex,
-    ambiguousByFile,
-    topLevelOnly,
-    hooks.filterWildcardNames,
-    input.workspaceIndex,
-  );
+  // Direct imports and unfiltered wildcards never read these closures. Build
+  // them once, on demand, so those workspaces do not allocate transitive tables
+  // (and their provenance paths) that are discarded without a single lookup.
+  let reexportClosures: ReadonlyMap<string, FileReexportClosure> | undefined;
+  const getReexportClosures = () =>
+    (reexportClosures ??= buildReexportClosures(
+      input.files,
+      byFilePath,
+      moduleEdgeIndex,
+      ambiguousByFile,
+      topLevelOnly,
+      hooks.filterWildcardNames,
+      input.workspaceIndex,
+    ));
 
   // ── Phase 3: process SCCs in reverse-topological order (leaves first).
   // Within each SCC, run a bounded fixpoint that resolves intra-SCC edges.
@@ -369,7 +374,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
         if (drafts === undefined) continue;
         for (const draft of drafts) {
           if (draft.finalized !== null) continue;
-          const finalized = tryFinalize(draft, byFilePath, reexportClosures, topLevelOnly);
+          const finalized = tryFinalize(draft, byFilePath, getReexportClosures, topLevelOnly);
           if (finalized !== null) {
             draft.finalized = finalized;
             progressed = true;
@@ -422,7 +427,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
           byFilePath,
           hooks,
           input.workspaceIndex,
-          reexportClosures,
+          getReexportClosures,
         );
         for (const e of expanded) {
           if (
@@ -692,7 +697,7 @@ function extractExportedName(parsed: ParsedImport): string {
 function tryFinalize(
   draft: ImportEdgeDraft,
   byFilePath: Map<string, FinalizeFile>,
-  reexportClosures: ReadonlyMap<string, FileReexportClosure>,
+  getReexportClosures: () => ReadonlyMap<string, FileReexportClosure>,
   topLevelOnly: boolean,
 ): ImportEdge | null {
   const targetFile = draft.targetFile;
@@ -754,7 +759,7 @@ function tryFinalize(
   // already encodes every name reachable through that file's named and
   // wildcard re-exports — including transitively through cyclic SCCs —
   // so the lookup is O(1) and never recurses.
-  const followed = lookupReexportedName(reexportClosures, targetFile, importedName);
+  const followed = lookupReexportedName(getReexportClosures(), targetFile, importedName);
   if (followed === null) {
     // Target resolvable but the name isn't exported — keep trying in case a
     // re-export inside the target's SCC surfaces it in a later iteration.
@@ -1605,7 +1610,7 @@ function expandWildcard(
   byFilePath: Map<string, FinalizeFile>,
   hooks: FinalizeHooks,
   workspace: WorkspaceIndex,
-  reexportClosures: ReadonlyMap<string, FileReexportClosure>,
+  getReexportClosures: () => ReadonlyMap<string, FileReexportClosure>,
 ): readonly ImportEdge[] {
   if (edge.targetModuleScope === undefined || edge.targetFile === null) {
     return [edge]; // unresolvable wildcard survives as a single unlinked edge
@@ -1614,7 +1619,9 @@ function expandWildcard(
   if (target === undefined) return [edge];
 
   const targetClosure =
-    hooks.filterWildcardNames === undefined ? undefined : reexportClosures.get(edge.targetFile);
+    hooks.filterWildcardNames === undefined
+      ? undefined
+      : getReexportClosures().get(edge.targetFile);
   const names =
     hooks.filterWildcardNames?.(
       edge.targetModuleScope,
