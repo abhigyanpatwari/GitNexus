@@ -38,6 +38,20 @@ function predicate(source: string) {
 }
 
 describe('normalized predicate and expression facts', () => {
+  it.each(['"prefix\narguments"', '/prefix\narguments/'])(
+    'preserves error-recovery uses and conservative fallback inside %s',
+    (literal) => {
+      const cfg = cfgOf(`function f(x) { const value = ${literal}; consume(x, value); }`);
+      const recovered = cfg.bindings!.findIndex((binding) => binding.name === 'arguments');
+      expect(recovered).toBeGreaterThanOrEqual(0);
+      expect(
+        cfg.blocks.flatMap((block) => (block.statements ?? []).flatMap((s) => s.uses)),
+      ).toContain(recovered);
+      expect(cfg.refinementSafe).toBe(false);
+      expect(createFunctionRefinement(cfg).guards.status).toBe('fallback');
+    },
+  );
+
   it.each([
     '{command}',
     '{9: command}',
