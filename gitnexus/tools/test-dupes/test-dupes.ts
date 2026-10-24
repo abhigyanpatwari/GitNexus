@@ -19,7 +19,8 @@
  *
  * The extraction is also a library for tools/scenario-map (Layer 2): `extractCases` /
  * `extract(...).records` return one `CaseRecord` per test call, suppressed and empty ones
- * included, and `buildFrame`, `closure`, `staticValue` and `dupeOkReason` are exported with it.
+ * included, and `buildFrame`, `closure`, `staticValue`, `dupeOkReason` and the call-shape helpers
+ * (`shapeOf`, `roleOf`, `eachTableOf`) are exported with it.
  *
  * Usage (from gitnexus/; `npm run test:dupes` runs the same):
  *   node --import tsx tools/test-dupes/test-dupes.ts [--base <ref>] [--all] [--json <file>]
@@ -112,13 +113,13 @@ function refsOf(node: t.Node): Set<string> {
 }
 const hash = (s: string): string => createHash('sha1').update(s).digest('hex');
 
-interface CallShape {
+export interface CallShape {
   root: string;
   mods: string[];
   modArgs: t.Node[];
 }
 /** `it`, `it.skip`, `it.each(table)`, `test.describe.serial`, `describe.skipIf(x)` … */
-function shapeOf(callee: t.Node): CallShape | null {
+export function shapeOf(callee: t.Node): CallShape | null {
   const mods: string[] = [];
   const modArgs: t.Node[] = [];
   let n = callee;
@@ -136,8 +137,8 @@ function shapeOf(callee: t.Node): CallShape | null {
     } else return null;
   }
 }
-type Role = 'suite' | 'test' | 'hook' | 'other';
-function roleOf(call: t.CallExpression, shape: CallShape | null): Role {
+export type Role = 'suite' | 'test' | 'hook' | 'other';
+export function roleOf(call: t.CallExpression, shape: CallShape | null): Role {
   if (!shape) return 'other';
   const { root, mods } = shape;
   if (root === 'describe' || root === 'suite' || (root === 'test' && mods.includes('describe')))
@@ -167,7 +168,7 @@ function titleOf(call: t.CallExpression): string {
 }
 const EACH = new Set(['each', 'for']);
 /** The table of `it.each(table)`, `it.each\`…\``, `test.for(table)` …; null for other modifiers. */
-function eachTableOf(callee: t.Node): t.Node | null {
+export function eachTableOf(callee: t.Node): t.Node | null {
   let n = callee;
   for (;;) {
     if (t.isMemberExpression(n)) n = n.object;
@@ -479,6 +480,8 @@ export interface Corpus {
   skipped: string[];
   /** Top-level frame per module key, for `closure` / `staticValue` over these files. */
   programs: Programs;
+  /** The AST of each parsed file by path, the one the records' nodes belong to. */
+  asts: Map<string, t.File>;
 }
 
 const DUPE_OK = /dupe-ok:(.*)/;
@@ -491,7 +494,16 @@ export function suppressed(lines: string[], line: number): boolean {
   return dupeOkReason(lines, line) !== null;
 }
 
-export function extract(files: SourceFile[]): Corpus {
+export interface ExtractOptions {
+  /**
+   * Which files' test calls become records; default {@link isTestFile}. tools/scenario-map passes
+   * its eligible set, which in `controls` mode holds `*.case.ts` files under `test/fixtures/`.
+   */
+  isTest?: (path: string) => boolean;
+}
+
+export function extract(files: SourceFile[], options: ExtractOptions = {}): Corpus {
+  const isTest = options.isTest ?? isTestFile;
   const skipped: string[] = [];
   const parsed: { file: string; ast: t.File; lines: string[] }[] = [];
   for (const { path: file, source } of files) {
@@ -508,7 +520,15 @@ export function extract(files: SourceFile[]): Corpus {
       { file, frame: buildFrame(file, ast.program, []) },
     ]),
   );
-  const corpus: Corpus = { cases: [], records: [], hooks: [], helpers: [], skipped, programs };
+  const corpus: Corpus = {
+    cases: [],
+    records: [],
+    hooks: [],
+    helpers: [],
+    skipped,
+    programs,
+    asts: new Map(parsed.map(({ file, ast }) => [file, ast])),
+  };
   for (const { file, ast, lines } of parsed) {
     const keep = (n: t.Node): boolean => !suppressed(lines, lineOf(n));
 
@@ -528,7 +548,7 @@ export function extract(files: SourceFile[]): Corpus {
       if (key.length < MIN_HELPER_CHARS) continue;
       corpus.helpers.push({ file, line: lineOf(raw), endLine: endLineOf(raw), key, exported });
     }
-    if (!isTestFile(file)) continue;
+    if (!isTest(file)) continue;
 
     // Enclosing describe titles and loops of the node being walked (walk is depth-first).
     const suites: string[] = [];
@@ -677,11 +697,12 @@ export function extract(files: SourceFile[]): Corpus {
 }
 
 /**
- * Every test call in `file` (which must pass `isTestFile`), in walk order. Imports resolve against
- * `file` alone; `extract(files).records` follows constants into the other files as Layer 0 does.
+ * Every test call in `file` (which must pass `options.isTest`, default `isTestFile`), in walk
+ * order. Imports resolve against `file` alone; `extract(files).records` follows constants into the
+ * other files as Layer 0 does.
  */
-export function extractCases(file: SourceFile): CaseRecord[] {
-  return extract([file]).records;
+export function extractCases(file: SourceFile, options: ExtractOptions = {}): CaseRecord[] {
+  return extract([file], options).records;
 }
 
 // ── Grouping and reporting ─────────────────────────────────────────────────

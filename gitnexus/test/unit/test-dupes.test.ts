@@ -3,6 +3,7 @@
  * sticky PR comment. The false-positive table pins every case the 2026-10 audit found
  * where an identical `it` body tested something different.
  */
+import type { ExpressionStatement } from '@babel/types';
 import { describe, it, expect } from 'vitest';
 import {
   dupeOkReason,
@@ -360,6 +361,17 @@ describe('extractCases', () => {
     ],
   ])('returns one record with the instance source of %s', (_label, source, expected) => {
     expect(extractCases(file(`${UNIT}/a.test.ts`, source))).toMatchObject([expected]);
+  });
+
+  it('records a fixture *.case.ts file only when options.isTest accepts it, and keeps its AST', () => {
+    const fixture = file('gitnexus/test/fixtures/mutation-x/a.case.ts', `it('t', () => {});`);
+    const isTest = (path: string): boolean => path.endsWith('.case.ts');
+    const corpus = extract([fixture], { isTest });
+    expect([extractCases(fixture).length, corpus.records.length]).toEqual([0, 1]);
+    const statement = corpus.asts.get(fixture.path)?.program.body[0] as
+      | ExpressionStatement
+      | undefined;
+    expect(statement?.expression).toBe(corpus.records[0].call);
   });
 
   it('feeds Layer 0 exactly the unsuppressed, non-empty records under the same key', () => {
