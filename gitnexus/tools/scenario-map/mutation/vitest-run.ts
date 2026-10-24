@@ -19,6 +19,11 @@
  * runner/classify-outcome.ts exactly as a Stryker run's tests are: every requested test gets its
  * outcome class (`survived` for a pass), plus the run's status and outside-test rows.
  *
+ * Load probe (U9): with `probeFiles`, the result's `loadedFiles` lists those the project's Vite
+ * module graph transformed before the instance closed. Workers fetch every inlined module through
+ * that graph, and a fresh instance with `cache: false` holds nothing else, so row deletion proves
+ * with it that its run evaluated the edited file (KTD10), without a V8 hook.
+ *
  * Library only: run-group.ts calls {@link runVitest}.
  */
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
@@ -75,6 +80,11 @@ export interface VitestRunOptions {
   vitest: VitestSelection;
   /** Absolute scratch directory of this call (scope file, Vite cache); created. */
   workDir: string;
+  /**
+   * Package paths of files whose loading the caller must prove (row deletion's edited file, U9):
+   * the result's `loadedFiles` lists those this run transformed.
+   */
+  probeFiles?: readonly string[];
 }
 
 export interface VitestTestResult {
@@ -100,6 +110,13 @@ export interface VitestRunResult {
   problems: string[];
   unhandledErrors: string[];
   wallClockMs: number;
+  /**
+   * With `probeFiles`: those of them that a Vite environment of the project transformed during
+   * this call (a module of the file holds a transform result), in probe order. The instance is
+   * fresh and Vite pre-transforms nothing for Node tests, so a transform means a worker fetched
+   * the file's current text to evaluate it.
+   */
+  loadedFiles?: string[];
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -166,6 +183,15 @@ function observeModule(file: string, module: TestModule): ObservedModule {
     }),
     hitCount: undefined,
   };
+}
+
+/** True when a Vite environment of the project holds a transformed module of `file` (absolute). */
+function wasTransformed(project: TestProject, file: string): boolean {
+  return Object.values(project.vite.environments).some((environment) =>
+    [...(environment.moduleGraph.getModulesByFile(file) ?? [])].some(
+      (module) => module.transformResult !== null,
+    ),
+  );
 }
 
 /** The checks the vitest5 runner makes before it adds its setup file; throws on a problem. */
@@ -365,7 +391,15 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       };
       project.provide(PROTOCOL_KEY, context);
       const run = await runSelected({ vitest, project, root }, files, testIds);
-      return { ...run, wallClockMs: Math.round(performance.now() - started) };
+      const probed =
+        options.probeFiles === undefined
+          ? {}
+          : {
+              loadedFiles: options.probeFiles.filter((file) =>
+                wasTransformed(project, path.posix.join(root, file)),
+              ),
+            };
+      return { ...run, wallClockMs: Math.round(performance.now() - started), ...probed };
     } finally {
       await vitest.close();
     }
