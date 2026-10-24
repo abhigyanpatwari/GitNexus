@@ -19,8 +19,9 @@
  *
  * The extraction is also a library for tools/scenario-map (Layer 2): `extractCases` /
  * `extract(...).records` return one `CaseRecord` per test call, suppressed and empty ones
- * included, and `buildFrame`, `closure`, `staticValue`, `dupeOkReason` and the call-shape helpers
- * (`shapeOf`, `roleOf`, `eachTableOf`) are exported with it.
+ * included, and `buildFrame`, `resolveName`, `closure`, `staticValue`, `dupeOkReason`, the
+ * call-shape helpers (`shapeOf`, `roleOf`, `eachTableOf`) and the `ENV_OR_MOCK` pattern are
+ * exported with it.
  *
  * Usage (from gitnexus/; `npm run test:dupes` runs the same):
  *   node --import tsx tools/test-dupes/test-dupes.ts [--base <ref>] [--all] [--json <file>]
@@ -68,7 +69,7 @@ const FRAMEWORK_MODULES = new Set([
   'node:assert/strict',
 ]);
 /** Setup that changes what the same call returns: module mocks, spies, env writes. */
-const ENV_OR_MOCK = /\bprocess\.env\b|\b(vi|jest)\.(mock|doMock|spyOn|stubGlobal|stubEnv)\b/;
+export const ENV_OR_MOCK = /\bprocess\.env\b|\b(vi|jest)\.(mock|doMock|spyOn|stubGlobal|stubEnv)\b/;
 const envOrMockTag = (chain: Frame[]): string =>
   chain
     .flatMap((f) => f.setup)
@@ -245,7 +246,8 @@ export function buildFrame(file: string, body: t.Node, extra: t.Node[]): Frame {
   return frame;
 }
 
-function resolveName(name: string, chain: Frame[]): Decl | undefined {
+/** The declaration `name` resolves to through `chain`, innermost frame first. */
+export function resolveName(name: string, chain: Frame[]): Decl | undefined {
   for (let i = chain.length - 1; i >= 0; i--) {
     const d = chain[i].decls.get(name);
     if (d) return d;
