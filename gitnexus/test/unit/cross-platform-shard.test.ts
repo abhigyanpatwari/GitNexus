@@ -100,6 +100,20 @@ describe('cross-platform shard partition', () => {
     ).toEqual([]);
   });
 
+  it('keeps the R rename suite off the shards that hold the go and dml-gate suites', () => {
+    // Windows CI run, 2026-10-17: rename-provider-r (599-750 s measured, 49
+    // persisted fixtures) was charged 100 s, so the packer put it with go and
+    // dml-gate and the shard exhausted the 20-minute watchdog.
+    const rWeight = weightOf('test/integration/rename-provider-r.test.ts');
+    expect(rWeight).toBeGreaterThanOrEqual(600);
+    const shards = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL);
+    const shardOf = (file: string) => shards.findIndex((files) => files.includes(file));
+    const r = shardOf('test/integration/rename-provider-r.test.ts');
+    expect(r).not.toBe(-1);
+    expect(shardOf('test/integration/rename-provider-go.test.ts')).not.toBe(r);
+    expect(shardOf('test/unit/incremental-index-extension-dml-gate.test.ts')).not.toBe(r);
+  });
+
   it('covers every file exactly once, with no overlap between shards', () => {
     const shards = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL);
     const seen = shards.flatMap((s) => [...s]);
@@ -129,9 +143,12 @@ describe('cross-platform shard partition', () => {
     const loads = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).map((files) =>
       files.reduce((sum, file) => sum + Math.max(weightOf(file), (observed[file] ?? 0) + floor), 0),
     );
-    // Leave at least three minutes for hosted-runner variation. Merely
+    // Leave at least two minutes for hosted-runner variation. Merely
     // fitting under 20 minutes left the previous partition prone to timeout.
-    expect(Math.max(...loads)).toBeLessThanOrEqual(17 * 60);
+    // The ceiling was 17 minutes until the R rename provider suite (measured
+    // ~600 s on Windows) was charged its real weight: the table total grew by
+    // ~520 s, so even a perfect ten-way split averages ~1047 s per shard.
+    expect(Math.max(...loads)).toBeLessThanOrEqual(18 * 60);
   });
 
   it('keeps each shard within a shard of the ideal weight', () => {

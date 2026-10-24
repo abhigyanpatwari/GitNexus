@@ -883,6 +883,7 @@ describe('parsing', () => {
       'simple.cpp',
       'simple.cs',
       'simple.zig',
+      'simple.r',
     ];
 
     for (const fixture of fixtures) {

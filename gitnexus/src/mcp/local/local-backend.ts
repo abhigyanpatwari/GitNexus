@@ -7040,7 +7040,8 @@ export class LocalBackend {
       `MATCH (n) WHERE n.filePath IS NOT NULL AND n.filePath <> ''
          AND labels(n) <> 'BasicBlock'
        RETURN n.id AS id, n.name AS name, n.filePath AS filePath,
-              n.startLine AS startLine, n.endLine AS endLine`,
+              n.startLine AS startLine, n.endLine AS endLine,
+              n.isExported AS isExported`,
     );
     const graphNodes: GraphNode[] = rows.map((row: any) => ({
       id: row.id,
@@ -7051,6 +7052,9 @@ export class LocalBackend {
         filePath: row.filePath,
         startLine: row.startLine ?? undefined,
         endLine: row.endLine ?? undefined,
+        // The indexed export verdict, read by providers whose refinement lives outside the
+        // indexed sources (R rename's second privacy check). Absent on tables without the column.
+        ...(typeof row.isExported === 'boolean' ? { isExported: row.isExported } : {}),
       },
     }));
     const referenceRows = await executeParameterized(

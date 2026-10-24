@@ -3056,6 +3056,232 @@ export const ZIG_QUERIES = `
   function: (field_expression
     member: (identifier) @call.name)) @call
 `;
+/**
+ * Every named expression kind the R grammar allows as an argument value, except
+ * `function_definition` (an R6 entry holding a function is a method, not a field).
+ * Mirrors RFieldExtractor, which accepts any non-function value, so the query and
+ * the extractor agree on what a field is.
+ */
+const R6_FIELD_VALUE = `[
+  (binary_operator) (braced_expression) (break) (call) (complex) (dot_dot_i) (dots)
+  (extract_operator) (false) (float) (for_statement) (identifier) (if_statement) (inf)
+  (integer) (na) (namespace_operator) (nan) (next) (null) (parenthesized_expression)
+  (repeat_statement) (return) (string) (subset) (subset2) (true) (unary_operator)
+  (while_statement)
+]`;
+// Every R `binary_operator` anchor below is an assignment (`operator: ["<-" "<<-" "="]`, see
+// languages/r/assignment.ts): the grammar has one node for all infix operators.
+export const R_QUERIES = `
+; ── Functions (name <- function(...) or name = function(...)) ────────────────
+(binary_operator
+  lhs: (identifier) @name
+  operator: ["<-" "<<-" "="]
+  rhs: (function_definition)) @definition.function
+
+; ── S4 Classes (setClass("ClassName", ...)) ──────────────────────────────────
+; The S4 patterns below capture EVERY string argument of the call on purpose.
+; Which argument names the definition is decided by the provider's
+; \`shouldSkipDefinitionCapture\` (languages/r/naming-argument.ts): a query cannot skip an
+; unbounded run of leading comments and named arguments without a repeated
+; sibling group, which is quadratic in the argument count.
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^(setClass|setRefClass)$")
+  arguments: (arguments
+    (argument
+      value: (string
+        content: (string_content) @name)))) @definition.class
+
+; ── R6 Classes via namespace (ClassName <- R6::R6Class(...)) ─────────────────
+(binary_operator
+  lhs: (identifier) @name
+  operator: ["<-" "<<-" "="]
+  rhs: (call
+    function: (namespace_operator
+      rhs: (identifier) @_nsfn
+      (#match? @_nsfn "^R6Class$")))) @definition.class
+
+; ── R6 Classes via bare call (ClassName <- R6Class(...)) ─────────────────────
+(binary_operator
+  lhs: (identifier) @name
+  operator: ["<-" "<<-" "="]
+  rhs: (call
+    function: (identifier) @_r6fn
+    (#match? @_r6fn "^R6Class$"))) @definition.class
+
+; ── R6 Methods via namespace (inside public/private/active = list(...)) ─────
+(binary_operator
+  lhs: (identifier) @_class
+  operator: ["<-" "<<-" "="]
+  rhs: (call
+    function: (namespace_operator
+      rhs: (identifier) @_nsfn2
+      (#match? @_nsfn2 "^R6Class$"))
+    arguments: (arguments
+      (argument
+        name: (identifier) @_section
+        (#match? @_section "^(public|private|active)$")
+        value: (call
+          function: (identifier) @_listfn
+          (#match? @_listfn "^list$")
+          arguments: (arguments
+            (argument
+              name: (identifier) @name
+              value: (function_definition)) @definition.method))))))
+
+; ── R6 Methods via bare call (inside public/private/active = list(...)) ─────
+(binary_operator
+  lhs: (identifier) @_class2
+  operator: ["<-" "<<-" "="]
+  rhs: (call
+    function: (identifier) @_r6fn2
+    (#match? @_r6fn2 "^R6Class$")
+    arguments: (arguments
+      (argument
+        name: (identifier) @_section2
+        (#match? @_section2 "^(public|private|active)$")
+        value: (call
+          function: (identifier) @_listfn2
+          (#match? @_listfn2 "^list$")
+          arguments: (arguments
+            (argument
+              name: (identifier) @name
+              value: (function_definition)) @definition.method))))))
+
+; ── R5 Methods (inside setRefClass(... methods = list(...))) ─────────────────
+; The call itself, assigned or not: \`Person <- setRefClass(...)\` and a bare
+; \`setRefClass(...)\` define the same methods.
+(call
+  function: (identifier) @_refFn
+  (#match? @_refFn "^setRefClass$")
+  arguments: (arguments
+    (argument
+      name: (identifier) @_methods
+      (#match? @_methods "^methods$")
+      value: (call
+        function: (identifier) @_listfn3
+        (#match? @_listfn3 "^list$")
+        arguments: (arguments
+          (argument
+            name: (identifier) @name
+            value: (function_definition)) @definition.method)))))
+
+; ── S4 setGeneric() (generic function declaration) ───────────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^setGeneric$")
+  arguments: (arguments
+    (argument
+      value: (string
+        content: (string_content) @name)))) @definition.function
+
+; ── S4 setMethod() (method implementation for a class) ──────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^setMethod$")
+  arguments: (arguments
+    (argument
+      value: (string
+        content: (string_content) @name)))) @definition.method
+
+; ── All function calls ───────────────────────────────────────────────────────
+(call
+  function: (identifier) @call.name) @call
+
+; ── Namespaced calls (pkg::func()) ───────────────────────────────────────────
+(call
+  function: (namespace_operator
+    lhs: (identifier) @call.namespace
+    rhs: (identifier) @call.name)) @call
+
+; ── Member calls via $ (obj$method()) ───────────────────────────────────────
+(call
+  function: (extract_operator
+    rhs: (identifier) @call.name)) @call
+
+; ── Imports (library/require/source) ─────────────────────────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^(library|require|source)$")
+  arguments: (arguments
+    (argument
+      value: [(identifier) (string)] @import.source))) @import
+
+; ── R6 Fields via namespace (non-function entries in public/private list()) ──
+(binary_operator
+  lhs: (identifier) @_class
+  operator: ["<-" "<<-" "="]
+  rhs: (call
+    function: (namespace_operator
+      rhs: (identifier) @_nsfn
+      (#match? @_nsfn "^R6Class$"))
+    arguments: (arguments
+      (argument
+        name: (identifier) @_section
+        (#match? @_section "^(public|private)$")
+        value: (call
+          function: (identifier) @_listfn
+          (#match? @_listfn "^list$")
+          arguments: (arguments
+            (argument
+              name: (identifier) @name
+              value: ${R6_FIELD_VALUE} @_val) @definition.property))))))
+
+; ── R6 Fields via bare call ──────────────────────────────────────────────────
+(binary_operator
+  lhs: (identifier) @_class2
+  operator: ["<-" "<<-" "="]
+  rhs: (call
+    function: (identifier) @_r6fn
+    (#match? @_r6fn "^R6Class$")
+    arguments: (arguments
+      (argument
+        name: (identifier) @_section2
+        (#match? @_section2 "^(public|private)$")
+        value: (call
+          function: (identifier) @_listfn2
+          (#match? @_listfn2 "^list$")
+          arguments: (arguments
+            (argument
+              name: (identifier) @name
+              value: ${R6_FIELD_VALUE} @_val2) @definition.property))))))
+
+; ── S4 slots / representation ────────────────────────────────────────────────
+(call
+  function: (identifier) @_fn
+  (#match? @_fn "^(setClass|setRefClass)$")
+  arguments: (arguments
+    (argument
+      name: (identifier) @_slotArg
+      (#match? @_slotArg "^(representation|slots|fields)$")
+      value: (call
+        function: (identifier) @_listfn
+        (#match? @_listfn "^(list|representation|c)$")
+        arguments: (arguments
+          (argument
+            name: (identifier) @name) @definition.property)))))
+
+; ── S4 / RefClass unnamed names: slots = c("a", "b"), fields = c("a", "b") ──
+; An unnamed character vector names the slots or fields (their class is ANY). Only
+; c(...) reads this way: an unnamed string in representation(...) is a superclass.
+; The callee is captured as @_vecOwner, not @_fn, so these string captures are not
+; mistaken for the class-naming argument by isRNonNamingArgumentCapture.
+(call
+  function: (identifier) @_vecOwner
+  (#match? @_vecOwner "^(setClass|setRefClass)$")
+  arguments: (arguments
+    (argument
+      name: (identifier) @_vecArg
+      (#match? @_vecArg "^(slots|fields)$")
+      value: (call
+        function: (identifier) @_vecfn
+        (#match? @_vecfn "^c$")
+        arguments: (arguments
+          (argument
+            !name
+            value: (string
+              content: (string_content) @name)) @definition.property)))))
+`;
 
 import { SupportedLanguages } from 'gitnexus-shared';
 
@@ -3078,6 +3304,7 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
+  [SupportedLanguages.R]: R_QUERIES,
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
   [SupportedLanguages.Zig]: ZIG_QUERIES,
 };

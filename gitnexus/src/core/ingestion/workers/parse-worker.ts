@@ -68,7 +68,7 @@ const CSharp = getLanguageGrammar(SupportedLanguages.CSharp);
 // `isLanguageAvailable` must re-introduce the gate here. (The cleaner end-state
 // — routing this table through `parser-loader.getLanguageGrammar` so there is
 // one loader — is the deferred Tier-1 consolidation.)
-// Swift/Dart/Kotlin/C/Zig are vendored grammars loaded from `vendor/` by absolute
+// Swift/Dart/Kotlin/C/Zig/ObjC are vendored grammars loaded from `vendor/` by absolute
 // path (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Each
 // may be absent on a platform without a prebuild or a toolchain-less /
 // `--ignore-scripts` install, so every load is guarded so a missing binding
@@ -96,6 +96,16 @@ try {
 let Zig: TreeSitterLanguage | null = null;
 try {
   Zig = requireVendoredGrammar('tree-sitter-zig') as TreeSitterLanguage;
+} catch {}
+
+// R is an npm dependency, not a vendored grammar, but its native binding can fail to load in the
+// same ways (no prebuild for the platform, a corrupt or ABI-mismatched install). A static import
+// would take the whole worker down at module load and with it the parse of every language, so it
+// goes through the shared loader behind the same guard: a failure leaves R out of `languageMap`
+// and the main thread's `isLanguageAvailable` filter skips R files.
+let R: TreeSitterLanguage | null = null;
+try {
+  R = getLanguageGrammar(SupportedLanguages.R) as TreeSitterLanguage;
 } catch {}
 
 let ObjectiveC: TreeSitterLanguage | null = null;
@@ -613,6 +623,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
   [SupportedLanguages.PHP]: PHP.php_only,
   [SupportedLanguages.Ruby]: Ruby,
+  ...(R ? { [SupportedLanguages.R]: R } : {}),
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
@@ -693,7 +704,9 @@ function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
  * a type (`resolveFileTypeOwner`, e.g. a Zig file-struct), the tree root is
  * the owner node the method/field extractors should read members from. Same
  * root, same name as `findEnclosingClassInfo`'s root branch, so member ids and
- * owner ids agree.
+ * owner ids agree. Failing both, the provider's `resolveMemberOwnerNode` gets
+ * the last word (languages whose members belong to a call/assignment rather
+ * than an enclosing container node, e.g. R's `R6Class(...)`).
  */
 function findEnclosingClassNodeOrFileOwner(
   node: SyntaxNode,
@@ -702,10 +715,12 @@ function findEnclosingClassNodeOrFileOwner(
 ): SyntaxNode | null {
   const container = findEnclosingClassNode(node);
   if (container !== null) return container;
-  if (provider.resolveFileTypeOwner === undefined) return null;
-  let root: SyntaxNode = node;
-  while (root.parent) root = root.parent;
-  return provider.resolveFileTypeOwner(root, filePath) !== null ? root : null;
+  if (provider.resolveFileTypeOwner !== undefined) {
+    let root: SyntaxNode = node;
+    while (root.parent) root = root.parent;
+    if (provider.resolveFileTypeOwner(root, filePath) !== null) return root;
+  }
+  return provider.resolveMemberOwnerNode?.(node) ?? null;
 }
 
 /**

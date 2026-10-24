@@ -1,0 +1,207 @@
+/**
+ * R language provider.
+ *
+ * `library()` / `require()` of a local package are wildcard imports: every top-level
+ * name of the package becomes visible. `source()` binds no name; it only records a file
+ * dependency. Named imports come from NAMESPACE `importFrom()` entries, which
+ * `populateRNamespaceImports` turns into `named` imports before resolution. No special
+ * call routing is needed (unlike Ruby); `emitRScopeCaptures` (`r/captures.ts`) produces
+ * the import captures from the R scope query rather than from standard import nodes.
+ */
+
+import { SupportedLanguages } from 'gitnexus-shared';
+import { defineLanguage } from '../language-provider.js';
+import { typeConfig as rTypeConfig } from '../type-extractors/r.js';
+import { R_QUERIES } from '../tree-sitter-queries.js';
+import { RFieldExtractor } from '../field-extractors/r.js';
+import { rMethodExtractor } from '../method-extractors/r.js';
+import { emitRScopeCaptures } from './r/captures.js';
+import { interpretRImport, interpretRTypeBinding } from './r/interpret.js';
+import { rPostParse } from './r/post-parse.js';
+import {
+  rDefinitionProperties,
+  rResolveDetachedOwnerName,
+  rResolveMemberOwnerNode,
+} from './r/owner-hooks.js';
+import { isRNonNamingArgumentCapture } from './r/naming-argument.js';
+import { createRCfgVisitor } from '../cfg/visitors/r.js';
+import { rRenameProvider } from './r/rename.js';
+
+const R_BUILT_INS: ReadonlySet<string> = new Set([
+  // Base R
+  'c',
+  'list',
+  'vector',
+  'matrix',
+  'array',
+  'data.frame',
+  'length',
+  'nrow',
+  'ncol',
+  'dim',
+  'names',
+  'colnames',
+  'rownames',
+  'print',
+  'cat',
+  'paste',
+  'paste0',
+  'sprintf',
+  'message',
+  'warning',
+  'stop',
+  'tryCatch',
+  'withCallingHandlers',
+  'try',
+  'on.exit',
+  'sys.call',
+  'match.arg',
+  // Type checks / coercion
+  'is.null',
+  'is.na',
+  'is.numeric',
+  'is.character',
+  'is.logical',
+  'is.list',
+  'as.character',
+  'as.numeric',
+  'as.integer',
+  'as.logical',
+  'as.data.frame',
+  // Apply family
+  'lapply',
+  'sapply',
+  'vapply',
+  'mapply',
+  'tapply',
+  'apply',
+  'Map',
+  'Reduce',
+  'Filter',
+  // Functional
+  'do.call',
+  'Recall',
+  'match.fun',
+  // I/O
+  'readRDS',
+  'saveRDS',
+  'readLines',
+  'writeLines',
+  'read.csv',
+  'write.csv',
+  // Environment
+  'new.env',
+  'environment',
+  'parent.env',
+  'globalenv',
+  'baseenv',
+  'exists',
+  'get',
+  'assign',
+  'rm',
+  'ls',
+  // String
+  'nchar',
+  'substr',
+  'substring',
+  'gsub',
+  'sub',
+  'grep',
+  'grepl',
+  'regmatches',
+  'trimws',
+  'toupper',
+  'tolower',
+  'startsWith',
+  'endsWith',
+  'strsplit',
+  // Math
+  'sum',
+  'mean',
+  'median',
+  'min',
+  'max',
+  'abs',
+  'sqrt',
+  'log',
+  'exp',
+  'round',
+  'ceiling',
+  'floor',
+  'seq',
+  'seq_len',
+  'seq_along',
+  'rep',
+  'which',
+  'range',
+  'cumsum',
+  'diff',
+  // Logical
+  'any',
+  'all',
+  'xor',
+  'identical',
+  // Sort / order
+  'sort',
+  'order',
+  'rev',
+  'unique',
+  'duplicated',
+  'table',
+  // S4 / R6 internals
+  'setClass',
+  'setGeneric',
+  'setMethod',
+  'setRefClass',
+  'new',
+  'validObject',
+  'is',
+  'extends',
+  'isVirtualClass',
+  'R6Class',
+  // Package / namespace
+  'library',
+  'require',
+  'requireNamespace',
+  'loadNamespace',
+  'getNamespace',
+  'source',
+  'sys.source',
+  'attachNamespace',
+  // Control flow (builtins that appear as calls)
+  'return',
+  'invisible',
+  'missing',
+  'nargs',
+  'Sys.time',
+  'Sys.sleep',
+  'proc.time',
+]);
+
+export const rProvider = defineLanguage({
+  id: SupportedLanguages.R,
+  extensions: ['.R', '.r'],
+  entryPointPatterns: [],
+  astFrameworkPatterns: [],
+  treeSitterQueries: R_QUERIES,
+  typeConfig: rTypeConfig,
+  // Every definition is exported by default. NAMESPACE-driven export refinement lives in
+  // `rPostParse`: an `ExportChecker` has no file-path context, and NAMESPACE detection needs it.
+  exportChecker: () => true,
+  fieldExtractor: new RFieldExtractor(),
+  methodExtractor: rMethodExtractor,
+  builtInNames: R_BUILT_INS,
+  emitScopeCaptures: emitRScopeCaptures,
+  interpretImport: interpretRImport,
+  interpretTypeBinding: interpretRTypeBinding,
+  postParse: rPostParse,
+  resolveMemberOwnerNode: rResolveMemberOwnerNode,
+  resolveDetachedOwnerName: rResolveDetachedOwnerName,
+  definitionPropertiesExtractor: rDefinitionProperties,
+  // R_QUERIES captures every string argument of setClass/setGeneric/setMethod;
+  // only the one that names the definition is kept.
+  shouldSkipDefinitionCapture: isRNonNamingArgumentCapture,
+  // Control flow only (no def/use harvest): CFG + CDG, REACHING_DEF reports no-facts.
+  cfgVisitor: createRCfgVisitor(),
+  rename: rRenameProvider,
+});

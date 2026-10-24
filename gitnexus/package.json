@@ -68,6 +68,7 @@
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
+    "@eagleoutice/tree-sitter-r": "1.1.2",
     "@ladybugdb/core": "0.21.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
@@ -144,6 +145,7 @@
     "node": "^22.18.0 || >=24.11.0"
   },
   "bundleDependencies": [
+    "@eagleoutice/tree-sitter-r",
     "tree-sitter",
     "tree-sitter-c-sharp",
     "tree-sitter-cpp",

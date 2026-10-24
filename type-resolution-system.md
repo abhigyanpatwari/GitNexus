@@ -82,6 +82,12 @@ The receiver benchmark has its own language and shape inventory. Read its
 including deliberate untyped controls, unsupported shapes and N/A entries.
 Optional grammar availability must be recorded separately from resolver results.
 
+R (experimental) is registered too. It has no inline type annotations: parameter
+types come only from roxygen2 `@param` tags, S4 slot types from
+`representation(...)` string literals, and receiver types from same-file R6, S4 and
+RefClass definitions. Coverage, limits and the roxygen2 rules are in
+[docs/languages/r-provider.md](docs/languages/r-provider.md).
+
 ## Design Constraints
 
 - Prefer an unresolved reference over an edge to an unrelated declaration.
