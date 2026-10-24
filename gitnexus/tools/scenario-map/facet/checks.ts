@@ -49,7 +49,9 @@
  * candidate source (KTD5).
  *
  * Library only; the scenario-map CLI (U14) calls {@link computeChecks} per inventory instance,
- * with {@link fsSnapshotReader} and {@link fsModuleReader} over the repo root.
+ * with {@link fsSnapshotReader} and {@link fsModuleReader} over the repo root. The input facet
+ * (input-facet.ts, rule 4) reuses the selector rule through {@link buildScope},
+ * {@link rowValueOf}, {@link isLiteralish}, {@link receiverQueried} and {@link abstractNode}.
  */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -377,7 +379,8 @@ function stripIndentation(text: string): string {
 
 // ── Instance scope: locals and row bindings ────────────────────────────────
 
-interface Scope {
+/** The names one instance's body sees; built by {@link buildScope}. */
+export interface Scope {
   record: CaseRecord;
   /** Names declared in the body (nested ones too) and own parameters no row binds. */
   locals: ReadonlySet<string>;
@@ -439,7 +442,7 @@ function bindPattern(
   } else if (t.isRestElement(pattern)) bindPattern(pattern.argument, null, rows);
 }
 
-function buildScope(subject: CheckSubject): Scope {
+export function buildScope(subject: CheckSubject): Scope {
   const { record, instance } = subject;
   const locals = new Set<string>();
   const rows = new Map<string, RowValue | null>();
@@ -487,7 +490,7 @@ function buildScope(subject: CheckSubject): Scope {
 }
 
 /** The row value an identifier or member read of a row binding evaluates to; null otherwise. */
-function rowValueOf(node: t.Node, scope: Scope): RowValue | 'unknown' | null {
+export function rowValueOf(node: t.Node, scope: Scope): RowValue | 'unknown' | null {
   const inner = unwrap(node);
   if (t.isIdentifier(inner)) {
     if (scope.locals.has(inner.name) || !scope.rows.has(inner.name)) return null;
@@ -579,7 +582,7 @@ function literalNode(node: t.Node, exact: boolean): t.Node | null {
 }
 
 /** A literal, a literal container, or a row value: data rather than a queried value. */
-function isLiteralish(node: t.Node, scope: Scope): boolean {
+export function isLiteralish(node: t.Node, scope: Scope): boolean {
   const inner = unwrap(node);
   if (literalNode(inner, false) !== null || rowValueOf(inner, scope) !== null) return true;
   if (t.isIdentifier(inner))
@@ -602,7 +605,7 @@ function isLiteralish(node: t.Node, scope: Scope): boolean {
  * import or any computed value. A global (`Math`) or a module namespace / default import is a
  * function library, not a value the literal selects from.
  */
-function receiverQueried(callee: t.Node, scope: Scope): boolean {
+export function receiverQueried(callee: t.Node, scope: Scope): boolean {
   if (!t.isMemberExpression(callee) && !t.isOptionalMemberExpression(callee)) return false;
   if (isLiteralish(callee.object, scope)) return false;
   let root = unwrap(callee.object);
@@ -641,7 +644,12 @@ function identifierNode(node: t.Identifier, scope: Scope): t.Node {
  * The abstracted copy of `node`. `inSubject` enables selectors; `exact` keeps the literals of this
  * node (a selector argument or a literal container inside one) as written.
  */
-function abstractNode(node: t.Node, scope: Scope, inSubject: boolean, exact: boolean): t.Node {
+export function abstractNode(
+  node: t.Node,
+  scope: Scope,
+  inSubject: boolean,
+  exact: boolean,
+): t.Node {
   if (node.type.startsWith('TS') && !TS_EXPRESSIONS.has(node.type)) return node;
   const literal = literalNode(node, exact);
   if (literal !== null) return literal;
