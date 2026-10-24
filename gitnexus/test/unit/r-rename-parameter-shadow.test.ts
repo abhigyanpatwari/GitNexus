@@ -1,23 +1,21 @@
 /**
- * A parameter named like a function shadows a CALL of that name only when it holds a function:
- * R skips a non-function binding when it looks up the callee of `f(x)`. A rename therefore
- *
- *  - leaves the call alone for a parameter without a default (it is called, so it is a function);
- *  - renames the call for a parameter whose default is a constant (the call reaches the global);
- *  - refuses when the parameter may hold a function (a function or computed default, or an
- *    assignment to it in the body), because the call may reach either.
+ * A default proves nothing about the value a caller passes, so a parameter named like a function
+ * shadows a CALL of that name whenever it exists: `function(x, helper = 2) helper(x)` reaches the
+ * parameter when the caller passes a function and the outer function when it does not. A rename
+ * therefore refuses (`ambiguous_reference`) any call under a same-named parameter, whatever the
+ * default, and a new name that a parameter carries and calls is a collision (`name_collision`).
  */
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
-import { rParameterKind, rRenameProvider } from '../../src/core/ingestion/languages/r/rename.js';
+import { isRParameterName, rRenameProvider } from '../../src/core/ingestion/languages/r/rename.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 
 const parser = new Parser();
 parser.setLanguage(R as Parameters<Parser['setLanguage']>[0]);
 
-/** The kind of the first parameter named `helper` in `source`. */
-function kindOf(source: string): string | null {
+/** Whether the first parameter named `helper` in `source` is read as a parameter name. */
+function isParameter(source: string): boolean {
   const stack = [parser.parse(source).rootNode];
   for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
     if (
@@ -25,68 +23,47 @@ function kindOf(source: string): string | null {
       node.text.replaceAll('`', '') === 'helper' &&
       node.parent?.type === 'parameter'
     ) {
-      return rParameterKind(node);
+      return isRParameterName(node);
     }
     stack.push(...node.namedChildren);
   }
   throw new Error('no parameter named helper');
 }
 
-function verdict(source: string): string {
+function verdict(source: string, newName = 'assist', name = 'helper'): string {
   const files = new Map([['a.R', { tree: parser.parse(source), parsed: { localDefs: [] } }]]);
   const issue = rRenameProvider.checkSafety?.({
-    target: { type: 'Function', qualifiedName: 'helper', filePath: 'a.R' },
-    newName: 'assist',
+    target: { type: 'Function', qualifiedName: name, filePath: 'a.R' },
+    newName,
     files,
     graph: createKnowledgeGraph(),
   } as never);
   return issue ? issue.code : 'ok';
 }
 
-describe('rParameterKind', () => {
-  it('treats a parameter without a default as a function it is called as', () => {
-    expect(kindOf('use <- function(x, helper) helper(x)')).toBe('function');
+describe('isRParameterName', () => {
+  it.each([
+    'use <- function(x, helper) helper(x)',
+    'use <- function(x, helper = 2) helper(x)',
+    'use <- function(x, helper = NULL) helper(x)',
+    'use <- function(x, helper = function(z) z) helper(x)',
+    'use <- function(x, `helper` = 2) x',
+    'use <- \\(x, helper = 2) x',
+  ])('is true for the name of a parameter in %s, whatever its default', (source) => {
+    expect(isParameter(source)).toBe(true);
   });
 
-  it.each(['2', '2L', '1i', '"s"', 'TRUE', 'FALSE', 'NA', 'NA_integer_', 'Inf', 'NaN', '-1'])(
-    'treats the constant default %s as not a function',
-    (constant) => {
-      expect(kindOf(`use <- function(x, helper = ${constant}) helper(x)`)).toBe('constant');
-    },
-  );
-
-  it.each(['function(z) z', '\\(z) z', 'NULL', 'identity', 'c(1, 2)', 'x + 1', 'list()'])(
-    'treats the default %s as possibly a function',
-    (expression) => {
-      expect(kindOf(`use <- function(x, helper = ${expression}) helper(x)`)).toBe('maybe');
-    },
-  );
-
-  it('treats a parameter that the body assigns as possibly a function', () => {
-    expect(kindOf('use <- function(x, helper = 2) { helper <- identity; helper(x) }')).toBe(
-      'maybe',
-    );
-    expect(kindOf('use <- function(x, helper = 2) { identity -> helper; helper(x) }')).toBe(
-      'maybe',
-    );
-    expect(kindOf('use <- function(x, helper) { for (helper in fs) helper(x) }')).toBe('maybe');
-  });
-
-  it('ignores an assignment in a nested function, which binds its own variable', () => {
-    expect(kindOf('use <- function(x, helper = 2) { g <- function() { helper <- 1 }; x }')).toBe(
-      'constant',
-    );
-  });
-
-  it('reads a backticked parameter and a lambda', () => {
-    expect(kindOf('use <- function(x, `helper` = 2) x')).toBe('constant');
-    expect(kindOf('use <- \\(x, helper = 2) x')).toBe('constant');
-  });
-
-  it('is null for an identifier that is not a parameter name', () => {
+  it('is false for an identifier that is not a parameter name', () => {
     const tree = parser.parse('helper(1)');
     const callee = tree.rootNode.descendantForIndex(0);
-    expect(rParameterKind(callee)).toBeNull();
+    expect(isRParameterName(callee)).toBe(false);
+  });
+
+  it('is false for a parameter default that spells the name', () => {
+    const tree = parser.parse('use <- function(x = helper) x');
+    const read = tree.rootNode.descendantsOfType('identifier').find((n) => n.text === 'helper');
+    if (read === undefined) throw new Error('no read');
+    expect(isRParameterName(read)).toBe(false);
   });
 });
 
@@ -120,21 +97,43 @@ describe('R rename: a call that a same-named parameter may or may not shadow', (
 
   it('finds the innermost function that binds the name', () => {
     expect(verdict('use <- function(helper = f) { g <- function(helper = 1) helper(2) }')).toBe(
-      'ok',
+      'ambiguous_reference',
     );
+    expect(verdict('use <- function(helper = f) { g <- function(other = 1) helper(2) }')).toBe(
+      'ambiguous_reference',
+    );
+    expect(verdict('use <- function(other = f) { g <- function(other = 1) helper(2) }')).toBe('ok');
     expect(verdict('use <- function(helper = 1) { g <- function(helper = f) helper(2) }')).toBe(
       'ambiguous_reference',
     );
   });
 
-  it('allows a call under a constant-default or default-less parameter, and a bare read', () => {
-    expect(verdict('use <- function(x, helper = 2) { helper(x) }')).toBe('ok');
-    expect(verdict('use <- function(x, helper) { helper(x) }')).toBe('ok');
+  it('refuses a call under a constant-default or default-less parameter', () => {
+    expect(verdict('use <- function(x, helper = 2) { helper(x) }')).toBe('ambiguous_reference');
+    expect(verdict('use <- function(x, helper) { helper(x) }')).toBe('ambiguous_reference');
+    expect(verdict('use <- function(x, helper = "s") x |> helper()')).toBe('ambiguous_reference');
+  });
+
+  it('allows a bare read of a parameter named like the function', () => {
     expect(verdict('use <- function(x, helper = function(z) z) { x + helper }')).toBe('ok');
+    expect(verdict('use <- function(x, helper) { x + helper }')).toBe('ok');
   });
 
   it('allows a call to the name when no parameter carries it', () => {
     expect(verdict('use <- function(x, other = function(z) z) { helper(x) }')).toBe('ok');
     expect(verdict('helper(1)')).toBe('ok');
+  });
+});
+
+describe('R rename: a new name that a parameter carries', () => {
+  it('collides when the parameter is called: a non-function argument reaches the global', () => {
+    expect(verdict('use <- function(x, assist) { assist(x) }')).toBe('name_collision');
+    expect(verdict('use <- function(x, assist = 2) { assist(x) }')).toBe('name_collision');
+    expect(verdict('use <- function(x, assist = f) x |> assist()')).toBe('name_collision');
+  });
+
+  it('is not a collision when the parameter is only read, or only named', () => {
+    expect(verdict('use <- function(x, assist) { assist * 2 }')).toBe('ok');
+    expect(verdict('use <- function(x, assist) x')).toBe('ok');
   });
 });

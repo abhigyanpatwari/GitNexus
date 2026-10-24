@@ -38,8 +38,8 @@ describe('R calls through a formal or a loop variable', () => {
     expect(targets('via_lapply')).not.toContain('handler');
   });
 
-  it('binds a call through a formal with a constant default: R skips it and reaches the function', () => {
-    expect(targets('constant_default')).toEqual(['transform']);
+  it('does not bind a call through a formal with a constant default: a default proves nothing about the argument', () => {
+    expect(targets('constant_default')).toEqual([]);
   });
 
   it('does not bind a call through a formal that defaults to NULL: it can hold a callback', () => {

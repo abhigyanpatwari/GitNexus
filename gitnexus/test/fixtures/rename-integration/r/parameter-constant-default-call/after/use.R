@@ -1,5 +1,5 @@
-assist <- function(v) v + 1
+helper <- function(v) v + 1
 
 use <- function(x, helper = 2) {
-  assist(x)
+  helper(x)
 }

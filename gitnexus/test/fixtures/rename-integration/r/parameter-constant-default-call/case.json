@@ -1,9 +1,18 @@
 {
   "language": "r",
-  "description": "Rename a function whose call sits in a function with a same-named parameter that defaults to a constant: R skips the non-function parameter, so the call reaches the renamed function and is renamed with it.",
-  "categories": ["call-graph", "same-file", "parameter-shadowing"],
-  "target": { "name": "helper", "kind": "Function", "file": "use.R", "startLine": 0 },
+  "description": "Refuse when a parameter with a constant default is named like the function and called: a default proves nothing about the argument, so the call may reach the parameter or the function being renamed.",
+  "categories": ["parameter-shadowing", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
   "newName": "assist",
-  "expect": { "status": "success", "edits": 2 },
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
   "edges": []
 }

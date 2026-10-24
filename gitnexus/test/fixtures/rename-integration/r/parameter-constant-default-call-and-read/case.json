@@ -1,9 +1,18 @@
 {
   "language": "r",
-  "description": "Refuse when a constant-default parameter named like the function is both called and read as a value: the read is not a reference to the function, and the pair cannot be renamed consistently.",
+  "description": "Refuse when a constant-default parameter named like the function is both called and read as a value: the call may reach the parameter or the function being renamed.",
   "categories": ["parameter-shadowing", "negative", "unchanged-on-error"],
-  "target": { "name": "helper", "kind": "Function", "file": "use.R", "startLine": 0 },
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
   "newName": "assist",
-  "expect": { "status": "error", "code": "incomplete_semantics", "planningStatus": "blocked" },
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
   "edges": []
 }

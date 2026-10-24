@@ -1,7 +1,7 @@
-calculate <- function(x) {
+compute <- function(x) {
   x * 2
 }
 
 run <- function(y) {
-  calculate(y) + 1
+  compute(y) + 1
 }

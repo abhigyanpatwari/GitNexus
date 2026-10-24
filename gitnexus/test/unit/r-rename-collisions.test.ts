@@ -119,15 +119,15 @@ describe('R rename: a new name that the sources already read', () => {
       'f <- function(assist) assist * 2\n',
       'f <- function(assist, n = assist) n\n',
       'f <- function(assist) { g <- function() assist; g() }\n',
-      'f <- function(assist) assist(1)\n',
       '# assist\n',
     ]) {
       expect(verdict(source), source).toBe('ok');
     }
   });
 
-  it('still refuses a call of a parameter that may not hold a function', () => {
+  it('refuses a call of a parameter, whatever its default: the argument may not be a function', () => {
     for (const source of [
+      'f <- function(assist) assist(1)\n',
       'f <- function(assist = 2) assist(1)\n',
       'f <- function(assist = g()) assist(1)\n',
       'f <- function(assist) { assist <- 3; assist(1) }\n',

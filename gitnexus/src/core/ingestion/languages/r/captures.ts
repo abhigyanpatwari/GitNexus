@@ -3,7 +3,6 @@ import { nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { getRParser, getRScopeQuery } from './query.js';
 import { isRNonNamingScopeMatch } from './naming-argument.js';
-import { rParameterKind } from './rename.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
@@ -65,12 +64,13 @@ export function emitRScopeCaptures(
 }
 
 /**
- * The names a `function_definition` binds in its own frame without a definition node: its
- * named formals that can hold a function (`...` is not a name, and a formal with a constant
- * default that the body never assigns is skipped, see below) and the variable of every `for` loop in its body, outside
- * any function nested in it (that one binds its own). A name is kept as written, backticks
- * included, which is how a call site spells it. Read from the tree once per function, so the
- * work over a file is linear in its size; the walk is iterative because a body can nest deeply.
+ * The names a `function_definition` binds in its own frame without a definition node: all its
+ * named formals (`...` is not a name; a default proves nothing about the argument, which may be a
+ * function, so a formal with a constant default is a lexical name too) and the variable of every
+ * `for` loop in its body, outside any function nested in it (that one binds its own). A name is
+ * kept as written, backticks included, which is how a call site spells it. Read from the tree once
+ * per function, so the work over a file is linear in its size; the walk is iterative because a
+ * body can nest deeply.
  */
 export function rFunctionLexicalNames(fn: SyntaxNode): string[] {
   const names = new Set<string>();
@@ -81,10 +81,6 @@ export function rFunctionLexicalNames(fn: SyntaxNode): string[] {
       if (parameter?.type !== 'parameter') continue;
       const name = parameter.childForFieldName('name');
       if (name?.type !== 'identifier' || name.text.length === 0) continue;
-      // R skips a binding that is not a function when it looks up a callee: a formal whose
-      // default is a constant (and that the body never assigns) lets the call reach the
-      // function of that name outside, as the rename provider already reads it.
-      if (rParameterKind(name) === 'constant') continue;
       names.add(name.text);
     }
   }
