@@ -143,15 +143,25 @@ function populateJavaCrossFileReturnTypes(
         if (sourceModule === undefined) continue;
 
         const tb = importerModule.typeBindings as Map<string, TypeRef>;
-        for (const [srcName, srcRef] of moduleReturnTypesByFile.get(ref.def.filePath) ?? []) {
-          if (ambiguousMirrors.has(srcName)) continue;
-          const existing = tb.get(srcName);
-          if (existing !== undefined && existing.rawName !== srcRef.rawName) {
-            ambiguousMirrors.add(srcName);
-            tb.delete(srcName);
-            continue;
+        const sourceFiles = new Set([ref.def.filePath]);
+        for (const ancestorId of indexes.methodDispatch.mroFor(ref.def.nodeId)) {
+          const ancestor = indexes.defs.get(ancestorId);
+          if (ancestor !== undefined) sourceFiles.add(ancestor.filePath);
+        }
+        const familyNames = new Set<string>();
+        for (const sourceFile of sourceFiles) {
+          for (const [srcName, srcRef] of moduleReturnTypesByFile.get(sourceFile) ?? []) {
+            if (familyNames.has(srcName)) continue;
+            familyNames.add(srcName);
+            if (ambiguousMirrors.has(srcName)) continue;
+            const existing = tb.get(srcName);
+            if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+              ambiguousMirrors.add(srcName);
+              tb.delete(srcName);
+              continue;
+            }
+            if (existing === undefined) tb.set(srcName, srcRef);
           }
-          if (existing === undefined) tb.set(srcName, srcRef);
         }
 
         for (const classScope of classScopesByFile.get(ref.def.filePath) ?? []) {

@@ -28,6 +28,8 @@ import { describe, it, expect } from 'vitest';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { javaScopeResolver } from '../../../src/core/ingestion/languages/java/scope-resolver.js';
+import { runScopeResolution } from '../../../src/core/ingestion/scope-resolution/pipeline/run.js';
+import { parseFilesWithWorkers } from '../../helpers/worker-parse.js';
 import { finalizeScopeModel } from '../../../src/core/ingestion/finalize-orchestrator.js';
 import { buildWorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
 import { propagateImportedReturnTypes } from '../../../src/core/ingestion/scope-resolution/passes/imported-return-types.js';
@@ -77,6 +79,65 @@ function moduleTypeBindings(file: ParsedFile): Scope['typeBindings'] {
 }
 
 describe('Java imported method return types', () => {
+  it.each([
+    { order: 'forward', override: false },
+    { order: 'reverse', override: false },
+    { order: 'forward', override: true },
+    { order: 'reverse', override: true },
+  ])(
+    'resolves inherited return calls ($order, override=$override)',
+    async ({ order, override }) => {
+      const files = [
+        {
+          path: 'p0/Foo.java',
+          content: 'package p0; public class Foo { public void fooMethod() {} }',
+        },
+        {
+          path: 'p0/Base.java',
+          content:
+            'package p0; public class Base { public Foo baseMethod() { return new Foo(); } }',
+        },
+        {
+          path: 'p1/ChildFoo.java',
+          content:
+            'package p1; import p0.Foo; public class ChildFoo extends Foo { public void childOnly() {} }',
+        },
+        {
+          path: 'p1/C1.java',
+          content: `package p1; import p0.Base; public class C1 extends Base {
+${override ? 'public ChildFoo baseMethod() { return new ChildFoo(); }' : ''}
+}`,
+        },
+        {
+          path: 'p2/App.java',
+          content: `package p2; import p1.C1; public class App { public void run() {
+C1 c = new C1(); var r = c.baseMethod(); r.${override ? 'childOnly' : 'fooMethod'}();
+} }`,
+        },
+      ];
+      if (order === 'reverse') files.reverse();
+      javaScopeResolver.loadResolutionConfig?.('');
+      const { graph, model, data } = await parseFilesWithWorkers(files);
+      runScopeResolution(
+        {
+          graph,
+          model,
+          files,
+          preExtractedParsedFiles: new Map(data.parsedFiles.map((file) => [file.filePath, file])),
+        },
+        javaScopeResolver,
+      );
+      const target = override
+        ? 'Method:p1/ChildFoo.java:ChildFoo.childOnly#0'
+        : 'Method:p0/Foo.java:Foo.fooMethod#0';
+      expect([...graph.iterRelationshipsByType('CALLS')]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ sourceId: 'Method:p2/App.java:App.run#0', targetId: target }),
+        ]),
+      );
+    },
+  );
+
   const chain = (count: number): InMemoryFile[] =>
     Array.from({ length: count }, (_, i) => ({
       path: `p${i}/C${i}.java`,
