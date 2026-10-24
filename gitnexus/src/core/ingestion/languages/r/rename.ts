@@ -3,7 +3,7 @@ import type { NameClaim } from 'gitnexus-shared';
 import type { RenameIssue, RenameProvider } from '../../rename-provider.js';
 import { unescapeRString } from './export-pattern.js';
 import { rBareName } from './bare-name.js';
-import { rBoundName } from './assignment.js';
+import { rBoundName, rLexicalAssignedNames } from './assignment.js';
 import { rOwningPackageDir } from './namespace-imports.js';
 import {
   rExportPatternsIncomplete,
@@ -420,6 +420,19 @@ export const rRenameProvider: RenameProvider = {
               message:
                 'A parameter of this name may hold a function, so this call may reach the parameter or the function being renamed.',
             };
+        }
+        // A body assignment of this name to a value that may be a function (`helper <- identity`)
+        // makes the name local to that function, flow-insensitively: a call before it, under an
+        // `if`, or no call at all cannot be told apart from a use of the function being renamed.
+        // The scope captures read the same assignments (`rLexicalAssignedNames`).
+        if (node.type === 'function_definition') {
+          for (const assigned of rLexicalAssignedNames(node)) {
+            if (rBareName(assigned) === name)
+              return {
+                code: 'ambiguous_reference',
+                message: 'A local assignment of this name may shadow the function being renamed.',
+              };
+          }
         }
         if (callsInAssignmentTarget(node, name))
           return unsupported(

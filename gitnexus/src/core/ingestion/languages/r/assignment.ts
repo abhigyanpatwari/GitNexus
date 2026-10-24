@@ -85,3 +85,111 @@ export function rOwnAssignedNames(fn: SyntaxNode): ReadonlySet<string> {
   byFunction.set(fn.id, names);
   return names;
 }
+
+/**
+ * Whether assigning `value` to a name binds something a call of that name may reach.
+ *
+ * R looks a callee up as a function and skips any binding that is not one, so what matters is
+ * whether the value can be a function:
+ *  - a `function_definition` is a real definition (the scope extractor already records it, and a
+ *    call resolves to it), so it is not a lexical name here;
+ *  - a constant (`isRConstantValue`) is skipped by R at a call, which then reaches the outer
+ *    function, so it is not either;
+ *  - everything else (an identifier, a call, anything computed, `NULL`) may hold a function.
+ */
+export function isLexicalAssignment(value: SyntaxNode): boolean {
+  return value.type !== 'function_definition' && !isRConstantValue(value);
+}
+
+/** The first argument of a call node (`x` of `names(x)`), or null when there is none. */
+function firstArgumentValue(call: SyntaxNode): SyntaxNode | null {
+  const argument = call.childForFieldName('arguments')?.namedChildren.find((child) => {
+    return child.type === 'argument';
+  });
+  return argument?.childForFieldName('value') ?? null;
+}
+
+/**
+ * The identifier an assignment target writes through: `x` for `x`, `x$a`, `x@a`, `x[i]`, `x[[i]]`
+ * and `names(x)`, `names(x)[2]`, `pkg::foo(x)` (a replacement call assigns its first argument, never
+ * the called name). Null for a target with no identifier at its base (`f()$a`, a string).
+ */
+function assignmentBase(target: SyntaxNode): SyntaxNode | null {
+  for (let node: SyntaxNode | null = target; node !== null;) {
+    switch (node.type) {
+      case 'identifier':
+        return node;
+      case 'extract_operator':
+        node = node.childForFieldName('lhs');
+        break;
+      case 'subset':
+      case 'subset2':
+        node = node.childForFieldName('function');
+        break;
+      case 'call':
+        node = firstArgumentValue(node);
+        break;
+      default:
+        return null;
+    }
+  }
+  return null;
+}
+
+/** The name (as written) an assignment node binds to a value that may be a function, or null. */
+function lexicalAssignmentOf(node: SyntaxNode): string | null {
+  if (node.type !== 'binary_operator') return null;
+  const operator = node.childForFieldName('operator')?.text;
+  let target: SyntaxNode | null;
+  let value: SyntaxNode | null;
+  if (operator === '<-' || operator === '=') {
+    target = node.childForFieldName('lhs');
+    value = node.childForFieldName('rhs');
+  } else if (operator === '->') {
+    target = node.childForFieldName('rhs');
+    value = node.childForFieldName('lhs');
+  } else {
+    // `<<-` and `->>` assign outward and bind nothing in this frame.
+    return null;
+  }
+  if (target === null || value === null) return null;
+  if (target.type === 'identifier') {
+    return isLexicalAssignment(value) && target.text.length > 0 ? target.text : null;
+  }
+  // `x$a <- v`, `names(x) <- v`: R evaluates `x`, modifies it and binds the result to `x` here,
+  // whatever the value.
+  const base = assignmentBase(target);
+  return base !== null && base.text.length > 0 ? base.text : null;
+}
+
+const lexicalAssigned = new WeakMap<SyntaxNode['tree'], Map<number, ReadonlySet<string>>>();
+
+/**
+ * The names a function's own body binds by ordinary assignment to a value that may be a function
+ * (`isLexicalAssignment`), as written (backticks included, like a formal): `x <- v`, `x = v`,
+ * `v -> x`, and the base identifier of a complex target (`x$a <- v`, `names(x) <- v`, never the
+ * called name, so `foo(x) <- 1` binds `x`). Flow-insensitive: a name counts when ANY assignment
+ * of it in the body does. A nested function binds its own variables and is not read; `<<-` and
+ * `->>` assign outward; `assign()`, `delayedAssign()`, `list2env()`, `local()` and `with()` are not
+ * modelled (`local({ x <- f })` is read as an assignment in this frame, which only costs an edge).
+ *
+ * The one implementation behind both the call side (`rFunctionLexicalNames`) and the rename guard
+ * (`checkSafety`), so the two cannot drift apart.
+ */
+export function rLexicalAssignedNames(fn: SyntaxNode): ReadonlySet<string> {
+  let byFunction = lexicalAssigned.get(fn.tree);
+  if (byFunction === undefined) lexicalAssigned.set(fn.tree, (byFunction = new Map()));
+  const known = byFunction.get(fn.id);
+  if (known !== undefined) return known;
+  const names = new Set<string>();
+  const body = fn.childForFieldName('body');
+  const pending = body === null ? [] : [body];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    if (node.type === 'function_definition') continue;
+    const bound = lexicalAssignmentOf(node);
+    if (bound !== null) names.add(bound);
+    for (const child of node.namedChildren) pending.push(child);
+  }
+  byFunction.set(fn.id, names);
+  return names;
+}

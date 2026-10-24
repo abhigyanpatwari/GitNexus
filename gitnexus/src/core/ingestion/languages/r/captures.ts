@@ -5,6 +5,7 @@ import { getRParser, getRScopeQuery } from './query.js';
 import { isRNonNamingScopeMatch } from './naming-argument.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { rLexicalAssignedNames } from './assignment.js';
 import { createSelfOwnerClassifier, fileBindsSelf, rR6MethodClassName } from './r6-self.js';
 
 /**
@@ -99,8 +100,13 @@ export function emitRScopeCaptures(
 /**
  * The names a `function_definition` binds in its own frame without a definition node: all its
  * named formals (`...` is not a name; a default proves nothing about the argument, which may be a
- * function, so a formal with a constant default is a lexical name too) and the variable of every
- * `for` loop in its body, outside any function nested in it (that one binds its own). A name is
+ * function, so a formal with a constant default is a lexical name too), the variable of every
+ * `for` loop in its body and every name an ordinary assignment binds to a value that may be a
+ * function (`rLexicalAssignedNames`: `helper <- identity`, not `helper <- function(y) 1` nor
+ * `helper <- 2`, and not `<<-`), outside any function nested in it (that one binds its own). The
+ * assignment names are flow-insensitive: a call before the assignment, or under an `if` that may
+ * skip it, stops at the local too and is left unresolved rather than bound to the outer function.
+ * A name is
  * kept as written, backticks included, which is how a call site spells it. Read from the tree once
  * per function, so the work over a file is linear in its size; the walk is iterative because a
  * body can nest deeply.
@@ -117,6 +123,7 @@ export function rFunctionLexicalNames(fn: SyntaxNode): string[] {
       names.add(name.text);
     }
   }
+  for (const assigned of rLexicalAssignedNames(fn)) names.add(assigned);
   const stack: SyntaxNode[] = [];
   const body = fn.childForFieldName('body');
   if (body !== null) stack.push(body);

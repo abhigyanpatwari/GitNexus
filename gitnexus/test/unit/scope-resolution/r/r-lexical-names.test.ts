@@ -71,6 +71,63 @@ describe('rFunctionLexicalNames', () => {
   });
 });
 
+describe('rFunctionLexicalNames: ordinary assignments', () => {
+  it('reads the target of `<-`, `=`, `->` and `->>` whose value may be a function', () => {
+    expect(namesOf('f <- function(a) { b <- identity; c = g(); h -> d; 1 ->> e; a }')).toEqual([
+      'a',
+      'b',
+      'c',
+      'd',
+    ]);
+  });
+
+  it('reads an identifier or computed value, and any complex-target assignment, as a binding', () => {
+    expect(namesOf('f <- function() { p <- q; r <- s(1); t <- if (u) v else w }')).toEqual([
+      'p',
+      'r',
+      't',
+    ]);
+  });
+
+  it('does not read a function literal (a real definition) or a constant (R skips it at a call)', () => {
+    expect(namesOf('f <- function() { a <- function(y) 1; b <- 2; c <- "s"; d <- TRUE }')).toEqual(
+      [],
+    );
+    expect(namesOf('f <- function() { a <- -1; b <- NA; c <- Inf; d <- \\(z) z }')).toEqual([]);
+  });
+
+  it('keeps NULL as a binding: it is the placeholder of an optional callback', () => {
+    expect(namesOf('f <- function() { a <- NULL }')).toEqual(['a']);
+  });
+
+  it('reads the base identifier of a complex target, never the called name', () => {
+    expect(
+      namesOf('f <- function(x) { names(y) <- v; z$a <- v; w[[1]] <- v; foo(x) <- 1 }'),
+    ).toEqual(['w', 'x', 'y', 'z']);
+  });
+
+  it('does not read `<<-` or `->>`: they assign outward', () => {
+    expect(namesOf('f <- function() { a <<- identity; identity ->> b }')).toEqual([]);
+  });
+
+  it('is flow-insensitive: a name is read when any of its assignments is a binding', () => {
+    expect(namesOf('f <- function() { a <- 2; a <- identity; b <- identity; b <- 2 }')).toEqual([
+      'a',
+      'b',
+    ]);
+  });
+
+  it('leaves the assignments of a nested function to that function', () => {
+    expect(namesOf('f <- function(a) { h <- function(b) { c <- identity; b }; a }')).toEqual(['a']);
+  });
+
+  it('does not model assign(), delayedAssign(), list2env() or with()', () => {
+    expect(
+      namesOf('f <- function() { assign("a", identity); delayedAssign("b", g()); with(e, c) }'),
+    ).toEqual([]);
+  });
+});
+
 describe('the function scope publishes them as lexicalNames', () => {
   it('puts the formals and loop variables on the function_definition scope only', () => {
     const file = extractParsedFile(

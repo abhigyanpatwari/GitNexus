@@ -1,0 +1,22 @@
+{
+  "language": "r",
+  "description": "Refuse a body assignment of a constant with no call (P4): the assignment target stays an uncovered occurrence (incomplete_semantics).",
+  "categories": [
+    "assignment-shadowing",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "incomplete_semantics",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}
