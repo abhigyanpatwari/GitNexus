@@ -19,6 +19,9 @@
  * runner/classify-outcome.ts exactly as a Stryker run's tests are: every requested test gets its
  * outcome class (`survived` for a pass), plus the run's status and outside-test rows.
  *
+ * Extra setup files (U11): `setupFiles` go after the runner's setup file, in list order, and
+ * `provide` gives them their context (the value-flow trace hook).
+ *
  * Load probe (U9): with `probeFiles`, the result's `loadedFiles` lists those the project's Vite
  * module graph transformed before the instance closed. Workers fetch every inlined module through
  * that graph, and a fresh instance with `cache: false` holds nothing else, so row deletion proves
@@ -85,6 +88,13 @@ export interface VitestRunOptions {
    * the result's `loadedFiles` lists those this run transformed.
    */
   probeFiles?: readonly string[];
+  /**
+   * Extra worker setup files (package paths) run after the runner's own and before the project's
+   * (the value-flow trace hook, U11); with any, setup files run in list order.
+   */
+  setupFiles?: readonly string[];
+  /** Called with the project before the run: provides the extra setup files' context. */
+  provide?: (project: Pick<TestProject, 'provide'>) => void;
 }
 
 export interface VitestTestResult {
@@ -377,10 +387,13 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
       }
       const [project] = projects;
       checkProject(project, configFile);
+      const extraSetupFiles = (options.setupFiles ?? []).map((file) => path.join(root, file));
       project.config.setupFiles = [
         path.join(root, RUNNER_SETUP_FILE),
+        ...extraSetupFiles,
         ...project.config.setupFiles,
       ];
+      if (extraSetupFiles.length > 0) project.config.sequence.setupFiles = 'list';
       const context: WorkerContext = {
         mode: 'dry-run',
         namespace: INSTRUMENTER_CONSTANTS.NAMESPACE,
@@ -390,6 +403,7 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
         hitLimit: null,
       };
       project.provide(PROTOCOL_KEY, context);
+      options.provide?.(project);
       const run = await runSelected({ vitest, project, root }, files, testIds);
       const probed =
         options.probeFiles === undefined
