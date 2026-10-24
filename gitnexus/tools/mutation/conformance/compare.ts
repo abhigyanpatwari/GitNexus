@@ -38,6 +38,7 @@ import type {
 import { MUTANT_STATUSES, type MutantStatus } from '../prepare/mutant-identity.js';
 import type { OutcomeClass } from '../runner/classify-outcome.js';
 import type { SidecarRecord } from '../runner/sidecar.js';
+import { errorMessage } from '../shared/cli.js';
 
 export const EXPECTED_SCHEMA_VERSION = 1;
 
@@ -452,10 +453,7 @@ export function parseExpected(source: string): ExpectedConformance {
   try {
     data = JSON.parse(source);
   } catch (error) {
-    return fail(
-      'file',
-      `not valid JSON (${error instanceof Error ? error.message : String(error)})`,
-    );
+    return fail('file', `not valid JSON (${errorMessage(error)})`);
   }
   const root = object(data, 'root', ['schemaVersion', 'profiles', 'scopes', 'cases']);
   if (root.schemaVersion !== EXPECTED_SCHEMA_VERSION) {

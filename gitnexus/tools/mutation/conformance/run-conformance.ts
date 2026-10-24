@@ -31,13 +31,15 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { INSTRUMENTER_CONSTANTS } from '@stryker-mutator/api/core';
 import type { RunResults } from '../driver/normalise-results.js';
 import { runScope } from '../driver/run-scope.js';
 import { DEFAULT_IGNORED_DIRS } from '../driver/stryker-config.js';
 import type { SidecarRecord } from '../runner/sidecar.js';
+import { errorMessage, isMainModule } from '../shared/cli.js';
+import { isInside, readJsonFile } from '../shared/fs.js';
 import {
   compareConformance,
   formatDifference,
@@ -114,22 +116,21 @@ const layoutOf = (out: string): Layout => ({
   observedFile: path.join(out, 'observed.json'),
 });
 
-const readJson = (file: string): unknown => JSON.parse(readFileSync(file, 'utf8'));
-
 /** Reads one finished run back from disk. */
 function observeRun(layout: Layout, profile: Profile, scope: ScopeSpec): ObservedScopeRun {
   const runDir = layout.runDir(profile, scope);
   const resultsFile = path.join(runDir, 'results.json');
   if (!existsSync(resultsFile)) throw new Error(`no results at ${resultsFile}`);
-  const results = readJson(resultsFile) as RunResults;
+  const results = readJsonFile(resultsFile) as RunResults;
   const records = new Map<string, SidecarRecord>();
   for (const file of results.mutants.flatMap((mutant) => mutant.sidecar?.file ?? [])) {
-    records.set(file, readJson(file) as SidecarRecord);
+    records.set(file, readJsonFile(file) as SidecarRecord);
   }
-  const dryRun = results.dryRun === null ? null : (readJson(results.dryRun.file) as SidecarRecord);
+  const dryRun =
+    results.dryRun === null ? null : (readJsonFile(results.dryRun.file) as SidecarRecord);
   const runRecord = path.join(runDir, RUN_RECORD_FILE);
   const exported = existsSync(runRecord)
-    ? (readJson(runRecord) as { exportedActiveMutant: string | null }).exportedActiveMutant
+    ? (readJsonFile(runRecord) as { exportedActiveMutant: string | null }).exportedActiveMutant
     : null;
   return observeScopeRun({
     profile: profile.name,
@@ -179,12 +180,6 @@ async function runPair(
     else process.env[ACTIVE_MUTANT_ENV] = previous;
   }
 }
-
-const isInside = (parent: string, child: string): boolean => {
-  const relative = path.relative(parent, child);
-  const escapes = relative === '..' || relative.startsWith(`..${path.sep}`);
-  return !escapes && !path.isAbsolute(relative);
-};
 
 function prepareOut(repoRoot: string, out: string, compareOnly: boolean): void {
   if (isInside(repoRoot, out) || isInside(out, repoRoot)) {
@@ -268,7 +263,7 @@ async function main(): Promise<void> {
             profile: profile.name,
             scope: scope.name,
             case: 'run',
-            detail: error instanceof Error ? error.message : String(error),
+            detail: errorMessage(error),
           });
         }
       }
@@ -301,7 +296,7 @@ async function main(): Promise<void> {
     console.error(`  observed facts: ${layout.observedFile}`);
     process.exitCode = 1;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     if (error instanceof UsageError || error instanceof TypeError) {
       console.error(
         'usage: npm run test:mutation:conformance -- [--out <dir>] [--expected <file>] ' +
@@ -312,6 +307,6 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   void main();
 }

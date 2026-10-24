@@ -67,7 +67,6 @@ import {
   hashInputs,
   inputFiles,
   inventoryDiffers,
-  isObject,
   normaliseTestId,
   preparedInputs,
   readManifest,
@@ -85,6 +84,7 @@ import {
   type ToolVersions,
 } from './freeze.js';
 import type { OracleClass } from './oracle-classify.js';
+import { isObject } from './util.js';
 
 export const REPORT_SCHEMA_VERSION = 1;
 export const EXIT_PASS = 0;
@@ -224,23 +224,40 @@ export interface RunnerTestClass {
   source: 'row' | 'attributed' | 'collection' | 'not-run';
 }
 
+/**
+ * Indexes a sidecar record once and returns the runner's class of one test (normalised id) in it:
+ * its row, else the first outside-test row attributed to it, else the first collection failure
+ * of its file, else survived (not run); each lookup takes the first match in record order. Pure.
+ */
+function sidecarTestClasses(sidecar: SidecarView): (testId: string) => RunnerTestClass {
+  const rows = new Map<string, OracleClass>();
+  const attributed = new Map<string, OracleClass>();
+  const collections = new Map<string, OracleClass>();
+  const first = (index: Map<string, OracleClass>, key: string, outcome: OracleClass): void => {
+    if (!index.has(key)) index.set(key, outcome);
+  };
+  for (const entry of sidecar.tests) first(rows, normaliseTestId(entry.id), entry.outcome);
+  for (const entry of sidecar.outsideTest) {
+    for (const id of entry.attributedTo) first(attributed, normaliseTestId(id), entry.outcome);
+    if (entry.outcome === 'killed-outside-test:collection') {
+      first(collections, entry.file.replaceAll('\\', '/'), entry.outcome);
+    }
+  }
+  return (testId) => {
+    const key = normaliseTestId(testId);
+    const row = rows.get(key);
+    if (row !== undefined) return { outcome: row, source: 'row' };
+    const outside = attributed.get(key);
+    if (outside !== undefined) return { outcome: outside, source: 'attributed' };
+    const collection = collections.get(key.slice(0, key.indexOf('#')));
+    if (collection !== undefined) return { outcome: collection, source: 'collection' };
+    return { outcome: 'survived', source: 'not-run' };
+  };
+}
+
 /** The runner's class of one test (normalised id) in a sidecar record; pure. */
 export function runnerTestClass(sidecar: SidecarView, testId: string): RunnerTestClass {
-  const key = normaliseTestId(testId);
-  const row = sidecar.tests.find((entry) => normaliseTestId(entry.id) === key);
-  if (row !== undefined) return { outcome: row.outcome, source: 'row' };
-  const attributed = sidecar.outsideTest.find((entry) =>
-    entry.attributedTo.some((id) => normaliseTestId(id) === key),
-  );
-  if (attributed !== undefined) return { outcome: attributed.outcome, source: 'attributed' };
-  const file = key.slice(0, key.indexOf('#'));
-  const collection = sidecar.outsideTest.find(
-    (entry) =>
-      entry.outcome === 'killed-outside-test:collection' &&
-      entry.file.replaceAll('\\', '/') === file,
-  );
-  if (collection !== undefined) return { outcome: collection.outcome, source: 'collection' };
-  return { outcome: 'survived', source: 'not-run' };
+  return sidecarTestClasses(sidecar)(testId);
 }
 
 // ── comparison ─────────────────────────────────────────────────────────────
@@ -397,11 +414,12 @@ export function compareScope(input: ScopeInput): ScopeReport {
       });
       continue;
     }
+    const recordClass = evidence.kind === 'record' ? sidecarTestClasses(evidence.sidecar) : null;
     for (const { testId, position } of validated) {
       const oracle = frozen.get(position) ?? 'survived';
       const found: RunnerTestClass | null =
-        evidence.kind === 'record'
-          ? runnerTestClass(evidence.sidecar, testId)
+        recordClass !== null
+          ? recordClass(testId)
           : evidence.kind === 'no-coverage'
             ? { outcome: 'survived', source: 'not-run' }
             : null;

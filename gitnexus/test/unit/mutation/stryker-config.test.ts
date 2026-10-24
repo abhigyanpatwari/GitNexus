@@ -11,6 +11,7 @@ import {
   DEFAULT_IGNORED_DIRS,
   assertTestFilesInSandbox,
   buildStrykerConfig,
+  formatMutateEntry,
   parseDriverScope,
   parseMutateEntry,
   parseVariant,
@@ -83,6 +84,13 @@ describe('parseMutateEntry and strykerMutatePattern', () => {
   it('splits the file from its range', () => {
     expect(parseMutateEntry(`${LOCAL}:545-660`)).toEqual({ file: LOCAL, range: '545-660' });
   });
+
+  it.each([LOCAL, `${LOCAL}:545-660`, `${SHARED}:3:5-9:1`])(
+    'formats the parsed entry %s back to its text',
+    (entry) => {
+      expect(formatMutateEntry(parseMutateEntry(entry))).toBe(entry);
+    },
+  );
 
   it.each([
     ['README.md', /\.ts source file/],

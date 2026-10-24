@@ -107,21 +107,13 @@
  * error; 130 interrupted.
  */
 import { createHash } from 'node:crypto';
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { Classifier } from '../classify/classify.js';
 import { runScope } from '../driver/run-scope.js';
-import { parseDriverScope } from '../driver/stryker-config.js';
+import { formatMutateEntry, parseDriverScope } from '../driver/stryker-config.js';
 import { PACKAGE_DIR, RELOCATED_SHARED_DIR } from '../prepare/path-map.js';
 import { RESULT_FILE_NAME, runOracleCommand } from './command-run.js';
 import {
@@ -139,11 +131,13 @@ import {
   ORACLE_CLASSES,
   classifyRun,
   isKillClass,
+  isUnusableClass,
   parseOracleRunRecord,
   recordFileName,
   type OracleClass,
 } from './oracle-classify.js';
 import { parseOracleProbe, type ProbeCoverage } from './probe.js';
+import { isObject, writeFileAtomicSync } from './util.js';
 
 export const MANIFEST_SCHEMA_VERSION = 1;
 export const MANIFEST_KIND = 'gitnexus-mutation-oracle-manifest';
@@ -501,12 +495,15 @@ export const PREPARE_DIR = 'tools/mutation/prepare';
 /** Repo-relative: the mutation config derives its aliases from this file's `exports`. */
 export const SHARED_MANIFEST = 'gitnexus-shared/package.json';
 
-/** The repo-relative files of each input group in the checkout (U5 classifier closures). */
+/**
+ * The repo-relative files of each input group in the checkout (U5 classifier closures). Pass
+ * `classifier` to share its parse and resolution caches with later classifications.
+ */
 export function inputFiles(
   repoRoot: string,
   testFiles: readonly string[],
+  classifier: Classifier = new Classifier(repoRoot),
 ): Record<InputGroup, string[]> {
-  const classifier = new Classifier(repoRoot);
   const closure = (files: readonly string[]): string[] =>
     [...new Set(files.flatMap((file) => classifier.classifyFile(file).closure))].sort();
   const prepareModules = readdirSync(path.join(repoRoot, PACKAGE_DIR, PREPARE_DIR))
@@ -627,11 +624,6 @@ export type JsonValue =
   | string
   | JsonValue[]
   | { [key: string]: JsonValue };
-type JsonObject = Record<string, unknown>;
-
-export const isObject = (value: unknown): value is JsonObject =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 function field(data: unknown, key: string, at: string): unknown {
   if (!isObject(data) || !(key in data)) throw new FreezeUsageError(`${at}.${key} is missing`);
   return data[key];
@@ -1285,9 +1277,7 @@ export function readManifest(file: string): OracleManifest {
 
 const writeAtomic = (file: string, text: string): void => {
   mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
-  writeFileSync(temporary, text);
-  renameSync(temporary, file);
+  writeFileAtomicSync(file, text);
 };
 
 export const writeManifest = (file: string, manifest: OracleManifest): void =>
@@ -1395,16 +1385,10 @@ export async function runFreeze(options: FreezeOptions): Promise<FreezeResult> {
   if (source !== null) scope = source.scope;
   else if (options.scopeFile !== null) {
     const parsed = parseDriverScope(readFileSync(options.scopeFile, 'utf8'));
-    scope = {
-      testFiles: parsed.testFiles,
-      mutate: parsed.mutate.map((entry) =>
-        entry.range === null ? entry.file : `${entry.file}:${entry.range}`,
-      ),
-    };
+    scope = { testFiles: parsed.testFiles, mutate: parsed.mutate.map(formatMutateEntry) };
   } else throw new FreezeUsageError('give --scope <driver scope.json> or --from-manifest <file>');
   const name = options.name ?? source?.name ?? defaultName(scope.mutate);
-  const manifestFile =
-    options.manifestFile ?? (options.fromManifest === null ? null : options.fromManifest);
+  const manifestFile = options.manifestFile ?? options.fromManifest;
   const manifestPath =
     manifestFile !== null && isInside(packageDir, manifestFile)
       ? path.relative(packageDir, manifestFile).split(path.sep).join('/')
@@ -1470,9 +1454,7 @@ export async function runFreeze(options: FreezeOptions): Promise<FreezeResult> {
   problems.push(...extras.problems.map((problem) => `command run: ${problem}`));
   if (!sameScope(extras.scope, scope)) problems.push('the command run ran another scope');
   if (!sameScope(runner.scope, scope)) problems.push('the runner run ran another scope');
-  const unusable = run.mutants.filter((mutant) =>
-    ['invalid', 'infrastructure', 'inconclusive'].includes(mutant.oracleClass),
-  );
+  const unusable = run.mutants.filter((mutant) => isUnusableClass(mutant.oracleClass));
   for (const mutant of unusable) {
     problems.push(`command run: ${mutant.globalId} classifies as ${mutant.oracleClass}`);
   }
@@ -1497,7 +1479,8 @@ export async function runFreeze(options: FreezeOptions): Promise<FreezeResult> {
   if (JSON.stringify(readStrykerMutator(runner.configFile)) !== JSON.stringify(mutator)) {
     problems.push('the runner and command runs used different Stryker mutator options');
   }
-  const inputs = hashInputs(inputFiles(options.repoRoot, scope.testFiles), (repoPath) =>
+  const classifier = new Classifier(options.repoRoot);
+  const inputs = hashInputs(inputFiles(options.repoRoot, scope.testFiles, classifier), (repoPath) =>
     path.join(options.repoRoot, repoPath),
   );
   const mutated = new Set(scope.mutate.map((entry) => entry.split(':')[0]));
@@ -1552,7 +1535,6 @@ export async function runFreeze(options: FreezeOptions): Promise<FreezeResult> {
   }
 
   // Constructs (U5 classifier) and each rows.
-  const classifier = new Classifier(options.repoRoot);
   const verdicts = scope.testFiles.map((file) => classifier.classifyFile(file));
   const beforeAllFiles = new Set(
     verdicts.filter((verdict) => verdict.hooks.beforeAll > 0).map((verdict) => verdict.file),
@@ -1724,10 +1706,7 @@ export async function runFreeze(options: FreezeOptions): Promise<FreezeResult> {
           if (entry.invalid.length > 0) {
             problems.push(`${globalId}: ${entry.invalid.length} invalid observations`);
           }
-          const commandKills = new Set(
-            run.mutants.find((candidate) => candidate.globalId === globalId)?.assertionKilledBy ??
-              [],
-          );
+          const commandKills = new Set(mutant?.assertionKilledBy ?? []);
           const aloneKills = new Set(
             entry.outcomes
               .filter(([, outcome]) => outcome === 'killed-by-test:assertion')

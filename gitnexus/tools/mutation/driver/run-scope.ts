@@ -39,7 +39,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { INSTRUMENTER_CONSTANTS } from '@stryker-mutator/api/core';
 import { identifyMutants, readMutationReport, readRepoFile } from '../prepare/mutant-identity.js';
@@ -49,6 +49,8 @@ import { assertSpanMap, checkSpanMap } from '../prepare/span-map-check.js';
 import { readRunManifest } from '../runner/run-manifest.js';
 import { readSidecars, sidecarFileName } from '../runner/sidecar.js';
 import { MUTATION_SCOPE_ENV, parseMutationScope } from '../scope-file.js';
+import { errorMessage, isMainModule } from '../shared/cli.js';
+import { isInside } from '../shared/fs.js';
 import {
   RESULTS_SCHEMA_VERSION,
   normaliseRun,
@@ -60,6 +62,7 @@ import {
   DEFAULT_IGNORED_DIRS,
   assertTestFilesInSandbox,
   buildStrykerConfig,
+  formatMutateEntry,
   parseDriverScope,
   parseVariant,
   runLayout,
@@ -168,12 +171,6 @@ export function findSandboxes(tempDir: string, entries: readonly string[]): stri
     .map((entry) => path.join(tempDir, entry));
 }
 
-const isInside = (parent: string, child: string): boolean => {
-  const relative = path.relative(parent, child);
-  const escapes = relative === '..' || relative.startsWith(`..${path.sep}`);
-  return !escapes && !path.isAbsolute(relative);
-};
-
 function resetOutDir(repoRoot: string, outDir: string): void {
   if (isInside(repoRoot, outDir) || isInside(outDir, repoRoot)) {
     throw new UsageError(`--out ${outDir} must lie outside the checkout ${repoRoot}`);
@@ -235,9 +232,6 @@ function runStryker(layout: RunLayout): Promise<{ exitCode: number; wallClockMs:
 
 const logTail = (file: string): string =>
   existsSync(file) ? readFileSync(file, 'utf8').split('\n').slice(-LOG_TAIL_LINES).join('\n') : '';
-
-const formatMutateEntry = ({ file, range }: { file: string; range: string | null }): string =>
-  range === null ? file : `${file}:${range}`;
 
 export class StrykerRunError extends Error {
   override name = 'StrykerRunError';
@@ -343,7 +337,7 @@ export async function runScope(
   return { results, exitCode: clean ? 0 : 1 };
 }
 
-const formatDuration = (ms: number): string => {
+export const formatDuration = (ms: number): string => {
   const seconds = Math.round(ms / 1000);
   return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
 };
@@ -389,11 +383,11 @@ async function main(): Promise<void> {
     try {
       assertSpanMap({ ...results.spanMap, mapped: [] });
     } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
+      console.error(errorMessage(error));
     }
     process.exitCode = exitCode;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     if (error instanceof TypeError || error instanceof UsageError) {
       console.error(
         'usage: npm run test:mutation:run -- --scope <scope.json> --out <dir> ' +
@@ -405,6 +399,6 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   void main();
 }

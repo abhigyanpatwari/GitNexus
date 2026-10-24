@@ -64,12 +64,16 @@ function runningSuiteChain(root: RunnerTestFile): string[] {
   }
 }
 
+const NO_SUITES: readonly string[] = Object.freeze([]);
+
+/** The suite chain is walked only for a hit with no current test, the one bucket that reads it. */
 function hitContext(): HitContext {
   if (file === undefined) return { phase: 'collection' };
+  const testId = TestRunner.getCurrentTest<RunnerTestCase | undefined>()?.id;
   return {
     phase: 'run',
-    testId: TestRunner.getCurrentTest<RunnerTestCase | undefined>()?.id,
-    runningSuiteIds: runningSuiteChain(file),
+    testId,
+    runningSuiteIds: testId === undefined ? runningSuiteChain(file) : NO_SUITES,
   };
 }
 

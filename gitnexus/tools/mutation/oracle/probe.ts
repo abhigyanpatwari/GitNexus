@@ -34,6 +34,7 @@
  * A hit is one evaluation of the installed mutant's switch that selected the mutated code
  * (Stryker's instrumenter counts it in `hitCount`). The baseline launch has no hits.
  */
+import { isObject, type JsonObject } from './util.js';
 
 export const PROBE_SCHEMA_VERSION = 1;
 
@@ -101,17 +102,6 @@ export function checkActivation(input: {
     matches: input.installed === input.intended && !input.namespaceExists,
   };
 }
-
-/** Total hits of a probe's buckets; 0 without hits. */
-export const totalHits = (hits: ProbeHits | null): number =>
-  hits === null
-    ? 0
-    : hits.loadAndCollection + hits.hook + hits.perTest.reduce((sum, test) => sum + test.count, 0);
-
-type JsonObject = Record<string, unknown>;
-
-const isObject = (value: unknown): value is JsonObject =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 function fail(at: string, detail: string): never {
   throw new Error(`oracle probe: ${at} ${detail}`);

@@ -52,6 +52,7 @@
  * location is shared too.
  */
 import type { MutantStatus, MutationReport } from '../prepare/mutant-identity.js';
+import { isObject, type JsonObject } from './util.js';
 
 export const ORACLE_RECORD_SCHEMA_VERSION = 1;
 
@@ -74,6 +75,15 @@ export type OracleClass = (typeof ORACLE_CLASSES)[number];
 export const KILL_ORDER: readonly OracleClass[] = ORACLE_CLASSES.slice(0, 5);
 
 export const isKillClass = (outcome: OracleClass): boolean => KILL_ORDER.includes(outcome);
+
+/** Classes that carry no verdict on the mutant: the run was invalid, broken or undecided. */
+const UNUSABLE_CLASSES: ReadonlySet<OracleClass> = new Set<OracleClass>([
+  'invalid',
+  'infrastructure',
+  'inconclusive',
+]);
+
+export const isUnusableClass = (outcome: OracleClass): boolean => UNUSABLE_CLASSES.has(outcome);
 
 export type TestHookName = 'beforeEach' | 'afterEach';
 export type SuiteHookName = 'beforeAll' | 'afterAll';
@@ -198,11 +208,6 @@ export function parseRecordFileName(
 }
 
 // ── record parsing ───────────────────────────────────────────────────────────
-
-type JsonObject = Record<string, unknown>;
-
-const isObject = (value: unknown): value is JsonObject =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 function fail(at: string, detail: string): never {
   throw new Error(`oracle record: ${at} ${detail}`);

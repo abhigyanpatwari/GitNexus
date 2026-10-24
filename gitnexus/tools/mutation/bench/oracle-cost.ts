@@ -42,7 +42,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
   DEFAULT_WALL_CLOCK_MS,
@@ -56,6 +55,7 @@ import {
   type LaunchTarget,
 } from '../oracle/launch-single.js';
 import type { OracleClass } from '../oracle/oracle-classify.js';
+import { errorMessage, isMainModule } from '../shared/cli.js';
 
 export const BENCH_SCHEMA_VERSION = 1;
 export const REPORT_FILE = 'oracle-cost.json';
@@ -680,7 +680,7 @@ async function main(): Promise<void> {
     console.log(text);
     process.exitCode = exitCode;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     if (error instanceof LaunchUsageError || error instanceof TypeError) {
       console.error(
         'usage: npm run test:mutation:bench -- --scope <oracle-command-run.json>[,<results.json>]... ' +
@@ -693,6 +693,6 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   void main();
 }

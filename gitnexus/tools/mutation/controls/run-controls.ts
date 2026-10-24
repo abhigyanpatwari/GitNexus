@@ -82,7 +82,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { parse } from '@babel/parser';
 import {
@@ -91,7 +91,7 @@ import {
   type RunResults,
 } from '../driver/normalise-results.js';
 import { runScope } from '../driver/run-scope.js';
-import { parseDriverScope } from '../driver/stryker-config.js';
+import { formatMutateEntry, parseDriverScope } from '../driver/stryker-config.js';
 import {
   diffInputs,
   hashInputs,
@@ -105,6 +105,8 @@ import { PACKAGE_DIR } from '../prepare/path-map.js';
 import { indexSource, locationToOffsets, type Offsets } from '../prepare/span-map-check.js';
 import type { OutcomeClass } from '../runner/classify-outcome.js';
 import type { SidecarRecord } from '../runner/sidecar.js';
+import { errorMessage, isMainModule } from '../shared/cli.js';
+import { isInside, readJsonFile } from '../shared/fs.js';
 
 export const PLANTED_SCHEMA_VERSION = 1;
 export const PLANTED_KIND = 'gitnexus-mutation-controls';
@@ -847,10 +849,8 @@ export interface ControlsReport {
   summary: string[];
 }
 
-const readJson = (file: string): unknown => JSON.parse(readFileSync(file, 'utf8'));
-
 function readRanTests(file: string): RanTest[] {
-  const record = readJson(file) as SidecarRecord;
+  const record = readJsonFile(file) as SidecarRecord;
   return record.result.tests.map((test) => ({ id: test.id, outcome: test.outcome }));
 }
 
@@ -862,7 +862,7 @@ const isRunResults = (value: unknown): value is RunResults =>
   Array.isArray(value.flags);
 
 function readResults(file: string): RunResults {
-  const data = readJson(file);
+  const data = readJsonFile(file);
   if (!isRunResults(data)) {
     throw new ControlsUsageError(
       `${file} is not a results.json of schema ${RESULTS_SCHEMA_VERSION}`,
@@ -887,7 +887,7 @@ function runStaleness(
   ) {
     reasons.push('the run ran another scope than the planted file');
   }
-  const config = readJson(results.paths.configFile);
+  const config = readJsonFile(results.paths.configFile);
   const concurrency = isRecord(config) ? config.concurrency : undefined;
   const reuse = isRecord(config) ? config.maxTestRunnerReuse : undefined;
   if (concurrency !== profile.concurrency || reuse !== profile.maxTestRunnerReuse) {
@@ -932,12 +932,6 @@ function runProblems(results: RunResults): string[] {
     ),
   ];
 }
-
-const isInside = (parent: string, child: string): boolean => {
-  const relative = path.relative(parent, child);
-  const escapes = relative === '..' || relative.startsWith(`..${path.sep}`);
-  return !escapes && !path.isAbsolute(relative);
-};
 
 function prepareWork(repoRoot: string, work: string, compareOnly: boolean): void {
   if (!path.isAbsolute(work)) throw new ControlsUsageError(`--work ${work} must be absolute`);
@@ -1033,9 +1027,7 @@ function selectionBase(options: ControlsOptions, request: SelectRequest): Plante
       name,
       scope: {
         testFiles: driver.testFiles,
-        mutate: driver.mutate.map(({ file, range }) =>
-          range === null ? file : `${file}:${range}`,
-        ),
+        mutate: driver.mutate.map(formatMutateEntry),
       },
       mutants: 0,
       tests: 0,
@@ -1134,7 +1126,7 @@ export async function runControls(options: ControlsOptions): Promise<ControlsRep
           command: undefined,
         });
       } catch (error) {
-        pair.runError = error instanceof Error ? error.message : String(error);
+        pair.runError = errorMessage(error);
       }
       log(
         `gate 4: ${scope.name} / ${profile.name}: done in ${seconds(performance.now() - started)}`,
@@ -1436,12 +1428,12 @@ async function main(): Promise<void> {
     );
     process.exitCode = report.exitCode;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     if (error instanceof ControlsUsageError || error instanceof TypeError) console.error(USAGE);
     process.exitCode = error instanceof ControlsInterruptedError ? EXIT_INTERRUPTED : EXIT_USAGE;
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   void main();
 }

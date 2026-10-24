@@ -67,7 +67,7 @@
 import { readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { parse, type ParserOptions } from '@babel/parser';
 import {
@@ -81,6 +81,7 @@ import {
   type Node,
 } from '@babel/types';
 import { DEFAULT_IGNORED_DIRS } from '../driver/stryker-config.js';
+import { errorMessage, isMainModule } from '../shared/cli.js';
 
 export const CLASSIFY_SCHEMA_VERSION = 1;
 
@@ -1227,6 +1228,7 @@ export class Classifier {
   private readonly kinds = new Map<string, 'file' | 'dir' | null>();
   private readonly directNative = new Map<string, string | null>();
   private readonly packageNative = new Map<string, NativeHit | null>();
+  private readonly displays = new Map<string, string>();
   private sharedExports: ReadonlyMap<string, string> | undefined;
 
   constructor(readonly repoRoot: string) {
@@ -1237,7 +1239,12 @@ export class Classifier {
   }
 
   private display(abs: string): string {
-    return isInside(abs, this.repoRoot) ? toPosix(path.relative(this.repoRoot, abs)) : abs;
+    let shown = this.displays.get(abs);
+    if (shown === undefined) {
+      shown = isInside(abs, this.repoRoot) ? toPosix(path.relative(this.repoRoot, abs)) : abs;
+      this.displays.set(abs, shown);
+    }
+    return shown;
   }
 
   private kind(abs: string): 'file' | 'dir' | null {
@@ -1262,7 +1269,7 @@ export class Classifier {
         display: (target) => this.display(target),
       }).facts;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       facts = emptyFacts({ reason: 'parse error', line: 0, detail: message.split('\n')[0] });
     }
     this.factsCache.set(abs, facts);
@@ -1708,7 +1715,7 @@ export function toJson(result: Classification, withClosure: boolean): string {
 
 // ── CLI ────────────────────────────────────────────────────────────────────
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   const usage =
     'usage: node --import tsx tools/mutation/classify/classify.ts [--root <dir>] ' +
     '[--file <package-relative path>]... [--out <file.json>] [--closure]';
@@ -1724,7 +1731,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       strict: true,
     }));
   } catch (error) {
-    console.error(`${error instanceof Error ? error.message : String(error)}\n${usage}`);
+    console.error(`${errorMessage(error)}\n${usage}`);
     process.exit(2);
   }
   const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -1742,7 +1749,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       process.stdout.write(json);
     }
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     process.exitCode = 2;
   }
 }

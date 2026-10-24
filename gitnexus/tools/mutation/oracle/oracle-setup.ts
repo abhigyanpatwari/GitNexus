@@ -24,7 +24,6 @@
  * It imports nothing from the vitest5 runner. Vitest parses the second parameter of `aroundAll`
  * as a fixture pattern, so it must be written `{}`.
  */
-import { renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { INSTRUMENTER_CONSTANTS } from '@stryker-mutator/api/core';
 import { TestRunner, aroundAll, type RunnerTask, type RunnerTestCase } from 'vitest';
@@ -38,6 +37,7 @@ import {
   type ProbeHits,
   type ProbeTestHits,
 } from './probe.js';
+import { writeFileAtomicSync } from './util.js';
 
 /** Stryker's coverage record: counts per mutant id, read by the instrumenter's `stryCov`. */
 type CoverageCounts = Record<string, number>;
@@ -59,14 +59,8 @@ if (probeFile === undefined || !path.isAbsolute(probeFile)) {
   throw new Error(`oracle setup: ${PROBE_FILE_ENV} must name an absolute probe file`);
 }
 
-const writeProbe = (probe: OracleProbe): void => {
-  const temporary = path.join(
-    path.dirname(probeFile),
-    `.${path.basename(probeFile)}.${process.pid}.tmp`,
-  );
-  writeFileSync(temporary, `${JSON.stringify(probe)}\n`);
-  renameSync(temporary, probeFile);
-};
+const writeProbe = (probe: OracleProbe): void =>
+  writeFileAtomicSync(probeFile, `${JSON.stringify(probe)}\n`);
 
 const globals = globalThis as unknown as Record<string, Namespace | undefined>;
 const existing = globals[INSTRUMENTER_CONSTANTS.NAMESPACE];

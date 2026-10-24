@@ -59,8 +59,6 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
-  renameSync,
-  writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -73,6 +71,7 @@ import {
   assignTestIds,
   classifyRun,
   isMutantId,
+  isUnusableClass,
   parseOracleRunRecord,
   recordFileName,
   type OracleClass,
@@ -85,6 +84,7 @@ import {
   parseOracleProbe,
   type OracleProbe,
 } from './probe.js';
+import { isObject, writeFileAtomicSync } from './util.js';
 
 /** `testTimeout` and `hookTimeout` of gitnexus/vitest.config.ts. */
 export const BASE_TEST_TIMEOUT_MS = 30_000;
@@ -215,8 +215,6 @@ export interface LaunchObservation {
   assertionKilledBy: string[];
 }
 
-const UNUSABLE: readonly OracleClass[] = ['invalid', 'infrastructure', 'inconclusive'];
-
 /** Classifies one launch; pure. See the module comment for the rules. */
 export function classifyLaunch(evidence: LaunchEvidence): LaunchObservation {
   const { target, probe, record } = evidence;
@@ -334,7 +332,7 @@ export function classifyLaunch(evidence: LaunchEvidence): LaunchObservation {
       );
     }
   }
-  if (UNUSABLE.includes(classified.outcome)) {
+  if (isUnusableClass(classified.outcome)) {
     return reject(classified.outcome, classified.reason ?? classified.outcome, executed);
   }
 
@@ -409,11 +407,6 @@ export interface CommandRunMutant {
   assertionKilledBy: string[];
   wallClockMs: number | null;
 }
-
-type JsonObject = Record<string, unknown>;
-
-const isObject = (value: unknown): value is JsonObject =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 function member(data: unknown, key: string, at: string): unknown {
   if (!isObject(data) || !(key in data)) {
@@ -587,20 +580,32 @@ interface ChildRequest {
   setupFile: string;
 }
 
-/** The real directory of `node_modules/<name>` as Node resolves it from `fromDir`, or null. */
+const packageDirs = new Map<string, string | null>();
+
+/**
+ * The real directory of `node_modules/<name>` as Node resolves it from `fromDir`, or null;
+ * memoised per resolved `fromDir` and name for the life of the process.
+ */
 export function findPackageDir(fromDir: string, name: string): string | null {
-  for (let dir = path.resolve(fromDir); ; dir = path.dirname(dir)) {
+  const start = path.resolve(fromDir);
+  const key = `${start}\0${name}`;
+  const cached = packageDirs.get(key);
+  if (cached !== undefined) return cached;
+  let found: string | null = null;
+  for (let dir = start; ; dir = path.dirname(dir)) {
     const candidate = path.join(dir, 'node_modules', name, 'package.json');
-    if (existsSync(candidate)) return realpathSync(path.dirname(candidate));
-    if (path.dirname(dir) === dir) return null;
+    if (existsSync(candidate)) {
+      found = realpathSync(path.dirname(candidate));
+      break;
+    }
+    if (path.dirname(dir) === dir) break;
   }
+  packageDirs.set(key, found);
+  return found;
 }
 
-const writeJson = (file: string, value: unknown): void => {
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
-  renameSync(temporary, file);
-};
+const writeJson = (file: string, value: unknown): void =>
+  writeFileAtomicSync(file, `${JSON.stringify(value, null, 2)}\n`);
 
 const readOptional = <T>(file: string, parse: (text: string) => T): T | null =>
   existsSync(file) ? parse(readFileSync(file, 'utf8')) : null;

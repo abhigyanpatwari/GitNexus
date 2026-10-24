@@ -34,6 +34,7 @@
 import path from 'node:path';
 import { parseMutationScope } from '../scope-file.js';
 import { PACKAGE_DIR, PATH_MAP, toPreparedPath, type PathMapEntry } from '../prepare/path-map.js';
+import { errorMessage } from '../shared/cli.js';
 
 export const VARIANTS = ['vitest5', 'command'] as const;
 export type Variant = (typeof VARIANTS)[number];
@@ -155,6 +156,10 @@ export function parseMutateEntry(
   return { file, range: `${start}-${end}` };
 }
 
+/** The entry as `<repo path>[:<range>]`, the form {@link parseMutateEntry} reads. */
+export const formatMutateEntry = ({ file, range }: MutateEntry): string =>
+  range === null ? file : `${file}:${range}`;
+
 /** The entry as a Stryker mutate pattern, relative to the prepared `gitnexus/` package. */
 export function strykerMutatePattern(
   entry: MutateEntry,
@@ -180,9 +185,7 @@ export function parseDriverScope(
   try {
     data = JSON.parse(text);
   } catch (error) {
-    return fail(
-      `scope file is not valid JSON (${error instanceof Error ? error.message : String(error)})`,
-    );
+    return fail(`scope file is not valid JSON (${errorMessage(error)})`);
   }
   if (typeof data !== 'object' || data === null || Array.isArray(data)) {
     return fail('scope file must be a JSON object');

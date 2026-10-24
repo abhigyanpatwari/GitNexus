@@ -9,9 +9,11 @@ import {
   type MutantStatus,
 } from '../../../tools/mutation/prepare/mutant-identity.js';
 import {
+  ORACLE_CLASSES,
   assignTestIds,
   classifyMutant,
   classifyRun,
+  isUnusableClass,
   parseOracleRunRecord,
   parseRecordFileName,
   recordFileName,
@@ -504,5 +506,15 @@ describe('oracle test identity and record files', () => {
     expect(() => parseOracleRunRecord(JSON.stringify({ ...original, schemaVersion: 2 }))).toThrow(
       /schemaVersion/,
     );
+  });
+});
+
+describe('oracle classes without a verdict', () => {
+  it('counts exactly infrastructure, inconclusive and invalid as unusable', () => {
+    expect(ORACLE_CLASSES.filter(isUnusableClass)).toEqual([
+      'infrastructure',
+      'inconclusive',
+      'invalid',
+    ]);
   });
 });

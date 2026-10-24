@@ -25,14 +25,7 @@
  *   node --import tsx <prepared>/gitnexus/tools/mutation/oracle/command-wrapper.ts \
  *     --report-dir <absolute dir> [--config <package-relative Vitest config>]
  */
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -49,6 +42,7 @@ import {
   type VitestJsonTotals,
 } from './oracle-classify.js';
 import { OracleReporter } from './oracle-reporter.js';
+import { writeFileAtomicSync } from './util.js';
 
 export const DEFAULT_VITEST_CONFIG = 'tools/mutation/vitest.mutation.config.ts';
 /** Per-process Vite cache directories live under this sandbox directory (KTD5). */
@@ -203,9 +197,7 @@ export async function runOracleVitest(options: OracleVitestOptions): Promise<Ora
     vitestJson: readVitestJsonTotals(vitestJsonFile),
     vitestJsonFile: existsSync(vitestJsonFile) ? vitestJsonFile : null,
   };
-  const temporary = path.join(reportDir, `.${path.basename(recordFile)}.${process.pid}.tmp`);
-  writeFileSync(temporary, `${JSON.stringify(record)}\n`);
-  renameSync(temporary, recordFile);
+  writeFileAtomicSync(recordFile, `${JSON.stringify(record)}\n`);
   return record;
 }
 

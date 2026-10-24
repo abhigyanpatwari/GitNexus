@@ -42,7 +42,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { RESULTS_SCHEMA_VERSION } from '../driver/normalise-results.js';
-import { StrykerRunError, UsageError, runScope } from '../driver/run-scope.js';
+import { StrykerRunError, UsageError, formatDuration, runScope } from '../driver/run-scope.js';
 import { runLayout } from '../driver/stryker-config.js';
 import {
   MUTANT_STATUSES,
@@ -389,11 +389,6 @@ const formatCounts = (counts: Readonly<Record<string, number>>): string =>
     .filter(([, count]) => count > 0)
     .map(([key, count]) => `${count} ${key}`)
     .join(', ');
-
-const formatDuration = (ms: number): string => {
-  const seconds = Math.round(ms / 1000);
-  return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`;
-};
 
 export function formatOracleSummary(result: OracleCommandRun): string {
   const { summary } = result;

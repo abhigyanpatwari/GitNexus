@@ -37,19 +37,11 @@
  * Exit codes: 0 gate 1 passes; 1 a difference (each one named); 2 usage or setup error.
  */
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { isBuiltin } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { classify } from '../classify/classify.js';
 import { StrykerRunError, runScope } from '../driver/run-scope.js';
@@ -57,6 +49,8 @@ import { readRunManifest, type RunManifest } from '../runner/run-manifest.js';
 import { readSidecars, type SidecarRecord } from '../runner/sidecar.js';
 import type { TestLocation } from '../runner/test-ids.js';
 import { resolveVitestInstall } from '../runner/version-guard.js';
+import { errorMessage, isMainModule } from '../shared/cli.js';
+import { readJsonFile } from '../shared/fs.js';
 import {
   ALLOWED_CONFIG_DIFFS,
   VOLATILE_CONFIG_VALUES,
@@ -640,7 +634,7 @@ const layoutOf = (outDir: string): Layout => ({
   batchDir: (index) => path.join(outDir, `stryker-${index}`),
 });
 
-const readJson = <T>(file: string): T => JSON.parse(readFileSync(file, 'utf8')) as T;
+const readJson = <T>(file: string): T => readJsonFile(file) as T;
 const writeJson = (file: string, value: unknown): void =>
   writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 
@@ -1315,7 +1309,7 @@ async function main(): Promise<void> {
     );
     process.exitCode = report.result === 'pass' ? 0 : 1;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     if (error instanceof TypeError || error instanceof UsageError) {
       console.error(
         'usage: npm run test:mutation:fidelity -- [--out <dir>] [--envelope <file>] ' +
@@ -1327,6 +1321,6 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (isMainModule(import.meta.url)) {
   void main();
 }
