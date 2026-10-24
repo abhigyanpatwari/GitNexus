@@ -17,6 +17,10 @@
  * split a group, never merge one, so the scan errs towards missing a dupe rather than
  * inventing one. Python tests are not scanned.
  *
+ * The extraction is also a library for tools/scenario-map (Layer 2): `extractCases` /
+ * `extract(...).records` return one `CaseRecord` per test call, suppressed and empty ones
+ * included, and `buildFrame`, `closure`, `staticValue` and `dupeOkReason` are exported with it.
+ *
  * Usage (from gitnexus/; `npm run test:dupes` runs the same):
  *   node --import tsx tools/test-dupes/test-dupes.ts [--base <ref>] [--all] [--json <file>]
  */
@@ -152,10 +156,39 @@ const stmtsOf = (body: t.Node): t.Statement[] =>
 const lineOf = (n: t.Node): number => n.loc?.start.line ?? 0;
 const endLineOf = (n: t.Node): number => n.loc?.end.line ?? lineOf(n);
 
+/** A test or suite title: literal text (an `each` template stays a template), else its code. */
+function titleOf(call: t.CallExpression): string {
+  const a = call.arguments[0];
+  if (!a) return '';
+  if (t.isStringLiteral(a)) return a.value;
+  if (t.isTemplateLiteral(a) && a.expressions.length === 0)
+    return a.quasis[0].value.cooked ?? code(a);
+  return code(a);
+}
+const EACH = new Set(['each', 'for']);
+/** The table of `it.each(table)`, `it.each\`…\``, `test.for(table)` …; null for other modifiers. */
+function eachTableOf(callee: t.Node): t.Node | null {
+  let n = callee;
+  for (;;) {
+    if (t.isMemberExpression(n)) n = n.object;
+    else if (t.isCallExpression(n) || t.isTaggedTemplateExpression(n)) {
+      const inner = t.isCallExpression(n) ? n.callee : n.tag;
+      if (
+        t.isMemberExpression(inner) &&
+        !inner.computed &&
+        t.isIdentifier(inner.property) &&
+        EACH.has(inner.property.name)
+      )
+        return t.isCallExpression(n) ? (n.arguments[0] ?? null) : n.quasi;
+      n = inner;
+    } else return null;
+  }
+}
+
 // ── Scope frames ───────────────────────────────────────────────────────────
 
-type Decl = { kind: 'import'; key: string } | { kind: 'node'; node: t.Node };
-interface Frame {
+export type Decl = { kind: 'import'; key: string } | { kind: 'node'; node: t.Node };
+export interface Frame {
   decls: Map<string, Decl>;
   /** Side-effecting statements of this body: hooks, vi.mock, env writes … */
   setup: t.Node[];
@@ -171,7 +204,7 @@ function resolveSpecifier(file: string, spec: string): string {
     .replace(/\/index$/, '');
 }
 
-function buildFrame(file: string, body: t.Node, extra: t.Node[]): Frame {
+export function buildFrame(file: string, body: t.Node, extra: t.Node[]): Frame {
   const frame: Frame = { decls: new Map(), setup: [], extra };
   for (const raw of stmtsOf(body)) {
     const stmt =
@@ -220,7 +253,7 @@ function resolveName(name: string, chain: Frame[]): Decl | undefined {
 }
 
 /** Module key (path without extension / index) → that file's top-level frame. */
-type Programs = Map<string, { file: string; frame: Frame }>;
+export type Programs = Map<string, { file: string; frame: Frame }>;
 const moduleKey = (file: string): string =>
   file.replace(/\.[mc]?[jt]sx?$/, '').replace(/\/index$/, '');
 
@@ -230,7 +263,7 @@ const moduleKey = (file: string): string =>
  * `path.resolve(__dirname, '..', 'fixtures', 'x')` in one file equal an imported
  * `FIXTURES`-style constant pointing at the same directory in another.
  */
-function staticValue(
+export function staticValue(
   decl: Decl,
   file: string,
   chain: Frame[],
@@ -281,7 +314,12 @@ function staticValue(
 }
 
 /** Every declaration `nodes` reach through `chain`, transitively: code, import key or static value. */
-function closure(nodes: t.Node[], chain: Frame[], file: string, programs: Programs): string[] {
+export function closure(
+  nodes: t.Node[],
+  chain: Frame[],
+  file: string,
+  programs: Programs,
+): string[] {
   const out = new Set<string>();
   const seen = new Set<t.Node>();
   const visit = (n: t.Node, depth: number): void => {
@@ -391,37 +429,77 @@ function assertionSignatures(body: t.Node, chain: Frame[]): { sigs: string[]; al
 
 // ── Corpus extraction ──────────────────────────────────────────────────────
 
-interface Item extends Location {
+export interface Item extends Location {
   endLine: number;
   key: string;
 }
-interface Case extends Item {
+export interface Case extends Item {
   sigs: string[];
   allLiteral: boolean;
 }
-interface Helper extends Item {
+export interface Helper extends Item {
   exported: boolean;
 }
-interface Corpus {
+/**
+ * One test call as written, with the parts Layer 0 folds into `key` (body, params, call-modifier
+ * arguments such as the `each` table, context) kept apart. A call with an `each` table or inside
+ * a loop is one record for all of its runtime instances.
+ */
+export interface CaseRecord extends Item {
+  /** Enclosing `describe` / `suite` titles, outermost first. */
+  describePath: string[];
+  /** The title argument; an `each` title stays a template (`doubles %s`). */
+  title: string;
+  /**
+   * Hash of the context alone: enclosing hooks and describe-level statements, wrapper-call
+   * arguments, loop heads, if-tests, and every declaration the case reaches. Title, line, body,
+   * own params and own call-modifier arguments are not part of it.
+   */
+  contextHash: string;
+  /** The body as compact code without comments (the text folded into `key`). */
+  body: string;
+  call: t.CallExpression;
+  fn: t.ArrowFunctionExpression | t.FunctionExpression;
+  /** The `it.each` / `test.for` table (array or tagged template), else null. */
+  each: t.Node | null;
+  /** The nearest enclosing loop statement, whose head varies per iteration, else null. */
+  loop: t.Loop | null;
+  /** Scope frames from the file's top level down to the body enclosing the call. */
+  chain: Frame[];
+  /** The `// dupe-ok:` reason (`''` when blank); null when the case is not suppressed. */
+  suppressed: string | null;
+}
+export interface Corpus {
+  /** Layer 0's cases: the unsuppressed records with a non-empty body, under the same `key`. */
   cases: Case[];
+  /** Every test call of every test file, in walk order. */
+  records: CaseRecord[];
   hooks: Item[];
   helpers: Helper[];
   skipped: string[];
+  /** Top-level frame per module key, for `closure` / `staticValue` over these files. */
+  programs: Programs;
 }
 
-function suppressed(lines: string[], line: number): boolean {
-  return /dupe-ok:/.test(lines[line - 1] ?? '') || /dupe-ok:/.test(lines[line - 2] ?? '');
+const DUPE_OK = /dupe-ok:(.*)/;
+/** The `dupe-ok:` reason on 1-based `line` or the line above (the line itself wins), else null. */
+export function dupeOkReason(lines: string[], line: number): string | null {
+  const m = DUPE_OK.exec(lines[line - 1] ?? '') ?? DUPE_OK.exec(lines[line - 2] ?? '');
+  return m ? m[1].trim() : null;
+}
+export function suppressed(lines: string[], line: number): boolean {
+  return dupeOkReason(lines, line) !== null;
 }
 
-function extract(files: SourceFile[]): Corpus {
-  const corpus: Corpus = { cases: [], hooks: [], helpers: [], skipped: [] };
+export function extract(files: SourceFile[]): Corpus {
+  const skipped: string[] = [];
   const parsed: { file: string; ast: t.File; lines: string[] }[] = [];
   for (const { path: file, source } of files) {
     try {
       const ast = parse(source, { sourceType: 'module', plugins: PLUGINS, errorRecovery: true });
       parsed.push({ file, ast, lines: source.split('\n') });
     } catch {
-      corpus.skipped.push(file);
+      skipped.push(file);
     }
   }
   const programs: Programs = new Map(
@@ -430,6 +508,7 @@ function extract(files: SourceFile[]): Corpus {
       { file, frame: buildFrame(file, ast.program, []) },
     ]),
   );
+  const corpus: Corpus = { cases: [], records: [], hooks: [], helpers: [], skipped, programs };
   for (const { file, ast, lines } of parsed) {
     const keep = (n: t.Node): boolean => !suppressed(lines, lineOf(n));
 
@@ -451,6 +530,9 @@ function extract(files: SourceFile[]): Corpus {
     }
     if (!isTestFile(file)) continue;
 
+    // Enclosing describe titles and loops of the node being walked (walk is depth-first).
+    const suites: string[] = [];
+    const loops: t.Loop[] = [];
     const enter = (body: t.Node, extra: t.Node[], chain: Frame[]): void => {
       const frame = buildFrame(file, body, extra);
       const next = [...chain, frame];
@@ -464,12 +546,17 @@ function extract(files: SourceFile[]): Corpus {
         const shape = shapeOf(node.callee);
         const role = roleOf(node, shape);
         const fn = fnArg(node);
-        if (role === 'test' && fn && shape && keep(node)) {
+        if (role === 'test' && fn && shape) {
           recordCase(node, fn, shape, chain);
           return;
         }
         if (role === 'test' || role === 'hook') return;
-        if (role === 'suite' && fn && shape) return enter(fn.body, shape.modArgs, chain);
+        if (role === 'suite' && fn && shape) {
+          suites.push(titleOf(node));
+          enter(fn.body, shape.modArgs, chain);
+          suites.pop();
+          return;
+        }
         walk(node.callee, chain);
         for (const a of node.arguments) {
           if (t.isArrowFunctionExpression(a) || t.isFunctionExpression(a))
@@ -489,11 +576,14 @@ function extract(files: SourceFile[]): Corpus {
           : t.isForInStatement(node) || t.isForOfStatement(node)
             ? [node.left, node.right]
             : [node.test];
-        return enter(
+        loops.push(node);
+        enter(
           node.body,
           head.filter((h): h is NonNullable<typeof h> => h != null),
           chain,
         );
+        loops.pop();
+        return;
       }
       if (t.isIfStatement(node)) {
         enter(node.consequent, [node.test], chain);
@@ -523,22 +613,33 @@ function extract(files: SourceFile[]): Corpus {
       chain: Frame[],
     ): void => {
       const body = code(fn.body);
-      if (body === '{}') return;
       const own = [fn.body, ...fn.params, ...shape.modArgs];
+      const parts = context(chain, own);
       const key = hash(
-        [body, ...fn.params.map(code), ...shape.modArgs.map(code), ...context(chain, own)].join(
-          '\0',
-        ),
+        [body, ...fn.params.map(code), ...shape.modArgs.map(code), ...parts].join('\0'),
       );
-      const { sigs, all } = assertionSignatures(fn.body, chain);
-      corpus.cases.push({
+      const line = lineOf(call);
+      const endLine = endLineOf(call);
+      const reason = dupeOkReason(lines, line);
+      corpus.records.push({
         file,
-        line: lineOf(call),
-        endLine: endLineOf(call),
+        line,
+        endLine,
         key,
-        sigs,
-        allLiteral: all,
+        describePath: [...suites],
+        title: titleOf(call),
+        contextHash: hash(parts.join('\0')),
+        body,
+        call,
+        fn,
+        each: eachTableOf(call.callee),
+        loop: loops.at(-1) ?? null,
+        chain,
+        suppressed: reason,
       });
+      if (reason !== null || body === '{}') return;
+      const { sigs, all } = assertionSignatures(fn.body, chain);
+      corpus.cases.push({ file, line, endLine, key, sigs, allLiteral: all });
     };
 
     /** `x = await build(fixture)` inside a before* hook. */
@@ -573,6 +674,14 @@ function extract(files: SourceFile[]): Corpus {
     enter(ast.program, [], []);
   }
   return corpus;
+}
+
+/**
+ * Every test call in `file` (which must pass `isTestFile`), in walk order. Imports resolve against
+ * `file` alone; `extract(files).records` follows constants into the other files as Layer 0 does.
+ */
+export function extractCases(file: SourceFile): CaseRecord[] {
+  return extract([file]).records;
 }
 
 // ── Grouping and reporting ─────────────────────────────────────────────────

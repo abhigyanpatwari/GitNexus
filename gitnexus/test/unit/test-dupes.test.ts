@@ -5,9 +5,13 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  dupeOkReason,
+  extract,
+  extractCases,
   orphanBenchGates,
   parseUnifiedDiff,
   scan,
+  suppressed,
   type Finding,
   type SourceFile,
   type Touched,
@@ -272,5 +276,130 @@ describe('parseUnifiedDiff', () => {
     expect([...parseUnifiedDiff(diff)].map(([f, lines]) => [f, [...lines]])).toEqual([
       ['x.ts', [2, 3, 11]],
     ]);
+  });
+});
+
+describe('extractCases', () => {
+  it('records the describe path, title, line and a setup-specific context hash per case', () => {
+    const records = extractCases(
+      file(
+        `${UNIT}/a.test.ts`,
+        `describe('outer', () => {`,
+        `  beforeEach(() => { seed(1); });`,
+        `  describe('inner', () => {`,
+        `    beforeEach(() => { seed(2); });`,
+        `    it('a', () => { expect(run()).toBe(1); });`,
+        `  });`,
+        `  it('b', () => { expect(run()).toBe(1); });`,
+        `});`,
+      ),
+    );
+    expect(records.map((r) => [r.file, r.describePath, r.title, r.line, r.body])).toEqual([
+      [`${UNIT}/a.test.ts`, ['outer', 'inner'], 'a', 5, '{expect(run()).toBe(1);}'],
+      [`${UNIT}/a.test.ts`, ['outer'], 'b', 7, '{expect(run()).toBe(1);}'],
+    ]);
+    expect(new Set(records.map((r) => r.contextHash)).size).toBe(2);
+  });
+
+  it('keeps the body out of the context hash: siblings under one setup share it', () => {
+    const [a, b] = extractCases(
+      file(
+        `${UNIT}/a.test.ts`,
+        `describe('d', () => {`,
+        `  beforeEach(() => { seed(1); });`,
+        `  it('a', () => { expect(run()).toBe(1); });`,
+        `  it('b', () => { expect(run()).toBe(2); });`,
+        `});`,
+      ),
+    );
+    expect([a.contextHash === b.contextHash, a.key === b.key]).toEqual([true, false]);
+  });
+
+  it('reports a `// dupe-ok:` case as suppressed with its reason', () => {
+    const records = extractCases(
+      file(
+        `${UNIT}/a.test.ts`,
+        `describe('d', () => {`,
+        `  // dupe-ok: order-dependent control`,
+        `  it('t', () => { expect(run()).toBe(1); });`,
+        `  it('u', () => { expect(run()).toBe(1); });`,
+        `});`,
+      ),
+    );
+    expect(records.map((r) => [r.title, r.suppressed])).toEqual([
+      ['t', 'order-dependent control'],
+      ['u', null],
+    ]);
+  });
+
+  it.each([
+    [
+      'an it.each array table',
+      `it.each([[1], [2]])('doubles %s', (n) => { expect(double(n)).toBe(n * 2); });`,
+      { title: 'doubles %s', each: { type: 'ArrayExpression' }, loop: null },
+    ],
+    [
+      'an it.each tagged-template table',
+      "it.each`n\n${1}`('doubles $n', ({ n }) => { expect(double(n)).toBe(n * 2); });",
+      { title: 'doubles $n', each: { type: 'TemplateLiteral' }, loop: null },
+    ],
+    [
+      'a test.for table',
+      `test.for([[1], [2]])('doubles %s', ([n]) => { expect(double(n)).toBe(n * 2); });`,
+      { title: 'doubles %s', each: { type: 'ArrayExpression' }, loop: null },
+    ],
+    [
+      'a skipIf condition, which is no table',
+      `it.skipIf(slow)('doubles', () => { expect(double(1)).toBe(2); });`,
+      { title: 'doubles', each: null, loop: null },
+    ],
+    [
+      'an enclosing for-of loop',
+      `for (const n of [1, 2]) { it('doubles', () => { expect(double(n)).toBe(n * 2); }); }`,
+      { title: 'doubles', each: null, loop: { type: 'ForOfStatement' } },
+    ],
+  ])('returns one record with the instance source of %s', (_label, source, expected) => {
+    expect(extractCases(file(`${UNIT}/a.test.ts`, source))).toMatchObject([expected]);
+  });
+
+  it('feeds Layer 0 exactly the unsuppressed, non-empty records under the same key', () => {
+    const corpus = extract([
+      file(
+        `${UNIT}/a.test.ts`,
+        `describe('d', () => {`,
+        `  it('a', () => { expect(run()).toBe(1); });`,
+        `  // dupe-ok: kept on purpose`,
+        `  it('b', () => { expect(run()).toBe(1); });`,
+        `  it('c', () => {});`,
+        `  it('d', () => { expect(run()).toBe(2); });`,
+        `});`,
+      ),
+    ]);
+    expect(corpus.records.map((r) => r.title)).toEqual(['a', 'b', 'c', 'd']);
+    expect(corpus.cases.map((c) => [c.line, c.key])).toEqual(
+      corpus.records
+        .filter((r) => r.suppressed === null && r.body !== '{}')
+        .map((r) => [r.line, r.key]),
+    );
+  });
+});
+
+describe('dupeOkReason', () => {
+  const lines = [
+    `// dupe-ok: two lines up`,
+    `const x = 1;`,
+    `it('a', () => {});`,
+    `// dupe-ok: shared fixture`,
+    `it('b', () => {});`,
+    `it('c', () => {}); // dupe-ok: trailing`,
+    `it('d', () => {}); // dupe-ok:`,
+  ];
+  it.each([
+    ['a comment two lines above, which does not count', 3, null, false],
+    ['a comment on the line above', 5, 'shared fixture', true],
+    ['a trailing comment on the reported line', 6, 'trailing', true],
+    ['an empty trailing reason, which wins over the line above', 7, '', true],
+  ])('reads %s', (_label, line, reason, isSuppressed) => {
+    expect([dupeOkReason(lines, line), suppressed(lines, line)]).toEqual([reason, isSuppressed]);
   });
 });
