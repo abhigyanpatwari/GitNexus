@@ -306,11 +306,11 @@ jobs:
 
   # Branch protection still requires these six names from the three-shard
   # matrix. Keep them as aggregate gates as the real matrix grows: every native
-  # shard and the complete execution audit must pass before any gate succeeds.
+  # shard, the complete execution audit, and the scope measurements must pass.
   # These jobs only verify dependency results; tests run in cross-platform above.
   protected-platform-checks:
     name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.check }}/3
-    needs: [cross-platform, test-completeness]
+    needs: [cross-platform, test-completeness, scope-resolution-benchmark]
     if: always()
     permissions: {}
     strategy:
@@ -321,17 +321,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Require all native shards and the execution audit
+      - name: Require native shards, execution audit, and scope measurements
         shell: bash
         env:
           NATIVE_RESULT: ${{ needs.cross-platform.result }}
           EXECUTION_RESULT: ${{ needs.test-completeness.result }}
+          SCOPE_BENCH_RESULT: ${{ needs.scope-resolution-benchmark.result }}
         run: |
           echo "Compatibility gate for the former three-shard check name."
           echo "All native shards: $NATIVE_RESULT"
           echo "Complete execution audit: $EXECUTION_RESULT"
-          if [[ "$NATIVE_RESULT" != "success" || "$EXECUTION_RESULT" != "success" ]]; then
-            echo "::error::Every native shard and the execution audit must succeed."
+          echo "Scope-resolution measurements: $SCOPE_BENCH_RESULT"
+          if [[ "$NATIVE_RESULT" != "success" || "$EXECUTION_RESULT" != "success" || "$SCOPE_BENCH_RESULT" != "success" ]]; then
+            echo "::error::Every native shard, the execution audit, and scope-resolution measurements must succeed."
             exit 1
           fi
 
@@ -1105,6 +1107,33 @@ jobs:
         with:
           name: execution-benchmarks
           path: gitnexus/benchmarks.json
+          if-no-files-found: error
+          retention-days: 5
+
+  # Fresh-process measurements have their own runner and time budget so they
+  # neither contend with nor consume the existing benchmark gate's allowance.
+  scope-resolution-benchmark:
+    name: scope resolution time / memory (all languages)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Measure all languages and check graph and binding baselines
+        run: node --import tsx bench/scope-resolution/measure.mts --check --output scope-resolution-benchmark.json
+        working-directory: gitnexus
+      - name: Upload scope-resolution measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scope-resolution-benchmark
+          path: gitnexus/scope-resolution-benchmark.json
           if-no-files-found: error
           retention-days: 5
 
