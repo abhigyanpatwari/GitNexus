@@ -1,0 +1,388 @@
+{
+  "$comment": [
+    "Expected verdicts of the scenario-map controls fixture (Phase 1 plan U17, docs/plans/2026-10-24-0902-feat-test-scenario-map-phase1-plan.md). They were written from the design (docs/plans/2026-10-23-test-scenario-map-design.md §2, §5.3, §5.3a, §5.4, §8) and the plan's KTD5-KTD12 before any pipeline run. Never regenerate them from observed output; a mismatch is a finding, and an adversarial pair that ends as a repeat candidate is a plan stop condition.",
+    "Test ids: `<case file relative to this directory>#<Vitest full name>`, the Phase 0 id scheme of tools/mutation/runner/test-ids.ts with the file relative to the fixture root, as in mutation-conformance/expected.json. Prefix `test/fixtures/mutation-scenario-map/` for the package-relative Phase 0 id. Every full name is unique, so no id needs a location suffix.",
+    "Layout: one pair per case file, and each case file imports one production module under src/ (numeric-boundary imports src/page-size.ts, which imports the constants-only src/limits.ts). No two pairs share V8 blocks, checks or a mutate scope, so no cross-pair candidate is expected. `mutate` is the pair's KTD7 mutate scope: whole production files, relative to this directory.",
+    "`verdict` uses the ids of `verdicts` (design §2 labels). `rule` names the deciding design rule. `stages` gives the design's expected result for each stage on the pair's decision path (Verdict decision diagram of the plan); a stage not listed is off the path and does not affect the verdict. Stage values: facet equal | differs | equal-unresolved; discardedValues equal | differ; killSets equal (always non-empty here) | differ; rowDeletion not-applicable | symmetric | asymmetric; trace clean | veto; staticValueFlow clean | veto | unknown | not-required (discarded values equal); isolation agrees | disagrees.",
+    "Every test passes unmutated in file order. No production mutant throws, loops or times out in any test, so every kill is an assertion failure and no pair is Inconclusive by accident; only order-dependent is built to be Inconclusive.",
+    "Plan conflicts, recorded on the pairs in `planConflict`: enum-member (the residual-difference guard alone yields repeat-weak; expected review), set-membership (the design yields row, not the strong repeat U17 lists for positive controls), repo-arithmetic (design §5.3 rule 3 keeps the literal 1 exact). set-non-member is a positive control added beyond the U17 list: it is the only pair that checks a table read through Set.prototype.has is not vetoed as opaque."
+  ],
+  "schemaVersion": 1,
+  "verdicts": {
+    "inconclusive": "Inconclusive",
+    "out-of-scope": "Out of scope",
+    "weak": "Weak",
+    "repeat-strong": "Repeat candidate (strong evidence)",
+    "repeat-weak": "Repeat candidate (weak evidence)",
+    "row": "Row",
+    "review": "Review",
+    "distinct": "Distinct"
+  },
+  "pairs": [
+    {
+      "id": "math-round",
+      "kind": "adversarial",
+      "mechanism": "opaque built-in: Math.round on 2.4 and 2.5",
+      "tests": [
+        "math-round.case.ts#math-round > rounds 2.4 down to 2",
+        "math-round.case.ts#math-round > rounds 2.5 up to 3"
+      ],
+      "mutate": [
+        "src/math-round.ts"
+      ],
+      "verdict": "review",
+      "rule": "value-flow-veto",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "veto",
+        "staticValueFlow": "veto"
+      },
+      "reason": "Both tests take the same path through roundScore (the `raw < 0` guard is false) with the same check and context. 2.4/2.5 and 2/3 are in no table and not within ±1 of the module's only constant 0, so the facets are equal and the values are discarded. Stryker has no mutator inside Math.round: both tests kill exactly the guard forced true, `raw >= 0` and the removed body. No table, so row deletion does not apply. The trace sees Math.round called from src/math-round.ts with 2.4 against 2.5 (veto); the static check finds `raw` flowing into Math.round, declared in lib.es5.d.ts (opaque, veto). Design §2: same path, checks, context and kills with a value-flow veto is Review."
+    },
+    {
+      "id": "parse-int-radix",
+      "kind": "adversarial",
+      "mechanism": "opaque built-in: parseInt with radix 8 and radix 16",
+      "tests": [
+        "parse-int-radix.case.ts#parse-int-radix > reads 17 as an octal code",
+        "parse-int-radix.case.ts#parse-int-radix > reads 17 as a hexadecimal code"
+      ],
+      "mutate": [
+        "src/parse-int-radix.ts"
+      ],
+      "verdict": "review",
+      "rule": "value-flow-veto",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "veto",
+        "staticValueFlow": "veto"
+      },
+      "reason": "The text '17' is the same; the radix 8/16 and the results 15/23 are discarded (not within ±1 of the module's constant -1). Both tests skip the NaN branch and kill the same mutants: the NaN guard forced true and the removed body. The trace sees parseInt('17', 8) against parseInt('17', 16) at one call site, and Number.isNaN(15) against Number.isNaN(23) (veto); the static check finds `radix` flowing into parseInt, declared in lib.es5.d.ts (veto). Review."
+    },
+    {
+      "id": "locale-compare",
+      "kind": "adversarial",
+      "mechanism": "opaque built-in: String.prototype.localeCompare, difference in argument position",
+      "tests": [
+        "locale-compare.case.ts#locale-compare > orders apple before Banana",
+        "locale-compare.case.ts#locale-compare > orders apple before Damson"
+      ],
+      "mutate": [
+        "src/locale-compare.ts"
+      ],
+      "verdict": "review",
+      "rule": "value-flow-veto",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "veto",
+        "staticValueFlow": "veto"
+      },
+      "reason": "The receiver 'apple' is the same; only the argument differs, and 'Banana'/'Damson' have the same shape, so the facets are equal. Both comparisons are negative, so both tests take the same branch and kill the same mutants: first guard forced false, `order >= 0`, first guard body removed, `-1` to `+1`, body removed (the second guard is not covered). The trace sees localeCompare from src/locale-compare.ts with the same receiver but different arguments (veto); the static check finds `right` flowing into String.prototype.localeCompare, declared in lib (veto). Review."
+    },
+    {
+      "id": "unicode-normalize",
+      "kind": "adversarial",
+      "mechanism": "opaque built-in: String.prototype.normalize, difference in receiver position",
+      "tests": [
+        "unicode-normalize.case.ts#unicode-normalize > composes e and a combining acute into one code unit",
+        "unicode-normalize.case.ts#unicode-normalize > keeps a combining acute that has no composed form"
+      ],
+      "mutate": [
+        "src/unicode-normalize.ts"
+      ],
+      "verdict": "review",
+      "rule": "value-flow-veto",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "veto",
+        "staticValueFlow": "veto"
+      },
+      "reason": "'Jose' + U+0301 composes to 4 code units; 'Josq' + U+0301 has no composed form and stays 5. Both inputs have the same shape (a capitalised word, then U+0301) and 4/5 are discarded, so the facets are equal. Both kill the same mutants: the empty-name guard forced true, `name !== ''` and the removed body. The differing value is the receiver (`this`) of normalize, which the trace records (KTD11): different receivers at one call site (veto). The static check finds `name` as the receiver of String.prototype.normalize, declared in lib (veto). Review."
+    },
+    {
+      "id": "date-boundary",
+      "kind": "adversarial",
+      "mechanism": "opaque built-in: Date month-end rollover in a leap and a common year",
+      "tests": [
+        "date-boundary.case.ts#date-boundary > counts the days of February in a leap year",
+        "date-boundary.case.ts#date-boundary > counts the days of February in a common year"
+      ],
+      "mutate": [
+        "src/date-boundary.ts"
+      ],
+      "verdict": "review",
+      "rule": "value-flow-veto",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "veto",
+        "staticValueFlow": "veto"
+      },
+      "reason": "The month literal 1 is exact and equal in both tests; the years 2024/2023 and the results 29/28 are discarded (not within ±1 of the module's constants 0 and 1). The leap-year rule lives inside Date, so both tests kill the same mutants: `month + 1` to `month - 1` (31 days) and the removed body. The trace sees Date.UTC(2024, 2, 0) against Date.UTC(2023, 2, 0), and different Date and getUTCDate receivers (veto); the static check finds `year` flowing into Date.UTC, declared in lib (veto). Review."
+    },
+    {
+      "id": "regex-alternatives",
+      "kind": "adversarial",
+      "mechanism": "regex: two inputs matching different alternatives of one regex",
+      "tests": [
+        "regex-alternatives.case.ts#regex-alternatives > recognises a getter name",
+        "regex-alternatives.case.ts#regex-alternatives > recognises a setter name"
+      ],
+      "mutate": [
+        "src/regex-alternatives.ts"
+      ],
+      "verdict": "review",
+      "rule": "value-flow-veto",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "veto",
+        "staticValueFlow": "veto"
+      },
+      "reason": "'getName' and 'setName' match different alternatives of /^(?:get|set)[A-Z]/ and have the same shape; whether the facet maps them to the alternation table or to shapes, they stay equal. Weapon-regex level 1 has no operator that drops one alternative, so both kill the same mutants: the character-class negation and the removed body (removing `^` survives both). A regex alternation is not a row-deletion table (design §5.4, KTD10), so row deletion does not apply. The trace sees RegExp.prototype.test with different arguments (veto); the static check treats any regex use as opaque (veto). Review."
+    },
+    {
+      "id": "numeric-boundary",
+      "kind": "adversarial",
+      "mechanism": "numeric boundary: PAGE_LIMIT + 1 against an interior value, the constant in a constants-only module",
+      "tests": [
+        "numeric-boundary.case.ts#numeric-boundary > cuts a page size one above the limit",
+        "numeric-boundary.case.ts#numeric-boundary > cuts a page size far above the limit"
+      ],
+      "mutate": [
+        "src/page-size.ts",
+        "src/limits.ts"
+      ],
+      "verdict": "review",
+      "rule": "facet-differs-same-kills",
+      "stages": {
+        "facet": "differs",
+        "killSets": "equal"
+      },
+      "reason": "PAGE_LIMIT = 100 lives in src/limits.ts, a constants-only module that runs only while it loads, so the facet must read it through the static import closure (KTD6). 101 is within ±1 of 100 and stays exact; 150 collapses to a shape; the expected 100 is exact in both. The facets differ. Both inputs take the clamp branch and kill the same mutants: guard forced false, `requested <= PAGE_LIMIT`, clamp branch emptied, body removed (`>=` survives both; Stryker has no numeric-literal mutator). Design §2: same path, checks, context and kill set with a different facet is Review. Without the ±1 rule the facets would be equal, the trace and the static check would be clean (a comparison and a pass-through only) and the pair would wrongly become a strong repeat."
+    },
+    {
+      "id": "expected-only",
+      "kind": "adversarial",
+      "mechanism": "expected-only difference: one shared input, toContain('alpha') against toContain('beta')",
+      "tests": [
+        "expected-only.case.ts#expected-only > renders the first tag",
+        "expected-only.case.ts#expected-only > renders the second tag"
+      ],
+      "mutate": [
+        "src/expected-only.ts"
+      ],
+      "verdict": "review",
+      "rule": "value-flow-unknown",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "clean",
+        "staticValueFlow": "unknown"
+      },
+      "reason": "Both tests render the describe's shared `tags`, so path, calls and kills are identical: the `#` template emptied, the map callback removed and the removed body (each leaves no 'alpha' and no 'beta'; the separator mutant survives both). Only the expected values 'alpha'/'beta' differ; they are in no production table and have the same shape, so the facets are equal and the values are discarded. The trace sees identical calls (clean). KTD11 test side: a differing expected value with no differing bound input is unknown, so the static check vetoes. Review."
+    },
+    {
+      "id": "derived-to-fixed",
+      "kind": "adversarial",
+      "mechanism": "derived value reaching an opaque built-in: (x * 10).toFixed(1) with x 2.4 and 2.5",
+      "tests": [
+        "derived-to-fixed.case.ts#derived-to-fixed > formats a 2.4-star rating",
+        "derived-to-fixed.case.ts#derived-to-fixed > formats a 2.5-star rating"
+      ],
+      "mutate": [
+        "src/derived-to-fixed.ts"
+      ],
+      "verdict": "review",
+      "rule": "value-flow-veto",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "veto",
+        "staticValueFlow": "veto"
+      },
+      "reason": "2.4/2.5 and '24.0'/'25.0' are discarded (not within ±1 of the constants 10 and 1). Both kill the same mutants: `*` to `/` ('0.2'/'0.3') and the removed body. `stars * 10` is repo arithmetic, but its result is the receiver of Number.prototype.toFixed: the trace sees receivers 24 and 25 at one call site (veto; this is the derived-value case of design §5.3a step 4), and the static check finds the product of `stars` reaching toFixed, declared in lib (veto). Review."
+    },
+    {
+      "id": "enum-member",
+      "kind": "adversarial",
+      "mechanism": "enum-member-only difference outside the expect subject (KTD6 residual-difference guard)",
+      "tests": [
+        "enum-member.case.ts#enum-member > finds a callable after adding a function node",
+        "enum-member.case.ts#enum-member > finds a callable after adding a method node"
+      ],
+      "mutate": [
+        "src/enum-member.ts"
+      ],
+      "verdict": "review",
+      "rule": "residual-difference",
+      "stages": {
+        "facet": "equal-unresolved",
+        "discardedValues": "equal",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "clean",
+        "staticValueFlow": "not-required"
+      },
+      "reason": "The bodies differ only in NodeLabel.Function against NodeLabel.Method, a member expression passed to addNode outside the expect subject. No literal differs, so the facets are equal and nothing is discarded; the residual-difference guard (KTD6, R5) marks both instances unresolved. Mutants of NodeLabel (object emptied, member strings emptied) change the argument and the CALLABLE_LABELS Set together and survive both; both kill the same mutants: the Set's entry array emptied (static), addNode and hasCallableNode bodies removed, the `some` callback removed (`every` survives a one-element list). The differing nodes are not literals, so row deletion does not apply (design §5.4). Set.has, push and some are not wrapped, so the trace is clean. Mutation cannot tell the tests apart and the facet did not capture their difference, so the inputs are not shown equal: Review (fail closed). Removing NodeLabel.Method from the Set would fail only the second test.",
+      "planConflict": "As written, U6 (residual difference marks both instances unresolved) plus U12 (an unresolved facet input is only a weak disqualifier) give repeat-weak for this pair, a repeat candidate, which U17 and the Goal Capsule stop condition forbid for an adversarial pair. Review needs the verdict engine to treat a residual-difference pair as not facet-equal (design §2 Review: same path, checks, context and kill set with a different facet). Until that rule exists the controls stage reports this pair as a mismatch."
+    },
+    {
+      "id": "order-dependent",
+      "kind": "special",
+      "mechanism": "order dependence: the second test relies on module state the first leaks",
+      "tests": [
+        "order-dependent.case.ts#order-dependent > labels the first ticket",
+        "order-dependent.case.ts#order-dependent > labels the second ticket"
+      ],
+      "mutate": [
+        "src/order-dependent.ts"
+      ],
+      "verdict": "inconclusive",
+      "rule": "isolation-disagrees",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "clean",
+        "staticValueFlow": "clean",
+        "isolation": "disagrees"
+      },
+      "reason": "nextTicketLabel reads a module-level counter. In file order the first test leaves it at 1 and the second gets 'beta-2'; alone, the second gets 'beta-1' and fails. Run together (main run, baselines, dry run, trace run), the pair looks like a repeat: same path, checks and context; 'alpha'/'beta' and 'alpha-1'/'beta-2' have the same shapes; both kill `+=` to `-=`, the template emptied and the removed body; no table; no wrapped built-in; the value flows only into a template literal and the return. So it reaches the repeat stage, and the full isolation pass (design §5.4, KTD9) runs the second test alone: its baseline and Stryker dry run fail, and its outcomes disagree with the together run. Design §2: an isolation check that disagrees is Inconclusive, which takes precedence over every other verdict."
+    },
+    {
+      "id": "object-key-row",
+      "kind": "special",
+      "mechanism": "row deletion: two keys of one three-key object-literal table",
+      "tests": [
+        "object-key-row.case.ts#object-key-row > converts seconds to milliseconds",
+        "object-key-row.case.ts#object-key-row > converts minutes to milliseconds"
+      ],
+      "mutate": [
+        "src/object-key-row.ts"
+      ],
+      "verdict": "row",
+      "rule": "row-deletion-asymmetric",
+      "stages": {
+        "facet": "equal",
+        "killSets": "equal",
+        "rowDeletion": "asymmetric"
+      },
+      "reason": "UNIT_FACTORS = { ms, s, min } is an object literal with plain identifier keys read through `UNIT_FACTORS[unit]`, a supported table (design §5.4). 's' and 'min' are keys of it, so both map to the table and the facets are equal; the amount 2 is exact (within ±1 of the constant 1) and equal; 2000/120000 have the same shape. Stryker never mutates object keys, and both tests kill the same mutants: the table emptied (static), the unknown-unit guard forced true, `factor !== undefined`, `*` to `/`, the removed body. Row deletion: deleting `s` fails only the seconds test and deleting `min` only the minutes test, so it is asymmetric. Design §2: same path, checks, context and facet with asymmetric row deletion is Row."
+    },
+    {
+      "id": "verbatim-duplicate",
+      "kind": "positive-control",
+      "mechanism": "verbatim duplicate: byte-identical bodies, different titles",
+      "tests": [
+        "verbatim-duplicate.case.ts#verbatim-duplicate > clamps a percentage above 100",
+        "verbatim-duplicate.case.ts#verbatim-duplicate > caps an oversized percentage"
+      ],
+      "mutate": [
+        "src/verbatim-duplicate.ts"
+      ],
+      "verdict": "repeat-strong",
+      "rule": "all-strong-conditions",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "equal",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "clean",
+        "staticValueFlow": "not-required",
+        "isolation": "agrees"
+      },
+      "reason": "The two bodies are byte-identical and share the describe, so path, V8 blocks, checks, context, facet and kills are identical by construction (both kill the first guard forced true, `value >= 0`, the second guard forced false, `value <= 100`, the clamp branch emptied and the removed body). The discarded values are equal, so only the trace is needed, and clampPercent calls no built-in. The module is a pure production file of the fixture, so provenance is strong-eligible, and the pure function lets isolation agree. Every design §2 strong condition holds."
+    },
+    {
+      "id": "repo-arithmetic",
+      "kind": "positive-control",
+      "mechanism": "repo-only arithmetic: add(2, 3) against add(5, 5) (design §8; operands avoid 0, 1 and -1, which design §5.3 rule 3 keeps exact)",
+      "tests": [
+        "repo-arithmetic.case.ts#repo-arithmetic > adds 2 and 3",
+        "repo-arithmetic.case.ts#repo-arithmetic > adds 5 and 5"
+      ],
+      "mutate": [
+        "src/repo-arithmetic.ts"
+      ],
+      "verdict": "repeat-strong",
+      "rule": "all-strong-conditions",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "clean",
+        "staticValueFlow": "clean",
+        "isolation": "agrees"
+      },
+      "reason": "add uses only repo arithmetic. Both tests kill exactly `+` to `-` and the removed body. The inputs and sums are discarded: none is 0, 1 or -1 (design §5.3 rule 3 keeps those exact) and the module has no numeric constant, so the ±1 rule keeps none of them exact. The static check finds `left` and `right` flowing only into `+` (repo arithmetic) and the return (pass-through): clean. No wrapped built-in is called: the trace is clean. Plan U12 lists this pair as its strong-repeat scenario."
+    },
+    {
+      "id": "set-membership",
+      "kind": "positive-control",
+      "mechanism": "membership in a supported Set table: one test per member, identical kill sets (design §8)",
+      "tests": [
+        "set-membership.case.ts#set-membership > accepts 200 as a success status",
+        "set-membership.case.ts#set-membership > accepts 204 as a success status"
+      ],
+      "mutate": [
+        "src/set-membership.ts"
+      ],
+      "verdict": "row",
+      "rule": "row-deletion-asymmetric",
+      "stages": {
+        "facet": "equal",
+        "killSets": "equal",
+        "rowDeletion": "asymmetric"
+      },
+      "reason": "SUCCESS_STATUSES = new Set([200, 204]) is built from literal entries and read through `has`, a supported table (design §5.4). The entries are numbers, which Stryker never mutates one by one, so the kill sets are identical: the entry array emptied (static) and the removed body. 200 and 204 are entries of the table, so both map to it and the facets are equal (Set entries are not named constants, so the ±1 rule does not apply). No weak disqualifier applies. But row deletion applies to exactly this table: deleting 200 fails only the first test and deleting 204 only the second, which is asymmetric, and design §2 ranks Row before any Repeat. A Set table with one test per member is therefore a Row (fold into it.each, keep every row), the verdict the design implies.",
+      "planConflict": "U17 and the Success Criteria list Set membership among positive controls that end as strong repeats. With two members tested by two tests, the design can only reach Row: row deletion exists to separate them. set-non-member covers the eligibility property instead (a Set.has table read is not vetoed)."
+    },
+    {
+      "id": "set-non-member",
+      "kind": "positive-control",
+      "mechanism": "table read through Set.prototype.has is clean, not opaque (design §5.3a step 3)",
+      "tests": [
+        "set-non-member.case.ts#set-non-member > rejects banana as a reserved word",
+        "set-non-member.case.ts#set-non-member > rejects cherry as a reserved word"
+      ],
+      "mutate": [
+        "src/set-non-member.ts"
+      ],
+      "verdict": "repeat-strong",
+      "rule": "all-strong-conditions",
+      "stages": {
+        "facet": "equal",
+        "discardedValues": "differ",
+        "killSets": "equal",
+        "rowDeletion": "not-applicable",
+        "trace": "clean",
+        "staticValueFlow": "clean",
+        "isolation": "agrees"
+      },
+      "reason": "Added beyond the U17 list: it is the pair that keeps the Set-membership eligibility property under test. 'banana' and 'cherry' are not entries of RESERVED_WORDS, so they collapse to the same shape and row deletion does not apply. Both tests kill only the removed body (an emptied entry array or an emptied entry string still answers false). Their differing values reach Set.prototype.has, declared in lib.es2015.collection.d.ts, which design §5.3a step 3 classifies as a supported table read (clean), and Set methods are not wrapped by the trace (clean). Every design §2 strong condition holds. A value-flow check that vetoes this pair over-vetoes table reads."
+    }
+  ]
+}
