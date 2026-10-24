@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
 import threading
+import time
+import uuid
+from contextlib import ExitStack
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -56,6 +60,195 @@ from workflow_bench.proposer_sandbox import (
 )
 from workflow_bench.review_scoring import REVIEW_OUTPUT, parse_review_output
 from workflow_bench.task_assets import TaskAssetCache, stage_task_assets as stage_immutable_task_assets
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix socket transport requires POSIX socket flags")
+def test_mcp_socket_transport_reconnects_and_reports_server_failure(tmp_path: Path) -> None:
+    from workflow_bench.mcp_transport import serve_stdio
+
+    endpoint = tmp_path / "mcp.sock"
+    failure = tmp_path / "failure"
+    command = [sys.executable, "-c", "import sys; line=sys.stdin.readline(); print(line.strip(), flush=True); sys.exit(3 if line.strip() == 'fail' else 0)"]
+    errors: list[Exception] = []
+
+    def serve() -> None:
+        try:
+            serve_stdio(endpoint, failure, command)
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=serve, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + 5
+    while not endpoint.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        for message in (b"first\n", b"second\n", b"fail\n"):
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(5)
+                client.connect(str(endpoint))
+                client.sendall(message)
+                client.shutdown(socket.SHUT_WR)
+                assert client.recv(100) == message
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert errors and "3" in failure.read_text()
+    finally:
+        worker.join(timeout=1)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Unix socket transport requires POSIX socket flags")
+def test_mcp_socket_transport_rejects_premature_clean_server_exit(tmp_path):
+    from workflow_bench.mcp_transport import serve_stdio
+
+    endpoint, failure = tmp_path / "mcp.sock", tmp_path / "failure"
+    errors = []
+
+    def serve():
+        try:
+            serve_stdio(endpoint, failure, [sys.executable, "-c", "pass"])
+        except Exception as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=serve, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + 5
+    while not endpoint.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    with socket.socket(socket.AF_UNIX) as client:
+        client.connect(str(endpoint))
+        worker.join(timeout=2)
+        assert errors and "before client EOF" in failure.read_text()
+
+
+def test_mcp_only_sandbox_does_not_supply_a_cli_wrapper(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(
+        clone=clone, claude_bin=sys.executable, bwrap_bin=sys.executable,
+        preflight=False, gitnexus_cli_available=False,
+    ) as sandbox:
+        assert not (sandbox.private_root / "gitnexus").exists()
+        assert SANDBOX_GITNEXUS_CLI not in {mount.target for mount in sandbox.read_only_mounts}
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_sibling_mcp_failure_invalidates_cell_after_client_eof(tmp_path):
+    from workflow_bench.mcp_transport import isolated_mcp
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    runtime = tmp_path / "runtime"
+    entrypoint = runtime / "dist/cli/index.js"
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.write_text("process.exit(7)")
+    bwrap = preflight_bubblewrap()
+    endpoint = None
+    with pytest.raises(SandboxError, match="MCP transport failed"):
+        with isolated_mcp(clone=clone, mounts=[ReadOnlyMount(runtime, proposer_sandbox.SANDBOX_GITNEXUS)],
+                          bwrap_bin=bwrap) as endpoint:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(10)
+                client.connect(str(endpoint.source))
+                assert client.recv(1) == b""
+    assert endpoint is not None and not endpoint.source.exists()
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_sibling_mcp_hides_runtime_and_reaps_detached_children(tmp_path):
+    from workflow_bench.mcp_transport import isolated_mcp, connector_config
+
+    marker = "mcp-child-" + uuid.uuid4().hex
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "source.txt").write_text("unsolved")
+    runtime = tmp_path / "runtime with spaces"
+    entrypoint = runtime / "dist/cli/index.js"
+    entrypoint.parent.mkdir(parents=True)
+    host_listener = socket.socket()
+    host_listener.bind(("127.0.0.1", 0))
+    host_listener.listen()
+    entrypoint.write_text("""
+const fs = require('fs');
+const cp = require('child_process');
+const net = require('net');
+const readline = require('readline');
+cp.spawn('/usr/bin/python3', ['-c', 'import time; time.sleep(60)', MARKER],
+  {detached:true, stdio:'ignore'}).unref();
+const input = readline.createInterface({input:process.stdin});
+input.on('line', async line => {
+  const request = JSON.parse(line);
+  let writeBlocked = false;
+  try { fs.writeFileSync('/workspace/source.txt', 'solution'); } catch { writeBlocked = true; }
+  const privateState = !fs.existsSync('/home/agent/secret');
+  const runtimeReadable = fs.readFileSync(__filename, 'utf8').length > 0;
+  const credentialAbsent = !process.env.ANTHROPIC_API_KEY;
+  const networkBlocked = await new Promise(resolve => {
+    const client = net.connect({host:'127.0.0.1', port:HOST_PORT});
+    client.once('connect', () => { client.destroy(); resolve(false); });
+    client.once('error', () => resolve(true));
+    client.setTimeout(1000, () => { client.destroy(); resolve(true); });
+  });
+  process.stdout.write(JSON.stringify({id:request.id, writeBlocked, privateState,
+    runtimeReadable, credentialAbsent, networkBlocked}) + '\\n');
+});
+""".replace("MARKER", json.dumps(marker)).replace("HOST_PORT", str(host_listener.getsockname()[1])))
+    bwrap = preflight_bubblewrap()
+    mounts = [ReadOnlyMount(runtime, proposer_sandbox.SANDBOX_GITNEXUS)]
+    with host_listener, ExitStack() as clients, ExitStack() as stack:
+        endpoints = [stack.enter_context(isolated_mcp(clone=clone, mounts=mounts, bwrap_bin=bwrap)) for _ in range(2)]
+        assert endpoints[0].source != endpoints[1].source
+        server = json.loads(connector_config())["mcpServers"]["gitnexus"]
+        connector = [server["command"], *server["args"]]
+        for index, endpoint in enumerate(endpoints):
+            with prepare_sandbox(
+                clone=clone, claude_bin=sys.executable, bwrap_bin=bwrap,
+                read_only_mounts=[endpoint], preflight=False, gitnexus_cli_available=False,
+            ) as sandbox:
+                (sandbox.home / "secret").write_text("agent-secret")
+                probe = f"""
+import json, subprocess
+from pathlib import Path
+for path in ['/opt/gitnexus', '/opt/gitnexus-shared', '/opt/gitnexus-registry',
+             '/opt/claude/gitnexus', {str(endpoint.source.parent)!r}]:
+    assert not Path(path).exists(), path
+for proc in Path('/proc').glob('[0-9]*'):
+    assert not (proc / 'root/opt/gitnexus').exists()
+for request_id in [{index}, {index + 10}]:
+    result = subprocess.run({connector!r}, input=json.dumps({{'id':request_id}})+'\\n',
+        text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    reply = json.loads(result.stdout)
+    assert reply.pop('id') == request_id
+    assert all(reply.values()), reply
+"""
+                result = sandbox.run(["/usr/bin/python3", "-c", probe], timeout=30,
+                                     env=build_sandbox_environment(auth_token="agent-secret"))
+                assert result.ok, result.stderr_tail
+        # Keep requests open while the cell owner cancels its server namespaces.
+        for endpoint in endpoints:
+            client = clients.enter_context(socket.socket(socket.AF_UNIX))
+            client.settimeout(10)
+            client.connect(str(endpoint.source))
+            client.sendall(b'{"id":99}\n')
+            assert json.loads(client.recv(4096))["id"] == 99
+        children = []
+        for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+            try:
+                if marker.encode() in cmdline.read_bytes():
+                    children.append(cmdline.parent)
+            except (FileNotFoundError, PermissionError):
+                pass
+        assert children, "canary must create detached descendants"
+    assert all(not process.exists() for process in children)
+    assert all(not endpoint.source.exists() for endpoint in endpoints)
+    assert (clone / "source.txt").read_text() == "unsolved"
 
 
 def test_nomcp_sandbox_hides_graph_and_guidance_without_exposing_the_cli(tmp_path):
