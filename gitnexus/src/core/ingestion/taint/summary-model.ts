@@ -34,6 +34,7 @@
  */
 
 import type { SinkKind, SourceKind } from './source-sink-config.js';
+import { valueEffectKey, type ValueEffect } from './value-refinement.js';
 
 /**
  * Source-relative parameter index (0-based, in declaration order). A
@@ -61,6 +62,7 @@ export type ParamIndex = number;
  * callees of one caller, never as the primary join key.
  */
 export interface ParamToCallArg {
+  readonly valueEffect?: ValueEffect;
   readonly param: ParamIndex;
   readonly callLine: number;
   readonly argIndex: number;
@@ -96,6 +98,8 @@ export interface ParamToReturn {
 
 /** `param i` reaches a modelled sink of kind `sinkKind` inside this function. */
 export interface ParamToSink {
+  readonly valueEffect?: ValueEffect;
+  readonly inertCommandPrefixes?: readonly string[];
   readonly param: ParamIndex;
   readonly sinkKind: SinkKind;
 }
@@ -140,6 +144,7 @@ export interface CallResult {
  * procedural `source → sink` partial flow whose sink lives in the callee.
  */
 export interface SourceToCallArg {
+  readonly valueEffect?: ValueEffect;
   readonly sourceKind: SourceKind;
   /** Carried for hop display + same-name tie-break; NOT the join key (see
    *  {@link ParamToCallArg} — the solver joins by `calleeName`). */
@@ -227,17 +232,24 @@ export function ownFactsDigest(
     ...s.paramToCallArg
       .map(
         (c) =>
-          `c:${c.param}:${c.callLine}:${c.argIndex}:${c.calleeName ?? ''}:${[...(c.neutralized ?? [])].sort().join(',')}`,
+          `c:${c.param}:${c.callLine}:${c.argIndex}:${c.calleeName ?? ''}:${[...(c.neutralized ?? [])].sort().join(',')}${c.valueEffect ? ':' + valueEffectKey(c.valueEffect) : ''}`,
       )
       .sort(),
   );
-  parts.push(...s.paramToSink.map((k) => `k:${k.param}:${k.sinkKind}`).sort());
+  parts.push(
+    ...s.paramToSink
+      .map(
+        (k) =>
+          `k:${k.param}:${k.sinkKind}${k.valueEffect ? ':' + valueEffectKey(k.valueEffect) : ''}${k.inertCommandPrefixes ? ':' + JSON.stringify([...k.inertCommandPrefixes].sort()) : ''}`,
+      )
+      .sort(),
+  );
   parts.push(...s.sourceToReturn.map((g) => `g:${g.sourceKind}`).sort());
   parts.push(
     ...s.sourceToCallArg
       .map(
         (g) =>
-          `s:${g.sourceKind}:${g.callLine}:${g.argIndex}:${g.calleeName ?? ''}:${[...(g.neutralized ?? [])].sort().join(',')}`,
+          `s:${g.sourceKind}:${g.callLine}:${g.argIndex}:${g.calleeName ?? ''}:${[...(g.neutralized ?? [])].sort().join(',')}${g.valueEffect ? ':' + valueEffectKey(g.valueEffect) : ''}`,
       )
       .sort(),
   );

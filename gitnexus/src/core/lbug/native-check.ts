@@ -3,7 +3,7 @@ import path from 'path';
 import { createRequire } from 'node:module';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { escapeCypherString } from './cypher-escape.js';
-import { resolveVendoredFtsPath } from './vendored-extension-path.js';
+import { resolveVendoredFtsPath, resolveVendoredVectorPath } from './vendored-extension-path.js';
 
 /** Cap the out-of-process native load probe so a hung filesystem cannot wedge a
  *  CLI startup gate (same bounding rationale as the extension probe below). */
@@ -505,7 +505,7 @@ export async function probeFtsExtensionLoad(
 export async function probeVectorExtensionLoad(
   timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
 ): Promise<ExtensionProbeResult> {
-  return await probeExtensionLoad('vector', timeoutMs);
+  return await probeExtensionLoad('vector', timeoutMs, resolveVendoredVectorPath());
 }
 
 /**
@@ -529,7 +529,7 @@ async function probeExtensionLoad(
   });
 
   const statements: string[] = [];
-  if (extension === 'fts' && vendoredPath) {
+  if (vendoredPath) {
     statements.push(`LOAD EXTENSION '${escapeCypherString(path.resolve(vendoredPath))}'`);
   }
   statements.push(`LOAD EXTENSION ${extension}`);
