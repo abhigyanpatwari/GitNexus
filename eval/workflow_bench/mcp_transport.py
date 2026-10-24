@@ -107,7 +107,7 @@ def isolated_mcp(*, clone: Path, mounts: Sequence[ReadOnlyMount], bwrap_bin: Pat
         root = Path(tempfile.mkdtemp(prefix="wf-mcp-"))
         endpoint, failure = root / "mcp.sock", root / "failure"
         ready, stop = threading.Event(), threading.Event()
-        outcomes: list[ManagedProcessResult | BaseException] = []
+        outcomes: list[ManagedProcessResult | Exception] = []
         command = pid_namespace_command([
             sys.executable, "-m", "workflow_bench.mcp_transport", str(endpoint), str(failure),
             *server_command(clone=clone, mounts=mounts, bwrap_bin=bwrap_bin),
@@ -121,7 +121,7 @@ def isolated_mcp(*, clone: Path, mounts: Sequence[ReadOnlyMount], bwrap_bin: Pat
                          "PYTHONPATH": str(Path(__file__).resolve().parent.parent)},
                     cancel_event=stop, stdout_observer=lambda _chunk: ready.set(),
                 ))
-            except BaseException as exc:
+            except Exception as exc:
                 outcomes.append(exc)
             finally:
                 ready.set()
@@ -147,7 +147,7 @@ def isolated_mcp(*, clone: Path, mounts: Sequence[ReadOnlyMount], bwrap_bin: Pat
                 error = f"MCP transport supervisor did not stop; backing paths retained at {root}"
             elif failure.exists():
                 error = f"MCP transport failed: {failure.read_text()}"
-            elif not outcomes or isinstance(outcomes[0], BaseException):
+            elif not outcomes or isinstance(outcomes[0], Exception):
                 error = f"MCP transport supervision failed: {outcomes!r}"
             elif outcomes[0].state not in ("cancelled",):
                 error = f"MCP transport exited unexpectedly: {outcomes[0]!r}"

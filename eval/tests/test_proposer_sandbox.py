@@ -146,7 +146,6 @@ def test_real_sibling_mcp_failure_invalidates_cell_after_client_eof(tmp_path):
     entrypoint.parent.mkdir(parents=True)
     entrypoint.write_text("process.exit(7)")
     bwrap = preflight_bubblewrap()
-    endpoint = None
     with pytest.raises(SandboxError, match="MCP transport failed"):
         with isolated_mcp(clone=clone, mounts=[ReadOnlyMount(runtime, proposer_sandbox.SANDBOX_GITNEXUS)],
                           bwrap_bin=bwrap) as endpoint:
@@ -154,7 +153,7 @@ def test_real_sibling_mcp_failure_invalidates_cell_after_client_eof(tmp_path):
                 client.settimeout(10)
                 client.connect(str(endpoint.source))
                 assert client.recv(1) == b""
-    assert endpoint is not None and not endpoint.source.exists()
+    assert not endpoint.source.exists()
 
 
 @pytest.mark.skipif(
@@ -244,6 +243,7 @@ for request_id in [{index}, {index + 10}]:
                 if marker.encode() in cmdline.read_bytes():
                     children.append(cmdline.parent)
             except (FileNotFoundError, PermissionError):
+                # Processes may exit during the scan or belong to another user.
                 pass
         assert children, "canary must create detached descendants"
     assert all(not process.exists() for process in children)
