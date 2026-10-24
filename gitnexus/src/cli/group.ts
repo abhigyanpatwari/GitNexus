@@ -514,7 +514,7 @@ export function registerGroupCommands(program: Command): void {
             }
           }
         } finally {
-          await backend.dispose().catch(() => {});
+          await backend.disconnect().catch(() => {});
         }
       },
     );
