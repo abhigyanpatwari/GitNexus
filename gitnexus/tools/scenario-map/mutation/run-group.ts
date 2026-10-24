@@ -31,6 +31,8 @@
  *   5. the raw observations of every per-test row (observations.ts) are extracted and the group
  *      result is written at once to `<work>/observations/<group>.json` ({@link GroupObservations}),
  *      whatever the outcome, so a later failure of the shard loses nothing (KTD17).
+ * Steps 1 to 4 are {@link runMutationRun}, which the isolation pass's together and alone runs
+ * (isolation.ts, U8) share, so every Layer 3 Stryker run passes the same KTD8 checks.
  *
  * Shard run ({@link runShard}): prepares `<work>/shard-<n>/prepared` (tools/mutation/prepare,
  * nothing blanked), verifies it against the run manifest, then runs its planned groups in order,
@@ -538,42 +540,53 @@ const strykerSummary = (results: RunResults): StrykerSummary => ({
   flags: results.flags.length,
 });
 
-/** Runs one group; see the module comment. Always writes and returns its result. */
-export async function runGroup(
-  options: GroupRunOptions,
+/**
+ * One validated Stryker run of a set of tests (steps 1 to 4 of the module comment), shared by the
+ * group run and the isolation pass's together and alone runs (isolation.ts, U8).
+ */
+export interface MutationRunInput {
+  /** Absolute repo checkout. */
+  repoRoot: string;
+  manifest: ScenarioRunManifest;
+  /** Absolute prepared `gitnexus/` package of the shard's verified copy. */
+  packageDir: string;
+  /** Absolute scratch directory: `baseline-{1,2}/`, `scope.json`, `stryker/`; must exist. */
+  runDir: string;
+  /** Phase 0 ids of the tests to run, sorted. */
+  tests: readonly string[];
+  /** Package paths of their files, sorted. */
+  testFiles: readonly string[];
+  /** Driver mutate entries: whole files (KTD7) or Stryker ranges (KTD9). */
+  mutate: readonly string[];
+  settings: StrykerSettings;
+}
+
+export interface MutationRunOutcome {
+  baselines: BaselineSummary[];
+  stryker: StrykerSummary | null;
+  /** The driver's results; null unless the run passed every KTD8 check. */
+  results: RunResults | null;
+  /** Why the run gives no usable observations; null when it does. */
+  failure: { reason: GroupStatusReason; detail: string } | null;
+}
+
+/** Runs and checks one Stryker run (KTD8); see {@link MutationRunInput}. Never throws. */
+export async function runMutationRun(
+  input: MutationRunInput,
   deps: GroupRunDeps = defaultGroupRunDeps,
-): Promise<GroupObservations> {
-  const started = deps.now();
-  const { scope, manifest } = options;
-  // Validates the group id before any path is built from it.
-  observationsFile(options.workDir, scope.id);
-  const groupDir = path.join(options.workDir, 'groups', scope.id);
-  mkdirSync(groupDir, { recursive: true });
+): Promise<MutationRunOutcome> {
+  const { manifest, runDir } = input;
   const baselines: BaselineSummary[] = [];
   let stryker: StrykerSummary | null = null;
-  const finish = (
-    status: GroupObservations['status'],
-    reason: GroupStatusReason | null,
-    detail: string | null,
-    observations: Observation[] = [],
-  ): GroupObservations =>
-    writeGroupResult(options.workDir, {
-      scope,
-      shard: options.shard,
-      manifestDigest: manifest.digest,
-      status,
-      reason,
-      detail,
-      baselines,
-      stryker,
-      observations,
-      wallClockMs: Math.round(deps.now() - started),
-    });
-  const inconclusive = (reason: GroupStatusReason, detail: string): GroupObservations =>
-    finish('inconclusive', reason, detail);
+  const inconclusive = (reason: GroupStatusReason, detail: string): MutationRunOutcome => ({
+    baselines,
+    stryker,
+    results: null,
+    failure: { reason, detail },
+  });
 
   const listed = new Set(manifest.tests.map((test) => test.id));
-  const unlisted = scope.tests.filter((test) => !listed.has(test));
+  const unlisted = input.tests.filter((test) => !listed.has(test));
   if (unlisted.length > 0) {
     return inconclusive('manifest-mismatch', `not in the run manifest: ${unlisted.join(', ')}`);
   }
@@ -582,10 +595,10 @@ export async function runGroup(
   for (const index of [1, 2]) {
     try {
       const run = await deps.runVitest({
-        packageDir: options.packageDir,
-        testIds: scope.tests,
+        packageDir: input.packageDir,
+        testIds: input.tests,
         vitest: selection,
-        workDir: path.join(groupDir, `baseline-${index}`),
+        workDir: path.join(runDir, `baseline-${index}`),
       });
       baselines.push(summarizeBaseline(run));
     } catch (error) {
@@ -598,19 +611,19 @@ export async function runGroup(
   const extraRoots = extraRootsOf(manifest.mode);
   const pathMap = buildPathMap(extraRoots);
   const scopeText = `${JSON.stringify(
-    { testFiles: scope.testFiles, mutate: scope.mutate, testIds: scope.tests },
+    { testFiles: input.testFiles, mutate: input.mutate, testIds: input.tests },
     null,
     2,
   )}\n`;
-  const scopeFile = path.join(groupDir, 'scope.json');
-  const strykerDir = path.join(groupDir, 'stryker');
+  const scopeFile = path.join(runDir, 'scope.json');
+  const strykerDir = path.join(runDir, 'stryker');
   const ignoredDirs = sandboxIgnoredDirs(
     manifest.mode,
-    fixtureEntriesOf(options.repoRoot, manifest.mode),
+    fixtureEntriesOf(input.repoRoot, manifest.mode),
   );
   // Normal mode keeps the runner's default config and project, as every Phase 0 run does.
   const strykerVitest = manifest.mode.kind === 'controls' ? selection : undefined;
-  const settings = { ...DEFAULT_STRYKER_SETTINGS, ...options.stryker };
+  const { settings } = input;
   try {
     const driverScope = parseDriverScope(scopeText, pathMap);
     writeFileSync(scopeFile, scopeText);
@@ -633,7 +646,7 @@ export async function runGroup(
   let results: RunResults;
   try {
     ({ results } = await deps.runScope({
-      repoRoot: options.repoRoot,
+      repoRoot: input.repoRoot,
       scopeFile,
       outDir: strykerDir,
       variant: 'vitest5',
@@ -659,14 +672,54 @@ export async function runGroup(
     dryRun = errorMessage(error);
   }
   if (dryRun !== null) return inconclusive('dry-run-unstable', dryRun);
+  return { baselines, stryker, results, failure: null };
+}
 
-  const observations = extractObservations(results, {
-    group: scope.id,
-    kind: 'main',
-    lineage: MAIN_LINEAGE,
+/** Runs one group; see the module comment. Always writes and returns its result. */
+export async function runGroup(
+  options: GroupRunOptions,
+  deps: GroupRunDeps = defaultGroupRunDeps,
+): Promise<GroupObservations> {
+  const started = deps.now();
+  const { scope, manifest } = options;
+  // Validates the group id before any path is built from it.
+  observationsFile(options.workDir, scope.id);
+  const groupDir = path.join(options.workDir, 'groups', scope.id);
+  mkdirSync(groupDir, { recursive: true });
+  const run = await runMutationRun(
+    {
+      repoRoot: options.repoRoot,
+      manifest,
+      packageDir: options.packageDir,
+      runDir: groupDir,
+      tests: scope.tests,
+      testFiles: scope.testFiles,
+      mutate: scope.mutate,
+      settings: { ...DEFAULT_STRYKER_SETTINGS, ...options.stryker },
+    },
+    deps,
+  );
+  const observations =
+    run.results === null
+      ? []
+      : extractObservations(run.results, {
+          group: scope.id,
+          kind: 'main',
+          lineage: MAIN_LINEAGE,
+          shard: options.shard,
+        });
+  return writeGroupResult(options.workDir, {
+    scope,
     shard: options.shard,
+    manifestDigest: manifest.digest,
+    status: run.failure === null ? 'complete' : 'inconclusive',
+    reason: run.failure?.reason ?? null,
+    detail: run.failure?.detail ?? null,
+    baselines: run.baselines,
+    stryker: run.stryker,
+    observations,
+    wallClockMs: Math.round(deps.now() - started),
   });
-  return finish('complete', null, null, observations);
 }
 
 // ── Shard run ─────────────────────────────────────────────────────────────

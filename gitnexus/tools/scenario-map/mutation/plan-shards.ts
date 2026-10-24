@@ -63,15 +63,18 @@ export interface CostModel {
  * First calibration, from one controls-fixture group run (U7, WSL2, concurrency 2): a group of
  * 2 tests and 11 mutants took about 98 s (two baselines 6 s, the scope driver's prepare and
  * Stryker's start about 70 s, the mutant runs about 0.25 s per mutant and covering test), and
- * the fixture holds about 0.04 mutants per source byte. `freshProcessMs` is an estimate until the
- * isolation pass (U8) measures a fresh-process mutant run. The full local run (U14) re-measures
- * all four on the eligible category.
+ * the fixture holds about 0.04 mutants per source byte. `freshProcessMs` comes from the isolation
+ * pass (U8) on four controls pairs (same machine, concurrency 2, `maxTestRunnerReuse` 1): 54 mutant
+ * runs in 10 Stryker runs took 298 s from the dry run to the last sidecar, about 5.5 s per mutant;
+ * each of those runs also cost about 130 s besides its mutant runs (two baselines, the scope
+ * driver's prepare, Stryker's start and its test-runner processes), which the isolation term does
+ * not count. The full local run (U14) re-measures all four on the eligible category.
  */
 export const DEFAULT_COST_MODEL: Readonly<CostModel> = Object.freeze({
   perRunMs: 100_000,
   perByteTestMs: 10,
   mutantsPerByte: 0.04,
-  freshProcessMs: 5_000,
+  freshProcessMs: 5_500,
 });
 
 // ── Mutate scope (KTD7) ───────────────────────────────────────────────────
