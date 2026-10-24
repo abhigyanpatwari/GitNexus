@@ -67,6 +67,7 @@ import {
   type TaintEmitLimits,
 } from '../../taint/emit.js';
 import { registerBuiltinTaintModels } from '../../taint/typescript-model.js';
+import { createMemoizedRefinement } from '../../taint/guard-refinement.js';
 import { getSourceSinkConfig } from '../../taint/source-sink-registry.js';
 import {
   buildFunctionNodeIndex,
@@ -1796,6 +1797,9 @@ export function runScopeResolution(
       kills: 0,
       dropped: 0,
       hopsTruncated: 0,
+      guardFunctions: 0,
+      guardFallbacks: 0,
+      guardVisits: 0,
       gapExamples: [] as string[],
       dropExamples: [] as string[],
     };
@@ -1878,6 +1882,11 @@ export function runScopeResolution(
         // per (limits) bucket instead of 3–4× (#2227 tri-review). File-scoped: it
         // is re-created each iteration, so its per-function facts drop with the file.
         const rdSolve = createMemoizedReachingDefs();
+        const refine = createMemoizedRefinement((result) => {
+          if (result.guards.status === 'computed') taintTotals.guardFunctions++;
+          if (result.guards.status === 'fallback') taintTotals.guardFallbacks++;
+          taintTotals.guardVisits += result.guards.visits;
+        });
         const t0 = PROF ? performance.now() : 0;
         const rd = emitFileReachingDefs(
           pdgTarget,
@@ -1956,6 +1965,7 @@ export function runScopeResolution(
             (message) => logger.warn(message), // unconditional — R4/R6
             rdSolve,
             taintParsed,
+            refine,
           );
           if (PROF) taintMs += performance.now() - t1;
           taintTotals.analyzed += taint.functionsAnalyzed;
@@ -1991,6 +2001,7 @@ export function runScopeResolution(
                 : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
               rdSolve,
               taintParsed,
+              refine,
             );
             harvestedSummaries.push(...harvest.summaries);
             summaryUnresolved += harvest.unresolved;
@@ -2028,6 +2039,7 @@ export function runScopeResolution(
             ? `; taint: ${taintTotals.findings} TAINTED, ${taintTotals.kills} SANITIZES ` +
               `(${taintTotals.analyzed} function(s) analyzed, ` +
               `${taintTotals.noMatch} skipped: no source/sink match` +
+              `; guards: ${taintTotals.guardFunctions} analyzed, ${taintTotals.guardFallbacks} fallback, ${taintTotals.guardVisits} visits` +
               (taintTotals.hopsTruncated > 0
                 ? `, ${taintTotals.hopsTruncated} finding(s) with truncated hop paths`
                 : '') +
