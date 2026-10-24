@@ -13,12 +13,19 @@ const LINE_PREFIX_RE = /^(\s*(?:(?:[-A-Za-z0-9_]+)\s*:\s*)?)(.*)$/;
 // `-. text .->`). The labelled forms are matched whole, so their text is
 // never taken for a node reference (#3705). Dots mean a link only in the
 // dotted syntax: a plain run of dots is text.
+//
+// A labelled link opens with a bare `--`, `==` or `-.` followed by its text,
+// with or without a space (`-- text -->`, `--text-->`). A complete link never
+// opens one: `---`, `-->`, `-.-`, `--o`, `--x` are links on their own, so
+// `A --- file.ts --- B` is a chain of three nodes and `file.ts` reaches the
+// node sanitizer like any other reference.
 const LINK_HEAD = '(?:--+|==+|-\\.+-?)';
+const LABEL_OPENER = '(?:--|==|-\\.)(?![-=.>|])(?![ox](?:\\s|$))';
 const EDGE_RE = new RegExp(
   '(' +
     [
-      // `-- text -->`, `== text ==>`, `-. text .->`
-      `\\s*(?:[ox<])?${LINK_HEAD}\\s+[^\\n]*?\\s+(?:--+|==+|\\.+-+)(?:[>ox])?`,
+      // `-- text -->`, `--text-->`, `== text ==>`, `-. text .->`
+      `\\s*(?:[ox<])?${LABEL_OPENER}[^\\n]*?\\s*(?:--+|==+|\\.+-+)(?:[>ox])?`,
       // `-->|text|`
       `\\s*(?:[ox<])?${LINK_HEAD}(?:[>|ox])?\\|[^|\\n]*\\|(?:[>|ox])?`,
       // `-->`, `---`, `-.->`, `==>`
@@ -78,7 +85,7 @@ function sanitizeMermaidLine(line: string, aliasFor: (id: string) => string): st
   if (parts.length === 1) return sanitized;
 
   for (let i = 0; i < parts.length; i += 2) {
-    parts[i] = sanitizeNodeReference(parts[i], aliasFor);
+    parts[i] = sanitizeNodeReference(parts[i], aliasFor, labels);
   }
 
   return prefix + unmaskLabels(parts.join(''), labels);
@@ -164,11 +171,29 @@ function quoteUnsafeEdgeLabels(line: string): string {
   });
 }
 
-function sanitizeNodeReference(segment: string, aliasFor: (id: string) => string): string {
-  const match = segment.match(/^(\s*)([A-Za-z0-9_.:/()-]+)(.*?)(\s*)$/);
+// A masked, empty pair of parentheses right after an id: `doc()`, a
+// call-shaped id the sanitizer has always repaired, not a round node.
+const EMPTY_PARENS_RE = /^\(\u0000(\d+)\u0000\)/;
+
+function sanitizeNodeReference(
+  segment: string,
+  aliasFor: (id: string) => string,
+  labels: string[],
+): string {
+  // The id stops where a node shape opens (`[`, `(`, `{`): `A(Start)` is the
+  // node `A` with a round label, and the label is already masked.
+  const match = segment.match(/^(\s*)([A-Za-z0-9_.:/-]+)(.*?)(\s*)$/);
   if (!match) return segment;
 
-  const [, leading, id, suffix, trailing] = match;
+  const leading = match[1];
+  const trailing = match[4];
+  let id = match[2];
+  let suffix = match[3];
+  const emptyParens = suffix.match(EMPTY_PARENS_RE);
+  if (emptyParens && labels[Number(emptyParens[1])] === '') {
+    id += '()';
+    suffix = suffix.slice(emptyParens[0].length);
+  }
   if (!NODE_ID_RE.test(id) || !UNSAFE_NODE_ID_RE.test(id)) return segment;
   const hasInlineLabel =
     suffix.trim().startsWith('[') || suffix.trim().startsWith('(') || suffix.trim().startsWith('{');
