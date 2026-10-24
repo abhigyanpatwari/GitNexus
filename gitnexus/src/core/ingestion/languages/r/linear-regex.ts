@@ -14,7 +14,11 @@
  * Supported: literals, `.`, bracket expressions, `\d \D \w \W \s \S \b \B`, the
  * single-character escapes, `^ $`, groups (capturing and `(?:)`), alternation and the
  * quantifiers `* + ? {n} {n,} {n,m}` (lazy forms behave identically for a yes/no
- * test). Not supported, and compiled to `null`: back-references (`\1` to `\9`, whether or not
+ * test). Not supported, and compiled to `null`: constructs TRE reads differently from
+ * JavaScript (`\<` `\>` word boundaries, `\a` `\e` `\Q` `\E`, `\x{`, `\u` in any form, a
+ * letter class escape such as `\d` inside `[...]`, `[.x.]` and `[=x=]` elements, `{,n}`, a
+ * leading `]` in a bracket expression), which fail closed rather than match differently
+ * from R; back-references (`\1` to `\9`, whether or not
  * the group exists, as in TRE) and look-around (no
  * linear-time algorithm), named groups, legacy octal escapes, patterns longer than
  * {@link MAX_PATTERN_LENGTH} and patterns whose expansion exceeds {@link MAX_STATES}.
@@ -351,6 +355,7 @@ type EscapeResult =
 
 /** `{n}`, `{n,}`, `{n,m}` at the sticky cursor. */
 const BRACES = /\{(\d+)(?:(,)(\d*))?\}/y;
+const LOWER_BOUND_OMITTED = /\{,\d*\}/y;
 
 class Parser {
   private pos = 0;
@@ -458,7 +463,12 @@ class Parser {
   private tryReadBraces(): { min: number; max: number; length: number } | null {
     BRACES.lastIndex = this.pos;
     const m = BRACES.exec(this.src);
-    if (m === null) return null;
+    if (m === null) {
+      // TRE reads `{,n}` as `{0,n}`; JavaScript as literal text. Refuse rather than guess.
+      LOWER_BOUND_OMITTED.lastIndex = this.pos;
+      if (LOWER_BOUND_OMITTED.test(this.src)) reject('{,n} quantifier is read differently by TRE');
+      return null;
+    }
     const min = Number(m[1]);
     const max = m[2] === undefined ? min : m[3] === '' ? Infinity : Number(m[3]);
     return { min, max, length: m[0].length };
@@ -513,6 +523,11 @@ class Parser {
     const c = this.peek();
     if (c === undefined) return reject('\\ at end of pattern');
     this.pos++;
+    // TRE reads a backslash inside a bracket expression as a literal member, not as an
+    // escape, so a letter class escape there means different things to R and to this parser.
+    if (inClass && 'dDwWsSb'.includes(c)) {
+      reject('letter class escape inside a bracket expression (TRE reads the backslash literally)');
+    }
     switch (c) {
       case 'd':
         return { ranges: DIGIT, classEscape: true };
@@ -554,7 +569,16 @@ class Parser {
         this.pos--;
         return { code: 0x5c };
       }
+      case '<':
+      case '>':
+        return reject('\\< and \\> are TRE word boundaries, not modelled');
+      case 'a':
+      case 'e':
+      case 'Q':
+      case 'E':
+        return reject(`\\${c} has a TRE meaning that is not modelled`);
       case 'x': {
+        if (this.peek() === '{') return reject('\\x{...} is not modelled');
         if (isHexDigit(this.peek()) && isHexDigit(this.peek(1))) {
           const code = parseInt(this.src.slice(this.pos, this.pos + 2), 16);
           this.pos += 2;
@@ -562,14 +586,8 @@ class Parser {
         }
         return { code: 0x78 };
       }
-      case 'u': {
-        const digits = this.src.slice(this.pos, this.pos + 4);
-        if (/^[0-9A-Fa-f]{4}$/.test(digits)) {
-          this.pos += 4;
-          return { code: parseInt(digits, 16) };
-        }
-        return { code: 0x75 };
-      }
+      case 'u':
+        return reject('\\u is not modelled (TRE reading unverified)');
       case 'k':
         // Identity escape (no named groups exist; `parseGroup` rejects those).
         return { code: 0x6b };
@@ -589,10 +607,15 @@ class Parser {
       negated = true;
       this.pos++;
     }
+    // POSIX makes a leading `]` a literal member; JavaScript reads `[]` as an empty class.
+    if (this.peek() === ']') reject('leading ] in a bracket expression is read differently by TRE');
     const ranges: Range[] = [];
     for (;;) {
       const ch = this.peek();
       if (ch === undefined) reject('unterminated character class');
+      if (ch === '[' && (this.peek(1) === '.' || this.peek(1) === '=')) {
+        reject('collating and equivalence elements are not modelled');
+      }
       if (ch === ']') {
         this.pos++;
         break;
@@ -1058,8 +1081,7 @@ function inSet(set: CharSet, c: number): boolean {
 
 /** The outcome of {@link compileLinearRegexDetailed}: a matcher, or why there is none. */
 export type LinearRegexResult =
-  | { readonly regex: LinearRegex }
-  | { readonly regex: null; readonly reason: string };
+  { readonly regex: LinearRegex } | { readonly regex: null; readonly reason: string };
 
 /**
  * Compile a JavaScript-syntax pattern to a linear-time matcher. When the pattern is

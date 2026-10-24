@@ -19,7 +19,10 @@ import { compileLinearRegexDetailed, type SharedWorkBudget } from './linear-rege
  * from the repository being analysed, and a backtracking engine lets a hostile
  * pattern such as `^(a+)+$` hang the analyzer (R itself uses the non-backtracking
  * TRE). See `linear-regex.ts` for the supported subset; a pattern outside it
- * compiles to null and therefore matches nothing. Callers that care why use
+ * (including one that uses a construct TRE reads differently from JavaScript, such as
+ * `\<`, `{,n}` or a leading `]`) compiles to null and therefore matches nothing. A
+ * leading `]` is a literal member when the pattern also has a POSIX class, because the
+ * translation below escapes it. Callers that care why use
  * {@link compileRExportPatternDetailed}, so that a dropped pattern is reported
  * rather than silently treated as an empty export list.
  *
@@ -76,6 +79,8 @@ function translateBracket(src: string, start: number): { text: string; end: numb
     } else if (ch === '\\' && i + 1 < src.length) {
       out += ch + src[i + 1];
       i += 2;
+    } else if (ch === '[' && (src[i + 1] === '.' || src[i + 1] === '=')) {
+      return null; // a collating or equivalence element: not modelled, so the pattern is refused
     } else if (ch === '[' || ch === '^') {
       out += '\\' + ch;
       i++;
@@ -124,8 +129,7 @@ export interface RExportMatcher {
 
 /** The outcome of {@link compileRExportPatternDetailed}: a matcher, or why there is none. */
 export type RExportPatternResult =
-  | { readonly matcher: RExportMatcher }
-  | { readonly matcher: null; readonly reason: string };
+  { readonly matcher: RExportMatcher } | { readonly matcher: null; readonly reason: string };
 
 /**
  * Compile an `exportPattern()` argument, saying why when it cannot be compiled safely.

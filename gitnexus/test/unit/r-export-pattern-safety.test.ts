@@ -494,12 +494,9 @@ const CHARACTERISATION: ReadonlyArray<readonly [string, readonly string[] | null
   ['^(get|set)[A-Z]', ['getX', 'setY']],
   ['a.c', ['abc', 'a.c']],
   ['^.{3}$', ['foo', 'bar', 'aaa', 'abc', 'Abc', 'a.c', 'a|b', 'x.y']],
-  // Leading `]` in a bracket expression WITHOUT a POSIX class: these two rows record the
-  // JS-RegExp reading (`[]` is an empty class), not TRE's. They cannot tell a working
-  // matcher from a never-matching one; the discriminating checks are in the
-  // 'leading ] in a bracket expression' block below.
-  ['[]a]', []],
-  ['[^]a]', []],
+  // Leading `]` and `{,n}` are refused (null); see 'unsupported TRE constructs fail closed'.
+  ['[]a]', null],
+  ['[^]a]', null],
   ['^[\\]]', [']']],
   [
     'a+?',
@@ -524,7 +521,7 @@ const CHARACTERISATION: ReadonlyArray<readonly [string, readonly string[] | null
       'ab',
     ],
   ],
-  ['a{,2}', ['a{,2}']],
+  ['a{,2}', null],
   ['a{', ['a{,2}', 'a{']],
   ['^[[:punct:]]', ['.hidden', '_x', '[', ']']],
   ['^.*_internal$', ['my_internal']],
@@ -550,13 +547,10 @@ describe('compileRExportPattern characterisation', () => {
 });
 
 // R compiles exportPattern() with TRE (POSIX extended): a `]` in first position of a bracket
-// expression, after an optional `^`, is a literal member. The translator only applies that
-// rule when the pattern also contains a POSIX class (`[:`); otherwise the text reaches the
-// matcher verbatim and is read as a JavaScript RegExp, where `[]` is an empty class and
-// `[^]` matches any character. The first block characterises what the code does today with
-// names that discriminate (`a`, `]`, `xa]`, `5`); the second states the TRE expectation and
-// is marked `it.fails` until export-pattern.ts translates the leading `]` unconditionally.
-// The gap is listed under the limits in docs/languages/r-provider.md.
+// expression, after an optional `^`, is a literal member. The translator applies that rule
+// only when the pattern also contains a POSIX class (`[:`); otherwise the text would reach the
+// matcher and be read as a JavaScript RegExp (`[]` is an empty class), so the matcher refuses
+// it (null), which makes rename report incomplete_semantics instead of guessing.
 describe('compileRExportPattern: leading ] in a bracket expression', () => {
   const BRACKET_NAMES = ['a', ']', 'b', '5', 'xa]', 'ba]', 'a]', 'x]', ']a'];
   const matched = (pattern: string): readonly string[] | null => {
@@ -564,35 +558,13 @@ describe('compileRExportPattern: leading ] in a bracket expression', () => {
     return matcher === null ? null : BRACKET_NAMES.filter((n) => matcher.test(n));
   };
 
-  describe('current behaviour (characterisation, JS-RegExp reading)', () => {
-    it.each([
-      ['[]a]', []],
-      ['[]]', []],
-      ['[^]a]', ['xa]', 'ba]']],
-      ['[^]]', ['xa]', 'ba]', 'a]', 'x]']],
-    ] as const)('%s matches %j', (pattern, expected) => {
-      expect(matched(pattern)).toEqual(expected);
-    });
-
-    it('applies the TRE rule once a POSIX class is present (translated path)', () => {
-      expect(matched('[]a[:digit:]]')).toEqual(['a', ']', '5', 'xa]', 'ba]', 'a]', 'x]', ']a']);
-      expect(matched('[^]a[:digit:]]')).toEqual(['b', 'xa]', 'ba]', 'x]']);
-    });
+  it.each(['[]a]', '[]]', '[^]a]', '[^]]'])('%s is refused without a POSIX class', (pattern) => {
+    expect(matched(pattern)).toBeNull();
   });
 
-  describe('TRE expectation (known gap)', () => {
-    // The expected sets come from the equivalent JavaScript RegExp with the leading `]`
-    // escaped, so the expectation is computed, not hand-listed, and is never empty by luck.
-    it.fails.each([
-      ['[]a]', /[\]a]/],
-      ['[]]', /[\]]/],
-      ['[^]a]', /[^\]a]/],
-      ['[^]]', /[^\]]/],
-    ] as const)('%s behaves like its escaped equivalent', (pattern, oracle) => {
-      const expected = BRACKET_NAMES.filter((n) => oracle.test(n));
-      expect(expected.length).toBeGreaterThan(0);
-      expect(matched(pattern)).toEqual(expected);
-    });
+  it('applies the TRE rule once a POSIX class is present (translated path)', () => {
+    expect(matched('[]a[:digit:]]')).toEqual(['a', ']', '5', 'xa]', 'ba]', 'a]', 'x]', ']a']);
+    expect(matched('[^]a[:digit:]]')).toEqual(['b', 'xa]', 'ba]', 'x]']);
   });
 });
 
@@ -675,6 +647,34 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
     '[\\d-z]',
     '[z-a]',
   ];
+  // The constructs the matcher refuses because TRE reads them differently from JavaScript.
+  // Written separately from linear-regex.ts on purpose (a bracket-aware scan, not a copy of its
+  // parser): a mismatch fails loudly and is fixed in whichever side is wrong. Refused: `\<` `\>`
+  // `\a` `\e` `\Q` `\E` `\u` `\x{` anywhere; `{,n}` outside a bracket expression; and inside
+  // one, a `]` straight after `[` or `[^`, `[.` / `[=` elements and a letter class escape
+  // (`\d \D \w \W \s \S \b`). A `[` inside a bracket expression is a plain member.
+  const ALWAYS_REFUSED_ESCAPES = /^\\(?:[<>aeQEu]|x\{)/;
+  function c2Refused(source: string): boolean {
+    let inClass = false;
+    for (let i = 0; i < source.length; i++) {
+      const ch = source[i];
+      if (ch === '\\') {
+        if (ALWAYS_REFUSED_ESCAPES.test(source.slice(i, i + 3))) return true;
+        if (inClass && /^\\[dDwWsSb]/.test(source.slice(i, i + 2))) return true;
+        i++;
+      } else if (inClass) {
+        if (ch === ']') inClass = false;
+        else if (ch === '[' && (source[i + 1] === '.' || source[i + 1] === '=')) return true;
+      } else if (ch === '[') {
+        inClass = true;
+        if (source[i + 1] === ']' || (source[i + 1] === '^' && source[i + 2] === ']')) return true;
+      } else if (ch === '{' && /^\{,\d*\}/.test(source.slice(i))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  // Hand-checked: `[\d-z]` -> true, `^[^\\.]` -> false, `\bfoo\b` -> false, `[[]` -> false.
   const NAME_ALPHABET = ['a', 'b', '1', '_', '.', ' ', 'c', '\t'];
 
   function lcg(seed: number): () => number {
@@ -697,6 +697,7 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
     }
     let compiled = 0;
     let rejected = 0;
+    let refused = 0;
     for (let i = 0; i < 4000; i++) {
       const parts = Math.floor(rand() * 7) + 1;
       let source = '';
@@ -713,6 +714,11 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
         rejected++;
         continue;
       }
+      if (c2Refused(source)) {
+        expect(matcher, `source ${JSON.stringify(source)} uses a refused TRE construct`).toBeNull();
+        refused++;
+        continue;
+      }
       expect(matcher, `source ${JSON.stringify(source)} is valid for RegExp`).not.toBeNull();
       compiled++;
       for (const name of names) {
@@ -724,21 +730,57 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
     // The corpus must exercise both branches, or the comparison proves nothing.
     expect(compiled).toBeGreaterThan(500);
     expect(rejected).toBeGreaterThan(500);
+    expect(refused).toBeGreaterThan(100);
   });
 });
 
-// A `\\u` without four hex digits is the letter `u`, as in JavaScript (`/\\u12/` matches "u12").
-// The translator keeps that reading instead of refusing the pattern.
-describe('compileRExportPattern: \\u without four hex digits', () => {
+// `\\u` is refused in every form: TRE does not read it as JavaScript does and the
+// reading is unverified, so the pattern fails closed (and rename reports incomplete_semantics).
+describe('compileRExportPattern: \\u is refused', () => {
+  it.each(['\\u12', '^\\u$', '^\\u00zz$', '^\\u0062$', '\\u{62}'])(
+    '%s compiles to null',
+    (source) => {
+      expect(compileRExportPattern(source)).toBeNull();
+    },
+  );
+});
+
+describe('compileRExportPattern: unsupported TRE constructs fail closed', () => {
   it.each([
-    ['\\u12', 'u12', true],
-    ['\\u12', '\u0012', false],
-    ['^\\u$', 'u', true],
-    ['^\\u00zz$', 'u00zz', true],
-    ['^\\u0062$', 'b', true],
-  ])('%s against %s is %s, as RegExp says', (source, name, expected) => {
-    expect(new RegExp(source).test(name)).toBe(expected);
-    expect(compileRExportPattern(source)?.test(name)).toBe(expected);
+    '\\<a\\>',
+    '\\<a',
+    'a\\>',
+    '\\a',
+    '\\e',
+    '\\Q.\\E',
+    '\\x{61}',
+    '\\u0062',
+    'a{,1}',
+    'a{,}',
+    '[\\d-z]',
+    '[\\d]',
+    '[^\\w]',
+    '[a\\s]',
+    '[\\b]',
+    '[]',
+    '[]a]',
+    '[^]a]',
+    '[[.a.]]',
+    '[[=a=]]',
+    '[a[.x.]]',
+  ])('%s compiles to null', (source) => {
+    expect(compileRExportPattern(source)).toBeNull();
+  });
+
+  it.each(['^[[:alpha:]]', '\\d+', '\\bfoo\\b', '^[^\\\\.]', '\\D\\w\\W\\s\\S\\B', 'a{1,2}'])(
+    '%s still compiles',
+    (source) => {
+      expect(compileRExportPattern(source)).not.toBeNull();
+    },
+  );
+
+  it('keeps the POSIX-translated leading ] (a literal member, as in TRE)', () => {
+    expect(compileRExportPattern('[]a[:digit:]]')).not.toBeNull();
   });
 });
 
