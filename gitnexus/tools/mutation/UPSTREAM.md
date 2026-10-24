@@ -13,4 +13,13 @@ Versions probed: Vitest 5.0.5, Stryker 10.0.0 (`@stryker-mutator/core`, `@stryke
 
 ## Residual deltas against upstream
 
-U9 fills in this section.
+What an upstream `@stryker-mutator/vitest-runner` release needs before this plugin can be dropped (KTD1). Status on 2026-10-24: the latest release is 10.0.0, and nothing has been filed upstream. A release that covers every item must still pass gates 1-4 before the plugin goes.
+
+- **Per-test failure classes.** Stryker's mutant run result has no field for them, only killed, survived or timeout plus `killedBy`. Gates 2-4 and the assertion-only kill rule need the class of every failing test (assertion, runtime, hook, timeout) and of every failure outside a test (a failed `beforeAll`, a collection error). The plugin writes them to sidecar files (KTD6, KTD17). Upstream needs a channel for them.
+- **Name filter fixes in a release.** The equivalent of #6214 (`' > '` separator, merged, unreleased) and #6246 (end anchoring). Even with both, titles hold regex metacharacters and duplicate full names, so name patterns stay fragile: see task ids below.
+- **Keep the project's pool (#6236).** Upstream forces the threads pool. The repo runs `forks`, and the plugin refuses to start unless the pool is `forks` with isolation on.
+- **NoCoverage, not Survived (#6256).** A mutant no test covers must be reported as NoCoverage. Gate 3 treats the two as one class but keeps the raw status in its report.
+- **Selection by Vitest task id.** Select the tests of a mutant run with `project.createSpecification(file, { testIds })` and `runTestSpecifications`, never related mode or name patterns, and check that the executed set equals the requested set: a specification with only unknown ids silently skips every test. Static mutants run exactly the dry run's test set.
+- **A dry-run manifest shared across processes.** Only one pool process runs the dry run. The others, and replacements after a crash, a timeout or `maxTestRunnerReuse`, only call `init` and `mutantRun`, so test ids, task ids and the expected test set per file must reach them from outside that process. The plugin writes a run manifest atomically to the run directory, and every process loads it before its first mutant run (KTD16).
+- **Hook-time hit attribution.** A mutant hit after collection with no current test (a suite's `beforeAll`) is coverage for every test of the suite whose hook ran. Only load- and collection-time hits make a mutant static. The current test must come from `TestRunner.getCurrentTest()`, because `expect.getState().currentTestName` is stale in later hooks (finding 6).
+- **The `({}, suite)` hook signature.** Vitest 5 parses the first hook parameter as a fixture pattern, so a setup-file hook that needs the suite must be written `afterAll(({}, suite) => ...)`. A plain identifier throws a FixtureParseError and fails the file (finding 5).
