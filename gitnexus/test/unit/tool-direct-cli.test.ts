@@ -2,12 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const initMock = vi.fn();
 const callToolMock = vi.fn();
+const disconnectMock = vi.fn();
 const writeSyncMock = vi.fn();
 
 vi.mock('../../src/mcp/local/local-backend.js', () => ({
   LocalBackend: class {
     init = initMock;
     callTool = callToolMock;
+    disconnect = disconnectMock;
   },
 }));
 
@@ -22,9 +24,11 @@ describe('direct CLI tool commands', () => {
     vi.resetModules();
     initMock.mockReset();
     callToolMock.mockReset();
+    disconnectMock.mockReset();
     writeSyncMock.mockReset();
     process.exitCode = undefined;
     initMock.mockResolvedValue(true);
+    disconnectMock.mockResolvedValue(undefined);
   });
 
   // These commands set `process.exitCode` on the real process. Clearing it after
@@ -164,6 +168,26 @@ describe('direct CLI tool commands', () => {
 
     expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('not found'));
     expect(process.exitCode).toBe(1);
+    expect(disconnectMock).toHaveBeenCalledOnce();
+  });
+
+  it('disconnects after a successful query so the embedding sidecar cannot hold the CLI open', async () => {
+    callToolMock.mockResolvedValue({ definitions: [], processes: [] });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow');
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"definitions": []'));
+    expect(disconnectMock).toHaveBeenCalledOnce();
+  });
+
+  it('disconnects when a query throws', async () => {
+    callToolMock.mockRejectedValue(new Error('embedding failed'));
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await expect(queryCommand('auth flow')).rejects.toThrow('embedding failed');
+
+    expect(disconnectMock).toHaveBeenCalledOnce();
   });
 
   // `partial` is cross-tool vocabulary, not detect_changes' private flag, and the
