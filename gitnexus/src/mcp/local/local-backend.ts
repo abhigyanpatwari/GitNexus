@@ -3354,10 +3354,19 @@ export class LocalBackend {
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
     const vectorDegraded = { reason: undefined as string | undefined };
-    const [bm25SearchResult, semanticResults] = await Promise.all([
+    const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
       timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit, vectorDegraded)),
     ]);
+    // A rejected lane must not let the other lane outlive query(). In particular,
+    // semantic search may still be importing the embedder and can start its
+    // sidecar after a one-shot CLI has already run disconnect() in `finally`.
+    // Settle both lanes first, then preserve Promise.all's left-to-right error
+    // precedence for callers.
+    if (bm25Outcome.status === 'rejected') throw bm25Outcome.reason;
+    if (semanticOutcome.status === 'rejected') throw semanticOutcome.reason;
+    const bm25SearchResult = bm25Outcome.value;
+    const semanticResults = semanticOutcome.value;
 
     // Guard against undefined results (#1489) — when FTS is entirely
     // unavailable the search helper may return an unexpected shape.
