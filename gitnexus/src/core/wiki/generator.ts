@@ -906,7 +906,9 @@ export class WikiGenerator {
           overviewEnd > 0 ? content.slice(0, overviewEnd).trim() : content.slice(0, 800).trim();
         childDocs.push(`#### ${child.name} (\`${child.slug}.md\`)\n${overview}`);
       } catch {
-        childDocs.push(`#### ${child.name} (\`${child.slug}.md\`)\n(Documentation not yet generated)`);
+        childDocs.push(
+          `#### ${child.name} (\`${child.slug}.md\`)\n(Documentation not yet generated)`,
+        );
       }
     }
 
