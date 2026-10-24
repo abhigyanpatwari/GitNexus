@@ -904,9 +904,9 @@ export class WikiGenerator {
         const overviewEnd = content.indexOf('### Architecture');
         const overview =
           overviewEnd > 0 ? content.slice(0, overviewEnd).trim() : content.slice(0, 800).trim();
-        childDocs.push(`#### ${child.name}\n${overview}`);
+        childDocs.push(`#### ${child.name} (\`${child.slug}.md\`)\n${overview}`);
       } catch {
-        childDocs.push(`#### ${child.name}\n(Documentation not yet generated)`);
+        childDocs.push(`#### ${child.name} (\`${child.slug}.md\`)\n(Documentation not yet generated)`);
       }
     }
 
@@ -944,9 +944,9 @@ export class WikiGenerator {
         const overviewEnd = content.indexOf('### Architecture');
         const overview =
           overviewEnd > 0 ? content.slice(0, overviewEnd).trim() : content.slice(0, 600).trim();
-        moduleSummaries.push(`#### ${node.name}\n${overview}`);
+        moduleSummaries.push(`#### ${node.name} (\`${node.slug}.md\`)\n${overview}`);
       } catch {
-        moduleSummaries.push(`#### ${node.name}\n(Documentation pending)`);
+        moduleSummaries.push(`#### ${node.name} (\`${node.slug}.md\`)\n(Documentation pending)`);
       }
     }
 
