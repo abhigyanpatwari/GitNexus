@@ -9,7 +9,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { InputFacet } from '../../../tools/scenario-map/facet/input-facet.js';
-import type { MergedObservation } from '../../../tools/scenario-map/mutation/observations.js';
+import type {
+  MergedObservation,
+  RunUniverse,
+} from '../../../tools/scenario-map/mutation/observations.js';
 import type { DegradedFlag } from '../../../tools/scenario-map/value-flow/pdg-walk.js';
 import {
   VERDICT_ENGINE_VERSION,
@@ -177,7 +180,10 @@ const world = (edit: WorldEdit = {}): VerdictInput => ({
     testInput(B, { facet: facet(['5', '5']), ...edit.b }),
   ],
   pairs: [pairInput(edit.pair)],
-  observations: (edit.observations ?? ((entries) => entries))(mainRun([A, B])),
+  observations: {
+    explicit: (edit.observations ?? ((entries) => entries))(mainRun([A, B])),
+    universes: [],
+  },
   valueFlowDegraded: edit.degraded ?? [],
 });
 
@@ -740,16 +746,19 @@ describe('gaps per production file (R11)', () => {
           schedule: { status: 'inconclusive', reason: 'baseline-failed', detail: null },
         }),
       ],
-      observations: [
-        ...mainRun([A, B]),
-        observation(A, M4, { covered: false, static: true, ...SURVIVED }),
-        observation(B, M4, { covered: false, static: true, ...SURVIVED }),
-        // Group g2 kills M2, which survives group g1.
-        observation(C, M2, { group: 'g2' }),
-        observation(D, M2, { group: 'g2', ...SURVIVED }),
-        // Group g3 never completed: its kill of M3 does not count.
-        observation(A, M3, { group: 'g3' }),
-      ],
+      observations: {
+        explicit: [
+          ...mainRun([A, B]),
+          observation(A, M4, { covered: false, static: true, ...SURVIVED }),
+          observation(B, M4, { covered: false, static: true, ...SURVIVED }),
+          // Group g2 kills M2, which survives group g1.
+          observation(C, M2, { group: 'g2' }),
+          observation(D, M2, { group: 'g2', ...SURVIVED }),
+          // Group g3 never completed: its kill of M3 does not count.
+          observation(A, M3, { group: 'g3' }),
+        ],
+        universes: [],
+      },
     };
     expect(computeVerdicts(input).gaps).toEqual([
       { file: FILE, mutants: 4, killed: 2, survived: [M4], uncovered: [M3], inconclusive: [] },
@@ -785,15 +794,65 @@ describe('report', () => {
       tests: [...world().tests, testInput(C)],
       pairs: [pairInput(), pairInput({ a: C, b: A, group: 'g1' })],
     };
-    const withC = { ...input, observations: [...input.observations, ...mainRun([C])] };
+    const withC: VerdictInput = {
+      ...input,
+      observations: { explicit: [...input.observations.explicit, ...mainRun([C])], universes: [] },
+    };
     const reordered: VerdictInput = {
       tests: [...withC.tests].reverse(),
       pairs: [...withC.pairs].reverse().map((pair) => ({ ...pair, a: pair.b, b: pair.a })),
-      observations: [...withC.observations].reverse(),
+      observations: { explicit: [...withC.observations.explicit].reverse(), universes: [] },
       valueFlowDegraded: [],
     };
     const first = JSON.stringify(computeVerdicts(withC));
     expect(JSON.stringify(computeVerdicts(withC))).toBe(first);
     expect(JSON.stringify(computeVerdicts(reordered))).toBe(first);
+  });
+});
+
+// ── Compact observations ───────────────────────────────────────────────────
+
+describe('compact observations', () => {
+  /** The main run's universe: A and B selected, M1 to M3 evaluated, none static. */
+  const universe: RunUniverse = {
+    group: 'g1',
+    kind: 'main',
+    lineage: 'main',
+    shard: 0,
+    tests: [A, B],
+    mutants: [M1, M2, M3].map((id) => ({
+      id,
+      file: FILE,
+      static: false,
+      status: 'Survived' as const,
+      reasons: [],
+      hookMarker: true,
+    })),
+    valid: true,
+    reasons: [],
+  };
+  const implied = (input: VerdictInput, reasons: string[] = []): VerdictInput => ({
+    ...input,
+    observations: {
+      explicit: input.observations.explicit.filter((entry) => entry.mutant !== M3),
+      universes: [{ ...universe, valid: reasons.length === 0, reasons }],
+    },
+  });
+
+  it.each([
+    ['the positive control', {}],
+    ['a pair whose kill sets differ', { observations: change(B, M1, SURVIVED) }],
+    ['a test that kills nothing', { observations: chain(change(A, M1, SURVIVED)) }],
+  ])('decides %s the same when the not-covered survivals of M3 are implied', (_title, edit) => {
+    expect(computeVerdicts(implied(world(edit)))).toEqual(computeVerdicts(world(edit)));
+  });
+
+  it('makes an implied observation of a run with a run-level reason unknown, never survived', () => {
+    const report = computeVerdicts(implied(world(), ['run-flag:dry-run-missing']));
+    expect([report.pairs[0].rule, report.gaps[0].inconclusive, report.gaps[0].uncovered]).toEqual([
+      'kills-unknown',
+      [M3],
+      [],
+    ]);
   });
 });

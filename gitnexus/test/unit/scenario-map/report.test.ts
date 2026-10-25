@@ -140,7 +140,13 @@ describe('evidence hash', () => {
     const input = reportInput();
     const reordered = {
       ...input,
-      evidence: { ...input.evidence, observations: [...input.evidence.observations].reverse() },
+      evidence: {
+        ...input.evidence,
+        observations: {
+          ...input.evidence.observations,
+          explicit: [...input.evidence.observations.explicit].reverse(),
+        },
+      },
     };
     expect(JSON.stringify(buildReport(reordered))).toBe(JSON.stringify(buildReport(input)));
   });

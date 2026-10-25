@@ -8,7 +8,8 @@
  * the pure helpers behind the plan, shard and controls stages (the D9/D10 cost terms at a target
  * concurrency and speed factor, the shards needed, the value-flow view of the isolation
  * selection, the seeded group sample, the shard completeness check, the expected.json
- * comparison).
+ * comparison, the batch split of observations and run universes, the slim batch record), and a
+ * merge that reports a group result of an older schema as incomplete.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -20,10 +21,16 @@ import type {
   CoverageWorkFile,
 } from '../../../tools/scenario-map/path-coverage/run-coverage.js';
 import type { PlannedGroup } from '../../../tools/scenario-map/mutation/plan-shards.js';
-import type { GroupObservations } from '../../../tools/scenario-map/mutation/run-group.js';
+import type {
+  GroupObservations,
+  StrykerSummary,
+} from '../../../tools/scenario-map/mutation/run-group.js';
 import type { RowDeletionPlan } from '../../../tools/scenario-map/mutation/row-deletion.js';
 import type { ScenarioMapReport } from '../../../tools/scenario-map/report/report.js';
-import type { Observation } from '../../../tools/scenario-map/mutation/observations.js';
+import type {
+  Observation,
+  RunUniverse,
+} from '../../../tools/scenario-map/mutation/observations.js';
 import type { PairValueFlow } from '../../../tools/scenario-map/value-flow/pdg-walk.js';
 import type { PairTrace } from '../../../tools/scenario-map/value-flow/trace.js';
 import {
@@ -34,6 +41,7 @@ import {
   valueFlowPasses,
   valueFlowView,
   batchGroups,
+  batchRecordOf,
   batchScope,
   compareControls,
   effectiveShardPlan,
@@ -381,7 +389,7 @@ function writeTwoShardRun(work: string, replan: ShardReplan | null = null): void
     wallClockMs: 20,
   };
   const groupResult: GroupObservations = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     group: 'ga',
     shard: 0,
     manifestDigest: DIGEST,
@@ -392,6 +400,7 @@ function writeTwoShardRun(work: string, replan: ShardReplan | null = null): void
     scope: groups[0],
     baselines: [],
     stryker: null,
+    runUniverse: null,
     observations: [],
     wallClockMs: 10,
   };
@@ -452,6 +461,33 @@ describe('merge stage', () => {
         [C1, 'out-of-scope', 'covers-no-evaluated-mutant'],
       ],
       written: [true, true],
+    });
+  });
+
+  it('reports a group result of the pre-compact schema as incomplete, its pairs not scheduled', async () => {
+    const { deps, work } = setup();
+    writeTwoShardRun(work);
+    const file = path.join(work, 'observations', 'ga.json');
+    const written = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    writeFileSync(file, JSON.stringify({ ...written, schemaVersion: 1 }));
+    const code = await runCli(['merge', '--work', work, '--run-id', '7'], deps);
+    const report = JSON.parse(
+      readFileSync(workLayout(work).reportJson, 'utf8'),
+    ) as ScenarioMapReport;
+    expect({
+      code,
+      incomplete: report.completeness.shards.incomplete,
+      pair: report.pairs.map((pair) => [pair.a, pair.rule])[0],
+    }).toEqual({
+      code: 1,
+      incomplete: [
+        { shard: '1', reason: 'no shard result' },
+        {
+          shard: 'group ga',
+          reason: expect.stringMatching(/has schema 1, not 2: .*re-run its shard$/),
+        },
+      ],
+      pair: [A1, 'not-scheduled'],
     });
   });
 
@@ -949,8 +985,25 @@ describe('splitBatchResult', () => {
     const ga = { ...plannedGroup('ga', [A1, A2]), mutate: ['gitnexus/src/a.ts'] };
     const gb = { ...plannedGroup('gb', [B1, B2]), mutate: ['gitnexus/src/b.ts'] };
     const scope = batchScope('bbatch', [ga, gb]);
+    const universe: RunUniverse = {
+      group: 'bbatch',
+      kind: 'main',
+      lineage: 'main',
+      shard: 0,
+      tests: scope.tests,
+      mutants: ['gitnexus/src/a.ts', 'gitnexus/src/b.ts'].map((file) => ({
+        id: observation(A1, file).mutant,
+        file,
+        static: false,
+        status: 'Killed' as const,
+        reasons: [],
+        hookMarker: true,
+      })),
+      valid: true,
+      reasons: [],
+    };
     const result: GroupObservations = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       group: 'bbatch',
       shard: 0,
       manifestDigest: DIGEST,
@@ -961,6 +1014,7 @@ describe('splitBatchResult', () => {
       scope,
       baselines: [],
       stryker: null,
+      runUniverse: universe,
       observations: [
         observation(A1, 'gitnexus/src/a.ts'),
         observation(A1, 'gitnexus/src/b.ts'),
@@ -977,6 +1031,11 @@ describe('splitBatchResult', () => {
         member.tests,
         member.scope.mutate,
         member.observations.map((entry) => [entry.group, entry.test, entry.file]),
+        [
+          member.runUniverse?.group,
+          member.runUniverse?.tests,
+          member.runUniverse?.mutants.map((entry) => entry.file),
+        ],
         member.batch,
       ]),
     }).toEqual({
@@ -987,6 +1046,7 @@ describe('splitBatchResult', () => {
           [A1, A2],
           ['gitnexus/src/a.ts'],
           [['ga', A1, 'gitnexus/src/a.ts']],
+          ['ga', [A1, A2], ['gitnexus/src/a.ts']],
           { id: 'bbatch', groups: ['ga', 'gb'] },
         ],
         [
@@ -994,10 +1054,59 @@ describe('splitBatchResult', () => {
           [B1, B2],
           ['gitnexus/src/b.ts'],
           [['gb', B2, 'gitnexus/src/b.ts']],
+          ['gb', [B1, B2], ['gitnexus/src/b.ts']],
           { id: 'bbatch', groups: ['ga', 'gb'] },
         ],
       ],
     });
+  });
+});
+
+describe('batchRecordOf', () => {
+  it('keeps a batch outcome and its members, never its run universe or observations', () => {
+    const scope = plannedGroup('bbatch', [A1, B1]);
+    const stryker: StrykerSummary = {
+      exitCode: 0,
+      wallClockMs: 1,
+      resultsFile: '/work/groups/bbatch/stryker/results.json',
+      mutants: 2,
+      evaluated: 2,
+      flags: 0,
+    };
+    const record = batchRecordOf(
+      {
+        schemaVersion: 2,
+        group: 'bbatch',
+        shard: 0,
+        manifestDigest: DIGEST,
+        status: 'complete',
+        reason: null,
+        detail: null,
+        tests: scope.tests,
+        scope,
+        baselines: [],
+        stryker,
+        runUniverse: {
+          group: 'bbatch',
+          kind: 'main',
+          lineage: 'main',
+          shard: 0,
+          tests: scope.tests,
+          mutants: [],
+          valid: true,
+          reasons: [],
+        },
+        observations: [],
+        wallClockMs: 5,
+      },
+      ['ga', 'gb'],
+    );
+    expect([
+      'runUniverse' in record,
+      'observations' in record,
+      record.groups,
+      record.stryker?.resultsFile,
+    ]).toEqual([false, false, ['ga', 'gb'], '/work/groups/bbatch/stryker/results.json']);
   });
 });
 

@@ -1,10 +1,14 @@
 /**
  * Shared in-memory worlds for the report tests (U13): the verdict engine's positive control
  * (`add(2, 3)` against `add(5, 5)`, a strong repeat) plus a test that kills nothing, so a report
- * has a strong repeat, a Weak pair verdict, a weak test and one production file with gaps.
+ * has a strong repeat, a Weak pair verdict, a weak test and one production file with gaps. The
+ * observations follow the compact model: M3, covered by no test, is implied by the run universe.
  */
 import type { InputFacet } from '../../../tools/scenario-map/facet/input-facet.js';
-import type { MergedObservation } from '../../../tools/scenario-map/mutation/observations.js';
+import type {
+  MergedObservation,
+  RunUniverse,
+} from '../../../tools/scenario-map/mutation/observations.js';
 import type { MutantFingerprint } from '../../../tools/scenario-map/report/anchors.js';
 import type {
   CollectedProvenance,
@@ -56,12 +60,6 @@ export const observation = (
 });
 
 const SURVIVED: Partial<MergedObservation> = { outcome: 'survived' };
-const UNCOVERED: Partial<MergedObservation> = {
-  covered: false,
-  outcome: 'survived',
-  attempts: [],
-  sources: ['not-covered'],
-};
 
 export const facet = (values: readonly string[]): InputFacet => ({
   fingerprint: 'facet-add',
@@ -134,8 +132,24 @@ export function world(options: WorldOptions = {}): VerdictInput {
   const run = (test: string, killsM1: boolean): MergedObservation[] => [
     observation(test, M1, { group, ...(killsM1 ? {} : SURVIVED) }),
     observation(test, M2, { group, ...SURVIVED }),
-    observation(test, M3, { group, ...UNCOVERED }),
   ];
+  const universe: RunUniverse = {
+    group,
+    kind: 'main',
+    lineage: 'main',
+    shard: 0,
+    tests: [A, B, C],
+    mutants: [M1, M2, M3].map((id) => ({
+      id,
+      file: FILE,
+      static: false,
+      status: 'Survived' as const,
+      reasons: [],
+      hookMarker: true,
+    })),
+    valid: true,
+    reasons: [],
+  };
   return {
     tests: [
       testInput(A, { facet: facet(['2', '3']) }),
@@ -143,7 +157,10 @@ export function world(options: WorldOptions = {}): VerdictInput {
       testInput(C, { facet: facet(['1', '1']), checksContext: 'checks-log' }),
     ],
     pairs: [pairInput(A, B, { group }), pairInput(A, C, { group })],
-    observations: [...run(A, true), ...run(B, true), ...run(C, false)],
+    observations: {
+      explicit: [...run(A, true), ...run(B, true), ...run(C, false)],
+      universes: [universe],
+    },
     valueFlowDegraded: options.degraded ?? [],
   };
 }

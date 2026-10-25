@@ -5,8 +5,9 @@
  * each selected pair gets one together run, and each test one alone run over the union of its
  * pairs' universes; mutate is the universe as Stryker ranges; every run reuses no test-runner
  * process; per test and mutant, coverage and outcome class (and the unmutated baseline) must agree
- * across main, together and alone, a missing result is unknown, and a hook-attributed mutant caps
- * the pair at weak.
+ * across main, together and alone (a not-covered survival a run universe implies included), a
+ * missing result is unknown, and a hook-attributed mutant caps the pair at weak. Result files hold
+ * the compact model (schema 2); a schema 1 file is rejected.
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -33,6 +34,7 @@ import {
   mutateRangesOf,
   pairKey,
   planIsolation,
+  readIsolationRun,
   readIsolationRuns,
   runIsolationRun,
   selectRepeatStagePairs,
@@ -44,6 +46,8 @@ import {
 import {
   mergeObservations,
   type Observation,
+  type RunKind,
+  type RunUniverse,
 } from '../../../tools/scenario-map/mutation/observations.js';
 import type { PairRef } from '../../../tools/scenario-map/mutation/plan-shards.js';
 import {
@@ -145,7 +149,7 @@ const facts = (
   main: readonly Observation[] = pairWorld(),
   overrides: Partial<Omit<RepeatStageFacts, 'merged'>> = {},
 ): RepeatStageFacts => ({
-  merged: mergeObservations(main),
+  merged: mergeObservations(main, []),
   checksContext: new Map([
     [A, 'k1'],
     [B, 'k1'],
@@ -180,7 +184,7 @@ function runResult(
 ): IsolationRunResult {
   const tests = new Set(spec.tests);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: spec.id,
     group: spec.group,
     kind: spec.kind,
@@ -197,6 +201,7 @@ function runResult(
     settings: { concurrency: 2, maxTestRunnerReuse: 1, timeoutMS: 10_000 },
     baselines: [passed(spec.tests), passed(spec.tests)],
     stryker: null,
+    runUniverse: null,
     observations: observations
       .filter((entry) => tests.has(entry.test) && spec.universe.includes(entry.mutant))
       .map((entry) => ({ ...entry, kind: spec.kind, lineage: spec.lineage })),
@@ -228,12 +233,36 @@ function evaluate(world: RerunWorld = {}) {
         ),
   );
   const [result] = evaluateIsolation([decision], {
-    merged: mergeObservations(main),
+    merged: mergeObservations(main, []),
     runs,
     manifestDigest: 'd',
   });
   return { result, runs };
 }
+
+/** A run universe of g1 over non-static mutants of x.ts. */
+const universeOf = (
+  kind: RunKind,
+  lineage: string,
+  tests: readonly string[],
+  mutants: readonly string[],
+): RunUniverse => ({
+  group: 'g1',
+  kind,
+  lineage,
+  shard: 0,
+  tests: [...tests],
+  mutants: mutants.map((mutant) => ({
+    id: mutant,
+    file: 'gitnexus/src/x.ts',
+    static: false,
+    status: 'Survived',
+    reasons: [],
+    hookMarker: true,
+  })),
+  valid: true,
+  reasons: [],
+});
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
@@ -522,7 +551,7 @@ describe('evaluateIsolation', () => {
   it('does not run a pair that never reached the repeat stage', () => {
     const main = replace(pairWorld(), B, M1, { outcome: 'survived' });
     const [result] = evaluateIsolation([decisionOf(main)], {
-      merged: mergeObservations(main),
+      merged: mergeObservations(main, []),
       runs: [],
       manifestDigest: 'd',
     });
@@ -540,7 +569,7 @@ describe('evaluateIsolation', () => {
       .runs.filter((spec) => spec.lineage !== B)
       .map((spec) => runResult(spec, pairWorld()));
     const [result] = evaluateIsolation([decision], {
-      merged: mergeObservations(pairWorld()),
+      merged: mergeObservations(pairWorld(), []),
       runs,
       manifestDigest: 'd',
     });
@@ -560,6 +589,50 @@ describe('evaluateIsolation', () => {
       ['hook-stratum-unvalidated', 'weak'],
     ]);
     expect(result.disqualifiers[0].mutants).toContain(M1);
+  });
+
+  describe('with not-covered survivals implied by run universes', () => {
+    /** The pair's explicit observations: M3, covered by neither test, is implied. */
+    const explicit = (entries: readonly Observation[]): Observation[] =>
+      entries.filter((entry) => entry.mutant !== M3);
+    const mainUniverse = universeOf('main', 'main', [A, B], [M1, M2, M3]);
+    const merged = mergeObservations(explicit(pairWorld()), [mainUniverse]);
+    const [decision] = selectRepeatStagePairs([PAIR], { ...facts(), merged });
+    const runsOf = (alone: Partial<Record<string, Observation[]>>): IsolationRunResult[] =>
+      planIsolation([decision]).runs.map((spec) =>
+        runResult(spec, explicit(alone[spec.lineage] ?? pairWorld()), {
+          runUniverse: universeOf(spec.kind, spec.lineage, spec.tests, spec.universe),
+        }),
+      );
+
+    it.each([
+      ['agrees when every run implies the same survivals', {}, 'agrees', []],
+      [
+        'disagrees when B covers M2 in main but its alone run implies a not-covered survival',
+        { [B]: pairWorld().filter((entry) => entry.test !== B || entry.mutant !== M2) },
+        'disagrees',
+        [[B, M2, 'coverage', 'covered', 'covered', 'not-covered']],
+      ],
+    ])('%s', (_title, alone, status, disagreements) => {
+      const [result] = evaluateIsolation([decision], {
+        merged,
+        runs: runsOf(alone),
+        manifestDigest: 'd',
+      });
+      expect([
+        decision.selected,
+        decision.universe,
+        result.status,
+        result.disagreements.map((entry) => [
+          entry.test,
+          entry.mutant,
+          entry.field,
+          entry.main,
+          entry.together,
+          entry.alone,
+        ]),
+      ]).toEqual([true, [M1, M2].sort(), status, disagreements]);
+    });
   });
 });
 
@@ -786,7 +859,22 @@ describe('runIsolationRun', () => {
       result.outsideUniverse,
       result.wallClockMs,
     ]).toEqual(['complete', [['alone', B, B, M1]], [M2], 1, 1000]);
+    expect([
+      result.runUniverse?.tests,
+      result.runUniverse?.mutants.map((entry) => entry.id),
+    ]).toEqual([[B], [M1]]);
     expect(readIsolationRuns(workDir)).toEqual([result]);
+  });
+
+  it('writes the observations as rows of the run universe and rejects a schema 1 file', async () => {
+    const workDir = tempDir();
+    const { deps } = fakeDeps();
+    const result = await runIsolationRun(spec, options(workDir), deps);
+    const file = path.join(workDir, 'isolation', 'g1', `${spec.id}.json`);
+    const written = JSON.parse(readFileSync(file, 'utf8')) as { observations: unknown[] };
+    writeFileSync(file, JSON.stringify({ ...result, schemaVersion: 1 }));
+    expect(written.observations).toEqual([[0, 0, 0, KILL, 'row', true, false, []]]);
+    expect(() => readIsolationRun(file)).toThrow(/has schema 1, not 2: .*re-run its shard/);
   });
 
   it('stops before Stryker when the test fails alone unmutated, and writes the result', async () => {

@@ -1,11 +1,14 @@
 /**
- * Locks Layer 3's raw observations (U7, R6, R7, R11, KTD8, design §5.4): one observation per
- * per-test row of every sidecar attempt, keyed by group, run kind, lineage, attempt, test and
- * global mutant id; an uncovered test of a non-static mutant is a survived observation, while a
- * covered or static mutant without a row is unknown, never a non-kill; untrusted runs, attempt
- * disagreements and integrity flags invalidate; merging folds attempts of one lineage and turns a
- * class disagreement into one inconclusive observation; observations of different groups stay
- * apart, and a pair is compared only over its common universe inside one group run.
+ * Locks Layer 3's raw observations (U7, R6, R7, R11, KTD8, design §5.4) in the compact model: a
+ * run universe (the selected tests, never a skipped one, and the evaluated mutants) plus one
+ * explicit observation per per-test row of every sidecar attempt, keyed by group, run kind,
+ * lineage, attempt, test and global mutant id; an uncovered test of a non-static mutant is an
+ * implied survived observation, never stored, while a covered or static mutant without a row is
+ * an explicit unknown, never a non-kill; untrusted runs, attempt disagreements and integrity flags
+ * invalidate (implied observations too); merging folds attempts and runs of one lineage and turns
+ * a class disagreement into one inconclusive observation; observations of different groups stay
+ * apart, and a pair is compared only over its common universe inside one group run. Work files
+ * hold the explicit observations as rows of the universe.
  */
 import { describe, expect, it } from 'vitest';
 import type {
@@ -17,11 +20,20 @@ import type {
 import type { OutcomeClass } from '../../../tools/mutation/runner/classify-outcome.js';
 import {
   comparePair,
+  decodeObservations,
+  encodeObservations,
   extractObservations,
+  impliedObservation,
+  indexObservations,
+  lineageOf,
   mergeObservations,
   observationKey,
+  observationOf,
+  observedMutants,
+  type MergedObservation,
   type Observation,
   type RunRef,
+  type RunUniverse,
 } from '../../../tools/scenario-map/mutation/observations.js';
 
 const T1 = 'test/unit/a.test.ts#A > one';
@@ -135,15 +147,36 @@ const results = (
   },
 });
 
-/** The observation of one test and mutant, as `[outcome, source, valid, reasons]`. */
+/** The explicit observations of one test and mutant, as `[outcome, source, valid, reasons]`. */
 const summary = (
-  observations: readonly Observation[],
+  run: { observations: readonly Observation[] },
   test: string,
   globalId: string,
 ): [OutcomeClass | null, string, boolean, string[]][] =>
-  observations
+  run.observations
     .filter((entry) => entry.test === test && entry.mutant === globalId)
     .map((entry) => [entry.outcome, entry.source, entry.valid, entry.reasons]);
+
+/** The merged observation (explicit or implied) of a test and mutant in a run's main lineage. */
+const merged = (
+  run: { universe: RunUniverse; observations: readonly Observation[] },
+  test: string,
+  globalId: string,
+): MergedObservation | undefined => {
+  const view = lineageOf(
+    indexObservations(mergeObservations(run.observations, [run.universe])),
+    run.universe,
+  );
+  return view === undefined ? undefined : observationOf(view, test, globalId);
+};
+
+/** `[outcome, sources, valid, reasons, hookAttributed]` of a merged observation. */
+const brief = (
+  entry: MergedObservation | undefined,
+): [OutcomeClass | null, string[], boolean, string[], boolean | null] | undefined =>
+  entry === undefined
+    ? undefined
+    : [entry.outcome, entry.sources, entry.valid, entry.reasons, entry.hookAttributed];
 
 const observation = (overrides: Partial<Observation>): Observation => ({
   group: 'g1',
@@ -166,7 +199,7 @@ const observation = (overrides: Partial<Observation>): Observation => ({
 
 describe('extractObservations', () => {
   it('emits one valid observation per per-test row, carrying the run reference', () => {
-    const observations = extractObservations(results([mutant(M1)]), MAIN);
+    const { observations } = extractObservations(results([mutant(M1)]), MAIN);
     expect(observations.map((entry) => [entry.test, entry.outcome, entry.attempt])).toEqual([
       [T1, 'killed-by-test:assertion', 0],
       [T2, 'survived', 0],
@@ -193,13 +226,75 @@ describe('extractObservations', () => {
     ]);
   });
 
-  it('records an uncovered test of a non-static mutant as a valid survived observation', () => {
+  it('implies a valid survived observation for an uncovered test of a non-static mutant', () => {
     const narrow = mutant(M1, {
       coveredBy: [T1],
       perTest: [{ testId: T1, outcome: 'killed-by-test:assertion', attempt: 0 }],
     });
-    expect(summary(extractObservations(results([narrow]), MAIN), T2, M1)).toEqual([
-      ['survived', 'not-covered', true, []],
+    const run = extractObservations(results([narrow]), MAIN);
+    expect([summary(run, T2, M1), brief(merged(run, T2, M1))]).toEqual([
+      [],
+      ['survived', ['not-covered'], true, [], false],
+    ]);
+  });
+
+  it('records the selected tests and the evaluated mutants in the run universe', () => {
+    const run = extractObservations(
+      results([mutant(M2, { flags: ['status-mismatch'] }), mutant(M1, { static: true })]),
+      MAIN,
+    );
+    expect(run.universe).toEqual({
+      ...MAIN,
+      tests: [T1, T2],
+      mutants: [
+        {
+          id: M1,
+          file: 'gitnexus/src/x.ts',
+          static: true,
+          status: 'Killed',
+          reasons: [],
+          hookMarker: true,
+        },
+        {
+          id: M2,
+          file: 'gitnexus/src/x.ts',
+          static: false,
+          status: 'Killed',
+          reasons: ['mutant-flag:status-mismatch'],
+          hookMarker: true,
+        },
+      ],
+      valid: true,
+      reasons: [],
+    });
+  });
+
+  it('gives a collected but skipped test no observation, even when it covers the mutant', () => {
+    const skipped = 'test/unit/a.test.ts#A > skipped';
+    const covered = mutant(M1, {
+      coveredBy: [T1, skipped],
+      perTest: [{ testId: T1, outcome: 'killed-by-test:assertion', attempt: 0 }],
+    });
+    const run = extractObservations(
+      {
+        ...results([covered]),
+        tests: [T1, T2, skipped].map((id) => ({
+          id,
+          file: 'test/unit/a.test.ts',
+          fullName: id.split('#')[1],
+          taskId: null,
+          skipped: id === skipped,
+          notOracleValidated: false,
+          killed: [],
+          assertionKilled: [],
+        })),
+      },
+      MAIN,
+    );
+    expect([run.universe.tests, summary(run, skipped, M1), merged(run, skipped, M1)]).toEqual([
+      [T1, T2],
+      [],
+      undefined,
     ]);
   });
 
@@ -218,10 +313,10 @@ describe('extractObservations', () => {
       coveredBy: [],
       perTest: [{ testId: T1, outcome: 'survived', attempt: 0 }],
     });
-    const observations = extractObservations(results([statik]), MAIN);
-    expect(summary(observations, T2, M1)).toEqual([[null, 'no-row', false, ['missing-result']]]);
-    expect(summary(observations, T1, M1)).toEqual([['survived', 'row', true, []]]);
-    expect(observations.every((entry) => entry.static && !entry.covered)).toBe(true);
+    const run = extractObservations(results([statik]), MAIN);
+    expect(summary(run, T2, M1)).toEqual([[null, 'no-row', false, ['missing-result']]]);
+    expect(summary(run, T1, M1)).toEqual([['survived', 'row', true, []]]);
+    expect(run.observations.every((entry) => entry.static && !entry.covered)).toBe(true);
   });
 
   it.each([
@@ -245,14 +340,14 @@ describe('extractObservations', () => {
       attempts: [],
       perTest: [],
     });
-    const observations = extractObservations(results([killed]), MAIN);
-    expect(summary(observations, T1, M1)).toEqual([
+    const run = extractObservations(results([killed]), MAIN);
+    expect(summary(run, T1, M1)).toEqual([
       ['timeout', 'stryker-timeout', false, ['stryker-timeout']],
     ]);
-    expect(summary(observations, T2, M1)).toEqual([['survived', 'not-covered', true, []]]);
+    expect(brief(merged(run, T2, M1))).toEqual(['survived', ['not-covered'], true, [], false]);
   });
 
-  it('records a NoCoverage mutant as survived by every test', () => {
+  it('implies a NoCoverage mutant survived by every test and stores no observation', () => {
     const uncovered = mutant(M1, {
       status: 'NoCoverage',
       outcome: 'survived',
@@ -261,30 +356,37 @@ describe('extractObservations', () => {
       attempts: [],
       perTest: [],
     });
-    expect(
-      extractObservations(results([uncovered]), MAIN).map((entry) => [
-        entry.test,
-        entry.outcome,
-        entry.valid,
-      ]),
-    ).toEqual([
-      [T1, 'survived', true],
-      [T2, 'survived', true],
+    const run = extractObservations(results([uncovered]), MAIN);
+    expect([run.observations, [T1, T2].map((test) => brief(merged(run, test, M1)))]).toEqual([
+      [],
+      [
+        ['survived', ['not-covered'], true, [], false],
+        ['survived', ['not-covered'], true, [], false],
+      ],
     ]);
   });
 
   it.each(['Ignored', 'Pending'] as const)('leaves a %s mutant out of the universe', (status) => {
-    expect(extractObservations(results([mutant(M1, { status, perTest: [] })]), MAIN)).toEqual([]);
+    const run = extractObservations(results([mutant(M1, { status, perTest: [] })]), MAIN);
+    expect([run.observations, run.universe.mutants]).toEqual([[], []]);
   });
 
   it('invalidates every observation of a run with a run-level integrity flag', () => {
     const flags: RunResults['flags'] = [
       { kind: 'dry-run-missing', localId: null, globalId: null, detail: 'no dry run' },
     ];
-    const observations = extractObservations(results([mutant(M1)], { flags }), MAIN);
-    expect(observations.map((entry) => entry.reasons)).toEqual([
-      ['run-flag:dry-run-missing'],
-      ['run-flag:dry-run-missing'],
+    const run = extractObservations(
+      results([mutant(M1), mutant(M2, { coveredBy: [], perTest: [] })], { flags }),
+      MAIN,
+    );
+    expect([
+      run.universe.valid,
+      run.observations.map((entry) => entry.reasons),
+      brief(merged(run, T1, M2)),
+    ]).toEqual([
+      false,
+      [['run-flag:dry-run-missing'], ['run-flag:dry-run-missing']],
+      ['survived', ['not-covered'], false, ['run-flag:dry-run-missing'], false],
     ]);
   });
 
@@ -299,17 +401,35 @@ describe('extractObservations', () => {
   });
 
   it('invalidates a mutant whose span-map check failed', () => {
-    const observations = extractObservations(results([mutant(M1)], { spanFailures: [M1] }), MAIN);
+    const { observations } = extractObservations(
+      results([mutant(M1)], { spanFailures: [M1] }),
+      MAIN,
+    );
     expect(observations.map((entry) => [entry.valid, entry.reasons])).toEqual([
       [false, ['span-map']],
       [false, ['span-map']],
     ]);
   });
 
+  it('invalidates the implied observations of a flagged mutant', () => {
+    const narrow = mutant(M1, {
+      coveredBy: [T1],
+      perTest: [{ testId: T1, outcome: 'killed-by-test:assertion', attempt: 0 }],
+      flags: ['status-mismatch'],
+    });
+    expect(brief(merged(extractObservations(results([narrow]), MAIN), T2, M1))).toEqual([
+      'survived',
+      ['not-covered'],
+      false,
+      ['mutant-flag:status-mismatch'],
+      false,
+    ]);
+  });
+
   it('marks the hook-attributed tests and leaves the marker unknown without a dry-run record', () => {
     const hooked = mutant(M1, { hookAttributedTests: [T2] });
     const unknown = mutant(M2, { hookAttributedTests: null });
-    const observations = extractObservations(results([hooked, unknown]), MAIN);
+    const { observations } = extractObservations(results([hooked, unknown]), MAIN);
     expect(
       observations.map((entry) => [entry.mutant === M1 ? 'M1' : 'M2', entry.hookAttributed]),
     ).toEqual([
@@ -319,6 +439,25 @@ describe('extractObservations', () => {
       ['M2', null],
     ]);
   });
+
+  it.each([
+    ['a hook marker naming it', [T2], 1, true],
+    ['no hook marker for the mutant', null, 0, null],
+  ] as const)(
+    'stores an uncovered test of a mutant with %s only when the marker names it',
+    (_title, hookAttributedTests, stored, marker) => {
+      const narrow = mutant(M1, {
+        coveredBy: [T1],
+        perTest: [{ testId: T1, outcome: 'survived', attempt: 0 }],
+        hookAttributedTests: hookAttributedTests === null ? null : [...hookAttributedTests],
+      });
+      const run = extractObservations(results([narrow]), MAIN);
+      expect([summary(run, T2, M1).length, merged(run, T2, M1)?.hookAttributed]).toEqual([
+        stored,
+        marker,
+      ]);
+    },
+  );
 
   it('keys observations by group, kind, lineage, attempt, test and mutant', () => {
     const keys = [
@@ -335,51 +474,115 @@ describe('extractObservations', () => {
 
 describe('mergeObservations', () => {
   it('folds two attempts with different classes into one inconclusive observation', () => {
-    const merged = mergeObservations([
-      observation({ attempt: 0, outcome: 'killed-by-test:assertion' }),
-      observation({ attempt: 1, outcome: 'survived' }),
-    ]);
+    const { explicit } = mergeObservations(
+      [
+        observation({ attempt: 0, outcome: 'killed-by-test:assertion' }),
+        observation({ attempt: 1, outcome: 'survived' }),
+      ],
+      [],
+    );
     expect(
-      merged.map((entry) => [entry.outcome, entry.valid, entry.reasons, entry.attempts]),
+      explicit.map((entry) => [entry.outcome, entry.valid, entry.reasons, entry.attempts]),
     ).toEqual([['inconclusive', false, ['class-disagreement'], [0, 1]]]);
   });
 
   it('folds agreeing attempts into one valid observation', () => {
-    const merged = mergeObservations([
-      observation({ attempt: 0 }),
-      observation({ attempt: 1 }),
-      observation({ attempt: 1 }),
-    ]);
-    expect(merged.map((entry) => [entry.outcome, entry.valid, entry.attempts])).toEqual([
+    const { explicit } = mergeObservations(
+      [observation({ attempt: 0 }), observation({ attempt: 1 }), observation({ attempt: 1 })],
+      [],
+    );
+    expect(explicit.map((entry) => [entry.outcome, entry.valid, entry.attempts])).toEqual([
       ['killed-by-test:assertion', true, [0, 1]],
     ]);
   });
 
   it('keeps the observations of one mutant in two groups apart', () => {
-    const merged = mergeObservations([
-      observation({ group: 'gx', test: T1, outcome: 'killed-by-test:assertion' }),
-      observation({ group: 'gy', test: T2, outcome: 'survived' }),
-    ]);
-    expect(merged.map((entry) => [entry.group, entry.test, entry.outcome])).toEqual([
+    const { explicit } = mergeObservations(
+      [
+        observation({ group: 'gx', test: T1, outcome: 'killed-by-test:assertion' }),
+        observation({ group: 'gy', test: T2, outcome: 'survived' }),
+      ],
+      [],
+    );
+    expect(explicit.map((entry) => [entry.group, entry.test, entry.outcome])).toEqual([
       ['gx', T1, 'killed-by-test:assertion'],
       ['gy', T2, 'survived'],
     ]);
   });
 
   it('carries the reasons of an invalid observation into the merged one', () => {
-    const merged = mergeObservations([
-      observation({ attempt: 0 }),
-      observation({ attempt: 1, valid: false, reasons: ['run-timeout'] }),
+    const { explicit } = mergeObservations(
+      [
+        observation({ attempt: 0 }),
+        observation({ attempt: 1, valid: false, reasons: ['run-timeout'] }),
+      ],
+      [],
+    );
+    expect(explicit.map((entry) => [entry.valid, entry.reasons])).toEqual([
+      [false, ['run-timeout']],
     ]);
-    expect(merged.map((entry) => [entry.valid, entry.reasons])).toEqual([[false, ['run-timeout']]]);
+  });
+
+  /** A universe of the main run of g1 on one shard: T1 and T2 selected, M1 non-static. */
+  const universe = (shard: number, hookMarker = true): RunUniverse => ({
+    ...MAIN,
+    shard,
+    tests: [T1, T2],
+    mutants: [
+      {
+        id: M1,
+        file: 'gitnexus/src/x.ts',
+        static: false,
+        status: 'Survived',
+        reasons: [],
+        hookMarker,
+      },
+    ],
+    valid: true,
+    reasons: [],
+  });
+
+  it('folds the implied observation of another run of the lineage into an explicit one', () => {
+    const { explicit } = mergeObservations(
+      [observation({ test: T1, shard: 0 })],
+      [universe(0), universe(1)],
+    );
+    expect(
+      explicit.map((entry) => [
+        entry.test,
+        entry.outcome,
+        entry.covered,
+        entry.shards,
+        entry.reasons,
+      ]),
+    ).toEqual([
+      [T1, 'inconclusive', true, [0, 1], ['class-disagreement', 'coverage-disagreement']],
+    ]);
+  });
+
+  it('folds the implied observations of two runs on read, marker disagreements included', () => {
+    const view = lineageOf(
+      indexObservations(mergeObservations([], [universe(0, true), universe(1, false)])),
+      MAIN,
+    );
+    expect(brief(view === undefined ? undefined : observationOf(view, T2, M1))).toEqual([
+      'survived',
+      ['not-covered'],
+      false,
+      ['hook-marker-disagreement'],
+      false,
+    ]);
   });
 });
 
 describe('comparePair', () => {
   const run = { group: 'g1', kind: 'main', lineage: 'main' } as const;
+  /** Explicit observations only, indexed. */
+  const indexed = (observations: readonly Observation[]) =>
+    indexObservations(mergeObservations(observations, []));
 
   it('compares equal kill sets over the common universe', () => {
-    const merged = mergeObservations([
+    const merged = indexed([
       observation({ test: T1, mutant: M1 }),
       observation({ test: T2, mutant: M1 }),
       observation({ test: T1, mutant: M2, outcome: 'survived' }),
@@ -396,7 +599,7 @@ describe('comparePair', () => {
   });
 
   it('makes a covered mutant unknown when one test has no observation, and does not compare', () => {
-    const merged = mergeObservations([
+    const merged = indexed([
       observation({ test: T1, mutant: M1 }),
       observation({ test: T1, mutant: M2 }),
       observation({ test: T2, mutant: M2 }),
@@ -410,10 +613,7 @@ describe('comparePair', () => {
   });
 
   it('does not compare two tests of a run that has no observation', () => {
-    const merged = mergeObservations([
-      observation({ group: 'gx' }),
-      observation({ group: 'gx', test: T2 }),
-    ]);
+    const merged = indexed([observation({ group: 'gx' }), observation({ group: 'gx', test: T2 })]);
     expect(comparePair(merged, run, T1, T2)).toMatchObject({
       universe: [],
       unknown: [],
@@ -422,7 +622,7 @@ describe('comparePair', () => {
   });
 
   it('makes an invalid observation unknown for the pair', () => {
-    const merged = mergeObservations([
+    const merged = indexed([
       observation({ test: T1, mutant: M1 }),
       observation({ test: T2, mutant: M1, valid: false, reasons: ['missing-result'] }),
     ]);
@@ -430,7 +630,7 @@ describe('comparePair', () => {
   });
 
   it('compares only inside the requested group run', () => {
-    const merged = mergeObservations([
+    const merged = indexed([
       observation({ group: 'gx', test: T1, mutant: M1 }),
       observation({ group: 'gx', test: T2, mutant: M1 }),
       observation({ group: 'gy', test: T1, mutant: M1, outcome: 'survived' }),
@@ -443,12 +643,107 @@ describe('comparePair', () => {
   });
 
   it('lists the universe mutants whose class is neither an assertion kill nor survived', () => {
-    const merged = mergeObservations([
+    const merged = indexed([
       observation({ test: T1, mutant: M1, outcome: 'killed-by-test:runtime' }),
       observation({ test: T2, mutant: M1 }),
       observation({ test: T1, mutant: M2, outcome: 'timeout' }),
       observation({ test: T2, mutant: M2, outcome: 'survived' }),
     ]);
     expect(comparePair(merged, run, T1, T2).otherClasses).toEqual([M1, M2]);
+  });
+});
+
+describe('comparePair over implied observations', () => {
+  it('compares two tests whose survivals of uncovered mutants are implied, not stored', () => {
+    const noCoverage = mutant(M2, {
+      status: 'NoCoverage',
+      outcome: 'survived',
+      outcomeSource: 'no-coverage',
+      coveredBy: [],
+      attempts: [],
+      perTest: [],
+    });
+    const onlyT1 = mutant(M3, {
+      coveredBy: [T1],
+      perTest: [{ testId: T1, outcome: 'killed-by-test:assertion', attempt: 0 }],
+    });
+    const run = extractObservations(results([mutant(M1), noCoverage, onlyT1]), MAIN);
+    const comparison = comparePair(
+      indexObservations(mergeObservations(run.observations, [run.universe])),
+      MAIN,
+      T1,
+      T2,
+    );
+    expect([
+      run.observations.length,
+      comparison.universe,
+      comparison.killsA,
+      comparison.killsB,
+      comparison.unknown,
+      comparison.sameKills,
+    ]).toEqual([3, [M1, M2, M3], [M1, M3], [], [], false]);
+  });
+
+  it('lists every mutant of a run with a test as observed, and none of a run without tests', () => {
+    const run = extractObservations(
+      results([mutant(M1), mutant(M2, { coveredBy: [], perTest: [] })]),
+      MAIN,
+    );
+    const empty: RunUniverse = { ...run.universe, group: 'g2', tests: [] };
+    expect(observedMutants(mergeObservations(run.observations, [run.universe, empty]))).toEqual([
+      M1,
+      M2,
+    ]);
+  });
+});
+
+describe('work-file rows', () => {
+  const run = extractObservations(
+    results([
+      mutant(M1),
+      mutant(M2, { static: true, coveredBy: [], perTest: [], hookAttributedTests: null }),
+      mutant(M3, { coveredBy: [] }),
+    ]),
+    MAIN,
+  );
+
+  it('round-trips the explicit observations through rows of the universe', () => {
+    const rows = encodeObservations(run.universe, run.observations);
+    expect([
+      rows[0],
+      decodeObservations(run.universe, JSON.parse(JSON.stringify(rows)) as unknown[]),
+    ]).toEqual([[0, 0, 0, 'killed-by-test:assertion', 'row', true, false, []], run.observations]);
+  });
+
+  it.each([
+    ['a test outside the universe', { test: 'test/unit/z.test.ts#Z > z' }],
+    ['a mutant outside the universe', { mutant: 'gitnexus/src/z.ts@0:1:1-1:2:X:0' }],
+    ['another run', { shard: 3 }],
+  ])('refuses to encode an observation of %s', (_title, change: Partial<Observation>) => {
+    expect(() => encodeObservations(run.universe, [{ ...run.observations[0], ...change }])).toThrow(
+      /does not fit its run universe/,
+    );
+  });
+
+  it.each([
+    ['a test index out of range', [9, 0, 0, null, 'row', true, null, []]],
+    ['an unknown source', [0, 0, 0, null, 'guess', true, null, []]],
+    ['a short row', [0, 0, 0]],
+  ])('refuses to decode a row with %s', (_title, row) => {
+    expect(() => decodeObservations(run.universe, [row])).toThrow(/row 0 is not an observation/);
+  });
+
+  it('implies the observation the full materialisation stored for an uncovered test', () => {
+    const [, , uncovered] = run.universe.mutants;
+    expect(impliedObservation(run.universe, uncovered, T2)).toEqual(
+      observation({
+        attempt: null,
+        test: T2,
+        mutant: M3,
+        covered: false,
+        outcome: 'survived',
+        source: 'not-covered',
+      }),
+    );
   });
 });

@@ -77,8 +77,12 @@
  *               ({@link effectiveShardPlan}). Shard and merge follow the same plan.
  *   merge       every result found: shard reports, group results, isolation runs, row deletion
  *               and value flow. A missing or unfinished shard leaves the run partial, and the
- *               pairs of its groups without a result Inconclusive (`not-scheduled`, R11). Then the
- *               verdicts (U12), mutant fingerprints, provenance and the report (U13).
+ *               pairs of its groups without a result Inconclusive (`not-scheduled`, R11); so does
+ *               a group result it cannot read (another schema, such as the fully materialised
+ *               schema 1, or a malformed row), which it lists as incomplete. Observations follow
+ *               the compact model (mutation/observations.ts: run universes plus explicit
+ *               observations). Then the verdicts (U12), mutant fingerprints, provenance and the
+ *               report (U13).
  *   all         plan (one shard), value-flow, shard 0 of 1 and merge, in one process.
  *   controls    `all` in controls mode over the U17 fixture (extra root, its tsconfig, its own
  *               PDG index), then the verdict and rule of every expected.json pair compared.
@@ -120,8 +124,11 @@
  *                                dupe-ok, checks-and-context key, unsupported forms, facet
  *   coverage/coverage.json       plan: the Layer 1 work file; coverage/candidates.json: pairs
  *   plan/prepared/, coverage/prepared/   plan scratch
- *   observations/<group>.json    shard: group results (U7; a batch member's carries `batch`)
- *   batches/<batch>.json         shard: the whole result of a main-run batch (before the split)
+ *   observations/<group>.json    shard: group results (U7, run-group.ts schema 2: run universe and
+ *                                explicit observations; a batch member's carries `batch`)
+ *   batches/<batch>.json         shard: a main-run batch's outcome without observations (its
+ *                                members' results hold them; `stryker.resultsFile` names the
+ *                                driver's results.json, shard scratch)
  *   isolation/<group>/<run>.json shard: isolation run results (U8)
  *   row-deletion-shard-<i>.json  shard: row-deletion results (U9)
  *   shard-<i>.json               shard: shard report (written as it goes; `finished` at the end)
@@ -153,7 +160,6 @@ import {
   openSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -201,7 +207,12 @@ import {
   selectRepeatStagePairs,
   type IsolationResult,
 } from './mutation/isolation.js';
-import { mergeObservations, type MergedObservation } from './mutation/observations.js';
+import {
+  mergeObservations,
+  observedMutants,
+  type MergedObservations,
+  type RunUniverse,
+} from './mutation/observations.js';
 import {
   DEFAULT_COST_MODEL,
   ISOLATION_RUNS,
@@ -233,6 +244,7 @@ import {
   readScenarioRunManifest,
   runGroup,
   verifyPreparedCopy,
+  writeGroupObservations,
   writeScenarioRunManifest,
   type GroupObservations,
   type ManifestCheck,
@@ -1301,7 +1313,7 @@ export interface VerdictAssembly {
   pairs: readonly CandidatePair[];
   schedules: readonly PairSchedule[];
   stages: StageLookups;
-  observations: readonly MergedObservation[];
+  observations: MergedObservations;
   degraded: VerdictInput['valueFlowDegraded'];
   /** Only these tests (default every test of the work file). */
   tests?: ReadonlySet<string>;
@@ -1360,6 +1372,10 @@ export function assembleVerdictInput(input: VerdictAssembly): VerdictInput {
     valueFlowDegraded: input.degraded,
   };
 }
+
+/** The run universes of group or isolation results (null for a run without results). */
+const universesOf = (results: readonly { runUniverse: RunUniverse | null }[]): RunUniverse[] =>
+  results.flatMap((result) => (result.runUniverse === null ? [] : [result.runUniverse]));
 
 /** The best case of every stage still to come (D9): what the provisional verdicts assume. */
 const BEST_ISOLATION: VerdictPairInput['isolation'] = {
@@ -1645,7 +1661,7 @@ export async function runPlanStage(
         staticValueFlow: () => BEST_STATIC,
         trace: () => BEST_TRACE,
       },
-      observations: [],
+      observations: { explicit: [], universes: [] },
       degraded: [],
     }),
   );
@@ -1820,23 +1836,50 @@ export interface BatchedGroupObservations extends GroupObservations {
 }
 
 /**
+ * `batches/<batch>.json`: a main-run batch's outcome without its run universe and observations:
+ * the members' split results hold them, and `stryker.resultsFile` names the driver's results.
+ */
+export interface BatchRecord extends Omit<GroupObservations, 'runUniverse' | 'observations'> {
+  /** Member group ids, in plan order. */
+  groups: string[];
+}
+
+export const batchRecordOf = (
+  { runUniverse: _universe, observations: _observations, ...outcome }: GroupObservations,
+  groups: readonly string[],
+): BatchRecord => ({ ...outcome, groups: [...groups] });
+
+/**
  * Splits a batch's result into one result per member: the member's own tests' observations of
  * its own mutate files (KTD7), relabelled with its group id, so its universe, kill sets and path
- * are those of its own scope; status, baselines and the Stryker summary are the batch's.
+ * are those of its own scope; its run universe likewise (the batch's tests that are the member's,
+ * the mutants of its files), so the implied observations are its own too. Status, baselines and
+ * the Stryker summary are the batch's.
  */
 export function splitBatchResult(
   result: GroupObservations,
   members: readonly GroupScope[],
 ): BatchedGroupObservations[] {
   const ids = members.map((member) => member.id);
+  const universe = result.runUniverse;
   return members.map((member) => {
     const tests = new Set(member.tests);
     const files = new Set(member.mutate);
+    const runUniverse: RunUniverse | null =
+      universe === null
+        ? null
+        : {
+            ...universe,
+            group: member.id,
+            tests: universe.tests.filter((test) => tests.has(test)),
+            mutants: universe.mutants.filter((mutant) => files.has(mutant.file)),
+          };
     return {
       ...result,
       group: member.id,
       tests: [...member.tests],
       scope: scopeOnly(member),
+      runUniverse,
       observations: result.observations
         .filter((entry) => tests.has(entry.test) && files.has(entry.file))
         .map((entry) => ({ ...entry, group: member.id })),
@@ -1867,10 +1910,11 @@ function writeMismatchResult(
     scope: scopeOnly(group),
     baselines: [],
     stryker: null,
+    runUniverse: null,
     observations: [],
     wallClockMs: 0,
   };
-  writeJson(observationsFile(workDir, group.id), result);
+  writeGroupObservations(observationsFile(workDir, group.id), result);
 }
 
 export interface ShardStageOptions {
@@ -2139,9 +2183,12 @@ export async function runShardStage(
       scope: batchScope(batch.id, members),
       stryker,
     });
-    const batchFile = path.join(layout.root, 'batches', `${batch.id}.json`);
-    mkdirSync(path.dirname(batchFile), { recursive: true });
-    renameSync(observationsFile(layout.root, batch.id), batchFile);
+    // The batch's observations live on in its members' results: keep its outcome only.
+    writeJson(
+      path.join(layout.root, 'batches', `${batch.id}.json`),
+      batchRecordOf(result, batch.groups),
+    );
+    rmSync(observationsFile(layout.root, batch.id), { force: true });
     report.batches.push({
       id: batch.id,
       groups: batch.groups,
@@ -2157,7 +2204,7 @@ export async function runShardStage(
     );
     if (result.status === 'complete') {
       for (const split of splitBatchResult(result, members)) {
-        writeJson(observationsFile(layout.root, split.group), split);
+        writeGroupObservations(observationsFile(layout.root, split.group), split);
         record(split, batch.id, result.wallClockMs);
       }
       continue;
@@ -2216,7 +2263,10 @@ export async function runShardStage(
   // Isolation only for pairs that can still be strong (D9): the verdict engine gets the real value
   // flow when it ran before the shards, and every stage still to come at its best otherwise.
   const shardPairs = plan.pairs.filter((pair) => complete.has(pair.group));
-  const mainObservations = mergeObservations(results.flatMap((result) => result.observations));
+  const mainObservations = mergeObservations(
+    results.flatMap((result) => result.observations),
+    universesOf(results),
+  );
   const schedules = resolvePairSchedules({
     plan: shardPlan,
     manifestDigest: manifest.digest,
@@ -2618,7 +2668,9 @@ export async function runMergeStage(
     if (!existsSync(file)) return [];
     try {
       return [readGroupObservations(file)];
-    } catch {
+    } catch (error) {
+      // Unreadable (another schema, a malformed row): its pairs stay not scheduled, run partial.
+      incomplete.push({ shard: `group ${group.id}`, reason: errorMessage(error) });
       return [];
     }
   });
@@ -2642,15 +2694,14 @@ export async function runMergeStage(
     }
   }
 
-  // Observations, schedules, isolation (U7, U8).
-  const mainObservations = groupResults
-    .filter((result) => result.manifestDigest === digest)
-    .flatMap((result) => result.observations);
-  const mainMerged = mergeObservations(mainObservations);
-  const merged = mergeObservations([
-    ...mainObservations,
-    ...isolationRuns.flatMap((run) => run.observations),
-  ]);
+  // Observations, schedules, isolation (U7, U8); compact model (observations.ts).
+  const verified = groupResults.filter((result) => result.manifestDigest === digest);
+  const mainObservations = verified.flatMap((result) => result.observations);
+  const mainMerged = mergeObservations(mainObservations, universesOf(verified));
+  const merged = mergeObservations(
+    [...mainObservations, ...isolationRuns.flatMap((run) => run.observations)],
+    [...universesOf(verified), ...universesOf(isolationRuns)],
+  );
   const schedules = resolvePairSchedules({
     plan: shardPlan,
     manifestDigest: digest,
@@ -2709,10 +2760,7 @@ export async function runMergeStage(
     evidence,
     verdicts,
     anchors: new Map(layer2.tests.map((test) => [test.id, test.anchor])),
-    fingerprints: fingerprintMutants(
-      merged.map((entry) => entry.mutant),
-      read,
-    ),
+    fingerprints: fingerprintMutants(observedMutants(merged), read),
     baseline,
   });
   writeFileSync(layout.reportJson, `${JSON.stringify(report, null, 2)}\n`);

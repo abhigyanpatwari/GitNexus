@@ -42,7 +42,17 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Finding, Kind } from '../../test-dupes/test-dupes.js';
-import { MAIN_LINEAGE, comparePair, type MergedObservation } from '../mutation/observations.js';
+import {
+  MAIN_LINEAGE,
+  comparePair,
+  indexObservations,
+  lineageOf,
+  mutantsOf,
+  observedMutants as observedMutantsOf,
+  type LineageObservations,
+  type MergedObservation,
+  type RunKey,
+} from '../mutation/observations.js';
 import {
   SCENARIO_MAP_SCHEMA_VERSION,
   fromPackagePath,
@@ -580,27 +590,12 @@ function testRecord(
 
 // ── Build ──────────────────────────────────────────────────────────────────
 
-const push = <V>(map: Map<string, V[]>, key: string, value: V): void => {
-  const list = map.get(key);
-  if (list === undefined) map.set(key, [value]);
-  else list.push(value);
-};
+const isMain = (run: RunKey): boolean => run.kind === 'main' && run.lineage === MAIN_LINEAGE;
 
-interface Indexed {
-  mainByGroup: Map<string, MergedObservation[]>;
-  mainByTest: Map<string, MergedObservation[]>;
-}
-
-function indexObservations(observations: readonly MergedObservation[]): Indexed {
-  const mainByGroup = new Map<string, MergedObservation[]>();
-  const mainByTest = new Map<string, MergedObservation[]>();
-  for (const entry of observations) {
-    if (entry.kind !== 'main' || entry.lineage !== MAIN_LINEAGE) continue;
-    push(mainByGroup, entry.group, entry);
-    push(mainByTest, entry.test, entry);
-  }
-  return { mainByGroup, mainByTest };
-}
+/** A test's explicit observations in a lineage (an implied one is never on a path or a kill). */
+const explicitOf = (view: LineageObservations | undefined, test: string): MergedObservation[] => [
+  ...(view?.explicit.get(test)?.values() ?? []),
+];
 
 const countBy = <K extends string>(keys: readonly K[], values: readonly K[]): Record<K, number> =>
   Object.fromEntries(
@@ -615,7 +610,8 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
   const engineVersion = verdicts.engineVersion;
   const fp = (id: string): string => fingerprintOf(fingerprints, id);
   const fps = (ids: Iterable<string>): string[] => [...ids].map(fp).sort(byText);
-  const index = indexObservations(evidence.observations);
+  // Every main lineage, compact model (observations.ts): implied observations are read, not stored.
+  const index = indexObservations(evidence.observations, isMain);
   const inputs = new Map(evidence.tests.map((test) => [test.id, test]));
   const anchorOf = (id: string): TestAnchor => input.anchors.get(id) ?? fallbackAnchor(id);
   const universes = new Set<string>();
@@ -623,8 +619,8 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
   // Pairs (findings and kept), before change status.
   const pairOf = (verdict: PairVerdict): Omit<ReportPair, 'change'> => {
     const run = { group: verdict.group, kind: 'main', lineage: MAIN_LINEAGE } as const;
-    const observed = index.mainByGroup.get(verdict.group) ?? [];
-    const comparison = comparePair(observed, run, verdict.a, verdict.b);
+    const view = lineageOf(index, run);
+    const comparison = comparePair(index, run, verdict.a, verdict.b);
     const universeId = universeIdOf(comparison.universe.map(fp));
     if (universeId !== null && verdict.evidence.schedule === 'evaluated') universes.add(universeId);
     const sides = (
@@ -634,8 +630,8 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
       ] as const
     ).map(([test, kills]): { [key: string]: JsonValue } => {
       const testInput = inputs.get(test);
-      const pathIds = observed
-        .filter((entry) => entry.test === test && (entry.covered || entry.static))
+      const pathIds = explicitOf(view, test)
+        .filter((entry) => entry.covered || entry.static)
         .map((entry) => entry.mutant);
       return {
         ...testRecord(testInput, propertiesOf(testInput), sortedUnique(fps(pathIds)), fps(kills)),
@@ -691,8 +687,9 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
   const tests = verdicts.tests.map((result): Omit<ReportTest, 'change'> => {
     const testInput = inputs.get(result.id);
     const properties = propertiesOf(testInput);
-    const observed = index.mainByTest.get(result.id) ?? [];
-    const universe = fps(sortedUnique(observed.map((entry) => entry.mutant)));
+    const views = index.byTest.get(result.id) ?? [];
+    const observed = views.flatMap((view) => explicitOf(view, result.id));
+    const universe = fps(sortedUnique(views.flatMap((view) => mutantsOf(view, result.id))));
     const pathFps = sortedUnique(
       fps(observed.filter((entry) => entry.covered || entry.static).map((entry) => entry.mutant)),
     );
@@ -826,7 +823,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
     ),
   };
   const complete = shards.complete >= shards.planned && shards.incomplete.length === 0;
-  const observedMutants = sortedUnique(evidence.observations.map((entry) => entry.mutant));
+  const observedMutants = observedMutantsOf(evidence.observations);
   const fallbacks = countBy(
     FINGERPRINT_FALLBACKS,
     observedMutants.flatMap((id) => {

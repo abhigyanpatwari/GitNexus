@@ -11,7 +11,12 @@
  * (plan-shards.ts `resolvePairSchedules`) count; other groups' observations are ignored. A test is
  * evaluated when one of its pairs is. Observations are observations.ts `mergeObservations` output
  * over every complete group run and isolation run verified against this run's manifest; each test
- * has one `main` run (its candidate group).
+ * has one `main` run (its candidate group). They follow the compact model: explicit observations
+ * plus run universes; an observation a universe implies (a selected test Stryker never ran against
+ * a non-static mutant: a not-covered survival) is read through the index, never materialised. It
+ * is never covered, exposed, a kill or another class, so the per-test status, kills and the hook
+ * check's exposed path come from explicit observations; validity, rerun classes, path and gaps
+ * read the implied ones too.
  *
  * Per test ({@link TestResult}), over its trusted observations of every run. A test is exposed to
  * a mutant when it covers it, the mutant is static, or it has a per-test row (isolation.ts).
@@ -80,8 +85,18 @@ import type { IsolationResult, IsolationStatus } from '../mutation/isolation.js'
 import {
   MAIN_LINEAGE,
   comparePair,
+  impliedStatesOf,
+  indexObservations,
+  lineageOf,
+  mutantsOf,
+  stateOf,
+  type LineageObservations,
   type MergedObservation,
+  type MergedObservations,
+  type ObservationIndex,
+  type ObservationState,
   type PairComparison,
+  type RunKey,
 } from '../mutation/observations.js';
 import type { PairRef, PairSchedule, ScheduleReason } from '../mutation/plan-shards.js';
 import type { RowDeletionOutcome, RowDeletionResult } from '../mutation/row-deletion.js';
@@ -224,8 +239,8 @@ export interface VerdictInput {
   /** Every test of a pair, and any other evaluated test whose properties are reported. */
   tests: readonly VerdictTestInput[];
   pairs: readonly VerdictPairInput[];
-  /** Merged observations of every group run and isolation run (U7, U8). */
-  observations: readonly MergedObservation[];
+  /** Merged observations of every group run and isolation run (U7, U8), compact model. */
+  observations: MergedObservations;
   /** U10 run-level degraded flags (`StaticValueFlowRun.degraded`). */
   valueFlowDegraded: readonly DegradedFlag[];
 }
@@ -343,18 +358,18 @@ const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const sortedUnique = (values: Iterable<string>): string[] => [...new Set(values)].sort(byText);
 
 /** The test ran against the mutant: covered, static, or a per-test row (as isolation.ts). */
-const exposed = (entry: MergedObservation): boolean =>
+const exposed = (entry: ObservationState): boolean =>
   entry.covered || entry.static || entry.sources.includes('row');
-const isKill = (entry: MergedObservation): boolean =>
-  entry.valid && entry.outcome === ASSERTION_KILL;
+const isKill = (entry: ObservationState | undefined): boolean =>
+  entry !== undefined && entry.valid && entry.outcome === ASSERTION_KILL;
 /** Valid, and neither a kill nor a survival. */
-const isOtherClass = (entry: MergedObservation): boolean =>
+const isOtherClass = (entry: ObservationState): boolean =>
   entry.valid &&
   entry.outcome !== null &&
   entry.outcome !== ASSERTION_KILL &&
   entry.outcome !== 'survived';
-const isUnknown = (entry: MergedObservation): boolean => !entry.valid || entry.outcome === null;
-const coverageOf = (entry: MergedObservation | undefined): string =>
+const isUnknown = (entry: ObservationState): boolean => !entry.valid || entry.outcome === null;
+const coverageOf = (entry: ObservationState | undefined): string =>
   entry === undefined
     ? 'missing'
     : entry.static
@@ -367,14 +382,12 @@ type ByMutant = Map<string, MergedObservation[]>;
 
 /** Trusted observations, indexed. */
 interface Index {
-  /** Per test, per mutant: every observation (all runs). */
-  byTest: Map<string, ByMutant>;
-  /** Per group: its `main` lineage observations. */
-  mainByGroup: Map<string, MergedObservation[]>;
-  /** Per test, per group: its main-run observation of each mutant. */
-  mainRuns: Map<string, Map<string, Map<string, MergedObservation>>>;
-  /** Per mutant: every observation. */
-  byMutant: ByMutant;
+  /** Every trusted lineage. */
+  observations: ObservationIndex;
+  /** Per test, per mutant: its explicit observations (every lineage). */
+  explicitByTest: Map<string, ByMutant>;
+  /** Per mutant: every explicit observation. */
+  explicitByMutant: ByMutant;
 }
 
 const push = <K, V>(map: Map<K, V[]>, key: K, value: V): void => {
@@ -383,33 +396,33 @@ const push = <K, V>(map: Map<K, V[]>, key: K, value: V): void => {
   else list.push(value);
 };
 
-function buildIndex(observations: readonly MergedObservation[]): Index {
-  const byTest = new Map<string, ByMutant>();
-  const mainByGroup = new Map<string, MergedObservation[]>();
-  const mainRuns = new Map<string, Map<string, Map<string, MergedObservation>>>();
-  const byMutant: ByMutant = new Map();
-  for (const entry of observations) {
-    const ofTest = byTest.get(entry.test) ?? new Map<string, MergedObservation[]>();
-    byTest.set(entry.test, ofTest);
-    push(ofTest, entry.mutant, entry);
-    push(byMutant, entry.mutant, entry);
-    if (entry.kind === 'main' && entry.lineage === MAIN_LINEAGE) {
-      push(mainByGroup, entry.group, entry);
-      const runs = mainRuns.get(entry.test) ?? new Map<string, Map<string, MergedObservation>>();
-      mainRuns.set(entry.test, runs);
-      const run = runs.get(entry.group) ?? new Map<string, MergedObservation>();
-      runs.set(entry.group, run.set(entry.mutant, entry));
+const isMain = (run: RunKey): boolean => run.kind === 'main' && run.lineage === MAIN_LINEAGE;
+const mainRun = (group: string): RunKey => ({ group, kind: 'main', lineage: MAIN_LINEAGE });
+
+/** The trusted groups' observations, indexed; the input order does not matter. */
+function buildIndex(merged: MergedObservations, trusted: ReadonlySet<string>): Index {
+  const observations = indexObservations(merged, (run) => trusted.has(run.group));
+  const explicitByTest = new Map<string, ByMutant>();
+  const explicitByMutant: ByMutant = new Map();
+  for (const view of observations.lineages.values()) {
+    for (const [test, byMutant] of view.explicit) {
+      const ofTest = explicitByTest.get(test) ?? new Map<string, MergedObservation[]>();
+      explicitByTest.set(test, ofTest);
+      for (const entry of byMutant.values()) {
+        push(ofTest, entry.mutant, entry);
+        push(explicitByMutant, entry.mutant, entry);
+      }
     }
   }
-  return { byTest, mainByGroup, mainRuns, byMutant };
+  return { observations, explicitByTest, explicitByMutant };
 }
 
-/** A canonical order for observations, so nothing depends on the input order. */
-const observationOrder = (x: MergedObservation, y: MergedObservation): number =>
-  byText(
-    JSON.stringify([x.group, x.kind, x.lineage, x.mutant, x.test]),
-    JSON.stringify([y.group, y.kind, y.lineage, y.mutant, y.test]),
-  );
+/** Every trusted observation of a test and mutant (each lineage of the test), explicit or not. */
+const observedIn = (index: Index, test: string, mutant: string): ObservationState[] =>
+  (index.observations.byTest.get(test) ?? []).flatMap((view) => {
+    const state = stateOf(view, test, mutant);
+    return state === undefined ? [] : [state];
+  });
 
 // ── Per test ───────────────────────────────────────────────────────────────
 
@@ -453,13 +466,14 @@ function classifyTest(
   return facts('weak', []);
 }
 
-/** A test's only main run (its group, by mutant); null without one or with several. */
-function mainRunOf(
-  index: Index,
-  test: string,
-): { group: string; run: Map<string, MergedObservation> } | null {
-  const runs = [...(index.mainRuns.get(test)?.entries() ?? [])];
-  return runs.length === 1 ? { group: runs[0][0], run: runs[0][1] } : null;
+/** The main lineages a test has an observation in. */
+const mainRunsOf = (index: Index, test: string): LineageObservations[] =>
+  (index.observations.byTest.get(test) ?? []).filter(isMain);
+
+/** A test's only main run; null without one or with several. */
+function mainRunOf(index: Index, test: string): LineageObservations | null {
+  const runs = mainRunsOf(index, test);
+  return runs.length === 1 ? runs[0] : null;
 }
 
 function subsumptionOf(
@@ -471,7 +485,7 @@ function subsumptionOf(
   const test = facts.input.id;
   const own = facts.status === 'killing' ? mainRunOf(index, test) : null;
   if (own === null) {
-    const several = facts.status === 'killing' && (index.mainRuns.get(test)?.size ?? 0) > 1;
+    const several = facts.status === 'killing' && mainRunsOf(index, test).length > 1;
     return {
       status: several ? 'unknown' : 'not-applicable',
       by: [],
@@ -479,10 +493,10 @@ function subsumptionOf(
       universe: 0,
     };
   }
-  const run = { group: own.group, kind: 'main', lineage: MAIN_LINEAGE } as const;
-  const self = comparePair([...own.run.values()], run, test, test);
-  const universe = [...own.run.keys()].sort(byText);
-  const kills = universe.filter((mutant) => isKill(own.run.get(mutant)));
+  const self = comparePair(index.observations, mainRun(own.group), test, test);
+  const universe = mutantsOf(own, test);
+  const ownOf = (mutant: string): ObservationState | undefined => stateOf(own, test, mutant);
+  const kills = universe.filter((mutant) => isKill(ownOf(mutant)));
   const result = (status: SubsumptionStatus, by: readonly string[]): Subsumption => ({
     status,
     by: sortedUnique(by),
@@ -490,7 +504,7 @@ function subsumptionOf(
     universe: universe.length,
   });
   if (kills.length === 0) return result('not-applicable', []);
-  const complete = universe.every((mutant) => own.run.get(mutant).valid);
+  const complete = universe.every((mutant) => ownOf(mutant)?.valid === true);
   const candidates = sortedUnique(killers.get(kills[0]) ?? []).filter(
     (other) =>
       other !== test &&
@@ -500,13 +514,13 @@ function subsumptionOf(
   const subsumers: string[] = [];
   const possible: string[] = [];
   for (const other of candidates) {
-    const theirs = mainRunOf(index, other)?.run;
+    const theirs = mainRunOf(index, other);
+    const theirsOf = (mutant: string): ObservationState | undefined =>
+      theirs === null ? undefined : stateOf(theirs, other, mutant);
     const evaluated =
-      theirs !== undefined && universe.every((mutant) => theirs.get(mutant)?.valid === true);
+      theirs !== null && universe.every((mutant) => theirsOf(mutant)?.valid === true);
     if (!evaluated || !complete) possible.push(other);
-    else if (
-      universe.some((mutant) => isKill(theirs.get(mutant)) && !isKill(own.run.get(mutant)))
-    ) {
+    else if (universe.some((mutant) => isKill(theirsOf(mutant)) && !isKill(ownOf(mutant)))) {
       subsumers.push(other);
     }
   }
@@ -514,14 +528,17 @@ function subsumptionOf(
   return result(possible.length > 0 ? 'unknown' : 'not-subsumed', possible);
 }
 
-/** Per mutant: the tests with a valid assertion kill in their main run. */
+/** Per mutant: the tests with a valid assertion kill in their main run (never implied). */
 function killersIndex(index: Index): Map<string, Set<string>> {
   const killers = new Map<string, Set<string>>();
-  for (const entries of index.mainByGroup.values()) {
-    for (const entry of entries) {
-      if (!isKill(entry)) continue;
-      const tests = killers.get(entry.mutant) ?? new Set<string>();
-      killers.set(entry.mutant, tests.add(entry.test));
+  for (const view of index.observations.lineages.values()) {
+    if (!isMain(view)) continue;
+    for (const byMutant of view.explicit.values()) {
+      for (const entry of byMutant.values()) {
+        if (!isKill(entry)) continue;
+        const tests = killers.get(entry.mutant) ?? new Set<string>();
+        killers.set(entry.mutant, tests.add(entry.test));
+      }
     }
   }
   return killers;
@@ -596,21 +613,29 @@ function staticFlowOf(
   return { status: input.status, details: sortedUnique(input.reasons) };
 }
 
-/** Per test of the pair and mutant of its run: valid classes that differ between runs. */
+/**
+ * Per test of the pair and mutant of its run: valid classes that differ between runs. An implied
+ * observation is a survival, so only a mutant with an explicit valid class other than survived
+ * can differ.
+ */
 function rerunDisagreements(
   tests: readonly string[],
   mutants: readonly string[],
   index: Index,
 ): string[] {
-  return tests.flatMap((test) =>
-    mutants.flatMap((mutant) => {
-      const entries = index.byTest.get(test)?.get(mutant) ?? [];
+  return tests.flatMap((test) => {
+    const explicit = index.explicitByTest.get(test);
+    return mutants.flatMap((mutant) => {
+      const own = explicit?.get(mutant) ?? [];
+      if (!own.some((entry) => !isUnknown(entry) && entry.outcome !== 'survived')) return [];
       const classes = sortedUnique(
-        entries.flatMap((entry) => (isUnknown(entry) ? [] : [String(entry.outcome)])),
+        observedIn(index, test, mutant).flatMap((entry) =>
+          isUnknown(entry) ? [] : [String(entry.outcome)],
+        ),
       );
       return classes.length > 1 ? [`${test}: ${classes.join(' / ')} on ${mutant}`] : [];
-    }),
-  );
+    });
+  });
 }
 
 /** The hook-attributed mutants of the pair's path or kills (KTD9; see the module comment). */
@@ -621,18 +646,19 @@ function hookedMutants(
 ): string[] {
   const fromIsolation = (pair.isolation?.disqualifiers ?? []).flatMap((entry) => entry.mutants);
   if (comparison === null) return sortedUnique(fromIsolation);
-  const observed = (test: string, mutant: string): MergedObservation[] =>
-    index.byTest.get(test)?.get(mutant) ?? [];
   const tests = [pair.a, pair.b];
+  // Exposure needs an explicit observation: an implied one is never covered, static or a row.
   const touched = [
     ...comparison.killsA,
     ...comparison.killsB,
     ...comparison.universe.filter((mutant) =>
-      tests.some((test) => observed(test, mutant).some(exposed)),
+      tests.some((test) => (index.explicitByTest.get(test)?.get(mutant) ?? []).some(exposed)),
     ),
   ];
-  const hooked = touched.filter((mutant) =>
-    tests.some((test) => observed(test, mutant).some((entry) => entry.hookAttributed !== false)),
+  const hooked = sortedUnique(touched).filter((mutant) =>
+    tests.some((test) =>
+      observedIn(index, test, mutant).some((entry) => entry.hookAttributed !== false),
+    ),
   );
   return sortedUnique([...fromIsolation, ...hooked]);
 }
@@ -707,21 +733,14 @@ interface PairContext {
 
 function pairFacts(pair: VerdictPairInput, ctx: PairContext): PairFacts {
   const [a, b] = [ctx.tests.get(pair.a), ctx.tests.get(pair.b)];
-  const main = ctx.index.mainByGroup.get(pair.group) ?? [];
+  const run = mainRun(pair.group);
+  const main = lineageOf(ctx.index.observations, run);
   const comparison =
     pair.schedule.status === 'evaluated'
-      ? comparePair(
-          main,
-          { group: pair.group, kind: 'main', lineage: MAIN_LINEAGE },
-          pair.a,
-          pair.b,
-        )
+      ? comparePair(ctx.index.observations, run, pair.a, pair.b)
       : null;
-  const mainOf = (test: string, mutant: string): MergedObservation | undefined =>
-    (ctx.index.byTest.get(test)?.get(mutant) ?? []).find(
-      (entry) =>
-        entry.group === pair.group && entry.kind === 'main' && entry.lineage === MAIN_LINEAGE,
-    );
+  const mainOf = (test: string, mutant: string): ObservationState | undefined =>
+    main === undefined ? undefined : stateOf(main, test, mutant);
   const pathDiffers =
     comparison?.universe.filter(
       (mutant) => coverageOf(mainOf(pair.a, mutant)) !== coverageOf(mainOf(pair.b, mutant)),
@@ -1093,9 +1112,14 @@ function judge(facts: PairFacts): PairVerdict {
 
 function gapsOf(index: Index): FileGaps[] {
   const files = new Map<string, FileGaps>();
-  for (const mutant of [...index.byMutant.keys()].sort(byText)) {
-    const entries = index.byMutant.get(mutant);
-    const file = entries[0].file;
+  const lineagesOf = new Map<string, LineageObservations[]>();
+  for (const view of index.observations.lineages.values()) {
+    for (const mutant of view.mutants) push(lineagesOf, mutant, view);
+  }
+  for (const mutant of [...lineagesOf.keys()].sort(byText)) {
+    const entries = index.explicitByMutant.get(mutant) ?? [];
+    const implied = (lineagesOf.get(mutant) ?? []).flatMap((view) => impliedStatesOf(view, mutant));
+    const file = entries[0]?.file ?? implied[0].file;
     const gaps = files.get(file) ?? {
       file,
       mutants: 0,
@@ -1107,7 +1131,10 @@ function gapsOf(index: Index): FileGaps[] {
     files.set(file, gaps);
     gaps.mutants += 1;
     if (entries.some(isKill)) gaps.killed += 1;
-    else if (entries.some((entry) => isUnknown(entry) || isOtherClass(entry))) {
+    else if (
+      entries.some((entry) => isUnknown(entry) || isOtherClass(entry)) ||
+      implied.some(isUnknown)
+    ) {
       gaps.inconclusive.push(mutant);
     } else if (entries.some(exposed)) gaps.survived.push(mutant);
     else gaps.uncovered.push(mutant);
@@ -1137,12 +1164,14 @@ export function computeVerdicts(input: VerdictInput): VerdictReport {
   const evaluatedPairs = pairs.filter((pair) => pair.schedule.status === 'evaluated');
   const trusted = new Set(evaluatedPairs.map((pair) => pair.group));
   const evaluated = new Set(evaluatedPairs.flatMap((pair) => [pair.a, pair.b]));
-  const index = buildIndex(
-    input.observations.filter((entry) => trusted.has(entry.group)).sort(observationOrder),
-  );
+  const index = buildIndex(input.observations, trusted);
   const ids = [...inputs.keys()].sort(byText);
+  // Only explicit observations decide a test's status: an implied one is never exposed.
   const tests = new Map(
-    ids.map((id) => [id, classifyTest(inputs.get(id), index.byTest.get(id), evaluated.has(id))]),
+    ids.map((id) => [
+      id,
+      classifyTest(inputs.get(id), index.explicitByTest.get(id), evaluated.has(id)),
+    ]),
   );
   const killers = killersIndex(index);
   const eligible = new Set(ids.filter((id) => inputs.get(id).eligible));

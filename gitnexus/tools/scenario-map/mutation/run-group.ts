@@ -28,9 +28,15 @@
  *   4. the scope driver (tools/mutation/driver/run-scope.ts) runs Stryker on the vitest5 runner;
  *      the config it wrote is checked again, and its dry run must pass with the baselines'
  *      identities (`dry-run-unstable`); a driver failure is `stryker-failed`;
- *   5. the raw observations of every per-test row (observations.ts) are extracted and the group
- *      result is written at once to `<work>/observations/<group>.json` ({@link GroupObservations}),
- *      whatever the outcome, so a later failure of the shard loses nothing (KTD17).
+ *   5. the run universe and the explicit observations (observations.ts, compact model: the
+ *      unstored ones are implied by the universe) are extracted and the group result is written at
+ *      once to `<work>/observations/<group>.json` ({@link GroupObservations}), whatever the
+ *      outcome, so a later failure of the shard loses nothing (KTD17).
+ * Group result file (schema 2, {@link writeGroupObservations}, {@link readGroupObservations}): the
+ * group outcome, scope, baselines and Stryker summary, `runUniverse` (null unless complete) and
+ * `observations`, the explicit observations as rows of the universe (observations.ts
+ * `ObservationRow`). Schema 1 materialised one observation per test and mutant, which overflowed
+ * V8's string limit on large runs; a schema 1 file is rejected.
  * Steps 1 to 4 are {@link runMutationRun}, which the isolation pass's together and alone runs
  * (isolation.ts, U8) share, so every Layer 3 Stryker run passes the same KTD8 checks.
  *
@@ -79,9 +85,14 @@ import { isInside, readJsonFile } from '../../mutation/shared/fs.js';
 import { extraRootsOf, toPackagePath, type RunMode } from '../types.js';
 import {
   MAIN_LINEAGE,
+  decodeObservations,
+  encodeObservations,
   extractObservations,
   isEvaluated,
+  isRunUniverse,
   type Observation,
+  type ObservationRow,
+  type RunUniverse,
 } from './observations.js';
 import {
   fitsBeforeDeadline,
@@ -385,7 +396,8 @@ const fixtureEntriesOf = (repoRoot: string, mode: RunMode): string[] =>
 
 // ── Group run ─────────────────────────────────────────────────────────────
 
-export const GROUP_OBSERVATIONS_SCHEMA_VERSION = 1;
+/** 2: the compact model, a run universe plus explicit observations as rows (observations.ts). */
+export const GROUP_OBSERVATIONS_SCHEMA_VERSION = 2;
 
 export interface StrykerSettings {
   concurrency: number;
@@ -418,10 +430,17 @@ export interface GroupObservations extends GroupOutcome {
   scope: GroupScope;
   baselines: BaselineSummary[];
   stryker: StrykerSummary | null;
-  /** Empty unless the group is complete. */
+  /** The run universe that implies the unstored observations; null unless complete. */
+  runUniverse: RunUniverse | null;
+  /** Explicit observations; empty unless the group is complete. */
   observations: Observation[];
   wallClockMs: number;
 }
+
+/** A group result as written: its explicit observations as rows of its run universe. */
+export type GroupObservationsFile = Omit<GroupObservations, 'observations'> & {
+  observations: ObservationRow[];
+};
 
 export interface GroupRunDeps {
   runVitest: (options: VitestRunOptions) => Promise<VitestRunResult>;
@@ -466,22 +485,40 @@ export function observationsFile(workDir: string, group: string): string {
   return path.join(workDir, 'observations', `${group}.json`);
 }
 
-const isGroupObservations = (value: unknown): value is GroupObservations =>
+const isGroupObservationsFile = (value: unknown): value is GroupObservationsFile =>
   isRecord(value) &&
   value.schemaVersion === GROUP_OBSERVATIONS_SCHEMA_VERSION &&
   typeof value.group === 'string' &&
   typeof value.manifestDigest === 'string' &&
   isRecord(value.scope) &&
+  (value.runUniverse === null || isRunUniverse(value.runUniverse)) &&
   Array.isArray(value.observations) &&
   Array.isArray(value.tests);
 
-/** Reads a group result file; a wrong schema throws. */
+/** Writes a group result (any extra fields kept), its observations as universe rows. */
+export function writeGroupObservations<T extends GroupObservations>(file: string, result: T): void {
+  const written: GroupObservationsFile = {
+    ...result,
+    observations: encodeObservations(result.runUniverse, result.observations),
+  };
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(written)}\n`);
+}
+
+/** Reads a group result file; another schema (schema 1 included) or a malformed row throws. */
 export function readGroupObservations(file: string): GroupObservations {
   const data = readJsonFile(file);
-  if (!isGroupObservations(data)) {
+  if (isRecord(data) && data.schemaVersion !== GROUP_OBSERVATIONS_SCHEMA_VERSION) {
+    throw new Error(
+      `group run: ${file} has schema ${JSON.stringify(data.schemaVersion)}, not ` +
+        `${GROUP_OBSERVATIONS_SCHEMA_VERSION}: it was written before the compact observation ` +
+        'model (one observation per test and mutant); re-run its shard',
+    );
+  }
+  if (!isGroupObservationsFile(data)) {
     throw new Error(`group run: ${file} is not a group observations file`);
   }
-  return data;
+  return { ...data, observations: decodeObservations(data.runUniverse, data.observations) };
 }
 
 interface GroupResultInput {
@@ -493,6 +530,7 @@ interface GroupResultInput {
   detail: string | null;
   baselines: BaselineSummary[];
   stryker: StrykerSummary | null;
+  runUniverse: RunUniverse | null;
   observations: Observation[];
   wallClockMs: number;
 }
@@ -511,12 +549,11 @@ function writeGroupResult(workDir: string, input: GroupResultInput): GroupObserv
     scope: scopeOf(input.scope),
     baselines: input.baselines,
     stryker: input.stryker,
+    runUniverse: input.runUniverse,
     observations: input.observations,
     wallClockMs: input.wallClockMs,
   };
-  const file = observationsFile(workDir, result.group);
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(result)}\n`);
+  writeGroupObservations(observationsFile(workDir, result.group), result);
   return result;
 }
 
@@ -699,9 +736,9 @@ export async function runGroup(
     },
     deps,
   );
-  const observations =
+  const extracted =
     run.results === null
-      ? []
+      ? null
       : extractObservations(run.results, {
           group: scope.id,
           kind: 'main',
@@ -717,7 +754,8 @@ export async function runGroup(
     detail: run.failure?.detail ?? null,
     baselines: run.baselines,
     stryker: run.stryker,
-    observations,
+    runUniverse: extracted?.universe ?? null,
+    observations: extracted?.observations ?? [],
     wallClockMs: Math.round(deps.now() - started),
   });
 }
@@ -806,6 +844,7 @@ export async function runShard(
         detail: `the prepared copy differs from the run manifest: ${manifestCheck.mismatches.join('; ')}`,
         baselines: [],
         stryker: null,
+        runUniverse: null,
         observations: [],
         wallClockMs: 0,
       });

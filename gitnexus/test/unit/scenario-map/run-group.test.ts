@@ -3,7 +3,8 @@
  * Stryker: every runner is a fake. The run manifest's prepared-copy hashes and their check, the
  * KTD8 config check before any mutant runs, the two baselines (failing or unstable identities make
  * the group Inconclusive and emit no observations), Stryker's dry run against the baselines, the
- * group result written as soon as the group finishes, and a shard that refuses a foreign
+ * group result written as soon as the group finishes (schema 2: the run universe and the explicit
+ * observations as its rows; a schema 1 file is rejected), and a shard that refuses a foreign
  * prepared copy or a group that does not fit before its deadline.
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -420,7 +421,25 @@ describe('runGroup', () => {
       [T1, 'killed-by-test:assertion'],
       [T2, 'killed-by-test:assertion'],
     ]);
+    expect([
+      result.runUniverse?.tests,
+      result.runUniverse?.mutants.map((entry) => entry.id),
+    ]).toEqual([[T1, T2], [M1]]);
     expect(readGroupObservations(path.join(workDir, 'observations', 'g1.json'))).toEqual(result);
+  });
+
+  it('writes the observations as rows of the run universe and rejects a schema 1 file', async () => {
+    const workDir = tempDir();
+    const { deps } = fakes();
+    const result = await runGroup(groupOptions(workDir, manifestFor()), deps);
+    const file = path.join(workDir, 'observations', 'g1.json');
+    const written = JSON.parse(readFileSync(file, 'utf8')) as { observations: unknown[] };
+    writeFileSync(file, JSON.stringify({ ...result, schemaVersion: 1 }));
+    expect(written.observations).toEqual([
+      [0, 0, 0, 'killed-by-test:assertion', 'row', true, false, []],
+      [1, 0, 0, 'killed-by-test:assertion', 'row', true, false, []],
+    ]);
+    expect(() => readGroupObservations(file)).toThrow(/has schema 1, not 2: .*re-run its shard/);
   });
 
   it('passes testFiles, testIds and the whole-file mutate list to the scope driver', async () => {

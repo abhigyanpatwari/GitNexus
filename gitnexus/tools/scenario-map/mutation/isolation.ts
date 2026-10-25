@@ -31,10 +31,13 @@
  * `runMutationRun`: two baselines, the KTD8 config check, the scope driver, the dry run against the
  * baselines) with the run's tests as `testIds` and `maxTestRunnerReuse` forced to
  * {@link ISOLATION_TEST_RUNNER_REUSE}: every mutant gets a fresh test-runner process with its
- * modules reset (design §5.4). Its observations (kind `together` or `alone`, the run's lineage)
- * are kept for the universe only; universe mutants the run did not evaluate are `missing`.
- * Each result ({@link IsolationRunResult}) is written at once, with its wall clock, baselines and
- * Stryker summary (the KTD17 `freshProcessMs` calibration source). Work layout:
+ * modules reset (design §5.4). Its observations (kind `together` or `alone`, the run's lineage;
+ * observations.ts compact model: a run universe plus the explicit observations) are kept for the
+ * universe only; universe mutants the run did not evaluate are `missing`. Each result
+ * ({@link IsolationRunResult}, schema 2: the explicit observations as rows of `runUniverse`; a
+ * schema 1 file, one observation per test and mutant, is rejected) is written at once, with its
+ * wall clock, baselines and Stryker summary (the KTD17 `freshProcessMs` calibration source). Work
+ * layout:
  *   isolation/<group>/<run id>.json   run result   groups/<group>/<run id>/   scratch
  * where the run id is `<kind>-` plus 16 hex digits of sha1 over the lineage.
  *
@@ -69,11 +72,23 @@ import { residualDifference, type InputFacet } from '../facet/input-facet.js';
 import {
   MAIN_LINEAGE,
   comparePair,
+  decodeObservations,
+  encodeObservations,
   extractObservations,
+  indexObservations,
+  isRunUniverse,
+  lineageOf,
   mergeObservations,
-  type MergedObservation,
+  stateOf,
+  type LineageObservations,
+  type MergedObservations,
   type Observation,
+  type ObservationIndex,
+  type ObservationRow,
+  type ObservationState,
   type PairComparison,
+  type RunKey,
+  type RunUniverse,
 } from './observations.js';
 import type { GroupStatusReason, PairRef } from './plan-shards.js';
 import {
@@ -98,36 +113,26 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 /** The lineage of a pair's `together` run: its two tests, sorted, as a JSON array. */
 export const pairKey = (a: string, b: string): string => JSON.stringify([a, b].sort(byText));
 
-type ByMutant = Map<string, MergedObservation>;
-type ByTest = Map<string, ByMutant>;
+/** The `main` lineage of each group, indexed. */
+const mainIndex = (merged: MergedObservations): ObservationIndex =>
+  indexObservations(merged, (run) => run.kind === 'main' && run.lineage === MAIN_LINEAGE);
 
-/** Merged observations indexed by test, then mutant. */
-function indexByTest(entries: readonly MergedObservation[]): ByTest {
-  const index: ByTest = new Map();
-  for (const entry of entries) {
-    const byMutant = index.get(entry.test) ?? new Map<string, MergedObservation>();
-    byMutant.set(entry.mutant, entry);
-    index.set(entry.test, byMutant);
-  }
-  return index;
-}
+/** The main run of a group. */
+const mainRun = (group: string): RunKey => ({ group, kind: 'main', lineage: MAIN_LINEAGE });
 
-/** The `main` lineage observations of each group. */
-function mainByGroup(merged: readonly MergedObservation[]): Map<string, MergedObservation[]> {
-  const groups = new Map<string, MergedObservation[]>();
-  for (const entry of merged) {
-    if (entry.kind !== 'main' || entry.lineage !== MAIN_LINEAGE) continue;
-    groups.set(entry.group, [...(groups.get(entry.group) ?? []), entry]);
-  }
-  return groups;
-}
+/** A test's observation of a mutant in a lineage; undefined without the lineage or one. */
+const stateIn = (
+  view: LineageObservations | undefined,
+  test: string,
+  mutant: string,
+): ObservationState | undefined => (view === undefined ? undefined : stateOf(view, test, mutant));
 
 /** Coverage of a mutant for a test in one run. */
-const coverageOf = (entry: MergedObservation): 'static' | 'covered' | 'not-covered' =>
+const coverageOf = (entry: ObservationState): 'static' | 'covered' | 'not-covered' =>
   entry.static ? 'static' : entry.covered ? 'covered' : 'not-covered';
 
 /** Whether a test was exposed to the mutant: covered, static, or run against it. */
-const exposed = (entry: MergedObservation | undefined): boolean =>
+const exposed = (entry: ObservationState | undefined): boolean =>
   entry !== undefined && (entry.covered || entry.static || entry.sources.includes('row'));
 
 // ── Repeat stage ──────────────────────────────────────────────────────────
@@ -135,7 +140,7 @@ const exposed = (entry: MergedObservation | undefined): boolean =>
 /** What the repeat-stage selection reads; see the module comment. */
 export interface RepeatStageFacts {
   /** Merged observations; only each pair's group `main` lineage is read. */
-  merged: readonly MergedObservation[];
+  merged: MergedObservations;
   /** U5 checks-and-context key per Phase 0 test id; null or absent when the test has none. */
   checksContext: ReadonlyMap<string, string | null>;
   /** U6 input facet per Phase 0 test id; absent when it was not computed. */
@@ -158,14 +163,29 @@ export type RepeatStageMiss =
   /** Equal fingerprints with a residual difference (KTD6 guard, D1). */
   | 'facet-residual';
 
+/**
+ * A main-run comparison without its universe and unknown lists, their sizes kept: what a decision
+ * retains, so a decision per candidate pair stays O(kills), not O(pairs × mutants).
+ */
+export type ComparisonSummary = Omit<PairComparison, 'universe' | 'unknown'> & {
+  universeSize: number;
+  unknownSize: number;
+};
+
+const summaryOf = ({ universe, unknown, ...rest }: PairComparison): ComparisonSummary => ({
+  ...rest,
+  universeSize: universe.length,
+  unknownSize: unknown.length,
+});
+
 export interface RepeatStageDecision extends PairRef {
   /** {@link pairKey}. */
   key: string;
   selected: boolean;
   /** Failed conditions, sorted; empty when selected. */
   misses: RepeatStageMiss[];
-  /** The main run's comparison. */
-  comparison: PairComparison;
+  /** The main run's comparison, summarised. */
+  comparison: ComparisonSummary;
   /** Common-universe mutants either test was exposed to, sorted: the isolation universe. */
   universe: string[];
 }
@@ -183,7 +203,9 @@ function checksMiss(a: string | null | undefined, b: string | null | undefined):
   return a === b ? [] : ['checks-context-differs'];
 }
 
-function killMisses(comparison: PairComparison): RepeatStageMiss[] {
+function killMisses(
+  comparison: Pick<PairComparison, 'sameKills' | 'killsA' | 'otherClasses'>,
+): RepeatStageMiss[] {
   const misses: RepeatStageMiss[] = [];
   if (comparison.sameKills === null) misses.push('kills-unknown');
   if (comparison.sameKills === false) misses.push('kills-differ');
@@ -194,15 +216,14 @@ function killMisses(comparison: PairComparison): RepeatStageMiss[] {
 
 function decide(
   pair: PairRef,
-  main: readonly MergedObservation[],
+  index: ObservationIndex,
   facts: RepeatStageFacts,
 ): RepeatStageDecision {
-  const run = { group: pair.group, kind: 'main', lineage: MAIN_LINEAGE } as const;
-  const comparison = comparePair(main, run, pair.a, pair.b);
-  const index = indexByTest(main);
-  const [obsA, obsB] = [index.get(pair.a), index.get(pair.b)];
+  const run = mainRun(pair.group);
+  const comparison = comparePair(index, run, pair.a, pair.b);
+  const view = lineageOf(index, run);
   const pathDiffers = comparison.universe.some((mutant) => {
-    const [x, y] = [obsA?.get(mutant), obsB?.get(mutant)];
+    const [x, y] = [stateIn(view, pair.a, mutant), stateIn(view, pair.b, mutant)];
     return x === undefined || y === undefined || coverageOf(x) !== coverageOf(y);
   });
   const misses = [
@@ -216,9 +237,9 @@ function decide(
     key: pairKey(pair.a, pair.b),
     selected: misses.length === 0,
     misses,
-    comparison,
+    comparison: summaryOf(comparison),
     universe: comparison.universe.filter(
-      (mutant) => exposed(obsA?.get(mutant)) || exposed(obsB?.get(mutant)),
+      (mutant) => exposed(stateIn(view, pair.a, mutant)) || exposed(stateIn(view, pair.b, mutant)),
     ),
   };
 }
@@ -228,8 +249,8 @@ export function selectRepeatStagePairs(
   pairs: readonly PairRef[],
   facts: RepeatStageFacts,
 ): RepeatStageDecision[] {
-  const groups = mainByGroup(facts.merged);
-  return pairs.map((pair) => decide(pair, groups.get(pair.group) ?? [], facts));
+  const index = mainIndex(facts.merged);
+  return pairs.map((pair) => decide(pair, index, facts));
 }
 
 // ── Plan ──────────────────────────────────────────────────────────────────
@@ -402,9 +423,10 @@ export function planIsolation(decisions: readonly RepeatStageDecision[]): Isolat
 /** Stryker's `maxTestRunnerReuse` in every isolation run: a fresh process per mutant (KTD9). */
 export const ISOLATION_TEST_RUNNER_REUSE = 1;
 
-export const ISOLATION_RUN_SCHEMA_VERSION = 1;
+/** 2: the compact model, a run universe plus explicit observations as rows (observations.ts). */
+export const ISOLATION_RUN_SCHEMA_VERSION = 2;
 
-/** One isolation run's result file; see the module comment. */
+/** One isolation run's result; see the module comment. */
 export interface IsolationRunResult extends Omit<IsolationRunSpec, 'pairs'> {
   schemaVersion: typeof ISOLATION_RUN_SCHEMA_VERSION;
   shard: number;
@@ -415,7 +437,9 @@ export interface IsolationRunResult extends Omit<IsolationRunSpec, 'pairs'> {
   settings: StrykerSettings;
   baselines: BaselineSummary[];
   stryker: StrykerSummary | null;
-  /** The run's observations of universe mutants; empty unless complete. */
+  /** The run universe restricted to the planned universe; null unless complete. */
+  runUniverse: RunUniverse | null;
+  /** The run's explicit observations of universe mutants; empty unless complete. */
   observations: Observation[];
   /** Universe mutants a complete run did not evaluate, sorted. */
   missing: string[];
@@ -478,9 +502,9 @@ export async function runIsolationRun(
     },
     deps,
   );
-  const all =
+  const extracted =
     run.results === null
-      ? []
+      ? null
       : extractObservations(run.results, {
           group: spec.group,
           kind: spec.kind,
@@ -488,7 +512,7 @@ export async function runIsolationRun(
           shard: options.shard,
         });
   const universe = new Set(spec.universe);
-  const evaluated = new Set(all.map((entry) => entry.mutant));
+  const evaluated = new Set(extracted?.universe.mutants.map((mutant) => mutant.id) ?? []);
   const result: IsolationRunResult = {
     schemaVersion: ISOLATION_RUN_SCHEMA_VERSION,
     id: spec.id,
@@ -507,13 +531,24 @@ export async function runIsolationRun(
     settings,
     baselines: run.baselines,
     stryker: run.stryker,
-    observations: all.filter((entry) => universe.has(entry.mutant)),
+    runUniverse:
+      extracted === null
+        ? null
+        : {
+            ...extracted.universe,
+            mutants: extracted.universe.mutants.filter((mutant) => universe.has(mutant.id)),
+          },
+    observations: (extracted?.observations ?? []).filter((entry) => universe.has(entry.mutant)),
     missing: run.results === null ? [] : spec.universe.filter((mutant) => !evaluated.has(mutant)),
     outsideUniverse: [...evaluated].filter((mutant) => !universe.has(mutant)).length,
     wallClockMs: Math.round(deps.now() - started),
   };
+  const written: IsolationRunFile = {
+    ...result,
+    observations: encodeObservations(result.runUniverse, result.observations),
+  };
   mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(result)}\n`);
+  writeFileSync(file, `${JSON.stringify(written)}\n`);
   return result;
 }
 
@@ -528,23 +563,36 @@ export async function runIsolationPlan(
   return results;
 }
 
-const isIsolationRunResult = (value: unknown): value is IsolationRunResult =>
+/** An isolation run result as written: its explicit observations as rows of its run universe. */
+export type IsolationRunFile = Omit<IsolationRunResult, 'observations'> & {
+  observations: ObservationRow[];
+};
+
+const isIsolationRunFile = (value: unknown): value is IsolationRunFile =>
   isRecord(value) &&
   value.schemaVersion === ISOLATION_RUN_SCHEMA_VERSION &&
   typeof value.group === 'string' &&
   (value.kind === 'together' || value.kind === 'alone') &&
   typeof value.lineage === 'string' &&
+  (value.runUniverse === null || isRunUniverse(value.runUniverse)) &&
   Array.isArray(value.observations) &&
   Array.isArray(value.baselines) &&
   Array.isArray(value.missing);
 
-/** Reads one isolation run result; a wrong schema throws. */
+/** Reads one isolation run result; another schema (schema 1 included) or a bad row throws. */
 export function readIsolationRun(file: string): IsolationRunResult {
   const data = readJsonFile(file);
-  if (!isIsolationRunResult(data)) {
+  if (isRecord(data) && data.schemaVersion !== ISOLATION_RUN_SCHEMA_VERSION) {
+    throw new Error(
+      `isolation: ${file} has schema ${JSON.stringify(data.schemaVersion)}, not ` +
+        `${ISOLATION_RUN_SCHEMA_VERSION}: it was written before the compact observation model ` +
+        '(one observation per test and mutant); re-run its shard',
+    );
+  }
+  if (!isIsolationRunFile(data)) {
     throw new Error(`isolation: ${file} is not an isolation run result`);
   }
-  return data;
+  return { ...data, observations: decodeObservations(data.runUniverse, data.observations) };
 }
 
 /** Every isolation run result under `<work>/isolation/`, sorted by group and run id. */
@@ -621,7 +669,7 @@ export interface IsolationResult extends PairRef {
 /** What the comparison reads; see the module comment. */
 export interface IsolationEvidence {
   /** Merged observations holding each pair's group `main` lineage; other entries are ignored. */
-  merged: readonly MergedObservation[];
+  merged: MergedObservations;
   /** Every isolation run result found, from every shard. */
   runs: readonly IsolationRunResult[];
   /** Digest of the plan's run manifest: a run verified against another one is not used. */
@@ -633,7 +681,8 @@ interface RunView {
   /** Run-level reasons: a failed run's `run:<reason>`. */
   reasons: string[];
   baselines: BaselineSummary[];
-  observations: ByTest;
+  /** The merged observations of its verified results; undefined when they have none. */
+  observations: LineageObservations | undefined;
 }
 
 /**
@@ -652,6 +701,11 @@ function runViews(
   return new Map(
     [...grouped.entries()].map(([key, results]): [string, RunView] => {
       const own = results.filter((run) => run.manifestDigest === manifestDigest);
+      const [first] = results;
+      const merged = mergeObservations(
+        own.flatMap((run) => run.observations),
+        own.flatMap((run) => (run.runUniverse === null ? [] : [run.runUniverse])),
+      );
       return [
         key,
         {
@@ -663,7 +717,7 @@ function runViews(
             ),
           ]),
           baselines: own.flatMap((run) => run.baselines),
-          observations: indexByTest(mergeObservations(own.flatMap((run) => run.observations))),
+          observations: lineageOf(indexObservations(merged), first),
         },
       ];
     }),
@@ -729,12 +783,12 @@ function compareSlots(
  * with the observation's reasons, else the run's own (`run:<reason>`), else `missing`.
  */
 function observedSlots(
-  observations: ByTest | undefined,
+  observations: LineageObservations | undefined,
   runReasons: readonly string[],
   test: string,
   mutant: string,
 ): [Slot, Slot] {
-  const entry = observations?.get(test)?.get(mutant);
+  const entry = stateIn(observations, test, mutant);
   if (entry === undefined || !entry.valid || entry.outcome === null) {
     const reasons =
       entry !== undefined && entry.reasons.length > 0
@@ -756,7 +810,7 @@ function observedSlots(
 /** The KTD9 hook disqualifier of a pair; see the module comment. */
 function hookDisqualifiers(
   decision: RepeatStageDecision,
-  sources: readonly (ByTest | undefined)[],
+  sources: readonly (LineageObservations | undefined)[],
 ): IsolationDisqualifier[] {
   const touched = sortedUnique([
     ...decision.universe,
@@ -764,9 +818,9 @@ function hookDisqualifiers(
     ...decision.comparison.killsB,
   ]);
   const hooked = touched.filter((mutant) =>
-    sources.some((index) =>
+    sources.some((view) =>
       [decision.a, decision.b].some((test) => {
-        const entry = index?.get(test)?.get(mutant);
+        const entry = stateIn(view, test, mutant);
         return entry !== undefined && entry.hookAttributed !== false;
       }),
     ),
@@ -781,17 +835,12 @@ export function evaluateIsolation(
   decisions: readonly RepeatStageDecision[],
   evidence: IsolationEvidence,
 ): IsolationResult[] {
-  const mains = new Map(
-    [...mainByGroup(evidence.merged).entries()].map(([group, entries]) => [
-      group,
-      indexByTest(entries),
-    ]),
-  );
+  const mains = mainIndex(evidence.merged);
   const views = runViews(evidence.runs, evidence.manifestDigest);
   const viewOf = (group: string, kind: IsolationRunKind, lineage: string): RunView | undefined =>
     views.get(JSON.stringify([group, kind, lineage]));
   return decisions.map((decision): IsolationResult => {
-    const main = mains.get(decision.group);
+    const main = lineageOf(mains, mainRun(decision.group));
     const together = viewOf(decision.group, 'together', decision.key);
     const alone = new Map(
       [decision.a, decision.b].map((test) => [test, viewOf(decision.group, 'alone', test)]),
