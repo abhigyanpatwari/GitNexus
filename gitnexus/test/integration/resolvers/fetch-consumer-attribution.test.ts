@@ -30,7 +30,26 @@ describe('FETCHES consumer attribution through the pipeline (#3644)', () => {
 
     const edges = getRelationships(result, 'FETCHES').filter((e) => e.target === '/api/repos');
     expect(edges.map((e) => [e.sourceFilePath, e.rel.reason])).toEqual([
-      ['src/client.ts', 'fetch-url-match|via:Function:src/client.ts:fetchRepos'],
+      ['src/client.ts', 'fetch-url-match|fetches:2|via:Function:src/client.ts:fetchRepos'],
+    ]);
+  });
+
+  it('attributes a request to the function that makes it, not to a helper on the same line', () => {
+    // `const decode = (res) => res.json(); return fetch(...).then(decode);` on one
+    // line: by span alone the helper would win, and the callers of fetchFile
+    // would vanish from the report.
+    const edges = getRelationships(result, 'FETCHES').filter((e) => e.target === '/api/file');
+    expect(edges.map((e) => [e.sourceFilePath, e.rel.reason])).toEqual([
+      ['src/client.ts', 'fetch-url-match|fetches:2|via:Function:src/client.ts:fetchFile'],
+    ]);
+  });
+
+  it('attributes a request made through a wrapper to the function that calls the wrapper', () => {
+    // apiFetch('/api/stats') inside fetchStats, with a helper on the same line:
+    // the site comes from the wrapper-call capture, not from a bare fetch().
+    const edges = getRelationships(result, 'FETCHES').filter((e) => e.target === '/api/stats');
+    expect(edges.map((e) => [e.sourceFilePath, e.rel.reason])).toEqual([
+      ['src/stats.ts', 'fetch-url-match|fetches:2|via:Function:src/stats.ts:fetchStats'],
     ]);
   });
 

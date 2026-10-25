@@ -731,6 +731,8 @@ export const traceFromEntryPoint = (
 export interface OutwardActionSite {
   readonly filePath: string;
   readonly lineNumber: number;
+  /** The parser's enclosing callable, when it recorded one; see `EnclosingCallableIndex`. */
+  readonly enclosingId?: string;
 }
 
 /**
@@ -762,7 +764,7 @@ export function buildSinkFunctionSet(
 
   const callables = new EnclosingCallableIndex(graph);
   for (const site of sites) {
-    const id = callables.at(site.filePath, site.lineNumber);
+    const id = callables.of(site);
     if (id !== undefined) sinks.add(id);
   }
   return sinks;

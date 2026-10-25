@@ -774,13 +774,13 @@ export const matchFetchRouteKeys = (
  * (or method-less) URL has a one-element list, keeping edges byte-identical to
  * the pre-#2289 behavior.
  *
- * The edge is file-level. Its reason also names the callables whose spans
- * contain the request sites, one `|via:<id>` field each, under the same
- * containment rule as the R3-6 sink set: `api_impact` follows their CALLS edges
- * one level up to list the callers of the requesting function (#3644). A site
- * outside any callable adds no field, so a reason without attribution reads as
- * before. An id that itself contains the field separator cannot be carried and
- * is left out rather than split.
+ * The edge is file-level. Its reason also names the callables that hold the
+ * request sites, one `|via:<id>` field each, under the same attribution as the
+ * R3-6 sink set (the parser's enclosing callable, else the innermost span):
+ * `api_impact` follows their CALLS edges one level up to list the callers of
+ * the requesting function (#3644). A site outside any callable adds no field,
+ * so a reason without attribution reads as before. An id that itself contains
+ * the field separator cannot be carried and is left out rather than split.
  */
 export const processNextjsFetchRoutes = (
   graph: KnowledgeGraph,
@@ -819,7 +819,7 @@ export const processNextjsFetchRoutes = (
     const routeKeys = matchFetchRouteKeys(normalized, routeUrlToKeys);
     if (!routeKeys) continue;
     const sourceId = generateId('File', call.filePath);
-    const callable = callables.at(call.filePath, call.lineNumber);
+    const callable = callables.of(call);
 
     // Connect to every Route node at this URL (one per verb).
     for (const routeKey of routeKeys) {

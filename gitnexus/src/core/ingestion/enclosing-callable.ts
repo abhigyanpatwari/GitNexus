@@ -14,6 +14,13 @@ interface CallableSpan {
   end: number;
 }
 
+/** A call site: where it is, and, when the parser recorded it, which callable holds it. */
+export interface CallSite {
+  readonly filePath: string;
+  readonly lineNumber: number;
+  readonly enclosingId?: string;
+}
+
 /**
  * Which callable contains a given line of a file.
  *
@@ -24,10 +31,16 @@ interface CallableSpan {
  * change. The R3-6 sink set and the FETCHES consumer attribution (#3644) both
  * use this rule, through this one index, so they cannot drift apart.
  *
- * Innermost wins: a nested closure that performs the call is the callable, not
- * the outer function that merely spans it. Among equal spans the first node
- * seen keeps the site. Lines are 0-based on both sides, as the graph stores
- * them and as tree-sitter reports them.
+ * The parser records the enclosing callable of each site it captures from the
+ * AST (`enclosingId`), and that identity is used first: a line alone cannot
+ * tell a helper defined on the same line as the request apart from the
+ * function that makes it. The span lookup remains for sites found by text
+ * scan and for an identity the graph does not hold.
+ *
+ * Span rule: innermost wins, a nested closure that performs the call is the
+ * callable, not the outer function that merely spans it. Among equal spans the
+ * first node seen keeps the site. Lines are 0-based on both sides, as the graph
+ * stores them and as tree-sitter reports them.
  */
 export class EnclosingCallableIndex {
   private readonly byFile = new Map<string, CallableSpan[]>();
@@ -36,7 +49,10 @@ export class EnclosingCallableIndex {
    * One pass over the graph's nodes. `files` limits the index to the files
    * that have sites to attribute; without it every file is indexed.
    */
-  constructor(graph: KnowledgeGraph, files?: ReadonlySet<string>) {
+  constructor(
+    private readonly graph: KnowledgeGraph,
+    files?: ReadonlySet<string>,
+  ) {
     for (const node of graph.iterNodes()) {
       if (!CALLABLE_LABELS.has(node.label)) continue;
       const props = node.properties as {
@@ -52,6 +68,15 @@ export class EnclosingCallableIndex {
       if (list === undefined) this.byFile.set(props.filePath, [span]);
       else list.push(span);
     }
+  }
+
+  /** The callable that holds `site`: its recorded enclosing callable, else the innermost span. */
+  of(site: CallSite): string | undefined {
+    if (site.enclosingId !== undefined) {
+      const node = this.graph.getNode(site.enclosingId);
+      if (node !== undefined && CALLABLE_LABELS.has(node.label)) return node.id;
+    }
+    return this.at(site.filePath, site.lineNumber);
   }
 
   /** Id of the innermost callable of `filePath` whose span contains `line`, if any. */

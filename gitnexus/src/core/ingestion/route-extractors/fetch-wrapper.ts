@@ -34,6 +34,12 @@ export type CalleeTarget =
 export interface FetchWrapperCall extends ExtractedFetchCall {
   functionName: string;
   target: CalleeTarget;
+  /**
+   * Start of the call node in tree coordinates (0-based, before `lineOffset`),
+   * so the parse worker can find the node again and record the callable that
+   * holds the call (#3644). `lineNumber` stays 1-based as its readers expect.
+   */
+  callPosition: { row: number; column: number };
 }
 export interface ForwardedCallee {
   callee: string;
@@ -941,6 +947,7 @@ export function createFetchWrapperContext(
           fetchURL,
           lineNumber: call.startPosition.row + lineOffset + 1,
           target,
+          callPosition: { row: call.startPosition.row, column: call.startPosition.column },
         });
       }
       return calls;

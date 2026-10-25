@@ -781,6 +781,25 @@ describe('sink-terminated flows (R3-6)', () => {
     expect(sinks.has('func:inner')).toBe(true);
     expect(sinks.has('func:outer')).toBe(false);
   });
+
+  it('prefers the enclosing callable the parser recorded over the innermost span', () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'func:outer',
+      label: 'Function',
+      properties: { name: 'outer', filePath: 'src/a.ts', startLine: 1, endLine: 30 },
+    });
+    graph.addNode({
+      id: 'func:helper',
+      label: 'Function',
+      properties: { name: 'helper', filePath: 'src/a.ts', startLine: 15, endLine: 15 },
+    });
+    const sinks = buildSinkFunctionSet(graph, [
+      { filePath: 'src/a.ts', lineNumber: 15, enclosingId: 'func:outer' },
+    ]);
+    expect(sinks.has('func:outer')).toBe(true);
+    expect(sinks.has('func:helper')).toBe(false);
+  });
 });
 
 describe('process selection diversity (R2-3)', () => {

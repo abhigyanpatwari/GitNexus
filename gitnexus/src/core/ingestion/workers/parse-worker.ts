@@ -346,6 +346,11 @@ export interface ExtractedFetchCall {
   filePath: string;
   fetchURL: string;
   lineNumber: number;
+  /**
+   * generateId of the callable whose body holds the call, from the AST;
+   * omitted for a top-level call and for sites found by text scan (#3644).
+   */
+  enclosingId?: string;
 }
 
 export interface FetchWrapperDef extends FetchWrapperFacts {
@@ -2031,10 +2036,16 @@ const processFileGroup = (
         // Measured before this: 44 of 47 fetch calls in this repo pass a
         // variable, so the sink signal was absent from 94% of them and
         // sink-terminated flows could effectively never fire.
+        const fetchEnclosingId = findEnclosingFunctionId(
+          captureMap['route.fetch'],
+          file.path,
+          provider,
+        );
         result.fetchCalls.push({
           filePath: file.path,
           fetchURL: urlNode ? urlNode.text : '',
           lineNumber: captureMap['route.fetch'].startPosition.row + lineOffset,
+          ...(fetchEnclosingId ? { enclosingId: fetchEnclosingId } : {}),
         });
         continue;
       }
@@ -2045,10 +2056,16 @@ const processFileGroup = (
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
         if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
+          const clientEnclosingId = findEnclosingFunctionId(
+            captureMap['http_client'],
+            file.path,
+            provider,
+          );
           result.fetchCalls.push({
             filePath: file.path,
             fetchURL: url,
             lineNumber: captureMap['http_client'].startPosition.row + lineOffset,
+            ...(clientEnclosingId ? { enclosingId: clientEnclosingId } : {}),
           });
         }
         continue;
@@ -3309,7 +3326,15 @@ const processFileGroup = (
         const calls = provider.extractFetchWrapperCalls?.(tree, parsedFile, lineOffset);
         const reexports = provider.extractFetchWrapperReexports?.(tree, parsedFile, lineOffset);
         const routeFacts = provider.extractRouteFacts?.(tree, parsedFile, lineOffset);
-        for (const call of calls ?? []) (result.fetchWrapperCalls ??= []).push(call);
+        for (const call of calls ?? []) {
+          // The wrapper call is a request site too (#3644): record the callable
+          // that holds it, as the direct fetch sites do.
+          const callNode = tree.rootNode.descendantForPosition(call.callPosition);
+          const callEnclosingId = findEnclosingFunctionId(callNode, file.path, provider);
+          (result.fetchWrapperCalls ??= []).push(
+            callEnclosingId ? { ...call, enclosingId: callEnclosingId } : call,
+          );
+        }
         for (const reexport of reexports ?? [])
           (result.fetchWrapperReexports ??= []).push(reexport);
         if (routeFacts)

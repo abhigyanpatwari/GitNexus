@@ -138,6 +138,35 @@ describe('FETCHES consumer attribution (#3644)', () => {
     ]);
   });
 
+  it('prefers the enclosing callable the parser recorded over the innermost span', () => {
+    const graph = createKnowledgeGraph();
+    // `const decode = (res) => res.json(); return fetch('/api/repos').then(decode);`
+    // on one line: the helper's span is smaller, but the request belongs to fetchRepos.
+    addCallable(graph, 'Function:src/client.ts:fetchRepos', 2, 4);
+    addCallable(graph, 'Function:src/client.ts:fetchRepos.decode', 3, 3);
+
+    processNextjsFetchRoutes(
+      graph,
+      [{ ...site(3), enclosingId: 'Function:src/client.ts:fetchRepos' }],
+      REPOS,
+    );
+
+    expect(reasons(graph)).toEqual(['fetch-url-match|via:Function:src/client.ts:fetchRepos']);
+  });
+
+  it('falls back to the span when the recorded callable is not in the graph', () => {
+    const graph = createKnowledgeGraph();
+    addCallable(graph, 'Function:src/client.ts:fetchRepos', 2, 6);
+
+    processNextjsFetchRoutes(
+      graph,
+      [{ ...site(3), enclosingId: 'Function:src/client.ts:skipped' }],
+      REPOS,
+    );
+
+    expect(reasons(graph)).toEqual(['fetch-url-match|via:Function:src/client.ts:fetchRepos']);
+  });
+
   it('leaves out an id that contains the field separator rather than splitting the reason', () => {
     const graph = createKnowledgeGraph();
     // A type tag from an overload collision can carry a union type.
