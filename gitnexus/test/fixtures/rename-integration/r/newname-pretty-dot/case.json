@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse a new name pretty.x: pretty() is a base S3 generic, so the renamed function would register as its method.",
+  "categories": ["s3", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "pretty.x",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": []
+}

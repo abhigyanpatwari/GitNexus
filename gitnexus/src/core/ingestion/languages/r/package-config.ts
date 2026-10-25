@@ -14,6 +14,7 @@ import {
 import { rBareName } from './bare-name.js';
 import { compileRExportPatternDetailed, type RExportMatcher } from './export-pattern.js';
 import { SharedWorkBudget } from './linear-regex.js';
+import type { RUnindexedSource } from './unindexed-sources.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { isDev } from '../../utils/env.js';
 import { isHardcodedIgnoredDirectory } from '../../../../config/ignore-service.js';
@@ -69,6 +70,13 @@ export interface RPackageConfig {
    * as "complete".
    */
   truncated?: boolean;
+  /**
+   * R files of the repository that are not indexed sources (skipped directories, `.Rprofile`,
+   * `R/*.S`), with the identifier tokens each contains. Set only by the rename-preview reload
+   * (`refreshResolutionConfig`), so the rename guard can refuse a name such a file uses; absent
+   * means the repository was not scanned.
+   */
+  unindexedRSources?: readonly RUnindexedSource[];
 }
 
 export interface RNamespaceInfo {

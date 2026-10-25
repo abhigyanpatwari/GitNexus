@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename the script function and its caller: a stub of the same name inside a test_that() block binds in that block only, so it is not a second top-level definition (scripts layout, the block-scope rule decides).",
+  "categories": ["duplicate-definition", "block-scope", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "foo.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": []
+}

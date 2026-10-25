@@ -43,6 +43,7 @@ import { rBareName } from './bare-name.js';
 import { applyRCaptureSideChannel, rResolveSelfMember } from './r6-self.js';
 import { perFileSet } from '../../utils/per-file-set.js';
 import { resolveRImportTarget } from './import-target.js';
+import { collectRUnindexedSources } from './unindexed-sources.js';
 import {
   isRGlobalNameFallbackPlausible,
   populateRNamespaceImports,
@@ -225,6 +226,14 @@ export const rScopeResolver: ScopeResolver = {
   importEdgeReason: 'r-scope: import',
 
   loadResolutionConfig: (repoPath: string) => loadRPackageConfig(repoPath),
+
+  // The rename preview reloads the config uncached (as the contract requires), and also records
+  // the repository's R files that are not indexed sources, for the rename guard (`checkSafety`
+  // refuses a name such a file uses; see `collectRUnindexedSources`).
+  refreshResolutionConfig: async (repoPath: string, filePaths: readonly string[]) => ({
+    ...(await loadRPackageConfig(repoPath)),
+    unindexedRSources: await collectRUnindexedSources(repoPath, filePaths),
+  }),
 
   resolveImportTarget: resolveRImportTarget,
 
