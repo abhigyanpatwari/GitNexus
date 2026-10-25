@@ -828,6 +828,10 @@ interface LanguageProviderConfig {
    * because the hook mutates shared state and a swallowed mid-mutation throw could leave the graph
    * half-updated).
    *
+   * Incremental analyse writes back only changed files, so a mutation of an unchanged file's nodes is
+   * not persisted; a hook whose result depends on manifests that are not parsed sources needs
+   * `--force` after such an edit.
+   *
    * Default: undefined (nothing to do after the merge).
    */
   readonly postParse?: (ctx: PostParseContext) => void | Promise<void>;

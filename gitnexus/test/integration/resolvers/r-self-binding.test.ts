@@ -23,6 +23,8 @@
  *     before calling through it, and one that rebinds self plainly (`self <- other()`)
  *   - c15 self$ reaches public members only: a private method of the class or a parent is not on
  *     self, and a child's private method does not hide a parent's public one
+ *   - c16 a parent's public field and a child's private method share a name: self$m() gives no
+ *     edge to the private method and records a suppressed lookup (the field is not callable)
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';
@@ -185,6 +187,7 @@ describe('R6 self$method() never reaches a free function', () => {
     ['c15 a private parent method through self', 'c15_call_hidden', 'R/c15.R'],
     ['c15 a private own method through self', 'c15_call_mine', 'R/c15.R'],
     ['c15 private$m() (private$ is not modelled)', 'c15_priv_mine', 'R/c15.R'],
+    ['c16 a parent field and a child private method share the name', 'c16_call', 'R/c16.R'],
   ])('%s: no edge', (_label, source, file) => {
     expect(callsFrom(source, file)).toEqual([]);
   });
@@ -213,6 +216,7 @@ describe('R6 self$method() never reaches a free function', () => {
       'c15_hidden',
       'c15_mine',
       'c15_shared',
+      'c16_x',
     ]);
     expect(
       getRelationships(result, 'CALLS')
@@ -243,6 +247,7 @@ describe('R6 self$method() that cannot be bound is an outcome, not silence', () 
     ],
     ['c15 a private parent method is not on self', 'R/c15.R', 'c15_hidden', 16],
     ['c15 a private own method is not on self', 'R/c15.R', 'c15_mine', 17],
+    ['c16 a parent public field and a child private method share the name', 'R/c16.R', 'c16_x', 11],
   ])(
     '%s: a typed self whose class and parents lack the method is a suppressed lookup with no candidate',
     (_label, file, name, line) => {

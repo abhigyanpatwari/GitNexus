@@ -1,5 +1,5 @@
-<!-- version: 1.19.0 -->
-<!-- Last updated: 2026-10-17 -->
+<!-- version: 1.20.0 -->
+<!-- Last updated: 2026-10-25 -->
 
 Last reviewed: 2026-10-17
 
@@ -93,7 +93,7 @@ mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Toke
 
 | Date       | Version | Change                                                                                                                                                                                                                                                               |
 | ---------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-10-24 | 1.20.0  | Added the R ingestion gaps inventory (`docs/languages/r-ingestion-gaps.md`) next to the R provider guide as a required reference before changing R parsing or resolution. |
+| 2026-10-25 | 1.20.0  | Added the R ingestion gaps inventory (`docs/languages/r-ingestion-gaps.md`) next to the R provider guide as a required reference before changing R parsing or resolution. |
 | 2026-10-17 | 1.19.0  | Added the R provider guide as the required reference before changing R parsing or resolution.                                                                                                                                                                        |
 | 2026-10-17 | 1.18.0  | Require the reviewed preview's single-use `plan_token` when applying semantic rename (#2973). |
 | 2026-09-24 | 1.17.0  | Clones with the same `origin` URL now share a store automatically; `--no-share` records a lasting opt-out (#3352).                                                                                                                                                   |

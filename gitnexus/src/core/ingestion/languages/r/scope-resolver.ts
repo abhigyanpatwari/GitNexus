@@ -202,10 +202,14 @@ export function expandRWildcardNames(
 }
 
 /**
- * A bare R call `foo(x)` can never invoke a def whose name contains a `.`
- * (`print.foo` is only reachable as `print.foo(...)` or through S3 dispatch),
- * yet the free-call fallback's simple-name index keys it under `foo`. Refuse
- * such candidates so `foo(x)` cannot collide with `print.foo`.
+ * The free-call name fallback must not bind a bare call `foo(x)` to a def whose
+ * name contains a `.`: `print.foo` is reached as `print.foo(...)` or through S3
+ * dispatch, yet the fallback's simple-name index keys it under `foo`. Refuse
+ * such candidates so `foo(x)` cannot collide with `print.foo`. This is not a
+ * claim that a bare call never runs a dotted function: `my.helper(x)` and
+ * `read.config(x)` are ordinary calls. They skip this fallback and bind in the
+ * same file locally (0.85) or elsewhere by qualified-name lookup at 0.35
+ * (`scope-resolution: call`), which `docs/languages/r-provider.md` describes.
  *
  * Applies to every candidate the hook sees, including R6/R5 members whose
  * qualified name is `Class.member`. A bare `member(x)` never reaches an R6
@@ -326,7 +330,8 @@ export const rScopeResolver: ScopeResolver = {
 
   // The free-call fallback keys defs by the text after the last `.` of their
   // qualified name, so an S3 method `print.foo` sits next to a bare `foo` and
-  // makes the bare call ambiguous (no edge). A bare call can never invoke a
-  // dotted def, so drop those candidates.
+  // makes the bare call ambiguous (no edge). Drop those candidates from the
+  // name fallback; a call that spells the full dotted name binds by
+  // qualified-name lookup instead (see `rIsCallableVisibleFromCaller`).
   isCallableVisibleFromCaller: rIsCallableVisibleFromCaller,
 };

@@ -77,7 +77,9 @@ describe('R function definitions and calls', () => {
   it('resolves source() to IMPORTS edge', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const sourceEdge = imports.find(
-      (e) => e.sourceFilePath.includes('run_analysis.R') && e.targetFilePath.includes('utils.R'),
+      (e) =>
+        e.rel.sourceId === 'File:scripts/run_analysis.R' &&
+        e.rel.targetId === 'File:pkgA/R/utils.R',
     );
     expect(sourceEdge).toBeDefined();
   });
@@ -125,8 +127,11 @@ describe('R function definitions and calls', () => {
 
   it('resolves cross-package pkgB::CleanData call', () => {
     const calls = getRelationships(result, 'CALLS');
+    // The `pkgB::CleanData(data)` call in AddOutlierStatuses, not the script's bare call.
     const crossPkg = calls.find(
-      (e) => e.target === 'CleanData' && e.targetFilePath.includes('clean_data.R'),
+      (e) =>
+        e.rel.sourceId === 'Function:pkgA/R/add_outliers.R:AddOutlierStatuses' &&
+        e.rel.targetId === 'Function:pkgB/R/clean_data.R:CleanData',
     );
     expect(crossPkg).toBeDefined();
   });
@@ -136,7 +141,9 @@ describe('R function definitions and calls', () => {
   it('resolves source()-imported function calls', () => {
     const calls = getRelationships(result, 'CALLS');
     const helperCall = calls.find(
-      (e) => e.sourceFilePath.includes('run_analysis.R') && e.target === 'HelperFunc',
+      (e) =>
+        e.rel.sourceId === 'File:scripts/run_analysis.R' &&
+        e.rel.targetId === 'Function:pkgA/R/utils.R:HelperFunc',
     );
     expect(helperCall).toBeDefined();
   });
@@ -239,9 +246,8 @@ describe('R function definitions and calls', () => {
     const calls = getRelationships(result, 'CALLS');
     const countCall = calls.find(
       (e) =>
-        e.sourceFilePath.includes('run_analysis.R') &&
-        e.target === 'count' &&
-        e.targetFilePath.includes('models.R'),
+        e.rel.sourceId === 'File:scripts/run_analysis.R' &&
+        e.rel.targetId === 'Method:pkgA/R/models.R:ResultSet.count#0',
     );
     expect(countCall).toBeDefined();
   });
@@ -268,7 +274,11 @@ describe('R function definitions and calls', () => {
 
   it('emits EXTENDS edge from R6 Child class via inherit= (namespace call)', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
-    const childEdge = extends_.find((e) => e.source === 'Child' && e.target === 'Parent');
+    const childEdge = extends_.find(
+      (e) =>
+        e.rel.sourceId === 'Class:pkgA/R/s4_and_r6.R:Child' &&
+        e.rel.targetId === 'Class:pkgA/R/s4_and_r6.R:Parent',
+    );
     expect(childEdge).toBeDefined();
   });
 
@@ -281,8 +291,16 @@ describe('R function definitions and calls', () => {
 
   it('emits EXTENDS edges from S4 multi-parent setClass with contains=c()', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
-    const toBaseA = extends_.find((e) => e.source === 'MultiChild' && e.target === 'BaseA');
-    const toBaseB = extends_.find((e) => e.source === 'MultiChild' && e.target === 'BaseB');
+    const toBaseA = extends_.find(
+      (e) =>
+        e.rel.sourceId === 'Class:pkgA/R/s4_multi_parent.R:MultiChild' &&
+        e.rel.targetId === 'Class:pkgA/R/s4_multi_parent.R:BaseA',
+    );
+    const toBaseB = extends_.find(
+      (e) =>
+        e.rel.sourceId === 'Class:pkgA/R/s4_multi_parent.R:MultiChild' &&
+        e.rel.targetId === 'Class:pkgA/R/s4_multi_parent.R:BaseB',
+    );
     expect(toBaseA).toBeDefined();
     expect(toBaseB).toBeDefined();
   });
@@ -303,7 +321,11 @@ describe('R function definitions and calls', () => {
 
   it('emits EXTENDS edge from R6 class defined with bare R6Class() via inherit=', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
-    const bareEdge = extends_.find((e) => e.source === 'BareR6' && e.target === 'Parent');
+    const bareEdge = extends_.find(
+      (e) =>
+        e.rel.sourceId === 'Class:pkgA/R/r6_bare.R:BareR6' &&
+        e.rel.targetId === 'Class:pkgA/R/s4_and_r6.R:Parent',
+    );
     expect(bareEdge).toBeDefined();
   });
 
