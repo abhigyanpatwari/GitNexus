@@ -181,6 +181,7 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-php.test.ts',
   'test/integration/rename-provider-python.test.ts',
   'test/integration/rename-provider-r.test.ts',
+  'test/integration/rename-provider-r-part2.test.ts',
   'test/integration/rename-provider-ruby.test.ts',
   'test/integration/rename-provider-rust.test.ts',
   'test/integration/rename-provider-swift.test.ts',

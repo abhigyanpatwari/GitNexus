@@ -36,10 +36,87 @@ for (const language of (await fs.readdir(fixtures, { withFileTypes: true })).fil
 
 renameCases.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 
+// A language whose fixtures outgrow one CI shard budget moves part of them into an overflow file.
+// The ids listed here are skipped by `defineRenameFixtureTests` and run only through
+// `defineRenameOverflowFixtureTests`, so every fixture is registered exactly once. Keyed by id,
+// so a fixture added later stays in the primary file until it is listed.
+export const renameOverflowIds: ReadonlySet<string> = new Set([
+  'r/assign-local-conditional',
+  'r/assign-local-constant-call',
+  'r/assign-local-function-literal-no-call',
+  'r/assign-local-nested-function',
+  'r/assign-local-no-call',
+  'r/backtick-definition',
+  'r/chained-receiver-same-name',
+  'r/collision-new-name-parameter-call',
+  'r/collision-unrelated-uses',
+  'r/collision-variable-before',
+  'r/cross-file-qualified-call',
+  'r/duplicate-definition-other-file',
+  'r/duplicate-definition-test-stub',
+  'r/export-name-null',
+  'r/function-call-chain',
+  'r/generated-cpp11-wrapper',
+  'r/infix-operator',
+  'r/invalid-name-invalid-start',
+  'r/local-def-call-before',
+  'r/local-def-first',
+  'r/local-def-loop',
+  'r/namespace-export',
+  'r/namespace-export-new-name',
+  'r/namespace-pattern-new-name-exported',
+  'r/namespace-pattern-word-boundary',
+  'r/namespace-private-external-call',
+  'r/namespace-private-local-import',
+  'r/newname-pretty-dot',
+  'r/parameter-body-read',
+  'r/parameter-constant-default-call-and-read',
+  'r/parameter-no-default-call',
+  'r/r6-class',
+  'r/r6-member-shadow-private',
+  'r/r6-method',
+  'r/rawnamespace-attached',
+  'r/rc-own-method-shadow',
+  'r/refclass-parent-without-member',
+  'r/replacement-getter',
+  'r/replacement-setter',
+  'r/rprofile-mention',
+  'r/s3-method',
+  'r/s3-new-method-dotted-generic',
+  'r/s3-new-method-name',
+  'r/s4-class',
+  'r/self-method-same-name',
+  'r/string-built-name',
+  'r/string-glue-call',
+  'r/string-lookup-escaped',
+  'r/string-parse-text',
+  'r/superassign-in-function',
+  'r/toplevel-call-before-definition-attached',
+  'r/unindexed-no-mention',
+  'r/unparseable-other-file',
+  'r/value-reference-default',
+  'r/value-reference-function-argument',
+]);
+
 // Separate files let CI distribute these real indexing runs across its shards.
 export function defineRenameFixtureTests(language: string): void {
+  defineRenameFixtureCases(
+    (fixture) => fixture.language === language && !renameOverflowIds.has(fixture.id),
+  );
+}
+
+// Registers only the overflow fixtures of `language`, for its second test file.
+export function defineRenameOverflowFixtureTests(language: string): void {
+  defineRenameFixtureCases(
+    (fixture) => fixture.language === language && renameOverflowIds.has(fixture.id),
+  );
+}
+
+function defineRenameFixtureCases(
+  include: (fixture: (typeof renameCases)[number]) => boolean,
+): void {
   describe('persisted semantic rename across providers (no mocks)', () => {
-    it.each(renameCases.filter((fixture) => fixture.language === language))(
+    it.each(renameCases.filter(include))(
       '$id',
       async ({ directory }) => {
         const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'rename-integration-'));

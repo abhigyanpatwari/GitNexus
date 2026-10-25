@@ -73,7 +73,10 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   // old 100 s entry let this file share shard 5/10 with go and dml-gate and
   // exhaust the 20-minute watchdog. Weighted at the faster measurement, scaled by
   // 55 fixtures + the pin test over the 49 + 1 measured (6 fixtures added since).
+  // 110 fixtures now run as two files of 55 (rename-provider-r and -r-part2),
+  // each weighted as that 55-fixture file: 695 s apiece, so the packer places them apart.
   'test/integration/rename-provider-r.test.ts': 695,
+  'test/integration/rename-provider-r-part2.test.ts': 695,
   'test/integration/rename-provider-ruby.test.ts': 100,
   'test/integration/rename-provider-rust.test.ts': 75,
   'test/integration/rename-provider-swift.test.ts': 300,

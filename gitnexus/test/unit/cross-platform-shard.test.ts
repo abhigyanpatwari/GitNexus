@@ -100,18 +100,26 @@ describe('cross-platform shard partition', () => {
     ).toEqual([]);
   });
 
-  it('keeps the R rename suite off the shards that hold the go and dml-gate suites', () => {
+  it('keeps the R rename suites off the shards that hold the go and dml-gate suites', () => {
     // Windows CI run, 2026-10-17: rename-provider-r (599-750 s measured, 49
     // persisted fixtures) was charged 100 s, so the packer put it with go and
-    // dml-gate and the shard exhausted the 20-minute watchdog.
-    const rWeight = weightOf('test/integration/rename-provider-r.test.ts');
-    expect(rWeight).toBeGreaterThanOrEqual(600);
+    // dml-gate and the shard exhausted the 20-minute watchdog. The 110 R fixtures
+    // now run as two files of 55, each charged like that 55-fixture file.
+    const halves = [
+      'test/integration/rename-provider-r.test.ts',
+      'test/integration/rename-provider-r-part2.test.ts',
+    ];
     const shards = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL);
     const shardOf = (file: string) => shards.findIndex((files) => files.includes(file));
-    const r = shardOf('test/integration/rename-provider-r.test.ts');
-    expect(r).not.toBe(-1);
-    expect(shardOf('test/integration/rename-provider-go.test.ts')).not.toBe(r);
-    expect(shardOf('test/unit/incremental-index-extension-dml-gate.test.ts')).not.toBe(r);
+    for (const half of halves) {
+      expect(weightOf(half)).toBeGreaterThanOrEqual(600);
+      const r = shardOf(half);
+      expect(r).not.toBe(-1);
+      expect(shardOf('test/integration/rename-provider-go.test.ts')).not.toBe(r);
+      expect(shardOf('test/unit/incremental-index-extension-dml-gate.test.ts')).not.toBe(r);
+    }
+    // Both halves on one shard would project past the 1200 s watchdog at 15 s/test.
+    expect(shardOf(halves[0])).not.toBe(shardOf(halves[1]));
   });
 
   it('covers every file exactly once, with no overlap between shards', () => {
@@ -147,7 +155,8 @@ describe('cross-platform shard partition', () => {
     // fitting under 20 minutes left the previous partition prone to timeout.
     // The ceiling was 17 minutes until the R rename provider suite (measured
     // ~600 s on Windows) was charged its real weight: the table total grew by
-    // ~520 s, so even a perfect ten-way split averages ~1047 s per shard.
+    // ~520 s, so even a perfect ten-way split averages ~1047 s per shard; the 695 s added by splitting the R
+    // suite into two files made it eleven shards.
     expect(Math.max(...loads)).toBeLessThanOrEqual(18 * 60);
   });
 
