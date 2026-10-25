@@ -1,0 +1,592 @@
+name: Test Scenario Map
+
+# Weekly advisory report on the validated pure-JS unit tests of gitnexus/ (R13, R14, KTD13,
+# KTD14, KTD17): tests that repeat a scenario, tests that kill no evaluated mutant, and per-file
+# gaps. The CLI is gitnexus/tools/scenario-map/scenario-map.ts; its header documents the stages,
+# flags, work-directory layout and exit codes. Local equivalent, from gitnexus/ (the work dir must
+# lie outside the checkout; value flow needs `npm run build` first):
+#   npm run test:scenario-map -- all --work <dir>
+#
+# Jobs, each one CLI stage over one work directory ($RUNNER_TEMP/scenario-map) exchanged as
+# artifacts:
+#   plan        eligibility, Layer 0, the prepared copy and run manifest, Layers 1-2, candidates
+#               and the provisional shard plan.
+#   value-flow  the PDG index (`analyze --pdg` spawns workers from dist/, hence build: 'true'),
+#               the static value-flow check, the trace run and the final shard plan. It runs
+#               before the shards, so a shard isolates only the pairs value flow leaves able to be
+#               strong (the CLI's deviation from KTD14's parallel value-flow job).
+#   shards      prints the final shard count (the re-plan's, or the provisional plan's when value
+#               flow left no usable result); it sizes the shard matrix.
+#   shard       one matrix job per shard (fail-fast off): Layer 3 group runs, row deletion and
+#               isolation until a 300-minute deadline (KTD17). Results upload even on failure.
+#   merge       always runs once a plan exists: merges whatever the shards and value flow left
+#               (a missing shard leaves the run partial and its pairs Inconclusive, R11), compares
+#               against the newest `scenario-map-baseline` artifact of an earlier run, and writes
+#               the report. Only a complete default-branch run uploads a new baseline (KTD13).
+#   upsert-issue  default branch only: a complete run replaces the tracking issue's body unless
+#               the issue already records a newer run; a partial run comments and leaves the body
+#               alone. The issue is found by label in any state and never closed.
+#
+# Advisory: every job is continue-on-error, so nothing here fails the run or blocks a merge. Exit
+# code 1 of a stage means "finished with incomplete results"; it is a warning, the job carries on
+# and merge reports the run as partial. Exit code 2 (usage or setup error) fails the step.
+# The full matrix can hold up to 20 runners for about 5.5 hours.
+#
+# Artifact names carry the run attempt. A downstream job takes the plan and value-flow artifact
+# names from those jobs' outputs, so re-running one job reuses the earlier attempt's inputs; merge
+# copies shard results oldest attempt first, so a later attempt of a shard wins.
+#
+# The controls run (the U17 fixture, every expected verdict) is a PR job in
+# mutation-runner-validation.yml; this workflow cannot run from a PR branch.
+
+on:
+  schedule:
+    # Mondays 04:17 UTC, outside the busy CI hours.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'Seed of every sampled choice, the spot audit included (default: the run id)'
+        type: string
+        required: false
+        default: ''
+      shards:
+        description: 'Number of mutation shards (default: the fewest that fit, at most 20)'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention".
+# Global single slot: weekly and manual runs share the tracking issue and the baseline, so they
+# run one at a time, and a run that holds hours of shard work is never cancelled. (GitHub keeps
+# one pending run: a third run queued behind a pending one replaces it.)
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+    working-directory: gitnexus
+
+env:
+  # Stryker concurrency: the plan's cost estimate and the shards' runs (ubuntu-latest: 4 vCPUs).
+  SCENARIO_MAP_CONCURRENCY: '4'
+  # One shard's budget in the plan and its deadline in the shard job (KTD17). The shard job's
+  # timeout-minutes (330) leaves room for setup and the last uploads.
+  SCENARIO_MAP_DEADLINE_MINUTES: '300'
+
+jobs:
+  # ── Plan: Layers 0-2, candidates, shard plan, run manifest ─────────
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.artifact.outputs.name }}
+      # Scheduled runs always run on the default branch; their event payload has no repository.
+      default_branch: ${{ github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    steps:
+      # persist-credentials: false — the jobs upload artifacts and never push.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Plan the run
+        env:
+          SEED: ${{ inputs.seed || github.run_id }}
+          SHARDS: ${{ inputs.shards }}
+        run: |
+          args=(--work "$RUNNER_TEMP/scenario-map" --seed "$SEED"
+            --concurrency "$SCENARIO_MAP_CONCURRENCY"
+            --deadline-minutes "$SCENARIO_MAP_DEADLINE_MINUTES")
+          if [ -n "$SHARDS" ]; then args+=(--shards "$SHARDS"); fi
+          npm run test:scenario-map -- plan "${args[@]}"
+      - name: Upload the plan
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenario-map-plan-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/scenario-map/plan.json
+            ${{ runner.temp }}/scenario-map/scenario-run-manifest.json
+            ${{ runner.temp }}/scenario-map/layer0.json
+            ${{ runner.temp }}/scenario-map/layer2.json
+            ${{ runner.temp }}/scenario-map/coverage/coverage.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Name the plan artifact
+        id: artifact
+        env:
+          NAME: scenario-map-plan-${{ github.run_attempt }}
+        run: echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+  # ── Value flow: PDG static check, trace run, final shard plan ──────
+  value-flow:
+    name: Value flow
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.artifact != '' }}
+    runs-on: ubuntu-latest
+    # Locally: PDG index about 3 min (peak RSS about 8.4 GB of the runner's 16 GB), the whole
+    # stage about 5 min.
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.artifact.outputs.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Download the plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.plan.outputs.artifact }}
+          path: ${{ runner.temp }}/scenario-map
+      - name: Run value flow
+        timeout-minutes: 50
+        env:
+          GITNEXUS_WORKER_READY_TIMEOUT_MS: '120000'
+        run: |
+          status=0
+          npm run test:scenario-map -- value-flow --work "$RUNNER_TEMP/scenario-map" || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "::warning::value flow is degraded or its trace did not run; the report says so"
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+      - name: Upload the value-flow result
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenario-map-value-flow-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/scenario-map/value-flow.json
+            ${{ runner.temp }}/scenario-map/value-flow/pdg/analyze.log
+          retention-days: 14
+      # Named only when value-flow.json was uploaded: without it, shards and merge fall back to
+      # the provisional plan and merge reports value flow missing.
+      - name: Name the value-flow artifact
+        id: artifact
+        if: always() && steps.upload.outcome == 'success'
+        env:
+          NAME: scenario-map-value-flow-${{ github.run_attempt }}
+        run: |
+          if [ -f "$RUNNER_TEMP/scenario-map/value-flow.json" ]; then
+            echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Shard count: sizes the matrix ──────────────────────────────────
+  shards:
+    name: Shard count
+    needs: [plan, value-flow]
+    if: ${{ !cancelled() && needs.plan.outputs.artifact != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    permissions:
+      contents: read
+    outputs:
+      count: ${{ steps.count.outputs.count }}
+      matrix: ${{ steps.count.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Download the plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.plan.outputs.artifact }}
+          path: ${{ runner.temp }}/scenario-map
+      - name: Download the value-flow result
+        if: needs.value-flow.outputs.artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.value-flow.outputs.artifact }}
+          path: ${{ runner.temp }}/scenario-map
+      # --silent: the stage prints the count and nothing else; npm's banner would precede it.
+      - name: Read the final shard count
+        id: count
+        run: |
+          count="$(npm run --silent test:scenario-map -- shards --work "$RUNNER_TEMP/scenario-map")"
+          if ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::the shards stage printed '$count', not a shard count"
+            exit 1
+          fi
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -cn --argjson n "$count" '[range($n)]')" >> "$GITHUB_OUTPUT"
+          echo "Final shard plan: $count shard(s)"
+
+  # ── Layer 3 shards ─────────────────────────────────────────────────
+  shard:
+    name: Shard ${{ matrix.index }}
+    needs: [plan, value-flow, shards]
+    if: ${{ !cancelled() && needs.shards.outputs.matrix != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    continue-on-error: true
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      # Leave runner slots for PR CI on the default plan (about 9 shards at concurrency 4).
+      max-parallel: 10
+      matrix:
+        index: ${{ fromJSON(needs.shards.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Download the plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.plan.outputs.artifact }}
+          path: ${{ runner.temp }}/scenario-map
+      - name: Download the value-flow result
+        if: needs.value-flow.outputs.artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.value-flow.outputs.artifact }}
+          path: ${{ runner.temp }}/scenario-map
+      # The shard verifies its own prepared copy against the run manifest; a mismatch runs
+      # nothing and leaves its groups' pairs Inconclusive. The step timeout sits inside the job's,
+      # so a shard that overruns its deadline still uploads what it finished.
+      - name: Run the shard
+        timeout-minutes: 315
+        env:
+          INDEX: ${{ matrix.index }}
+          COUNT: ${{ needs.shards.outputs.count }}
+        run: |
+          status=0
+          npm run test:scenario-map -- shard --work "$RUNNER_TEMP/scenario-map" \
+            --index "$INDEX" --of "$COUNT" \
+            --deadline-minutes "$SCENARIO_MAP_DEADLINE_MINUTES" \
+            --concurrency "$SCENARIO_MAP_CONCURRENCY" || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "::warning::shard $INDEX finished with incomplete results; the report says which"
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+      # Every group result is written as soon as it exists: upload whatever the shard finished,
+      # even after a failure.
+      - name: Upload the shard results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenario-map-shard-${{ github.run_attempt }}-${{ matrix.index }}
+          path: |
+            ${{ runner.temp }}/scenario-map/shard-${{ matrix.index }}.json
+            ${{ runner.temp }}/scenario-map/row-deletion-shard-${{ matrix.index }}.json
+            ${{ runner.temp }}/scenario-map/observations/
+            ${{ runner.temp }}/scenario-map/batches/
+            ${{ runner.temp }}/scenario-map/isolation/
+            ${{ runner.temp }}/scenario-map/groups/*/stryker/stryker.log
+            ${{ runner.temp }}/scenario-map/groups/*/*/stryker/stryker.log
+          retention-days: 14
+
+  # ── Merge: verdicts and the report ─────────────────────────────────
+  merge:
+    name: Merge and report
+    needs: [plan, value-flow, shard]
+    if: ${{ always() && needs.plan.outputs.artifact != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: read # list and download an earlier run's scenario-map-baseline artifact
+    outputs:
+      artifact: ${{ steps.artifact.outputs.name }}
+      complete: ${{ steps.merge.outputs.complete }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Download the plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.plan.outputs.artifact }}
+          path: ${{ runner.temp }}/scenario-map
+      - name: Download the value-flow result
+        if: needs.value-flow.outputs.artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.value-flow.outputs.artifact }}
+          path: ${{ runner.temp }}/scenario-map
+      # No shard result at all is a valid, partial outcome: merge reports every shard missing.
+      - name: Download the shard results
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: scenario-map-shard-*
+          path: ${{ runner.temp }}/scenario-map-shards
+      - name: Place the shard results
+        run: |
+          shopt -s nullglob
+          work="$RUNNER_TEMP/scenario-map"
+          found=("$RUNNER_TEMP"/scenario-map-shards/scenario-map-shard-*)
+          # scenario-map-shard-<attempt>-<index>: oldest attempt first, so a later attempt wins.
+          while IFS= read -r dir; do
+            [ -n "$dir" ] || continue
+            echo "Using $(basename "$dir")"
+            cp -R "$dir/." "$work/"
+          done < <(printf '%s\n' "${found[@]}" | sort -V)
+      # KTD13: the newest `scenario-map-baseline` of another run. Only complete default-branch
+      # runs upload one; the branch filter keeps it that way. None found: "first run" banner.
+      # A failure here must not cost the run its report: merge then runs without a baseline.
+      - name: Fetch the baseline
+        id: baseline
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
+        run: |
+          dir="$RUNNER_TEMP/scenario-map-baseline"
+          mkdir -p "$dir"
+          if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=scenario-map-baseline&per_page=100" \
+            > "$dir/artifacts.json"; then
+            echo "::warning::could not list the baseline artifacts; the report shows no baseline"
+            exit 0
+          fi
+          id="$(jq -r --argjson run "$GITHUB_RUN_ID" --arg branch "$DEFAULT_BRANCH" '
+            [.artifacts[]
+              | select((.expired | not) and .workflow_run.id != $run
+                and .workflow_run.head_branch == $branch)]
+            | sort_by(.created_at) | last | .id // empty' "$dir/artifacts.json")"
+          if [ -z "$id" ]; then
+            echo "No earlier scenario-map-baseline artifact: first run, no baseline."
+            exit 0
+          fi
+          if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$dir/baseline.zip" \
+            || ! unzip -q -o "$dir/baseline.zip" -d "$dir/report" \
+            || [ ! -f "$dir/report/scenario-map-report.json" ]; then
+            echo "::warning::could not fetch baseline artifact $id; the report shows no baseline"
+            exit 0
+          fi
+          echo "Baseline: artifact $id"
+          echo "report=$dir/report/scenario-map-report.json" >> "$GITHUB_OUTPUT"
+      - name: Merge
+        id: merge
+        env:
+          BASELINE: ${{ steps.baseline.outputs.report }}
+          ON_DEFAULT_BRANCH: ${{ needs.plan.outputs.default_branch }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF: ${{ github.ref }}
+        run: |
+          work="$RUNNER_TEMP/scenario-map"
+          args=(--work "$work" --run-id "$GITHUB_RUN_ID" --run-attempt "$RUN_ATTEMPT"
+            --run-url "$RUN_URL" --ref "$REF")
+          if [ -n "$BASELINE" ]; then args+=(--baseline "$BASELINE"); fi
+          if [ "$ON_DEFAULT_BRANCH" = 'true' ]; then args+=(--default-branch); fi
+          status=0
+          npm run test:scenario-map -- merge "${args[@]}" || status=$?
+          if [ "$status" -eq 1 ]; then
+            echo "::warning::partial report: some shard or value-flow result is missing"
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+          complete="$(jq -r '.completeness.complete == true' "$work/scenario-map-report.json")"
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+      - name: Upload the report
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenario-map-report-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/scenario-map/scenario-map-report.json
+            ${{ runner.temp }}/scenario-map/scenario-map-report.md
+            ${{ runner.temp }}/scenario-map/issue-body.md
+          retention-days: 90
+      - name: Name the report artifact
+        id: artifact
+        if: always() && steps.upload.outcome == 'success'
+        env:
+          NAME: scenario-map-report-${{ github.run_attempt }}
+        run: |
+          if [ -f "$RUNNER_TEMP/scenario-map/scenario-map-report.json" ]; then
+            echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          fi
+      # overwrite: a re-run attempt replaces this run's own baseline instead of failing on it.
+      - name: Upload the baseline
+        if: steps.merge.outputs.complete == 'true' && needs.plan.outputs.default_branch == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenario-map-baseline
+          path: ${{ runner.temp }}/scenario-map/scenario-map-report.json
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+  # ── Tracking issue (R13) ───────────────────────────────────────────
+  # The only job with a write scope, and only on the default branch. No install scripts run here
+  # (lifecycle-scripts: 'false'): tsx alone runs the decision.
+  upsert-issue:
+    name: Upsert tracking issue
+    needs: [plan, merge]
+    if: ${{ !cancelled() && needs.plan.outputs.default_branch == 'true' && needs.merge.outputs.artifact != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: write # find, open, update or comment on the tracking issue (and its label)
+    env:
+      LABEL: test-scenario-map
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          lifecycle-scripts: 'false'
+      - name: Download the report
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.merge.outputs.artifact }}
+          path: ${{ runner.temp }}/scenario-map-report
+      - name: Find the tracking issue
+        id: find
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: process.env.LABEL,
+              state: 'all',
+              per_page: 100,
+            });
+            // Any state; the oldest one when several carry the label.
+            const tracking = issues
+              .filter((issue) => !issue.pull_request)
+              .sort((a, b) => a.number - b.number)[0];
+            if (tracking === undefined) {
+              core.info('No tracking issue yet.');
+              return;
+            }
+            const issueDir = path.join(process.env.RUNNER_TEMP, 'scenario-map-issue');
+            fs.mkdirSync(issueDir, { recursive: true });
+            fs.writeFileSync(path.join(issueDir, 'existing-body.md'), tracking.body ?? '');
+            core.setOutput('number', String(tracking.number));
+            core.info(`Tracking issue #${tracking.number} (${tracking.state}).`);
+      # The decision is issue-body.ts's own R13/KTD13 rule (shouldUpdateIssue): a complete
+      # default-branch run updates unless the body's first-line run marker records a newer run.
+      - name: Decide the update
+        id: decide
+        env:
+          ISSUE_NUMBER: ${{ steps.find.outputs.number }}
+        run: |
+          node --import tsx --input-type=module <<'EOF'
+          import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+          import path from 'node:path';
+          import { shouldUpdateIssue } from './tools/scenario-map/report/issue-body.ts';
+          import { completenessLine, degradedLine, runLink } from './tools/scenario-map/report/markdown.ts';
+
+          const { ISSUE_NUMBER, GITHUB_OUTPUT, RUNNER_TEMP } = process.env;
+          const reportDir = path.join(RUNNER_TEMP, 'scenario-map-report');
+          const issueDir = path.join(RUNNER_TEMP, 'scenario-map-issue');
+          const report = JSON.parse(
+            readFileSync(path.join(reportDir, 'scenario-map-report.json'), 'utf8'),
+          );
+          const existing = ISSUE_NUMBER
+            ? readFileSync(path.join(issueDir, 'existing-body.md'), 'utf8')
+            : null;
+          let action = 'skip';
+          if (report.completeness.complete) {
+            if (shouldUpdateIssue(report, existing)) action = existing === null ? 'create' : 'update';
+            else console.log('The issue already records a newer run: body left alone.');
+          } else if (existing !== null) {
+            action = 'comment';
+            const lines = [
+              `Partial ${runLink(report.run)}: the issue body is left unchanged; only a complete run updates it.`,
+              '',
+              `- ${completenessLine(report)}`,
+              `- ${degradedLine(report)}`,
+              '',
+              "The run's report artifact holds every result it produced.",
+            ];
+            mkdirSync(issueDir, { recursive: true });
+            writeFileSync(path.join(issueDir, 'comment.md'), `${lines.join('\n')}\n`);
+          } else {
+            console.log('Partial run and no tracking issue yet: nothing to comment on.');
+          }
+          appendFileSync(GITHUB_OUTPUT, `action=${action}\n`);
+          console.log(`Tracking issue action: ${action}`);
+          EOF
+      # Bodies are read from files, never passed through env or outputs. Never closes the issue.
+      - name: Apply the update
+        if: steps.decide.outputs.action != 'skip'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          ACTION: ${{ steps.decide.outputs.action }}
+          ISSUE_NUMBER: ${{ steps.find.outputs.number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { owner, repo } = context.repo;
+            const label = process.env.LABEL;
+            const read = (dir, file) =>
+              fs.readFileSync(path.join(process.env.RUNNER_TEMP, dir, file), 'utf8');
+            switch (process.env.ACTION) {
+              case 'create': {
+                try {
+                  await github.rest.issues.getLabel({ owner, repo, name: label });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                  await github.rest.issues.createLabel({
+                    owner,
+                    repo,
+                    name: label,
+                    color: 'c5def5',
+                    description: 'Tracking issue of the weekly test scenario map',
+                  });
+                }
+                const { data } = await github.rest.issues.create({
+                  owner,
+                  repo,
+                  title: 'Test scenario map: repeat candidates, weak tests and gaps',
+                  body: read('scenario-map-report', 'issue-body.md'),
+                  labels: [label],
+                });
+                core.info(`Opened tracking issue #${data.number}.`);
+                break;
+              }
+              case 'update':
+                await github.rest.issues.update({
+                  owner,
+                  repo,
+                  issue_number: Number(process.env.ISSUE_NUMBER),
+                  body: read('scenario-map-report', 'issue-body.md'),
+                });
+                core.info(`Updated the body of #${process.env.ISSUE_NUMBER}.`);
+                break;
+              case 'comment':
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: Number(process.env.ISSUE_NUMBER),
+                  body: read('scenario-map-issue', 'comment.md'),
+                });
+                core.info(`Commented on #${process.env.ISSUE_NUMBER}.`);
+                break;
+              default:
+                throw new Error(`unknown action ${process.env.ACTION}`);
+            }

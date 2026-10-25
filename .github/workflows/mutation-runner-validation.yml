@@ -1,13 +1,17 @@
 name: Mutation Runner Validation
 
 # Validates the repo-local Stryker test runner for Vitest 5 and its validation gates
-# (gitnexus/tools/mutation/, TESTING.md "Mutation testing tooling (Phase 0)").
+# (gitnexus/tools/mutation/, TESTING.md "Mutation testing tooling (Phase 0)"), and the test
+# scenario map built on it (gitnexus/tools/scenario-map/).
 #
-#   pull_request     gate 2: the conformance suite, one job per profile. Runs only when the
-#                    tooling, its fixtures, the gitnexus package manifest or lockfile (Vitest
-#                    and Stryker versions), the base Vitest config, the gitnexus-shared package
-#                    manifest (its exports drive the mutation config's aliases) or the
-#                    setup-gitnexus action (the jobs' install path) change.
+#   pull_request     gate 2: the conformance suite, one job per profile; and the scenario-map
+#                    controls run. Runs only when the tooling (tools/mutation, tools/scenario-map,
+#                    tools/test-dupes), its fixtures (mutation-scenario-map among them), the
+#                    gitnexus package manifest or lockfile (Vitest and Stryker versions), the base
+#                    Vitest config, the gitnexus-shared package manifest (its exports drive the
+#                    mutation config's aliases) or the setup-gitnexus action (the jobs' install
+#                    path) change. The paths are workflow-level, so a scenario-map change also runs
+#                    gate 2, an accepted extra cost.
 #   workflow_dispatch  gate 2 plus gate 1 (fidelity), gate 3 (oracle), gate 4 (controls) and
 #                    the oracle cost benchmark, each selectable by an input.
 #
@@ -46,6 +50,8 @@ on:
     paths:
       - '.github/workflows/mutation-runner-validation.yml'
       - 'gitnexus/tools/mutation/**'
+      - 'gitnexus/tools/scenario-map/**'
+      - 'gitnexus/tools/test-dupes/**'
       - 'gitnexus/test/fixtures/mutation-*/**'
       - 'gitnexus/package.json'
       - 'gitnexus/package-lock.json'
@@ -345,4 +351,44 @@ jobs:
             ${{ runner.temp }}/mutation/bench/report/oracle-cost.txt
             ${{ runner.temp }}/mutation/bench/*-command/oracle-command-run.json
             ${{ runner.temp }}/mutation/bench/*/stryker.log
+          retention-days: 14
+
+  # ── Scenario map controls ──────────────────────────────────────────
+  # The PR check of test-scenario-map.yml, which cannot run from a PR branch: its whole pipeline
+  # (plan, value flow, one shard, merge) over the controls fixture
+  # (gitnexus/test/fixtures/mutation-scenario-map/), then every expected.json verdict and rule
+  # compared; exit 1 means a pair differs. build: 'true' because the value-flow stage's PDG index
+  # spawns analyze workers from dist/. About 30 min locally.
+  scenario-map-controls:
+    name: Scenario map controls
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Run the scenario-map controls
+        env:
+          GITNEXUS_WORKER_READY_TIMEOUT_MS: '120000'
+        run: npm run test:scenario-map -- controls --work "$RUNNER_TEMP/scenario-map-controls"
+      - name: Upload the controls report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenario-map-controls-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/scenario-map-controls/scenario-map-report.json
+            ${{ runner.temp }}/scenario-map-controls/scenario-map-report.md
+            ${{ runner.temp }}/scenario-map-controls/issue-body.md
+            ${{ runner.temp }}/scenario-map-controls/plan.json
+            ${{ runner.temp }}/scenario-map-controls/value-flow.json
+            ${{ runner.temp }}/scenario-map-controls/shard-0.json
+            ${{ runner.temp }}/scenario-map-controls/value-flow/pdg/analyze.log
           retention-days: 14
