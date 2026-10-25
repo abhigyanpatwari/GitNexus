@@ -29,13 +29,12 @@ jobs:
           fi
       - name: Upload release accuracy evidence
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: release-tool-accuracy
           path: |
             ${{ runner.temp }}/tool-accuracy/accuracy.json
             ${{ runner.temp }}/tool-accuracy/accuracy.md
-          if-no-files-found: error
           retention-days: 30
 
   # Ubuntu full-suite coverage, sharded. Each shard writes a vitest blob report
@@ -108,7 +107,7 @@ jobs:
         working-directory: gitnexus
       - name: Upload coverage blob
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: coverage-blob-${{ matrix.shard }}
           path: gitnexus/.vitest/blob/
@@ -171,7 +170,7 @@ jobs:
         run: node --test docker-server.test.mjs
       - name: Upload test reports
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: coverage-reports
           path: |
@@ -297,11 +296,10 @@ jobs:
         working-directory: gitnexus
       - name: Upload platform execution report
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: execution-${{ matrix.os }}-${{ matrix.shard }}
           path: gitnexus/${{ matrix.os }}-${{ matrix.shard }}.json
-          if-no-files-found: error
           retention-days: 5
 
   # Branch protection still requires these six names from the three-shard
@@ -1103,11 +1101,10 @@ jobs:
         working-directory: gitnexus
       - name: Upload benchmark execution report
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: execution-benchmarks
           path: gitnexus/benchmarks.json
-          if-no-files-found: error
           retention-days: 5
 
   # Fresh-process measurements have their own runner and time budget so they
@@ -1130,11 +1127,10 @@ jobs:
         working-directory: gitnexus
       - name: Upload scope-resolution measurements
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: scope-resolution-benchmark
           path: gitnexus/scope-resolution-benchmark.json
-          if-no-files-found: error
           retention-days: 5
 
   # Locked eval suite. setup-uv and uv itself are immutable so CI exercises
@@ -1158,11 +1154,10 @@ jobs:
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: execution-pytest-locked
           path: eval/pytest-locked.xml
-          if-no-files-found: error
           retention-days: 5
       - uses: ./.github/actions/setup-gitnexus
         with:
@@ -1175,11 +1170,10 @@ jobs:
         working-directory: gitnexus
       - name: Upload preflight execution report
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: execution-preflight
           path: gitnexus/preflight.json
-          if-no-files-found: error
           retention-days: 5
 
   test-completeness:
@@ -1225,7 +1219,7 @@ jobs:
         run: python3 eval/check_test_execution.py execution-reports eval/pytest-results.json
       - name: Upload complete test reports
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: test-reports
           path: |
@@ -1234,7 +1228,6 @@ jobs:
             gitnexus/test-results.json
             gitnexus-web/web-test-results.json
             eval/pytest-results.json
-          if-no-files-found: error
           retention-days: 5
 
   # Native Linux ownership and Bubblewrap boundary. The environment flag makes
@@ -1336,11 +1329,10 @@ jobs:
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: execution-pytest-ubuntu
           path: eval/pytest-ubuntu.xml
-          if-no-files-found: error
           retention-days: 5
 
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while
@@ -1367,9 +1359,8 @@ jobs:
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: execution-pytest-windows
           path: eval/pytest-windows.xml
-          if-no-files-found: error
           retention-days: 5
