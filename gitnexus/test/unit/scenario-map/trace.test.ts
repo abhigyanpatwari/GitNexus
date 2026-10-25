@@ -6,7 +6,10 @@
  * through a sandbox object, never the real globals (per-test calls, receivers, arguments and
  * counts at the production call site, pass-through behaviour); the pure pair comparison
  * (`receiver-differs`, `args-differ`, `asymmetric-sites`, `asymmetric-counts`, and the
- * inconclusive reasons); and the run's orchestration through an injected `runVitest`.
+ * inconclusive reasons); the run-level validity that fails every pair closed (`trace-run-invalid`:
+ * a baseline or traced run that did not end `survived`, an unhandled error, an outside-test
+ * failure, an unwrapped entry or a recorder error); and the run's orchestration through an
+ * injected `runVitest`.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -52,6 +55,7 @@ import {
   compareTracePair,
   runTrace,
   traceLayout,
+  traceRunIssues,
   tracesOf,
   type TestTrace,
   type TraceRunDeps,
@@ -705,6 +709,24 @@ describe('compareTracePair', () => {
     expect([pair.status, pair.reasons]).toEqual([status, reasons]);
   });
 
+  it.each([
+    ['a clean pair', [ROUND('[2]')], [ROUND('[2]')], ['trace-run-invalid']],
+    [
+      'a vetoed pair, its veto reasons kept',
+      [ROUND('[2.4]')],
+      [ROUND('[2.5]')],
+      ['args-differ', 'trace-run-invalid'],
+    ],
+  ] as const)(
+    'makes %s inconclusive when the run is invalid',
+    (_title, callsA, callsB, reasons) => {
+      const pair = compareTracePair(trace(A, [...callsA]), trace(B, [...callsB]), [
+        'traced run error/infrastructure',
+      ]);
+      expect([pair.status, pair.reasons]).toEqual(['inconclusive', reasons]);
+    },
+  );
+
   it('reports the differing site with both sides', () => {
     const pair = compareTracePair(trace(A, [FIXED('24')]), trace(B, [FIXED('25'), ROUND('[1]')]));
     expect(pair.sharedSites).toBe(1);
@@ -756,13 +778,18 @@ function vitestResult(
   };
 }
 
-const rawRecord = (packageDir: string, tests: RawTestTrace[]): RawTraceRecord => ({
+const rawRecord = (
+  packageDir: string,
+  tests: RawTestTrace[],
+  extra: Partial<Pick<RawTraceRecord, 'unavailable' | 'errors'>> = {},
+): RawTraceRecord => ({
   schemaVersion: RAW_TRACE_SCHEMA_VERSION,
   file: `${packageDir}/${PACKAGE_FILE}`,
   wrapped: ['Math.round'],
-  unavailable: [{ api: 'Intl.DisplayNames', reason: 'missing' }],
+  unavailable: [],
   errors: [],
   tests,
+  ...extra,
 });
 
 const rawTest = (taskId: string, calls: RawTraceCall[]): RawTestTrace => ({
@@ -771,6 +798,35 @@ const rawTest = (taskId: string, calls: RawTraceCall[]): RawTestTrace => ({
   attempts: 1,
   overflow: [],
   calls,
+});
+
+describe('traceRunIssues', () => {
+  it('finds nothing in two survived runs without wrap problems', () => {
+    const run = vitestResult(['survived', 'survived']);
+    expect(
+      traceRunIssues({ baseline: run, traced: run, wrap: { unavailable: [], errors: [] } }),
+    ).toEqual([]);
+  });
+
+  it('fails a run with a selection problem and a failing test closed', () => {
+    const baseline: VitestRunResult = {
+      ...vitestResult(['survived', null]),
+      status: 'error',
+      outcome: 'invalid',
+      reason: 'requested test was not collected',
+      problems: ['requested test "b" was not collected'],
+    };
+    const traced: VitestRunResult = {
+      ...vitestResult(['survived', 'killed-by-test:assertion']),
+      status: 'killed',
+      outcome: 'killed-by-test:assertion',
+    };
+    expect(traceRunIssues({ baseline, traced, wrap: { unavailable: [], errors: [] } })).toEqual([
+      'baseline run error/invalid: requested test was not collected',
+      'baseline run: requested test "b" was not collected',
+      'traced run killed/killed-by-test:assertion',
+    ]);
+  });
 });
 
 describe('tracesOf', () => {
@@ -832,6 +888,16 @@ interface FakeRun {
   provided: [string, unknown][];
 }
 
+interface FakeRunOptions {
+  /** The prepared copy differs from the run manifest. */
+  foreignCopy?: boolean;
+  /** Run-level overrides of the baseline and the traced run. */
+  baseline?: Partial<VitestRunResult>;
+  traced?: Partial<VitestRunResult>;
+  /** Unwrapped entries and recorder errors of the raw record. */
+  record?: Partial<Pick<RawTraceRecord, 'unavailable' | 'errors'>>;
+}
+
 const isTraceContext = (value: unknown): value is TraceContext =>
   typeof value === 'object' && value !== null && 'outDir' in value && 'wrap' in value;
 
@@ -839,13 +905,17 @@ const lastWrappedApi = (context: unknown): string | null =>
   isTraceContext(context) ? (context.wrap.at(-1)?.api ?? null) : null;
 
 /** Fake runs: the traced one writes the given calls for A and B through the provided context. */
-function fakeRun(callsA: RawTraceCall[], callsB: RawTraceCall[], foreignCopy = false): FakeRun {
+function fakeRun(
+  callsA: RawTraceCall[],
+  callsB: RawTraceCall[],
+  world: FakeRunOptions = {},
+): FakeRun {
   const calls: VitestRunOptions[] = [];
   const provided: [string, unknown][] = [];
   let clock = 0;
   const deps: TraceRunDeps = {
     prepare: (options: PrepareOptions): PrepareReport => {
-      writeTree(options.outDir, foreignCopy ? '// changed\n' : '');
+      writeTree(options.outDir, world.foreignCopy === true ? '// changed\n' : '');
       return {
         version: 1,
         repoRoot: options.repoRoot,
@@ -867,17 +937,31 @@ function fakeRun(callsA: RawTraceCall[], callsB: RawTraceCall[], foreignCopy = f
       const records =
         context === undefined
           ? []
-          : [rawRecord(options.packageDir, [rawTest('t_0', callsA), rawTest('t_1', callsB)])];
+          : [
+              rawRecord(
+                options.packageDir,
+                [rawTest('t_0', callsA), rawTest('t_1', callsB)],
+                world.record,
+              ),
+            ];
       for (const record of records)
         writeRawTrace(context?.outDir ?? '', 'trace-1-a-a.test.ts.json', record);
-      return vitestResult(['survived', 'survived'], calls.length === 1 ? 100 : 150);
+      const first = calls.length === 1;
+      return {
+        ...vitestResult(['survived', 'survived'], first ? 100 : 150),
+        ...(first ? world.baseline : world.traced),
+      };
     },
     now: () => (clock += 1000),
   };
   return { deps, calls, provided };
 }
 
-async function runWith(fake: FakeRun, opaqueCallees: readonly string[] = []) {
+async function runWith(
+  fake: FakeRun,
+  opaqueCallees: readonly string[] = [],
+  maxWorkers: number | undefined = undefined,
+) {
   const manifestRoot = tempDir();
   writeTree(manifestRoot, '');
   const manifest = buildRunManifest({
@@ -887,7 +971,7 @@ async function runWith(fake: FakeRun, opaqueCallees: readonly string[] = []) {
   });
   const workDir = tempDir();
   const result = await runTrace(
-    { repoRoot: tempDir(), workDir, manifest, pairs: [{ a: A, b: B }], opaqueCallees },
+    { repoRoot: tempDir(), workDir, manifest, pairs: [{ a: A, b: B }], opaqueCallees, maxWorkers },
     fake.deps,
   );
   return { result, workDir };
@@ -910,21 +994,103 @@ describe('runTrace', () => {
       wrap: {
         added: ['Array.prototype.join'],
         skipped: [{ callee: 'Map.set', reason: 'storage read' }],
-        unavailable: [{ api: 'Intl.DisplayNames', reason: 'missing' }],
+        unavailable: [],
+        errors: [],
       },
+      issues: [],
     });
     expect(result.pairs.map((pair) => [pair.status, pair.reasons])).toEqual([
       ['veto', ['args-differ']],
     ]);
   });
 
-  it('keeps identical traces clean', async () => {
-    const { result } = await runWith(fakeRun([ROUND('[2]')], [ROUND('[2]')]));
-    expect(result.pairs.map((pair) => pair.status)).toEqual(['clean']);
+  it('bounds the baseline and the traced run by the worker bound it is given', async () => {
+    const fake = fakeRun([ROUND('[2]')], [ROUND('[2]')]);
+    await runWith(fake, [], 3);
+    expect(fake.calls.map((options) => options.maxWorkers)).toEqual([3, 3]);
   });
 
+  it('keeps identical traces of a valid run clean', async () => {
+    const { result } = await runWith(fakeRun([ROUND('[2]')], [ROUND('[2]')]));
+    expect([result.issues, result.pairs.map((pair) => [pair.status, pair.reasons])]).toEqual([
+      [],
+      [['clean', []]],
+    ]);
+  });
+
+  it.each([
+    [
+      'a traced run with an unhandled error (infrastructure)',
+      {
+        traced: {
+          status: 'error',
+          outcome: 'infrastructure',
+          reason: 'unhandled error during the run: Error: boom',
+          unhandledErrors: ['Error: boom'],
+        },
+      },
+      [
+        'traced run error/infrastructure: unhandled error during the run: Error: boom',
+        'traced run: unhandled error: Error: boom',
+      ],
+    ],
+    [
+      'a traced run whose selected tests use retry (inconclusive)',
+      {
+        traced: {
+          status: 'error',
+          outcome: 'inconclusive',
+          reason: 'selected tests use retry: d > a',
+        },
+      },
+      ['traced run error/inconclusive: selected tests use retry: d > a'],
+    ],
+    [
+      'a baseline with a failure outside any test',
+      {
+        baseline: {
+          status: 'killed',
+          outcome: 'killed-outside-test:hook',
+          outsideTest: [
+            {
+              file: PACKAGE_FILE,
+              suiteTaskId: undefined,
+              outcome: 'killed-outside-test:hook',
+              attributedTo: [],
+              message: 'afterAll failed',
+            },
+          ],
+        },
+      },
+      [
+        'baseline run killed/killed-outside-test:hook',
+        `baseline run: killed-outside-test:hook outside a test in ${PACKAGE_FILE}`,
+      ],
+    ],
+    [
+      'a wrap-list entry a worker could not wrap',
+      { record: { unavailable: [{ api: 'Intl.DisplayNames', reason: 'missing' }] } },
+      ['not wrapped: Intl.DisplayNames (missing)'],
+    ],
+    [
+      'a recorder error outside any test',
+      { record: { errors: ['TypeError: no stack'] } },
+      ['trace error: TypeError: no stack'],
+    ],
+  ] as const satisfies readonly (readonly [string, FakeRunOptions, readonly string[]])[])(
+    'makes every pair inconclusive after %s',
+    async (_title, world, issues) => {
+      const { result } = await runWith(fakeRun([ROUND('[2]')], [ROUND('[2]')], world));
+      expect([
+        result.status,
+        result.issues,
+        result.pairs.map((pair) => [pair.status, pair.reasons]),
+      ]).toEqual(['ran', issues, [['inconclusive', ['trace-run-invalid']]]]);
+    },
+  );
+
   it('runs nothing when the copy does not match the run manifest', async () => {
-    const fake = fakeRun([], [], true);
+    const fake = fakeRun([], [], { foreignCopy: true });
     const { result } = await runWith(fake);
     expect(fake.calls).toEqual([]);
     expect([

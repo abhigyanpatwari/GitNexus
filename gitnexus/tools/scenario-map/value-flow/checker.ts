@@ -30,7 +30,6 @@
  *
  * Library only; pdg-walk.ts opens one checker per run ({@link openChecker}).
  */
-import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { Node } from 'typescript/unstable/ast';
@@ -42,6 +41,8 @@ import type {
   Symbol as TsSymbol,
   Type,
 } from 'typescript/unstable/sync';
+import { readJsonFile } from '../../mutation/shared/fs.js';
+import { toPosixRelative } from '../util.js';
 import type { CalleeInfo } from './sinks.js';
 
 /** The only TypeScript version the unstable API is trusted at. */
@@ -115,9 +116,7 @@ const unresolved = (name: string, reason: string): CalleeInfo => ({
 /** The `typescript` version resolved from the gitnexus package. */
 export function installedTypescriptVersion(repoRoot: string): string {
   const require = createRequire(path.join(repoRoot, 'gitnexus', 'package.json'));
-  const manifest: unknown = JSON.parse(
-    readFileSync(require.resolve('typescript/package.json'), 'utf8'),
-  );
+  const manifest = readJsonFile(require.resolve('typescript/package.json'));
   const version = (manifest as { version?: unknown }).version;
   return typeof version === 'string' ? version : 'unknown';
 }
@@ -133,23 +132,32 @@ export async function openChecker(options: OpenCheckerOptions): Promise<OpenChec
   }
   if (version !== PINNED_TYPESCRIPT) return { status: 'checker-version', version };
   const tsconfig = path.resolve(repoRoot, options.tsconfig ?? DEFAULT_TSCONFIG);
+  // Hoisted: a failure after the API started its checker server (a bad tsconfig, a project
+  // that does not open) must close that server, or it outlives the run.
+  let api: API | undefined;
   try {
     const require = createRequire(path.join(repoRoot, 'gitnexus', 'package.json'));
     const mod = (await import(
       require.resolve('typescript/unstable/sync')
     )) as typeof import('typescript/unstable/sync');
-    const api = new mod.API({ cwd: path.dirname(tsconfig) });
-    const snapshot = api.updateSnapshot({ openProjects: [tsconfig] });
+    const opened = new mod.API({ cwd: path.dirname(tsconfig) });
+    api = opened;
+    const snapshot = opened.updateSnapshot({ openProjects: [tsconfig] });
     const checker = new TsValueFlowChecker(
       repoRoot,
       version,
-      path.relative(repoRoot, tsconfig).split(path.sep).join('/'),
-      api,
+      toPosixRelative(path.relative(repoRoot, tsconfig)),
+      opened,
       (file) => snapshot.getDefaultProjectForFile(file),
       mod,
     );
     return { status: 'ready', checker };
   } catch (error) {
+    try {
+      api?.close();
+    } catch {
+      // Closing a dead server is not a result.
+    }
     return { status: 'error', error: `checker failed to open: ${errorText(error)}` };
   }
 }
@@ -335,7 +343,7 @@ class TsValueFlowChecker implements ValueFlowChecker {
     origin: 'repo' | 'declaration' | 'library';
     file: string | null;
   } {
-    const relative = path.relative(this.repoRoot, declarationPath).split(path.sep).join('/');
+    const relative = toPosixRelative(path.relative(this.repoRoot, declarationPath));
     const outside = relative.startsWith('../') || path.isAbsolute(relative);
     const basename = path.posix.basename(relative);
     if (

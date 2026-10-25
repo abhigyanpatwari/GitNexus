@@ -14,3 +14,6 @@ export const isInside = (parent: string, child: string): boolean => {
   const escapes = relative === '..' || relative.startsWith(`..${path.sep}`);
   return !escapes && !path.isAbsolute(relative);
 };
+
+/** True when either path is the other or lies inside it ({@link isInside} both ways). */
+export const overlaps = (a: string, b: string): boolean => isInside(a, b) || isInside(b, a);

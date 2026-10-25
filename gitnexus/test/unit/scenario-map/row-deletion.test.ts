@@ -424,6 +424,7 @@ interface Call {
   workDir: string;
   testIds: readonly string[];
   probeFiles: readonly string[] | undefined;
+  maxWorkers: number | undefined;
   /** The table file's text when the call started. */
   text: string;
 }
@@ -441,6 +442,8 @@ interface FakeOptions {
   foreignCopy?: boolean;
   /** The 1-based call that throws. */
   throwsOn?: number;
+  /** The worker bound passed to runRowDeletion. */
+  maxWorkers?: number;
 }
 
 function fakeDeps(options: FakeOptions): { deps: RowDeletionDeps; calls: Call[] } {
@@ -467,6 +470,7 @@ function fakeDeps(options: FakeOptions): { deps: RowDeletionDeps; calls: Call[] 
         workDir: runOptions.workDir,
         testIds: runOptions.testIds,
         probeFiles: runOptions.probeFiles,
+        maxWorkers: runOptions.maxWorkers,
         text,
       });
       if (calls.length === options.throwsOn) throw new Error('vitest could not start');
@@ -500,7 +504,13 @@ async function runWith(options: FakeOptions) {
   const workDir = tempDir();
   const { deps, calls } = fakeDeps(options);
   const [result] = await runRowDeletion(
-    { repoRoot: tempDir(), workDir, manifest, plans: [await objectPlan()] },
+    {
+      repoRoot: tempDir(),
+      workDir,
+      manifest,
+      plans: [await objectPlan()],
+      maxWorkers: options.maxWorkers,
+    },
     deps,
   );
   const copied = readFileSync(path.join(workDir, 'row-deletion', 'prepared', M), 'utf8');
@@ -581,6 +591,11 @@ describe('runRowDeletion', () => {
       3,
     ]);
     expect(copied).toBe(OBJECT_SOURCE);
+  });
+
+  it('bounds every run by the worker bound it is given (the CLI --concurrency)', async () => {
+    const { calls } = await runWith({ reads: { [A]: ['a'], [B]: ['b'] }, maxWorkers: 3 });
+    expect(calls.map((call) => call.maxWorkers)).toEqual([3, 3, 3]);
   });
 
   it('gives each run a fresh call that sees its own edit, and restores the file', async () => {

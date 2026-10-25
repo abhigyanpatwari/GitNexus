@@ -17,8 +17,9 @@
  *               row-deletion plans of the facet-equal pairs (U9); the provisional shard plan
  *               (KTD17), which value-flow re-plans.
  *               The KTD17 estimate of a group ({@link estimateScenarioGroup}) is its main run
- *               (a fixed cost plus mutated bytes, the form the U14 slice measured: the cost does not
- *               grow with the group's tests), plus row deletion (one Vitest run
+ *               (a fixed cost plus mutated bytes, the form calibrated on a 24-core WSL2 host at
+ *               concurrency 2, KTD17 and design §7: the cost does not grow with the group's
+ *               tests), plus row deletion (one Vitest run
  *               per control and deletion of its planned pairs, D10), plus isolation over the pairs
  *               that can still be strong on plan-time facts (equal checks-and-context keys, equal
  *               facets without a residual difference, and no weak disqualifier the verdict engine
@@ -79,13 +80,19 @@
  *               and value flow. A missing or unfinished shard leaves the run partial, and the
  *               pairs of its groups without a result Inconclusive (`not-scheduled`, R11); so does
  *               a group result it cannot read (another schema, such as the fully materialised
- *               schema 1, or a malformed row), which it lists as incomplete. Observations follow
+ *               schema 1, or a malformed row), which it lists as incomplete, and an isolation run
+ *               result it cannot read (its pairs fall to isolation not-run, a weak cap). Observations follow
  *               the compact model (mutation/observations.ts: run universes plus explicit
  *               observations). Then the verdicts (U12), mutant fingerprints, provenance and the
- *               report (U13).
+ *               report (U13). A `--baseline` that does not read, is not JSON or has another
+ *               schema is not an error: the report gets the incompatible-baseline banner and no
+ *               delta, and merge logs a warning.
  *   all         plan (one shard), value-flow, shard 0 of 1 and merge, in one process.
  *   controls    `all` in controls mode over the U17 fixture (extra root, its tsconfig, its own
- *               PDG index), then the verdict and rule of every expected.json pair compared.
+ *               PDG index), then the verdict and rule of every expected.json pair compared; it
+ *               also fails on an empty expected.json, on a repeat verdict (strong or weak) of a
+ *               pair expected.json does not list, and on a `*.case.ts` file without an expected
+ *               pair, so the oracle never passes vacuously.
  *               Needs a built `dist/` for the PDG index (`node scripts/build.js`).
  *
  * Usage (from gitnexus/; `npm run test:scenario-map -- <stage> …` runs the same):
@@ -98,7 +105,10 @@
  *                              controls: 1)
  *   --concurrency <n>          plan, all, controls: Stryker concurrency of the estimate
  *                              (default 2); shard, all, controls: of the main and isolation runs
- *                              (default the plan's)
+ *                              (default the plan's). It also bounds every in-process Vitest run
+ *                              (`maxWorkers`): plan's Layer 1, the shard's baselines and row
+ *                              deletion, value-flow's trace run (value-flow: default the plan's),
+ *                              so a local run never fans out over every core
  *   --speed-factor <x>         plan, all, controls: the target machine's wall clock over the
  *                              calibration machine's in the estimate (default 1.5)
  *   --index <i> --of <n>       shard: 0-based shard index and the final plan's shard count
@@ -145,13 +155,12 @@
  * Exit codes: 0 the stage finished with complete results (`controls`: every expected verdict and
  * rule holds); 1 it finished with incomplete results: a shard with a manifest mismatch, groups not
  * started before the deadline, row deletion or isolation skipped, or sampled; a degraded value-flow
- * run or a trace that did not run; a partial report (`controls`: a verdict or rule differs); 2 a
+ * run or a trace that did not run or whose run is invalid; a partial report (`controls`: a verdict or rule differs); 2 a
  * usage or setup error, including a missing `dist/` build for value-flow, all and controls, or an
  * unexpected error. Codes are always set explicitly: an in-process Vitest run with a failing
  * baseline leaves `process.exitCode` at 1 (D9).
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import {
   closeSync,
   cpSync,
@@ -169,12 +178,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { classify } from '../mutation/classify/classify.js';
+import { classify, type FileVerdict } from '../mutation/classify/classify.js';
 import { PACKAGE_DIR, buildPathMap } from '../mutation/prepare/path-map.js';
 import { prepare } from '../mutation/prepare/prepare.js';
 import { parseTestId } from '../mutation/runner/test-ids.js';
 import { errorMessage, isMainModule } from '../mutation/shared/cli.js';
-import { isInside, readJsonFile } from '../mutation/shared/fs.js';
+import { overlaps, readJsonFile } from '../mutation/shared/fs.js';
 import { isTestSupportFile, scan, type SourceFile } from '../test-dupes/test-dupes.js';
 import {
   checksContextKey,
@@ -206,6 +215,7 @@ import {
   runIsolationRun,
   selectRepeatStagePairs,
   type IsolationResult,
+  type IsolationRunResult,
 } from './mutation/isolation.js';
 import {
   mergeObservations,
@@ -233,6 +243,7 @@ import {
   planRowDeletion,
   pairTableSearch,
   runRowDeletion,
+  type RowDeletionEnv,
   type RowDeletionPlan,
   type RowDeletionResult,
 } from './mutation/row-deletion.js';
@@ -261,6 +272,7 @@ import {
   type CoverageWorkFile,
 } from './path-coverage/run-coverage.js';
 import { fingerprintMutants } from './report/anchors.js';
+import { UnreadableBaseline } from './report/baseline.js';
 import { renderIssueBody } from './report/issue-body.js';
 import { renderMarkdown } from './report/markdown.js';
 import {
@@ -281,6 +293,15 @@ import {
   type RunMode,
   type TestAnchor,
 } from './types.js';
+import {
+  byText,
+  isRecord,
+  sha1,
+  sha256,
+  sortedUnique,
+  toPosixRelative,
+  writeJson,
+} from './util.js';
 import { bindSideOf } from './value-flow/bind.js';
 import { openChecker } from './value-flow/checker.js';
 import {
@@ -324,12 +345,18 @@ export const BUILD_COMMAND = 'node scripts/build.js';
 export const DEFAULT_SEED = '0';
 /** The analyze's worker start budget (D11). */
 const WORKER_READY_TIMEOUT_MS = '120000';
-const ANALYZE_TIMEOUT_MS = 60 * 60_000;
+/**
+ * The PDG analyze's budget. It must stay well below the CI value-flow step's `timeout-minutes`
+ * (50, .github/workflows/test-scenario-map.yml "Run value flow"): a hung analyze then ends as the
+ * `no-pdg-layer` degraded run, and the static check, the trace and value-flow.json still happen
+ * (locally the index takes about 3 minutes).
+ */
+export const ANALYZE_TIMEOUT_MS = 25 * 60_000;
 
 /**
- * KTD17 cost model plus the D9 and D10 terms, in milliseconds. The main-run form is the one the
- * eligible category measured (U14 slice, 16 groups run alone, concurrency 2, a 24-core WSL2
- * host): 1.46 min plus 12.97 min per MB of mutated code (`perRunMs` 88 s, `perByteMs` 0.78 ms),
+ * KTD17 cost model plus the D9 and D10 terms, in milliseconds (KTD17, design §7). The main-run form
+ * is calibrated on a 24-core WSL2 host at concurrency 2, over 16 groups of the eligible category
+ * run alone: 1.46 min plus 12.97 min per MB of mutated code (`perRunMs` 88 s, `perByteMs` 0.78 ms),
  * with no factor for the group's tests (a 10-test group cost what a 2-test group of the same size
  * did; the KTD17 first calibration, 10 ms per byte and test, estimated 200 min for a 10.9 min
  * run), so `perByteTestMs` is 0. A batch costs `batchFactor` (1.23, the calibration batches)
@@ -347,14 +374,14 @@ const ANALYZE_TIMEOUT_MS = 60 * 60_000;
  * 0.51, 0.62 together). A 4-vCPU runner at concurrency 4 may gain less.
  */
 export interface ScenarioCostModel extends CostModel {
-  /** Main-run cost per mutated byte, whatever the number of tests (U14 slice). */
+  /** Main-run cost per mutated byte, whatever the number of tests (calibrated, KTD17). */
   perByteMs: number;
-  /** A main-run batch over its members' fixed cost once plus their byte terms (U14). */
+  /** A main-run batch over its members' fixed cost once plus their byte terms (calibrated). */
   batchFactor: number;
   isolationRunMs: number;
   rowDeletionBatchMs: number;
   rowDeletionRunMs: number;
-  /** A shard's prepare and manifest check before its first group, about 45 to 60 s (U14). */
+  /** A shard's prepare and manifest check before its first group: 45 to 60 s calibrated. */
   shardFixedMs: number;
   /** The Stryker concurrency every other term was measured at. */
   calibrationConcurrency: number;
@@ -412,19 +439,9 @@ export const isolationRunEstimate = (model: Readonly<ScenarioCostModel>, mutants
       (model.isolationRunMs + mutants * model.freshProcessMs * mutantRunScale(model)),
   );
 
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const sortedUnique = (values: Iterable<string>): string[] => [...new Set(values)].sort(byText);
 const sum = (values: readonly number[]): number =>
   values.reduce((total, value) => total + value, 0);
-const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 const minutes = (ms: number): string => `${(ms / 60_000).toFixed(1)} min`;
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-function writeJson(file: string, value: unknown): void {
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(value)}\n`);
-}
 
 // ── Arguments ──────────────────────────────────────────────────────────────
 
@@ -439,13 +456,15 @@ export const USAGE =
   '[--deadline-minutes <m>] [--concurrency <n>] [--speed-factor <x>]\n' +
   '  shard:      --index <i> --of <n> [--deadline-minutes <m>] [--concurrency <n>] ' +
   '[--sample <n>] [--groups <id,…>]\n' +
-  '  value-flow: (no flags)\n' +
+  '  value-flow: [--concurrency <n>]\n' +
   '  shards:     (no flags; prints the final shard count)\n' +
   '  merge:      [--baseline <report.json>] [--run-id <id>] [--run-attempt <n>] ' +
   '[--run-url <url>] [--ref <ref>] [--default-branch]\n' +
   '  all:        the plan flags except --shards, and the merge flags\n' +
   '  controls:   [--seed <text>] [--deadline-minutes <m>] [--concurrency <n>] ' +
-  '[--speed-factor <x>] and the merge flags';
+  '[--speed-factor <x>] and the merge flags\n' +
+  '  --concurrency bounds both Stryker and every in-process Vitest run (its maxWorkers); ' +
+  `default the plan's, ${DEFAULT_CONCURRENCY} for plan, all and controls`;
 
 export interface CliOptions {
   stage: Stage;
@@ -464,7 +483,10 @@ export interface CliOptions {
   groups: string[] | null;
   /** `--deadline-minutes` in milliseconds; null takes the plan's budget (KTD17 default). */
   deadlineMs: number | null;
-  /** Stryker concurrency: of the plan's estimate, of a shard's runs (default the plan's). */
+  /**
+   * Stryker concurrency: of the plan's estimate, of a shard's runs (default the plan's); also the
+   * worker bound of every in-process Vitest run.
+   */
   concurrency: number | null;
   /** The plan's wall-clock factor of the target machine (default {@link DEFAULT_SPEED_FACTOR}). */
   speedFactor: number | null;
@@ -516,7 +538,7 @@ const STAGE_FLAGS: Readonly<Record<Stage, readonly Flag[]>> = {
     'speed-factor',
   ],
   shard: ['work', 'index', 'of', 'sample', 'groups', 'deadline-minutes', 'concurrency'],
-  'value-flow': ['work'],
+  'value-flow': ['work', 'concurrency'],
   shards: ['work'],
   merge: ['work', ...REPORT_FLAGS],
   all: [
@@ -811,7 +833,7 @@ export interface ShardIsolationRun {
   tests: number;
   universe: number;
   status: 'complete' | 'inconclusive';
-  reason: string | null;
+  reason: IsolationRunResult['reason'];
   estimateMs: number;
   wallClockMs: number;
 }
@@ -925,10 +947,12 @@ const isShardStageReport = (value: unknown): value is ShardStageReport =>
 const isRowDeletionFile = (value: unknown): value is RowDeletionFile =>
   versioned(value) && Array.isArray(value.results) && typeof value.manifestDigest === 'string';
 
+// A trace result without `issues` predates the run-validity check: not this file's shape.
 const isValueFlowFile = (value: unknown): value is ValueFlowFile =>
   versioned(value) &&
   isRecord(value.staticValueFlow) &&
   isRecord(value.trace) &&
+  Array.isArray(value.trace.issues) &&
   typeof value.manifestDigest === 'string';
 
 function readWork<T>(file: string, what: string, check: (value: unknown) => value is T): T {
@@ -1033,7 +1057,9 @@ export interface ShardPlanning {
 export function planShards(input: ShardPlanningInput): ShardPlanning {
   const pairsByGroup = new Map<string, CandidatePair[]>();
   for (const pair of input.pairs) {
-    pairsByGroup.set(pair.group, [...(pairsByGroup.get(pair.group) ?? []), pair]);
+    const known = pairsByGroup.get(pair.group);
+    if (known === undefined) pairsByGroup.set(pair.group, [pair]);
+    else known.push(pair);
   }
   const rowPlans = new Map(input.rowDeletion.map((plan) => [pairKey(plan.a, plan.b), plan]));
   const scopes = [...input.scopes].sort((x, y) => byText(x.id, y.id));
@@ -1474,6 +1500,8 @@ interface Layer2Run {
   tests: Layer2Test[];
   facetContext: FacetContext;
   subjects: Map<string, FacetSubject>;
+  /** classify's verdicts of the run's test files: the facet closures and the KTD7 scopes. */
+  verdicts: FileVerdict[];
 }
 
 async function computeLayer2(repoRoot: string, work: CoverageWorkFile): Promise<Layer2Run> {
@@ -1483,10 +1511,12 @@ async function computeLayer2(repoRoot: string, work: CoverageWorkFile): Promise<
     snapshots: fsSnapshotReader(repoRoot),
     modules: fsModuleReader(repoRoot),
   };
+  const verdicts = classify({ repoRoot, testFiles: files }).files;
   const facetContext = createRunFacetContext({
     repoRoot,
     extraRoots: work.extraRoots,
     testFiles: files,
+    verdicts,
   });
   const provenance = new Map(work.tests.map((test) => [test.id, test.provenance]));
   const subjects = new Map<string, FacetSubject>();
@@ -1510,7 +1540,7 @@ async function computeLayer2(repoRoot: string, work: CoverageWorkFile): Promise<
       facet: facetSubject === null ? null : await computeFacet(facetSubject, facetContext),
     });
   }
-  return { tests, facetContext, subjects };
+  return { tests, facetContext, subjects, verdicts };
 }
 
 /** Facet-equal: both facets known with the same fingerprint (residual differences included). */
@@ -1572,7 +1602,12 @@ export async function runPlanStage(
     return buildRunManifest({ preparedRoot: layout.planPrepared, mode: options.mode, tests: [] });
   });
   const { work } = await timed('layer 1', () =>
-    runCoverage({ repoRoot, outDir: layout.coverageDir, mode: options.mode }),
+    runCoverage({
+      repoRoot,
+      outDir: layout.coverageDir,
+      mode: options.mode,
+      maxWorkers: options.concurrency,
+    }),
   );
   const ids = sortedUnique(work.tests.map((test) => test.id));
   const manifest: ScenarioRunManifest = {
@@ -1589,10 +1624,9 @@ export async function runPlanStage(
   writeJson(layout.candidates, { schemaVersion: WORK_FILE_SCHEMA_VERSION, ...candidates });
 
   const scopes = await timed('scopes', () => {
-    const files = sortedUnique(work.tests.map((test) => test.file));
-    const verdicts = classify({ repoRoot, testFiles: files }).files;
+    // The verdicts layer 2 classified (the same test files).
     const closures = new Map(
-      verdicts.map((verdict) => [
+      layer2.verdicts.map((verdict) => [
         verdict.file,
         { closure: verdict.closure, complete: verdict.status === 'accepted' },
       ]),
@@ -1604,6 +1638,11 @@ export async function runPlanStage(
   });
 
   const sources = fsFacetSources(repoRoot);
+  // One env for every pair: row-deletion.ts caches each file's text, scan and hash per env.
+  const rowEnv: RowDeletionEnv = {
+    tables: layer2.facetContext.tables,
+    read: (file) => sources.read(file),
+  };
   const equalPairs = candidates.pairs.filter((pair) => facetEqual(facets, pair));
   const rowDeletion = await timed('row-deletion plans', () =>
     equalPairs.flatMap((pair): RowDeletionPlan[] => {
@@ -1618,7 +1657,7 @@ export async function runPlanStage(
             facets: [fa, fb],
             search: pairTableSearch(layer2.facetContext, [sa, sb]),
           },
-          { tables: layer2.facetContext.tables, read: (file) => sources.read(file) },
+          rowEnv,
         ),
       ];
     }),
@@ -1755,8 +1794,8 @@ export async function runPlanStage(
 /**
  * One batch's budget: consecutive groups share a main run while `perRunMs` once plus each
  * member's main estimate above it stays within it. A larger batch amortises more fixed overhead
- * (two baselines, the scope driver's prepare, Stryker's start and dry run: about 1.5 min per run,
- * U14 measured slice) but risks more work at the deadline and on a fallback.
+ * (two baselines, the scope driver's prepare, Stryker's start and dry run: about 1.5 min per run on
+ * the calibration host, KTD17) but risks more work at the deadline and on a fallback.
  */
 export const BATCH_BUDGET_MS = 30 * 60_000;
 
@@ -1799,7 +1838,7 @@ export function batchGroups(
     id:
       batch.groups.length === 1
         ? batch.groups[0]
-        : `b${createHash('sha1').update(batch.groups.join('\n')).digest('hex').slice(0, 16)}`,
+        : `b${sha1(batch.groups.join('\n')).slice(0, 16)}`,
     groups: batch.groups,
     mainMs: batch.mainMs,
   }));
@@ -2238,6 +2277,7 @@ export async function runShardStage(
     workDir: layout.root,
     manifest,
     plans: rowFits ? rowPlans : rowPlans.filter((entry) => entry.deletions.length === 0),
+    maxWorkers: concurrency,
   });
   const rowFile: RowDeletionFile = {
     schemaVersion: WORK_SCHEMA_VERSION,
@@ -2446,10 +2486,19 @@ const noLayerSource: ClosableEdgeSource = {
   close: () => Promise.resolve(),
 };
 
+export interface ValueFlowStageOptions {
+  /** Bound of the trace run's Vitest workers; null takes the plan's concurrency. */
+  concurrency: number | null;
+}
+
 /** The value-flow stage; see the module comment. */
-export async function runValueFlowStage(ctx: StageContext): Promise<ValueFlowFile> {
+export async function runValueFlowStage(
+  ctx: StageContext,
+  options: ValueFlowStageOptions,
+): Promise<ValueFlowFile> {
   const { repoRoot, layout, log } = ctx;
   const plan = readWork(layout.plan, 'plan', isPlanFile);
+  const concurrency = options.concurrency ?? plan.costModel.concurrency;
   const manifest = readScenarioRunManifest(layout.manifest);
   if (manifest.digest !== plan.manifestDigest) {
     throw new Error(`${layout.manifest} is not the run manifest of ${layout.plan}`);
@@ -2562,12 +2611,15 @@ export async function runValueFlowStage(ctx: StageContext): Promise<ValueFlowFil
     opaqueCallees: sortedUnique(
       staticRun.pairs.flatMap((pair) => pair.opaqueSinks.map((sink) => sink.callee)),
     ),
+    maxWorkers: concurrency,
   });
   wallClockMs.trace = Math.round(ctx.now() - traceStarted);
   log(
     `value-flow: trace ${trace.status}${trace.detail === null ? '' : ` (${trace.detail})`} in ` +
       `${minutes(wallClockMs.trace)}`,
   );
+  for (const issue of trace.issues)
+    log(`value-flow: trace run invalid, every pair inconclusive: ${issue}`);
   const result: ValueFlowFile = {
     schemaVersion: WORK_SCHEMA_VERSION,
     manifestDigest: manifest.digest,
@@ -2611,6 +2663,9 @@ export function valueFlowIssues(result: ValueFlowFile): string[] {
     ...(result.trace.status === 'not-run' && result.pairs.facetEqual > 0
       ? [`trace not run: ${result.trace.detail ?? 'unknown'}`]
       : []),
+    ...(result.trace.issues.length > 0
+      ? [`trace run invalid: ${result.trace.issues.join('; ')}`]
+      : []),
   ];
 }
 
@@ -2639,12 +2694,14 @@ export async function runMergeStage(
   const digest = plan.manifestDigest;
   const valueFlowFile = readOptional(layout.valueFlow, isValueFlowFile);
   const { shardPlan, source } = effectiveShardPlan(plan, valueFlowFile);
+  // A baseline that does not read (missing, not JSON) or is not a report of this schema must not
+  // cost the run its report: it gets the incompatible-baseline banner and no delta (baseline.ts).
   let baseline: unknown = null;
   if (options.baseline !== null) {
     try {
       baseline = readJsonFile(options.baseline);
     } catch (error) {
-      throw new UsageError(`--baseline ${options.baseline}: ${errorMessage(error)}`);
+      baseline = new UnreadableBaseline(errorMessage(error));
     }
   }
 
@@ -2674,9 +2731,13 @@ export async function runMergeStage(
       return [];
     }
   });
-  const isolationRuns = readIsolationRuns(layout.root).filter(
-    (run) => run.manifestDigest === digest,
-  );
+  // An isolation run that does not read (truncated, another schema) is left out: its pairs fall
+  // to isolation not-run (weak cap) and the run is partial.
+  const isolationRoot = path.join(layout.root, 'isolation');
+  const isolationRuns = readIsolationRuns(layout.root, (file, error) => {
+    const name = toPosixRelative(path.relative(isolationRoot, file));
+    incomplete.push({ shard: `isolation ${name}`, reason: errorMessage(error) });
+  }).filter((run) => run.manifestDigest === digest);
   const valueFlow =
     valueFlowFile !== null && valueFlowFile.manifestDigest === digest ? valueFlowFile : null;
   if (valueFlow === null) {
@@ -2688,20 +2749,30 @@ export async function runMergeStage(
           : 'its result belongs to another run manifest',
     });
   } else {
+    // A trace that did not run, or whose run is invalid, leaves every facet-equal pair
+    // Inconclusive: the run is partial.
     const issues = valueFlowIssues(valueFlow);
-    if (issues.some((issue) => issue.startsWith('trace not run'))) {
+    if (issues.some((issue) => issue.startsWith('trace '))) {
       incomplete.push({ shard: 'value-flow', reason: issues.join('; ') });
     }
   }
 
   // Observations, schedules, isolation (U7, U8); compact model (observations.ts).
   const verified = groupResults.filter((result) => result.manifestDigest === digest);
-  const mainObservations = verified.flatMap((result) => result.observations);
-  const mainMerged = mergeObservations(mainObservations, universesOf(verified));
   const merged = mergeObservations(
-    [...mainObservations, ...isolationRuns.flatMap((run) => run.observations)],
+    [
+      ...verified.flatMap((result) => result.observations),
+      ...isolationRuns.flatMap((run) => run.observations),
+    ],
     [...universesOf(verified), ...universesOf(isolationRuns)],
   );
+  // Group results are the `main` runs and isolation runs `together` or `alone` ones, and the run
+  // kind is part of every merge key: the main part of the merge is the group results' own merge.
+  // The repeat stage and the comparison share its index (isolation.ts).
+  const mainMerged: MergedObservations = {
+    explicit: merged.explicit.filter((entry) => entry.kind === 'main'),
+    universes: merged.universes.filter((universe) => universe.kind === 'main'),
+  };
   const schedules = resolvePairSchedules({
     plan: shardPlan,
     manifestDigest: digest,
@@ -2763,7 +2834,15 @@ export async function runMergeStage(
     fingerprints: fingerprintMutants(observedMutants(merged), read),
     baseline,
   });
-  writeFileSync(layout.reportJson, `${JSON.stringify(report, null, 2)}\n`);
+  if (report.changes.state === 'incompatible') {
+    const why = report.changes.reason ?? 'incompatible';
+    log(
+      `merge: warning: --baseline ${options.baseline ?? ''} is not used (${why}); the report ` +
+        'shows the incompatible-baseline banner',
+    );
+  }
+  // The work directory exists: the plan was read from it.
+  writeJson(layout.reportJson, report, true);
   writeFileSync(layout.reportMarkdown, renderMarkdown(report));
   writeFileSync(layout.issueBody, renderIssueBody(report));
   log(
@@ -2786,10 +2865,13 @@ export interface ExpectedControlsPair {
   rule: string;
 }
 
-/** The pairs of the fixture's expected.json; a malformed file throws. */
+/** The pairs of the fixture's expected.json; a malformed file, or one without a pair, throws. */
 export function parseExpectedControls(data: unknown): ExpectedControlsPair[] {
   const pairs = isRecord(data) ? data.pairs : undefined;
   if (!Array.isArray(pairs)) throw new Error('expected.json: pairs must be an array');
+  if (pairs.length === 0) {
+    throw new Error('expected.json: pairs is empty, nothing would be checked');
+  }
   return pairs.map((pair: unknown): ExpectedControlsPair => {
     const ok =
       isRecord(pair) &&
@@ -2810,21 +2892,38 @@ export function parseExpectedControls(data: unknown): ExpectedControlsPair[] {
 }
 
 export interface ControlsComparison {
-  /** One line per expected pair. */
+  /** One line per expected pair, then one per problem of the oracle itself. */
   lines: string[];
-  /** Ids of the pairs whose verdict or rule differs, or that have no verdict. */
+  /**
+   * Ids of the expected pairs whose verdict or rule differs or that have no verdict, then the
+   * oracle's own failures: no expected pair, a repeat verdict of a pair expected.json does not
+   * list, a case file without an expected pair.
+   */
   differences: string[];
 }
 
-/** Compares the verdict and rule of every expected pair (findings and kept pairs). */
+const REPEAT_VERDICTS: ReadonlySet<string> = new Set(['repeat-strong', 'repeat-weak']);
+
+/**
+ * Compares the verdict and rule of every expected pair (findings and kept pairs), and keeps the
+ * oracle from passing vacuously: an empty expected list fails, so does any repeat verdict
+ * (strong or weak) of a pair expected.json does not list (the fixture expects no cross-pair
+ * candidate), and so does a `*.case.ts` file of the fixture (`caseFiles`, relative to its root)
+ * that no expected pair exercises.
+ */
 export function compareControls(
   expected: readonly ExpectedControlsPair[],
   verdicts: readonly Pick<PairVerdict, 'a' | 'b' | 'verdict' | 'rule'>[],
   prefix: string,
+  caseFiles: readonly string[],
 ): ControlsComparison {
   const byKey = new Map(verdicts.map((verdict) => [pairKey(verdict.a, verdict.b), verdict]));
   const lines: string[] = [];
   const differences: string[] = [];
+  if (expected.length === 0) {
+    differences.push('no expected pair');
+    lines.push('DIFFERS  expected.json lists no pair');
+  }
   for (const pair of expected) {
     const got = byKey.get(pairKey(prefix + pair.tests[0], prefix + pair.tests[1]));
     const want = `${pair.verdict}/${pair.rule}`;
@@ -2835,7 +2934,34 @@ export function compareControls(
       `${holds ? 'ok      ' : 'DIFFERS '} ${pair.id}: ${actual}${holds ? '' : ` (expected ${want})`}`,
     );
   }
+  const listed = new Set(
+    expected.map((pair) => pairKey(prefix + pair.tests[0], prefix + pair.tests[1])),
+  );
+  const local = (id: string): string => (id.startsWith(prefix) ? id.slice(prefix.length) : id);
+  const unlisted = verdicts.filter(
+    (verdict) => REPEAT_VERDICTS.has(verdict.verdict) && !listed.has(pairKey(verdict.a, verdict.b)),
+  );
+  for (const verdict of unlisted) {
+    const pair = `${local(verdict.a)} + ${local(verdict.b)}`;
+    differences.push(`unlisted ${verdict.verdict}: ${pair}`);
+    lines.push(`DIFFERS  unlisted pair ${pair}: ${verdict.verdict}/${verdict.rule}`);
+  }
+  const exercised = new Set(
+    expected.flatMap((pair) => pair.tests.map((id) => parseTestId(id).file)),
+  );
+  for (const file of [...caseFiles].sort(byText).filter((entry) => !exercised.has(entry))) {
+    differences.push(`case file without a pair: ${file}`);
+    lines.push(`DIFFERS  ${file} has no expected pair`);
+  }
   return { lines, differences };
+}
+
+/** The `*.case.ts` files of a controls fixture, relative to its root, sorted. */
+export function controlsCaseFiles(fixtureDir: string): string[] {
+  return readdirSync(fixtureDir, { recursive: true, encoding: 'utf8' })
+    .map(toPosixRelative)
+    .filter((file) => file.endsWith('.case.ts'))
+    .sort(byText);
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────
@@ -2898,7 +3024,9 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
       return shardIssues(report).length === 0 ? 0 : 1;
     }
     case 'value-flow': {
-      const result = await timed('value-flow', () => runValueFlowStage(ctx));
+      const result = await timed('value-flow', () =>
+        runValueFlowStage(ctx, { concurrency: options.concurrency }),
+      );
       return valueFlowIssues(result).length === 0 ? 0 : 1;
     }
     case 'shards':
@@ -2910,25 +3038,26 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
     case 'controls': {
       // Value flow before the shard, as in CI: the shard isolates only what value flow leaves.
       await timed('plan', () => plan(options.mode, 1));
-      await timed('value-flow', () => runValueFlowStage(ctx));
+      await timed('value-flow', () => runValueFlowStage(ctx, { concurrency: options.concurrency }));
       await timed('shard', () => shard(0, 1, false));
       const merged = await timed('merge', merge);
       if (options.stage === 'all') return merged.complete ? 0 : 1;
       const fixtureRoot =
         options.mode.kind === 'controls' ? options.mode.fixtureRoot : DEFAULT_FIXTURE_ROOT;
-      const expected = parseExpectedControls(
-        readJsonFile(path.join(ctx.repoRoot, fixtureRoot, 'expected.json')),
-      );
+      const fixtureDir = path.join(ctx.repoRoot, fixtureRoot);
+      const expected = parseExpectedControls(readJsonFile(path.join(fixtureDir, 'expected.json')));
       const comparison = compareControls(
         expected,
         [...merged.verdicts.pairs, ...merged.verdicts.kept],
         `${toPackagePath(fixtureRoot)}/`,
+        controlsCaseFiles(fixtureDir),
       );
       for (const line of comparison.lines) ctx.log(`controls: ${line}`);
       ctx.log(
         comparison.differences.length === 0
-          ? `controls: all ${expected.length} pairs match expected.json`
-          : `controls: ${comparison.differences.length} of ${expected.length} pairs differ: ` +
+          ? `controls: all ${expected.length} pairs match expected.json, no unlisted repeat, ` +
+              'every case file exercised'
+          : `controls: ${comparison.differences.length} differences from expected.json: ` +
               comparison.differences.join(', '),
       );
       return comparison.differences.length === 0 ? 0 : 1;
@@ -2941,7 +3070,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
   let options: CliOptions;
   try {
     options = parseCliArgs(argv, deps.cwd);
-    if (isInside(deps.repoRoot, options.workDir) || isInside(options.workDir, deps.repoRoot)) {
+    if (overlaps(deps.repoRoot, options.workDir)) {
       throw new UsageError(
         `--work ${options.workDir} must lie outside the checkout ${deps.repoRoot}`,
       );

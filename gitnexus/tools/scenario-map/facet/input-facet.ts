@@ -1,7 +1,6 @@
 /**
  * Input facet of a test instance for the scenario map (Layer 2, U6, R5, R9, KTD6, design §2
- * "Input facet", §5.3 rules 1–8), ported from the input-facet spike
- * (`gitnexus/spike-input-facet.mts`, untracked) and its rule 6 (`analyze-slice.mjs`).
+ * "Input facet", §5.3 rules 1–8).
  *
  * The facet is a signature of what one runtime instance feeds the code. Its slots are the test
  * body's string, template, numeric and bigint literals, and the values its row binds (an
@@ -41,14 +40,13 @@
  * ({@link createRunFacetContext}, or {@link createFacetContext} with in-memory sources) and calls
  * {@link computeFacet} per inventory instance ({@link facetSubjectOf}).
  */
-import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { generate } from '@babel/generator';
 import { parse } from '@babel/parser';
 import * as t from '@babel/types';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { classify } from '../../mutation/classify/classify.js';
+import { classify, type FileVerdict } from '../../mutation/classify/classify.js';
 import type { CaseRecord } from '../../test-dupes/test-dupes.js';
 import {
   normalizeRelativePath,
@@ -58,6 +56,7 @@ import {
   type RowValue,
   type StaticInstance,
 } from '../types.js';
+import { sha1, sortedUnique } from '../util.js';
 import { abstractNode, buildScope, rowValueOf, SUPPORTED_MATCHERS, type Scope } from './checks.js';
 import {
   cobolWords,
@@ -78,7 +77,7 @@ export const BUILTINS_DIR = 'gitnexus/src/core/ingestion/languages';
 /** Import hops of the second table tier (design §5.3 rule 3). */
 const TABLE_HOPS = 2;
 
-/** Body text that marks presence-only assertions (rule 7, the spike's GitNexus heuristic). */
+/** Body text that marks presence-only assertions (rule 7, a GitNexus-specific heuristic). */
 const PRESENCE_QUERY = /getNodesByLabel/;
 const RELATION_QUERY = /getRelationships|CALLS|ACCESSES|EXTENDS|IMPLEMENTS|HAS_METHOD|IMPORTS/;
 /** Called names that are assertion plumbing, not builders (rule 6). */
@@ -235,6 +234,8 @@ export class FacetContext {
   private fixtureIndex: FixtureIndex | null = null;
   private builtinNames: ReadonlySet<string> | null = null;
   private readonly closureFiles = new Map<string, ClosureFiles | null>();
+  /** Module specifiers per repo path; null when the file cannot be read. */
+  private readonly specifiers = new Map<string, string[] | null>();
 
   constructor(private readonly options: FacetContextOptions) {
     this.isProduction = productionFilePredicate(options.extraRoots ?? []);
@@ -273,12 +274,26 @@ export class FacetContext {
     const closure = this.options.closures.get(subject.file);
     let files: ClosureFiles | null = null;
     if (closure !== undefined) {
-      const hops = importHops(subject.record.file, closure, this.options.sources, TABLE_HOPS);
+      const hops = hopsVia(
+        subject.record.file,
+        closure,
+        (module) => this.specifiersIn(module),
+        TABLE_HOPS,
+      );
       const all = closure.filter((file) => this.isProduction(file)).sort();
       files = { all, near: all.filter((file) => (hops.get(file) ?? Infinity) <= TABLE_HOPS) };
     }
     this.closureFiles.set(subject.file, files);
     return files;
+  }
+
+  /** The specifiers a repo path imports, parsed once per run; null when it cannot be read. */
+  private specifiersIn(module: string): string[] | null {
+    if (!this.specifiers.has(module)) {
+      const source = this.options.sources.read(module);
+      this.specifiers.set(module, source === null ? null : specifiersOf(source));
+    }
+    return this.specifiers.get(module) ?? null;
   }
 }
 
@@ -333,6 +348,8 @@ export interface RunFacetOptions {
   extraRoots: readonly string[];
   /** Package paths of the run's test files. */
   testFiles: readonly string[];
+  /** classify's verdicts of `testFiles` when the caller already has them; else classified here. */
+  verdicts?: readonly FileVerdict[];
 }
 
 /**
@@ -341,7 +358,9 @@ export interface RunFacetOptions {
  */
 export function createRunFacetContext(options: RunFacetOptions): FacetContext {
   const sources = fsFacetSources(options.repoRoot);
-  const verdicts = classify({ repoRoot: options.repoRoot, testFiles: options.testFiles }).files;
+  const verdicts =
+    options.verdicts ??
+    classify({ repoRoot: options.repoRoot, testFiles: options.testFiles }).files;
   const closures = new Map(verdicts.map((verdict) => [verdict.file, verdict.closure]));
   const isProduction = productionFilePredicate(options.extraRoots);
   const base = new Set(productionRoots());
@@ -443,6 +462,24 @@ export function importHops(
   sources: FacetSources,
   limit: number,
 ): Map<string, number> {
+  return hopsVia(
+    testFile,
+    closure,
+    (module) => {
+      const source = sources.read(module);
+      return source === null ? null : specifiersOf(source);
+    },
+    limit,
+  );
+}
+
+/** {@link importHops} over a module's specifiers (null when it cannot be read). */
+function hopsVia(
+  testFile: string,
+  closure: readonly string[],
+  specifiersOfModule: (module: string) => readonly string[] | null,
+  limit: number,
+): Map<string, number> {
   const members = new Set(closure);
   const hops = new Map<string, number>([[testFile, 0]]);
   const queue = [testFile];
@@ -450,9 +487,9 @@ export function importHops(
     const module = queue[index];
     const depth = hops.get(module) ?? 0;
     if (depth >= limit) continue;
-    const source = sources.read(module);
-    if (source === null) continue;
-    for (const specifier of specifiersOf(source)) {
+    const specifiers = specifiersOfModule(module);
+    if (specifiers === null) continue;
+    for (const specifier of specifiers) {
       const target = resolveIn(module, specifier, members);
       if (target === null || hops.has(target)) continue;
       hops.set(target, depth + 1);
@@ -485,7 +522,6 @@ interface Collected {
 }
 
 const gen = (node: t.Node): string => generate(node, { comments: false, compact: true }).code;
-const sha1 = (text: string): string => createHash('sha1').update(text).digest('hex');
 
 function unwrap(node: t.Node): t.Node {
   let n = node;
@@ -884,7 +920,7 @@ export function applyResidualGuard(
   const reason = `residual difference: ${residual.map((entry) => entry.path).join(', ')}`;
   const mark = (facet: InputFacet): InputFacet => ({
     ...facet,
-    unresolved: [...new Set([...facet.unresolved, reason])].sort(),
+    unresolved: sortedUnique([...facet.unresolved, reason]),
   });
   return { a: mark(a), b: mark(b), residual };
 }
@@ -1089,10 +1125,10 @@ export async function computeFacet(subject: FacetSubject, ctx: FacetContext): Pr
   for (const slot of slots) tokens.push(await tokenOf(slot));
   const { parts: fixtureTokens, resolved } = await fixtureParts(record, strings, ctx, unresolved);
 
-  const source = [
-    ...new Set(tokens.flatMap((token) => (token.source === null ? [] : [token.source]))),
-  ].sort();
-  const fixtureSet = [...new Set(fixtureTokens)].sort();
+  const source = sortedUnique(
+    tokens.flatMap((token) => (token.source === null ? [] : [token.source])),
+  );
+  const fixtureSet = sortedUnique(fixtureTokens);
   const data = [
     ...tokens.flatMap((token, index) => {
       const slot = slots[index];

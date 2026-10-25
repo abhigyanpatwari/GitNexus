@@ -23,10 +23,10 @@
  *
  * Library only; checks.ts joins the context hash with the checks fingerprint for Layer 1.
  */
-import { createHash } from 'node:crypto';
 import { generate } from '@babel/generator';
 import * as t from '@babel/types';
 import { ENV_OR_MOCK, shapeOf, type CaseRecord } from '../../test-dupes/test-dupes.js';
+import { sha1 } from '../util.js';
 
 /** Modifiers that repeat a test call; their rows are instance inputs, not context. */
 const ROW_MODIFIERS = new Set(['each', 'for']);
@@ -42,7 +42,6 @@ export interface TestContext {
   hash: string;
 }
 
-const sha1 = (text: string): string => createHash('sha1').update(text).digest('hex');
 const codeOf = (node: t.Node): string => generate(node, { comments: false, compact: true }).code;
 
 function bodySetupOf(record: CaseRecord): string[] {

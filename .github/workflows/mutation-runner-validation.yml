@@ -1,7 +1,7 @@
 name: Mutation Runner Validation
 
 # Validates the repo-local Stryker test runner for Vitest 5 and its validation gates
-# (gitnexus/tools/mutation/, TESTING.md "Mutation testing tooling (Phase 0)"), and the test
+# (gitnexus/tools/mutation/, TESTING.md "Mutation testing tooling"), and the test
 # scenario map built on it (gitnexus/tools/scenario-map/).
 #
 #   pull_request     gate 2: the conformance suite, one job per profile; and the scenario-map

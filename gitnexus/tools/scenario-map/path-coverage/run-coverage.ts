@@ -8,8 +8,9 @@
  *   3. `<out>/scope.json` (tools/mutation/scope-file.ts) names the files; they run in the prepared
  *      package, through the Vitest Node API with the environment `vitest run` sets, under
  *      tools/mutation/vitest.mutation.config.ts (project `mutation`) or, in controls mode, the
- *      fixture project's own vitest.config.ts. Every test runs twice (`repeats: 1`, design §5.2:
- *      the warm run gives the blocks). The coverage hook (coverage.setup.ts) is put first among the
+ *      fixture project's own vitest.config.ts, with at most `maxWorkers` worker processes
+ *      (`--concurrency`; the scenario-map CLI passes its own). Every test runs twice (`repeats: 1`,
+ *      design §5.2: the warm run gives the blocks). The coverage hook (coverage.setup.ts) is put first among the
  *      setup files and writes one raw record per test file (records.ts).
  *   4. The raw records become the work file `<out>/coverage.json` ({@link buildWorkFile}).
  *   5. The tests are joined to the static inventory (inventory/identity.ts), their
@@ -49,8 +50,9 @@
  *
  * Usage (from gitnexus/):
  *   node --import tsx tools/scenario-map/path-coverage/run-coverage.ts [--out <dir>]
- *     [--controls [--fixture <repo path>]] [--file <package path>]...
- * `--out` defaults to `<os tmpdir>/gitnexus-scenario-coverage` and must lie outside the checkout.
+ *     [--controls [--fixture <repo path>]] [--file <package path>]... [--concurrency <n>]
+ * `--out` defaults to `<os tmpdir>/gitnexus-scenario-coverage` and must lie outside the checkout;
+ * `--concurrency` bounds Vitest's worker processes (default {@link DEFAULT_COVERAGE_CONCURRENCY}).
  * Exit codes: 0 every file recorded without errors; 1 written, but a file failed or wrote no
  * record; 2 usage or setup error.
  */
@@ -65,11 +67,12 @@ import { prepare } from '../../mutation/prepare/prepare.js';
 import { assignTestIds, type TestLocation } from '../../mutation/runner/test-ids.js';
 import { MUTATION_SCOPE_ENV, parseMutationScope } from '../../mutation/scope-file.js';
 import { errorMessage, isMainModule } from '../../mutation/shared/cli.js';
-import { isInside, readJsonFile } from '../../mutation/shared/fs.js';
+import { overlaps, readJsonFile } from '../../mutation/shared/fs.js';
 import { checksContextKey, fsModuleReader, fsSnapshotReader } from '../facet/checks.js';
 import { loadStaticInventory } from '../inventory/cases.js';
 import { resolveEligibility } from '../inventory/eligible.js';
 import { joinRuntime } from '../inventory/identity.js';
+import { inProcessVitestOptions } from '../mutation/vitest-run.js';
 import {
   extraRootsOf,
   productionFilePredicate,
@@ -77,6 +80,7 @@ import {
   type Eligibility,
   type RunMode,
 } from '../types.js';
+import { ascending, byText, sortedUnique, toPosixSeparators } from '../util.js';
 import { findCandidates, type CandidateResult, type CandidateTest } from './candidates.js';
 import {
   COVERAGE_KEY,
@@ -179,10 +183,6 @@ export interface WorkFileInput {
   unhandledErrors: readonly string[];
 }
 
-const toPosix = (file: string): string => file.replace(/\\/g, '/');
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const sorted = (items: Iterable<string>): string[] => [...new Set(items)].sort(byText);
-
 /** Where the workers ran: the prepared root and its path map. */
 export interface PathContext {
   preparedRoot: string;
@@ -195,7 +195,7 @@ export interface PathContext {
  * root), `outside:<path>` for anything else.
  */
 export function scriptKey(file: string, context: PathContext): string {
-  const posix = toPosix(file);
+  const posix = toPosixSeparators(file);
   const at = posix.indexOf('/node_modules/');
   if (at >= 0) return `node_modules/${posix.slice(at + '/node_modules/'.length)}`;
   const relative = path.posix.relative(context.preparedRoot, posix);
@@ -266,11 +266,11 @@ function provenanceOf(
       spawns.set(JSON.stringify(mapped), mapped);
     }
   }
-  const executedFiles = sorted(executed);
+  const executedFiles = sortedUnique(executed);
   return {
     known,
     executedFiles,
-    nativeEntries: sorted([...executedFiles.filter(isNativeEntry), ...natives]),
+    nativeEntries: sortedUnique([...executedFiles.filter(isNativeEntry), ...natives]),
     workerSpawns: [...spawns.values()],
     excludedCandidates: executedFiles.filter((key) => isExcludedCandidate(key, production)),
   };
@@ -289,7 +289,7 @@ const unknownProvenance = (): Provenance => ({
 export function buildWorkFile(input: WorkFileInput): CoverageWorkFile {
   const extraRoots = extraRootsOf(input.mode);
   const context: PathContext = {
-    preparedRoot: toPosix(input.preparedRoot).replace(/\/+$/, ''),
+    preparedRoot: toPosixSeparators(input.preparedRoot).replace(/\/+$/, ''),
     pathMap: buildPathMap(extraRoots),
   };
   const production = productionFilePredicate(extraRoots);
@@ -297,7 +297,7 @@ export function buildWorkFile(input: WorkFileInput): CoverageWorkFile {
 
   const rawByFile = new Map<string, RawCoverageRecord>();
   for (const raw of input.raws) {
-    const file = path.posix.relative(packageDir, toPosix(raw.file));
+    const file = path.posix.relative(packageDir, toPosixSeparators(raw.file));
     if (rawByFile.has(file)) throw new Error(`coverage: two raw records for ${file}`);
     rawByFile.set(file, raw);
   }
@@ -313,7 +313,7 @@ export function buildWorkFile(input: WorkFileInput): CoverageWorkFile {
       return production(repoPath) ? `${repoPath}${key.slice(hash)}` : null;
     });
   const idsOf = (translated: readonly (string | null)[], rawBlocks: readonly number[]): string[] =>
-    sorted(
+    sortedUnique(
       rawBlocks.flatMap((rawIndex) => {
         const id = translated[rawIndex];
         return id === null || id === undefined ? [] : [id];
@@ -383,10 +383,10 @@ export function buildWorkFile(input: WorkFileInput): CoverageWorkFile {
       });
     });
   }
-  const blocks = sorted(drafts.flatMap(({ own, suite }) => [...own, ...suite]));
+  const blocks = sortedUnique(drafts.flatMap(({ own, suite }) => [...own, ...suite]));
   const blockIndex = new Map(blocks.map((id, index) => [id, index]));
   const indicesOf = (ids: readonly string[]): number[] =>
-    [...new Set(ids.map((id) => blockIndex.get(id) ?? -1))].sort((a, b) => a - b);
+    [...new Set(ids.map((id) => blockIndex.get(id) ?? -1))].sort(ascending);
   const tests: CoverageTest[] = drafts.map(({ test, own, suite }) => ({
     ...test,
     blocks: indicesOf([...own, ...suite]),
@@ -427,7 +427,7 @@ export function checksContextKeys(
   repoRoot: string,
   work: CoverageWorkFile,
 ): Map<string, string | null> {
-  const files = sorted(work.tests.map((test) => test.file));
+  const files = sortedUnique(work.tests.map((test) => test.file));
   const join = joinRuntime(
     loadStaticInventory(repoRoot, files),
     work.tests.map(({ file, taskId, fullName, location }) => ({
@@ -475,7 +475,12 @@ export interface CoverageOptions {
   mode: RunMode;
   /** Package paths: a subset of the eligible files; undefined runs them all. */
   files?: readonly string[];
+  /** Upper bound of Vitest's worker processes; undefined leaves Vitest's default. */
+  maxWorkers?: number;
 }
+
+/** The standalone CLI's worker bound: the scenario-map CLI's default concurrency. */
+export const DEFAULT_COVERAGE_CONCURRENCY = 2;
 
 export interface CoverageRun {
   eligibility: Eligibility;
@@ -508,7 +513,7 @@ const layoutOf = (outDir: string): Layout => ({
 });
 
 function resetOutDir(repoRoot: string, outDir: string): void {
-  if (isInside(repoRoot, outDir) || isInside(outDir, repoRoot)) {
+  if (overlaps(repoRoot, outDir)) {
     throw new UsageError(`--out ${outDir} must lie outside the checkout ${repoRoot}`);
   }
   if (existsSync(outDir) && readdirSync(outDir).length > 0) {
@@ -526,7 +531,7 @@ function selectFiles(eligibility: Eligibility, subset: readonly string[] | undef
   const eligible = new Set(eligibility.files);
   const outside = subset.filter((file) => !eligible.has(file));
   if (outside.length > 0) throw new UsageError(`not eligible: ${outside.join(', ')}`);
-  return sorted(subset);
+  return sortedUnique(subset);
 }
 
 const isRawRecord = (value: unknown): value is RawCoverageRecord =>
@@ -567,7 +572,7 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
 
   const pathMap = buildPathMap(eligibility.extraRoots);
   prepare({ repoRoot, outDir: layout.preparedRoot, mutate: [], pathMap });
-  const preparedRoot = toPosix(realpathSync(layout.preparedRoot));
+  const preparedRoot = toPosixSeparators(realpathSync(layout.preparedRoot));
   const packageDir = `${preparedRoot}/gitnexus`;
   const setupFile = path.join(packageDir, COVERAGE_SETUP_FILE);
   if (!existsSync(setupFile))
@@ -597,16 +602,13 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
   try {
     const { createVitest } = await import('vitest/node');
     const vitest = await createVitest(
-      {
+      inProcessVitestOptions({
         root: packageDir,
-        config: path.join(packageDir, config),
-        project: projectName === undefined ? undefined : [projectName],
-        watch: false,
-        cache: false,
-        fsModuleCache: false,
+        configFile: config,
+        projects: projectName === undefined ? undefined : [projectName],
+        maxWorkers: options.maxWorkers,
         repeats: COVERAGE_REPEATS,
-        reporters: [],
-      },
+      }),
       { cacheDir: layout.cacheDir },
     );
     try {
@@ -631,7 +633,7 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
       const result = await vitest.runTestSpecifications(specs, true);
       const byFile = new Map(
         result.testModules.map((module) => [
-          path.posix.relative(packageDir, toPosix(module.moduleId)),
+          path.posix.relative(packageDir, toPosixSeparators(module.moduleId)),
           module,
         ]),
       );
@@ -680,6 +682,7 @@ export interface CliOptions {
   outDir: string;
   mode: RunMode;
   files: string[] | undefined;
+  maxWorkers: number;
 }
 
 export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
@@ -690,6 +693,7 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
       controls: { type: 'boolean', default: false },
       fixture: { type: 'string' },
       file: { type: 'string', multiple: true },
+      concurrency: { type: 'string' },
     },
     strict: true,
     allowPositionals: false,
@@ -697,12 +701,17 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
   if (values.fixture !== undefined && !values.controls) {
     throw new UsageError('--fixture needs --controls');
   }
+  const concurrency = values.concurrency ?? String(DEFAULT_COVERAGE_CONCURRENCY);
+  if (!/^[1-9]\d*$/.test(concurrency)) {
+    throw new UsageError(`--concurrency must be a positive integer, got ${concurrency}`);
+  }
   return {
     outDir: path.resolve(cwd, values.out ?? path.join(os.tmpdir(), 'gitnexus-scenario-coverage')),
     mode: values.controls
       ? { kind: 'controls', fixtureRoot: values.fixture ?? DEFAULT_FIXTURE_ROOT }
       : { kind: 'normal' },
     files: values.file,
+    maxWorkers: Number(concurrency),
   };
 }
 

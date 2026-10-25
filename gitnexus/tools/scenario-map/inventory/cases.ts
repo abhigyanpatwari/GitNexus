@@ -31,7 +31,6 @@
  *
  * Library only; the scenario-map CLI (U14) calls {@link loadStaticInventory}.
  */
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { generate } from '@babel/generator';
@@ -57,6 +56,7 @@ import {
   type StaticInstance,
   type StaticInventory,
 } from '../types.js';
+import { sha1 } from '../util.js';
 
 /** Nesting limit for `const` bindings followed while evaluating one value. */
 const MAX_DEPTH = 8;
@@ -79,7 +79,6 @@ const NUMBER_CONSTANTS: ReadonlyMap<string, number> = new Map([
 
 type AnyPath = NodePath<t.Node>;
 
-const sha1 = (text: string): string => createHash('sha1').update(text).digest('hex');
 const codeOf = (node: t.Node): string => generate(node, { comments: false, compact: true }).code;
 
 // ── Row values ─────────────────────────────────────────────────────────────

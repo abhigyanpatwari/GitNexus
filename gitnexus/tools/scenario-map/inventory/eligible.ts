@@ -26,15 +26,13 @@ import {
   type Eligibility,
   type RunMode,
 } from '../types.js';
+import { byText, isRecord } from '../util.js';
 
 /** Repo path of the gate 1 envelope. */
 export const ENVELOPE_FILE = 'gitnexus/test/fixtures/mutation-oracle/envelope.json';
 
 /** The classifier output eligibility needs. */
 export type ClassifierVerdicts = Pick<Classification, 'accepted' | 'rejected'>;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** The envelope's `accepted.files` (package paths); a malformed envelope throws. */
 export function parseEnvelopeFiles(data: unknown): string[] {
@@ -50,8 +48,7 @@ export function parseEnvelopeFiles(data: unknown): string[] {
   });
 }
 
-const sorted = (files: Iterable<string>): string[] =>
-  [...files].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+const sorted = (files: Iterable<string>): string[] => [...files].sort(byText);
 
 /** R1 for a normal run: envelope files the classifier accepts, plus the delta; pure. */
 export function computeEligibility(

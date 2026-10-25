@@ -1,6 +1,6 @@
 /**
  * Anonymised source shapes for the input facet (Layer 2, U6, R5, KTD6, design §5.3 rules 1, 2, 7
- * and 8), ported from the input-facet spike (`gitnexus/spike-input-facet.mts`, untracked).
+ * and 8).
  *
  * Rule 1, inline source: a test literal that looks like code, in the language the test names
  * ({@link languageOf}: `SupportedLanguages.X`, a grammar identifier argument, a capture-emitter
@@ -25,23 +25,23 @@
  *
  * Library only; input-facet.ts owns one {@link SourceShaper} per run.
  */
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { SupportedLanguages } from 'gitnexus-shared';
 import type Parser from 'tree-sitter';
 import { getTreeSitterBufferSize } from '../../../src/core/ingestion/constants.js';
 import { createParserForLanguage } from '../../../src/core/tree-sitter/parser-loader.js';
+import { sha1 } from '../util.js';
 
 type SyntaxNode = Parser.SyntaxNode;
 
-/** Files at or above this size are not parsed (the spike's limit). */
+/** Files at or above this size are not parsed. */
 export const MAX_SOURCE_CHARS = 200_000;
 /** A parse with a larger share of ERROR / missing nodes is data, not code. */
 const MAX_ERROR_SHARE = 0.2;
 /** Fixture directories are indexed by name this many levels below the fixture root. */
 const FIXTURE_DIR_DEPTH = 4;
 
-const sha12 = (text: string): string => createHash('sha1').update(text).digest('hex').slice(0, 12);
+const sha12 = (text: string): string => sha1(text).slice(0, 12);
 
 // ── Language detection ─────────────────────────────────────────────────────
 

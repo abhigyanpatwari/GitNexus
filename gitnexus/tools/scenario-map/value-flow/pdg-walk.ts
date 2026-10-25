@@ -60,7 +60,8 @@ import traverse, { type Binding, type NodePath } from '@babel/traverse';
 import * as t from '@babel/types';
 import { decodeReachingDefReason } from '../../../src/core/ingestion/cfg/reaching-def-reason-codec.js';
 import { decodeCallSummary } from '../../../src/core/ingestion/taint/call-summary-codec.js';
-import { scanSupportedTables } from '../mutation/row-deletion.js';
+import { scanSupportedTablesIn } from '../mutation/row-deletion.js';
+import { byText } from '../util.js';
 import { bindPair, type BindSide, type EntryKind } from './bind.js';
 import type { OpenCheckerResult, ParamInfo, ValueFlowChecker } from './checker.js';
 import {
@@ -162,7 +163,6 @@ export interface StaticValueFlowOptions {
 
 const errorText = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).split('\n')[0];
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 // ── Modules ────────────────────────────────────────────────────────────────
 
@@ -189,7 +189,8 @@ function loadModule(file: string, source: string): ModuleInfo | null {
       },
     });
     const tables = new Map<string, TableSupport>();
-    for (const [binding, constructs] of scanSupportedTables(file, source) ?? new Map()) {
+    // The tables of the same parse: row-deletion.ts parses with these options too.
+    for (const [binding, constructs] of scanSupportedTablesIn(file, ast) ?? new Map()) {
       tables.set(binding, { supported: constructs.length === 0, constructs });
     }
     return { file, byEnd, tables };

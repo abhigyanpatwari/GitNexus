@@ -62,7 +62,6 @@
  * (run-group.ts) writes the observations of each group as soon as it finishes; the merge stage and
  * the verdict engine (U12) read them.
  */
-import { createHash } from 'node:crypto';
 import type {
   NormalisedMutant,
   PerTestRow,
@@ -70,6 +69,7 @@ import type {
 } from '../../mutation/driver/normalise-results.js';
 import type { MutantStatus } from '../../mutation/prepare/mutant-identity.js';
 import type { OutcomeClass } from '../../mutation/runner/classify-outcome.js';
+import { byText, isRecord, sha1, sortedUnique } from '../util.js';
 
 /** The run kinds of Layer 3: the group run, and the isolation pass's together and alone runs. */
 export type RunKind = 'main' | 'together' | 'alone';
@@ -186,9 +186,6 @@ const UNTRUSTED_RUN: ReadonlySet<OutcomeClass> = new Set([
 
 const ASSERTION_KILL: OutcomeClass = 'killed-by-test:assertion';
 
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const sortedUnique = (values: Iterable<string>): string[] => [...new Set(values)].sort(byText);
-
 const push = <K, V>(map: Map<K, V[]>, key: K, value: V): void => {
   const list = map.get(key);
   if (list === undefined) map.set(key, [value]);
@@ -242,6 +239,8 @@ function mutantObservations(
   universe: RunUniverse,
 ): Observation[] {
   const reasons = [...universe.reasons, ...entry.reasons];
+  // Every observation of the mutant without its own extra reason carries exactly these.
+  const shared = sortedUnique(reasons);
   const covered = new Set(mutant.coveredBy ?? []);
   const hooked = mutant.hookAttributedTests === null ? null : new Set(mutant.hookAttributedTests);
   const rows = new Map<string, PerTestRow[]>();
@@ -255,7 +254,7 @@ function mutantObservations(
     source: ObservationSource,
     extra: readonly string[],
   ): Observation => {
-    const all = sortedUnique([...reasons, ...extra]);
+    const all = extra.length === 0 ? shared : sortedUnique([...reasons, ...extra]);
     return {
       ...ref,
       attempt,
@@ -419,8 +418,18 @@ function impliedBy(run: IndexedRun, test: string, mutant: string): UniverseMutan
   return entry === undefined || entry.static ? undefined : entry;
 }
 
-const universeOrder = (a: RunUniverse, b: RunUniverse): number =>
-  byText(lineageKey(a), lineageKey(b)) || a.shard - b.shard;
+interface KeyedUniverse {
+  universe: RunUniverse;
+  lineage: string;
+}
+
+/** Universes with their lineage keys, each computed once, in input order. */
+const keyedUniverses = (universes: readonly RunUniverse[]): KeyedUniverse[] =>
+  universes.map((universe) => ({ universe, lineage: lineageKey(universe) }));
+
+/** Universe order: by lineage, then shard. */
+const universeOrder = (x: KeyedUniverse, y: KeyedUniverse): number =>
+  byText(x.lineage, y.lineage) || x.universe.shard - y.universe.shard;
 
 /**
  * Merges observations and run universes from any number of shards and runs: the folded
@@ -431,25 +440,30 @@ export function mergeObservations(
   observations: readonly Observation[],
   universes: readonly RunUniverse[],
 ): MergedObservations {
+  const keyed = keyedUniverses(universes);
   const runs = new Map<string, IndexedRun[]>();
-  for (const universe of universes) push(runs, lineageKey(universe), indexedRun(universe));
-  const byKey = new Map<string, Observation[]>();
+  for (const { universe, lineage } of keyed) push(runs, lineage, indexedRun(universe));
+  const byKey = new Map<string, { lineage: string; entries: Observation[] }>();
   for (const entry of observations) {
-    push(byKey, JSON.stringify([lineageKey(entry), entry.mutant, entry.test]), entry);
+    const lineage = lineageKey(entry);
+    const key = JSON.stringify([lineage, entry.mutant, entry.test]);
+    const known = byKey.get(key);
+    if (known === undefined) byKey.set(key, { lineage, entries: [entry] });
+    else known.entries.push(entry);
   }
   const explicit = [...byKey.entries()]
     .sort(([a], [b]) => byText(a, b))
-    .map(([, entries]) => {
+    .map(([, { lineage, entries }]) => {
       const [first] = entries;
       const shards = new Set(entries.map((entry) => entry.shard));
-      const implied = (runs.get(lineageKey(first)) ?? []).flatMap((run) => {
+      const implied = (runs.get(lineage) ?? []).flatMap((run) => {
         if (shards.has(run.universe.shard)) return [];
         const mutant = impliedBy(run, first.test, first.mutant);
         return mutant === undefined ? [] : [impliedObservation(run.universe, mutant, first.test)];
       });
       return fold([...entries, ...implied]);
     });
-  return { explicit, universes: [...universes].sort(universeOrder) };
+  return { explicit, universes: keyed.sort(universeOrder).map((entry) => entry.universe) };
 }
 
 // ── Index ─────────────────────────────────────────────────────────────────
@@ -471,11 +485,15 @@ export interface ObservationIndex {
   byTest: ReadonlyMap<string, readonly LineageObservations[]>;
 }
 
-const observationOrder = (x: MergedObservation, y: MergedObservation): number =>
-  byText(
-    JSON.stringify([x.group, x.kind, x.lineage, x.mutant, x.test]),
-    JSON.stringify([y.group, y.kind, y.lineage, y.mutant, y.test]),
-  );
+/** Observations sorted by group, kind, lineage, mutant and test (each key computed once). */
+const inObservationOrder = (entries: readonly MergedObservation[]): MergedObservation[] =>
+  entries
+    .map((entry) => ({
+      entry,
+      order: JSON.stringify([entry.group, entry.kind, entry.lineage, entry.mutant, entry.test]),
+    }))
+    .sort((x, y) => byText(x.order, y.order))
+    .map(({ entry }) => entry);
 
 /**
  * Indexes merged observations by lineage and test, keeping the lineages `keep` accepts. The input
@@ -485,13 +503,16 @@ export function indexObservations(
   merged: MergedObservations,
   keep: (run: RunKey) => boolean = () => true,
 ): ObservationIndex {
+  // Filtering before the (stable) sorts keeps the order filtering after them gives.
   const runs = new Map<string, IndexedRun[]>();
-  for (const universe of [...merged.universes].sort(universeOrder)) {
-    if (keep(universe)) push(runs, lineageKey(universe), indexedRun(universe));
+  for (const { universe, lineage } of keyedUniverses(merged.universes.filter(keep)).sort(
+    universeOrder,
+  )) {
+    push(runs, lineage, indexedRun(universe));
   }
   const explicit = new Map<string, MergedObservation[]>();
-  for (const entry of [...merged.explicit].sort(observationOrder)) {
-    if (keep(entry)) push(explicit, lineageKey(entry), entry);
+  for (const entry of inObservationOrder(merged.explicit.filter(keep))) {
+    push(explicit, lineageKey(entry), entry);
   }
   const keys = sortedUnique([...runs.keys(), ...explicit.keys()]);
   const lineages = new Map<string, LineageObservations>();
@@ -665,6 +686,37 @@ export interface PairComparison {
 const ordinary = (entry: ObservationState): boolean =>
   entry.outcome === ASSERTION_KILL || entry.outcome === 'survived';
 
+/** `u` + 16 hex digits of sha1 over a lineage key and a universe. */
+const universeIdFor = (lineage: string, universe: readonly string[]): string =>
+  `u${sha1(JSON.stringify([lineage, universe])).slice(0, 16)}`;
+
+/** The universe id of every mutant of a lineage view, computed once per view. */
+const fullUniverseIds = new WeakMap<LineageObservations, { lineage: string; id: string }>();
+
+function universeIdIn(
+  view: LineageObservations,
+  lineage: string,
+  universe: readonly string[],
+): string {
+  const full =
+    universe.length === view.mutants.length &&
+    universe.every((mutant, i) => mutant === view.mutants[i]);
+  if (!full) return universeIdFor(lineage, universe);
+  const known = fullUniverseIds.get(view);
+  if (known !== undefined && known.lineage === lineage) return known.id;
+  const id = universeIdFor(lineage, view.mutants);
+  fullUniverseIds.set(view, { lineage, id });
+  return id;
+}
+
+/**
+ * {@link PairComparison.universeId} of a universe of a lineage view: the id {@link comparePair}
+ * gives a comparison of the view's lineage with that universe (memoised when it is every mutant
+ * of the view).
+ */
+export const lineageUniverseId = (view: LineageObservations, universe: readonly string[]): string =>
+  universeIdIn(view, lineageKey(view), universe);
+
 /** Compares two tests over their common universe in one run lineage; pure. */
 export function comparePair(
   index: ObservationIndex,
@@ -680,7 +732,9 @@ export function comparePair(
   const killsB: string[] = [];
   const otherClasses: string[] = [];
   for (const mutant of view === undefined ? [] : view.mutants) {
-    const [x, y] = [stateOf(view, a, mutant), stateOf(view, b, mutant)];
+    // One lookup when `a` is unknown already, or when both sides are one test.
+    const x = stateOf(view, a, mutant);
+    const y = x?.valid !== true ? undefined : a === b ? x : stateOf(view, b, mutant);
     if (x?.valid !== true || y?.valid !== true) {
       unknown.push(mutant);
       continue;
@@ -696,10 +750,8 @@ export function comparePair(
     lineage: run.lineage,
     a,
     b,
-    universeId: `u${createHash('sha1')
-      .update(JSON.stringify([lineage, universe]))
-      .digest('hex')
-      .slice(0, 16)}`,
+    universeId:
+      view === undefined ? universeIdFor(lineage, universe) : universeIdIn(view, lineage, universe),
     universe,
     unknown,
     killsA,
@@ -818,9 +870,6 @@ export function decodeObservations(
     };
   });
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** Shallow shape check of a run universe read from a work file. */
 export const isRunUniverse = (value: unknown): value is RunUniverse =>

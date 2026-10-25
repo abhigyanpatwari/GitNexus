@@ -52,7 +52,6 @@
  * Library only; the scenario-map CLI (U14) calls {@link runShard}. Every runner is injected
  * ({@link GroupRunDeps}), so unit tests never spawn Vitest or Stryker.
  */
-import { createHash } from 'node:crypto';
 import {
   lstatSync,
   mkdirSync,
@@ -81,8 +80,9 @@ import type { OutcomeClass } from '../../mutation/runner/classify-outcome.js';
 import { readRunManifest, type RunManifest } from '../../mutation/runner/run-manifest.js';
 import { parseTestId, type TestLocation } from '../../mutation/runner/test-ids.js';
 import { errorMessage } from '../../mutation/shared/cli.js';
-import { isInside, readJsonFile } from '../../mutation/shared/fs.js';
+import { overlaps, readJsonFile } from '../../mutation/shared/fs.js';
 import { extraRootsOf, toPackagePath, type RunMode } from '../types.js';
+import { byText, isRecord, sha256, writeJson } from '../util.js';
 import {
   MAIN_LINEAGE,
   decodeObservations,
@@ -137,9 +137,6 @@ export interface ManifestCheck {
 /** Top-level entries of the prepared package that are no input: the dependency link, run caches. */
 const UNHASHED = new Set(['node_modules', '.stryker-tmp', '.vitest5-runner']);
 const MAX_MISMATCHES = 20;
-
-const sha256 = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex');
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /** Every file of the prepared package, as `{<prepared-root-relative path>: sha256}`, sorted. */
 export function hashPreparedTree(preparedRoot: string): Record<string, string> {
@@ -229,9 +226,6 @@ export function verifyPreparedCopy(
       : mismatches;
   return { ok: mismatches.length === 0, mismatches: shown };
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isRunManifest = (value: unknown): value is ScenarioRunManifest =>
   isRecord(value) &&
@@ -501,8 +495,7 @@ export function writeGroupObservations<T extends GroupObservations>(file: string
     ...result,
     observations: encodeObservations(result.runUniverse, result.observations),
   };
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(written)}\n`);
+  writeJson(file, written);
 }
 
 /** Reads a group result file; another schema (schema 1 included) or a malformed row throws. */
@@ -636,6 +629,8 @@ export async function runMutationRun(
         testIds: input.tests,
         vitest: selection,
         workDir: path.join(runDir, `baseline-${index}`),
+        // The Stryker concurrency bounds the baselines' Vitest workers too.
+        maxWorkers: input.settings.concurrency,
       });
       baselines.push(summarizeBaseline(run));
     } catch (error) {
@@ -813,7 +808,7 @@ export async function runShard(
   const { plan, manifest, shard, workDir, repoRoot } = options;
   const assignment = plan.shards.find((entry) => entry.index === shard);
   if (assignment === undefined) throw new Error(`shard run: the plan has no shard ${shard}`);
-  if (isInside(repoRoot, workDir) || isInside(workDir, repoRoot)) {
+  if (overlaps(repoRoot, workDir)) {
     throw new Error(`shard run: the work directory ${workDir} must lie outside ${repoRoot}`);
   }
   const planned = new Map(plan.groups.map((group) => [group.id, group]));
@@ -888,6 +883,7 @@ export async function runShard(
     notStarted,
     wallClockMs: Math.round(deps.now() - started),
   };
-  writeFileSync(shardReportFile(workDir, shard), `${JSON.stringify(report, null, 2)}\n`);
+  // `workDir` was created above.
+  writeJson(shardReportFile(workDir, shard), report, true);
   return report;
 }

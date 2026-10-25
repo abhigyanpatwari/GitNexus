@@ -14,7 +14,16 @@
  * opaque-sink callees). trace-records.ts documents what is recorded. {@link tracesOf} joins the
  * raw records to the tests by file and Vitest task id.
  *
+ * Run validity ({@link traceRunIssues}, pure). The runs as a whole must be fit to decide anything:
+ * the baseline and the traced run each end `survived` (no failing or timed-out test, no retry, no
+ * unhandled error, no outside-test row, no selection problem), every wrap-list entry was wrapped
+ * in every worker, no recorder error was swallowed outside a test and every raw record reads.
+ * Which wraps a pair depends on cannot be known (an unwrapped api records nothing), so any such
+ * issue fails every pair closed: `trace-run-invalid`, never `clean`. The issues are listed in the
+ * result (`issues`).
+ *
  * Comparison ({@link compareTracePair}, pure). Per pair, inconclusive first:
+ *  - `trace-run-invalid`: the run has an issue (above);
  *  - `trace-missing`: a test did not run in either run, or ran traced without a record;
  *  - `trace-changed-outcome`: its outcome class under tracing differs from the baseline;
  *  - `trace-unattributable`: it ran concurrently, so the current test does not attribute calls;
@@ -47,7 +56,7 @@ import {
 import type { OutcomeClass } from '../../mutation/runner/classify-outcome.js';
 import { parseTestId } from '../../mutation/runner/test-ids.js';
 import { errorMessage } from '../../mutation/shared/cli.js';
-import { isInside, readJsonFile } from '../../mutation/shared/fs.js';
+import { overlaps, readJsonFile } from '../../mutation/shared/fs.js';
 import { verifyPreparedCopy, type ScenarioRunManifest } from '../mutation/run-group.js';
 import {
   runVitest,
@@ -56,6 +65,7 @@ import {
   type VitestRunResult,
 } from '../mutation/vitest-run.js';
 import { extraRootsOf } from '../types.js';
+import { byText, isRecord, sortedUnique, toPosixSeparators } from '../util.js';
 import { wrapListOf } from './builtins.js';
 import {
   RAW_TRACE_PREFIX,
@@ -82,7 +92,8 @@ export type TraceInconclusiveReason =
   | 'trace-missing'
   | 'trace-unattributable'
   | 'trace-overflow'
-  | 'trace-not-run';
+  | 'trace-not-run'
+  | 'trace-run-invalid';
 export type TraceReason = TraceVetoReason | TraceInconclusiveReason;
 export type TraceStatus = 'clean' | 'veto' | 'inconclusive';
 
@@ -130,16 +141,13 @@ export interface PairTrace {
   differences: SiteDifference[];
 }
 
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const sortedDistinct = <T extends string>(items: Iterable<T>): T[] =>
-  [...new Set(items)].sort(byText);
-
 const INCONCLUSIVE: ReadonlySet<TraceReason> = new Set<TraceReason>([
   'trace-changed-outcome',
   'trace-missing',
   'trace-unattributable',
   'trace-overflow',
   'trace-not-run',
+  'trace-run-invalid',
 ]);
 
 // ── Comparison ─────────────────────────────────────────────────────────────
@@ -188,8 +196,8 @@ const total = (calls: readonly RawTraceCall[]): number =>
 
 const sideOf = (calls: readonly RawTraceCall[]): SiteSide => ({
   count: total(calls),
-  receivers: sortedDistinct(calls.map((call) => call.receiver)),
-  args: sortedDistinct(calls.map((call) => call.args)),
+  receivers: sortedUnique(calls.map((call) => call.receiver)),
+  args: sortedUnique(calls.map((call) => call.args)),
 });
 
 const receiverOf = (call: RawTraceCall): string => call.receiver;
@@ -211,14 +219,25 @@ export function siteReasons(
     const marginalsEqual = sameTally(receiversA, receiversB) && sameTally(argsA, argsB);
     reasons.add(marginalsEqual ? 'args-differ' : 'asymmetric-counts');
   }
-  return sortedDistinct(reasons);
+  return sortedUnique(reasons);
 }
 
-/** Compares two tests' traces (module header). */
-export function compareTracePair(a: TestTrace, b: TestTrace): PairTrace {
-  const inconclusive = [...inconclusiveReasons(a), ...inconclusiveReasons(b)];
+/**
+ * Compares two tests' traces (module header); `runIssues` are the run's ({@link traceRunIssues}):
+ * with any, the pair is `trace-run-invalid`.
+ */
+export function compareTracePair(
+  a: TestTrace,
+  b: TestTrace,
+  runIssues: readonly string[] = [],
+): PairTrace {
+  const inconclusive: TraceInconclusiveReason[] = [
+    ...(runIssues.length > 0 ? ['trace-run-invalid' as const] : []),
+    ...inconclusiveReasons(a),
+    ...inconclusiveReasons(b),
+  ];
   const [sitesA, sitesB] = [groupBySite(a.calls), groupBySite(b.calls)];
-  const keys = sortedDistinct([...sitesA.keys(), ...sitesB.keys()]);
+  const keys = sortedUnique([...sitesA.keys(), ...sitesB.keys()]);
   const differences: SiteDifference[] = [];
   let sharedSites = 0;
   for (const key of keys) {
@@ -238,7 +257,7 @@ export function compareTracePair(a: TestTrace, b: TestTrace): PairTrace {
       b: callsB === undefined ? null : sideOf(callsB),
     });
   }
-  const reasons = sortedDistinct<TraceReason>([
+  const reasons = sortedUnique<TraceReason>([
     ...inconclusive,
     ...differences.flatMap((difference) => difference.reasons),
   ]);
@@ -267,9 +286,6 @@ const notRunPair = (pair: TracePair): PairTrace => ({
 });
 
 // ── Records ────────────────────────────────────────────────────────────────
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isRawTraceRecord = (value: unknown): value is RawTraceRecord =>
   isRecord(value) &&
@@ -300,8 +316,6 @@ export function readRawTraces(dir: string): { records: RawTraceRecord[]; invalid
   return { records, invalid };
 }
 
-const toPosix = (file: string): string => file.replace(/\\/g, '/');
-
 export interface TracesInput {
   /** Phase 0 ids, in output order. */
   ids: readonly string[];
@@ -314,10 +328,10 @@ export interface TracesInput {
 
 /** Joins the runs and the raw records into one {@link TestTrace} per id (module header). */
 export function tracesOf(input: TracesInput): TestTrace[] {
-  const packageDir = toPosix(input.packageDir).replace(/\/+$/, '');
+  const packageDir = toPosixSeparators(input.packageDir).replace(/\/+$/, '');
   const byFile = new Map<string, Map<string, RawTraceRecord['tests'][number]>>();
   for (const record of input.records) {
-    const file = path.posix.relative(packageDir, toPosix(record.file));
+    const file = path.posix.relative(packageDir, toPosixSeparators(record.file));
     const tests = byFile.get(file) ?? new Map<string, RawTraceRecord['tests'][number]>();
     for (const test of record.tests) tests.set(test.taskId, test);
     byFile.set(file, tests);
@@ -374,6 +388,8 @@ export interface TraceRunOptions {
   pairs: readonly TracePair[];
   /** U10's opaque-sink callees (pdg-walk.ts `opaqueSinks[].callee`), added to the wrap list. */
   opaqueCallees?: readonly string[];
+  /** Upper bound of each Vitest run's worker processes (the CLI's `--concurrency`). */
+  maxWorkers?: number;
 }
 
 export interface TraceRunSummary {
@@ -387,6 +403,11 @@ export interface TraceRunResult {
   /** `not-run`: nothing was traced (`detail` says why); every pair is `trace-not-run`. */
   status: 'ran' | 'not-run';
   detail: string | null;
+  /**
+   * Why the runs cannot decide any pair ({@link traceRunIssues}); with any, every pair is
+   * `trace-run-invalid`. Empty when the trace did not run.
+   */
+  issues: string[];
   wrap: {
     /** Apis added for U10's opaque sinks. */
     added: string[];
@@ -422,6 +443,32 @@ export const traceLayout = (workDir: string): TraceLayout => ({
   rawDir: path.join(workDir, 'trace', 'raw'),
 });
 
+export interface TraceRunIssuesInput {
+  baseline: VitestRunResult;
+  traced: VitestRunResult;
+  wrap: Pick<TraceRunResult['wrap'], 'unavailable' | 'errors'>;
+}
+
+/** Why the runs as a whole cannot decide any pair (module header); empty when they can. */
+export function traceRunIssues(input: TraceRunIssuesInput): string[] {
+  const runIssues = (name: string, run: VitestRunResult): string[] => [
+    ...(run.status === 'survived' && run.outcome === 'survived'
+      ? []
+      : [
+          `${name} run ${run.status}/${run.outcome}${run.reason === null ? '' : `: ${run.reason}`}`,
+        ]),
+    ...run.outsideTest.map((row) => `${name} run: ${row.outcome} outside a test in ${row.file}`),
+    ...run.problems.map((problem) => `${name} run: ${problem}`),
+    ...run.unhandledErrors.map((error) => `${name} run: unhandled error: ${error}`),
+  ];
+  return [
+    ...runIssues('baseline', input.baseline),
+    ...runIssues('traced', input.traced),
+    ...input.wrap.unavailable.map((entry) => `not wrapped: ${entry.api} (${entry.reason})`),
+    ...input.wrap.errors.map((error) => `trace error: ${error}`),
+  ];
+}
+
 const summaryOf = (run: VitestRunResult): TraceRunSummary => ({
   wallClockMs: run.wallClockMs,
   outcome: run.outcome,
@@ -434,12 +481,13 @@ export async function runTrace(
   deps: TraceRunDeps = defaultTraceRunDeps,
 ): Promise<TraceRunResult> {
   const { repoRoot, workDir, manifest, pairs } = options;
-  if (isInside(repoRoot, workDir) || isInside(workDir, repoRoot)) {
+  if (overlaps(repoRoot, workDir)) {
     throw new Error(`trace: the work directory ${workDir} must lie outside ${repoRoot}`);
   }
   const started = deps.now();
   const wrap = wrapListOf(options.opaqueCallees);
   const base: Omit<TraceRunResult, 'status' | 'detail' | 'pairs' | 'wallClockMs'> = {
+    issues: [],
     wrap: { added: wrap.added, skipped: wrap.skipped, unavailable: [], errors: [] },
     baseline: null,
     traced: null,
@@ -455,7 +503,7 @@ export async function runTrace(
   });
   if (pairs.length === 0) return notRun('no pairs');
   const listed = new Set(manifest.tests.map((test) => test.id));
-  const ids = sortedDistinct(pairs.flatMap((pair) => [pair.a, pair.b])).filter((id) =>
+  const ids = sortedUnique(pairs.flatMap((pair) => [pair.a, pair.b])).filter((id) =>
     listed.has(id),
   );
   if (ids.length === 0) return notRun('no pair test is in the run manifest');
@@ -470,7 +518,7 @@ export async function runTrace(
   });
   const check = verifyPreparedCopy(manifest, layout.preparedRoot);
   if (!check.ok) return notRun(`manifest mismatch: ${check.mismatches.join('; ')}`);
-  const preparedRoot = toPosix(realpathSync(layout.preparedRoot));
+  const preparedRoot = toPosixSeparators(realpathSync(layout.preparedRoot));
   const packageDir = path.posix.join(preparedRoot, PACKAGE_DIR);
   const vitest = vitestSelectionOf(manifest.mode);
   const context: TraceContext = {
@@ -487,6 +535,7 @@ export async function runTrace(
       testIds: ids,
       vitest,
       workDir: layout.baselineDir,
+      maxWorkers: options.maxWorkers,
     });
     rmSync(layout.rawDir, { recursive: true, force: true });
     mkdirSync(layout.rawDir, { recursive: true });
@@ -497,6 +546,7 @@ export async function runTrace(
       workDir: layout.tracedDir,
       setupFiles: [TRACE_SETUP_FILE],
       provide: (project) => project.provide(TRACE_KEY, context),
+      maxWorkers: options.maxWorkers,
     });
   } catch (error) {
     return notRun(`run error: ${errorMessage(error)}`);
@@ -509,15 +559,18 @@ export async function runTrace(
   for (const item of records.flatMap((record) => record.unavailable)) {
     unavailable.set(`${item.api}\u0001${item.reason}`, { api: item.api, reason: item.reason });
   }
-  const errors = sortedDistinct([
+  const errors = sortedUnique([
     ...records.flatMap((record) => record.errors),
     ...invalid.map((name) => `unreadable raw record ${name}`),
   ]);
+  const wrapResult = { ...base.wrap, unavailable: [...unavailable.values()], errors };
+  const issues = traceRunIssues({ baseline, traced, wrap: wrapResult });
   return {
     ...base,
     status: 'ran',
     detail: null,
-    wrap: { ...base.wrap, unavailable: [...unavailable.values()], errors },
+    issues,
+    wrap: wrapResult,
     baseline: summaryOf(baseline),
     traced: summaryOf(traced),
     overhead:
@@ -527,7 +580,7 @@ export async function runTrace(
     tests,
     pairs: pairs.map((pair) => {
       const [a, b] = [byId.get(pair.a), byId.get(pair.b)];
-      return a === undefined || b === undefined ? notRunPair(pair) : compareTracePair(a, b);
+      return a === undefined || b === undefined ? notRunPair(pair) : compareTracePair(a, b, issues);
     }),
     wallClockMs: Math.round(deps.now() - started),
   };

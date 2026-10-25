@@ -37,10 +37,10 @@
  * Library only; {@link collectProvenance} is the one function that reads the file system. The
  * scenario-map CLI (U14) assembles the input and writes the artifacts.
  */
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { readJsonFile } from '../../mutation/shared/fs.js';
 import type { Finding, Kind } from '../../test-dupes/test-dupes.js';
 import {
   MAIN_LINEAGE,
@@ -51,6 +51,7 @@ import {
   observedMutants as observedMutantsOf,
   type LineageObservations,
   type MergedObservation,
+  type PairComparison,
   type RunKey,
 } from '../mutation/observations.js';
 import {
@@ -61,6 +62,7 @@ import {
   type EligibilityDelta,
   type TestAnchor,
 } from '../types.js';
+import { byText, isRecord, sha256, sortedUnique } from '../util.js';
 import type { DegradedFlag } from '../value-flow/pdg-walk.js';
 import {
   VERDICT_PRECEDENCE,
@@ -198,10 +200,6 @@ export interface RunProvenance extends CollectedProvenance {
   };
 }
 
-const sha256 = (data: string | Buffer): string => createHash('sha256').update(data).digest('hex');
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const sortedUnique = (values: Iterable<string>): string[] => [...new Set(values)].sort(byText);
-
 function hashFiles(repoRoot: string, repoPaths: readonly string[]): Record<string, string> {
   return Object.fromEntries(
     sortedUnique(repoPaths).map((repoPath) => {
@@ -214,7 +212,7 @@ function hashFiles(repoRoot: string, repoPaths: readonly string[]): Record<strin
 function packageVersion(repoRoot: string, name: string): string | null {
   const file = path.join(repoRoot, 'gitnexus', 'node_modules', name, 'package.json');
   if (!existsSync(file)) return null;
-  const data: unknown = JSON.parse(readFileSync(file, 'utf8'));
+  const data = readJsonFile(file);
   const version =
     typeof data === 'object' && data !== null && 'version' in data ? data.version : null;
   return typeof version === 'string' ? version : null;
@@ -434,8 +432,6 @@ const LAYER0_KINDS: readonly string[] = [
   'orphan-bench-gate',
 ] satisfies Kind[];
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 const isKind = (value: unknown): value is Kind =>
   typeof value === 'string' && LAYER0_KINDS.includes(value);
 const isLine = (value: unknown): value is number =>
@@ -597,10 +593,18 @@ const explicitOf = (view: LineageObservations | undefined, test: string): Merged
   ...(view?.explicit.get(test)?.values() ?? []),
 ];
 
-const countBy = <K extends string>(keys: readonly K[], values: readonly K[]): Record<K, number> =>
-  Object.fromEntries(
-    keys.map((key) => [key, values.filter((value) => value === key).length]),
-  ) as Record<K, number>;
+/** How often each key occurs among the values, in key order (one pass). */
+function countBy<K extends string>(keys: readonly K[], values: readonly K[]): Record<K, number> {
+  const counts = new Map<K, number>(keys.map((key) => [key, 0]));
+  for (const value of values) {
+    const count = counts.get(value);
+    if (count !== undefined) counts.set(value, count + 1);
+  }
+  return Object.fromEntries(counts) as Record<K, number>;
+}
+
+/** A sorted list without its repeats (still sorted). */
+const distinct = (sorted: readonly string[]): string[] => [...new Set(sorted)];
 
 const TEST_STATUSES: readonly TestStatus[] = ['killing', 'weak', 'inconclusive', 'out-of-scope'];
 
@@ -615,13 +619,29 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
   const inputs = new Map(evidence.tests.map((test) => [test.id, test]));
   const anchorOf = (id: string): TestAnchor => input.anchors.get(id) ?? fallbackAnchor(id);
   const universes = new Set<string>();
+  // KTD13 ids by comparison universe id: pairs of one group often share a universe. A hit is
+  // used only when its mutants are the same, so a truncated-hash collision recomputes.
+  const fingerprinted = new Map<string, { universe: readonly string[]; id: string | null }>();
+  const universeIdOfComparison = (comparison: PairComparison): string | null => {
+    const known = fingerprinted.get(comparison.universeId);
+    if (
+      known !== undefined &&
+      known.universe.length === comparison.universe.length &&
+      known.universe.every((mutant, i) => mutant === comparison.universe[i])
+    ) {
+      return known.id;
+    }
+    const id = universeIdOf(comparison.universe.map(fp));
+    fingerprinted.set(comparison.universeId, { universe: comparison.universe, id });
+    return id;
+  };
 
   // Pairs (findings and kept), before change status.
   const pairOf = (verdict: PairVerdict): Omit<ReportPair, 'change'> => {
     const run = { group: verdict.group, kind: 'main', lineage: MAIN_LINEAGE } as const;
     const view = lineageOf(index, run);
     const comparison = comparePair(index, run, verdict.a, verdict.b);
-    const universeId = universeIdOf(comparison.universe.map(fp));
+    const universeId = universeIdOfComparison(comparison);
     if (universeId !== null && verdict.evidence.schedule === 'evaluated') universes.add(universeId);
     const sides = (
       [
@@ -634,7 +654,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
         .filter((entry) => entry.covered || entry.static)
         .map((entry) => entry.mutant);
       return {
-        ...testRecord(testInput, propertiesOf(testInput), sortedUnique(fps(pathIds)), fps(kills)),
+        ...testRecord(testInput, propertiesOf(testInput), distinct(fps(pathIds)), fps(kills)),
         disqualifiers: verdict.disqualifiers
           .filter((entry) => entry.tests.includes(test))
           .map((entry) => entry.kind),
@@ -689,11 +709,11 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
     const properties = propertiesOf(testInput);
     const views = index.byTest.get(result.id) ?? [];
     const observed = views.flatMap((view) => explicitOf(view, result.id));
-    const universe = fps(sortedUnique(views.flatMap((view) => mutantsOf(view, result.id))));
-    const pathFps = sortedUnique(
+    const universe = fps(new Set(views.flatMap((view) => mutantsOf(view, result.id))));
+    const pathFps = distinct(
       fps(observed.filter((entry) => entry.covered || entry.static).map((entry) => entry.mutant)),
     );
-    const kills = sortedUnique(
+    const kills = distinct(
       fps(
         observed
           .filter((entry) => entry.valid && entry.outcome === ASSERTION_KILL && exposed(entry))
@@ -824,29 +844,21 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
   };
   const complete = shards.complete >= shards.planned && shards.incomplete.length === 0;
   const observedMutants = observedMutantsOf(evidence.observations);
-  const fallbacks = countBy(
-    FINGERPRINT_FALLBACKS,
-    observedMutants.flatMap((id) => {
-      const known = fingerprints.get(id);
-      return known === undefined
-        ? ['not-fingerprinted' as const]
-        : known.fallback === null
-          ? []
-          : [known.fallback];
-    }),
-  );
+  // One pass over the observed mutants: fingerprint fallbacks and mutator names.
+  const fallbackKinds: FingerprintFallback[] = [];
+  const mutators: string[] = [];
+  for (const id of observedMutants) {
+    const known = fingerprints.get(id);
+    if (known === undefined) fallbackKinds.push('not-fingerprinted');
+    else if (known.fallback !== null) fallbackKinds.push(known.fallback);
+    const parsed = parseGlobalMutantId(id);
+    if (parsed !== null) mutators.push(parsed.mutator);
+  }
+  const fallbacks = countBy(FINGERPRINT_FALLBACKS, fallbackKinds);
   const fallbackTotal = Object.values(fallbacks).reduce((sum, count) => sum + count, 0);
   const provenance: RunProvenance = {
     ...input.provenance,
-    operators: {
-      mutator: null,
-      names: sortedUnique(
-        observedMutants.flatMap((id) => {
-          const parsed = parseGlobalMutantId(id);
-          return parsed === null ? [] : [parsed.mutator];
-        }),
-      ),
-    },
+    operators: { mutator: null, names: sortedUnique(mutators) },
     universes: sortedUnique(universes),
     mutants: { total: observedMutants.length, fallbacks },
   };

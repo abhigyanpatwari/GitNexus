@@ -7,7 +7,7 @@
  *    interned block keys and executed scripts. A block key is `<script index>#<function or
  *    <anon>>@<function start>` for an executed function, plus
  *    `<script index>#<function>@<function start>|<start>-<end>:<1|0>` for each of its nested
- *    ranges (covered or not in the window), as in the spike. Blocks are kept only for scripts under
+ *    ranges (covered or not in the window). Blocks are kept only for scripts under
  *    the block roots (the prepared copy's production roots); every other executed script is listed
  *    by path only. `node:` scripts and the hook's own modules (this file and the setup file) are
  *    never listed: the hook runs inside every window.

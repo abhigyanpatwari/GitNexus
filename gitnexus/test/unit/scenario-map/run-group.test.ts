@@ -407,6 +407,13 @@ describe('sandboxIgnoredDirs', () => {
 });
 
 describe('runGroup', () => {
+  it('bounds both baselines\u2019 Vitest workers by the Stryker concurrency', async () => {
+    const workDir = tempDir();
+    const { deps, vitestCalls } = fakes();
+    await runGroup({ ...groupOptions(workDir, manifestFor()), stryker: { concurrency: 3 } }, deps);
+    expect(vitestCalls.map((options) => options.maxWorkers)).toEqual([3, 3]);
+  });
+
   it('runs two baselines, then Stryker, and writes the observations at once', async () => {
     const workDir = tempDir();
     const { deps, vitestCalls, scopeCalls } = fakes();

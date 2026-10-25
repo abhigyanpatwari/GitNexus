@@ -88,7 +88,7 @@ import {
   impliedStatesOf,
   indexObservations,
   lineageOf,
-  mutantsOf,
+  lineageUniverseId,
   stateOf,
   type LineageObservations,
   type MergedObservation,
@@ -102,6 +102,7 @@ import type { PairRef, PairSchedule, ScheduleReason } from '../mutation/plan-sha
 import type { RowDeletionOutcome, RowDeletionResult } from '../mutation/row-deletion.js';
 import type { Provenance } from '../path-coverage/run-coverage.js';
 import type { DegradedFlag, PairValueFlow } from '../value-flow/pdg-walk.js';
+import { byText, sortedUnique } from '../util.js';
 import type { PairTrace, TraceStatus } from '../value-flow/trace.js';
 
 /** Folded into the evidence hash (KTD12): a rule change resurfaces every pair it reclassifies. */
@@ -354,9 +355,6 @@ export interface VerdictReport {
 
 const ASSERTION_KILL: OutcomeClass = 'killed-by-test:assertion';
 
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const sortedUnique = (values: Iterable<string>): string[] => [...new Set(values)].sort(byText);
-
 /** The test ran against the mutant: covered, static, or a per-test row (as isolation.ts). */
 const exposed = (entry: ObservationState): boolean =>
   entry.covered || entry.static || entry.sources.includes('row');
@@ -377,6 +375,20 @@ const coverageOf = (entry: ObservationState | undefined): string =>
       : entry.covered
         ? 'covered'
         : 'not-covered';
+
+/** Whether a list sorted by {@link byText} holds the value (binary search). */
+function sortedHas(sorted: readonly string[], value: string): boolean {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const order = byText(sorted[middle], value);
+    if (order === 0) return true;
+    if (order < 0) low = middle + 1;
+    else high = middle;
+  }
+  return false;
+}
 
 type ByMutant = Map<string, MergedObservation[]>;
 
@@ -476,11 +488,18 @@ function mainRunOf(index: Index, test: string): LineageObservations | null {
   return runs.length === 1 ? runs[0] : null;
 }
 
+/**
+ * Per main lineage and test: whether the test is valid on every mutant of the lineage (the
+ * universe of a test with an observation of each), so a subsumption check reads it once.
+ */
+type ValidThroughout = Map<LineageObservations, Map<string, boolean>>;
+
 function subsumptionOf(
   facts: TestFacts,
   index: Index,
   killers: ReadonlyMap<string, ReadonlySet<string>>,
   eligible: ReadonlySet<string>,
+  validThroughout: ValidThroughout,
 ): Subsumption {
   const test = facts.input.id;
   const own = facts.status === 'killing' ? mainRunOf(index, test) : null;
@@ -493,36 +512,65 @@ function subsumptionOf(
       universe: 0,
     };
   }
-  const self = comparePair(index.observations, mainRun(own.group), test, test);
-  const universe = mutantsOf(own, test);
-  const ownOf = (mutant: string): ObservationState | undefined => stateOf(own, test, mutant);
-  const kills = universe.filter((mutant) => isKill(ownOf(mutant)));
+  // One pass over the lineage: the test's universe (its mutants with an observation), the valid
+  // ones (the universe of the test compared with itself, which names it) and its kills.
+  const universe: string[] = [];
+  const valid: string[] = [];
+  const kills: string[] = [];
+  for (const mutant of own.mutants) {
+    const state = stateOf(own, test, mutant);
+    if (state === undefined) continue;
+    universe.push(mutant);
+    if (state.valid) valid.push(mutant);
+    if (isKill(state)) kills.push(mutant);
+  }
   const result = (status: SubsumptionStatus, by: readonly string[]): Subsumption => ({
     status,
     by: sortedUnique(by),
-    universeId: self.universeId,
+    universeId: lineageUniverseId(own, valid),
     universe: universe.length,
   });
   if (kills.length === 0) return result('not-applicable', []);
-  const complete = universe.every((mutant) => ownOf(mutant)?.valid === true);
+  const complete = valid.length === universe.length;
   const candidates = sortedUnique(killers.get(kills[0]) ?? []).filter(
     (other) =>
       other !== test &&
       eligible.has(other) &&
       kills.every((mutant) => killers.get(mutant)?.has(other) === true),
   );
+  // The universe is every mutant of the lineage: another test's validity on it is shared.
+  const whole = universe.length === own.mutants.length;
+  const evaluatedOn = (theirs: LineageObservations, other: string): boolean => {
+    const check = (): boolean =>
+      universe.every((mutant) => stateOf(theirs, other, mutant)?.valid === true);
+    if (!whole) return check();
+    const known = validThroughout.get(own) ?? new Map<string, boolean>();
+    validThroughout.set(own, known);
+    const cached = known.get(other);
+    if (cached !== undefined) return cached;
+    const value = check();
+    known.set(other, value);
+    return value;
+  };
+  const ownKills = new Set(kills);
   const subsumers: string[] = [];
   const possible: string[] = [];
   for (const other of candidates) {
-    const theirs = mainRunOf(index, other);
-    const theirsOf = (mutant: string): ObservationState | undefined =>
-      theirs === null ? undefined : stateOf(theirs, other, mutant);
-    const evaluated =
-      theirs !== null && universe.every((mutant) => theirsOf(mutant)?.valid === true);
-    if (!evaluated || !complete) possible.push(other);
-    else if (universe.some((mutant) => isKill(theirsOf(mutant)) && !isKill(ownOf(mutant)))) {
-      subsumers.push(other);
+    if (!complete) {
+      possible.push(other);
+      continue;
     }
+    const theirs = mainRunOf(index, other);
+    if (theirs === null || !evaluatedOn(theirs, other)) {
+      possible.push(other);
+      continue;
+    }
+    // A kill is always explicit (an implied observation is a survival): only the other test's
+    // explicit kills can be universe mutants this test does not kill.
+    const extra = [...(theirs.explicit.get(other)?.values() ?? [])].some(
+      (entry) => isKill(entry) && !ownKills.has(entry.mutant) && sortedHas(universe, entry.mutant),
+    );
+    if (extra) subsumers.push(other);
   }
   if (subsumers.length > 0) return result('subsumed', subsumers);
   return result(possible.length > 0 ? 'unknown' : 'not-subsumed', possible);
@@ -614,20 +662,49 @@ function staticFlowOf(
 }
 
 /**
- * Per test of the pair and mutant of its run: valid classes that differ between runs. An implied
- * observation is a survival, so only a mutant with an explicit valid class other than survived
- * can differ.
+ * The mutants of a lineage view's universe on which two tests' coverage differs, sorted. An
+ * implied observation is never covered or static (`not-covered`), so only a mutant with an
+ * explicit observation of either test can differ.
+ */
+function coverageDiffers(
+  view: LineageObservations,
+  a: string,
+  b: string,
+  universe: readonly string[],
+): string[] {
+  const explicit = new Set([
+    ...(view.explicit.get(a)?.keys() ?? []),
+    ...(view.explicit.get(b)?.keys() ?? []),
+  ]);
+  return [...explicit]
+    .filter(
+      (mutant) =>
+        sortedHas(universe, mutant) &&
+        coverageOf(stateOf(view, a, mutant)) !== coverageOf(stateOf(view, b, mutant)),
+    )
+    .sort(byText);
+}
+
+/**
+ * Per test of the pair and mutant of its run (universe mutants first, then unknown ones, each
+ * sorted): valid classes that differ between runs. An implied observation is a survival, so only
+ * a mutant with an explicit valid class other than survived can differ.
  */
 function rerunDisagreements(
   tests: readonly string[],
-  mutants: readonly string[],
+  comparison: Pick<PairComparison, 'universe' | 'unknown'>,
   index: Index,
 ): string[] {
   return tests.flatMap((test) => {
-    const explicit = index.explicitByTest.get(test);
+    const definite = [...(index.explicitByTest.get(test)?.entries() ?? [])].flatMap(
+      ([mutant, own]) =>
+        own.some((entry) => !isUnknown(entry) && entry.outcome !== 'survived') ? [mutant] : [],
+    );
+    const mutants = [
+      ...definite.filter((mutant) => sortedHas(comparison.universe, mutant)).sort(byText),
+      ...definite.filter((mutant) => sortedHas(comparison.unknown, mutant)).sort(byText),
+    ];
     return mutants.flatMap((mutant) => {
-      const own = explicit?.get(mutant) ?? [];
-      if (!own.some((entry) => !isUnknown(entry) && entry.outcome !== 'survived')) return [];
       const classes = sortedUnique(
         observedIn(index, test, mutant).flatMap((entry) =>
           isUnknown(entry) ? [] : [String(entry.outcome)],
@@ -651,8 +728,10 @@ function hookedMutants(
   const touched = [
     ...comparison.killsA,
     ...comparison.killsB,
-    ...comparison.universe.filter((mutant) =>
-      tests.some((test) => (index.explicitByTest.get(test)?.get(mutant) ?? []).some(exposed)),
+    ...tests.flatMap((test) =>
+      [...(index.explicitByTest.get(test)?.entries() ?? [])].flatMap(([mutant, entries]) =>
+        entries.some(exposed) && sortedHas(comparison.universe, mutant) ? [mutant] : [],
+      ),
     ),
   ];
   const hooked = sortedUnique(touched).filter((mutant) =>
@@ -741,10 +820,11 @@ function pairFacts(pair: VerdictPairInput, ctx: PairContext): PairFacts {
       : null;
   const mainOf = (test: string, mutant: string): ObservationState | undefined =>
     main === undefined ? undefined : stateOf(main, test, mutant);
+  // Without the main lineage the comparison's universe is empty.
   const pathDiffers =
-    comparison?.universe.filter(
-      (mutant) => coverageOf(mainOf(pair.a, mutant)) !== coverageOf(mainOf(pair.b, mutant)),
-    ) ?? [];
+    comparison === null || main === undefined
+      ? []
+      : coverageDiffers(main, pair.a, pair.b, comparison.universe);
   const keys = [a.input.checksContext, b.input.checksContext];
   const checksContext =
     keys[0] === null || keys[1] === null ? 'missing' : keys[0] === keys[1] ? 'same' : 'differs';
@@ -805,14 +885,7 @@ function pairFacts(pair: VerdictPairInput, ctx: PairContext): PairFacts {
     staticFlow: staticRequired
       ? staticFlowOf(pair.staticValueFlow, ctx.degraded)
       : { status: 'not-required', details: [] },
-    rerun:
-      comparison === null
-        ? []
-        : rerunDisagreements(
-            [pair.a, pair.b],
-            [...comparison.universe, ...comparison.unknown],
-            ctx.index,
-          ),
+    rerun: comparison === null ? [] : rerunDisagreements([pair.a, pair.b], comparison, ctx.index),
     unknownDetails,
     otherDetails,
   };
@@ -1148,13 +1221,17 @@ function gapsOf(index: Index): FileGaps[] {
 const oriented = (pair: VerdictPairInput): VerdictPairInput =>
   pair.a <= pair.b ? pair : { ...pair, a: pair.b, b: pair.a };
 
-const pairOrder = (x: VerdictPairInput, y: VerdictPairInput): number =>
-  byText(JSON.stringify([x.a, x.b, x.group]), JSON.stringify([y.a, y.b, y.group]));
+/** Pairs sorted by a, b and group (each key computed once). */
+const inPairOrder = (pairs: readonly VerdictPairInput[]): VerdictPairInput[] =>
+  pairs
+    .map((pair) => ({ pair, order: JSON.stringify([pair.a, pair.b, pair.group]) }))
+    .sort((x, y) => byText(x.order, y.order))
+    .map(({ pair }) => pair);
 
 /** The verdict report of one run; pure. See the module comment. */
 export function computeVerdicts(input: VerdictInput): VerdictReport {
   const inputs = new Map(input.tests.map((test) => [test.id, test]));
-  const pairs = input.pairs.map(oriented).sort(pairOrder);
+  const pairs = inPairOrder(input.pairs.map(oriented));
   const missing = sortedUnique(
     pairs.flatMap((pair) => [pair.a, pair.b]).filter((test) => !inputs.has(test)),
   );
@@ -1175,9 +1252,10 @@ export function computeVerdicts(input: VerdictInput): VerdictReport {
   );
   const killers = killersIndex(index);
   const eligible = new Set(ids.filter((id) => inputs.get(id).eligible));
+  const validThroughout: ValidThroughout = new Map();
   const testResults = ids.map((id): TestResult => {
     const facts = tests.get(id);
-    const subsumption = subsumptionOf(facts, index, killers, eligible);
+    const subsumption = subsumptionOf(facts, index, killers, eligible, validThroughout);
     return {
       id,
       status: facts.status,

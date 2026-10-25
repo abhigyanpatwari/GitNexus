@@ -295,6 +295,17 @@ describe('positive control add(2, 3) against add(5, 5)', () => {
     ]);
   });
 
+  it('reads a not-required static check of differing values as unknown, never strong', () => {
+    const verdict = verdictOf({
+      pair: { staticValueFlow: { status: 'not-required', reasons: [] } },
+    });
+    expect([verdict.verdict, verdict.rule, verdict.details]).toEqual([
+      'review',
+      'value-flow-unknown',
+      ['static: not-required for differing discarded values'],
+    ]);
+  });
+
   it('reads a missing trace on the repeat path as Inconclusive', () => {
     const verdict = verdictOf({ pair: { trace: null } });
     expect([verdict.verdict, verdict.rule, verdict.details]).toEqual([
@@ -513,9 +524,32 @@ const DISQUALIFIER_CASES: { label: string; kind: WeakDisqualifier; edit: WorldEd
     edit: { a: { provenance: { known: false, nativeEntries: [], workerSpawns: [] } } },
   },
   {
+    label: 'worker spawn',
+    kind: 'provenance-not-strong-eligible',
+    edit: {
+      a: {
+        provenance: {
+          known: true,
+          nativeEntries: [],
+          workerSpawns: [{ api: 'Worker', target: 'gitnexus/src/worker.js', site: null }],
+        },
+      },
+    },
+  },
+  {
+    label: 'no provenance record',
+    kind: 'provenance-not-strong-eligible',
+    edit: { a: { provenance: null } },
+  },
+  {
     label: 'unresolved facet input',
     kind: 'unresolved-facet-input',
     edit: { a: { facet: facet(['2', '3'], { unresolved: ['row value is not static'] }) } },
+  },
+  {
+    label: 'unresolved inventory input',
+    kind: 'unresolved-facet-input',
+    edit: { a: { inventoryUnresolved: ['row value is not static'] } },
   },
   {
     label: 'unresolved selector',
@@ -572,6 +606,11 @@ const DISQUALIFIER_CASES: { label: string; kind: WeakDisqualifier; edit: WorldEd
     label: 'hook-attributed observation',
     kind: 'hook-stratum',
     edit: { observations: change(A, M1, { hookAttributed: true }) },
+  },
+  {
+    label: 'observation without a hook marker',
+    kind: 'hook-stratum',
+    edit: { observations: change(A, M1, { hookAttributed: null }) },
   },
   {
     label: 'hook stratum from the isolation pass',

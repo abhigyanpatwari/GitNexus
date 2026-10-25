@@ -22,7 +22,6 @@
  *
  * Library only; the scenario-map CLI (U14) calls it.
  */
-import { createHash } from 'node:crypto';
 import { generate } from '@babel/generator';
 import { assignTestIds, type IdentifiedTest } from '../../mutation/runner/test-ids.js';
 import type { CaseRecord } from '../../test-dupes/test-dupes.js';
@@ -36,6 +35,7 @@ import type {
   StaticInventory,
   TestAnchor,
 } from '../types.js';
+import { sha1 } from '../util.js';
 
 const JOIN_PROBLEMS: readonly JoinProblem[] = [
   'join-mismatch',
@@ -46,8 +46,6 @@ const JOIN_PROBLEMS: readonly JoinProblem[] = [
   'no-static-case',
   'unparsed',
 ];
-
-const sha1 = (text: string): string => createHash('sha1').update(text).digest('hex');
 
 /** sha1 over a test callback's parameters and body, without comments or formatting. */
 export function bodyFingerprint(record: CaseRecord): string {

@@ -157,7 +157,7 @@ describe('hookCoverage and hookAttributedTests (the hook marker, KTD2)', () => {
     });
   });
 
-  it('refuses a hook hit for a suite it does not know', () => {
+  it('refuses a hook-bucket hit for a suite it does not know', () => {
     const recorder = new CoverageRecorder(() => ({
       phase: 'run',
       testId: undefined,

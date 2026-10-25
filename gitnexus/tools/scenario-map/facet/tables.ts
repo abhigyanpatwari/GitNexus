@@ -9,8 +9,8 @@
  *  - the keys of an object literal with at least three properties (D3);
  *  - the string cases of a `switch`;
  *  - the word alternatives of a regex literal or of `new RegExp('…')` (`(?:get|set)`).
- * Array, switch and regex tables keep strings of two characters or more (the spike's filter); Set,
- * Map and object-key tables keep every non-empty string. A table has at least two values.
+ * Array, switch and regex tables keep strings of two characters or more; Set, Map and object-key
+ * tables keep every non-empty string. A table has at least two values.
  *
  * Property columns: across the run's production files, the string values of every array (or
  * `new Set([...])`) written as an object property's value, grouped by the property key
@@ -32,6 +32,7 @@
 import { parse } from '@babel/parser';
 import traverse, { type NodePath } from '@babel/traverse';
 import * as t from '@babel/types';
+import { byText } from '../util.js';
 
 /** A value as a table holds it: `s:<text>` for strings, `n:<String(number)>` for numbers. */
 export type LiteralKey = string;
@@ -64,7 +65,7 @@ export interface TableSearch {
 }
 
 const PLUGINS: ['typescript', 'decorators-legacy'] = ['typescript', 'decorators-legacy'];
-/** Property keys whose columns mix unrelated values (the spike's list). */
+/** Property keys whose columns mix unrelated values. */
 const GENERIC_KEYS: ReadonlySet<string> = new Set([
   'name',
   'type',
@@ -352,7 +353,7 @@ export class TableIndex {
           ([key, values]) =>
             !GENERIC_KEYS.has(key) && values.size >= 2 && values.size <= MAX_COLUMN_SIZE,
         )
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .sort(([a], [b]) => byText(a, b))
         .map(([key, values]) => ({
           id: `prop:${key}`,
           values: new Set([...values].map(stringKey)),

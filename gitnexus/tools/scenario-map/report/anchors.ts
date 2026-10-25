@@ -28,13 +28,13 @@
  *
  * Library only; pure except for the injected source reader.
  */
-import { createHash } from 'node:crypto';
 import { generate } from '@babel/generator';
 import { parse, type ParserPlugin } from '@babel/parser';
 import * as t from '@babel/types';
 import { contentHash, type ReportLocation } from '../../mutation/prepare/mutant-identity.js';
 import { indexSource, locationToOffsets } from '../../mutation/prepare/span-map-check.js';
 import type { TestAnchor } from '../types.js';
+import { byText, sha1, sha256 } from '../util.js';
 
 /** JSON data, the only input of {@link evidenceHash}. */
 export type JsonValue =
@@ -46,9 +46,6 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 const SHORT = 16;
-const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
-const sha1 = (text: string): string => createHash('sha1').update(text, 'utf8').digest('hex');
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 // ── Global mutant ids ──────────────────────────────────────────────────────
 
@@ -139,11 +136,23 @@ const pluginsOf = (file: string): ParserPlugin[] =>
     ? ['typescript', 'jsx', 'decorators-legacy']
     : ['typescript', 'decorators-legacy'];
 
+/** A statement-like node with its offsets and its position in traversal order. */
+interface Statement {
+  node: t.Node;
+  start: number;
+  end: number;
+  /** Index in traversal order (parents before children). */
+  order: number;
+}
+
 /** A parsed original source, shared by the mutants of one file. */
 interface ParsedSource {
   text: string;
   index: ReturnType<typeof indexSource>;
-  statements: t.Node[];
+  /** Statement-like nodes with offsets, sorted by start (traversal order among equal starts). */
+  statements: Statement[];
+  /** Normalised code of each statement already generated. */
+  code: Map<t.Node, string>;
 }
 
 function parseSource(file: string, text: string): ParsedSource | null {
@@ -153,11 +162,50 @@ function parseSource(file: string, text: string): ParsedSource | null {
   } catch {
     return null;
   }
-  const statements: t.Node[] = [];
+  const statements: Statement[] = [];
+  let order = 0;
   t.traverseFast(program, (node) => {
-    if (isStatementLike(node)) statements.push(node);
+    if (!isStatementLike(node)) return;
+    if (node.start != null && node.end != null) {
+      statements.push({ node, start: node.start, end: node.end, order });
+    }
+    order += 1;
   });
-  return { text, index: indexSource(text, file), statements };
+  statements.sort((x, y) => x.start - y.start);
+  return { text, index: indexSource(text, file), statements, code: new Map() };
+}
+
+/**
+ * The deepest statement holding `[start, end)`: the smallest span, the later in traversal order
+ * (the deeper) among equal spans; null when none does. A statement holding the span starts at or
+ * before `start`, so only that prefix of the start-sorted list is read, backwards, and the walk
+ * stops once a statement starts too early to be as small as the best found
+ * (`end - its start > best size`).
+ */
+function deepestStatement(
+  statements: readonly Statement[],
+  start: number,
+  end: number,
+): Statement | null {
+  let low = 0;
+  let high = statements.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (statements[middle].start <= start) low = middle + 1;
+    else high = middle;
+  }
+  let best: Statement | null = null;
+  for (let i = low - 1; i >= 0; i--) {
+    const statement = statements[i];
+    if (best !== null && statement.start < end - (best.end - best.start)) break;
+    if (statement.end < end) continue;
+    const size = statement.end - statement.start;
+    const bestSize = best === null ? Infinity : best.end - best.start;
+    if (size < bestSize || (size === bestSize && best !== null && statement.order > best.order)) {
+      best = statement;
+    }
+  }
+  return best;
 }
 
 /** The normalised enclosing statement and occurrence of a span; a fallback reason otherwise. */
@@ -172,12 +220,7 @@ function enclosingCode(
   } catch {
     return 'span-outside';
   }
-  let best: t.Node | null = null;
-  for (const node of parsed.statements) {
-    if (node.start == null || node.end == null || node.start > start || node.end < end) continue;
-    // Parents come before children (traverseFast), so `<=` keeps the deepest of equal spans.
-    if (best === null || node.end - node.start <= best.end - best.start) best = node;
-  }
+  const best = deepestStatement(parsed.statements, start, end);
   if (best === null) return 'no-statement';
   const mutated = parsed.text.slice(start, end);
   let occurrence = 0;
@@ -187,7 +230,12 @@ function enclosingCode(
       at = parsed.text.indexOf(mutated, at + 1);
     }
   }
-  return { code: generate(best, { comments: false, compact: true }).code, occurrence };
+  let code = parsed.code.get(best.node);
+  if (code === undefined) {
+    code = generate(best.node, { comments: false, compact: true }).code;
+    parsed.code.set(best.node, code);
+  }
+  return { code, occurrence };
 }
 
 /**

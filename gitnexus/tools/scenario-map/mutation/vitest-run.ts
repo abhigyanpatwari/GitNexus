@@ -22,17 +22,22 @@
  * Extra setup files (U11): `setupFiles` go after the runner's setup file, in list order, and
  * `provide` gives them their context (the value-flow trace hook).
  *
+ * Workers: `maxWorkers` caps the instance's worker processes (Vitest's own default is a share of
+ * the host's cores); the scenario-map CLI passes its `--concurrency`, the bound it gives Stryker,
+ * so a local run never fans out over every core ({@link inProcessVitestOptions}, which
+ * path-coverage/run-coverage.ts shares).
+ *
  * Load probe (U9): with `probeFiles`, the result's `loadedFiles` lists those the project's Vite
  * module graph transformed before the instance closed. Workers fetch every inlined module through
  * that graph, and a fresh instance with `cache: false` holds nothing else, so row deletion proves
  * with it that its run evaluated the edited file (KTD10), without a V8 hook.
  *
- * Library only: run-group.ts calls {@link runVitest}.
+ * Library only: run-group.ts, row-deletion.ts and value-flow/trace.ts call {@link runVitest}.
  */
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { INSTRUMENTER_CONSTANTS } from '@stryker-mutator/api/core';
-import type { TestModule, TestProject, Vitest } from 'vitest/node';
+import type { CliOptions, TestModule, TestProject, Vitest } from 'vitest/node';
 import type { VitestSelection } from '../../mutation/driver/stryker-config.js';
 import {
   classifyRun,
@@ -56,6 +61,7 @@ import {
 } from '../../mutation/runner/test-ids.js';
 import { MUTATION_SCOPE_ENV, parseMutationScope } from '../../mutation/scope-file.js';
 import { toPackagePath, type RunMode } from '../types.js';
+import { byText, isRecord, sortedUnique, toPosixRelative } from '../util.js';
 
 /** The mutation config and project (the vitest5 runner's defaults). */
 export const MUTATION_CONFIG = 'tools/mutation/vitest.mutation.config.ts';
@@ -95,7 +101,54 @@ export interface VitestRunOptions {
   setupFiles?: readonly string[];
   /** Called with the project before the run: provides the extra setup files' context. */
   provide?: (project: Pick<TestProject, 'provide'>) => void;
+  /** Upper bound of the instance's worker processes (the CLI's `--concurrency`). */
+  maxWorkers?: number;
 }
+
+export interface InProcessVitestInput {
+  /** Absolute POSIX package root. */
+  root: string;
+  /** Config file, relative to the root. */
+  configFile: string;
+  /** The projects to keep; undefined keeps every project of the config. */
+  projects?: readonly string[];
+  /** Upper bound of the worker processes; undefined leaves Vitest's default. */
+  maxWorkers?: number;
+  /** Runs of each test (`repeats`); undefined runs each once. */
+  repeats?: number;
+}
+
+/**
+ * The `createVitest` options of an in-process run: no watch, no cache, no reporter, and at most
+ * `maxWorkers` worker processes when given (module header).
+ */
+export function inProcessVitestOptions(input: InProcessVitestInput): CliOptions {
+  return {
+    root: input.root,
+    config: path.join(input.root, input.configFile),
+    project: input.projects === undefined ? undefined : [...input.projects],
+    watch: false,
+    cache: false,
+    fsModuleCache: false,
+    ...(input.repeats === undefined ? {} : { repeats: input.repeats }),
+    ...(input.maxWorkers === undefined ? {} : { maxWorkers: input.maxWorkers }),
+    reporters: [],
+  };
+}
+
+/** What {@link runVitest} uses of a Vitest instance. */
+export type VitestSession = Pick<
+  Vitest,
+  'projects' | 'close' | 'collectTests' | 'runTestSpecifications'
+>;
+/** `vitest/node`'s `createVitest`, narrowed to {@link VitestSession}; unit tests inject a fake. */
+export type CreateVitest = (
+  options: CliOptions,
+  viteOverrides: { cacheDir: string },
+) => Promise<VitestSession>;
+
+const loadCreateVitest = async (): Promise<CreateVitest> =>
+  (await import('vitest/node')).createVitest;
 
 export interface VitestTestResult {
   id: string;
@@ -129,9 +182,6 @@ export interface VitestRunResult {
   loadedFiles?: string[];
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const toObservedError = (error: unknown): ObservedError =>
   isRecord(error)
     ? {
@@ -148,9 +198,6 @@ const describeErrors = (errors: readonly unknown[]): string =>
 
 const retryCount = (retry: number | { count?: number } | undefined): number =>
   typeof retry === 'number' ? retry : (retry?.count ?? 0);
-
-const toPosix = (file: string): string => file.split(path.sep).join('/');
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 const pick = <T extends string>(hooks: readonly string[] | undefined, names: readonly T[]): T[] =>
   names.filter((name) => hooks?.includes(name) ?? false);
@@ -229,7 +276,7 @@ const ENV_NAMES = [
 ] as const;
 
 interface Session {
-  vitest: Vitest;
+  vitest: VitestSession;
   project: TestProject;
   root: string;
 }
@@ -241,7 +288,8 @@ async function runSelected(
   testIds: readonly string[],
 ): Promise<Omit<VitestRunResult, 'wallClockMs'>> {
   const { vitest, project, root } = session;
-  const relative = (moduleId: string): string => path.posix.relative(root, toPosix(moduleId));
+  const relative = (moduleId: string): string =>
+    path.posix.relative(root, toPosixRelative(moduleId));
   const specs = files.map((file) => project.createSpecification(path.join(root, file)));
   const collected = await vitest.collectTests(specs);
   const earlier = new Set<TestModule>(collected.testModules);
@@ -338,20 +386,26 @@ async function runSelected(
   };
 }
 
-/** Runs the requested tests with a fresh Vitest instance; see the module comment. */
-export async function runVitest(options: VitestRunOptions): Promise<VitestRunResult> {
+/**
+ * Runs the requested tests with a fresh Vitest instance; see the module comment. `createVitest`
+ * defaults to `vitest/node`'s.
+ */
+export async function runVitest(
+  options: VitestRunOptions,
+  createVitest?: CreateVitest,
+): Promise<VitestRunResult> {
   const started = performance.now();
   const testIds = [...options.testIds];
   if (testIds.length === 0 || new Set(testIds).size !== testIds.length) {
     throw new Error('vitest run: the test ids must be non-empty and distinct');
   }
-  const files = [...new Set(testIds.map((id) => parseTestId(id).file))].sort(byText);
+  const files = sortedUnique(testIds.map((id) => parseTestId(id).file));
   mkdirSync(options.workDir, { recursive: true });
   const scopeFile = path.join(options.workDir, 'scope.json');
   const scopeText = `${JSON.stringify({ testFiles: files }, null, 2)}\n`;
   parseMutationScope(scopeText);
   writeFileSync(scopeFile, scopeText);
-  const root = toPosix(realpathSync(options.packageDir));
+  const root = toPosixRelative(realpathSync(options.packageDir));
   const { configFile, project: projectName } = options.vitest;
 
   const savedEnv = new Map(ENV_NAMES.map((name) => [name, process.env[name]]));
@@ -364,17 +418,14 @@ export async function runVitest(options: VitestRunOptions): Promise<VitestRunRes
   delete process.env[INSTRUMENTER_CONSTANTS.ACTIVE_MUTANT_ENV_VARIABLE];
   process.chdir(root);
   try {
-    const { createVitest } = await import('vitest/node');
-    const vitest = await createVitest(
-      {
+    const create = createVitest ?? (await loadCreateVitest());
+    const vitest = await create(
+      inProcessVitestOptions({
         root,
-        config: path.join(root, configFile),
-        project: [projectName],
-        watch: false,
-        cache: false,
-        fsModuleCache: false,
-        reporters: [],
-      },
+        configFile,
+        projects: [projectName],
+        maxWorkers: options.maxWorkers,
+      }),
       { cacheDir: path.join(options.workDir, 'vite-cache') },
     );
     try {

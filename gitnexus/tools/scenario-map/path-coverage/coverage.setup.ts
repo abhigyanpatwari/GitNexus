@@ -1,6 +1,6 @@
 /**
- * Layer 1 coverage hook of the scenario map (U4, R3, R4, KTD4, design §5.2), ported from the
- * spike's per-test V8 block coverage to the vitest5 runner's hook pattern. run-coverage.ts puts it
+ * Layer 1 coverage hook of the scenario map (U4, R3, R4, KTD4, design §5.2): per-test V8 block
+ * coverage in the vitest5 runner's hook pattern. run-coverage.ts puts it
  * first among the project's setup files and provides its context (`inject`, records.ts
  * `CoverageContext`). With the forks pool and default isolation every test file runs in a fresh
  * fork, so this file starts before the test file (and anything it imports) loads, and its record

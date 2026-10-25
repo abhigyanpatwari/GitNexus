@@ -53,7 +53,6 @@
  * (input-facet.ts, rule 4) reuses the selector rule through {@link buildScope},
  * {@link rowValueOf}, {@link isLiteralish}, {@link receiverQueried} and {@link abstractNode}.
  */
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { generate } from '@babel/generator';
@@ -76,6 +75,7 @@ import {
   type RowValue,
   type StaticInstance,
 } from '../types.js';
+import { sha1 } from '../util.js';
 import { contextOf } from './context.js';
 
 const SNAPSHOT_MATCHERS: ReadonlySet<string> = new Set([
@@ -297,7 +297,6 @@ export interface CheckSubject {
 
 // ── Small helpers ──────────────────────────────────────────────────────────
 
-const sha1 = (text: string): string => createHash('sha1').update(text).digest('hex');
 const gen = (node: t.Node): string => generate(node, { comments: false, compact: true }).code;
 const lineOf = (node: t.Node): number => node.loc?.start.line ?? 0;
 /** An identifier node with any text, for placeholders such as `<string>` (never parsed back). */

@@ -63,8 +63,7 @@
  * engine (U12) reads {@link IsolationResult}s. Every runner is injected (run-group.ts
  * `GroupRunDeps`), so unit tests never spawn Vitest or Stryker.
  */
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { parseTestId } from '../../mutation/runner/test-ids.js';
 import { readJsonFile } from '../../mutation/shared/fs.js';
@@ -90,6 +89,7 @@ import {
   type RunKey,
   type RunUniverse,
 } from './observations.js';
+import { byText, isRecord, sha1, sortedUnique, writeJson } from '../util.js';
 import type { GroupStatusReason, PairRef } from './plan-shards.js';
 import {
   DEFAULT_STRYKER_SETTINGS,
@@ -103,19 +103,23 @@ import {
   type StrykerSummary,
 } from './run-group.js';
 
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const sortedUnique = (values: Iterable<string>): string[] => [...new Set(values)].sort(byText);
-const sha1 = (text: string): string => createHash('sha1').update(text).digest('hex');
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 /** The lineage of a pair's `together` run: its two tests, sorted, as a JSON array. */
 export const pairKey = (a: string, b: string): string => JSON.stringify([a, b].sort(byText));
 
-/** The `main` lineage of each group, indexed. */
-const mainIndex = (merged: MergedObservations): ObservationIndex =>
-  indexObservations(merged, (run) => run.kind === 'main' && run.lineage === MAIN_LINEAGE);
+/** Main indexes of the merged observations seen, so the repeat stage and the comparison share one. */
+const mainIndexes = new WeakMap<MergedObservations, ObservationIndex>();
+
+/** The `main` lineage of each group, indexed (once per merged observations object). */
+function mainIndex(merged: MergedObservations): ObservationIndex {
+  const known = mainIndexes.get(merged);
+  if (known !== undefined) return known;
+  const index = indexObservations(
+    merged,
+    (run) => run.kind === 'main' && run.lineage === MAIN_LINEAGE,
+  );
+  mainIndexes.set(merged, index);
+  return index;
+}
 
 /** The main run of a group. */
 const mainRun = (group: string): RunKey => ({ group, kind: 'main', lineage: MAIN_LINEAGE });
@@ -547,8 +551,7 @@ export async function runIsolationRun(
     ...result,
     observations: encodeObservations(result.runUniverse, result.observations),
   };
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(written)}\n`);
+  writeJson(file, written);
   return result;
 }
 
@@ -595,17 +598,33 @@ export function readIsolationRun(file: string): IsolationRunResult {
   return { ...data, observations: decodeObservations(data.runUniverse, data.observations) };
 }
 
-/** Every isolation run result under `<work>/isolation/`, sorted by group and run id. */
-export function readIsolationRuns(workDir: string): IsolationRunResult[] {
+/**
+ * Every isolation run result under `<work>/isolation/`, sorted by group and run id. A file that
+ * does not read (truncated, another schema, a bad row) throws, or, with `onUnreadable`, is passed
+ * to it and left out.
+ */
+export function readIsolationRuns(
+  workDir: string,
+  onUnreadable?: (file: string, error: unknown) => void,
+): IsolationRunResult[] {
   const root = path.join(workDir, 'isolation');
   if (!existsSync(root)) return [];
+  const read = (file: string): IsolationRunResult[] => {
+    if (onUnreadable === undefined) return [readIsolationRun(file)];
+    try {
+      return [readIsolationRun(file)];
+    } catch (error) {
+      onUnreadable(file, error);
+      return [];
+    }
+  };
   return readdirSync(root)
     .sort(byText)
     .flatMap((group) =>
       readdirSync(path.join(root, group))
         .filter((name) => name.endsWith('.json'))
         .sort(byText)
-        .map((name) => readIsolationRun(path.join(root, group, name))),
+        .flatMap((name) => read(path.join(root, group, name))),
     );
 }
 
@@ -696,7 +715,9 @@ function runViews(
   const grouped = new Map<string, IsolationRunResult[]>();
   for (const run of runs) {
     const key = JSON.stringify([run.group, run.kind, run.lineage]);
-    grouped.set(key, [...(grouped.get(key) ?? []), run]);
+    const known = grouped.get(key);
+    if (known === undefined) grouped.set(key, [run]);
+    else known.push(run);
   }
   return new Map(
     [...grouped.entries()].map(([key, results]): [string, RunView] => {

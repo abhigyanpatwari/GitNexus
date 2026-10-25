@@ -21,8 +21,9 @@ name: Test Scenario Map
 #               isolation until a 300-minute deadline (KTD17). Results upload even on failure.
 #   merge       always runs once a plan exists: merges whatever the shards and value flow left
 #               (a missing shard leaves the run partial and its pairs Inconclusive, R11), compares
-#               against the newest `scenario-map-baseline` artifact of an earlier run, and writes
-#               the report. Only a complete default-branch run uploads a new baseline (KTD13).
+#               against the newest `scenario-map-baseline` artifact of an earlier completed run of
+#               this workflow on the default branch, and writes the report. Only a complete
+#               default-branch run uploads a new baseline (KTD13).
 #   upsert-issue  default branch only: a complete run replaces the tracking issue's body unless
 #               the issue already records a newer run; a partial run comments and leaves the body
 #               alone. The issue is found by label in any state and never closed.
@@ -160,7 +161,7 @@ jobs:
           status=0
           npm run test:scenario-map -- value-flow --work "$RUNNER_TEMP/scenario-map" || status=$?
           if [ "$status" -eq 1 ]; then
-            echo "::warning::value flow is degraded or its trace did not run; the report says so"
+            echo "::warning::value flow is degraded, or its trace did not run or was invalid; the report says so"
           elif [ "$status" -ne 0 ]; then
             exit "$status"
           fi
@@ -344,9 +345,13 @@ jobs:
             echo "Using $(basename "$dir")"
             cp -R "$dir/." "$work/"
           done < <(printf '%s\n' "${found[@]}" | sort -V)
-      # KTD13: the newest `scenario-map-baseline` of another run. Only complete default-branch
-      # runs upload one; the branch filter keeps it that way. None found: "first run" banner.
-      # A failure here must not cost the run its report: merge then runs without a baseline.
+      # KTD13: the newest non-expired `scenario-map-baseline` of an earlier completed run of THIS
+      # workflow on the default branch; only complete default-branch runs upload one. Never a
+      # repository-wide artifact listing: it holds fork pull_request runs too, and a fork branch
+      # may carry the default branch's name. This workflow has no pull_request trigger, and each
+      # run's event and head repository are checked as well. None found: "first run" banner. A
+      # failure here must not cost the run its report: merge then runs without a baseline, and a
+      # baseline merge cannot read gets the incompatible-baseline banner.
       - name: Fetch the baseline
         id: baseline
         continue-on-error: true
@@ -356,16 +361,34 @@ jobs:
         run: |
           dir="$RUNNER_TEMP/scenario-map-baseline"
           mkdir -p "$dir"
-          if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=scenario-map-baseline&per_page=100" \
-            > "$dir/artifacts.json"; then
-            echo "::warning::could not list the baseline artifacts; the report shows no baseline"
+          if ! gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/test-scenario-map.yml/runs" \
+            -f branch="$DEFAULT_BRANCH" -f status=completed -f per_page=20 > "$dir/runs.json"; then
+            echo "::warning::could not list the earlier runs; the report shows no baseline"
             exit 0
           fi
-          id="$(jq -r --argjson run "$GITHUB_RUN_ID" --arg branch "$DEFAULT_BRANCH" '
-            [.artifacts[]
-              | select((.expired | not) and .workflow_run.id != $run
-                and .workflow_run.head_branch == $branch)]
-            | sort_by(.created_at) | last | .id // empty' "$dir/artifacts.json")"
+          id=""
+          # Newest first: this workflow's scheduled or manual runs other than this one, whose
+          # repository and head repository are this repository.
+          while IFS= read -r run_id; do
+            [ -n "$run_id" ] || continue
+            if ! gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?name=scenario-map-baseline" \
+              < /dev/null > "$dir/artifacts.json"; then
+              continue
+            fi
+            id="$(jq -r '[.artifacts[] | select(.expired | not)]
+              | sort_by(.created_at) | last | .id // empty' "$dir/artifacts.json")"
+            if [ -n "$id" ]; then
+              echo "Baseline run: $run_id"
+              break
+            fi
+          done < <(jq -r --argjson run "$GITHUB_RUN_ID" --argjson repo "$GITHUB_REPOSITORY_ID" '
+            [.workflow_runs[]
+              | select(.id != $run
+                and (.event == "schedule" or .event == "workflow_dispatch")
+                and .repository.id == $repo
+                and .head_repository.id == $repo)]
+            | sort_by(.created_at) | reverse | .[].id' "$dir/runs.json")
           if [ -z "$id" ]; then
             echo "No earlier scenario-map-baseline artifact: first run, no baseline."
             exit 0

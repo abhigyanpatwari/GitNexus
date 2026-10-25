@@ -39,6 +39,7 @@
  */
 import { parseTestId } from '../../mutation/runner/test-ids.js';
 import { productionFilePredicate } from '../types.js';
+import { byText, sortedUnique } from '../util.js';
 
 export const SHARD_PLAN_SCHEMA_VERSION = 1;
 
@@ -128,9 +129,6 @@ export interface GroupScopeInput {
   /** Extra path-map roots (controls mode). */
   extraRoots?: readonly string[];
 }
-
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const sortedUnique = (values: Iterable<string>): string[] => [...new Set(values)].sort(byText);
 
 /** Test-side names, as types.ts: never production, never excluded. */
 const TEST_NAME = /\.(test|spec|case)\.[mc]?[jt]sx?$/;
@@ -408,8 +406,19 @@ export function resolvePairSchedules(input: ScheduleInput): PairSchedule[] {
   const overBudget = new Set(input.plan.overBudget);
   const byGroup = new Map<string, GroupOutcome[]>();
   for (const outcome of [...input.outcomes].sort((x, y) => x.shard - y.shard)) {
-    byGroup.set(outcome.group, [...(byGroup.get(outcome.group) ?? []), outcome]);
+    const known = byGroup.get(outcome.group);
+    if (known === undefined) byGroup.set(outcome.group, [outcome]);
+    else known.push(outcome);
   }
+  // The tests of each group's first outcome, as a set (a pair checks two of them).
+  const testsOf = new Map<GroupOutcome, ReadonlySet<string>>();
+  const firstTests = (outcome: GroupOutcome): ReadonlySet<string> => {
+    const known = testsOf.get(outcome);
+    if (known !== undefined) return known;
+    const tests = new Set(outcome.tests);
+    testsOf.set(outcome, tests);
+    return tests;
+  };
   return input.pairs.map((pair): PairSchedule => {
     const inconclusive = (
       reason: ScheduleReason,
@@ -432,7 +441,8 @@ export function resolvePairSchedules(input: ScheduleInput): PairSchedule[] {
       return inconclusive(failed.reason ?? 'not-scheduled', failed.shard, failed.detail);
     }
     const [first] = outcomes;
-    if (!first.tests.includes(pair.a) || !first.tests.includes(pair.b)) {
+    const tests = firstTests(first);
+    if (!tests.has(pair.a) || !tests.has(pair.b)) {
       return inconclusive('not-scheduled', first.shard, 'the group run lacks a test of the pair');
     }
     return { ...pair, status: 'evaluated', reason: null, shard: first.shard, detail: null };

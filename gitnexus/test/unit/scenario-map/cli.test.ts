@@ -9,7 +9,12 @@
  * concurrency and speed factor, the shards needed, the value-flow view of the isolation
  * selection, the seeded group sample, the shard completeness check, the expected.json
  * comparison, the batch split of observations and run universes, the slim batch record), and a
- * merge that reports a group result of an older schema as incomplete.
+ * merge that reports a group result of an older schema as incomplete. Also: a merge whose
+ * --baseline does not read, is not JSON or has another schema still writes its report (the
+ * incompatible-baseline banner, a warning); a truncated isolation run file leaves the run partial;
+ * an invalid trace run leaves it partial; the controls oracle fails on an empty expected.json, an
+ * unlisted repeat verdict and a case file without a pair; the PDG analyze budget stays below the
+ * CI value-flow step timeout.
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -33,7 +38,9 @@ import type {
 } from '../../../tools/scenario-map/mutation/observations.js';
 import type { PairValueFlow } from '../../../tools/scenario-map/value-flow/pdg-walk.js';
 import type { PairTrace } from '../../../tools/scenario-map/value-flow/trace.js';
+import type { PairVerdict, RuleId, Verdict } from '../../../tools/scenario-map/verdict/verdict.js';
 import {
+  ANALYZE_TIMEOUT_MS,
   SCENARIO_COST_MODEL,
   WORK_SCHEMA_VERSION,
   mutantRunScale,
@@ -44,10 +51,12 @@ import {
   batchRecordOf,
   batchScope,
   compareControls,
+  controlsCaseFiles,
   effectiveShardPlan,
   estimateScenarioGroup,
   isolationOrder,
   parseCliArgs,
+  parseExpectedControls,
   planShards,
   replanShards,
   runCli,
@@ -121,6 +130,11 @@ describe('parseCliArgs', () => {
       null,
       3,
     ]);
+  });
+
+  it('takes the worker bound of the value-flow trace run', () => {
+    const valueFlow = parseCliArgs(['value-flow', '--concurrency', '3'], '/base');
+    expect([valueFlow.stage, valueFlow.concurrency]).toEqual(['value-flow', 3]);
   });
 
   it('takes the debug group selection of the shard stage', () => {
@@ -418,6 +432,7 @@ function writeTwoShardRun(work: string, replan: ShardReplan | null = null): void
     trace: {
       status: 'not-run',
       detail: 'no pairs',
+      issues: [],
       wrap: { added: [], skipped: [], unavailable: [], errors: [] },
       baseline: null,
       traced: null,
@@ -489,6 +504,91 @@ describe('merge stage', () => {
       ],
       pair: [A1, 'not-scheduled'],
     });
+  });
+
+  it.each([
+    [
+      'a truncated report (not JSON)',
+      (file: string): void => writeFileSync(file, '{"schemaVersion": 1, "contin'),
+      /^unreadable baseline: /,
+    ],
+    [
+      'a report of another schema',
+      (file: string): void => writeFileSync(file, JSON.stringify({ schemaVersion: 999 })),
+      /^baseline schema version 999, this report \d+$/,
+    ],
+    ['a missing file', (): void => undefined, /^unreadable baseline: ENOENT/],
+  ])(
+    'still writes the report with %s as --baseline, under the incompatible-baseline banner',
+    async (_title, write, reason) => {
+      const { deps, lines, work } = setup();
+      writeTwoShardRun(work, ONE_SHARD_REPLAN);
+      const baseline = path.join(path.dirname(work), 'baseline.json');
+      write(baseline);
+      const code = await runCli(['merge', '--work', work, '--baseline', baseline], deps);
+      const report = JSON.parse(
+        readFileSync(workLayout(work).reportJson, 'utf8'),
+      ) as ScenarioMapReport;
+      expect({
+        code,
+        state: report.changes.state,
+        banner: report.changes.banner,
+        reason: report.changes.reason,
+        warned: lines.some((line) => line.startsWith(`merge: warning: --baseline ${baseline}`)),
+      }).toEqual({
+        code: 0,
+        state: 'incompatible',
+        banner: 'incompatible baseline',
+        reason: expect.stringMatching(reason),
+        warned: true,
+      });
+    },
+  );
+
+  it('leaves a truncated isolation run out and the run partial', async () => {
+    const { deps, work } = setup();
+    writeTwoShardRun(work, ONE_SHARD_REPLAN);
+    const file = path.join(work, 'isolation', 'ga', 'ga-together-1.json');
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, '{"schemaVersion": 2, "group": "ga", "observ');
+    const code = await runCli(['merge', '--work', work], deps);
+    const report = JSON.parse(
+      readFileSync(workLayout(work).reportJson, 'utf8'),
+    ) as ScenarioMapReport;
+    expect([code, report.completeness.partial, report.completeness.shards.incomplete]).toEqual([
+      1,
+      true,
+      [{ shard: 'isolation ga/ga-together-1.json', reason: expect.stringMatching(/JSON/) }],
+    ]);
+  });
+
+  it('marks the run partial when the trace run is invalid', async () => {
+    const { deps, work } = setup();
+    writeTwoShardRun(work, ONE_SHARD_REPLAN);
+    const layout = workLayout(work);
+    const valueFlow = JSON.parse(readFileSync(layout.valueFlow, 'utf8')) as ValueFlowFile;
+    const invalid: ValueFlowFile = {
+      ...valueFlow,
+      pairs: { facetEqual: 1, valueDiffering: 0 },
+      trace: {
+        ...valueFlow.trace,
+        status: 'ran',
+        detail: null,
+        issues: ['traced run error/infrastructure'],
+      },
+    };
+    writeFileSync(layout.valueFlow, JSON.stringify(invalid));
+    const code = await runCli(['merge', '--work', work], deps);
+    const report = JSON.parse(readFileSync(layout.reportJson, 'utf8')) as ScenarioMapReport;
+    expect([code, report.completeness.shards.incomplete]).toEqual([
+      1,
+      [
+        {
+          shard: 'value-flow',
+          reason: 'trace run invalid: traced run error/infrastructure',
+        },
+      ],
+    ]);
   });
 
   it('follows the value-flow re-plan instead of the provisional plan', async () => {
@@ -804,6 +904,7 @@ describe('value flow before isolation', () => {
     trace: {
       status: overrides.traced === false ? 'not-run' : 'ran',
       detail: null,
+      issues: [],
       wrap: { added: [], skipped: [], unavailable: [], errors: [] },
       baseline: null,
       traced: null,
@@ -1193,6 +1294,110 @@ describe('shardIssues', () => {
   });
 });
 
+describe('parseExpectedControls', () => {
+  const PAIR = {
+    id: 'p',
+    tests: ['p.case.ts#p > a', 'p.case.ts#p > b'],
+    verdict: 'review',
+    rule: 'value-flow-veto',
+  };
+
+  it('reads each pair of the fixture file', () => {
+    expect(parseExpectedControls({ schemaVersion: 1, pairs: [{ ...PAIR, stages: {} }] })).toEqual([
+      PAIR,
+    ]);
+  });
+
+  it.each([
+    ['pairs that are no array', { pairs: {} }, /pairs must be an array/],
+    ['no pairs at all', { schemaVersion: 1 }, /pairs must be an array/],
+    ['an empty pair list', { pairs: [] }, /pairs is empty/],
+    ['a pair with one test', { pairs: [{ ...PAIR, tests: ['p.case.ts#p > a'] }] }, /malformed/],
+    [
+      'a pair without a rule',
+      { pairs: [{ id: 'p', tests: PAIR.tests, verdict: 'row' }] },
+      /malformed/,
+    ],
+  ])('rejects %s', (_title, data, message) => {
+    expect(() => parseExpectedControls(data)).toThrow(message);
+  });
+});
+
+describe('controls oracle failures', () => {
+  const prefix = 'test/fixtures/mutation-scenario-map/';
+  const expectedPair = {
+    id: 'p',
+    tests: ['p.case.ts#p > a', 'p.case.ts#p > b'] as [string, string],
+    verdict: 'review',
+    rule: 'value-flow-veto',
+  };
+  const verdictOf = (
+    a: string,
+    b: string,
+    verdict: Verdict,
+    rule: RuleId,
+  ): Pick<PairVerdict, 'a' | 'b' | 'verdict' | 'rule'> => ({
+    a: `${prefix}${a}`,
+    b: `${prefix}${b}`,
+    verdict,
+    rule,
+  });
+  const listed = verdictOf('p.case.ts#p > a', 'p.case.ts#p > b', 'review', 'value-flow-veto');
+
+  it.each([
+    ['an empty expected list', [], [], [], ['no expected pair']],
+    [
+      'a strong repeat between two case files that expected.json does not list',
+      [expectedPair],
+      [
+        listed,
+        verdictOf('p.case.ts#p > a', 'q.case.ts#q > a', 'repeat-strong', 'all-strong-conditions'),
+      ],
+      ['p.case.ts'],
+      ['unlisted repeat-strong: p.case.ts#p > a + q.case.ts#q > a'],
+    ],
+    [
+      'a weak repeat that expected.json does not list',
+      [expectedPair],
+      [listed, verdictOf('p.case.ts#p > b', 'q.case.ts#q > b', 'repeat-weak', 'weak-disqualifier')],
+      ['p.case.ts'],
+      ['unlisted repeat-weak: p.case.ts#p > b + q.case.ts#q > b'],
+    ],
+    [
+      'a case file no expected pair exercises',
+      [expectedPair],
+      [listed],
+      ['p.case.ts', 'q.case.ts'],
+      ['case file without a pair: q.case.ts'],
+    ],
+    [
+      'an unlisted pair that is not a repeat (nothing to report)',
+      [expectedPair],
+      [listed, verdictOf('p.case.ts#p > a', 'q.case.ts#q > a', 'distinct', 'path-differs')],
+      ['p.case.ts'],
+      [],
+    ],
+  ] as const)('reports %s', (_title, expected, verdicts, caseFiles, differences) => {
+    expect(compareControls(expected, verdicts, prefix, caseFiles).differences).toEqual(differences);
+  });
+
+  it('finds the case files of a fixture, nested ones included, relative to its root', () => {
+    const dir = tempDir();
+    mkdirSync(path.join(dir, 'src'), { recursive: true });
+    mkdirSync(path.join(dir, 'more'), { recursive: true });
+    for (const file of ['b.case.ts', 'a.case.ts', 'more/c.case.ts', 'src/a.ts', 'expected.json']) {
+      writeFileSync(path.join(dir, file), '');
+    }
+    expect(controlsCaseFiles(dir)).toEqual(['a.case.ts', 'b.case.ts', 'more/c.case.ts']);
+  });
+});
+
+describe('PDG analyze budget', () => {
+  it('stays below the CI value-flow step timeout of 50 minutes, so the degraded path is reachable', () => {
+    expect(ANALYZE_TIMEOUT_MS).toBeLessThan(50 * 60_000);
+  });
+});
+
 describe('compareControls', () => {
   it('names every expected pair whose verdict or rule differs or has no verdict', () => {
     const prefix = 'test/fixtures/mutation-scenario-map/';
@@ -1232,6 +1437,7 @@ describe('compareControls', () => {
         },
       ],
       prefix,
+      ['s.case.ts', 'o.case.ts', 'g.case.ts'],
     );
     expect(comparison.differences).toEqual(['other', 'gone']);
   });

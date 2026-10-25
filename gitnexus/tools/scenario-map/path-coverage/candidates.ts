@@ -23,7 +23,7 @@
  *
  * Library only; pure. The scenario-map CLI (U14) and run-coverage.ts call {@link findCandidates}.
  */
-import { createHash } from 'node:crypto';
+import { ascending, byText, sha1 } from '../util.js';
 
 /** Jaccard >= 99 / 100 makes a candidate (R3). */
 export const JACCARD_THRESHOLD = Object.freeze({ numerator: 99, denominator: 100 });
@@ -83,9 +83,6 @@ export interface CandidateResult {
   stats: CandidateStats;
 }
 
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const ascending = (a: number, b: number): number => a - b;
-
 /** Size of the intersection of two ascending arrays. */
 function intersectionSize(a: readonly number[], b: readonly number[]): number {
   let shared = 0;
@@ -100,12 +97,12 @@ function intersectionSize(a: readonly number[], b: readonly number[]): number {
   return shared;
 }
 
-const sortedUnique = (blocks: readonly number[]): number[] => [...new Set(blocks)].sort(ascending);
+const sortedBlocks = (blocks: readonly number[]): number[] => [...new Set(blocks)].sort(ascending);
 
 /** Jaccard similarity of two block sets; 1 for two empty sets. */
 export function jaccard(a: readonly number[], b: readonly number[]): number {
-  const x = sortedUnique(a);
-  const y = sortedUnique(b);
+  const x = sortedBlocks(a);
+  const y = sortedBlocks(b);
   const shared = intersectionSize(x, y);
   const union = x.length + y.length - shared;
   return union === 0 ? 1 : shared / union;
@@ -181,8 +178,7 @@ function checksContextPairs(items: readonly Indexed[]): [number, number][] {
   return found;
 }
 
-const groupId = (tests: readonly string[]): string =>
-  `g${createHash('sha1').update(tests.join('\n')).digest('hex').slice(0, 16)}`;
+const groupId = (tests: readonly string[]): string => `g${sha1(tests.join('\n')).slice(0, 16)}`;
 
 /** Connected components of the pairs, as sorted test-id lists keyed by each member. */
 function components(pairs: readonly { a: string; b: string }[]): Map<string, string[]> {
@@ -222,7 +218,7 @@ function components(pairs: readonly { a: string; b: string }[]): Map<string, str
 export function findCandidates(tests: readonly CandidateTest[]): CandidateResult {
   const items: Indexed[] = [...tests]
     .sort((p, q) => byText(p.id, q.id))
-    .map((test) => ({ test, blocks: sortedUnique(test.blocks) }));
+    .map((test) => ({ test, blocks: sortedBlocks(test.blocks) }));
   for (let i = 1; i < items.length; i += 1) {
     if (items[i].test.id === items[i - 1].test.id) {
       throw new Error(`candidates: test id ${items[i].test.id} is listed twice`);

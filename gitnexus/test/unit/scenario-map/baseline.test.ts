@@ -1,12 +1,14 @@
 /**
  * Locks the week-over-week comparison of the scenario map report (U13, R12, KTD13, design §5.5):
  * new, changed, unchanged and resolved items keyed by continuity anchors, the unique-only body
- * fallback for moved tests, the "first run, no baseline" and "incompatible baseline" banners, and
+ * fallback for moved tests, the "first run, no baseline" and "incompatible baseline" banners (a
+ * baseline that could not be read included), and
  * a report compared with itself and with a copy whose one evidence hash differs.
  */
 import { describe, expect, it } from 'vitest';
 import {
   BANNERS,
+  UnreadableBaseline,
   compareWithBaseline,
   itemKey,
   type ContinuityItem,
@@ -102,6 +104,18 @@ describe('compareWithBaseline', () => {
       state: 'incompatible',
       reason: 'baseline has no readable continuity',
       counts: null,
+    });
+  });
+
+  it('treats a baseline that could not be read as incompatible, with the read error', () => {
+    const unreadable = new UnreadableBaseline('Unexpected end of JSON input');
+    expect(compareWithBaseline(section([P('h1')]), unreadable)).toMatchObject({
+      state: 'incompatible',
+      banner: BANNERS.incompatible,
+      reason: 'unreadable baseline: Unexpected end of JSON input',
+      baseline: { runId: null, schemaVersion: null },
+      counts: null,
+      changes: [],
     });
   });
 

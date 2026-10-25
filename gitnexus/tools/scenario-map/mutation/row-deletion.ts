@@ -60,7 +60,6 @@
  * Library only; the scenario-map CLI (U14) plans the pairs and calls {@link runRowDeletion}. The
  * runner and the copy are injected ({@link RowDeletionDeps}), so unit tests never spawn Vitest.
  */
-import { createHash } from 'node:crypto';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parse } from '@babel/parser';
@@ -80,7 +79,7 @@ import {
 } from '../../mutation/prepare/prepare.js';
 import type { OutcomeClass } from '../../mutation/runner/classify-outcome.js';
 import { errorMessage } from '../../mutation/shared/cli.js';
-import { isInside } from '../../mutation/shared/fs.js';
+import { overlaps } from '../../mutation/shared/fs.js';
 import type {
   DiscardedValue,
   FacetContext,
@@ -95,6 +94,7 @@ import {
   type TableSearch,
 } from '../facet/tables.js';
 import { extraRootsOf } from '../types.js';
+import { byText, sha256, sortedUnique } from '../util.js';
 import { verifyPreparedCopy, type ScenarioRunManifest } from './run-group.js';
 import {
   runVitest,
@@ -204,9 +204,6 @@ const WRITING_CALLS: ReadonlySet<string> = new Set([
   'Reflect.setPrototypeOf',
 ]);
 
-const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
-const sortedDistinct = (values: readonly string[]): string[] => [...new Set(values)].sort(byText);
-
 // ── Table search ───────────────────────────────────────────────────────────
 
 /**
@@ -219,7 +216,7 @@ export function pairTableSearch(ctx: FacetContext, subjects: readonly FacetSubje
     (subject.executedFiles ?? []).filter((file) => ctx.isProduction(file)),
   );
   const closure = subjects.flatMap((subject) => ctx.closureOf(subject)?.near ?? []);
-  return { executed: sortedDistinct(executed), closure: sortedDistinct(closure) };
+  return { executed: sortedUnique(executed), closure: sortedUnique(closure) };
 }
 
 /** A discarded value as the table index holds it; null for values no table holds. */
@@ -422,8 +419,22 @@ function collectionEntries(kind: 'Set' | 'Map', array: t.ArrayExpression): Entry
   return scan;
 }
 
+const parseModule = (source: string): t.File =>
+  parse(source, { sourceType: 'module', plugins: PLUGINS });
+
 /** Every object literal, `new Set([...])` and `new Map([...])` of a module; null when it does not parse. */
 function scanTables(file: string, source: string): ScannedTable[] | null {
+  let ast: t.File;
+  try {
+    ast = parseModule(source);
+  } catch {
+    return null;
+  }
+  return tablesIn(file, ast);
+}
+
+/** {@link scanTables} over a parsed module; null when the traversal throws. */
+function tablesIn(file: string, ast: t.File): ScannedTable[] | null {
   const tables: ScannedTable[] = [];
   const record = (kind: TableKind, literal: NodePath, scan: EntryScan): void => {
     if (scan.entries.size < 2) return;
@@ -439,7 +450,6 @@ function scanTables(file: string, source: string): ScannedTable[] | null {
     });
   };
   try {
-    const ast = parse(source, { sourceType: 'module', plugins: PLUGINS });
     traverse(ast, {
       ObjectExpression(path) {
         record('object', path, objectEntries(path.node));
@@ -470,26 +480,37 @@ export function scanSupportedTables(
   file: string,
   source: string,
 ): Map<string, (UnsupportedConstruct | 'ambiguous')[]> | null {
-  const tables = scanTables(file, source);
-  if (tables === null) return null;
-  let topLevel: Set<string>;
+  let ast: t.File;
   try {
-    const ast = parse(source, { sourceType: 'module', plugins: PLUGINS });
-    topLevel = new Set(
-      ast.program.body.flatMap((statement) => {
-        const declaration =
-          t.isExportNamedDeclaration(statement) && statement.declaration !== null
-            ? statement.declaration
-            : statement;
-        if (!t.isVariableDeclaration(declaration) || declaration.kind !== 'const') return [];
-        return declaration.declarations.flatMap((declarator) =>
-          t.isIdentifier(declarator.id) ? [declarator.id.name] : [],
-        );
-      }),
-    );
+    ast = parseModule(source);
   } catch {
     return null;
   }
+  return scanSupportedTablesIn(file, ast);
+}
+
+/**
+ * {@link scanSupportedTables} over a module already parsed with the same options (`module`,
+ * `typescript` and `decorators-legacy`), so a caller that parsed it does not parse it again.
+ */
+export function scanSupportedTablesIn(
+  file: string,
+  ast: t.File,
+): Map<string, (UnsupportedConstruct | 'ambiguous')[]> | null {
+  const tables = tablesIn(file, ast);
+  if (tables === null) return null;
+  const topLevel = new Set(
+    ast.program.body.flatMap((statement) => {
+      const declaration =
+        t.isExportNamedDeclaration(statement) && statement.declaration !== null
+          ? statement.declaration
+          : statement;
+      if (!t.isVariableDeclaration(declaration) || declaration.kind !== 'const') return [];
+      return declaration.declarations.flatMap((declarator) =>
+        t.isIdentifier(declarator.id) ? [declarator.id.name] : [],
+      );
+    }),
+  );
   const out = new Map<string, (UnsupportedConstruct | 'ambiguous')[]>();
   for (const table of tables) {
     if (table.binding === null || !topLevel.has(table.binding)) continue;
@@ -520,7 +541,7 @@ function spliceEnd(source: string, end: number): number {
 
 const parses = (source: string): boolean => {
   try {
-    parse(source, { sourceType: 'module', plugins: PLUGINS });
+    parseModule(source);
     return true;
   } catch {
     return false;
@@ -541,27 +562,82 @@ type TableChoice =
 const sameSet = (a: ReadonlySet<LiteralKey>, b: ReadonlySet<LiteralKey>): boolean =>
   a.size === b.size && [...a].every((value) => b.has(value));
 
-class Planner {
-  private readonly scans = new Map<string, ScannedTable[] | null>();
+/** What planning reads more than once across the pairs of one env. */
+interface PlannerCache {
+  sources: Map<string, string | null>;
+  scans: Map<string, ScannedTable[] | null>;
+  /** `contentHash` of each file's planning text. */
+  fileHashes: Map<string, string>;
+  /** Whether a file's planning text parses without a splice, by `<file>\0<start>\0<end>`. */
+  splices: Map<string, boolean>;
+}
 
-  constructor(private readonly env: RowDeletionEnv) {}
+/**
+ * One cache per env: a run plans every pair over one env, so each file is read, scanned and
+ * hashed once and each splice checked once. `env.read` returns the same text for a file
+ * throughout (the run's checkout).
+ */
+const plannerCaches = new WeakMap<RowDeletionEnv, PlannerCache>();
+
+class Planner {
+  private readonly cache: PlannerCache;
+
+  constructor(private readonly env: RowDeletionEnv) {
+    let cache = plannerCaches.get(env);
+    if (cache === undefined) {
+      cache = { sources: new Map(), scans: new Map(), fileHashes: new Map(), splices: new Map() };
+      plannerCaches.set(env, cache);
+    }
+    this.cache = cache;
+  }
 
   source(file: string): string | null {
-    return this.env.read(file);
+    const { sources } = this.cache;
+    if (!sources.has(file)) sources.set(file, this.env.read(file));
+    return sources.get(file) ?? null;
+  }
+
+  /** The text a file's deletions are planned on: its source, empty when it cannot be read. */
+  text(file: string): string {
+    return this.source(file) ?? '';
+  }
+
+  fileHash(file: string): string {
+    const { fileHashes } = this.cache;
+    let hash = fileHashes.get(file);
+    if (hash === undefined) {
+      hash = contentHash(this.text(file));
+      fileHashes.set(file, hash);
+    }
+    return hash;
+  }
+
+  /** Whether the file's text still parses with `[start, end)` cut out. */
+  spliceParses(file: string, start: number, end: number): boolean {
+    const { splices } = this.cache;
+    const key = `${file}\0${start}\0${end}`;
+    let parsesCut = splices.get(key);
+    if (parsesCut === undefined) {
+      const text = this.text(file);
+      parsesCut = parses(text.slice(0, start) + text.slice(end));
+      splices.set(key, parsesCut);
+    }
+    return parsesCut;
   }
 
   private scan(file: string): ScannedTable[] | null {
-    if (!this.scans.has(file)) {
-      const source = this.env.read(file);
-      this.scans.set(file, source === null ? null : scanTables(file, source));
+    const { scans } = this.cache;
+    if (!scans.has(file)) {
+      const source = this.source(file);
+      scans.set(file, source === null ? null : scanTables(file, source));
     }
-    return this.scans.get(file) ?? null;
+    return scans.get(file) ?? null;
   }
 
   /** The one supported table holding both keys; see the module comment. */
   choose(search: TableSearch, a: LiteralKey, b: LiteralKey): TableChoice {
     for (const tier of [search.executed, search.closure]) {
-      const matching = sortedDistinct(tier).flatMap((file) => {
+      const matching = sortedUnique(tier).flatMap((file) => {
         const tables = this.env.tables
           .factsOf(file)
           .tables.filter((table) => table.values.has(a) && table.values.has(b));
@@ -584,7 +660,7 @@ class Planner {
       if (table.unsupported.size > 0) {
         return {
           kind: 'problem',
-          reasons: sortedDistinct([...table.unsupported].map((c) => `unsupported-table: ${c}`)),
+          reasons: sortedUnique([...table.unsupported].map((c) => `unsupported-table: ${c}`)),
         };
       }
       return { kind: 'table', table };
@@ -601,17 +677,21 @@ const rowTableOf = (table: ScannedTable): RowTable => ({
 });
 
 /** The deletion of one key of a chosen table; null when its splice does not parse. */
-function deletionOf(table: ScannedTable, key: LiteralKey, source: string): PlannedDeletion | null {
+function deletionOf(
+  planner: Planner,
+  table: ScannedTable,
+  key: LiteralKey,
+): PlannedDeletion | null {
   const node = table.entries.get(key);
   if (node === undefined || typeof node.start !== 'number' || typeof node.end !== 'number') {
     return null;
   }
   if (node.loc === null || node.loc === undefined) return null;
-  const splice = { start: node.start, end: spliceEnd(source, node.end) };
-  if (!parses(source.slice(0, splice.start) + source.slice(splice.end))) return null;
+  const splice = { start: node.start, end: spliceEnd(planner.text(table.file), node.end) };
+  if (!planner.spliceParses(table.file, splice.start, splice.end)) return null;
   const identity: MutantIdentity = {
     file: table.file,
-    fileHash: contentHash(source),
+    fileHash: planner.fileHash(table.file),
     location: reportLocation(node.loc),
     mutatorName: ROW_DELETION_MUTATOR,
     replacement: '',
@@ -647,9 +727,8 @@ export function planRowDeletion(input: RowDeletionPairInput, env: RowDeletionEnv
       continue;
     }
     const { table } = choice;
-    const source = planner.source(table.file) ?? '';
     const planned = [keyA, keyB].map((key) =>
-      key === null ? null : deletionOf(table, key, source),
+      key === null ? null : deletionOf(planner, table, key),
     );
     if (planned.some((deletion) => deletion === null)) {
       positions.push({
@@ -664,7 +743,7 @@ export function planRowDeletion(input: RowDeletionPairInput, env: RowDeletionEnv
       if (deletion !== null) deletions.set(deletion.globalId, deletion);
     positions.push({ ...base, status: 'planned', reasons: [], table: rowTableOf(table) });
   }
-  const reasons = sortedDistinct(positions.flatMap((position) => position.reasons));
+  const reasons = sortedUnique(positions.flatMap((position) => position.reasons));
   const status =
     deletions.size > 0
       ? 'planned'
@@ -790,6 +869,8 @@ export interface RowDeletionRunOptions {
   /** The run manifest the copy is verified against. */
   manifest: ScenarioRunManifest;
   plans: readonly RowDeletionPlan[];
+  /** Upper bound of each Vitest run's worker processes (the CLI's `--concurrency`). */
+  maxWorkers?: number;
 }
 
 const summarize = (run: VitestRunResult, tests: readonly string[]): RunSummary => ({
@@ -805,12 +886,7 @@ const summarize = (run: VitestRunResult, tests: readonly string[]): RunSummary =
 
 /** `<work>/row-deletion/pairs/<16 hex digits of sha256 over the two ids>`. */
 const pairDir = (workDir: string, plan: RowDeletionPlan): string =>
-  path.join(
-    workDir,
-    'row-deletion',
-    'pairs',
-    createHash('sha256').update(`${plan.a}\n${plan.b}`).digest('hex').slice(0, 16),
-  );
+  path.join(workDir, 'row-deletion', 'pairs', sha256(`${plan.a}\n${plan.b}`).slice(0, 16));
 
 interface Copy {
   preparedRoot: string;
@@ -837,7 +913,7 @@ function resultOf(plan: RowDeletionPlan, finish: Finish, wallClockMs: number): R
     ...finish.deletions.map((deletion) => deletion.outcome),
   ];
   const outcome = plan.positions.length === 0 ? 'not-applicable' : combineRowDeletion(outcomes);
-  const reasons = sortedDistinct([
+  const reasons = sortedUnique([
     ...plan.reasons,
     ...finish.reasons,
     ...finish.deletions.flatMap((deletion) =>
@@ -883,10 +959,10 @@ const skipped = (
 async function runPlan(
   plan: RowDeletionPlan,
   copy: Copy,
-  manifest: ScenarioRunManifest,
-  workDir: string,
+  options: Pick<RowDeletionRunOptions, 'manifest' | 'workDir' | 'maxWorkers'>,
   deps: RowDeletionDeps,
 ): Promise<Finish> {
+  const { manifest, workDir, maxWorkers } = options;
   if (copy.mismatches.length > 0) {
     return skipped(plan, 'manifest-mismatch', copy.mismatches.join('; '));
   }
@@ -926,6 +1002,7 @@ async function runPlan(
       vitest,
       workDir: path.join(dir, name),
       probeFiles,
+      maxWorkers,
     });
 
   const probeFiles = [...files.values()].map((file) => file.packagePath);
@@ -974,7 +1051,7 @@ export async function runRowDeletion(
   deps: RowDeletionDeps = defaultRowDeletionDeps,
 ): Promise<RowDeletionResult[]> {
   const { repoRoot, workDir, manifest, plans } = options;
-  if (isInside(repoRoot, workDir) || isInside(workDir, repoRoot)) {
+  if (overlaps(repoRoot, workDir)) {
     throw new Error(`row deletion: the work directory ${workDir} must lie outside ${repoRoot}`);
   }
   let copy: Copy | null = null;
@@ -996,7 +1073,7 @@ export async function runRowDeletion(
         mismatches: verifyPreparedCopy(manifest, preparedRoot).mismatches,
       };
     }
-    const finish = await runPlan(plan, copy, manifest, workDir, deps);
+    const finish = await runPlan(plan, copy, options, deps);
     results.push(resultOf(plan, finish, Math.round(deps.now() - started)));
   }
   return results;

@@ -9,12 +9,16 @@
  * function query is unknown; a fifth call level hits the depth cap; the statement rule; a derived
  * binding walked under its own name; repo code outside the mutated files is unknown; CALL_SUMMARY
  * continues the walk in the caller; a TypeScript version other than 7.0.2 and a missing PDG layer
- * degrade the run; a PDG that misses a use is unknown.
+ * degrade the run; a PDG that misses a use is unknown; a checker whose project fails to open
+ * closes its server (a fake `typescript/unstable/sync` in a temp package).
  */
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { parse } from '@babel/parser';
 import traverse from '@babel/traverse';
 import * as t from '@babel/types';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { encodeReachingDefReasonPairs } from '../../../src/core/ingestion/cfg/reaching-def-reason-codec.js';
 import type { DiscardedValue } from '../../../tools/scenario-map/facet/input-facet.js';
 import type { BindSide } from '../../../tools/scenario-map/value-flow/bind.js';
@@ -33,6 +37,43 @@ import {
   type ValueFlowPair,
 } from '../../../tools/scenario-map/value-flow/pdg-walk.js';
 import type { CalleeInfo } from '../../../tools/scenario-map/value-flow/sinks.js';
+
+const tempDirs: string[] = [];
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+/** A fake TypeScript 7 API whose project never opens; it logs `open` and `close`. */
+const FAKE_SYNC = `export const events = [];
+export class API {
+  constructor() { events.push('open'); }
+  updateSnapshot() { throw new Error('project failed to open'); }
+  close() { events.push('close'); }
+}
+`;
+
+/** A temp repo whose gitnexus/ resolves `typescript/unstable/sync` to {@link FAKE_SYNC}. */
+function fakeTypescript(): { repoRoot: string; syncFile: string } {
+  const repoRoot = mkdtempSync(path.join(os.tmpdir(), 'scenario-checker-'));
+  tempDirs.push(repoRoot);
+  const tsDir = path.join(repoRoot, 'gitnexus', 'node_modules', 'typescript');
+  mkdirSync(tsDir, { recursive: true });
+  writeFileSync(path.join(repoRoot, 'gitnexus', 'package.json'), '{"name":"fake","private":true}');
+  writeFileSync(
+    path.join(tsDir, 'package.json'),
+    JSON.stringify({
+      name: 'typescript',
+      version: PINNED_TYPESCRIPT,
+      exports: { './package.json': './package.json', './unstable/sync': './sync.mjs' },
+    }),
+  );
+  const syncFile = path.join(tsDir, 'sync.mjs');
+  writeFileSync(syncFile, FAKE_SYNC);
+  return { repoRoot, syncFile };
+}
+
+const eventsOf = (module: unknown): unknown =>
+  typeof module === 'object' && module !== null && 'events' in module ? module.events : null;
 
 const M = 'gitnexus/src/m.ts';
 const TOOL = 'gitnexus/tools/helper.ts';
@@ -719,6 +760,16 @@ describe('staticValueFlow: unknown and degraded', () => {
       ]);
     },
   );
+
+  it('closes the checker server when its project fails to open', async () => {
+    const { repoRoot, syncFile } = fakeTypescript();
+    const result = await openChecker({ repoRoot, version: PINNED_TYPESCRIPT });
+    const events = eventsOf(await import(syncFile));
+    expect([result, events]).toEqual([
+      { status: 'error', error: 'checker failed to open: project failed to open' },
+      ['open', 'close'],
+    ]);
+  });
 
   it('records the entry with its parameter type for the reviewer', async () => {
     const result = await run({ modules: { [M]: ROUND }, edges: roundEdges });

@@ -14,13 +14,16 @@
  *    else is `new`; previous items no current item continues are `resolved`.
  * No previous report: every item is new under the "first run, no baseline" banner. A previous
  * report with another schema version, or without a readable continuity section, gets the
- * "incompatible baseline" banner and no delta: no statuses and no counts.
+ * "incompatible baseline" banner and no delta: no statuses and no counts; so does a baseline the
+ * caller could not read at all ({@link UnreadableBaseline}: a missing file, not JSON), with the
+ * read error as the reason.
  *
  * Library only; pure. The report (report.ts) embeds the comparison, and the markdown and issue
  * body render it.
  */
 import { SCENARIO_MAP_SCHEMA_VERSION, type TestAnchor } from '../types.js';
 import { matchAnchors } from '../inventory/identity.js';
+import { isRecord } from '../util.js';
 
 export type ItemKind = 'pair' | 'test' | 'gap';
 
@@ -96,8 +99,6 @@ export function itemKey(kind: ItemKind, members: readonly string[], file = ''): 
 
 // ── Reading a previous report ──────────────────────────────────────────────
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 const ITEM_KINDS: readonly string[] = ['pair', 'test', 'gap'] satisfies ItemKind[];
@@ -163,7 +164,15 @@ function readBaseline(previous: unknown): Baseline {
 
 // ── Comparison ─────────────────────────────────────────────────────────────
 
-/** Compares `current` with a previous report (parsed JSON, or null when there is none). */
+/** A previous report that could not be read (a missing file, not JSON): an incompatible one. */
+export class UnreadableBaseline {
+  constructor(readonly reason: string) {}
+}
+
+/**
+ * Compares `current` with a previous report (parsed JSON, an {@link UnreadableBaseline}, or null
+ * when there is none).
+ */
 export function compareWithBaseline(
   current: ContinuitySection,
   previous: unknown,
@@ -193,6 +202,9 @@ export function compareWithBaseline(
     changes: [],
     resolved: [],
   });
+  if (previous instanceof UnreadableBaseline) {
+    return incompatible(`unreadable baseline: ${previous.reason}`);
+  }
   if (baseline.schemaVersion !== schemaVersion) {
     return incompatible(
       `baseline schema version ${baseline.schemaVersion ?? 'missing'}, this report ${schemaVersion}`,
