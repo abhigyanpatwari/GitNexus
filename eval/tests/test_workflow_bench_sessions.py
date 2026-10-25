@@ -463,6 +463,23 @@ def test_graph_enabled_cell_retains_its_graph_registry_and_runtime(monkeypatch, 
     assert sandbox_calls[0]["read_only_mounts"] == [dependencies, runtime, registry]
 
 
+def test_baseline_cell_mounts_only_the_endpoint_and_dependencies(monkeypatch, tmp_path):
+    ctx, clone, dependencies, runtime, registry, _, _, sandbox_calls = _probe_cell_provisioning(monkeypatch, tmp_path)
+    endpoint = runner.ReadOnlyMount(tmp_path / "mcp.sock", "/run/gitnexus-mcp.sock")
+    servers = []
+
+    def endpoint_context(**kwargs):
+        servers.append(kwargs)
+        return nullcontext(endpoint)
+
+    monkeypatch.setattr(runner, "isolated_mcp", endpoint_context)
+    runner.run_cell(ctx, 0, "baseline")
+    assert servers[0]["clone"] == clone
+    assert servers[0]["mounts"] == [dependencies, runtime, registry]
+    assert sandbox_calls[0]["read_only_mounts"] == [dependencies, endpoint]
+    assert sandbox_calls[0]["gitnexus_cli_available"] is False
+
+
 def test_nomcp_cell_does_not_require_an_available_graph(monkeypatch, tmp_path):
     ctx, _, dependencies, _, _, _, _, sandbox_calls = _probe_cell_provisioning(monkeypatch, tmp_path)
     ctx = replace(ctx, graph_snapshot=None, graph_snapshot_error=RuntimeError("graph unavailable"))
