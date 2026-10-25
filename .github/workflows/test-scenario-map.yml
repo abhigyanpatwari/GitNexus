@@ -1,22 +1,34 @@
 name: Test Scenario Map
 
-# Weekly advisory report on the validated pure-JS unit tests of gitnexus/ (R13, R14, KTD13,
-# KTD14, KTD17): tests that repeat a scenario, tests that kill no evaluated mutant, and per-file
-# gaps. The CLI is gitnexus/tools/scenario-map/scenario-map.ts; its header documents the stages,
-# flags, work-directory layout and exit codes. Local equivalent, from gitnexus/ (the work dir must
-# lie outside the checkout; value flow needs `npm run build` first):
-#   npm run test:scenario-map -- all --work <dir>
+# Advisory report on the validated pure-JS unit tests of gitnexus/ (R13, R14, KTD13, KTD14,
+# KTD17; docs/plans/2026-10-25-1700-feat-scenario-fingerprint-plan.md): duplicate tests (the same
+# execution path, input data and expectation: the scenario fingerprint), and, with mutation
+# evidence, tests that kill no evaluated mutant and per-file gaps. The CLI is
+# gitnexus/tools/scenario-map/scenario-map.ts; its header documents the stages, flags,
+# work-directory layout and exit codes. Local equivalent, from gitnexus/ (the work dir must lie
+# outside the checkout; mutation scope `all` needs `npm run build` first for the PDG index):
+#   npm run test:scenario-map -- all --work <dir> --mutation none
+#
+# Triggers and mutation scope (`--mutation`, types.ts `MutationScope`):
+#   schedule            weekly, `none`: the fingerprint only, minutes, no shard;
+#   workflow_dispatch   input `mutation`: `none` (default), `possible-duplicates` or `all` (the
+#                       full Phase 1 run, hours over up to 20 shards);
+#   pull_request        when a maintainer adds the `scenario-map` label to a pull request:
+#                       `possible-duplicates`, the deep run for a suspicious change (the groups with a
+#                       possible duplicate, trimmed to their tests). A PR run writes no tracking issue
+#                       and no baseline; its report is an artifact and the job summary.
 #
 # Jobs, each one CLI stage over one work directory ($RUNNER_TEMP/scenario-map) exchanged as
 # artifacts:
 #   plan        eligibility, Layer 0, the prepared copy and run manifest, Layers 1-2, candidates
 #               and the provisional shard plan.
-#   value-flow  the PDG index (`analyze --pdg` spawns workers from dist/, hence build: 'true'),
-#               the static value-flow check, the trace run and the final shard plan. It runs
+#   value-flow  for scope `all` the PDG index (`analyze --pdg` spawns workers from dist/, hence
+#               the build) and the static value-flow check; the trace run and the final shard plan
+#               (a narrower scope re-plans its target after the trace). It runs
 #               before the shards, so a shard isolates only the pairs value flow leaves able to be
 #               strong (the CLI's deviation from KTD14's parallel value-flow job).
 #   shards      prints the final shard count (the re-plan's, or the provisional plan's when value
-#               flow left no usable result); it sizes the shard matrix.
+#               flow left no usable result); it sizes the shard matrix, and 0 skips the shards.
 #   shard       one matrix job per shard (fail-fast off): Layer 3 group runs, row deletion and
 #               isolation until a 300-minute deadline (KTD17). Results upload even on failure.
 #   merge       always runs once a plan exists: merges whatever the shards and value flow left
@@ -37,8 +49,8 @@ name: Test Scenario Map
 # names from those jobs' outputs, so re-running one job reuses the earlier attempt's inputs; merge
 # copies shard results oldest attempt first, so a later attempt of a shard wins.
 #
-# The controls run (the U17 fixture, every expected verdict) is a PR job in
-# mutation-runner-validation.yml; this workflow cannot run from a PR branch.
+# The controls run (the U17 fixture, every expected mutation and fingerprint verdict) is a PR job
+# in mutation-runner-validation.yml.
 
 on:
   schedule:
@@ -46,6 +58,11 @@ on:
     - cron: '17 4 * * 1'
   workflow_dispatch:
     inputs:
+      mutation:
+        description: 'Mutation evidence: none (fingerprint only), possible-duplicates, or all'
+        type: choice
+        options: [none, possible-duplicates, all]
+        default: none
       seed:
         description: 'Seed of every sampled choice, the spot audit included (default: the run id)'
         type: string
@@ -56,16 +73,20 @@ on:
         type: string
         required: false
         default: ''
+  # The deep run of one pull request: only the `scenario-map` label starts it (the plan job's
+  # `if`); any other label event leaves every job skipped.
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
 
 # Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention".
-# Global single slot: weekly and manual runs share the tracking issue and the baseline, so they
-# run one at a time, and a run that holds hours of shard work is never cancelled. (GitHub keeps
-# one pending run: a third run queued behind a pending one replaces it.)
+# Weekly and manual runs share the tracking issue and the baseline, so they share one slot and run
+# one at a time; each pull request has its own slot. A run that holds hours of shard work is never
+# cancelled. (GitHub keeps one pending run: a third run queued behind a pending one replaces it.)
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'default' }}
   cancel-in-progress: false
 
 defaults:
@@ -84,6 +105,7 @@ jobs:
   # ── Plan: Layers 0-2, candidates, shard plan, run manifest ─────────
   plan:
     name: Plan
+    if: github.event_name != 'pull_request' || github.event.label.name == 'scenario-map'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     continue-on-error: true
@@ -91,6 +113,7 @@ jobs:
       contents: read
     outputs:
       artifact: ${{ steps.artifact.outputs.name }}
+      mutation: ${{ steps.scope.outputs.mutation }}
       # Scheduled runs always run on the default branch; their event payload has no repository.
       default_branch: ${{ github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     steps:
@@ -99,12 +122,18 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
+      - name: Choose the mutation scope
+        id: scope
+        env:
+          MUTATION: ${{ github.event_name == 'pull_request' && 'possible-duplicates' || inputs.mutation || 'none' }}
+        run: echo "mutation=$MUTATION" >> "$GITHUB_OUTPUT"
       - name: Plan the run
         env:
           SEED: ${{ inputs.seed || github.run_id }}
           SHARDS: ${{ inputs.shards }}
+          MUTATION: ${{ steps.scope.outputs.mutation }}
         run: |
-          args=(--work "$RUNNER_TEMP/scenario-map" --seed "$SEED"
+          args=(--work "$RUNNER_TEMP/scenario-map" --seed "$SEED" --mutation "$MUTATION"
             --concurrency "$SCENARIO_MAP_CONCURRENCY"
             --deadline-minutes "$SCENARIO_MAP_DEADLINE_MINUTES")
           if [ -n "$SHARDS" ]; then args+=(--shards "$SHARDS"); fi
@@ -145,9 +174,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Only the PDG index of scope `all` needs dist/.
       - uses: ./.github/actions/setup-gitnexus
         with:
-          build: 'true'
+          build: ${{ needs.plan.outputs.mutation == 'all' && 'true' || 'false' }}
       - name: Download the plan
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -191,7 +221,8 @@ jobs:
   shards:
     name: Shard count
     needs: [plan, value-flow]
-    if: ${{ !cancelled() && needs.plan.outputs.artifact != '' }}
+    # Scope `none` plans no shard.
+    if: ${{ !cancelled() && needs.plan.outputs.artifact != '' && needs.plan.outputs.mutation != 'none' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     continue-on-error: true
@@ -221,7 +252,7 @@ jobs:
         id: count
         run: |
           count="$(npm run --silent test:scenario-map -- shards --work "$RUNNER_TEMP/scenario-map")"
-          if ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+          if ! [[ "$count" =~ ^[0-9]+$ ]]; then
             echo "::error::the shards stage printed '$count', not a shard count"
             exit 1
           fi
@@ -233,7 +264,7 @@ jobs:
   shard:
     name: Shard ${{ matrix.index }}
     needs: [plan, value-flow, shards]
-    if: ${{ !cancelled() && needs.shards.outputs.matrix != '' }}
+    if: ${{ !cancelled() && needs.shards.outputs.matrix != '' && needs.shards.outputs.count != '0' }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     continue-on-error: true
@@ -348,8 +379,8 @@ jobs:
       # KTD13: the newest non-expired `scenario-map-baseline` of an earlier completed run of THIS
       # workflow on the default branch; only complete default-branch runs upload one. Never a
       # repository-wide artifact listing: it holds fork pull_request runs too, and a fork branch
-      # may carry the default branch's name. This workflow has no pull_request trigger, and each
-      # run's event and head repository are checked as well. None found: "first run" banner. A
+      # may carry the default branch's name. Only schedule and workflow_dispatch runs count (a
+      # labelled pull request run never does), and each run's head repository is checked as well. None found: "first run" banner. A
       # failure here must not cost the run its report: merge then runs without a baseline, and a
       # baseline merge cannot read gets the incompatible-baseline banner.
       - name: Fetch the baseline
@@ -435,6 +466,12 @@ jobs:
             ${{ runner.temp }}/scenario-map/scenario-map-report.md
             ${{ runner.temp }}/scenario-map/issue-body.md
           retention-days: 90
+      # The tracking-issue view on the run page: a pull request run's only rendered report.
+      - name: Summarise the report
+        if: always()
+        run: |
+          body="$RUNNER_TEMP/scenario-map/issue-body.md"
+          if [ -f "$body" ]; then tail -n +2 "$body" >> "$GITHUB_STEP_SUMMARY"; fi
       - name: Name the report artifact
         id: artifact
         if: always() && steps.upload.outcome == 'success'

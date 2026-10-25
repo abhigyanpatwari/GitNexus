@@ -354,10 +354,10 @@ jobs:
           retention-days: 14
 
   # ── Scenario map controls ──────────────────────────────────────────
-  # The PR check of test-scenario-map.yml, which cannot run from a PR branch: its whole pipeline
-  # (plan, value flow, one shard, merge) over the controls fixture
-  # (gitnexus/test/fixtures/mutation-scenario-map/), then every expected.json verdict and rule
-  # compared; exit 1 means a pair differs. build: 'true' because the value-flow stage's PDG index
+  # The PR check of test-scenario-map.yml's pipeline (plan, value flow, one shard, merge) over the
+  # controls fixture (gitnexus/test/fixtures/mutation-scenario-map/), mutation scope `all`, then
+  # every expected.json mutation and fingerprint verdict and rule compared; exit 1 means a pair
+  # differs. build: 'true' because the value-flow stage's PDG index
   # spawns analyze workers from dist/. About 30 min locally.
   scenario-map-controls:
     name: Scenario map controls
