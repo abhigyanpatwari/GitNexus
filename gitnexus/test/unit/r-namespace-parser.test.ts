@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   parseRNamespaceExports,
   parseRNamespaceImportFrom,
+  trimTrailingColons,
 } from '../../src/core/ingestion/languages/r/namespace-imports.js';
 import { loadRPackageConfig } from '../../src/core/ingestion/languages/r/package-config.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
@@ -496,5 +497,50 @@ describe('parseRNamespaceExports: what the reader could not read', () => {
     const parsed = parseRNamespaceExports('export(kept)\nif (a) export(hidden)\n');
     expect(parsed.namedExports).toEqual(['kept']);
     expect(parsed.unreadable).toBe(true);
+  });
+});
+
+describe('parseRNamespaceExports: the package side of an S3method() generic', () => {
+  it('trims trailing colons with the same result as the old /:+$/ regex', () => {
+    const inputs = [
+      '',
+      ':',
+      ':::',
+      'a',
+      'a:',
+      'a::',
+      'a:::',
+      'base',
+      'base::',
+      'base:::',
+      'a::b',
+      'a:::b',
+      'a::b::',
+      'a:::b:::',
+      ':a',
+      '::a',
+      'a:b:',
+      'pkg::gen::',
+      '`a::`:::',
+      'a: :',
+    ];
+    for (const s of inputs)
+      expect(trimTrailingColons(s), JSON.stringify(s)).toBe(s.replace(/:+$/, ''));
+  });
+
+  it('reads a generic with 400,000 colons in bounded time', () => {
+    // The old /:+$/ trim was quadratic: about 0.15 s at 20,000 colons, so tens of seconds here.
+    // A loop is linear; the bound is absolute and generous, and the timeout fails a regression
+    // rather than letting it hang.
+    const src = `S3method(a${':'.repeat(400_000)}b::c, z)\nexport(kept)\n`;
+    const started = performance.now();
+    const parsed = parseRNamespaceExports(src);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(parsed.namedExports).toEqual(['kept']);
+    expect(parsed.unreadable).toBe(true);
+  }, 10_000);
+
+  it('still drops the package of a qualified generic', () => {
+    expect(parseRNamespaceExports('S3method(base:::print, z)\n').namedExports).toEqual(['print.z']);
   });
 });

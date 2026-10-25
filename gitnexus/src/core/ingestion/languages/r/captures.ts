@@ -7,7 +7,7 @@ import { MAX_CHAIN_DEPTH } from '../../utils/call-analysis.js';
 import { encodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
-import { isRReplacementCall, rLexicalAssignedNames, rSetterName } from './assignment.js';
+import { rLexicalAssignedNames, rReplacementCallTest, rSetterName } from './assignment.js';
 import {
   createSelfOwnerClassifier,
   fileBindsSelf,
@@ -45,6 +45,8 @@ export function emitRScopeCaptures(
   const typedMethods = new Set<number>();
   // Where the R6 private members are, for `rResolveSelfMember` (`self$m()` never reaches one).
   const privateMembers = new Set<string>();
+  // One linear pass over the tree on the first free call, not a walk up from every call.
+  const isReplacementCall = rReplacementCallTest(tree.rootNode);
 
   for (const m of rawMatches) {
     // The scope query captures every candidate argument of setClass/library/require/
@@ -70,7 +72,7 @@ export function emitRScopeCaptures(
       }
     }
     if (!hasRealCapture) continue;
-    if (freeCallNode !== undefined && isRReplacementCall(freeCallNode)) {
+    if (freeCallNode !== undefined && isReplacementCall(freeCallNode)) {
       recordAsSetterCall(grouped, freeCallNode);
     }
     // A member call whose receiver is itself a `$` access or a call (`a$b$m()`): mint the

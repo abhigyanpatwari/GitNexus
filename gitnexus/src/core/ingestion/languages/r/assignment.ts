@@ -197,6 +197,11 @@ export function assignmentTarget(node: SyntaxNode): SyntaxNode | null {
  * `@`, `[` and `[[`, the same walk `assignmentBase` makes to find the variable written. Any other
  * argument (`foo(x, bar(1)) <- v`, the index of `x[bar(1)]`) and the value being assigned are
  * ordinary reads.
+ *
+ * For one call only: it walks up, and tree-sitter's `.parent` re-descends from the root, so asking
+ * it about every call of a file is cubic in the nesting depth. The capture layer asks
+ * {@link rReplacementCallTest} instead, which gives the same answer in one linear pass; this
+ * function is the reference that pass is tested against.
  */
 export function isRReplacementCall(call: SyntaxNode): boolean {
   for (let node = call; ; ) {
@@ -230,6 +235,62 @@ export function isRReplacementCall(call: SyntaxNode): boolean {
         return false;
     }
   }
+}
+
+/**
+ * The ids of every call under `root` that is in a replacement position: the calls for which
+ * {@link isRReplacementCall} is true, found top-down in one pass. From the target of each
+ * assignment, the chain is followed down through a call's first argument and the base of `$`,
+ * `@`, `[` and `[[`, the reverse of the upward walk, so no `.parent` is read. Each node is visited
+ * once and chains of different assignments never share a node, so the pass is linear in the
+ * size of the tree; it uses an explicit stack, never recursion, however deep the nesting.
+ */
+export function rReplacementCallIds(root: SyntaxNode): Set<number> {
+  const ids = new Set<number>();
+  const pending = [root];
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    const target = assignmentTarget(node);
+    if (target !== null) markReplacementChain(target, ids);
+    for (const child of node.namedChildren) pending.push(child);
+  }
+  return ids;
+}
+
+/** Add every call of the target chain that starts at `target` to `ids`. */
+function markReplacementChain(target: SyntaxNode, ids: Set<number>): void {
+  for (let node: SyntaxNode | null = target; node !== null; ) {
+    switch (node.type) {
+      case 'call': {
+        ids.add(node.id);
+        const list = node.childForFieldName('arguments');
+        const first =
+          list?.type === 'arguments'
+            ? list.namedChildren.find((child) => child.type === 'argument')
+            : undefined;
+        node = first?.childForFieldName('value') ?? null;
+        break;
+      }
+      case 'extract_operator':
+        node = node.childForFieldName('lhs');
+        break;
+      case 'subset':
+      case 'subset2':
+        node = node.childForFieldName('function');
+        break;
+      default:
+        return;
+    }
+  }
+}
+
+/**
+ * Whether a call of the tree under `root` is in a replacement position, for asking about many
+ * calls of one file: the set of {@link rReplacementCallIds} is built on the first question and
+ * reused, so the answers cost one linear pass in all.
+ */
+export function rReplacementCallTest(root: SyntaxNode): (call: SyntaxNode) => boolean {
+  let ids: Set<number> | undefined;
+  return (call) => (ids ??= rReplacementCallIds(root)).has(call.id);
 }
 
 /** The name of the replacement function a getter name stands for: `foo` -> `` `foo<-` ``. */

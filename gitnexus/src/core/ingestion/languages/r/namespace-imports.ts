@@ -215,6 +215,17 @@ function normaliseArg(raw: string): string {
 }
 
 /**
+ * `text` without its trailing colons: what `text.replace(/:+$/, '')` gives, in linear time. The
+ * regex retries from every colon of a long run, which is quadratic in its length, and a
+ * NAMESPACE is repository input.
+ */
+export function trimTrailingColons(text: string): string {
+  let end = text.length;
+  while (end > 0 && text.charCodeAt(end - 1) === 58) end--;
+  return text.slice(0, end);
+}
+
+/**
  * The generic named by the first argument of `S3method()`. R >= 3.6 also accepts a generic of
  * another package, `S3method(pkg::generic, class)` (roxygen2 writes it for
  * `@exportS3Method pkg::generic`), whose method is still `generic.class`: the text after the
@@ -242,7 +253,7 @@ function s3GenericArg(raw: string): string {
     return colons === -1 ? name : name.slice(colons + 2).replace(/^:/, '');
   }
   // Both sides must be names; the package side is only checked, never used.
-  const before = trimmed.slice(0, operatorEnd).replace(/:+$/, '');
+  const before = trimTrailingColons(trimmed.slice(0, operatorEnd));
   return normaliseArg(before) ? normaliseArg(trimmed.slice(operatorEnd)) : '';
 }
 

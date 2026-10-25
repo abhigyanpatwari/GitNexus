@@ -34,10 +34,14 @@
  * So the caps are sized for legitimate patterns and the hostile case is bounded
  * separately, by {@link MAX_TOTAL_WORK}: each matcher counts every state it visits
  * and, once the budget is spent, answers false for names it has not already decided
- * and reports `exhausted`. A visit costs 10-20 ns, so the budget is 0.4-0.8 s per
- * package however many names are tested: measured on the development machine, `a?`
- * repeated 500 or 8,000 times then `c`, `[A-Za-z]{1,2000}c`, and a 120-way alternation
- * of `a...ab` each exhaust it in ~0.4 s against 50,000 distinct 100-character names.
+ * and reports `exhausted`. A state visit inside a long search costs 10-20 ns, but a test
+ * costs more than its state visits (the memo lookup and insert, setting up the search), and
+ * that part is not charged: many short tests cost up to about 70 ns a counted visit (measured
+ * on the development machine: 50-56 ns for 2,000 trivial patterns against 5,000 names, about
+ * 70 ns for 50,000 names against two patterns), so the 30M package cap is about 2 s and the
+ * 100M load cap about 7 s at worst: bounded, never a hang. A hostile pattern spends its
+ * visits inside long searches: `(a?){100}a{100}` against 5,000 names spends the package cap
+ * in about 0.4 s.
  * Realistic patterns stay far below it: 500 alternated identifiers, anchored or not,
  * cost about 20 visits per name, because alternatives that share a prefix share
  * states. Verdicts are memoised per distinct name, so a repeated name costs one lookup, which is
@@ -102,7 +106,8 @@ export const MAX_TOTAL_WORK = 40_000_000;
 /**
  * State visits all the matchers of one package-config load may spend together (the
  * default limit of a {@link SharedWorkBudget}), in addition to the per-matcher
- * {@link MAX_TOTAL_WORK}. At 9-10 ns a visit it is about one second: enough for two
+ * {@link MAX_TOTAL_WORK}. About one second for hostile searches (10 ns a visit), up to
+ * about 7 s for many short tests (see the cost model above): enough for two
  * and a half pathological patterns to run to their own cap, after which the rest of
  * the load's patterns stop and are reported, so a hostile NAMESPACE cannot cost more
  * than that however many patterns it carries. Benign work is a tiny fraction of it: a
@@ -126,9 +131,10 @@ export const MAX_SHARED_STATES = 500_000;
 
 /**
  * State visits one package may spend on matching, out of {@link MAX_SHARED_WORK} (30 %,
- * about 0.3 s): one hostile package then cannot take the load's whole budget, so the
- * packages after it keep their patterns. Three hostile packages spend the load's
- * budget; the packages after those degrade, with a warning per pattern.
+ * about 0.4 s for a hostile pattern, up to about 2 s for many short tests): one hostile
+ * package then cannot take the load's whole budget, so the packages after it keep their
+ * patterns. Three hostile packages spend the load's budget; the packages after those
+ * degrade, with a warning per pattern.
  */
 export const MAX_PACKAGE_WORK = 30_000_000;
 
