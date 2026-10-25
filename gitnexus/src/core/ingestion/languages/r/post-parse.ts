@@ -204,8 +204,12 @@ export const refineRExportStatus = (
 
     // NAMESPACE writes the symbol (`export(`%+%`)`); the node keeps the definition's spelling.
     // An explicit export or an exportPattern match keeps the node public. The patterns are
-    // precompiled linear-time matchers (see loadRPackageConfig): no per-node recompile.
-    if (rNamespaceExports(nsInfo, rBareName(name))) return;
+    // precompiled linear-time matchers (see loadRPackageConfig): no per-node recompile. An
+    // `S3method()` registration keeps it public too: resolution does not treat the method as
+    // exported (`pkg::name` and `library()` do not reach it), but it is public API reached
+    // through dispatch, so entry-point scoring and process detection see it as before.
+    const bare = rBareName(name);
+    if (rNamespaceExports(nsInfo, bare) || nsInfo.s3Registered?.has(bare) === true) return;
 
     // Not in NAMESPACE → not exported.
     node.properties.isExported = false;

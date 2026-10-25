@@ -8,7 +8,11 @@
  * `helper.util` never finds `helper.util` there, and the hook has nothing to refuse for
  * it. The call binds in the later qualified-name pass (reason `scope-resolution: call`,
  * confidence 0.35) instead. This file pins that: the hook's blanket rejection does not
- * drop a dotted call (with the hook disabled every edge below is unchanged).
+ * drop a dotted call (with the hook disabled every edge below is unchanged). The hook's other
+ * rules apply to the dotted call as to any other: package code reaches another package only
+ * through a link it declares (`other` declares none, so its calls are refused), and an
+ * `S3method()` registration is not an export (`print.widget` is private to callers outside
+ * `prov`).
  *
  * Layout: `prov/R/defs.R` defines `helper.util`, `print.widget` and `plain_fn`; callers
  * are in the same package (`prov/R/use.R`), another package (`other/R/use.R`) that does
@@ -46,19 +50,25 @@ describe('R dotted function names called across files', () => {
     expect(edges('same_pkg_print')).toEqual([`print.widget:${DEFS}:${QUALIFIED}`]);
   });
 
-  it('binds a dotted call from a package that does not import the provider', () => {
-    expect(edges('other_helper')).toEqual([`helper.util:${DEFS}:${QUALIFIED}`]);
-    expect(edges('other_print')).toEqual([`print.widget:${DEFS}:${QUALIFIED}`]);
+  it('refuses a dotted call from a package that does not import the provider', () => {
+    expect(edges('other_helper')).toEqual([]);
+    expect(edges('other_print')).toEqual([]);
   });
 
-  it('binds a dotted call from a script with library(prov) and from one with no import', () => {
+  it('binds an exported dotted call from a script with library(prov) and from one with no import', () => {
     expect(edges('script_helper')).toEqual([`helper.util:${DEFS}:${QUALIFIED}`]);
-    expect(edges('script_print')).toEqual([`print.widget:${DEFS}:${QUALIFIED}`]);
     expect(edges('bare_helper')).toEqual([`helper.util:${DEFS}:${QUALIFIED}`]);
   });
 
-  it('control: an undotted cross-file call still goes through the global-name fallback (0.5)', () => {
+  it('refuses a script call of a method that NAMESPACE only registers (S3method())', () => {
+    expect(edges('script_print')).toEqual([]);
+  });
+
+  it('control: an undotted cross-file call in the package still goes through the global-name fallback (0.5)', () => {
     expect(edges('same_pkg_plain')).toEqual([`plain_fn:${DEFS}:global-name-fallback:0.5`]);
-    expect(edges('other_plain')).toEqual([`plain_fn:${DEFS}:global-name-fallback:0.5`]);
+  });
+
+  it('control: an undotted call from a package that does not import the provider is refused too', () => {
+    expect(edges('other_plain')).toEqual([]);
   });
 });

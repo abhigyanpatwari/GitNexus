@@ -1036,7 +1036,7 @@ describe('isRGlobalNameFallbackPlausible — global-name guess veto', () => {
     ).toBe(true);
   });
 
-  it('T9: allows a call whose name has no importFrom() entry', () => {
+  it('T9: refuses a call with no importFrom() entry into a package the caller declares no link to (rule A)', () => {
     expect(
       verdict({
         importFrom: [['scorelib', 'f']],
@@ -1044,7 +1044,45 @@ describe('isRGlobalNameFallbackPlausible — global-name guess veto', () => {
         candidateFile: 'legacyscore/R/l.R',
         name: 'g',
       }),
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  describe('T9b: allows it when the caller package declares a link, or its imports are not fully read', () => {
+    const plausible = (
+      extra: Partial<RNamespaceInfo>,
+      callerExtra: { parsedImports?: readonly { kind: string; targetRaw: string }[] } = {},
+    ): boolean => {
+      const cfg = config(pkgs, {
+        analytics: { importFrom: [['scorelib', 'f']] },
+        legacyscore: { exports: ['g'] },
+      });
+      const info = cfg.namespaceInfoByPackageDir.get(pkgs.analytics);
+      if (info === undefined) throw new Error('no analytics NAMESPACE');
+      Object.assign(info, extra);
+      return isRGlobalNameFallbackPlausible({
+        callerParsed: { filePath: 'analytics/R/use.R', ...callerExtra },
+        candidate: { filePath: 'legacyscore/R/l.R' },
+        resolutionConfig: cfg,
+        site: { name: 'g' },
+      });
+    };
+    it('import(legacyscore)', () => {
+      expect(plausible({ importPackages: new Set(['legacyscore']) })).toBe(true);
+    });
+    it('Depends: legacyscore', () => {
+      expect(plausible({ depends: new Set(['legacyscore']) })).toBe(true);
+    });
+    it('library(legacyscore) in the caller file', () => {
+      expect(
+        plausible({}, { parsedImports: [{ kind: 'wildcard', targetRaw: '"legacyscore"' }] }),
+      ).toBe(true);
+    });
+    it('an import the NAMESPACE reader could not read', () => {
+      expect(plausible({ importsUnreadable: true })).toBe(true);
+    });
+    it('control: an import of another package', () => {
+      expect(plausible({ importPackages: new Set(['scorelib']) })).toBe(false);
+    });
   });
 
   describe('T10: cannot decide', () => {

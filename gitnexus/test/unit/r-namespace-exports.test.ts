@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { loadRPackageConfig } from '../../src/core/ingestion/languages/r/package-config.js';
+import {
+  loadRPackageConfig,
+  rNamespaceExports,
+} from '../../src/core/ingestion/languages/r/package-config.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 
 // Regression tests: export()/exportClasses()/exportMethods()/S3method()/
@@ -328,5 +331,82 @@ describe('loadRPackageConfig -> RNamespaceInfo exports', () => {
         await expect(load(src)).resolves.toEqual({ names: [], patterns: [] });
       }
     });
+  });
+});
+
+// S3method() registers a method for dispatch; it does not export the function. The loader keeps
+// the directive's names in namedExports (what NAMESPACE names) and records which names only a
+// registration lists, so rNamespaceExports answers for real exports. The import readers feed the
+// package-visibility rule of the unique-name guess.
+describe('loadRPackageConfig -> RNamespaceInfo registrations, imports and Depends', () => {
+  const pool = createTempDirPool('gn-r-nsreg-');
+
+  const load = async (namespace: string, description = 'Package: rootpkg\n') => {
+    const root = pool.dir();
+    fs.writeFileSync(path.join(root, 'DESCRIPTION'), description);
+    fs.writeFileSync(path.join(root, 'NAMESPACE'), namespace);
+    const config = await loadRPackageConfig(root);
+    return config?.namespaceInfoByPackageDir.get('');
+  };
+
+  it('records S3method() names, and those no export() lists, without changing namedExports', async () => {
+    const info = await load(
+      'export(pub, print.both)\nS3method(print, both)\nS3method(format, thing, format_impl)\nS3method(summary, `odd`)\n',
+    );
+    expect([...(info?.namedExports ?? [])].sort()).toEqual(
+      ['format_impl', 'print.both', 'pub', 'summary.odd'].sort(),
+    );
+    expect([...(info?.s3Registered ?? [])].sort()).toEqual(
+      ['format_impl', 'print.both', 'summary.odd'].sort(),
+    );
+    expect([...(info?.s3RegisteredOnly ?? [])].sort()).toEqual(['format_impl', 'summary.odd']);
+    if (info === undefined) throw new Error('no NAMESPACE info');
+    expect(rNamespaceExports(info, 'pub')).toBe(true);
+    expect(rNamespaceExports(info, 'print.both')).toBe(true);
+    expect(rNamespaceExports(info, 'format_impl')).toBe(false);
+    expect(rNamespaceExports(info, 'summary.odd')).toBe(false);
+  });
+
+  it('an exportPattern() still exports a registered method it matches', async () => {
+    const info = await load('exportPattern("^format")\nS3method(format, thing, format_impl)\n');
+    if (info === undefined) throw new Error('no NAMESPACE info');
+    expect(rNamespaceExports(info, 'format_impl')).toBe(true);
+  });
+
+  it('reads import(), importClassesFrom() and importMethodsFrom() packages; except = is skipped', async () => {
+    const info = await load(
+      'import(a, "b")\nimport(c, except = c(x, y))\nimportClassesFrom(methods, envRefClass)\nimportMethodsFrom(d, show)\nimportFrom(e, f)\n',
+    );
+    expect([...(info?.importPackages ?? [])].sort()).toEqual(['a', 'b', 'c', 'd', 'methods']);
+    expect(info?.importsUnreadable).toBe(false);
+  });
+
+  it.each([
+    ['a conditional import()', 'if (getRversion() >= "4.0.0") import(a)\n'],
+    ['a conditional importFrom()', 'if (x) {\n  importFrom(a, f)\n}\n'],
+    ['an else body', 'if (x) export(y) else import(a)\n'],
+    ['a malformed import directive', 'import(a, "b\nexport(z)\n'],
+    ['an unreadable import() argument', 'import(r"(a)")\n'],
+    ['an unreadable importFrom() argument', 'importFrom(a, f(x))\n'],
+  ])('marks the imports unreadable for %s', async (_name, namespace) => {
+    expect((await load(namespace))?.importsUnreadable).toBe(true);
+  });
+
+  it('an export hidden by a conditional does not mark the imports unreadable', async () => {
+    const info = await load('if (x) export(y)\nimport(a)\n');
+    expect(info?.importsUnreadable).toBe(false);
+    expect(info?.exportsUnreadable).toBe(true);
+  });
+
+  it('reads Depends: across continuation lines, with versions, without R', async () => {
+    const info = await load(
+      'export(x)\n',
+      '﻿Package: rootpkg\nDepends:\n    R (>= 4.0),\n    pkgB (>= 1.0), pkgC,\n\tpkg.D\nImports: notdep\n',
+    );
+    expect([...(info?.depends ?? [])].sort()).toEqual(['pkg.D', 'pkgB', 'pkgC']);
+  });
+
+  it('reads no Depends when the field is absent', async () => {
+    expect([...((await load('export(x)\n'))?.depends ?? [])]).toEqual([]);
   });
 });

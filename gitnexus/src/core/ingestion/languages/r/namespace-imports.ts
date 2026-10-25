@@ -40,7 +40,7 @@
  */
 
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
-import type { RPackageConfig } from './package-config.js';
+import type { RNamespaceInfo, RPackageConfig } from './package-config.js';
 import { unescapeRString } from './export-pattern.js';
 import { rBareName } from './bare-name.js';
 import { resolveRNamedImport } from './import-target.js';
@@ -52,6 +52,20 @@ export interface RNamespaceImportFromEntry {
 }
 
 const IMPORT_FROM_DIRECTIVES: ReadonlySet<string> = new Set(['importFrom']);
+
+/** Directives that import from a package: whole (`import`), by name, or S4 classes and methods. */
+const IMPORT_DIRECTIVES: ReadonlySet<string> = new Set([
+  'import',
+  'importFrom',
+  'importClassesFrom',
+  'importMethodsFrom',
+]);
+
+/** An import-family directive head followed by `(`, anywhere in a piece of NAMESPACE text. */
+const IMPORT_HEAD_IN_TEXT = new RegExp(
+  `(?<![\\p{L}\\p{N}._])(?:${[...IMPORT_DIRECTIVES].join('|')})\\s*\\(`,
+  'u',
+);
 
 /** Directives whose arguments name exported symbols (`S3method` is handled separately). */
 const EXPORT_NAME_DIRECTIVES: ReadonlySet<string> = new Set([
@@ -381,14 +395,16 @@ interface RawDirective {
 function scanRNamespaceDirectives(
   text: string,
   heads: ReadonlySet<string>,
+  hiddenHead: RegExp = EXPORT_HEAD_IN_TEXT,
 ): { directives: RawDirective[]; hidesExport: boolean } {
   const directives: RawDirective[] = [];
   const blocks = new BraceBlocks(text);
-  // Set when the scan skipped or discarded text that names an export-family directive. The
-  // regions are disjoint (every skip moves `i` forward), so the tests cost one pass in total.
+  // Set when the scan skipped or discarded text that names a directive `hiddenHead` matches (by
+  // default the export family). The regions are disjoint (every skip moves `i` forward), so the
+  // tests cost one pass in total.
   let hidesExport = false;
   const skipped = (from: number, to: number): void => {
-    if (!hidesExport && EXPORT_HEAD_IN_TEXT.test(text.slice(from, to))) hidesExport = true;
+    if (!hidesExport && hiddenHead.test(text.slice(from, to))) hidesExport = true;
   };
   let i = 0;
   while (i < text.length) {
@@ -468,6 +484,48 @@ export function parseRNamespaceImportFrom(text: string): RNamespaceImportFromEnt
   return entries;
 }
 
+/** The packages a NAMESPACE file imports from, as read by {@link parseRNamespaceImportPackages}. */
+export interface RNamespaceImportPackages {
+  /** Packages of `import()`, `importClassesFrom()` and `importMethodsFrom()`, in file order. */
+  readonly packages: readonly string[];
+  /**
+   * True when the reader skipped or could not read something that may hide an import: a
+   * conditional (`if` / `else`) body or a malformed directive that names an import-family
+   * directive, or an argument of an `import()` or `importFrom()` it cannot read.
+   */
+  readonly unreadable: boolean;
+}
+
+/**
+ * Read the packages a NAMESPACE imports from without naming each object: `import(a, b)` (a named
+ * argument such as `except = c(...)` is skipped, the packages are still imported) and the package
+ * of `importClassesFrom()` / `importMethodsFrom()`. `importFrom()` entries are read by
+ * {@link parseRNamespaceImportFrom}; here they only count toward {@link
+ * RNamespaceImportPackages.unreadable}. Never throws.
+ */
+export function parseRNamespaceImportPackages(text: string): RNamespaceImportPackages {
+  const packages: string[] = [];
+  const scan = scanRNamespaceDirectives(text, IMPORT_DIRECTIVES, IMPORT_HEAD_IN_TEXT);
+  let unreadable = scan.hidesExport;
+  for (const { head, args } of scan.directives) {
+    if (head === 'import') {
+      for (const raw of args) {
+        if (/^\s*[A-Za-z_.][A-Za-z0-9_.]*\s*=/.test(raw)) continue; // except = ...
+        const pkg = normaliseArg(raw);
+        if (pkg) packages.push(pkg);
+        else if (raw.trim()) unreadable = true;
+      }
+    } else if (head === 'importFrom') {
+      for (const raw of args) if (!normaliseArg(raw) && raw.trim()) unreadable = true;
+    } else {
+      const pkg = normaliseArg(args[0] ?? '');
+      if (pkg) packages.push(pkg);
+      else unreadable = true;
+    }
+  }
+  return { packages, unreadable };
+}
+
 /** What a NAMESPACE file exports, as read by {@link parseRNamespaceExports}. */
 export interface RNamespaceExports {
   /** Names from `export()`, `exportClasses()`, `exportMethods()` and `S3method()` (the third argument, else `generic.class`), in file order. */
@@ -483,6 +541,16 @@ export interface RNamespaceExports {
    * that it is private.
    */
   readonly unreadable: boolean;
+  /**
+   * The `S3method()` names (as in {@link namedExports}) that no `export()`, `exportClasses()` or
+   * `exportMethods()` entry also lists, in file order. `S3method()` registers a method for S3
+   * dispatch; it does not export the function (`pkg::name` errors and `library(pkg)` does not
+   * attach it), so `loadRPackageConfig` takes these out of the exports resolution sees. Optional
+   * so that hand-built values read as "no registration-only name".
+   */
+  readonly s3RegisteredOnly?: readonly string[];
+  /** Every `S3method()` name (as in {@link namedExports}), in file order. Optional, as above. */
+  readonly s3Registered?: readonly string[];
 }
 
 /**
@@ -510,6 +578,8 @@ function exportPatternArg(raw: string): string {
  */
 export function parseRNamespaceExports(text: string): RNamespaceExports {
   const namedExports: string[] = [];
+  const s3Registered: string[] = [];
+  const exportedByName = new Set<string>();
   const exportPatterns: string[] = [];
   const scan = scanRNamespaceDirectives(text, EXPORT_DIRECTIVES);
   let unreadable = scan.hidesExport;
@@ -528,6 +598,7 @@ export function parseRNamespaceExports(text: string): RNamespaceExports {
         // without it the method is `generic.class`.
         const method = normaliseArg(args[2] ?? '');
         namedExports.push(method || `${generic}.${cls}`);
+        s3Registered.push(method || `${generic}.${cls}`);
         // A third argument that is not a plain name (`method = impl`) registers a function
         // this reader does not name.
         if (!method && (args[2] ?? '').trim()) unreadable = true;
@@ -537,12 +608,15 @@ export function parseRNamespaceExports(text: string): RNamespaceExports {
     } else {
       for (const raw of args) {
         const name = normaliseArg(raw);
-        if (name) namedExports.push(name);
-        else if (raw.trim()) unreadable = true;
+        if (name) {
+          namedExports.push(name);
+          exportedByName.add(name);
+        } else if (raw.trim()) unreadable = true;
       }
     }
   }
-  return { namedExports, exportPatterns, unreadable };
+  const s3RegisteredOnly = s3Registered.filter((name) => !exportedByName.has(name));
+  return { namedExports, exportPatterns, unreadable, s3RegisteredOnly, s3Registered };
 }
 
 // ─── Package lookup ─────────────────────────────────────────────────────────
@@ -1083,7 +1157,13 @@ export function rQualifiedDefinitionCount(
  * reads; the shared contract's full context is assignable to it.
  */
 export interface RGlobalNameFallbackContext {
-  readonly callerParsed: { readonly filePath: string };
+  readonly callerParsed: {
+    readonly filePath: string;
+    /** The caller file's imports; absent in hand-built contexts (no `library()` / `source()`). */
+    readonly parsedImports?: readonly { readonly kind: string; readonly targetRaw: string }[];
+    /** The caller file's reference sites; absent in hand-built contexts (no call). */
+    readonly referenceSites?: readonly { readonly name: string; readonly kind: string }[];
+  };
   readonly candidate: {
     readonly filePath: string;
     readonly nodeId?: string;
@@ -1111,11 +1191,126 @@ function isClosureLocalCandidate(ctx: RGlobalNameFallbackContext): boolean {
   return ids.all.has(candidate.nodeId) && !ids.topLevel.has(candidate.nodeId);
 }
 
+/** A file's own `source()`, `system.file()` or `test_path()` call: it may load a script itself. */
+function callerLoadsScripts(callerParsed: RGlobalNameFallbackContext['callerParsed']): boolean {
+  if (callerParsed.parsedImports?.some((imp) => imp.kind === 'side-effect') === true) return true;
+  return (
+    callerParsed.referenceSites?.some(
+      (site) =>
+        site.kind === 'call' &&
+        (rBareName(site.name) === 'system.file' || rBareName(site.name) === 'test_path'),
+    ) === true
+  );
+}
+
 /**
- * Refuse a `global-name-fallback` guess that R cannot make. Returns `false` (veto) when the
- * candidate is a function or class bound inside another function (not at top level), when its
- * package's NAMESPACE proves it private to a caller outside that package's directory tree, or
- * when the caller package's NAMESPACE contradicts the guess.
+ * Rule D of the package-visibility rules: a caller under `<P>/tests/` and a candidate under
+ * `<P>/data-raw/` or `<P>/inst/`. Tests run against the loaded package; `data-raw/` is never
+ * installed and `inst/` files are not sourced into the namespace, so a test reaches such a script
+ * only by loading it itself. Not applied when the caller's file calls `source()`, `system.file()`
+ * or `test_path()` (it may do exactly that).
+ */
+function isRTestReachingUnloadedScript(
+  ctx: RGlobalNameFallbackContext,
+  cfg: RPackageConfig,
+): boolean {
+  const tree = rEnclosingPackageDir(ctx.callerParsed.filePath, cfg);
+  if (tree === undefined) return false;
+  const base = tree === '' ? '' : `${tree}/`;
+  const callerFile = ctx.callerParsed.filePath.replace(/\\/g, '/');
+  const candidateFile = ctx.candidate.filePath.replace(/\\/g, '/');
+  if (!callerFile.startsWith(`${base}tests/`)) return false;
+  if (!candidateFile.startsWith(`${base}data-raw/`) && !candidateFile.startsWith(`${base}inst/`)) {
+    return false;
+  }
+  // A nested package claims its own files: the candidate must be in the caller's package tree.
+  if (rEnclosingPackageDir(ctx.candidate.filePath, cfg) !== tree) return false;
+  return !callerLoadsScripts(ctx.callerParsed);
+}
+
+/**
+ * Whether `pkg` is attached or imported by package P (`callerInfo`) or the caller's file: `import(pkg)`
+ * and the S4 import forms, a `library(pkg)` / `require(pkg)` in the caller's file, or `pkg` in the
+ * transitive `Depends:` closure of P over repository packages (attaching a package attaches its
+ * `Depends:` too). `undefined` when the closure reaches a repository package whose `Depends:` was
+ * not recorded (it has no NAMESPACE): cannot decide.
+ */
+function rPackageDeclaresLink(
+  ctx: RGlobalNameFallbackContext,
+  cfg: RPackageConfig,
+  callerInfo: RNamespaceInfo,
+  pkg: string,
+): boolean | undefined {
+  if (callerInfo.importPackages?.has(pkg) === true) return true;
+  const attaches = ctx.callerParsed.parsedImports?.some(
+    (imp) => imp.kind === 'wildcard' && imp.targetRaw.replace(/^["']|["']$/g, '') === pkg,
+  );
+  if (attaches === true) return true;
+  const seen = new Set<string>();
+  const queue = [...(callerInfo.depends ?? [])];
+  let undecided = false;
+  for (let next = queue.pop(); next !== undefined; next = queue.pop()) {
+    if (seen.has(next)) continue;
+    seen.add(next);
+    if (next === pkg) return true;
+    const dir = cfg.packages.get(next);
+    if (dir === undefined) continue; // an external package: its Depends are not known here
+    const info = cfg.namespaceInfoByPackageDir.get(dir);
+    if (info === undefined) {
+      undecided = true;
+      continue;
+    }
+    for (const dep of info.depends ?? []) if (!seen.has(dep)) queue.push(dep);
+  }
+  return undecided ? undefined : false;
+}
+
+/**
+ * Rules A and B of the package-visibility rules, for a bare call in `P/R/` of a package whose
+ * NAMESPACE was read completely (imports and exports). True (refuse) when the candidate is in
+ * another package Q's `R/` and P declares no link to Q (Rule A: no `importFrom()` entry for the
+ * name, no `import(Q)`, Q not in the transitive `Depends:`, no `library(Q)` in the caller's file),
+ * or in no package's `R/` at all, a loose script (Rule B: no `importFrom()` entry for the name).
+ *
+ * Such a call is not impossible in R: an undeclared use is an R CMD check NOTE ("no visible global
+ * function definition"), and package code falls through to the global environment and the search
+ * path, where a sibling package may be attached (`devtools::load_all()`, monorepo sessions). The
+ * rules refuse calls that are unsupported for check-clean package code, which the package's
+ * declared dependencies cannot justify: an unresolved call is preferred to an unsupported
+ * cross-package edge. That is stricter than the hook contract's "impossible", a trade stated in
+ * the R provider guide. With an `importFrom()` entry for the name the importFrom rules below
+ * decide, as before.
+ */
+function isRPackageCallUndeclared(
+  ctx: RGlobalNameFallbackContext,
+  cfg: RPackageConfig,
+  caller: RPackageLocation,
+  callerInfo: RNamespaceInfo,
+  symbol: string,
+): boolean {
+  if (!callerInfo.hasNamespaceFile) return false;
+  if (callerInfo.exportsUnreadable === true || callerInfo.importsUnreadable === true) return false;
+  if (callerInfo.importFrom.some((entry) => rBareName(entry.name) === symbol)) return false;
+  const candidatePkg = rPackageDirForFile(ctx.candidate.filePath, cfg);
+  if (candidatePkg === undefined) {
+    // In the `R/` of a package discovery read but did not register (a same-name copy): its name
+    // is not known here, so the link cannot be checked. Cannot decide: allow.
+    if (rFileBelongsToDiscoveredPackage(ctx.candidate.filePath, cfg)) return false;
+    return true; // Rule B
+  }
+  if (candidatePkg.name === caller.name) return false;
+  return rPackageDeclaresLink(ctx, cfg, callerInfo, candidatePkg.name) === false; // Rule A
+}
+
+/**
+ * Refuse a `global-name-fallback` guess that R cannot make, or that check-clean package code
+ * cannot make. Returns `false` (veto) when the candidate is a function or class bound inside
+ * another function or a block (not at top level), when its package's NAMESPACE proves it private
+ * to a caller outside that package's directory tree, when the package-visibility rules refuse it
+ * (a bare call from a package's `R/` into a package it declares no link to, or into a loose
+ * script, see {@link isRPackageCallUndeclared}; a call from `tests/` into the package's own
+ * `data-raw/` or `inst/`, see {@link isRTestReachingUnloadedScript}), or when the caller
+ * package's NAMESPACE contradicts the guess.
  *
  * The private-candidate veto applies when the candidate is a top-level function or class under
  * package P's `R/`, {@link rSymbolVisibility} says `private` (P has a readable, complete
@@ -1139,9 +1334,10 @@ function isClosureLocalCandidate(ctx: RGlobalNameFallbackContext): boolean {
  *    re-exports the name from a third package and the candidate may be the
  *    real origin (unknown per-package names = cannot decide = allow).
  *
- * Everything else — no config, no parse of the candidate's file, caller outside a package `R/` (`tests/`,
- * `scripts/`, root `plumber.R`), no entry, candidate outside any package
- * `R/` — answers `true`, so `source()`/`library()` script flows are untouched.
+ * Everything else — no config, no parse of the candidate's file, caller outside a package `R/`
+ * (`tests/`, `scripts/`, root `plumber.R`) other than Rule D, a call the package-visibility rules
+ * allow with no `importFrom()` entry for the name, a candidate outside any package `R/` reached
+ * through an entry — answers `true`, so `source()`/`library()` script flows are untouched.
  *
  * A qualified call `pkg::name()` (site carries `rawQualifiedName`) is judged
  * by its qualifier first: with `pkg` a local package, a candidate
@@ -1151,8 +1347,9 @@ function isClosureLocalCandidate(ctx: RGlobalNameFallbackContext): boolean {
  * local package falls through to the NAMESPACE rules above. (`populateRQualifiedCalls` resolves or
  * drops every qualified site before the fallback runs, so this branch is a second line.)
  *
- * Known unsound shape, pinned by a characterisation test: `import(pkg)` is not
- * tokenised, so a later `import(pkg)` that R would prefer is invisible.
+ * Known unsound shape, pinned by a characterisation test: an `import(pkg)` is read only as a link
+ * to `pkg` for the package-visibility rules; it does not take part in the `importFrom()` rules, so
+ * a later `import(pkg)` that R would prefer to an `importFrom()` entry is invisible to them.
  */
 export function isRGlobalNameFallbackPlausible(ctx: RGlobalNameFallbackContext): boolean {
   // A function or class bound inside another function lives in that call's frame: no other
@@ -1206,9 +1403,23 @@ export function isRGlobalNameFallbackPlausible(ctx: RGlobalNameFallbackContext):
     return false;
   }
 
+  // The package-visibility rules judge a bare name; a qualified site was decided above (and by
+  // `populateRQualifiedCalls`, which runs first).
+  if (ctx.site.rawQualifiedName === undefined && isRTestReachingUnloadedScript(ctx, cfg)) {
+    return false;
+  }
+
   const caller = rPackageDirForFile(ctx.callerParsed.filePath, cfg);
   if (caller === undefined) return true;
-  const importFrom = cfg.namespaceInfoByPackageDir.get(caller.dir)?.importFrom;
+  const callerInfo = cfg.namespaceInfoByPackageDir.get(caller.dir);
+  if (
+    ctx.site.rawQualifiedName === undefined &&
+    callerInfo !== undefined &&
+    isRPackageCallUndeclared(ctx, cfg, caller, callerInfo, symbol)
+  ) {
+    return false;
+  }
+  const importFrom = callerInfo?.importFrom;
   if (importFrom === undefined) return true;
 
   let lastEntry: RNamespaceImportFromEntry | undefined;

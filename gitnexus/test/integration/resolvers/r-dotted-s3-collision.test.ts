@@ -93,10 +93,8 @@ describe('R dotted (S3) names vs same-tailed bare names', () => {
       ]);
     });
 
-    it('print.foo(x) through library(prov) resolves to the S3 def (0.35)', () => {
-      expect(edges('use_dotted', 'cons/R/cons.R')).toEqual([
-        `print.foo:${PROV}:scope-resolution: call:0.35`,
-      ]);
+    it('print.foo(x) through library(prov) gets no edge: S3method(print, foo) registers, it does not export', () => {
+      expect(edges('use_dotted', 'cons/R/cons.R')).toEqual([]);
     });
   });
 

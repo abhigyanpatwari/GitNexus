@@ -197,9 +197,10 @@ export function resolveRNamedImport(
   const symbol = rBareName(importedName);
   const info = rConfig.namespaceInfoByPackageDir.get(pkgDir);
   if (info !== undefined && info.hasNamespaceFile) {
+    // An `S3method()` registration alone is not an export (`RNamespaceInfo.s3RegisteredOnly`).
     const exported =
-      info.namedExports.has(symbol) ||
-      backtickedExports(info.namedExports).has(symbol) ||
+      (info.s3RegisteredOnly?.has(symbol) !== true &&
+        (info.namedExports.has(symbol) || backtickedExports(info.namedExports).has(symbol))) ||
       rExportPatternMatches(info, symbol);
     if (!exported) return null;
   }

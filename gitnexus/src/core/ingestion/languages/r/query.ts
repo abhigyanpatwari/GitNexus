@@ -126,6 +126,26 @@ export const R_SCOPE_QUERY = `
   function: (identifier) @_s4_scope
   (#match? @_s4_scope "^(setClass|setRefClass)$")) @scope.class
 
+;; Braces that R evaluates in an environment of their own (\`local({...})\`, \`with(data, {...})\`,
+;; \`within(data, {...})\`, testthat's \`test_that(desc, {...})\`, \`describe()\` and \`it()\`): a
+;; definition inside binds in the block, not in the module or the enclosing function, so it is
+;; reachable from those braces only. \`withr::with_*()\` and \`suppressWarnings({...})\` evaluate
+;; their braces in the caller's frame and get no scope. Bare or \`pkg::\`-qualified.
+(call
+  function: (identifier) @_blkfn
+  (#match? @_blkfn "^(local|test_that|describe|it|with|within)$")
+  arguments: (arguments
+    (argument
+      value: (braced_expression) @scope.block)))
+
+(call
+  function: (namespace_operator
+    rhs: (identifier) @_blkfn_ns
+    (#match? @_blkfn_ns "^(local|test_that|describe|it|with|within)$"))
+  arguments: (arguments
+    (argument
+      value: (braced_expression) @scope.block)))
+
 ;; ── Declarations — functions ──────────────────────────────────────────────
 
 (binary_operator

@@ -525,7 +525,8 @@ function currentNamespaceIssue(
       message:
         'The package has no NAMESPACE file that could be read now (it may have been removed or be unreadable), so the function cannot be proven private.',
     };
-  if (rNamespaceExports(info, name))
+  // A registered S3 method is not exported for resolution, but it is public API: refused alike.
+  if (rNamespaceExports(info, name) || info.s3Registered?.has(name) === true)
     return unsupported(
       'The package NAMESPACE now exports this function (export(), exportPattern() or S3method()); that entry would not be renamed. Re-run analyze to refresh the index.',
     );
