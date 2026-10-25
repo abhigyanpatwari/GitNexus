@@ -85,6 +85,14 @@ describe('R: a function used other than as a callee creates no CALLS edge', () =
     expect(getRelationships(result, 'CALLS').filter((e) => e.target === 'name')).toEqual([]);
   });
 
+  it('does not read a call through @ on an R6 instance (p@greet()) as a member call', () => {
+    expect(callsFrom('via_slot_call')).toEqual([]);
+    const sites = getResolutionOutcomes(result).filter(
+      (o) => o.filePath === 'R/uses.R' && o.name === 'greet',
+    );
+    expect(sites).toEqual([]);
+  });
+
   it('does not link UseMethod() or NextMethod() to a method', () => {
     expect(callsFrom('area')).toEqual([]);
     expect(callsFrom('area.circle')).toEqual([]);

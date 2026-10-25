@@ -18,3 +18,9 @@ via_infix <- function(a, b) a %+% b
 
 # S4 slot access is not a call.
 via_slot <- function(p) p@name
+
+# A call through `@` on an R6 instance errors in R: not a member call.
+via_slot_call <- function() {
+  p <- Parent$new()
+  p@greet()
+}

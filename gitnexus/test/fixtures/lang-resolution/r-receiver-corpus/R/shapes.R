@@ -83,3 +83,50 @@ base_qualified_new <- function() {
 base_subset <- function(x) {
   x[[1]]$f$save()
 }
+
+# A constructor types a receiver only when every binding of the name in the frame agrees with it.
+# Each of these binds the name to something else as well, so the receiver is untyped.
+agree_two_classes <- function() {
+  ax <- User$new()
+  ax$save()
+  ax <- Address$new()
+}
+
+agree_rebound <- function() {
+  bx <- User$new()
+  bx <- make_user()
+  bx$save()
+}
+
+agree_for_variable <- function(xs) {
+  fx <- User$new()
+  for (fx in xs) fx$save()
+}
+
+agree_branches <- function(f) {
+  if (f) cx <- User$new() else cx <- Address$new()
+  cx$save()
+}
+
+# `<<-` binds in an enclosing frame, never in its own: `sx` is free here.
+agree_outward <- function() {
+  sx <<- User$new()
+  sx$save()
+}
+
+# A typed receiver reads the public interface: a private method (of the parent) is not on it.
+typed_private <- function() {
+  pc <- Child$new()
+  pc$secret()
+}
+
+# `@` on an R6 instance errors in R: no site.
+typed_slot_call <- function() {
+  su <- User$new()
+  su@save()
+}
+
+# A generator object does not carry instance methods.
+generator_call <- function() {
+  User$save()
+}

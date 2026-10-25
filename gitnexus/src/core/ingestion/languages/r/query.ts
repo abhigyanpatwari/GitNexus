@@ -346,10 +346,12 @@ export const R_SCOPE_QUERY = `
   function: (namespace_operator
     rhs: (identifier) @reference.name) @reference.qualified-name) @reference.call.free
 
-;; Member calls via $: obj$method()
+;; Member calls via $: obj$method(). Only $: the grammar uses extract_operator for @ too, and
+;; u@save() on an R6 instance is an error in R, not a member call (no site).
 (call
   function: (extract_operator
     lhs: (identifier) @reference.receiver
+    operator: "$"
     rhs: (identifier) @reference.name)) @reference.call.member
 
 ;; Chained member calls: a$b$m(), Cls$new()$m(). The receiver is itself an extract_operator or a
@@ -359,6 +361,7 @@ export const R_SCOPE_QUERY = `
 (call
   function: (extract_operator
     lhs: [(extract_operator) (call)] @reference.receiver
+    operator: "$"
     rhs: (identifier) @reference.name)) @reference.call.member
 `;
 

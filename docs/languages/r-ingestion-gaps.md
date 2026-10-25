@@ -55,7 +55,7 @@ In the harness vocabulary of the [README](README.md#reading-the-evidence):
   `invisiblepkg::fmt()` when package discovery was truncated) get no edge, never the
   caller-local `fmt`, and record no outcome (R-04).
 
-Of 38 corpus cells, 13 resolve, 6 are deliberately unresolved and 19 are `deferred` rows
+Of 49 corpus cells, 13 resolve, 17 are deliberately unresolved and 19 are `deferred` rows
 (absence pinned so that a later feature shows up as a deliberate change); every row
 without an edge names a resolving control. Nothing in the corpus reaches a decoy.
 

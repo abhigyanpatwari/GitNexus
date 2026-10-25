@@ -8,6 +8,7 @@ import { encodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { rLexicalAssignedNames, rReplacementCallTest, rSetterName } from './assignment.js';
+import { rConstructorAnchorTest } from './receiver-agreement.js';
 import {
   createSelfOwnerClassifier,
   fileBindsSelf,
@@ -47,6 +48,9 @@ export function emitRScopeCaptures(
   const privateMembers = new Set<string>();
   // One linear pass over the tree on the first free call, not a walk up from every call.
   const isReplacementCall = rReplacementCallTest(tree.rootNode);
+  // A constructor binding types its name only when every binding of the name in its frame agrees
+  // (`receiver-agreement.ts`); the tree is read once, on the first constructor binding.
+  const isAgreedConstructor = rConstructorAnchorTest(tree.rootNode);
 
   for (const m of rawMatches) {
     // The scope query captures every candidate argument of setClass/library/require/
@@ -58,6 +62,7 @@ export function emitRScopeCaptures(
     let methodNode: SyntaxNode | undefined;
     let freeCallNode: SyntaxNode | undefined;
     let chainedReceiver: SyntaxNode | undefined;
+    let constructorAnchor: SyntaxNode | undefined;
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
@@ -67,11 +72,15 @@ export function emitRScopeCaptures(
       if (tag === '@scope.function' && c.node.type === 'argument') methodNode = c.node;
       if (tag === '@reference.call.free') freeCallNode = c.node;
       if (tag === '@reference.receiver' && c.node.type !== 'identifier') chainedReceiver = c.node;
+      if (tag === '@type-binding.constructor') constructorAnchor = c.node;
       if (tag === '@scope.module' && c.node.type === 'program' && !bindsSelf) {
         grouped['@receiver-owner.self'] = syntheticCapture('@receiver-owner.self', c.node, 'self');
       }
     }
     if (!hasRealCapture) continue;
+    // Dropping the type leaves the receiver untyped, and an untyped receiver gets no edge: the
+    // call is unresolved, never bound to another class's method.
+    if (constructorAnchor !== undefined && !isAgreedConstructor(constructorAnchor)) continue;
     if (freeCallNode !== undefined && isReplacementCall(freeCallNode)) {
       recordAsSetterCall(grouped, freeCallNode);
     }

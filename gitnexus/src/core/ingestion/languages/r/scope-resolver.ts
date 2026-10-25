@@ -242,9 +242,19 @@ export const rScopeResolver: ScopeResolver = {
   emitHeritageEdges: (graph, parsedFiles, nodeLookup, scopes) =>
     emitRVirtualHeritageEdges(graph, parsedFiles, nodeLookup, scopes),
 
-  // `self$m()` reaches the public members of the class and its parents; where none defines `m`
-  // the call is unresolved, not a call of a free function `m`.
+  // A typed receiver (`self$m()`, `u <- User$new(); u$m()`) reaches the public members of the
+  // class and its parents; where none defines `m` the call is unresolved, not a call of a free
+  // function `m`.
   resolveReceiverMember: rResolveSelfMember,
+  // An R6 or RefClass generator object (`User` in `User$save()`) is not an instance: it carries
+  // `new()` and the class metadata, never the class's instance methods. So a class name is never
+  // the receiver of a member call here.
+  isBareClassReceiverCandidate: () => false,
+  // A dotted class name (`My.Class`) is read by the shared receiver pass as a qualified one, which
+  // does not walk the class's parents and lets a lexically visible free function of the member's
+  // name win. Such a receiver gets no lookup: the call is recorded as `receiver-unresolved`, which
+  // also gives up the class's own and inherited methods (R-13).
+  suppressReceiverLookup: (typeRef) => typeRef.rawName.includes('.'),
   // Restores which R6 members are private for a file reused from a worker or the parse cache.
   applyCaptureSideChannel: applyRCaptureSideChannel,
 

@@ -154,21 +154,21 @@ describe('R6 self$method(): the edge it gets', () => {
   });
 });
 
-describe('R6 self$method() with a dotted class name keeps the generic lexical route', () => {
-  // The shared receiver pass types a receiver by a class name with no dot (a dotted name is read
-  // as a qualified one), so `self` of `C12.DChild` is not resolved through the MRO. Known limit:
-  // the call reaches a free function of that name, as it did before `self` was bound.
-  it('c12 the own method of a dotted class still resolves', () => {
-    expect(targets('c12_dotted_run', 'R/c12.R')).toEqual([
-      'Method:R/c12.R:C12.Dotted.c12_dotted_greet#0',
-    ]);
-  });
-
+describe('R6 self$method() with a dotted class name gets no receiver lookup', () => {
+  // The shared receiver pass reads a dotted type name (`C12.DChild`) as a qualified one and does
+  // not walk its parents, so a lexically visible free function of the name could be bound. R
+  // refuses the lookup for a dotted class name (`suppressReceiverLookup`): the call is
+  // unresolved, which also gives up the own method's correct edge (R-13).
   it.each([
-    ['c12 inherited', 'c12_dinh_run', 'Function:R/c12.R:c12_dinh'],
-    ['c12 missing', 'c12_dmissing_run', 'Function:R/c12.R:c12_dmissing'],
-  ])('%s: the free function decoy is still reached (limit)', (_label, source, decoy) => {
-    expect(targets(source, 'R/c12.R')).toEqual([decoy]);
+    ['c12 own method', 'c12_dotted_run', 'c12_dotted_greet', 6],
+    ['c12 inherited', 'c12_dinh_run', 'c12_dinh', 32],
+    ['c12 missing', 'c12_dmissing_run', 'c12_dmissing', 33],
+  ])('%s: no edge, receiver-unresolved', (_label, source, name, line) => {
+    expect(targets(source, 'R/c12.R')).toEqual([]);
+    const suppressed = outcomesFor('R/c12.R', name).filter((o) => o.kind === 'suppressed');
+    expect(
+      suppressed.map((o) => `${o.range.startLine}:${o.kind === 'suppressed' ? o.reason : ''}`),
+    ).toEqual([`${line}:receiver-unresolved`]);
   });
 });
 

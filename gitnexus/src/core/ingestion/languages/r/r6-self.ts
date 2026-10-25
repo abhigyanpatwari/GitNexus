@@ -182,21 +182,25 @@ function isRR6PrivateMember(def: SymbolDefinition): boolean {
 }
 
 /**
- * `ScopeResolver.resolveReceiverMember` for R, for a typed `self` only.
+ * `ScopeResolver.resolveReceiverMember` for R: every typed receiver, `self` in an R6 method and a
+ * local typed by a constructor (`u <- User$new(); u$m()`) alike. The name is historical.
  *
- * `self$m()` reads `m` off the public interface of the instance: the public (and active) members
- * of the class and its parents. A private member is not on `self`, so it is skipped, and a
+ * `x$m()` reads `m` off the public interface of the instance: the public (and active) members of
+ * the class and its parents. A private member is not on the instance, so it is skipped, and a
  * parent's public member of that name is the answer even when the class has a private one. When
  * no public member is found, the lookup is reported ambiguous with no candidate.
  *
  * The generic lookup keeps a lexical route for `self` (a class body binds its own members, so the
  * name is also looked up in the enclosing scopes), and in R that walk reaches a free function of
- * the same name: `self$nothere()` would bind a top-level `nothere`. R reads `nothere` off the
- * instance, so a free function is never the answer. Answering `ambiguous` makes the pass record a
- * suppressed outcome and mark the site handled, which stops that fallback; the outcome reason is
- * `member-lookup-ambiguous`, where `member-not-found` would be more exact. A member found before
- * any private one was skipped is left to the generic MRO walk (`undefined`), which finds the same
- * one; past a skipped private member the answer is given here, because that walk would stop at it.
+ * the same name: `self$nothere()` would bind a top-level `nothere`. For any typed receiver, a
+ * member the owner lookup misses (a dotted member such as `to.json`, which the registry keys by
+ * its last segment) would fall to a global lookup of the bare name that ignores the receiver. R
+ * reads the member off the instance, so a free function is never the answer. Answering
+ * `ambiguous` makes the pass record a suppressed outcome and mark the site handled, which stops
+ * those fallbacks; the outcome reason is `member-lookup-ambiguous`, where `member-not-found` would
+ * be more exact. A member found before any private one was skipped is left to the generic MRO walk
+ * (`undefined`), which finds the same one; past a skipped private member the answer is given here,
+ * because that walk would stop at it.
  */
 export const rResolveSelfMember: NonNullable<ScopeResolver['resolveReceiverMember']> = (
   owner,
@@ -205,7 +209,7 @@ export const rResolveSelfMember: NonNullable<ScopeResolver['resolveReceiverMembe
   scopes,
   model,
 ) => {
-  if (site.kind !== 'call' || site.explicitReceiver?.name !== 'self') return undefined;
+  if (site.kind !== 'call') return undefined;
   let skippedPrivate = false;
   for (const ownerId of [owner.nodeId, ...scopes.methodDispatch.mroFor(owner.nodeId)]) {
     const methods = model.methods.lookupAllByOwner(ownerId, name);
