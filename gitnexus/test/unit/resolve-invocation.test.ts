@@ -39,7 +39,15 @@ const PLUGIN_CJS = path.resolve(
 interface CjsModule {
   formatAnalyzeCommand: (
     o?: { embeddings?: boolean; indexOnly?: boolean },
-    deps?: { npmMajor?: number | null; pnpmMajor?: number | null; pnpmMinor?: number | null },
+    deps?: {
+      npmMajor?: number | null;
+      pnpmMajor?: number | null;
+      pnpmMinor?: number | null;
+      pnpmPresent?: boolean;
+      pnpmRuns?: boolean;
+      bunPresent?: boolean;
+      bunRuns?: boolean;
+    },
   ) => string;
   formatBunxCommand: (args: string) => string;
   formatDocumentationDlxCommand: (args: string, o?: { embeddings?: boolean }) => string;
@@ -53,6 +61,7 @@ interface CjsModule {
       npmMajor?: number | null;
       pnpmMajor?: number | null;
       pnpmPresent?: boolean;
+      pnpmRuns?: boolean;
       bunPresent?: boolean;
       bunRuns?: boolean;
     },
@@ -267,6 +276,47 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     const probe = (c: string) => (c === 'bunx' ? '/usr/local/bin/bunx' : null);
     expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunRuns: false })).toBe('npx');
     expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, bunRuns: false })).toBe('npx');
+  });
+
+  it('rejects a pnpm that is on PATH but does not run (stale shim, #3717)', () => {
+    // When pnpm is an unusable shim (e.g. NVM for Windows: `pnpm --version` exits
+    // non-zero), mode resolution must not pick pnpm. On npm 11+ with bunx
+    // available, it falls through to bunx; without bunx, to npx.
+    const probeBoth = (c: string) =>
+      c === 'pnpm' ? '/usr/local/bin/pnpm' : c === 'bunx' ? '/usr/local/bin/bunx' : null;
+    const probePnpmOnly = (c: string) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null);
+
+    // With working bunx available -> falls through to bun
+    expect(
+      cjs.resolveInvocationMode(probeBoth, { npmMajor: 11, pnpmRuns: false, bunRuns: true }),
+    ).toBe('bun');
+    expect(
+      cjs.resolveInvocationMode(probeBoth, { npmMajor: null, pnpmRuns: false, bunRuns: true }),
+    ).toBe('bun');
+
+    // Without bunx available -> falls through to npx
+    expect(
+      cjs.resolveInvocationMode(probePnpmOnly, { npmMajor: 11, pnpmRuns: false, bunRuns: false }),
+    ).toBe('npx');
+    expect(
+      cjs.resolveInvocationMode(probePnpmOnly, { npmMajor: null, pnpmRuns: false, bunRuns: false }),
+    ).toBe('npx');
+  });
+
+  it('formatAnalyzeCommand falls through to bunx or npx when pnpm does not run (#3717)', () => {
+    expect(
+      cjs.formatAnalyzeCommand(undefined, { npmMajor: 11, pnpmRuns: false, bunRuns: true }),
+    ).toBe(`bunx ${cjs.NPX_REF} analyze`);
+    expect(
+      cjs.formatAnalyzeCommand(undefined, { npmMajor: 11, pnpmRuns: false, bunPresent: false }),
+    ).toBe(`npx ${cjs.NPX_REF} analyze`);
+  });
+
+  it('keeps pnpm when pnpmRuns:true even if version is unparseable (#3717)', () => {
+    const probe = (c: string) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null);
+    expect(
+      cjs.resolveInvocationMode(probe, { npmMajor: 11, pnpmMajor: null, pnpmRuns: true }),
+    ).toBe('pnpm');
   });
 
   it('never probes bunx when npm or pnpm already decides the mode', () => {
@@ -631,6 +681,56 @@ describe('formatAnalyzeCommand end-to-end via the pure scan (#1938)', () => {
     process.env.PATH = binDir;
     expect(cjs.formatAnalyzeCommand()).toBe('gitnexus analyze');
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'falls through to bunx when pnpm is an unusable shim on PATH (#3717)',
+    () => {
+      binDir = mkdtempSync(path.join(os.tmpdir(), 'gn-pnpm-shim-'));
+      const fakePnpm = path.join(binDir, 'pnpm');
+      // Fake unusable pnpm shim that exits 1 (mirrors NVM for Windows error).
+      writeFileSync(
+        fakePnpm,
+        `#!/bin/sh\necho "pnpm is not installed for this Node.js version" >&2\nexit 1\n`,
+      );
+      chmodSync(fakePnpm, 0o755);
+
+      const fakeBunx = path.join(binDir, 'bunx');
+      // Fake working bunx that answers --version.
+      writeFileSync(
+        fakeBunx,
+        `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "1.2.0"\n  exit 0\nfi\nexit 0\n`,
+      );
+      chmodSync(fakeBunx, 0o755);
+
+      // Prepend binDir to PATH so the broken pnpm and working bunx are found first.
+      process.env.PATH = `${binDir}:${savedPath}`;
+
+      // On npm 11+ (or when npm is absent), the unusable pnpm shim must be skipped
+      // in favor of working bunx instead of picking pnpm.
+      expect(cjs.formatAnalyzeCommand()).toBe(`bunx ${cjs.NPX_REF} analyze`);
+      expect(cjs.resolveInvocationMode()).toBe('bun');
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps pnpm when probe runs but prints unparseable banner (#3717 Corepack banner)',
+    () => {
+      binDir = mkdtempSync(path.join(os.tmpdir(), 'gn-pnpm-banner-'));
+      const fakePnpm = path.join(binDir, 'pnpm');
+      // Fake pnpm that exits 0 with a banner line but no parseable version.
+      writeFileSync(
+        fakePnpm,
+        `#!/bin/sh\necho "Corepack is downloading https://registry.npmjs.org/pnpm" >&2\necho "Notice: pnpm is active"\nexit 0\n`,
+      );
+      chmodSync(fakePnpm, 0o755);
+
+      process.env.PATH = `${binDir}:${savedPath}`;
+
+      expect(cjs.formatAnalyzeCommand()).toContain('pnpm');
+      expect(cjs.formatAnalyzeCommand()).toContain('dlx');
+      expect(cjs.resolveInvocationMode()).toBe('pnpm');
+    },
+  );
 });
 
 describe('resolve-analyze-cmd.cjs parity', () => {
