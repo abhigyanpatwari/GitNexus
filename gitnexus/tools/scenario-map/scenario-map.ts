@@ -2,7 +2,10 @@
  * The scenario-map CLI (U14, R14, R16, KTD1, KTD11, KTD13, KTD14, KTD17): one command whose
  * stages map one-to-one onto the CI jobs, so a local `all` run and CI produce the same report.
  * Every stage reads and writes JSON in one work directory (`--work`, outside the checkout); CI
- * jobs exchange those files as artifacts.
+ * jobs exchange those files as artifacts. Order (local and CI): plan, then value-flow, then the
+ * shards, then merge; value flow runs before the shards so the final shard plan and a shard's
+ * isolation count only the pairs value flow leaves able to be strong (a plan deviation from
+ * KTD14's parallel value-flow job). CI reads the matrix size from the `shards` stage.
  *
  * Stages:
  *   plan        eligibility (R1); the Layer 0 scan (test-dupes over the `--all` corpus plus the
@@ -11,16 +14,32 @@
  *               static inventory and runtime join (U3); checks and context (U5, with the file
  *               snapshot and helper-module readers); input facets (U6); candidates (U4, Jaccard
  *               and checks-and-context sources); each group's KTD7 mutate scope (U7); the
- *               row-deletion plans of the facet-equal pairs (U9); the shard plan (KTD17).
+ *               row-deletion plans of the facet-equal pairs (U9); the provisional shard plan
+ *               (KTD17), which value-flow re-plans.
  *               The KTD17 estimate of a group ({@link estimateScenarioGroup}) is its main run
- *               (fixed overhead plus mutated bytes times tests), plus row deletion (one Vitest run
+ *               (a fixed cost plus mutated bytes, the form the U14 slice measured: the cost does not
+ *               grow with the group's tests), plus row deletion (one Vitest run
  *               per control and deletion of its planned pairs, D10), plus isolation over the pairs
  *               that can still be strong on plan-time facts (equal checks-and-context keys, equal
  *               facets without a residual difference, and no weak disqualifier the verdict engine
  *               already finds before any mutation run): a FIXED cost per isolation run (one
  *               together run per pair, one alone run per test, D9) and the fresh-process mutant
  *               runs over the production bytes either test executed. The row-deletion batch's
- *               fixed cost is reserved once per shard, at the first group that needs it.
+ *               fixed cost is reserved once per shard, at the first group that needs it. The
+ *               estimate is for a target Stryker concurrency (`--concurrency`, default 2; the
+ *               mutant runs scale by the measured parallel efficiency, fixed costs do not) and a
+ *               target machine (`--speed-factor`, default 1.5, the CI runners' wall clock over the
+ *               calibration machine's). `shardsNeeded` is the fewest shards (at most 20) whose
+ *               packing keeps every shard, its fixed cost and one row-deletion batch within the
+ *               budget; the plan packs into it unless `--shards` is given. Only a group whose main
+ *               run and row deletion alone exceed the budget is over budget (`group-over-budget`);
+ *               a group whose isolation estimate does not fit as well still runs, with its
+ *               isolation deferred: a shard isolates its pairs only when their measured universe
+ *               fits the time left, and otherwise they stay isolation `not-run` (weak cap). A
+ *               group whose mutate
+ *               scope is empty executes no production file: it is packed into no shard and never
+ *               run, and merge gives it a complete result without observations, so the verdict
+ *               engine makes its pairs Out of scope (`covers-no-evaluated-mutant`).
  *   shard       `--index <i> --of <n>`: prepares its copy and verifies it against the run
  *               manifest (a mismatch writes `manifest-mismatch` results and runs nothing); runs its
  *               groups' Layer 3 main runs (U7 `runGroup`) in plan order, several groups sharing one
@@ -29,9 +48,16 @@
  *               row deletion and isolation of the groups already started still owed (KTD17); then
  *               one row-deletion batch (U9) for the pairs of its complete groups; then the
  *               isolation pass (U8) only for pairs that can still be strong: the verdict engine
- *               (U12), given every stage still to come at its best (isolation agrees, trace and
- *               static value flow clean), calls them repeat-strong (D9). Each isolation pair
- *               starts only when its pending runs fit before the deadline. Every result is written
+ *               (U12), given value-flow.json's static and trace results and isolation at its best
+ *               (agrees), calls them repeat-strong (D9). A pair value flow sends to Review (a veto
+ *               or an unknown static check) or Inconclusive (a trace that is inconclusive) is not
+ *               isolated, and its isolation is not owed when batches start. Without a usable
+ *               value-flow result (missing, another run manifest, degraded, trace not run) value
+ *               flow counts as clean and every repeat-stage pair is isolated (fail-safe). Each
+ *               isolation pair starts only when its pending runs, priced on the universe its main
+ *               run measured, fit before the deadline: first the pairs of groups whose isolation
+ *               was planned (reserved), then those of groups whose isolation was deferred. Main and
+ *               isolation runs use `--concurrency` (default the plan's). Every result is written
  *               as soon as it exists.
  *   value-flow  the PDG index of a copy (the production roots, or the fixture in controls mode)
  *               under a temporary GITNEXUS_HOME (`node dist/cli/index.js analyze <copy> --pdg
@@ -39,12 +65,21 @@
  *               controls mode); the static value-flow check (U10) of the facet-equal candidate
  *               pairs whose discarded values differ, with their group's mutate scope; the trace
  *               run (U11) of every facet-equal candidate pair, U10's opaque sinks wrapped. A
- *               failed analyze is the `no-pdg-layer` degraded run (KTD11).
+ *               failed analyze is the `no-pdg-layer` degraded run (KTD11). Then the final shard
+ *               plan ({@link replanShards}): the plan's estimate, packing, budget, cost model and
+ *               requested shard count, with the isolation term counting only the isolation
+ *               candidates value flow leaves; its `shardPlan` (with the over-budget groups),
+ *               estimates and `shardsNeeded` (at most 20) go into value-flow.json as `replan`.
+ *               A degraded result, or one whose trace did not run, re-plans nothing.
+ *   shards      prints the final shard count and nothing else (CI: the matrix size; run it with
+ *               `npm run --silent` or node directly): the re-plan's when value-flow.json is
+ *               usable for this run manifest, else the provisional plan's
+ *               ({@link effectiveShardPlan}). Shard and merge follow the same plan.
  *   merge       every result found: shard reports, group results, isolation runs, row deletion
  *               and value flow. A missing or unfinished shard leaves the run partial, and the
  *               pairs of its groups without a result Inconclusive (`not-scheduled`, R11). Then the
  *               verdicts (U12), mutant fingerprints, provenance and the report (U13).
- *   all         plan (one shard), shard 0 of 1, value-flow and merge, in one process.
+ *   all         plan (one shard), value-flow, shard 0 of 1 and merge, in one process.
  *   controls    `all` in controls mode over the U17 fixture (extra root, its tsconfig, its own
  *               PDG index), then the verdict and rule of every expected.json pair compared.
  *               Needs a built `dist/` for the PDG index (`node scripts/build.js`).
@@ -55,8 +90,14 @@
  *                              `<os tmpdir>/gitnexus-scenario-map` (`…-controls` for controls)
  *   --mode normal|controls     plan, all: the run mode; `--controls` is `--mode controls`
  *   --seed <text>              plan, all, controls: seed of every sampled choice (spot audit)
- *   --shards <n>               plan: number of shards (default 1)
- *   --index <i> --of <n>       shard: 0-based shard index and the plan's shard count
+ *   --shards <n>               plan: number of shards (default `shardsNeeded`; all and
+ *                              controls: 1)
+ *   --concurrency <n>          plan, all, controls: Stryker concurrency of the estimate
+ *                              (default 2); shard, all, controls: of the main and isolation runs
+ *                              (default the plan's)
+ *   --speed-factor <x>         plan, all, controls: the target machine's wall clock over the
+ *                              calibration machine's in the estimate (default 1.5)
+ *   --index <i> --of <n>       shard: 0-based shard index and the final plan's shard count
  *   --deadline-minutes <m>     plan: one shard's budget; shard, all, controls: the deadline
  *                              (default 300, KTD17)
  *   --baseline <report.json>   merge, all, controls: the previous complete run's report
@@ -69,9 +110,10 @@
  *
  * Work directory (every path relative to `--work`):
  *   .gitnexus-scenario-map       marker: plan may clear a directory that holds it
- *   plan.json                    plan: mode, seed, eligibility, cost model, shard plan (groups
- *                                with their KTD7 scope and estimate), per-group cost breakdown,
- *                                candidate pairs, row-deletion plans, timings
+ *   plan.json                    plan: mode, seed, eligibility, cost model (target concurrency
+ *                                and speed factor), shard plan (groups with their KTD7 scope and
+ *                                estimate), shardsNeeded, per-group cost breakdown, isolation
+ *                                candidates, candidate pairs, row-deletion plans, timings
  *   scenario-run-manifest.json   plan: the run manifest (U7, KTD14)
  *   layer0.json                  plan: test-dupes `--json` shape, findings on eligible files
  *   layer2.json                  plan: per test: anchor, join problems, unresolved inputs,
@@ -84,11 +126,13 @@
  *   row-deletion-shard-<i>.json  shard: row-deletion results (U9)
  *   shard-<i>.json               shard: shard report (written as it goes; `finished` at the end)
  *   shard-<i>/, groups/, row-deletion/   shard scratch
- *   value-flow.json              value-flow: PDG index status, static run, trace run
+ *   value-flow.json              value-flow: PDG index status, static run, trace run, the final
+ *                                shard plan (`replan`: shardPlan, estimates, shardsNeeded,
+ *                                surviving isolation candidates)
  *   value-flow/pdg/, trace/      value-flow scratch (the analyze log is value-flow/pdg/analyze.log)
  *   scenario-map-report.json, scenario-map-report.md, issue-body.md   merge
- * A CI shard job needs plan.json, scenario-run-manifest.json, layer2.json and
- * coverage/coverage.json; value-flow needs the same; merge needs every artifact listed above
+ * value-flow needs plan.json, scenario-run-manifest.json, layer2.json and coverage/coverage.json;
+ * a CI shard job needs the same plus value-flow.json; merge needs every artifact listed above
  * except the scratch directories.
  *
  * Exit codes: 0 the stage finished with complete results (`controls`: every expected verdict and
@@ -168,6 +212,7 @@ import {
   packShards,
   resolvePairSchedules,
   type CostModel,
+  type GroupOutcome,
   type GroupScope,
   type PairSchedule,
   type PlannedGroup,
@@ -230,10 +275,11 @@ import {
   openLocalBackendEdgeSource,
   staticValueFlow,
   type ClosableEdgeSource,
+  type PairValueFlow,
   type StaticValueFlowRun,
   type ValueFlowPair,
 } from './value-flow/pdg-walk.js';
-import { runTrace, type TraceRunResult } from './value-flow/trace.js';
+import { runTrace, type PairTrace, type TraceRunResult } from './value-flow/trace.js';
 import {
   computeVerdicts,
   type PairVerdict,
@@ -245,7 +291,15 @@ import {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-export const STAGES = ['plan', 'shard', 'value-flow', 'merge', 'all', 'controls'] as const;
+export const STAGES = [
+  'plan',
+  'shard',
+  'value-flow',
+  'shards',
+  'merge',
+  'all',
+  'controls',
+] as const;
 export type Stage = (typeof STAGES)[number];
 
 /** Schema version of every work file this CLI writes. */
@@ -261,29 +315,90 @@ const WORKER_READY_TIMEOUT_MS = '120000';
 const ANALYZE_TIMEOUT_MS = 60 * 60_000;
 
 /**
- * KTD17 cost model plus the D9 and D10 terms, in milliseconds. `perByteTestMs` is re-measured on
- * the eligible category (U14 measured slice, 16 groups, WSL2, concurrency 2): one group run took
- * 1.5 to 1.9 min for up to 11 KB of mutated code and 10.9 min for 597 KB with 2 tests, while the
- * KTD17 first calibration (10 ms per byte and test) estimated 200 min; 1.1 ms per byte and test
- * plus `perRunMs` (100 s) covers every measured group. `isolationRunMs`: the fixed part
+ * KTD17 cost model plus the D9 and D10 terms, in milliseconds. The main-run form is the one the
+ * eligible category measured (U14 slice, 16 groups run alone, concurrency 2, a 24-core WSL2
+ * host): 1.46 min plus 12.97 min per MB of mutated code (`perRunMs` 88 s, `perByteMs` 0.78 ms),
+ * with no factor for the group's tests (a 10-test group cost what a 2-test group of the same size
+ * did; the KTD17 first calibration, 10 ms per byte and test, estimated 200 min for a 10.9 min
+ * run), so `perByteTestMs` is 0. A batch costs `batchFactor` (1.23, the calibration batches)
+ * times one fixed cost plus its members' byte terms. Known ceiling: static mutants rerun every
+ * test of the run, so a run of many tests over much module-level code costs more than the form
+ * says; no cheap static-mutant count exists before the run, and the measured static-heavy batch
+ * (734 static mutants, 14 tests) stayed within the batch factor. `isolationRunMs`: the fixed part
  * of one isolation run (two baselines, the scope driver's prepare, Stryker's start and its
  * fresh test-runner processes), about 130 s besides its mutant runs (U8, WSL2, concurrency 2).
  * `rowDeletionBatchMs`: the batch's copy and its manifest check, about 48 s (U9);
  * `rowDeletionRunMs`: one control or deletion Vitest run, 2.5 to 5 s (U9; the upper end).
+ * `parallelEfficiency`: two main-run batches of the eligible category ran at concurrency 2 and 4
+ * on the calibration machine (24 cores): 9.3 and 10.2 min, then 5.9 and 7.3 min; with about
+ * 1.5 min of fixed cost each, the mutant runs sped up 1.76 and 1.51 times (efficiency 0.76 and
+ * 0.51, 0.62 together). A 4-vCPU runner at concurrency 4 may gain less.
  */
 export interface ScenarioCostModel extends CostModel {
+  /** Main-run cost per mutated byte, whatever the number of tests (U14 slice). */
+  perByteMs: number;
+  /** A main-run batch over its members' fixed cost once plus their byte terms (U14). */
+  batchFactor: number;
   isolationRunMs: number;
   rowDeletionBatchMs: number;
   rowDeletionRunMs: number;
+  /** A shard's prepare and manifest check before its first group, about 45 to 60 s (U14). */
+  shardFixedMs: number;
+  /** The Stryker concurrency every other term was measured at. */
+  calibrationConcurrency: number;
+  /**
+   * Speed-up of the mutant runs per step of concurrency over the calibration's: at concurrency
+   * `c` they take `1 / (1 + e * (c / calibration - 1))` of their calibrated time (fewer workers
+   * than the calibration's slow them down linearly). Fixed costs do not scale.
+   */
+  parallelEfficiency: number;
+  /** The Stryker concurrency the estimate is for. */
+  concurrency: number;
+  /** Wall clock of the target machine over the calibration machine's (CI: about 1.5). */
+  speedFactor: number;
 }
 
 export const SCENARIO_COST_MODEL: Readonly<ScenarioCostModel> = Object.freeze({
   ...DEFAULT_COST_MODEL,
-  perByteTestMs: 1.1,
+  perRunMs: 88_000,
+  perByteTestMs: 0,
+  perByteMs: 0.78,
+  batchFactor: 1.23,
   isolationRunMs: 130_000,
   rowDeletionBatchMs: 48_000,
   rowDeletionRunMs: 5_000,
+  shardFixedMs: 60_000,
+  calibrationConcurrency: 2,
+  parallelEfficiency: 0.6,
+  concurrency: 2,
+  speedFactor: 1,
 });
+
+/** Stryker concurrency of a plan's estimate and of a shard's runs unless given (KTD17). */
+export const DEFAULT_CONCURRENCY = 2;
+/** The plan's default wall-clock factor of the CI runners over the calibration machine. */
+export const DEFAULT_SPEED_FACTOR = 1.5;
+/** `shardsNeeded` never exceeds this many shards. */
+export const MAX_SHARDS = 20;
+
+/** {@link SCENARIO_COST_MODEL} for a target concurrency and machine. */
+export const scenarioCostModel = (target: {
+  concurrency: number;
+  speedFactor: number;
+}): ScenarioCostModel => ({ ...SCENARIO_COST_MODEL, ...target });
+
+/** The share of their calibrated time the mutant runs take at the model's concurrency. */
+export function mutantRunScale(model: Readonly<ScenarioCostModel>): number {
+  const steps = model.concurrency / model.calibrationConcurrency;
+  return 1 / (steps >= 1 ? 1 + model.parallelEfficiency * (steps - 1) : steps);
+}
+
+/** One isolation run's estimate over a universe of `mutants` (D9). */
+export const isolationRunEstimate = (model: Readonly<ScenarioCostModel>, mutants: number): number =>
+  Math.ceil(
+    model.speedFactor *
+      (model.isolationRunMs + mutants * model.freshProcessMs * mutantRunScale(model)),
+  );
 
 const byText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const sortedUnique = (values: Iterable<string>): string[] => [...new Set(values)].sort(byText);
@@ -306,15 +421,19 @@ export class UsageError extends Error {
 }
 
 export const USAGE =
-  'usage: npm run test:scenario-map -- <plan|shard|value-flow|merge|all|controls> [--work <dir>]\n' +
+  'usage: npm run test:scenario-map -- <plan|value-flow|shards|shard|merge|all|controls> ' +
+  '[--work <dir>]\n' +
   '  plan:       [--mode normal|controls | --controls] [--seed <text>] [--shards <n>] ' +
-  '[--deadline-minutes <m>]\n' +
-  '  shard:      --index <i> --of <n> [--deadline-minutes <m>] [--sample <n>] [--groups <id,…>]\n' +
+  '[--deadline-minutes <m>] [--concurrency <n>] [--speed-factor <x>]\n' +
+  '  shard:      --index <i> --of <n> [--deadline-minutes <m>] [--concurrency <n>] ' +
+  '[--sample <n>] [--groups <id,…>]\n' +
   '  value-flow: (no flags)\n' +
+  '  shards:     (no flags; prints the final shard count)\n' +
   '  merge:      [--baseline <report.json>] [--run-id <id>] [--run-attempt <n>] ' +
   '[--run-url <url>] [--ref <ref>] [--default-branch]\n' +
   '  all:        the plan flags except --shards, and the merge flags\n' +
-  '  controls:   [--seed <text>] [--deadline-minutes <m>] and the merge flags';
+  '  controls:   [--seed <text>] [--deadline-minutes <m>] [--concurrency <n>] ' +
+  '[--speed-factor <x>] and the merge flags';
 
 export interface CliOptions {
   stage: Stage;
@@ -322,7 +441,8 @@ export interface CliOptions {
   workDir: string;
   mode: RunMode;
   seed: string;
-  shards: number;
+  /** `--shards`; null lets the plan use `shardsNeeded`. */
+  shards: number | null;
   /** Shard stage only; null otherwise. */
   index: number | null;
   of: number | null;
@@ -332,6 +452,10 @@ export interface CliOptions {
   groups: string[] | null;
   /** `--deadline-minutes` in milliseconds; null takes the plan's budget (KTD17 default). */
   deadlineMs: number | null;
+  /** Stryker concurrency: of the plan's estimate, of a shard's runs (default the plan's). */
+  concurrency: number | null;
+  /** The plan's wall-clock factor of the target machine (default {@link DEFAULT_SPEED_FACTOR}). */
+  speedFactor: number | null;
   /** Absolute path of the baseline report; null when none. */
   baseline: string | null;
   run: RunInfo;
@@ -348,6 +472,8 @@ const FLAG_OPTIONS = {
   sample: { type: 'string' },
   groups: { type: 'string' },
   'deadline-minutes': { type: 'string' },
+  concurrency: { type: 'string' },
+  'speed-factor': { type: 'string' },
   baseline: { type: 'string' },
   'run-id': { type: 'string' },
   'run-attempt': { type: 'string' },
@@ -367,12 +493,31 @@ const REPORT_FLAGS: readonly Flag[] = [
   'default-branch',
 ];
 const STAGE_FLAGS: Readonly<Record<Stage, readonly Flag[]>> = {
-  plan: ['work', 'mode', 'controls', 'seed', 'shards', 'deadline-minutes'],
-  shard: ['work', 'index', 'of', 'sample', 'groups', 'deadline-minutes'],
+  plan: [
+    'work',
+    'mode',
+    'controls',
+    'seed',
+    'shards',
+    'deadline-minutes',
+    'concurrency',
+    'speed-factor',
+  ],
+  shard: ['work', 'index', 'of', 'sample', 'groups', 'deadline-minutes', 'concurrency'],
   'value-flow': ['work'],
+  shards: ['work'],
   merge: ['work', ...REPORT_FLAGS],
-  all: ['work', 'mode', 'controls', 'seed', 'deadline-minutes', ...REPORT_FLAGS],
-  controls: ['work', 'seed', 'deadline-minutes', ...REPORT_FLAGS],
+  all: [
+    'work',
+    'mode',
+    'controls',
+    'seed',
+    'deadline-minutes',
+    'concurrency',
+    'speed-factor',
+    ...REPORT_FLAGS,
+  ],
+  controls: ['work', 'seed', 'deadline-minutes', 'concurrency', 'speed-factor', ...REPORT_FLAGS],
 };
 
 const isStage = (value: string): value is Stage => (STAGES as readonly string[]).includes(value);
@@ -382,6 +527,15 @@ function integerFlag(flag: string, value: string | undefined, minimum: number): 
   if (value === undefined) return null;
   if (!/^\d+$/.test(value) || Number(value) < minimum || !Number.isSafeInteger(Number(value))) {
     throw new UsageError(`--${flag} must be an integer of at least ${minimum}, got ${value}`);
+  }
+  return Number(value);
+}
+
+/** A positive decimal flag value (`1.5`); anything else is a usage error. */
+function decimalFlag(flag: string, value: string | undefined): number | null {
+  if (value === undefined) return null;
+  if (!/^\d+(\.\d+)?$/.test(value) || !(Number(value) > 0)) {
+    throw new UsageError(`--${flag} must be a positive number, got ${value}`);
   }
   return Number(value);
 }
@@ -451,12 +605,14 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
     workDir: path.resolve(cwd, values.work ?? defaultWork),
     mode,
     seed: values.seed ?? DEFAULT_SEED,
-    shards: integerFlag('shards', values.shards, 1) ?? 1,
+    shards: integerFlag('shards', values.shards, 1),
     index,
     of,
     sample: integerFlag('sample', values.sample, 1),
     groups: groupsFlag(values.groups),
     deadlineMs: deadlineMinutes === null ? null : deadlineMinutes * 60_000,
+    concurrency: integerFlag('concurrency', values.concurrency, 1),
+    speedFactor: decimalFlag('speed-factor', values['speed-factor']),
     baseline: values.baseline === undefined ? null : path.resolve(cwd, values.baseline),
     run: {
       id: values['run-id'] ?? 'local',
@@ -547,8 +703,11 @@ export interface GroupWork {
 export interface GroupCostBreakdown extends GroupWork {
   mainMs: number;
   rowDeletionMs: number;
+  /** The isolation bound, planned or not. */
   isolationMs: number;
-  /** Their sum: the group's `estimateMs` in the shard plan. */
+  /** False when the isolation does not fit one shard's budget: deferred ({@link withinBudget}). */
+  isolationPlanned: boolean;
+  /** Main run, row deletion and planned isolation: the group's `estimateMs` in the shard plan. */
   estimateMs: number;
 }
 
@@ -558,10 +717,23 @@ export interface PlanFile {
   seed: string;
   eligibility: Eligibility;
   manifestDigest: string;
+  /** The cost model at the target concurrency and speed factor. */
   costModel: ScenarioCostModel;
+  /**
+   * The provisional shard plan, packed into `--shards` or `shardsNeeded`; value-flow re-plans it
+   * ({@link effectiveShardPlan}).
+   */
   shardPlan: ShardPlan;
+  /** `--shards`; null packs into `shardsNeeded`. */
+  shardsRequested: number | null;
+  /** The fewest shards whose packing keeps every shard in budget, at most {@link MAX_SHARDS}. */
+  shardsNeeded: number;
+  /** True when even {@link MAX_SHARDS} shards do not keep every shard in budget. */
+  shardsCapped: boolean;
   /** Sorted by group. */
   estimates: GroupCostBreakdown[];
+  /** {@link pairKey}s of the pairs the isolation term counts, sorted. */
+  isolationCandidates: string[];
   /** Candidate pairs (U4), sorted by `a`, then `b`. */
   pairs: CandidatePair[];
   /** Row-deletion plans of the facet-equal pairs (U9). */
@@ -640,6 +812,10 @@ export interface ShardStageReport {
   /** Null until the copy is verified. */
   manifestCheck: ManifestCheck | null;
   deadlineMs: number;
+  /** Stryker concurrency of its main and isolation runs. */
+  concurrency: number;
+  /** Whether the isolation selection read value-flow.json ({@link valueFlowView}). */
+  valueFlow: ValueFlowUse;
   /** The debug selection (`--sample`, `--groups`); null when every group ran. */
   sample: { size: number | null; seed: string; groups: string[] } | null;
   /** Main-run batches of more than one group, in run order. */
@@ -664,7 +840,13 @@ export interface ShardStageReport {
     candidates: number;
     selected: number;
     runs: ShardIsolationRun[];
+    /** Pairs whose planned isolation did not fit before the deadline: the shard is incomplete. */
     skipped: { a: string; b: string; estimateMs: number; elapsedMs: number }[];
+    /**
+     * Pairs of groups whose isolation was deferred (over one shard's budget) and whose measured
+     * universe did not fit the time left: isolation `not-run` by plan, not an incomplete shard.
+     */
+    deferred: { a: string; b: string; estimateMs: number; elapsedMs: number }[];
   };
   finished: boolean;
   wallClockMs: number;
@@ -689,7 +871,19 @@ export interface ValueFlowFile {
   };
   staticValueFlow: StaticValueFlowRun;
   trace: TraceRunResult;
+  /** The final shard plan; null when this result cannot be used ({@link valueFlowView}). */
+  replan: ShardReplan | null;
   wallClockMs: Record<string, number>;
+}
+
+/** The shard plan re-built from the isolation candidates value flow leaves ({@link replanShards}). */
+export interface ShardReplan {
+  shardPlan: ShardPlan;
+  estimates: GroupCostBreakdown[];
+  shardsNeeded: number;
+  shardsCapped: boolean;
+  /** The plan's isolation candidates that pass value flow, sorted. */
+  isolationCandidates: string[];
 }
 
 const versioned = (value: unknown): value is Record<string, unknown> =>
@@ -702,6 +896,8 @@ const isPlanFile = (value: unknown): value is PlanFile =>
   Array.isArray(value.pairs) &&
   Array.isArray(value.estimates) &&
   Array.isArray(value.rowDeletion) &&
+  Array.isArray(value.isolationCandidates) &&
+  (value.shardsRequested === null || typeof value.shardsRequested === 'number') &&
   typeof value.manifestDigest === 'string';
 
 const isLayer2File = (value: unknown): value is Layer2File =>
@@ -748,19 +944,47 @@ export function estimateScenarioGroup(
   work: GroupWork,
   model: Readonly<ScenarioCostModel> = SCENARIO_COST_MODEL,
 ): GroupCostBreakdown {
-  const mainMs = Math.ceil(model.perRunMs + work.mutatedBytes * work.tests * model.perByteTestMs);
-  const rowDeletionMs = Math.ceil(work.rowDeletionRuns * model.rowDeletionRunMs);
+  const scale = mutantRunScale(model);
+  const factor = model.speedFactor;
+  const mainMs = Math.ceil(factor * (model.perRunMs + work.mutatedBytes * model.perByteMs * scale));
+  const rowDeletionMs = Math.ceil(factor * work.rowDeletionRuns * model.rowDeletionRunMs);
   const isolationMs = Math.ceil(
-    work.isolationRuns * model.isolationRunMs +
-      work.isolationBytes * model.mutantsPerByte * ISOLATION_RUNS * model.freshProcessMs,
+    factor *
+      (work.isolationRuns * model.isolationRunMs +
+        work.isolationBytes * model.mutantsPerByte * ISOLATION_RUNS * model.freshProcessMs * scale),
   );
   return {
     ...work,
     mainMs,
     rowDeletionMs,
     isolationMs,
+    isolationPlanned: true,
     estimateMs: mainMs + rowDeletionMs + isolationMs,
   };
+}
+
+/**
+ * A group's estimate against one shard's budget: its isolation is planned (and counted) only when
+ * the whole estimate fits; otherwise it is deferred and the group costs its main run and row
+ * deletion, so only a group whose main run and row deletion alone exceed the budget is over it.
+ */
+export function withinBudget(estimate: GroupCostBreakdown, budgetMs: number): GroupCostBreakdown {
+  const planned = estimate.mainMs + estimate.rowDeletionMs + estimate.isolationMs <= budgetMs;
+  return {
+    ...estimate,
+    isolationPlanned: planned,
+    estimateMs: estimate.mainMs + estimate.rowDeletionMs + (planned ? estimate.isolationMs : 0),
+  };
+}
+
+/** A main-run batch's estimate: the batch factor over one fixed cost plus the members' rest. */
+export function batchEstimate(model: Readonly<ScenarioCostModel>, memberMainMs: number[]): number {
+  if (memberMainMs.length === 1) return memberMainMs[0];
+  const fixedMs = model.speedFactor * model.perRunMs;
+  return Math.ceil(
+    model.batchFactor *
+      (fixedMs + sum(memberMainMs.map((mainMs) => Math.max(0, mainMs - fixedMs)))),
+  );
 }
 
 export interface ShardPlanningInput {
@@ -772,16 +996,29 @@ export interface ShardPlanningInput {
   executedFiles: (test: string) => readonly string[] | null;
   rowDeletion: readonly RowDeletionPlan[];
   sizeOf: (repoPath: string) => number;
-  shards: number;
+  /** Shards to pack into; null packs into `shardsNeeded`. */
+  shards: number | null;
   budgetMs: number;
   model: Readonly<ScenarioCostModel>;
+  /** Default {@link MAX_SHARDS}. */
+  maxShards?: number;
 }
 
-/** Each group's estimate and the KTD17 packing over them; pure given `sizeOf`. */
-export function planShards(input: ShardPlanningInput): {
+export interface ShardPlanning {
   shardPlan: ShardPlan;
   estimates: GroupCostBreakdown[];
-} {
+  shardsNeeded: number;
+  shardsCapped: boolean;
+}
+
+/**
+ * Each group's estimate and the KTD17 packing over them; pure given `sizeOf`. A group with an
+ * empty mutate scope executes no production file: it is never run (its pairs are Out of scope,
+ * {@link notRunOutcomes}), costs nothing and is packed into no shard. `shardsNeeded` is the
+ * fewest shards whose packing keeps every shard, plus its fixed cost and one row-deletion batch,
+ * within the budget.
+ */
+export function planShards(input: ShardPlanningInput): ShardPlanning {
   const pairsByGroup = new Map<string, CandidatePair[]>();
   for (const pair of input.pairs) {
     pairsByGroup.set(pair.group, [...(pairsByGroup.get(pair.group) ?? []), pair]);
@@ -789,6 +1026,21 @@ export function planShards(input: ShardPlanningInput): {
   const rowPlans = new Map(input.rowDeletion.map((plan) => [pairKey(plan.a, plan.b), plan]));
   const scopes = [...input.scopes].sort((x, y) => byText(x.id, y.id));
   const estimates = scopes.map((scope): GroupCostBreakdown => {
+    if (scope.mutate.length === 0) {
+      return estimateScenarioGroup(
+        {
+          group: scope.id,
+          tests: scope.tests.length,
+          mutatedBytes: 0,
+          isolationPairs: 0,
+          isolationRuns: 0,
+          isolationBytes: 0,
+          rowDeletionPairs: 0,
+          rowDeletionRuns: 0,
+        },
+        { ...input.model, perRunMs: 0 },
+      );
+    }
     const mutate = new Set(scope.mutate);
     const bytesOf = (files: readonly string[]): number => sum(files.map(input.sizeOf));
     const mutatedBytes = bytesOf(scope.mutate);
@@ -817,22 +1069,206 @@ export function planShards(input: ShardPlanningInput): {
       input.model,
     );
   });
+  const budgeted = estimates.map((estimate) => withinBudget(estimate, input.budgetMs));
   const groups = scopes.map(
     (scope, i): PlannedGroup => ({
       ...scope,
-      mutatedBytes: estimates[i].mutatedBytes,
-      estimateMs: estimates[i].estimateMs,
+      mutatedBytes: budgeted[i].mutatedBytes,
+      estimateMs: budgeted[i].estimateMs,
     }),
   );
+  const runnable = groups.filter((group) => group.mutate.length > 0);
+  const { model } = input;
+  const reserve = Math.ceil(model.speedFactor * (model.shardFixedMs + model.rowDeletionBatchMs));
+  const maxShards = input.maxShards ?? MAX_SHARDS;
+  let shardsNeeded = maxShards;
+  let shardsCapped = true;
+  for (let count = 1; count <= maxShards; count++) {
+    const packing = packShards(runnable, count, input.budgetMs);
+    if (packing.shards.every((shard) => shard.estimateMs + reserve <= input.budgetMs)) {
+      shardsNeeded = count;
+      shardsCapped = false;
+      break;
+    }
+  }
   return {
     shardPlan: {
       schemaVersion: SHARD_PLAN_SCHEMA_VERSION,
       budgetMs: input.budgetMs,
-      costModel: { ...input.model },
+      costModel: { ...model },
       groups,
-      ...packShards(groups, input.shards, input.budgetMs),
+      ...packShards(runnable, input.shards ?? shardsNeeded, input.budgetMs),
     },
-    estimates,
+    estimates: budgeted,
+    shardsNeeded,
+    shardsCapped,
+  };
+}
+
+/** Why a group with an empty mutate scope has a result without a run. */
+export const EMPTY_SCOPE_DETAIL = 'no production file executed: nothing to mutate, not run';
+
+/**
+ * The outcome of each group with an empty mutate scope (KTD7): complete, with no observation, so
+ * its pairs are evaluated over an empty universe and the verdict engine's existing rule makes
+ * them Out of scope (`covers-no-evaluated-mutant`). `shard` -1: no shard ran it.
+ */
+export function notRunOutcomes(
+  groups: readonly GroupScope[],
+  manifestDigest: string,
+): GroupOutcome[] {
+  return groups
+    .filter((group) => group.mutate.length === 0)
+    .map((group) => ({
+      group: group.id,
+      shard: -1,
+      manifestDigest,
+      status: 'complete',
+      reason: null,
+      detail: EMPTY_SCOPE_DETAIL,
+      tests: [...group.tests],
+    }));
+}
+
+// ── Value flow before isolation ────────────────────────────────────────────
+
+/**
+ * How a shard's isolation selection reads value flow: `used` (value-flow.json of this run
+ * manifest, not degraded, its trace ran), else `missing`, `stale` (another run manifest),
+ * `degraded` (a run-level static flag) or `trace-not-run`; in every case but `used` the shard
+ * assumes value flow clean and isolates as without it (fail-safe: more cost, never fewer checks).
+ */
+export type ValueFlowUse = 'used' | 'missing' | 'stale' | 'degraded' | 'trace-not-run';
+
+export interface ValueFlowView {
+  use: ValueFlowUse;
+  /** Static results and trace pairs by {@link pairKey}; empty unless `used`. */
+  staticOf: ReadonlyMap<string, PairValueFlow>;
+  traceOf: ReadonlyMap<string, PairTrace>;
+}
+
+/** The view of a value-flow result for a run manifest; see {@link ValueFlowUse}. */
+export function valueFlowView(file: ValueFlowFile | null, manifestDigest: string): ValueFlowView {
+  const none = (use: ValueFlowUse): ValueFlowView => ({
+    use,
+    staticOf: new Map(),
+    traceOf: new Map(),
+  });
+  if (file === null) return none('missing');
+  if (file.manifestDigest !== manifestDigest) return none('stale');
+  if (file.staticValueFlow.degraded.length > 0) return none('degraded');
+  if (file.trace.status !== 'ran' && file.pairs.facetEqual > 0) return none('trace-not-run');
+  return {
+    use: 'used',
+    staticOf: new Map(file.staticValueFlow.pairs.map((pair) => [pairKey(pair.a, pair.b), pair])),
+    traceOf: new Map(file.trace.pairs.map((pair) => [pairKey(pair.a, pair.b), pair])),
+  };
+}
+
+/**
+ * Whether value flow leaves a pair able to be strong: its trace is clean and its static check is
+ * clean or was not needed (no static result: the discarded values are equal). Always true unless
+ * the view is `used`. The estimate reads it; the isolation selection asks the verdict engine.
+ */
+export function valueFlowPasses(view: ValueFlowView, key: string): boolean {
+  if (view.use !== 'used') return true;
+  const flow = view.staticOf.get(key);
+  return (
+    view.traceOf.get(key)?.status === 'clean' &&
+    (flow === undefined || flow.status === 'clean' || flow.status === 'not-required')
+  );
+}
+
+/** What a re-plan reads besides the plan file: Layer 1 provenance and the checkout's file sizes. */
+export interface ReplanFacts {
+  /** Repo paths a test executed; null when its provenance is unknown. */
+  executedFiles: (test: string) => readonly string[] | null;
+  sizeOf: (repoPath: string) => number;
+}
+
+/**
+ * The shard plan re-built after value flow: the plan's groups, pairs, row-deletion plans, budget,
+ * cost model and requested shard count, with the isolation term counting only the plan's
+ * isolation candidates that value flow leaves able to be strong ({@link valueFlowPasses}). Pure
+ * given `facts`; the view must be `used`.
+ */
+export function replanShards(plan: PlanFile, view: ValueFlowView, facts: ReplanFacts): ShardReplan {
+  const survivors = plan.isolationCandidates.filter((key) => valueFlowPasses(view, key));
+  const surviving = new Set(survivors);
+  const replanned = planShards({
+    scopes: plan.shardPlan.groups,
+    pairs: plan.pairs,
+    potentialRepeat: (pair) => surviving.has(pairKey(pair.a, pair.b)),
+    executedFiles: facts.executedFiles,
+    rowDeletion: plan.rowDeletion,
+    sizeOf: facts.sizeOf,
+    shards: plan.shardsRequested,
+    budgetMs: plan.shardPlan.budgetMs,
+    model: plan.costModel,
+  });
+  return {
+    shardPlan: replanned.shardPlan,
+    estimates: replanned.estimates,
+    shardsNeeded: replanned.shardsNeeded,
+    shardsCapped: replanned.shardsCapped,
+    isolationCandidates: survivors,
+  };
+}
+
+export interface EffectiveShardPlan {
+  /** `value-flow`: the re-plan of a usable value-flow result; `provisional`: plan.json's. */
+  source: 'value-flow' | 'provisional';
+  shardPlan: ShardPlan;
+  estimates: GroupCostBreakdown[];
+  shardsNeeded: number;
+  shardsCapped: boolean;
+}
+
+/**
+ * The shard plan shards and merge follow: value-flow.json's re-plan when that result is usable
+ * for this run manifest ({@link valueFlowView}), else plan.json's provisional plan, exactly as
+ * without a value-flow stage.
+ */
+export function effectiveShardPlan(
+  plan: PlanFile,
+  valueFlow: ValueFlowFile | null,
+): EffectiveShardPlan {
+  const replan = valueFlow?.replan ?? null;
+  if (replan !== null && valueFlowView(valueFlow, plan.manifestDigest).use === 'used') {
+    return {
+      source: 'value-flow',
+      shardPlan: replan.shardPlan,
+      estimates: replan.estimates,
+      shardsNeeded: replan.shardsNeeded,
+      shardsCapped: replan.shardsCapped,
+    };
+  }
+  return {
+    source: 'provisional',
+    shardPlan: plan.shardPlan,
+    estimates: plan.estimates,
+    shardsNeeded: plan.shardsNeeded,
+    shardsCapped: plan.shardsCapped,
+  };
+}
+
+/** Layer 1 provenance and checkout file sizes for {@link replanShards}. */
+function replanFactsOf(repoRoot: string, work: CoverageWorkFile): ReplanFacts {
+  const executed = new Map(
+    work.tests.map((test) => [
+      test.id,
+      test.provenance.known ? test.provenance.executedFiles : null,
+    ]),
+  );
+  return {
+    executedFiles: (test) => executed.get(test) ?? null,
+    sizeOf: (file) => {
+      try {
+        return statSync(path.join(repoRoot, file)).size;
+      } catch {
+        return 0;
+      }
+    },
   };
 }
 
@@ -1070,8 +1506,12 @@ const facetEqual = (facets: ReadonlyMap<string, InputFacet>, pair: CandidatePair
 export interface PlanStageOptions {
   mode: RunMode;
   seed: string;
-  shards: number;
+  /** Null packs into `shardsNeeded`. */
+  shards: number | null;
   budgetMs: number;
+  /** Stryker concurrency and wall-clock factor of the estimate. */
+  concurrency: number;
+  speedFactor: number;
 }
 
 /** The plan stage; see the module comment. */
@@ -1214,21 +1654,27 @@ export async function runPlanStage(
       .filter((verdict) => verdict.disqualifiers.every((entry) => entry.kind === 'hook-stratum'))
       .map((verdict) => pairKey(verdict.a, verdict.b)),
   );
-  const { shardPlan, estimates } = planShards({
+  const model = scenarioCostModel({
+    concurrency: options.concurrency,
+    speedFactor: options.speedFactor,
+  });
+  const isolationCandidates: string[] = [];
+  const { shardPlan, estimates, shardsNeeded, shardsCapped } = planShards({
     scopes,
     pairs: candidates.pairs,
     potentialRepeat: (pair) => {
       const keys = [checksContext.get(pair.a), checksContext.get(pair.b)];
       const [fa, fb] = [facets.get(pair.a), facets.get(pair.b)];
-      return (
+      const candidate =
         strongCapable.has(pairKey(pair.a, pair.b)) &&
         typeof keys[0] === 'string' &&
         keys[0] === keys[1] &&
         fa !== undefined &&
         fb !== undefined &&
         fa.fingerprint === fb.fingerprint &&
-        residualDifference(fa, fb).length === 0
-      );
+        residualDifference(fa, fb).length === 0;
+      if (candidate) isolationCandidates.push(pairKey(pair.a, pair.b));
+      return candidate;
     },
     executedFiles: (test) => executed.get(test) ?? null,
     rowDeletion,
@@ -1241,7 +1687,7 @@ export async function runPlanStage(
     },
     shards: options.shards,
     budgetMs: options.budgetMs,
-    model: SCENARIO_COST_MODEL,
+    model,
   });
 
   const plan: PlanFile = {
@@ -1250,9 +1696,13 @@ export async function runPlanStage(
     seed: options.seed,
     eligibility,
     manifestDigest: manifest.digest,
-    costModel: { ...SCENARIO_COST_MODEL },
+    costModel: model,
     shardPlan,
+    shardsRequested: options.shards,
+    shardsNeeded,
+    shardsCapped,
     estimates,
+    isolationCandidates: sortedUnique(isolationCandidates),
     pairs: candidates.pairs,
     rowDeletion,
     stats: {
@@ -1269,7 +1719,14 @@ export async function runPlanStage(
     `plan: ${work.tests.length} tests, ${candidates.pairs.length} candidate pairs ` +
       `(${equalPairs.length} facet-equal) in ${candidates.groups.length} groups; ` +
       `${rowDeletion.filter((entry) => entry.deletions.length > 0).length} pairs with a planned ` +
-      `row deletion; ${shardPlan.overBudget.length} groups over budget`,
+      `row deletion; ${shardPlan.overBudget.length} groups over budget; ` +
+      `${shardPlan.groups.filter((group) => group.mutate.length === 0).length} groups execute no ` +
+      `production file (not run)`,
+  );
+  log(
+    `plan: estimate at concurrency ${model.concurrency}, speed factor ${model.speedFactor}: ` +
+      `${shardsNeeded}${shardsCapped ? ' (capped)' : ''} shards needed; provisionally packed ` +
+      `into ${shardPlan.shards.length} (value-flow re-plans)`,
   );
   for (const shard of shardPlan.shards) {
     log(`plan: shard ${shard.index}: ${shard.groups.length} groups, ${minutes(shard.estimateMs)}`);
@@ -1296,29 +1753,30 @@ export interface MainBatch {
 }
 
 /**
- * Batches the groups of a shard, in plan order of their first member; see {@link BATCH_BUDGET_MS}.
- * A group with an empty mutate scope runs alone (the scope driver refuses it), and so does a
- * group whose own estimate exceeds the budget.
+ * Batches the groups of a shard, in plan order of their first member, while {@link batchEstimate}
+ * stays within the budget ({@link BATCH_BUDGET_MS}). A group with an empty mutate scope runs alone
+ * (the scope driver refuses it), and so does a group whose own estimate exceeds the budget.
  */
 export function batchGroups(
   groups: readonly { id: string; mainMs: number; mutate: number }[],
-  perRunMs: number,
+  model: Readonly<ScenarioCostModel>,
   budgetMs: number = BATCH_BUDGET_MS,
 ): MainBatch[] {
-  const batches: { groups: string[]; mainMs: number }[] = [];
-  let open: { groups: string[]; mainMs: number } | null = null;
+  const batches: { groups: string[]; members: number[]; mainMs: number }[] = [];
+  let open: { groups: string[]; members: number[]; mainMs: number } | null = null;
   for (const group of groups) {
     if (group.mutate === 0) {
-      batches.push({ groups: [group.id], mainMs: group.mainMs });
+      batches.push({ groups: [group.id], members: [group.mainMs], mainMs: group.mainMs });
       continue;
     }
-    const extra = Math.max(0, group.mainMs - perRunMs);
-    if (open !== null && open.mainMs + extra <= budgetMs) {
+    const joined = open === null ? null : batchEstimate(model, [...open.members, group.mainMs]);
+    if (open !== null && joined !== null && joined <= budgetMs) {
       open.groups.push(group.id);
-      open.mainMs += extra;
+      open.members.push(group.mainMs);
+      open.mainMs = joined;
       continue;
     }
-    open = { groups: [group.id], mainMs: group.mainMs };
+    open = { groups: [group.id], members: [group.mainMs], mainMs: group.mainMs };
     batches.push(open);
   }
   return batches.map((batch) => ({
@@ -1422,6 +1880,23 @@ export interface ShardStageOptions {
   groups: string[] | null;
   /** Null takes the plan's budget. */
   deadlineMs: number | null;
+  /** Stryker concurrency of the main and isolation runs; null takes the plan's. */
+  concurrency: number | null;
+}
+
+/**
+ * The shard's isolation order: first the pairs of groups whose isolation was planned (their time
+ * is reserved), then those of groups whose isolation was deferred, each in decision order.
+ */
+export function isolationOrder<T extends { group: string }>(
+  decisions: readonly T[],
+  isolationPlanned: (group: string) => boolean,
+): { decision: T; planned: boolean }[] {
+  const tagged = decisions.map((decision) => ({
+    decision,
+    planned: isolationPlanned(decision.group),
+  }));
+  return [...tagged.filter((entry) => entry.planned), ...tagged.filter((entry) => !entry.planned)];
 }
 
 /** Whether a shard report shows every planned piece of its work done. */
@@ -1455,9 +1930,14 @@ export async function runShardStage(
   const started = ctx.now();
   const elapsed = (): number => ctx.now() - started;
   const plan = readWork(layout.plan, 'plan', isPlanFile);
-  const shardCount = plan.shardPlan.shards.length;
+  const valueFlowFile = readOptional(layout.valueFlow, isValueFlowFile);
+  const effective = effectiveShardPlan(plan, valueFlowFile);
+  const shardPlan = effective.shardPlan;
+  const shardCount = shardPlan.shards.length;
   if (options.of !== shardCount) {
-    throw new UsageError(`--of ${options.of}: the plan has ${shardCount} shard(s)`);
+    throw new UsageError(
+      `--of ${options.of}: the ${effective.source} shard plan has ${shardCount} shard(s)`,
+    );
   }
   const manifest = readScenarioRunManifest(layout.manifest);
   if (manifest.digest !== plan.manifestDigest) {
@@ -1466,9 +1946,9 @@ export async function runShardStage(
   const work = readWorkFile(layout.coverage);
   const layer2 = readWork(layout.layer2, 'layer 2', isLayer2File);
   const model = plan.costModel;
-  const deadlineMs = options.deadlineMs ?? plan.shardPlan.budgetMs;
+  const deadlineMs = options.deadlineMs ?? shardPlan.budgetMs;
   const shard = options.index;
-  const assignment = plan.shardPlan.shards.find((entry) => entry.index === shard);
+  const assignment = shardPlan.shards.find((entry) => entry.index === shard);
   if (assignment === undefined) throw new UsageError(`the plan has no shard ${shard}`);
   const unknown = (options.groups ?? []).filter((id) => !assignment.groups.includes(id));
   if (unknown.length > 0)
@@ -1479,8 +1959,14 @@ export async function runShardStage(
   const chosen = new Set([...sampled, ...(options.groups ?? [])]);
   const selected = options.sample !== null || options.groups !== null;
   const toRun = selected ? assignment.groups.filter((id) => chosen.has(id)) : assignment.groups;
-  const planned = new Map(plan.shardPlan.groups.map((group) => [group.id, group]));
-  const estimates = new Map(plan.estimates.map((entry) => [entry.group, entry]));
+  const planned = new Map(shardPlan.groups.map((group) => [group.id, group]));
+  const concurrency = options.concurrency ?? model.concurrency;
+  const stryker = { concurrency };
+  // Value flow ran before the shards: a pair it already sends to Review or Inconclusive is never
+  // isolated, and the re-plan's estimates owe no isolation for it. Without a usable result, the
+  // provisional plan and its estimates.
+  const valueFlow = valueFlowView(valueFlowFile, manifest.digest);
+  const estimates = new Map(effective.estimates.map((entry) => [entry.group, entry]));
 
   // Results left by an earlier run of this shard would read as this run's.
   for (const group of assignment.groups) {
@@ -1495,6 +1981,8 @@ export async function runShardStage(
     manifestDigest: manifest.digest,
     manifestCheck: null,
     deadlineMs,
+    concurrency,
+    valueFlow: valueFlow.use,
     batches: [],
     sample: selected
       ? { size: options.sample, seed: plan.seed, groups: options.groups ?? [] }
@@ -1505,7 +1993,7 @@ export async function runShardStage(
       sampledOut: assignment.groups.filter((group) => !toRun.includes(group)),
     },
     rowDeletion: { status: 'none', pairs: 0, planned: 0, runs: 0, estimateMs: 0, wallClockMs: 0 },
-    isolation: { candidates: 0, selected: 0, runs: [], skipped: [] },
+    isolation: { candidates: 0, selected: 0, runs: [], skipped: [], deferred: [] },
     finished: false,
     wallClockMs: 0,
   };
@@ -1537,7 +2025,9 @@ export async function runShardStage(
   }
   const packageDir = path.join(preparedRoot, PACKAGE_DIR);
   log(
-    `shard ${shard}: ${toRun.length} of ${assignment.groups.length} groups; deadline ${minutes(deadlineMs)}`,
+    `shard ${shard}: ${toRun.length} of ${assignment.groups.length} groups; deadline ` +
+      `${minutes(deadlineMs)}; concurrency ${concurrency}; value flow ${valueFlow.use}; ` +
+      `${effective.source} shard plan`,
   );
 
   // Main runs (U7) in batches, each started only when it fits with the deferred work still owed
@@ -1584,6 +2074,7 @@ export async function runShardStage(
       manifest,
       packageDir,
       scope: group,
+      stryker,
     });
     record(result, null, result.wallClockMs);
     log(
@@ -1607,16 +2098,21 @@ export async function runShardStage(
       mainMs: estimateOf(id).mainMs,
       mutate: groupOf(id).mutate.length,
     })),
-    model.perRunMs,
+    model,
   );
   for (const batch of batches) {
     const members = batch.groups.map(groupOf);
+    // Row deletion and planned isolation are owed; deferred isolation is opportunistic.
     const deferred = sum(
-      batch.groups.map((id) => estimateOf(id).rowDeletionMs + estimateOf(id).isolationMs),
+      batch.groups.map(
+        (id) =>
+          estimateOf(id).rowDeletionMs +
+          (estimateOf(id).isolationPlanned ? estimateOf(id).isolationMs : 0),
+      ),
     );
     const reserve =
       !batchReserved && batch.groups.some((id) => estimateOf(id).rowDeletionRuns > 0)
-        ? model.rowDeletionBatchMs
+        ? Math.ceil(model.speedFactor * model.rowDeletionBatchMs)
         : 0;
     const at = elapsed();
     if (!fitsBeforeDeadline(batch.mainMs + deferred + reserve, at + owedMs, deadlineMs)) {
@@ -1641,6 +2137,7 @@ export async function runShardStage(
       manifest,
       packageDir,
       scope: batchScope(batch.id, members),
+      stryker,
     });
     const batchFile = path.join(layout.root, 'batches', `${batch.id}.json`);
     mkdirSync(path.dirname(batchFile), { recursive: true });
@@ -1682,7 +2179,11 @@ export async function runShardStage(
   const withDeletions = rowPlans.filter((entry) => entry.deletions.length > 0);
   const rowRuns = sum(withDeletions.map((entry) => 1 + entry.deletions.length));
   const rowEstimate =
-    withDeletions.length === 0 ? 0 : model.rowDeletionBatchMs + rowRuns * model.rowDeletionRunMs;
+    withDeletions.length === 0
+      ? 0
+      : Math.ceil(
+          model.speedFactor * (model.rowDeletionBatchMs + rowRuns * model.rowDeletionRunMs),
+        );
   const rowFits = fitsBeforeDeadline(rowEstimate, elapsed(), deadlineMs);
   const rowStarted = ctx.now();
   const rowResults = await runRowDeletion({
@@ -1712,11 +2213,12 @@ export async function runShardStage(
       `pairs in ${minutes(report.rowDeletion.wallClockMs)}`,
   );
 
-  // Isolation only for pairs that can still be strong (D9).
+  // Isolation only for pairs that can still be strong (D9): the verdict engine gets the real value
+  // flow when it ran before the shards, and every stage still to come at its best otherwise.
   const shardPairs = plan.pairs.filter((pair) => complete.has(pair.group));
   const mainObservations = mergeObservations(results.flatMap((result) => result.observations));
   const schedules = resolvePairSchedules({
-    plan: plan.shardPlan,
+    plan: shardPlan,
     manifestDigest: manifest.digest,
     pairs: shardPairs,
     outcomes: results,
@@ -1726,14 +2228,16 @@ export async function runShardStage(
     assembleVerdictInput({
       work,
       layer2: layer2.tests,
-      scopes: plan.shardPlan.groups,
+      scopes: shardPlan.groups,
       pairs: shardPairs,
       schedules,
       stages: {
         isolation: () => BEST_ISOLATION,
         rowDeletion: (key) => rowByKey.get(key) ?? null,
-        staticValueFlow: () => BEST_STATIC,
-        trace: () => BEST_TRACE,
+        staticValueFlow: (key) =>
+          valueFlow.use === 'used' ? (valueFlow.staticOf.get(key) ?? null) : BEST_STATIC,
+        trace: (key) =>
+          valueFlow.use === 'used' ? (valueFlow.traceOf.get(key) ?? null) : BEST_TRACE,
       },
       observations: mainObservations,
       degraded: [],
@@ -1756,24 +2260,22 @@ export async function runShardStage(
   const isolationPlan = planIsolation(decisions);
   const done = new Set<string>();
   const runKey = (spec: { group: string; id: string }): string => `${spec.group}/${spec.id}`;
-  for (const decision of decisions) {
+  for (const { decision, planned } of isolationOrder(
+    decisions,
+    (group) => estimateOf(group).isolationPlanned,
+  )) {
     const pending = isolationPlan.runs.filter(
       (spec) =>
         spec.group === decision.group &&
         spec.pairs.includes(decision.key) &&
         !done.has(runKey(spec)),
     );
-    const costOf = (universe: number): number =>
-      model.isolationRunMs + universe * model.freshProcessMs;
+    const costOf = (universe: number): number => isolationRunEstimate(model, universe);
     const estimateMs = sum(pending.map((spec) => costOf(spec.universe.length)));
     const at = elapsed();
     if (!fitsBeforeDeadline(estimateMs, at, deadlineMs)) {
-      report.isolation.skipped.push({
-        a: decision.a,
-        b: decision.b,
-        estimateMs,
-        elapsedMs: Math.round(at),
-      });
+      const entry = { a: decision.a, b: decision.b, estimateMs, elapsedMs: Math.round(at) };
+      (planned ? report.isolation.skipped : report.isolation.deferred).push(entry);
       save();
       continue;
     }
@@ -1787,6 +2289,7 @@ export async function runShardStage(
         shard,
         manifest,
         packageDir,
+        stryker,
       });
       done.add(runKey(spec));
       report.isolation.runs.push({
@@ -1808,8 +2311,9 @@ export async function runShardStage(
   log(
     `shard ${shard}: done in ${minutes(report.wallClockMs)}: ${results.length} groups ran ` +
       `(${report.batches.length} batches), ` +
-      `${report.groups.notStarted.length} not started; ${decisions.length} pairs isolated in ` +
-      `${report.isolation.runs.length} runs`,
+      `${report.groups.notStarted.length} not started; ${decisions.length} repeat-stage pairs, ` +
+      `${report.isolation.runs.length} isolation runs; ${report.isolation.deferred.length} ` +
+      `deferred pairs left isolation not-run, ${report.isolation.skipped.length} skipped`,
   );
   return report;
 }
@@ -2021,10 +2525,31 @@ export async function runValueFlowStage(ctx: StageContext): Promise<ValueFlowFil
     pdg,
     staticValueFlow: staticRun,
     trace,
+    replan: null,
     wallClockMs,
   };
+  // The final shard plan: only the isolation candidates value flow leaves count (a degraded or
+  // trace-less result re-plans nothing, so shards and merge follow the provisional plan).
+  const view = valueFlowView(result, manifest.digest);
+  if (view.use === 'used') result.replan = replanShards(plan, view, replanFactsOf(repoRoot, work));
+  const final = effectiveShardPlan(plan, result);
+  log(
+    `value-flow: ${final.source} shard plan: ${final.shardPlan.shards.length} shards ` +
+      `(${final.shardsNeeded}${final.shardsCapped ? ', capped' : ''} needed; provisional ` +
+      `${plan.shardPlan.shards.length}), ${final.shardPlan.overBudget.length} groups over budget ` +
+      `(provisional ${plan.shardPlan.overBudget.length}); isolation candidates ` +
+      `${result.replan?.isolationCandidates.length ?? plan.isolationCandidates.length} of ` +
+      `${plan.isolationCandidates.length}`,
+  );
   writeJson(layout.valueFlow, result);
   return result;
+}
+
+/** The final shard count (the CI matrix size): one number, nothing else on stdout. */
+export function finalShardCount(layout: WorkLayout): number {
+  const plan = readWork(layout.plan, 'plan', isPlanFile);
+  return effectiveShardPlan(plan, readOptional(layout.valueFlow, isValueFlowFile)).shardPlan.shards
+    .length;
 }
 
 /** Why a value-flow result is incomplete; empty when complete. */
@@ -2062,6 +2587,8 @@ export async function runMergeStage(
   const work = readWorkFile(layout.coverage);
   const layer2 = readWork(layout.layer2, 'layer 2', isLayer2File);
   const digest = plan.manifestDigest;
+  const valueFlowFile = readOptional(layout.valueFlow, isValueFlowFile);
+  const { shardPlan, source } = effectiveShardPlan(plan, valueFlowFile);
   let baseline: unknown = null;
   if (options.baseline !== null) {
     try {
@@ -2075,7 +2602,7 @@ export async function runMergeStage(
   const incomplete: ShardStatus['incomplete'] = [];
   let completeShards = 0;
   const rowResults: RowDeletionResult[] = [];
-  for (const { index } of plan.shardPlan.shards) {
+  for (const { index } of shardPlan.shards) {
     const shardReport = readOptional(layout.shardReport(index), isShardStageReport);
     const issues =
       shardReport !== null && shardReport.manifestDigest !== digest
@@ -2086,7 +2613,7 @@ export async function runMergeStage(
     const rows = readOptional(layout.rowDeletion(index), isRowDeletionFile);
     if (rows !== null && rows.manifestDigest === digest) rowResults.push(...rows.results);
   }
-  const groupResults = plan.shardPlan.groups.flatMap((group): GroupObservations[] => {
+  const groupResults = shardPlan.groups.flatMap((group): GroupObservations[] => {
     const file = observationsFile(layout.root, group.id);
     if (!existsSync(file)) return [];
     try {
@@ -2098,7 +2625,6 @@ export async function runMergeStage(
   const isolationRuns = readIsolationRuns(layout.root).filter(
     (run) => run.manifestDigest === digest,
   );
-  const valueFlowFile = readOptional(layout.valueFlow, isValueFlowFile);
   const valueFlow =
     valueFlowFile !== null && valueFlowFile.manifestDigest === digest ? valueFlowFile : null;
   if (valueFlow === null) {
@@ -2126,10 +2652,10 @@ export async function runMergeStage(
     ...isolationRuns.flatMap((run) => run.observations),
   ]);
   const schedules = resolvePairSchedules({
-    plan: plan.shardPlan,
+    plan: shardPlan,
     manifestDigest: digest,
     pairs: plan.pairs,
-    outcomes: groupResults,
+    outcomes: [...groupResults, ...notRunOutcomes(shardPlan.groups, digest)],
   });
   const { facets, checksContext } = layer2Maps(layer2.tests);
   const isolation = evaluateIsolation(
@@ -2145,7 +2671,7 @@ export async function runMergeStage(
   const evidence = assembleVerdictInput({
     work,
     layer2: layer2.tests,
-    scopes: plan.shardPlan.groups,
+    scopes: shardPlan.groups,
     pairs: plan.pairs,
     schedules,
     stages: {
@@ -2172,13 +2698,13 @@ export async function runMergeStage(
     provenance: collectProvenance({
       repoRoot,
       testFiles: plan.eligibility.files,
-      productionFiles: sortedUnique(plan.shardPlan.groups.flatMap((group) => group.mutate)),
+      productionFiles: sortedUnique(shardPlan.groups.flatMap((group) => group.mutate)),
       fixtureFiles: [],
       sourceRevision: ctx.sourceRevision(),
     }),
     eligibility: plan.eligibility,
     eligibleTests: work.tests.map((test) => test.id),
-    shards: { planned: plan.shardPlan.shards.length, complete: completeShards, incomplete },
+    shards: { planned: shardPlan.shards.length, complete: completeShards, incomplete },
     layer0: existsSync(layout.layer0) ? readJsonFile(layout.layer0) : null,
     evidence,
     verdicts,
@@ -2197,6 +2723,7 @@ export async function runMergeStage(
       `${report.summary.evaluated}; verdicts ${JSON.stringify(report.summary.byVerdict)}`,
   );
   for (const entry of incomplete) log(`merge: incomplete ${entry.shard}: ${entry.reason}`);
+  log(`merge: ${source} shard plan (${shardPlan.shards.length} shards)`);
   log(`merge: ${layout.reportJson}, ${layout.reportMarkdown}, ${layout.issueBody}`);
   return { report, verdicts, complete: report.completeness.complete };
 }
@@ -2288,12 +2815,14 @@ function ensureDist(packageDir: string): void {
 }
 
 async function runStage(options: CliOptions, ctx: StageContext): Promise<number> {
-  const plan = (mode: RunMode, shards: number): Promise<PlanFile> =>
+  const plan = (mode: RunMode, shards: number | null): Promise<PlanFile> =>
     runPlanStage(ctx, {
       mode,
       seed: options.seed,
       shards,
       budgetMs: options.deadlineMs ?? SHARD_DEADLINE_MS,
+      concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
+      speedFactor: options.speedFactor ?? DEFAULT_SPEED_FACTOR,
     });
   const shard = (index: number, of: number, selection: boolean): Promise<ShardStageReport> =>
     runShardStage(ctx, {
@@ -2302,6 +2831,7 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
       sample: selection ? options.sample : null,
       groups: selection ? options.groups : null,
       deadlineMs: options.deadlineMs,
+      concurrency: options.concurrency,
     });
   const merge = (): Promise<MergeResult> =>
     runMergeStage(ctx, { run: options.run, baseline: options.baseline });
@@ -2323,13 +2853,17 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
       const result = await timed('value-flow', () => runValueFlowStage(ctx));
       return valueFlowIssues(result).length === 0 ? 0 : 1;
     }
+    case 'shards':
+      ctx.log(String(finalShardCount(ctx.layout)));
+      return 0;
     case 'merge':
       return (await timed('merge', merge)).complete ? 0 : 1;
     case 'all':
     case 'controls': {
+      // Value flow before the shard, as in CI: the shard isolates only what value flow leaves.
       await timed('plan', () => plan(options.mode, 1));
-      await timed('shard', () => shard(0, 1, false));
       await timed('value-flow', () => runValueFlowStage(ctx));
+      await timed('shard', () => shard(0, 1, false));
       const merged = await timed('merge', merge);
       if (options.stage === 'all') return merged.complete ? 0 : 1;
       const fixtureRoot =
