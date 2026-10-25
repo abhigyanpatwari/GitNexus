@@ -26,6 +26,7 @@ import {
   type SpotAuditPick,
 } from '../../../tools/scenario-map/report/report.js';
 import { SCENARIO_MAP_SCHEMA_VERSION } from '../../../tools/scenario-map/types.js';
+import { VERDICT_ENGINE_VERSION } from '../../../tools/scenario-map/verdict/verdict.js';
 import { A, B, C, FILE, M1, M2, M3, fingerprints, reportInput } from './report-fixtures.js';
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -186,7 +187,7 @@ describe('buildReport', () => {
     const report = buildReport(reportInput());
     expect(report).toMatchObject({
       schemaVersion: SCENARIO_MAP_SCHEMA_VERSION,
-      engineVersion: 1,
+      engineVersion: VERDICT_ENGINE_VERSION,
       summary: {
         byVerdict: { 'repeat-strong': 1, weak: 1 },
         testsByStatus: { killing: 2, weak: 1 },

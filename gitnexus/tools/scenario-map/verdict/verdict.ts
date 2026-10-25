@@ -39,8 +39,9 @@
  * compared with `sameDiscardedValues`. Then {@link RULES}, design §2 precedence, first decisive
  * rule wins:
  *   Inconclusive  the schedule reason (not evaluated); a concurrent test or an unattributable path;
- *                 a mutant of the run without a valid result for both (`kills-unknown`); another
- *                 class on a universe mutant; isolation disagrees or unknown (U8); two valid
+ *                 a mutant of the run without a valid result for both (`kills-unknown`) or another
+ *                 class on a universe mutant, each only without a kill witness (below); isolation
+ *                 disagrees or unknown (U8); two valid
  *                 observations of one test and mutant in different runs with different classes
  *                 (`rerun-disagrees`); a member test per-test inconclusive; on the repeat path, a
  *                 trace that is inconclusive or did not run (U11). Every cause that holds is listed;
@@ -57,6 +58,10 @@
  *   Review        same path, checks, context and kills, but the facet differs, has a residual
  *                 difference, or is missing;
  *   Distinct      anything else, naming what differs.
+ * A kill witness is a universe mutant on which both tests have an ordinary result (an assertion
+ * kill or a survival) and exactly one kills: it proves the kill sets differ whatever the unknown
+ * and other-class mutants hold, so such a pair is never a repeat and goes on to Row or Distinct
+ * (`kills-differ` counts witnesses). Its empty kill set is only Weak when the run is fully known.
  * Weak disqualifiers ({@link WEAK_DISQUALIFIERS}), listed for every pair, deciding only between the
  * two repeat categories: provenance not strong-eligible (unknown, a native entry point, a worker
  * spawn; design §2); an unresolved facet input (the facet's, the inventory's, a checks selector's,
@@ -106,7 +111,7 @@ import { byText, sortedUnique } from '../util.js';
 import type { PairTrace, TraceStatus } from '../value-flow/trace.js';
 
 /** Folded into the evidence hash (KTD12): a rule change resurfaces every pair it reclassifies. */
-export const VERDICT_ENGINE_VERSION = 1;
+export const VERDICT_ENGINE_VERSION = 2;
 
 /** Design §2 verdict categories; see {@link VERDICT_PRECEDENCE}. */
 export type Verdict =
@@ -619,6 +624,8 @@ interface PairFacts {
   rerun: string[];
   unknownDetails: string[];
   otherDetails: string[];
+  /** Kill witnesses (see the module comment), sorted. */
+  witnesses: string[];
   disqualifiers: Disqualifier[];
 }
 
@@ -713,6 +720,17 @@ function rerunDisagreements(
       return classes.length > 1 ? [`${test}: ${classes.join(' / ')} on ${mutant}`] : [];
     });
   });
+}
+
+/** The kill witnesses of a comparison (see the module comment), sorted. */
+function killWitnesses(comparison: PairComparison): string[] {
+  const [a, b] = [new Set(comparison.killsA), new Set(comparison.killsB)];
+  const other = new Set(comparison.otherClasses);
+  return sortedUnique(
+    [...comparison.killsA, ...comparison.killsB].filter(
+      (mutant) => a.has(mutant) !== b.has(mutant) && !other.has(mutant),
+    ),
+  );
 }
 
 /** The hook-attributed mutants of the pair's path or kills (KTD9; see the module comment). */
@@ -888,6 +906,7 @@ function pairFacts(pair: VerdictPairInput, ctx: PairContext): PairFacts {
     rerun: comparison === null ? [] : rerunDisagreements([pair.a, pair.b], comparison, ctx.index),
     unknownDetails,
     otherDetails,
+    witnesses: comparison === null ? [] : killWitnesses(comparison),
   };
   return {
     ...base,
@@ -918,6 +937,10 @@ const testsWhere = (facts: PairFacts, predicate: (side: TestFacts) => boolean): 
 const sameScenario = (facts: PairFacts): boolean =>
   facts.path === 'same' && facts.checksContext === 'same';
 
+/** The kill sets differ: on a fully valid run, or by a kill witness despite unknown mutants. */
+const killsDiffer = (facts: PairFacts): boolean =>
+  facts.comparison?.sameKills === false || facts.witnesses.length > 0;
+
 /** Design §2 precedence, KTD12 value-flow gate before the repeat categories. */
 const RULES: readonly Rule[] = [
   // Inconclusive.
@@ -938,13 +961,24 @@ const RULES: readonly Rule[] = [
       ]);
     },
   },
+  // A kill witness already rules out a repeat: the unknown and other-class mutants cannot.
   {
     verdict: 'inconclusive',
-    decide: (f) => when(f.unknownDetails.length > 0, 'kills-unknown', f.unknownDetails),
+    decide: (f) =>
+      when(
+        f.unknownDetails.length > 0 && f.witnesses.length === 0,
+        'kills-unknown',
+        f.unknownDetails,
+      ),
   },
   {
     verdict: 'inconclusive',
-    decide: (f) => when(f.otherDetails.length > 0, 'non-assertion-outcome', f.otherDetails),
+    decide: (f) =>
+      when(
+        f.otherDetails.length > 0 && f.witnesses.length === 0,
+        'non-assertion-outcome',
+        f.otherDetails,
+      ),
   },
   {
     verdict: 'inconclusive',
@@ -996,14 +1030,16 @@ const RULES: readonly Rule[] = [
       return when(tests.length > 0, 'covers-no-evaluated-mutant', tests);
     },
   },
-  // Weak: an empty kill set is never part of a repeat.
+  // Weak: an empty kill set is never part of a repeat. With unknown or other-class mutants left
+  // (a pair past them on a witness), the run's kill set is not known to be empty.
   {
     verdict: 'weak',
     decide: (f) => {
+      const known = f.unknownDetails.length === 0 && f.otherDetails.length === 0;
       const empty = [
         ...testsWhere(f, (side) => side.status === 'weak'),
-        ...(f.comparison?.killsA.length === 0 ? [f.pair.a] : []),
-        ...(f.comparison?.killsB.length === 0 ? [f.pair.b] : []),
+        ...(known && f.comparison?.killsA.length === 0 ? [f.pair.a] : []),
+        ...(known && f.comparison?.killsB.length === 0 ? [f.pair.b] : []),
       ];
       return when(empty.length > 0, 'kills-nothing', empty);
     },
@@ -1047,9 +1083,10 @@ const RULES: readonly Rule[] = [
   {
     verdict: 'row',
     decide: (f) => {
-      const differ = sameScenario(f) && f.facet === 'equal' && f.comparison?.sameKills === false;
-      const symmetric = f.comparison === null ? [] : symmetricDifference(f.comparison);
-      return when(differ, 'kills-differ', [`${symmetric.length} mutants killed by one test only`]);
+      const differ = sameScenario(f) && f.facet === 'equal' && killsDiffer(f);
+      return when(differ, 'kills-differ', [
+        `${f.witnesses.length} mutants killed by one test only`,
+      ]);
     },
   },
   {
@@ -1115,20 +1152,12 @@ const RULES: readonly Rule[] = [
   {
     verdict: 'distinct',
     decide: (f) =>
-      when(f.facet !== 'equal' && f.comparison?.sameKills === false, 'facet-differs-kills-differ', [
+      when(f.facet !== 'equal' && killsDiffer(f), 'facet-differs-kills-differ', [
         `facet ${f.facet}`,
       ]),
   },
   { verdict: 'distinct', decide: () => when(true, 'anything-else') },
 ];
-
-function symmetricDifference(comparison: PairComparison): string[] {
-  const [a, b] = [new Set(comparison.killsA), new Set(comparison.killsB)];
-  return sortedUnique([
-    ...comparison.killsA.filter((mutant) => !b.has(mutant)),
-    ...comparison.killsB.filter((mutant) => !a.has(mutant)),
-  ]);
-}
 
 function evidenceOf(facts: PairFacts): PairEvidence {
   const { comparison, pair } = facts;
@@ -1144,12 +1173,7 @@ function evidenceOf(facts: PairFacts): PairEvidence {
     checksContext: facts.checksContext,
     facet: facts.facet,
     discardedValues: facts.discarded,
-    killSets:
-      comparison?.sameKills === true
-        ? 'equal'
-        : comparison?.sameKills === false
-          ? 'differ'
-          : 'unknown',
+    killSets: comparison?.sameKills === true ? 'equal' : killsDiffer(facts) ? 'differ' : 'unknown',
     rowDeletion: pair.rowDeletion?.outcome ?? 'not-run',
     trace: pair.trace?.status ?? 'not-run',
     staticValueFlow: pair.staticValueFlow?.status ?? 'not-run',

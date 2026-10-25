@@ -653,6 +653,51 @@ describe('weak disqualifiers', () => {
   });
 });
 
+// ── Kill witnesses ─────────────────────────────────────────────────────────
+
+const KILLED: Partial<MergedObservation> = { outcome: 'killed-by-test:assertion' };
+
+describe('kill witnesses', () => {
+  // B kills M2 by assertion where A survives it: a witness, whatever else the run holds.
+  it.each([
+    {
+      label: 'an unknown mutant',
+      observations: chain(change(B, M2, KILLED), change(B, M3, MISSING)),
+      unknown: 1,
+    },
+    {
+      label: 'a non-assertion outcome on another mutant',
+      observations: chain(
+        change(B, M2, KILLED),
+        change(B, M1, { outcome: 'killed-by-test:runtime' }),
+      ),
+      unknown: 0,
+    },
+    {
+      // A kills M1 where B survives it; B's own kill, M2, is unknown for A.
+      label: 'an empty kill set beside an unknown mutant',
+      observations: chain(change(B, M1, SURVIVED), change(B, M2, KILLED), change(A, M2, MISSING)),
+      unknown: 1,
+    },
+  ])('decides a pair with a witness and $label as a Row', ({ observations, unknown }) => {
+    const verdict = verdictOf({ observations });
+    expect([verdict.verdict, verdict.rule, verdict.details, verdict.inconclusive]).toEqual([
+      'row',
+      'kills-differ',
+      ['1 mutants killed by one test only'],
+      [],
+    ]);
+    expect([verdict.evidence.killSets, verdict.evidence.unknown]).toEqual(['differ', unknown]);
+  });
+
+  it('keeps a pair Inconclusive when its only difference is a non-assertion outcome', () => {
+    const verdict = verdictOf({
+      observations: change(B, M1, { outcome: 'killed-by-test:runtime' }),
+    });
+    expect([verdict.verdict, verdict.rule]).toEqual(['inconclusive', 'non-assertion-outcome']);
+  });
+});
+
 // ── Per-test properties ────────────────────────────────────────────────────
 
 describe('per-test Weak and Inconclusive', () => {
