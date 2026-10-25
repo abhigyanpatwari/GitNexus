@@ -166,13 +166,13 @@ The `Duplicate test scan` job in `ci.yml` runs `npm run test:dupes` on the lines
 changes, and the PR report lists what it finds under **Possible duplicate tests**. It
 never fails a build. It reports:
 
-| Kind                 | Meaning                                                                    |
-| -------------------- | -------------------------------------------------------------------------- |
-| `same-test`          | Same body and same setup as an existing test                               |
+| Kind                 | Meaning                                                                     |
+| -------------------- | --------------------------------------------------------------------------- |
+| `same-test`          | Same body and same setup as an existing test                                |
 | `assertions-pinned`  | Every assertion is a literal `fn(...)` → matcher another test already makes |
-| `same-fixture-setup` | A `before*` hook builds a fixture another describe already builds          |
-| `copied-helper`      | A top-level helper identical to one in another file or `test/helpers`      |
-| `orphan-bench-gate`  | A bench script with `--check` that no workflow or npm script runs          |
+| `same-fixture-setup` | A `before*` hook builds a fixture another describe already builds           |
+| `copied-helper`      | A top-level helper identical to one in another file or `test/helpers`       |
+| `orphan-bench-gate`  | A bench script with `--check` that no workflow or npm script runs           |
 
 "Same setup" includes enclosing hooks, describe-level statements, wrapper arguments,
 loop heads, `each` tables, referenced file-local declarations and resolved imports, so
@@ -187,11 +187,11 @@ them serially. Keep timing measurements out of parallel coverage workers. The
 preflight Vitest tests as well as pytest; those tests must exercise real Python
 validation, never a stubbed success.
 
-## Mutation testing tooling (Phase 0)
+## Mutation testing tooling
 
 `gitnexus/tools/mutation/` holds a Stryker test runner for Vitest 5 (`vitest5`) and the tools
 that validate it. The runner supports Vitest `5.0.x` only and refuses any other version. Its
-validated scope is the pure-JS category: 246 unit test files (4,541 tests) that load no native
+validated scope is the pure-JS category: 251 unit test files (4,667 tests) that load no native
 code, workers or child processes and read no fixtures. The gates stay out of the main suite
 (only the tools' unit tests in `test/unit/mutation/` run there), and nothing ships in the npm
 package.
@@ -230,6 +230,96 @@ only for an intended change.
 its fixtures, `gitnexus/package.json`, the lockfile or `gitnexus/vitest.config.ts`. A manual
 dispatch also runs gates 1, 3 and 4 and the benchmark, or re-freezes oracle manifests sharded
 by scope and uploads them for a maintainer to commit. The workflow is advisory.
+
+### Test Scenario Map
+
+`gitnexus/tools/scenario-map/` builds a report on the eligible pure-JS tests: tests that repeat
+a scenario, tests that kill no evaluated mutant, and per-file gaps. It runs Layers 0–3 of the
+design (`docs/plans/2026-10-23-test-scenario-map-design.md`) on the `vitest5` runner. It only
+reports. It never edits, deletes or folds a test.
+
+From `gitnexus/`, run `npm run test:scenario-map -- <stage> --work <dir>`. The work directory
+must lie outside the checkout. Every stage reads and writes JSON there, so a local `all` run and
+CI produce the same report. `value-flow`, `all` and `controls` need a built `dist/`
+(`npm run build`). The CLI header (`tools/scenario-map/scenario-map.ts`) documents every flag
+and file.
+
+| Stage        | What it does                                                         | Writes (under `--work`)                                                                    |
+| ------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `plan`       | Eligibility, Layers 0–2, the run manifest, candidates, shard plan    | `plan.json`, `scenario-run-manifest.json`, `layer0.json`, `layer2.json`, `coverage/`       |
+| `value-flow` | PDG index, static value-flow check, trace run, final shard plan      | `value-flow.json`                                                                          |
+| `shards`     | Prints the final shard count (the CI matrix size)                    | Nothing                                                                                    |
+| `shard`      | `--index <i> --of <n>`: Layer 3 runs, row deletion, isolation pass   | `observations/`, `batches/`, `isolation/`, `row-deletion-shard-<i>.json`, `shard-<i>.json` |
+| `merge`      | Merges every result, computes verdicts, compares with `--baseline`   | `scenario-map-report.json`, `scenario-map-report.md`, `issue-body.md`                      |
+| `all`        | `plan` (one shard), `value-flow`, `shard` 0 of 1 and `merge`         | All of the above                                                                           |
+| `controls`   | `all` over the controls fixture, then compares every expected result | All of the above                                                                           |
+
+Exit code 0 means complete results. Exit code 1 means the stage finished with incomplete results,
+or a controls verdict differs. Exit code 2 is a usage or setup error.
+
+The controls fixture is `gitnexus/test/fixtures/mutation-scenario-map/`: one pair per
+`*.case.ts` file (16 pairs). It holds the pure-JS adversarial pairs of design §8, an
+order-dependent pair, an object-key row and positive controls. `expected.json` was written from
+the design before any pipeline run. Never regenerate it from observed output: a mismatch is a
+finding. The fixture has its own Vitest config and tsconfig, and no repo project collects it.
+The `scenario-map-controls` job in `.github/workflows/mutation-runner-validation.yml` runs
+`controls` on the same PRs as gate 2.
+
+**Supported matchers** (`SUPPORTED_MATCHERS` in `tools/scenario-map/facet/checks.ts`), after
+`expect(…)` or `expect.soft(…)` and an optional `.not`, `.resolves` or `.rejects`:
+`toBe`, `toEqual`, `toStrictEqual`, `toMatchObject`, `toBeTruthy`, `toBeFalsy`, `toBeNull`,
+`toBeUndefined`, `toBeDefined`, `toBeNaN`, `toBeNullable`, `toBeTypeOf`, `toBeInstanceOf`,
+`toBeGreaterThan`, `toBeGreaterThanOrEqual`, `toBeLessThan`, `toBeLessThanOrEqual`,
+`toBeCloseTo`, `toBeOneOf`, `toContain`, `toContainEqual`, `toHaveLength`, `toHaveProperty`,
+`toMatch`, `toThrow`, `toThrowError`, `toHaveBeenCalled`, `toHaveBeenCalledOnce`,
+`toHaveBeenCalledTimes`, `toHaveBeenCalledWith`, `toHaveBeenCalledExactlyOnceWith`,
+`toHaveBeenLastCalledWith`, `toHaveBeenNthCalledWith`, `toHaveBeenCalledBefore`,
+`toHaveBeenCalledAfter`, `toBeCalled`, `toBeCalledTimes`, `toBeCalledWith`, `toHaveReturned`,
+`toHaveReturnedTimes`, `toHaveReturnedWith`, `toHaveLastReturnedWith`, `toHaveNthReturnedWith`,
+`toReturn`, `toReturnTimes`, `toReturnWith`, `toHaveResolved`, `toHaveResolvedTimes`,
+`toHaveResolvedWith`, `toHaveLastResolvedWith`, `toHaveNthResolvedWith`, and the snapshot
+matchers `toMatchSnapshot`, `toMatchInlineSnapshot`, `toMatchFileSnapshot`,
+`toThrowErrorMatchingSnapshot`, `toThrowErrorMatchingInlineSnapshot`. `expect.assertions(n)` and
+`expect.hasAssertions()` count as checks. Any other form is unsupported and blocks strong
+evidence: `assert.*`, chai-style chains, custom matchers, `toSatisfy`, and an `expect` inside a
+loop, a conditional, a catch clause, a nested function or a helper.
+
+**Wrapped built-ins** of the trace run (`BASE_WRAP_LIST` in
+`tools/scenario-map/value-flow/builtins.ts`), by group:
+
+- `math`: every `Math` function except `random`.
+- `string`: `String.prototype` `toUpperCase`, `toLowerCase`, `toLocaleUpperCase`,
+  `toLocaleLowerCase`, `normalize`, `localeCompare`, `trim`, `trimStart`, `trimEnd`, `padStart`,
+  `padEnd`, `slice`, `substring`, `substr`, `replace`, `replaceAll`, `split`, `at`, `charAt`,
+  `charCodeAt`, `codePointAt`, `startsWith`, `endsWith`, `includes`, `indexOf`, `lastIndexOf`,
+  `repeat`.
+- `regexp`: `RegExp.prototype.test` and `exec`; `String.prototype.match`, `matchAll` and
+  `search`.
+- `number`: `parseInt`, `parseFloat`, the `Number` constructor, and `Number.prototype.toFixed`,
+  `toPrecision`, `toExponential`, `toString`, `toLocaleString`.
+- `json`: `JSON.parse`, `JSON.stringify`.
+- `intl`: the `Intl` constructors `Collator`, `DateTimeFormat`, `NumberFormat`, `PluralRules`,
+  `RelativeTimeFormat`, `ListFormat`, `Segmenter`, `DisplayNames`; `Collator.prototype.compare`,
+  `DateTimeFormat.prototype.format` and `NumberFormat.prototype.format`; and the methods
+  `formatToParts`, `formatRange`, `formatRangeToParts`, `select`, `selectRange`, `segment` and
+  `of`.
+- `date`: the `Date` constructor, `Date.UTC`, `Date.parse`, every `Date.prototype` getter and
+  setter, and its formatters.
+- `sort`: `Array.prototype.sort` and `toSorted`, recorded with the receiver and the comparator.
+
+The trace also wraps the opaque callees that the static value-flow check finds. Storage and
+table reads stay unwrapped: array `push` and `unshift`, and every method of `Map`, `Set`,
+`WeakMap` and `WeakSet`.
+
+`.github/workflows/test-scenario-map.yml` runs the pipeline every Monday and on manual dispatch
+(inputs `seed` and `shards`). Its jobs are `plan`, `value-flow`, `shards`, a `shard` matrix,
+`merge` and `upsert-issue`. Every job is advisory (`continue-on-error`). Only a complete run from
+the default branch uploads the `scenario-map-baseline` artifact and replaces the body of the
+tracking issue (label `test-scenario-map`), unless the issue already records a newer run. A
+partial run adds a comment and leaves the body alone. The workflow never closes the issue.
+
+Mark a human keep with `// dupe-ok: <reason>` on either test of a pair, on the test call's line
+or the line above. The report then lists the pair as kept, with its evidence.
 
 ## Regression testing
 

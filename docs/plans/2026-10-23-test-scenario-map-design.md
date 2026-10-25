@@ -1,6 +1,6 @@
 # Test Scenario Map — design
 
-Date: 2026-10-23 · Status: design — Codex round 7 (fresh full review, `gpt-6-astra` xhigh): rework, 9 findings, all applied; blocker resolved with a semantic value-flow check (§5.3a). Approved 2026-10-23 ("we can proceed"). Phase 0 (§5.4a, pure-JS runner slice) built 2026-10-24: gates 1-4 pass on the pure-JS category · Related: PR #3686 (advisory duplicate-test scan; Phase 0 tooling in `gitnexus/tools/mutation/`)
+Date: 2026-10-23 · Status: design — Codex round 7 (fresh full review, `gpt-6-astra` xhigh): rework, 9 findings, all applied; blocker resolved with a semantic value-flow check (§5.3a). Approved 2026-10-23 ("we can proceed"). Phase 0 (§5.4a, pure-JS runner slice) built 2026-10-24: gates 1-4 pass on the pure-JS category. Phase 1 (§9, pure-JS report) built 2026-10-25 in `gitnexus/tools/scenario-map/`; its deviations from this design are applied in place and listed in §12 · Related: PR #3686 (advisory duplicate-test scan; Phase 0 tooling in `gitnexus/tools/mutation/`)
 
 ## 1. Intent
 
@@ -41,6 +41,8 @@ Precedence, highest first: **Inconclusive → Out of scope → Weak → Repeat (
 | **Review**                             | Same canonical path, checks, context and kill set, but a different input facet, **or** the same facet with a value-flow veto or unknown (§5.3a)                                                                                                                                                                                                                                                                                                | Human decides; mutation cannot tell them apart                                               |
 | **Distinct**                           | Anything else                                                                                                                                                                                                                                                                                                                                                                                                                                  | Keep                                                                                         |
 | _Subsumed_ (property)                  | Non-empty kill set strictly inside another test's, over the common universe                                                                                                                                                                                                                                                                                                                                                                    | Reported as "no unique protection among evaluated mutants"; never a removal suggestion alone |
+
+Phase 1 adds two weak-evidence disqualifiers. Both can only demote: V8 block sets that are not identical (§5.2), and a hook-attributed mutant on the pair's path or kills (§5.4 kill validity). A residual body difference makes two equal facets unequal (§5.3), so such a pair with equal kills ends in Review, never in a repeat.
 
 ## 3. Goals, non-goals, anti-goals
 
@@ -166,6 +168,7 @@ Retrieval:
 
 - **Metric:** Jaccard similarity over block identities. Pairs at ≥ 0.99 become candidates, together with pairs with identical checks + context.
 - **Not transitive:** candidate groups are connected components and are used only to schedule Layer 3, never as verdicts.
+- **Block identity (Phase 1, demote only):** a pair whose V8 block sets are not identical caps at weak evidence. The 0.99 tolerance would otherwise hide one test that reaches extra mutant-free code.
 
 ### 5.3 Layer 2 — input facet
 
@@ -197,31 +200,45 @@ Computed statically per test. Each rule was added to fix a measured miss; removi
 
 8. **Fixture files** named anywhere under `test/fixtures/` contribute their shape. Only synthetic paths fall back to extension tables.
 
+**Phase 1 additions (demote only):**
+
+- **Numeric literals** follow rule 3 too: `0`, `1`, `-1` and negatives stay exact.
+- **±1 rule:** a numeric literal within ±1 of a production numeric constant stays exact. Stryker has no numeric-literal mutator, so a boundary value such as `LIMIT + 1` would otherwise collapse with an interior value. The constants come from the test's executed production files and its static import closure, because a constants-only module runs only during the discarded module load. Statically evaluable initialisers such as `2 * 1024` count.
+- **Residual-difference guard:** for two instances with equal facets, the check diffs the instance bodies. Any differing node that is neither a facet part nor a recorded discarded value marks both instances unresolved and makes the two facets unequal. This catches pairs that differ only in an enum member, a regex, a boolean, `null` or an operator.
+
 ### 5.3a Value-flow check (semantic veto)
 
 **Why:** the facet drops literal values (rules 1 and 3). Two tests can then share facet, path and kills while protecting different behaviour inside code mutation cannot see. Example: a wrapper around `Math.round` tested with `2.4 → 2` and `2.5 → 3`. Non-empty kills show some sensitivity, not sensitivity to the erased difference.
 
-**Scope:** every candidate pair whose discarded values differ (§2 input facet). The check can only send a pair to **Review**; it never promotes. It uses four sources, and all must come back clean:
+**Scope:** every candidate pair whose discarded values differ (§2 input facet). Phase 1 also runs step 4 on every facet-equal candidate pair, as a cheap backstop for differences the facet cannot see. The check can only send a pair to **Review**; it never promotes. It uses four sources, and all must come back clean:
 
 1. **Test side (Babel).** Bind each differing value to where it enters production code: a call argument, a fixture field or a table key. A differing expected value follows the input that produces it. A value that cannot be bound is _unknown_.
 2. **Types and resolution (TypeScript 7 checker).** Through `typescript/unstable/sync` on `gitnexus/tsconfig.test.json`, resolve each entry call through aliases (`getAliasedSymbol`) to its declaration and read the parameter and contextual types.
    - An `any`/`unknown`-typed or unresolved entry is _unknown_.
    - Literal-union or enum members are recorded for the reviewer.
    - Probe (2026-10-23, TypeScript 7.0.2): the 2,401-file project loads in about 9 s; `Math.round` resolves to `lib.es5.d.ts`. The API is unstable: pin the TypeScript version, and treat any API failure as _unknown_.
-3. **Static value flow (GitNexus PDG).** From each entry parameter, follow the value inter-procedurally with `pdg_query` flows (REACHING_DEF) to its sinks, and classify each sink with the checker:
-   - **repo code** (branch, comparison, arithmetic, call into a repo function): coverage and mutation see it. Clean.
+3. **Static value flow (GitNexus PDG).** From each entry parameter, follow the value inter-procedurally to its sinks, and classify each sink with the checker:
+   - **repo code** (branch, comparison, arithmetic, call into a repo function): coverage and mutation see it. Clean only inside the pair's mutated production files (§5.4 mutate scope). Repo code outside them is _unknown_.
    - **supported table read** (§5.4 row deletion): row deletion tests it. Clean.
    - **pass-through** (stored, returned unchanged, compared for identity only): clean.
    - **opaque:** a call declared in `lib.*.d.ts`, `@types/node` or `node_modules`, or any regex use. Veto.
    - **unknown:** truncated flow, dynamic dispatch, or a file without a PDG layer. Veto (fail closed).
    - Classes apply in that order. Reads from supported tables and storage into built-in containers (`push`, `Map.set`, `Set.add`) are table reads and pass-through, even though they are declared in `lib.*.d.ts`. The flow continues from wherever the stored value is read back; if the PDG cannot follow it, it is _unknown_.
-4. **Dynamic trace (Vitest 5).** One extra run of the pair with a setup file that wraps value-sensitive built-ins: `Math`, string transforms and comparisons, `RegExp` methods, number parsing and formatting, `JSON`, `Intl`, `Date`, sort comparators, plus every opaque sink step 3 found. Storage and table reads (`push`, `Map`/`Set` methods) are not wrapped. Each call from a production frame (`gitnexus/src`, `gitnexus-shared/src`) records its call site and arguments.
-   - If the two tests reach the same call site with different arguments, the differing data reached opaque code. Veto. This also catches derived values (`x * 10`) and flows step 3 missed.
+   - **Stitched walk (Phase 1, `gitnexus/tools/scenario-map/value-flow/pdg-walk.ts`).** GitNexus `pdg_query` flows are intra-procedural, so the check stitches the walk itself:
+     - It reads each function's REACHING_DEF and `CALL_SUMMARY` edges through LocalBackend's `cypher` tool, scoped to the function's `BasicBlock:<file>:<fnLine>:` id prefix.
+     - The TypeScript checker resolves each callee. The argument position in the production AST gives the parameter. `CALL_SUMMARY` covers return values.
+     - A binding derived from the value (`const { ratio } = opts`, `x = v`) is walked under its own name. A store into a property or module state is _unknown_.
+     - Any opaque or unknown use in a statement vetoes the whole statement.
+     - A truncated per-function query, an ambiguous binding or the depth cap (4 functions, entry included) is _unknown_.
+4. **Dynamic trace (Vitest 5).** One extra run of the pair with a setup file that wraps value-sensitive built-ins: `Math`, string transforms and comparisons, `RegExp` methods, number parsing and formatting, `JSON`, `Intl`, `Date`, sort comparators, plus every opaque sink step 3 found. Storage and table reads (`push`, `Map`/`Set` methods) are not wrapped. Each call from a production frame (`gitnexus/src`, `gitnexus-shared/src`) records its call site, its receiver (`this`), its arguments and a call count per site.
+   - If the two tests reach the same call site with a different receiver or different arguments, the differing data reached opaque code. Veto. This also catches derived values (`x * 10`) and flows step 3 missed.
+   - Asymmetric call sites, or asymmetric call counts at a site, veto too.
+   - Phase 1 runs the trace for every facet-equal candidate pair, not only for value-differing ones (demote only).
    - The trace run is separate from mutation runs. If a test's outcome changes under tracing, the pair is Inconclusive.
 
 **Lifting a veto:** only an explicit equivalence rule for that built-in (e.g. `Math.round` on two integers), each with its own test. The list starts empty; add a rule only when measured Review noise justifies it.
 
-**Cost:** one checker load per run, PDG queries per candidate pair, and one traced run per candidate group. It touches only pairs that reach the repeat stage.
+**Cost:** one checker load per run, PDG queries per value-differing candidate pair, and one traced run over the tests of every facet-equal candidate pair. Phase 1 runs value flow before the mutation shards, so the isolation pass (§5.4) is spent only on pairs that can still be strong.
 
 ### 5.4 Layer 3 — mutation evidence
 
@@ -230,7 +247,9 @@ Computed statically per test. Each rule was added to fix a measured miss; removi
 - Stryker `perTest`, `disableBail: true`, **static mutants included**.
 - Runs **on the repo itself** (Stryker's sandbox copy of the checkout), through the Vitest 5 runner (§5.4a). There is no separate harness project.
   - Phase 0 runs Stryker in a **prepared copy** of `gitnexus/` outside the checkout. Its `node_modules` links to the checkout's. It leaves out `vendor/`, `prebuilds/` and `dist/`, which the pure-JS category never loads.
+  - Phase 1: baselines, row deletion and the trace run (§5.3a) run on plain Vitest 5 under the mutation config, with a fresh Vitest instance per run. Row deletion cannot run through Stryker, because Stryker applies only its own mutators. It edits a throwaway copy of the prepared tree instead. This still honours Vitest 5 only.
 - Mutate scope: the candidates' production closure **and** `gitnexus-shared/src`. `gitnexus-shared` resolves to its source via a Vitest alias in the Stryker-only config, so its tables are mutated.
+  - Phase 1: the mutate scope of a candidate group is whole production files: every production file in either test's V8 provenance or static import closure, with no line ranges.
   - Phase 0 finding: Stryker cannot mutate files outside its working directory. The prepared copy therefore relocates `gitnexus-shared/src` inside the `gitnexus/` tree. The mutation config derives its aliases from the package `exports`, and a path map translates relocated paths back.
 - **Type assertions** (Phase 0 finding, replaces the `as const`-only pre-step). Stryker's instrumenter skips every `TSAsExpression` subtree, not only `as const` tables (`gitnexus/src` alone has 317 `as const` nodes).
   - The prepared copy blanks every ` as <type>` in the mutated files with spaces of the same length, keeping newlines. Lines and columns do not move, so the span map is an identity.
@@ -242,8 +261,12 @@ Computed statically per test. Each rule was added to fix a measured miss; removi
 **Kill validity**
 
 - Before mutating, the baseline must pass twice with identical test identities.
+  - Phase 1: two plain Vitest 5 baselines (a fresh instance per run) and Stryker's dry run must agree. Otherwise the group is _inconclusive_.
 - Only assertion failures count (§2). Stryker `Timeout`, runtime and compile errors are recorded per test, and make any pair they touch _inconclusive_.
 - **Full isolation pass**, required for strong evidence: rerun every mutant covered by either test (the pair's covered universe), both tests together and then each alone, comparing coverage and outcome class. Static mutants and mutants executed in `beforeAll` rerun in a fresh process with modules reset. Any disagreement makes the pair _inconclusive_. This catches order dependence and leaking mocks that hide a distinguishing mutant.
+  - Phase 1: the pass selects tests through the runner's `testIds` scope key (§5.4a). Each pair gets one Stryker run with both tests, and each test one run alone, shared across pairs. Mutate is restricted to the pair's covered universe. `maxTestRunnerReuse` 1 gives every mutant a fresh process. Coverage and outcome class per test and mutant must agree across the main, together and alone runs.
+  - Phase 1: the pass runs only for pairs that can still be strong after value flow, because value flow (§5.3a) runs before the mutation shards. A pair whose isolation does not fit the shard's time stays isolation not-run, which caps it at weak.
+  - **Hook-stratum cap (Phase 1, demote only):** a pair whose path or kills touch a hook-attributed mutant caps at weak. The cap holds until a gate 3 scope with a non-empty hook stratum passes (§5.4a). Today that stratum is empty in all three scopes.
 - A sampled isolation pass is allowed as a cheap screen, but a pair without the full pass caps at weak evidence.
 - Two passing baselines show observed stability, not absence of flakiness. The report says so.
 
@@ -261,6 +284,7 @@ Computed statically per test. Each rule was added to fix a measured miss; removi
 
 - Applies to candidate pairs whose differing literals are both keys of one production object literal.
 - Delete each key in turn and run the pair.
+  - Phase 1: the operator splices one key's text out of a throwaway copy of the prepared tree and runs the pair on plain Vitest 5, a fresh instance per run. A reused instance serves cached transforms and would turn a no-op deletion into a false "neither fails". A control run comes first: both tests must pass, and the edited file must load.
 - Outcomes:
   - **symmetric:** both tests fail, or neither does
   - **asymmetric:** exactly one fails, which means _row_
@@ -285,6 +309,7 @@ Computed statically per test. Each rule was added to fix a measured miss; removi
 - Until that is proven, worker-only files are mutation _exclusions_.
 - Strong evidence is enforced through **execution provenance**. V8 coverage cannot see inside native addons or other worker isolates, and module-load coverage is discarded, so a clean V8 run is **not** proof of no native or excluded execution. Two checks always apply together:
   1. **V8 provenance:** excluded files, native-package entry points or worker spawns seen at runtime cap the test at weak evidence.
+     - **Excluded files (Phase 1):** any executed repo file under `gitnexus/` that is neither a test file (`test/**`, `*.case.ts`) nor mutated, such as `tools/` or `scripts/` code.
   2. **Static closure:** if the test's static import closure reaches any native package (tree-sitter included), any worker-spawning module, or **any mutation-excluded file**, the cap applies too. Excluded files' module initialisation runs during the discarded load phase, so V8 cannot vouch for it.
 - **No other exceptions.**
   - Tests depending on tree-sitter, LadybugDB, onnxruntime or any other native package top out at **weak evidence**: review queue, never a strong repeat candidate.
@@ -319,6 +344,12 @@ Computed statically per test. Each rule was added to fix a measured miss; removi
 - counts a hit in a suite's `beforeAll` as coverage for every test of that suite. Only load- and collection-time hits make a mutant static.
 - refuses any Vitest outside `5.0.x`.
 
+**Extended (Phase 1):**
+
+- an optional `testIds` key in the driver scope, passed as the `vitest5.testIds` runner option. The dry run runs only the requested tests, checks the executed set against the request, and fails on an unknown id before any mutant run.
+- per-test outcome classes from every sidecar attempt in `results.json` (`perTest`, `attemptsDisagree`).
+- a per-mutant hook marker (`hookAttributedTests`): the tests a suite hook attributed the mutant to.
+
 What upstream would need before the plugin can be dropped is listed in `gitnexus/tools/mutation/UPSTREAM.md`.
 
 **Required behaviour:**
@@ -342,6 +373,8 @@ What upstream would need before the plugin can be dropped is listed in `gitnexus
 
    **Phase 0 result:** pass on the pure-JS category, 246 files and 4,541 tests, 0 differences. The runtime load check found `commander` loading `child_process` at runtime; the classifier now rejects tests that import it. The span map check passed on 1,510 mutants with 0 failures.
 
+   **Phase 1 result:** after the runner extensions, gate 1 passes on 251 files and 4,667 tests, with 0 differences. The envelope was refreshed: the classifier now rejects `conformance-compare.test.ts` and `php-namespace-extraction.test.ts`, and accepts the three oracle unit tests.
+
 2. **Runner conformance suite.** A small, committed fixture project pins expected per-test coverage and outcomes for:
    - static and module-load mutants
    - mutants executed in a suite's `beforeAll`
@@ -353,6 +386,8 @@ What upstream would need before the plugin can be dropped is listed in `gitnexus
    A mutant run that unexpectedly executes zero tests invalidates that mutant's evidence. Worker-category controls must prove the workers ran the instrumented sandbox build.
 
    **Phase 0 result:** all 23 pinned cases hold in two profiles, about 4 min each: Stryker concurrency 2 with a fresh runner process per mutant, and concurrency 1 with unlimited runner reuse. Only this fixture exercises `beforeAll` hit attribution: the hook-hit populations of all three oracle scopes are empty.
+
+   **Phase 1 result:** the fixture gains a `testIds` selection scope and hook-marker cases. All 26 pinned cases hold.
 
 3. **Vitest 5 cross-check oracle.** It is built entirely on Vitest 5, independently of the new runner. Every category gets its own frozen cross-check scopes before it is promoted:
    - **Scopes (Phase 0):** the pure-JS category has three, because `shared.ts` alone exercises neither the blanking, the alias, `beforeAll` nor `it.each`:
@@ -378,10 +413,13 @@ What upstream would need before the plugin can be dropped is listed in `gitnexus
    - **Not covered by the oracle:** it shares Stryker's instrumentation, so it cannot vouch for instrumentation or the blanking span map. Gate 1 checks the span map separately.
    - The spike's Vitest 4 results are history only, not an oracle.
    - **Phase 0 result:** gate 3 passes on all three scopes (seed `u7-gate3-1`, frozen 2026-10-24 in `gitnexus/test/fixtures/mutation-oracle/`): every mutant class agrees (`shared.ts` 1,232, `schema-constants.ts` 72, `middleware.ts` 302; NoCoverage read as survived for 621, timeouts 5), and every sampled per-test observation agrees (14,300 + 3,024 + 3,131 = 20,455 over 273 sampled mutants), with 0 differences and 0 invalid launches. Inventories match (tests and global mutant ids). Strata across the scopes: static, multi-killer, survived, no-coverage and each-row met; hook-hit population empty. The freezes took 2 h 55 min, 1 h 25 min and 1 h 36 min locally at launch concurrency 8, 3 and 3.
+   - **Re-freeze (Phase 1, 2026-10-24):** merging `main` changed the import closure of the `schema-constants.ts` scope (`template-arguments.ts`), so gate 3 reported "re-freeze required". The manifest was re-frozen with seed `u7-gate3-2`: 72 sampled mutants, 3,024 valid observations, 0 invalid. Gate 3 passes on all three scopes again (1,232, 72 and 302 mutants), with 0 differences. The runner extensions changed no gate 3 hashed input, so they caused no re-freeze.
 
 4. **Positive controls and determinism.** Per category, a fixed list of planted mutants must be killed by the tests that depend on them and must survive under tests that don't touch them. Two runs must give identical kill sets.
 
    **Phase 0 result:** pass. Nine controls, three per oracle scope, picked from each run's own mutants by global id; three sit in relocated `gitnexus-shared` `as const` tables. The `shared.ts` scope uses lines 729-904 (199 mutants) to bound the run time. Profile A runs at Stryker concurrency 1 with unlimited runner reuse, profile B at concurrency 3 with a fresh runner process per mutant. Every control held in every run, and A and B gave 0 differences in outcome classes and kill sets. About 81 min locally.
+
+   **Phase 1 result:** after the runner extensions, gate 4 passes with 0 failures.
 
 **Maintenance:**
 
@@ -427,7 +465,7 @@ Applies §2 with its precedence. Emits evidence for each pair and each test, inc
   - **Vitest 5 only**, the version pinned in `gitnexus/package.json`. No Vitest 4 anywhere: no harness, no oracle, no `--legacy-peer-deps`.
   - The runner refuses anything outside Vitest `5.0.x`. A Vitest, Stryker or Node upgrade needs the four §5.4a gates again before its results count.
 - **TypeScript 7:** the stable JS API is not ready, and Stryker's tsconfig preprocessor crashes, so point `tsconfigFile` at a non-existent file. Set `disableTypeChecks: false` (§5.4). The value-flow check uses the shipped unstable API (`typescript/unstable/sync`), pinned to the repo's TypeScript version and fail-closed (§5.3a).
-- **Native code and fixtures** work as in normal test runs, because Stryker runs on the repo. The spike reached only pure-JS tests (170/894 unit files) through its copy harness, so integration-scale cost is still unmeasured (§5.4). Phase 0 validated the pure-JS category only: 246 unit files, chosen by a static classifier and checked by gate 1's runtime load check.
+- **Native code and fixtures** work as in normal test runs, because Stryker runs on the repo. The spike reached only pure-JS tests (170/894 unit files) through its copy harness, so integration-scale cost is still unmeasured (§5.4). Phase 0 validated the pure-JS category only: 246 unit files, chosen by a static classifier and checked by gate 1's runtime load check. Phase 1 refreshed that envelope to 251 files (§5.4a gate 1).
 - **Compute:**
   - Shard by candidate group (§5.4), and merge raw test–mutant observations by global identity (§5.4).
   - Must fit `ubuntu-latest` (4 vCPU, 6 h) through sharding. Size the job from the §5.4 benchmarks, not by extrapolating.
@@ -441,6 +479,16 @@ Applies §2 with its precedence. Emits evidence for each pair and each test, inc
   - gate 1 over the pure-JS category: 2 min 39 s
   - gate 2: about 4 min per profile
   - gate 4: about 81 min for both profiles
+- **Measured Phase 1 costs** (local runs; CI will differ):
+  - Layer 1: 4,667 tests in about 2 min (1 min 55 s)
+  - Layer 2: checks for 4,600 instances in 2.9 s; input facets for 4,667 instances in about 33 s
+  - Layer 3 main run: about 1.5 min fixed per group, plus about 13 min per MB of mutated code, at Stryker concurrency 2. The cost does not grow with the group's tests.
+  - isolation pass: about 130 s fixed per run, plus about 5.5 s per mutant (fresh process per mutant)
+  - row deletion: about 48 s per batch, plus 2.5–5 s per pair run
+  - whole-repo `analyze --pdg` for value flow: 6 min 49 s wall, 8.4 GB peak RSS
+  - trace run: 1.19× pooled overhead on 40 eligible files, with no outcome change
+  - controls fixture end to end: 16 of 16 pairs match, 28 min
+  - predicted CI run: 9 shards at Stryker concurrency 4, 1,658–1,829 min in total, largest shard 196–253 min (budget 300 min), 0 groups over budget
 - **Caching:** key results on everything that changes them:
   - test and production file contents
   - fixtures read
@@ -514,6 +562,9 @@ Each category becomes eligible for Layer 3 only after it passes the §5.4a gates
    - benchmark the oracle's fresh-process cost
    - write the residual deltas against upstream in `gitnexus/tools/mutation/UPSTREAM.md` (upstream merged the root-cause fix, StrykerJS #6214; no PR is opened in Phase 0)
 1. **Pure-JS unit tests:** Layers 1–3, the value-flow check, the kill-validity protocol, the report and the scheduled job.
+   - **Built 2026-10-25:** `gitnexus/tools/scenario-map/`, the `npm run test:scenario-map` CLI and `.github/workflows/test-scenario-map.yml`. The plan is `docs/plans/2026-10-24-0902-feat-test-scenario-map-phase1-plan.md`.
+   - The controls fixture (`gitnexus/test/fixtures/mutation-scenario-map/`) matches all 16 expected verdicts and rules.
+   - Phase 1 full-run results: <to be filled from the local full run>
 2. **Rest of the unit suite:**
    - a frozen cross-check scope, then validation, for the **native-backed** and **fixture-reading** categories
    - LadybugDB namespaces, then validation of the **LadybugDB** category
@@ -541,6 +592,8 @@ Each category becomes eligible for Layer 3 only after it passes the §5.4a gates
 - Where the Vitest 5 runner lives (an in-repo tooling package, or a pinned fork) until upstream ships support. Also the cache implementation (cache keys are fixed in §7).
 - The list of supported assertion forms, as long as it is documented and anything else is reported as unsupported.
 - The exact list of wrapped built-ins in the trace run (§5.3a), as long as storage and table reads stay unwrapped and the list is documented.
+
+Phase 1 choices: the tool lives in `gitnexus/tools/scenario-map/`. The supported matcher list and the wrapped built-ins list are documented in `TESTING.md` and in the headers of `facet/checks.ts` and `value-flow/builtins.ts`. There is no result cache yet: the report records the §7 cache-key inputs as run provenance.
 
 ## 12. Decisions log
 
@@ -622,3 +675,21 @@ Settled by the author (reviewable):
 - **Deletion guard:** tracked separately.
 - **Report home:** artifact plus one tracking issue.
 - §5 layer flow, §5.5 noise control, §7 sharding, §8 frozen labels.
+
+Phase 1 implementation (2026-10-24/25, `docs/plans/2026-10-24-0902-feat-test-scenario-map-phase1-plan.md`). Deviations from this design, all applied in place above:
+
+1. **Stitched value-flow walk (§5.3a step 3).** GitNexus `pdg_query` flows are intra-procedural. The check reads per-function REACHING_DEF and `CALL_SUMMARY` edges through LocalBackend's `cypher` tool. The TypeScript checker resolves callees, and AST argument positions map to parameters. Truncation, ambiguity and the depth cap of 4 are unknown. Repo code is clean only inside the pair's mutated files. Any opaque or unknown use in a statement vetoes it.
+2. **Trace (§5.3a step 4).** It records receivers as well as arguments. It runs for every facet-equal candidate pair. Asymmetric call sites or call counts veto.
+3. **Plain Vitest 5 outside Stryker (§5.4).** Baselines and row deletion run on plain Vitest 5 with a fresh instance per run. Row deletion cannot run through Stryker, because Stryker applies only its own mutators. It edits a throwaway copy of the prepared tree.
+4. **Isolation pass (§5.4).** It selects tests through the runner's new `testIds` scope key and gives every mutant a fresh process. It runs only for pairs that can still be strong after value flow.
+5. **Demote-only additions:**
+   - non-identical V8 block sets cap a pair at weak (§5.2);
+   - numeric literals keep `0`, `1`, `-1` and negatives exact (§5.3 rule 3);
+   - the ±1 numeric-constant rule, with constants from executed files and the static import closure and folded initialisers (§5.3);
+   - the residual-difference guard: a body difference the facet misses makes the facets unequal, so a pair with equal kills ends in Review (§5.3);
+   - excluded files: any executed repo file under `gitnexus/` that is neither a test nor mutated caps the test at weak (§5.4);
+   - the hook-stratum cap (§5.4);
+   - the trace on every facet-equal pair (§5.3a).
+6. **Runner extensions (§5.4a).** `testIds` selection, per-test classes from every attempt and a per-mutant hook marker. Gates 1–4 pass after them, with no oracle re-freeze caused by them.
+7. **Schema-constants re-freeze (§5.4a gate 3).** Merging `main` changed the scope's import closure. The manifest was re-frozen with seed `u7-gate3-2`, and gate 3 passes on all three scopes.
+8. **CI topology (§6, §7).** Value flow runs before the mutation shards, not in parallel with them. The shard plan is rebuilt after value flow, so it counts isolation only for the pairs value flow leaves able to be strong. A group whose isolation does not fit still runs its main run and row deletion; its pairs get isolation not-run (weak cap). A group that executes no production file is not run, and its pairs are Out of scope.
