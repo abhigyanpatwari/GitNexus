@@ -386,11 +386,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, ubuntu-24.04-arm]
+        os: [windows-latest, macos-latest, ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     # Windows pack + web install regularly exceeds 15 minutes when setup also
     # runs prepare/postinstall/build before prepack compiles the same tree again.
-    timeout-minutes: 20
+    # Also exercise fresh npm, pnpm, and Bun installs on the three desktop OSes.
+    timeout-minutes: 30
     steps:
       # persist-credentials: false — this job runs npm pack + npm install -g
       # from a tarball and never pushes back; the token in .git/config would
@@ -429,6 +430,14 @@ jobs:
       - name: Pack gitnexus tarball
         shell: bash
         run: npm pack
+        working-directory: gitnexus
+
+      - name: Index the PR tarball with npm, pnpm, and Bun
+        if: matrix.os != 'ubuntu-24.04-arm'
+        shell: bash
+        run: |
+          npm install --global pnpm@12.10.1 bun@1.3.14 --no-audit --no-fund
+          node scripts/smoke-package-managers.mjs
         working-directory: gitnexus
 
       # Block native compilation only in the consumer phase. A correct bundle
