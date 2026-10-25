@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createAnalyzerLbugLazyAction, createLazyAction } from '../../src/cli/lazy-action.js';
 
-const { checkLbugNativeMock } = vi.hoisted(() => ({
+const { checkLbugNativeMock, prepareLbugNativeBinaryMock } = vi.hoisted(() => ({
+  prepareLbugNativeBinaryMock: vi.fn(),
   checkLbugNativeMock: vi.fn<typeof import('../../src/core/lbug/native-check.js').checkLbugNative>(
     () => ({ ok: true }),
   ),
@@ -9,6 +10,7 @@ const { checkLbugNativeMock } = vi.hoisted(() => ({
 
 vi.mock('../../src/core/lbug/native-check.js', () => ({
   checkLbugNative: checkLbugNativeMock,
+  prepareLbugNativeBinary: prepareLbugNativeBinaryMock,
 }));
 
 describe('createLazyAction', () => {
@@ -64,6 +66,11 @@ describe('createLbugLazyAction', () => {
 describe('createAnalyzerLbugLazyAction', () => {
   it('captures identity before probing native code or importing the analyzer graph', async () => {
     const events: string[] = [];
+    prepareLbugNativeBinaryMock.mockImplementationOnce(() => events.push('binary-prepared'));
+    checkLbugNativeMock.mockImplementationOnce(() => {
+      events.push('native-probed');
+      return { ok: true };
+    });
     const receipt = { schemaVersion: 4 };
     const run = vi.fn(async () => undefined);
     const identityLoader = vi.fn(async () => {
@@ -89,7 +96,13 @@ describe('createAnalyzerLbugLazyAction', () => {
 
     await action('repo', { force: true });
 
-    expect(events).toEqual(['identity-module', 'receipt-captured', 'analyzer-module']);
+    expect(events).toEqual([
+      'binary-prepared',
+      'identity-module',
+      'receipt-captured',
+      'native-probed',
+      'analyzer-module',
+    ]);
     expect(run).toHaveBeenCalledWith(receipt, 'repo', { force: true });
   });
 

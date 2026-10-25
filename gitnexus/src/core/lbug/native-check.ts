@@ -202,6 +202,22 @@ function unrestorableBinaryFailure(
   };
 }
 
+/**
+ * Materialize a skipped install-script copy before recording analyzer identity.
+ * This only copies the already-installed prebuilt; it never loads native code.
+ * checkLbugNative still owns load probing and diagnostics after identity capture.
+ */
+export function prepareLbugNativeBinary(overridePkgDir?: string): void {
+  try {
+    const pkgDir =
+      overridePkgDir ?? path.dirname(createRequire(import.meta.url).resolve('@ladybugdb/core'));
+    const binaryPath = path.join(pkgDir, 'lbugjs.node');
+    if (!fs.existsSync(binaryPath)) restorePrebuiltNativeBinary(pkgDir, binaryPath);
+  } catch {
+    // The normal check reports missing packages and failed recovery unchanged.
+  }
+}
+
 export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
   let pkgDir: string;
 
