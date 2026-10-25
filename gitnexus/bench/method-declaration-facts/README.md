@@ -9,6 +9,10 @@ node bench/method-declaration-facts/measure.mjs \
   --samples 3 --output /tmp/method-declaration-facts.json
 ```
 
+The output file must not exist; existing files and symlinks are rejected before
+measurements start. Without `--output`, the harness creates a private temporary
+directory and prints the result path. Results are written after all pairs finish.
+
 Use `--candidate-root` to measure a built candidate snapshot elsewhere. Put both
 runtimes and their dependencies on the same filesystem. The source corpus always
 comes from the checkout containing the script, and its content hash must match

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { performance, PerformanceObserver } from 'node:perf_hooks';
@@ -432,64 +432,70 @@ if (args.includes('--child')) {
   assert(baseline, 'Supply --baseline-root pointing at the built pre-change package');
   const samples = Number(option('--samples', '3'));
   assert(Number.isInteger(samples) && samples >= 3, '--samples must be at least 3');
-  const child = (revision, mode, corpus) => {
-    const output = execFileSync(
-      process.execPath,
-      ['--expose-gc', here, '--child', mode, '--root', revision, '--corpus', corpus ?? ''],
-      {
-        encoding: 'utf8',
-        timeout: 600_000,
-        maxBuffer: 32 * 1024 * 1024,
-        env: { ...process.env, GITNEXUS_MEMORY: 'off' },
+  const outputPath =
+    option('--output') ??
+    path.join(await mkdtemp(path.join(os.tmpdir(), 'gitnexus-callable-results-')), 'results.json');
+  const outputFile = await open(outputPath, 'wx', 0o600);
+  try {
+    const child = (revision, mode, corpus) => {
+      const output = execFileSync(
+        process.execPath,
+        ['--expose-gc', here, '--child', mode, '--root', revision, '--corpus', corpus ?? ''],
+        {
+          encoding: 'utf8',
+          timeout: 600_000,
+          maxBuffer: 32 * 1024 * 1024,
+          env: { ...process.env, GITNEXUS_MEMORY: 'off' },
+        },
+      );
+      const line = output.split('\n').find((line) => line.startsWith('BENCH_RESULT='));
+      assert(line, 'child did not return measurements');
+      return JSON.parse(line.slice('BENCH_RESULT='.length));
+    };
+    const results = {
+      measuredAt: new Date().toISOString(),
+      environment: {
+        node: process.version,
+        platform: process.platform,
+        cpu: os.cpus()[0]?.model,
+        workers: 1,
       },
-    );
-    const line = output.split('\n').find((line) => line.startsWith('BENCH_RESULT='));
-    assert(line, 'child did not return measurements');
-    return JSON.parse(line.slice('BENCH_RESULT='.length));
-  };
-  const results = {
-    measuredAt: new Date().toISOString(),
-    environment: {
-      node: process.version,
-      platform: process.platform,
-      cpu: os.cpus()[0]?.model,
-      workers: 1,
-    },
-    counts: {},
-    lifetime: {},
-    samples: [],
-  };
-  for (const [name, revision] of [
-    ['baseline', baseline],
-    ['candidate', candidateRuntime],
-  ]) {
-    results.counts[name] = child(revision, 'counts');
-    results.lifetime[name] = child(revision, 'lifetime');
-  }
-  assert.deepEqual(
-    results.counts.baseline.map((r) => [r.language, r.facts]),
-    results.counts.candidate.map((r) => [r.language, r.facts]),
-  );
-  for (const corpus of args.includes('--providers-only')
-    ? ['providers']
-    : ['declarations', 'repository']) {
-    for (let sample = 0; sample < samples; sample++) {
-      const pair = {};
-      for (const name of sample % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']) {
-        console.log(`${corpus} pair ${sample + 1}/${samples}: ${name}`);
-        pair[name] = child(name === 'baseline' ? baseline : candidateRuntime, 'analysis', corpus);
-      }
-      assert.deepEqual(pair.baseline.manifest, pair.candidate.manifest);
-      assert.deepEqual(
-        pair.baseline.runs.map((r) => r.facts),
-        pair.candidate.runs.map((r) => r.facts),
-        'before/after graph facts differ',
-      );
-      results.samples.push({ corpus, sample, ...pair });
-      await writeFile(
-        option('--output', '/tmp/method-declaration-facts.json'),
-        JSON.stringify(results, null, 2) + '\n',
-      );
+      counts: {},
+      lifetime: {},
+      samples: [],
+    };
+    for (const [name, revision] of [
+      ['baseline', baseline],
+      ['candidate', candidateRuntime],
+    ]) {
+      results.counts[name] = child(revision, 'counts');
+      results.lifetime[name] = child(revision, 'lifetime');
     }
+    assert.deepEqual(
+      results.counts.baseline.map((r) => [r.language, r.facts]),
+      results.counts.candidate.map((r) => [r.language, r.facts]),
+    );
+    for (const corpus of args.includes('--providers-only')
+      ? ['providers']
+      : ['declarations', 'repository']) {
+      for (let sample = 0; sample < samples; sample++) {
+        const pair = {};
+        for (const name of sample % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']) {
+          console.log(`${corpus} pair ${sample + 1}/${samples}: ${name}`);
+          pair[name] = child(name === 'baseline' ? baseline : candidateRuntime, 'analysis', corpus);
+        }
+        assert.deepEqual(pair.baseline.manifest, pair.candidate.manifest);
+        assert.deepEqual(
+          pair.baseline.runs.map((r) => r.facts),
+          pair.candidate.runs.map((r) => r.facts),
+          'before/after graph facts differ',
+        );
+        results.samples.push({ corpus, sample, ...pair });
+      }
+    }
+    await outputFile.writeFile(JSON.stringify(results, null, 2) + '\n');
+    console.log(`Measurements saved to ${outputPath}`);
+  } finally {
+    await outputFile.close();
   }
 }
