@@ -12,7 +12,7 @@ describe('R rename overflow fixtures', () => {
     const overflow = renameCases.filter(
       (fixture) => fixture.language === 'r' && renameOverflowIds.has(fixture.id),
     );
-    expect(overflow).toHaveLength(55);
+    expect(overflow).toHaveLength(57);
   });
 });
 

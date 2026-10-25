@@ -310,24 +310,44 @@ function callsOf(root: Parser.SyntaxNode, name: string): Parser.SyntaxNode[] {
   return calls;
 }
 
+/** Calls whose braces get a block scope of their own (the `@scope.block` patterns of query.ts). */
+const BLOCK_SCOPE_CALLS = /^(local|test_that|describe|it|with|within)$/;
+
+/** Whether `node` is the braces of a block scope: `local({...})`, `test_that(desc, {...})`, ... */
+function isBlockScopeBody(node: Parser.SyntaxNode): boolean {
+  if (node.type !== 'braced_expression' || node.parent?.type !== 'argument') return false;
+  if (node.parent.childForFieldName('value')?.id !== node.id) return false;
+  const call = node.parent.parent?.parent;
+  if (call?.type !== 'call') return false;
+  let callee = call.childForFieldName('function');
+  if (callee?.type === 'namespace_operator') callee = callee.childForFieldName('rhs');
+  return callee?.type === 'identifier' && BLOCK_SCOPE_CALLS.test(callee.text);
+}
+
 /**
- * Whether a function body may call `name` before its own local definition of it. The scope graph
- * binds every call of the name in a body (nested functions included) to a function literal the
- * body assigns to it, wherever the assignment sits; R binds the local only once the assignment
- * has run. So the binding is accepted only when one such assignment is a direct statement of the
- * body's braces (not under `if`, `switch()`, a loop, `tryCatch()` or any call) and every call
- * of the name in the body starts after it ends (a call inside that literal runs after it too).
+ * Whether a function body or a block scope's braces may call `name` before its own local
+ * definition of it. The scope graph binds every call of the name in a body (nested functions and
+ * blocks included) to a function literal the body assigns to it, wherever the assignment sits;
+ * R binds the local only once the assignment has run. So the binding is accepted only when one
+ * such assignment is a direct statement of the body's braces (not under `if`, `switch()`, a
+ * loop, `tryCatch()` or any call) and every call of the name in the body starts after it ends (a
+ * call inside that literal runs after it too).
  */
 export function rCallsBeforeLocalDefinition(root: Parser.SyntaxNode, name: string): boolean {
   for (const fn of walkNamedNodes(root)) {
-    if (fn.type !== 'function_definition') continue;
-    const body = fn.childForFieldName('body');
+    const body =
+      fn.type === 'function_definition'
+        ? fn.childForFieldName('body')
+        : isBlockScopeBody(fn)
+          ? fn
+          : null;
     if (body === null) continue;
-    // Assignments made by this function itself: nested functions own theirs.
+    // Assignments made by this body itself: nested functions and blocks own theirs.
     const definitions: Parser.SyntaxNode[] = [];
     const stack: Parser.SyntaxNode[] = [body];
     for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
-      if (node.type === 'function_definition') continue;
+      if (node.type === 'function_definition' || (node.id !== body.id && isBlockScopeBody(node)))
+        continue;
       if (locallyAssignedValue(node, name)?.type === 'function_definition') definitions.push(node);
       for (const child of node.namedChildren) stack.push(child);
     }
@@ -517,6 +537,32 @@ function refClassInheritsName(files: ReadonlyMap<string, RenameSource>, name: st
         if (shape === undefined || shape.members.has(name)) return true;
         queue.push(...shape.contains);
       }
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a `$methods(...)` call (`Gen$methods(run = function() helper())`, which adds methods to
+ * a RefClass generator after `setRefClass()`) mentions `name`. A method added that way sees the
+ * class's methods by bare name, and a method of that name added there is seen by every method of
+ * the class; the class scope does not model these calls, so the scope graph binds such a call to
+ * the function being renamed. The receiver is not traced: any `x$methods(...)` counts.
+ */
+function refClassMethodsCallMentionsName(
+  files: ReadonlyMap<string, RenameSource>,
+  name: string,
+): boolean {
+  for (const source of files.values()) {
+    if (!source.tree) continue;
+    for (const call of walkNamedNodes(source.tree.rootNode)) {
+      if (call.type !== 'call') continue;
+      const callee = call.childForFieldName('function');
+      if (callee?.type !== 'extract_operator' || callee.childForFieldName('operator')?.text !== '$')
+        continue;
+      if (rBareName(callee.childForFieldName('rhs')?.text ?? '') !== 'methods') continue;
+      const args = call.childForFieldName('arguments');
+      if (args !== null && mentionsName(args, name)) return true;
     }
   }
   return false;
@@ -825,6 +871,10 @@ export const rRenameProvider: RenameProvider = {
     if (refClassInheritsName(files, name))
       return ambiguous(
         'A RefClass method calls this name and a parent class (contains =) defines a member of it, or is not indexed; the call may reach the inherited member.',
+      );
+    if (refClassMethodsCallMentionsName(files, name))
+      return ambiguous(
+        'A $methods() call (methods added to a RefClass generator) mentions this name; the index does not model those methods, so a call may reach a class method instead of the function being renamed.',
       );
     // R files the index does not cover (skipped directories, `.Rprofile`, `R/*.S`), recorded
     // by `refreshResolutionConfig` for this plan.

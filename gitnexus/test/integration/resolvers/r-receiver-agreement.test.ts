@@ -58,7 +58,8 @@ const EXPECTED: Readonly<Record<string, readonly string[]>> = {
   'Function:R/script.R:rp1': [],
   'Function:R/script.R:as1': [OTHER],
   'Function:R/script.R:sa1': [],
-  // modlevel.R: the module `u` is rebound by m6's `<<-`.
+  // modlevel.R: the module `u` is rebound by m6's `<<-`, so m2, m3 and m9 do not test the shadow
+  // on their own; m10 in modlevel2.R does.
   'Function:R/modlevel.R:m1': [],
   'Function:R/modlevel.R:m2': [OTHER],
   'Function:R/modlevel.R:m3': [OTHER],
@@ -73,6 +74,7 @@ const EXPECTED: Readonly<Record<string, readonly string[]>> = {
   'Function:R/modlevel2.R:n2': [],
   'Function:R/modlevel2.R:k1': [USER_SAVE],
   'Function:R/modlevel2.R:m8': [USER_SAVE], // (limit) a local constant walks out to the module type
+  'Function:R/modlevel2.R:m10': [OTHER], // a local rebinding shadows the module `k`
   // otherfile.R and otherfile-reset.R
   'Function:R/otherfile.R:o1': [],
   'Function:R/otherfile.R:q1': ['Method:R/models.R:Db.query#0:import-resolved:0.85'], // (limit)

@@ -11,14 +11,14 @@ import {
 // rename-provider-r-part2.test.ts; the two counts below must add up to the pin.
 describe('R rename fixtures', () => {
   it('are all discovered', () => {
-    expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(110);
+    expect(renameCases.filter((fixture) => fixture.language === 'r')).toHaveLength(114);
   });
 
   it('split exactly between this file and the overflow file', () => {
     const ids = renameCases.filter((fixture) => fixture.language === 'r').map((f) => f.id);
     const overflow = ids.filter((id) => renameOverflowIds.has(id));
-    expect(overflow).toHaveLength(55);
-    expect(ids.length - overflow.length).toBe(55);
+    expect(overflow).toHaveLength(57);
+    expect(ids.length - overflow.length).toBe(57);
     // An overflow id naming no R fixture would silently shrink the second file.
     expect([...renameOverflowIds].filter((id) => id.startsWith('r/') && !ids.includes(id))).toEqual(
       [],

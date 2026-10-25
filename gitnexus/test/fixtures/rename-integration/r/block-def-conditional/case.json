@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a test_that() block assigns a function literal to the name only under if: when the branch is not taken the call reaches the function being renamed, but the index binds it to the block-local definition.",
+  "categories": ["block-scope", "call-order", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "foo.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

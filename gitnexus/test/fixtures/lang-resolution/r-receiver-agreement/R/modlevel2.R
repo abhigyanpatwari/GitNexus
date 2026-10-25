@@ -15,3 +15,9 @@ m8 <- function() {
   k <- 5
   k$save()
 }
+# A function-local rebinding to another value shadows the module `k` (this file has no `<<-`, so
+# only the shadow decides). No User edge.
+m10 <- function() {
+  k <- other()
+  k$save()
+}
