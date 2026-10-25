@@ -329,7 +329,11 @@ import {
   type ValueFlowPair,
 } from './value-flow/pdg-walk.js';
 import { runTrace, type PairTrace, type TraceRunResult } from './value-flow/trace.js';
-import { computeFingerprints, type FingerprintVerdict } from './verdict/fingerprint.js';
+import {
+  computeFingerprints,
+  type FingerprintPair,
+  type FingerprintVerdict,
+} from './verdict/fingerprint.js';
 import {
   computeVerdicts,
   type PairVerdict,
@@ -2715,6 +2719,7 @@ export async function runValueFlowStage(
   // The static check only informs mutation verdicts of every group (scope `all`); a duplicate has
   // equal values, so the fingerprint never needs it.
   if (differing.length > 0 && plan.mutation === 'all') {
+    ensureDist(ctx.packageDir);
     const index = indexPdg(ctx, plan.mode);
     pdg = {
       status: index.status,
@@ -3069,6 +3074,8 @@ export interface ExpectedControlsPair {
   tests: [string, string];
   verdict: string;
   rule: string;
+  /** The scenario fingerprint verdict and rule (verdict/fingerprint.ts). */
+  fingerprint: { verdict: string; rule: string };
 }
 
 /** The pairs of the fixture's expected.json; a malformed file, or one without a pair, throws. */
@@ -3079,6 +3086,7 @@ export function parseExpectedControls(data: unknown): ExpectedControlsPair[] {
     throw new Error('expected.json: pairs is empty, nothing would be checked');
   }
   return pairs.map((pair: unknown): ExpectedControlsPair => {
+    const fingerprint = isRecord(pair) && isRecord(pair.fingerprint) ? pair.fingerprint : null;
     const ok =
       isRecord(pair) &&
       typeof pair.id === 'string' &&
@@ -3086,13 +3094,17 @@ export function parseExpectedControls(data: unknown): ExpectedControlsPair[] {
       pair.tests.length === 2 &&
       pair.tests.every((test: unknown) => typeof test === 'string') &&
       typeof pair.verdict === 'string' &&
-      typeof pair.rule === 'string';
+      typeof pair.rule === 'string' &&
+      fingerprint !== null &&
+      typeof fingerprint.verdict === 'string' &&
+      typeof fingerprint.rule === 'string';
     if (!ok) throw new Error(`expected.json: malformed pair ${JSON.stringify(pair)}`);
     return {
       id: String(pair.id),
       tests: [String(pair.tests[0]), String(pair.tests[1])],
       verdict: String(pair.verdict),
       rule: String(pair.rule),
+      fingerprint: { verdict: String(fingerprint.verdict), rule: String(fingerprint.rule) },
     };
   });
 }
@@ -3111,19 +3123,22 @@ export interface ControlsComparison {
 const REPEAT_VERDICTS: ReadonlySet<string> = new Set(['repeat-strong', 'repeat-weak']);
 
 /**
- * Compares the verdict and rule of every expected pair (findings and kept pairs), and keeps the
- * oracle from passing vacuously: an empty expected list fails, so does any repeat verdict
- * (strong or weak) of a pair expected.json does not list (the fixture expects no cross-pair
- * candidate), and so does a `*.case.ts` file of the fixture (`caseFiles`, relative to its root)
- * that no expected pair exercises.
+ * Compares the mutation verdict and rule and the fingerprint verdict and rule of every expected
+ * pair (findings and kept pairs), and keeps the oracle from passing vacuously: an empty expected
+ * list fails, so does any repeat verdict (strong or weak) or fingerprint duplicate of a pair
+ * expected.json does not list (the fixture expects no cross-pair candidate), and so does a
+ * `*.case.ts` file of the fixture (`caseFiles`, relative to its root) that no expected pair
+ * exercises.
  */
 export function compareControls(
   expected: readonly ExpectedControlsPair[],
   verdicts: readonly Pick<PairVerdict, 'a' | 'b' | 'verdict' | 'rule'>[],
+  fingerprints: readonly Pick<FingerprintPair, 'a' | 'b' | 'verdict' | 'rule'>[],
   prefix: string,
   caseFiles: readonly string[],
 ): ControlsComparison {
   const byKey = new Map(verdicts.map((verdict) => [pairKey(verdict.a, verdict.b), verdict]));
+  const fingerprintOf = new Map(fingerprints.map((pair) => [pairKey(pair.a, pair.b), pair]));
   const lines: string[] = [];
   const differences: string[] = [];
   if (expected.length === 0) {
@@ -3139,6 +3154,20 @@ export function compareControls(
     lines.push(
       `${holds ? 'ok      ' : 'DIFFERS '} ${pair.id}: ${actual}${holds ? '' : ` (expected ${want})`}`,
     );
+    const gotFingerprint = fingerprintOf.get(
+      pairKey(prefix + pair.tests[0], prefix + pair.tests[1]),
+    );
+    const wantFingerprint = `${pair.fingerprint.verdict}/${pair.fingerprint.rule}`;
+    const actualFingerprint =
+      gotFingerprint === undefined
+        ? 'no fingerprint'
+        : `${gotFingerprint.verdict}/${gotFingerprint.rule}`;
+    const fingerprintHolds = actualFingerprint === wantFingerprint;
+    if (!fingerprintHolds) differences.push(`${pair.id} fingerprint`);
+    lines.push(
+      `${fingerprintHolds ? 'ok      ' : 'DIFFERS '} ${pair.id} fingerprint: ${actualFingerprint}` +
+        (fingerprintHolds ? '' : ` (expected ${wantFingerprint})`),
+    );
   }
   const listed = new Set(
     expected.map((pair) => pairKey(prefix + pair.tests[0], prefix + pair.tests[1])),
@@ -3147,7 +3176,10 @@ export function compareControls(
   const unlisted = verdicts.filter(
     (verdict) => REPEAT_VERDICTS.has(verdict.verdict) && !listed.has(pairKey(verdict.a, verdict.b)),
   );
-  for (const verdict of unlisted) {
+  const unlistedDuplicates = fingerprints.filter(
+    (pair) => pair.verdict === 'duplicate' && !listed.has(pairKey(pair.a, pair.b)),
+  );
+  for (const verdict of [...unlisted, ...unlistedDuplicates]) {
     const pair = `${local(verdict.a)} + ${local(verdict.b)}`;
     differences.push(`unlisted ${verdict.verdict}: ${pair}`);
     lines.push(`DIFFERS  unlisted pair ${pair}: ${verdict.verdict}/${verdict.rule}`);
@@ -3182,7 +3214,12 @@ export interface CliDeps {
   sourceRevision: (repoRoot: string) => string | null;
 }
 
-const DIST_STAGES: ReadonlySet<Stage> = new Set(['value-flow', 'all', 'controls']);
+/**
+ * Whether a stage needs dist/ before it starts: controls, and all with mutation scope `all` (the
+ * PDG index spawns analyze workers from it). The value-flow stage checks its plan's scope itself.
+ */
+const needsDist = (options: CliOptions): boolean =>
+  options.stage === 'controls' || (options.stage === 'all' && options.mutation === 'all');
 
 /** Throws a usage error naming the build step when `dist/` is missing (D11). */
 function ensureDist(packageDir: string): void {
@@ -3258,6 +3295,7 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
       const comparison = compareControls(
         expected,
         [...merged.verdicts.pairs, ...merged.verdicts.kept],
+        [...merged.report.fingerprint.pairs, ...merged.report.fingerprint.kept],
         `${toPackagePath(fixtureRoot)}/`,
         controlsCaseFiles(fixtureDir),
       );
@@ -3284,7 +3322,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
         `--work ${options.workDir} must lie outside the checkout ${deps.repoRoot}`,
       );
     }
-    if (DIST_STAGES.has(options.stage)) ensureDist(deps.packageDir);
+    if (needsDist(options)) ensureDist(deps.packageDir);
   } catch (error) {
     deps.log(`scenario-map: ${errorMessage(error)}`);
     deps.log(USAGE);

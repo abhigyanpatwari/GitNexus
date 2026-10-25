@@ -39,7 +39,11 @@ import type {
 } from '../../../tools/scenario-map/mutation/observations.js';
 import type { PairValueFlow } from '../../../tools/scenario-map/value-flow/pdg-walk.js';
 import type { PairTrace } from '../../../tools/scenario-map/value-flow/trace.js';
-import type { FingerprintVerdict } from '../../../tools/scenario-map/verdict/fingerprint.js';
+import type {
+  FingerprintPair,
+  FingerprintRule,
+  FingerprintVerdict,
+} from '../../../tools/scenario-map/verdict/fingerprint.js';
 import type { PairVerdict, RuleId, Verdict } from '../../../tools/scenario-map/verdict/verdict.js';
 import {
   ANALYZE_TIMEOUT_MS,
@@ -228,12 +232,24 @@ describe('runCli usage', () => {
     expect([code, lines[0]]).toEqual([2, expect.stringMatching(/must lie outside the checkout/)]);
   });
 
-  it('exits 2 for controls without a built dist/, naming the build step, before any stage runs', async () => {
+  it.each([{ argv: ['controls'] }, { argv: ['all'] }, { argv: ['all', '--mutation', 'all'] }])(
+    'exits 2 for $argv without a built dist/, naming the build step, before any stage runs',
+    async ({ argv }) => {
+      const { deps, lines, work } = setup();
+      const code = await runCli([...argv, '--work', work], deps);
+      expect([code, lines[0], existsSync(work)]).toEqual([
+        2,
+        expect.stringContaining('node scripts/build.js'),
+        false,
+      ]);
+    },
+  );
+
+  it('lets value-flow start without dist/: only a scope-all PDG index needs it', async () => {
     const { deps, lines, work } = setup();
-    const code = await runCli(['controls', '--work', work], deps);
-    expect([code, lines[0], existsSync(work)]).toEqual([
+    const code = await runCli(['value-flow', '--work', work], deps);
+    expect([code, lines.some((line) => line.includes('node scripts/build.js'))]).toEqual([
       2,
-      expect.stringContaining('node scripts/build.js'),
       false,
     ]);
   });
@@ -1455,6 +1471,7 @@ describe('parseExpectedControls', () => {
     tests: ['p.case.ts#p > a', 'p.case.ts#p > b'],
     verdict: 'review',
     rule: 'value-flow-veto',
+    fingerprint: { verdict: 'table-row', rule: 'input-values-differ' },
   };
 
   it('reads each pair of the fixture file', () => {
@@ -1473,6 +1490,11 @@ describe('parseExpectedControls', () => {
       { pairs: [{ id: 'p', tests: PAIR.tests, verdict: 'row' }] },
       /malformed/,
     ],
+    [
+      'a pair without a fingerprint',
+      { pairs: [{ id: 'p', tests: PAIR.tests, verdict: 'row', rule: 'kills-differ' }] },
+      /malformed/,
+    ],
   ])('rejects %s', (_title, data, message) => {
     expect(() => parseExpectedControls(data)).toThrow(message);
   });
@@ -1485,6 +1507,7 @@ describe('controls oracle failures', () => {
     tests: ['p.case.ts#p > a', 'p.case.ts#p > b'] as [string, string],
     verdict: 'review',
     rule: 'value-flow-veto',
+    fingerprint: { verdict: 'table-row', rule: 'input-values-differ' },
   };
   const verdictOf = (
     a: string,
@@ -1498,9 +1521,26 @@ describe('controls oracle failures', () => {
     rule,
   });
   const listed = verdictOf('p.case.ts#p > a', 'p.case.ts#p > b', 'review', 'value-flow-veto');
+  const fingerprintOf = (
+    a: string,
+    b: string,
+    verdict: FingerprintVerdict,
+    rule: FingerprintRule,
+  ): Pick<FingerprintPair, 'a' | 'b' | 'verdict' | 'rule'> => ({
+    a: `${prefix}${a}`,
+    b: `${prefix}${b}`,
+    verdict,
+    rule,
+  });
+  const listedFingerprint = fingerprintOf(
+    'p.case.ts#p > a',
+    'p.case.ts#p > b',
+    'table-row',
+    'input-values-differ',
+  );
 
   it.each([
-    ['an empty expected list', [], [], [], ['no expected pair']],
+    ['an empty expected list', [], [], [], [], ['no expected pair']],
     [
       'a strong repeat between two case files that expected.json does not list',
       [expectedPair],
@@ -1508,6 +1548,7 @@ describe('controls oracle failures', () => {
         listed,
         verdictOf('p.case.ts#p > a', 'q.case.ts#q > a', 'repeat-strong', 'all-strong-conditions'),
       ],
+      [listedFingerprint],
       ['p.case.ts'],
       ['unlisted repeat-strong: p.case.ts#p > a + q.case.ts#q > a'],
     ],
@@ -1515,13 +1556,46 @@ describe('controls oracle failures', () => {
       'a weak repeat that expected.json does not list',
       [expectedPair],
       [listed, verdictOf('p.case.ts#p > b', 'q.case.ts#q > b', 'repeat-weak', 'weak-disqualifier')],
+      [listedFingerprint],
       ['p.case.ts'],
       ['unlisted repeat-weak: p.case.ts#p > b + q.case.ts#q > b'],
+    ],
+    [
+      'a fingerprint duplicate that expected.json does not list',
+      [expectedPair],
+      [listed],
+      [
+        listedFingerprint,
+        fingerprintOf(
+          'p.case.ts#p > a',
+          'q.case.ts#q > a',
+          'duplicate',
+          'same-path-input-expectation',
+        ),
+      ],
+      ['p.case.ts'],
+      ['unlisted duplicate: p.case.ts#p > a + q.case.ts#q > a'],
+    ],
+    [
+      'a fingerprint verdict that differs',
+      [expectedPair],
+      [listed],
+      [
+        fingerprintOf(
+          'p.case.ts#p > a',
+          'p.case.ts#p > b',
+          'duplicate',
+          'same-path-input-expectation',
+        ),
+      ],
+      ['p.case.ts'],
+      ['p fingerprint'],
     ],
     [
       'a case file no expected pair exercises',
       [expectedPair],
       [listed],
+      [listedFingerprint],
       ['p.case.ts', 'q.case.ts'],
       ['case file without a pair: q.case.ts'],
     ],
@@ -1529,11 +1603,17 @@ describe('controls oracle failures', () => {
       'an unlisted pair that is not a repeat (nothing to report)',
       [expectedPair],
       [listed, verdictOf('p.case.ts#p > a', 'q.case.ts#q > a', 'distinct', 'path-differs')],
+      [
+        listedFingerprint,
+        fingerprintOf('p.case.ts#p > a', 'q.case.ts#q > a', 'distinct', 'path-differs'),
+      ],
       ['p.case.ts'],
       [],
     ],
-  ] as const)('reports %s', (_title, expected, verdicts, caseFiles, differences) => {
-    expect(compareControls(expected, verdicts, prefix, caseFiles).differences).toEqual(differences);
+  ] as const)('reports %s', (_title, expected, verdicts, fingerprints, caseFiles, differences) => {
+    expect(
+      compareControls(expected, verdicts, fingerprints, prefix, caseFiles).differences,
+    ).toEqual(differences);
   });
 
   it('finds the case files of a fixture, nested ones included, relative to its root', () => {
@@ -1563,18 +1643,21 @@ describe('compareControls', () => {
           tests: ['s.case.ts#s > b', 's.case.ts#s > a'],
           verdict: 'row',
           rule: 'row-deletion-asymmetric',
+          fingerprint: { verdict: 'table-row', rule: 'input-values-differ' },
         },
         {
           id: 'other',
           tests: ['o.case.ts#o > a', 'o.case.ts#o > b'],
           verdict: 'review',
           rule: 'facet-differs-same-kills',
+          fingerprint: { verdict: 'distinct', rule: 'input-shape-differs' },
         },
         {
           id: 'gone',
           tests: ['g.case.ts#g > a', 'g.case.ts#g > b'],
           verdict: 'distinct',
           rule: 'distinct',
+          fingerprint: { verdict: 'distinct', rule: 'path-differs' },
         },
       ],
       [
@@ -1591,9 +1674,23 @@ describe('compareControls', () => {
           rule: 'facet-differs-same-kills',
         },
       ],
+      [
+        {
+          a: `${prefix}s.case.ts#s > a`,
+          b: `${prefix}s.case.ts#s > b`,
+          verdict: 'table-row',
+          rule: 'input-values-differ',
+        },
+        {
+          a: `${prefix}o.case.ts#o > a`,
+          b: `${prefix}o.case.ts#o > b`,
+          verdict: 'distinct',
+          rule: 'input-shape-differs',
+        },
+      ],
       prefix,
       ['s.case.ts', 'o.case.ts', 'g.case.ts'],
     );
-    expect(comparison.differences).toEqual(['other', 'gone']);
+    expect(comparison.differences).toEqual(['other', 'gone', 'gone fingerprint']);
   });
 });
