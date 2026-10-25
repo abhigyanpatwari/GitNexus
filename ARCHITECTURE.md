@@ -228,6 +228,13 @@ passes a route's URL to a callee not proven to be a wrapper is counted on the
 Route as `unverifiedConsumers` (proven consumers and the route's own file
 excluded), and `api_impact` then reports its consumer count as a lower bound.
 
+A `FETCHES` edge is file-level. Its reason also names the callables whose spans
+contain the request sites (`|via:<id>`, under the same containment rule as the
+R3-6 sink set). `api_impact` follows their `CALLS` edges one level up and lists
+those callers as `indirectConsumers`, apart from the direct count and outside
+the risk level: they never mention the URL, so no edge of their own could reach
+the route. An index built before this attribution carries no such list.
+
 An inline Express handler resolves to the anonymous Function node the capture
 layer names by position, so its Route carries a `handlerSymbolId`. In a file
 with several routes, response keys come from that handler's lines rather than

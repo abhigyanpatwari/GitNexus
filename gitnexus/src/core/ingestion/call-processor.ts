@@ -17,7 +17,7 @@
 
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SemanticModel, SymbolTableReader } from './model/index.js';
-import { generateId } from '../../lib/utils.js';
+import { compareCodeUnits, generateId } from '../../lib/utils.js';
 import type { ParsedImport, SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
@@ -34,6 +34,7 @@ import { extractReturnTypeName } from './type-extractors/shared.js';
 import { DATA_ROUTE_TABLE_SOURCE } from './route-extractors/data-route-table.js';
 import { reconcileDispatchGuardRoutes } from './route-extractors/dispatch-guard.js';
 import { toZeroBasedLine } from './utils/line-base.js';
+import { EnclosingCallableIndex } from './enclosing-callable.js';
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -772,6 +773,14 @@ export const matchFetchRouteKeys = (
  * route URL to the list of `routeNodeKey` identities at that URL; a single-verb
  * (or method-less) URL has a one-element list, keeping edges byte-identical to
  * the pre-#2289 behavior.
+ *
+ * The edge is file-level. Its reason also names the callables whose spans
+ * contain the request sites, one `|via:<id>` field each, under the same
+ * containment rule as the R3-6 sink set: `api_impact` follows their CALLS edges
+ * one level up to list the callers of the requesting function (#3644). A site
+ * outside any callable adds no field, so a reason without attribution reads as
+ * before. An id that itself contains the field separator cannot be carried and
+ * is left out rather than split.
  */
 export const processNextjsFetchRoutes = (
   graph: KnowledgeGraph,
@@ -794,6 +803,15 @@ export const processNextjsFetchRoutes = (
     }
   }
 
+  const callables = new EnclosingCallableIndex(graph, new Set(fetchCalls.map((c) => c.filePath)));
+
+  // One edge per (consumer file, route node), in first-seen order. Several
+  // sites in one file for the same route share the edge, each contributing the
+  // callable that contains it.
+  const edges = new Map<
+    string,
+    { sourceId: string; targetId: string; filePath: string; via: Set<string> }
+  >();
   for (const call of fetchCalls) {
     const normalized = normalizeFetchURL(call.fetchURL);
     if (!normalized) continue;
@@ -801,36 +819,49 @@ export const processNextjsFetchRoutes = (
     const routeKeys = matchFetchRouteKeys(normalized, routeUrlToKeys);
     if (!routeKeys) continue;
     const sourceId = generateId('File', call.filePath);
+    const callable = callables.at(call.filePath, call.lineNumber);
 
+    // Connect to every Route node at this URL (one per verb).
+    for (const routeKey of routeKeys) {
+      const targetId = generateId('Route', routeKey);
+      const id = generateId('FETCHES', `${sourceId}->${targetId}`);
+      let edge = edges.get(id);
+      if (edge === undefined) {
+        edge = { sourceId, targetId, filePath: call.filePath, via: new Set<string>() };
+        edges.set(id, edge);
+      }
+      if (callable !== undefined && !callable.includes('|')) edge.via.add(callable);
+    }
+  }
+
+  for (const [id, edge] of edges) {
     // Extract consumer accessed keys if file content is available
     let reason = 'fetch-url-match';
-    if (consumerContents) {
-      const content = consumerContents.get(call.filePath);
-      if (content) {
-        const accessedKeys = extractConsumerAccessedKeys(content);
-        if (accessedKeys.length > 0) {
-          reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
-        }
+    const content = consumerContents?.get(edge.filePath);
+    if (content) {
+      const accessedKeys = extractConsumerAccessedKeys(content);
+      if (accessedKeys.length > 0) {
+        reason = `${reason}|keys:${accessedKeys.join(',')}`;
       }
     }
 
     // Encode multi-fetch count so downstream can set confidence
-    const fetchCount = routeCountByFile.get(call.filePath) ?? 1;
+    const fetchCount = routeCountByFile.get(edge.filePath) ?? 1;
     if (fetchCount > 1) {
       reason = `${reason}|fetches:${fetchCount}`;
     }
 
-    // Connect to every Route node at this URL (one per verb).
-    for (const routeKey of routeKeys) {
-      const routeNodeId = generateId('Route', routeKey);
-      graph.addRelationship({
-        id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
-        sourceId,
-        targetId: routeNodeId,
-        type: 'FETCHES',
-        confidence: 0.9,
-        reason,
-      });
+    for (const via of [...edge.via].sort(compareCodeUnits)) {
+      reason = `${reason}|via:${via}`;
     }
+
+    graph.addRelationship({
+      id,
+      sourceId: edge.sourceId,
+      targetId: edge.targetId,
+      type: 'FETCHES',
+      confidence: 0.9,
+      reason,
+    });
   }
 };
