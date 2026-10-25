@@ -36,7 +36,10 @@ USAGE_FIELDS = (
     "cache_read_input_tokens",
     "output_tokens",
 )
-MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+# A successful 142-turn release session exceeded 8 MiB (#3500, run
+# 40181565589). Keep capture, redacted artifacts, and reuse bounded together,
+# with headroom for verbose tool results in the three concurrent paid cells.
+MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 # Wall-clock ceiling for one headless session, shared by the runner and the
 # evolution loop so both CLIs kill a session at the same point. 3600s was too
 # tight for the `workflow` arm: run 29907431284 lost two investigation-task
