@@ -25,7 +25,8 @@ import type {
   CoverageTest,
   CoverageWorkFile,
 } from '../../../tools/scenario-map/path-coverage/run-coverage.js';
-import type { PlannedGroup } from '../../../tools/scenario-map/mutation/plan-shards.js';
+import { pairKey } from '../../../tools/scenario-map/mutation/isolation.js';
+import type { GroupScope, PlannedGroup } from '../../../tools/scenario-map/mutation/plan-shards.js';
 import type {
   GroupObservations,
   StrykerSummary,
@@ -38,6 +39,7 @@ import type {
 } from '../../../tools/scenario-map/mutation/observations.js';
 import type { PairValueFlow } from '../../../tools/scenario-map/value-flow/pdg-walk.js';
 import type { PairTrace } from '../../../tools/scenario-map/value-flow/trace.js';
+import type { FingerprintVerdict } from '../../../tools/scenario-map/verdict/fingerprint.js';
 import type { PairVerdict, RuleId, Verdict } from '../../../tools/scenario-map/verdict/verdict.js';
 import {
   ANALYZE_TIMEOUT_MS,
@@ -55,6 +57,7 @@ import {
   effectiveShardPlan,
   estimateScenarioGroup,
   isolationOrder,
+  mutationTarget,
   parseCliArgs,
   parseExpectedControls,
   planShards,
@@ -130,6 +133,23 @@ describe('parseCliArgs', () => {
       null,
       3,
     ]);
+  });
+
+  it.each([
+    { argv: ['plan'], scope: 'all' },
+    { argv: ['plan', '--mutation', 'none'], scope: 'none' },
+    { argv: ['all', '--mutation', 'possible-duplicates'], scope: 'possible-duplicates' },
+  ])('takes the mutation scope $scope', ({ argv, scope }) => {
+    expect(parseCliArgs(argv, '/base').mutation).toBe(scope);
+  });
+
+  it('rejects an unknown mutation scope, and the flag outside plan and all', () => {
+    expect(() => parseCliArgs(['plan', '--mutation', 'some'], '/base')).toThrow(
+      /--mutation must be one of none, possible-duplicates, all/,
+    );
+    expect(() => parseCliArgs(['controls', '--mutation', 'none'], '/base')).toThrow(
+      /does not apply to the controls stage/,
+    );
   });
 
   it('takes the worker bound of the value-flow trace run', () => {
@@ -299,6 +319,7 @@ function basePlan(): PlanFile {
     schemaVersion: WORK_SCHEMA_VERSION,
     mode: { kind: 'normal' },
     seed: 's1',
+    mutation: 'all',
     eligibility: {
       mode: 'normal',
       files: ['test/unit/a.test.ts', 'test/unit/b.test.ts', 'test/unit/c.test.ts'],
@@ -453,6 +474,41 @@ function writeTwoShardRun(work: string, replan: ShardReplan | null = null): void
 }
 
 describe('merge stage', () => {
+  it('reports the fingerprint of every pair and no mutation verdict for a fingerprint-only run', async () => {
+    const { deps, work } = setup();
+    writeTwoShardRun(work);
+    const plan: PlanFile = {
+      ...basePlan(),
+      mutation: 'none',
+      shardPlan: { ...basePlan().shardPlan, groups: [], shards: [] },
+      shardsNeeded: 0,
+    };
+    writeFileSync(workLayout(work).plan, JSON.stringify(plan));
+    const code = await runCli(['merge', '--work', work, '--run-id', '7'], deps);
+    const report = JSON.parse(
+      readFileSync(workLayout(work).reportJson, 'utf8'),
+    ) as ScenarioMapReport;
+    expect({
+      code,
+      complete: report.completeness.complete,
+      mutation: report.mutation,
+      mutationPairs: report.pairs.length,
+      tests: report.tests.length,
+      fingerprint: report.fingerprint.pairs.map((pair) => [pair.a, pair.verdict, pair.rule]),
+    }).toEqual({
+      code: 0,
+      complete: true,
+      mutation: 'none',
+      mutationPairs: 0,
+      tests: 0,
+      fingerprint: [
+        [A1, 'possible-duplicate', 'facet-unknown'],
+        [B1, 'possible-duplicate', 'facet-unknown'],
+        [C1, 'possible-duplicate', 'facet-unknown'],
+      ],
+    });
+  });
+
   it('marks a run with a missing shard partial, its pairs Inconclusive, and a not-run empty scope Out of scope', async () => {
     const { deps, work } = setup();
     writeTwoShardRun(work);
@@ -716,7 +772,97 @@ describe('cost model at a target concurrency and speed factor', () => {
   });
 });
 
+describe('mutationTarget', () => {
+  const A3 = 'test/unit/a.test.ts#A > three';
+  const groups: GroupScope[] = [
+    {
+      ...plannedGroup('ga', [A1, A2, A3]),
+      mutate: ['gitnexus/src/a.ts', 'gitnexus/src/b.ts'],
+      provenanceUnknown: [A3],
+    },
+    plannedGroup('gb', [B1, B2]),
+  ];
+  const pairs = [
+    candidatePair(A1, A2, 'ga'),
+    candidatePair(A1, A3, 'ga'),
+    candidatePair(B1, B2, 'gb'),
+  ];
+  const verdicts = new Map<string, FingerprintVerdict>([
+    [pairKey(A1, A2), 'possible-duplicate'],
+    [pairKey(A1, A3), 'table-row'],
+    [pairKey(B1, B2), 'duplicate'],
+  ]);
+  const executed = (test: string): string[] | null => (test === A3 ? null : ['gitnexus/src/a.ts']);
+
+  it.each([
+    {
+      scope: 'all',
+      expected: [
+        ['ga', 3],
+        ['gb', 2],
+      ],
+      pairs: 3,
+    },
+    { scope: 'none', expected: [], pairs: 0 },
+  ] as const)('keeps every group for $scope, or none', ({ scope, expected, pairs: count }) => {
+    const target = mutationTarget(scope, groups, pairs, verdicts, executed);
+    expect([
+      target.scopes.map((group) => [group.id, group.tests.length]),
+      target.pairs.length,
+    ]).toEqual([expected, count]);
+  });
+
+  it('keeps the possible duplicates, trimmed to their tests and the files those tests executed', () => {
+    const target = mutationTarget('possible-duplicates', groups, pairs, verdicts, executed);
+    expect(target).toEqual({
+      scopes: [
+        {
+          id: 'ga',
+          tests: [A1, A2],
+          testFiles: ['test/unit/a.test.ts'],
+          pairs: 1,
+          mutate: ['gitnexus/src/a.ts'],
+          excluded: [],
+          closureIncomplete: [],
+          provenanceUnknown: [],
+        },
+      ],
+      pairs: [pairs[0]],
+    });
+  });
+
+  it('keeps every mutate file when a kept test has an unknown provenance', () => {
+    const unknown = new Map(verdicts).set(pairKey(A1, A3), 'possible-duplicate');
+    const target = mutationTarget('possible-duplicates', groups, pairs, unknown, executed);
+    expect(target.scopes.map((group) => [group.tests, group.mutate])).toEqual([
+      [
+        [A1, A2, A3],
+        ['gitnexus/src/a.ts', 'gitnexus/src/b.ts'],
+      ],
+    ]);
+  });
+});
+
 describe('planShards', () => {
+  it('plans no shard when no group has anything to mutate', () => {
+    const planned = planShards({
+      scopes: [],
+      pairs: [],
+      potentialRepeat: () => false,
+      executedFiles: () => null,
+      rowDeletion: [],
+      sizeOf: () => 0,
+      shards: null,
+      budgetMs: 300 * 60_000,
+      model: SCENARIO_COST_MODEL,
+    });
+    expect([planned.shardPlan.shards, planned.shardsNeeded, planned.shardsCapped]).toEqual([
+      [],
+      0,
+      false,
+    ]);
+  });
+
   const rowPlan = (a: string, b: string, deletions: number): RowDeletionPlan => ({
     a,
     b,
@@ -968,6 +1114,15 @@ describe('value flow before isolation', () => {
   ])('given %s, follows the %s shard plan of %i shards', (_title, source, shards, result) => {
     const effective = effectiveShardPlan(basePlan(), result);
     expect([effective.source, effective.shardPlan.shards.length]).toEqual([source, shards]);
+  });
+
+  it('follows the re-plan of a narrower mutation scope even when the trace did not run', () => {
+    const scoped: PlanFile = { ...basePlan(), mutation: 'possible-duplicates' };
+    const effective = effectiveShardPlan(
+      scoped,
+      file([], [], { traced: false, replan: ONE_SHARD_REPLAN }),
+    );
+    expect([effective.source, effective.shardPlan.shards.length]).toEqual(['value-flow', 1]);
   });
 
   // A candidate whose three isolation runs alone take 600 min has its isolation deferred (the

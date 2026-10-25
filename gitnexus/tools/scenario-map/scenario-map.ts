@@ -14,8 +14,11 @@
  *               static inventory and runtime join (U3); checks and context (U5, with the file
  *               snapshot and helper-module readers); input facets (U6); candidates (U4, Jaccard
  *               and checks-and-context sources); each group's KTD7 mutate scope (U7); the
- *               row-deletion plans of the facet-equal pairs (U9); the provisional shard plan
- *               (KTD17), which value-flow re-plans.
+ *               row-deletion plans of the facet-equal pairs (U9); the mutation target of
+ *               `--mutation` ({@link mutationTarget}: every group, none, or the groups with a
+ *               possible duplicate on the fingerprint before the trace, trimmed to its tests and the
+ *               files they executed); the provisional shard plan (KTD17) over that target, which
+ *               value-flow re-plans. Nothing to mutate plans no shard.
  *               The KTD17 estimate of a group ({@link estimateScenarioGroup}) is its main run
  *               (a fixed cost plus mutated bytes, the form calibrated on a 24-core WSL2 host at
  *               concurrency 2, KTD17 and design §7: the cost does not grow with the group's
@@ -60,18 +63,21 @@
  *               was planned (reserved), then those of groups whose isolation was deferred. Main and
  *               isolation runs use `--concurrency` (default the plan's). Every result is written
  *               as soon as it exists.
- *   value-flow  the PDG index of a copy (the production roots, or the fixture in controls mode)
- *               under a temporary GITNEXUS_HOME (`node dist/cli/index.js analyze <copy> --pdg
- *               --skip-git --index-only`); the TypeScript checker (the fixture's tsconfig in
- *               controls mode); the static value-flow check (U10) of the facet-equal candidate
- *               pairs whose discarded values differ, with their group's mutate scope; the trace
+ *   value-flow  for mutation scope `all` only (a duplicate has equal values, so the fingerprint
+ *               never needs it): the PDG index of a copy (the production roots, or the fixture in
+ *               controls mode) under a temporary GITNEXUS_HOME (`node dist/cli/index.js analyze
+ *               <copy> --pdg --skip-git --index-only`); the TypeScript checker (the fixture's
+ *               tsconfig in controls mode); the static value-flow check (U10) of the facet-equal
+ *               candidate pairs whose discarded values differ, with their group's mutate scope; the trace
  *               run (U11) of every facet-equal candidate pair, U10's opaque sinks wrapped. A
  *               failed analyze is the `no-pdg-layer` degraded run (KTD11). Then the final shard
  *               plan ({@link replanShards}): the plan's estimate, packing, budget, cost model and
  *               requested shard count, with the isolation term counting only the isolation
  *               candidates value flow leaves; its `shardPlan` (with the over-budget groups),
  *               estimates and `shardsNeeded` (at most 20) go into value-flow.json as `replan`.
- *               A degraded result, or one whose trace did not run, re-plans nothing.
+ *               A degraded result, or one whose trace did not run, re-plans nothing for scope
+ *               `all`; a narrower scope always re-plans over its target after the trace (a usable
+ *               trace decides more pairs, so the target only narrows).
  *   shards      prints the final shard count and nothing else (CI: the matrix size; run it with
  *               `npm run --silent` or node directly): the re-plan's when value-flow.json is
  *               usable for this run manifest, else the provisional plan's
@@ -83,11 +89,14 @@
  *               schema 1, or a malformed row), which it lists as incomplete, and an isolation run
  *               result it cannot read (its pairs fall to isolation not-run, a weak cap). Observations follow
  *               the compact model (mutation/observations.ts: run universes plus explicit
- *               observations). Then the verdicts (U12), mutant fingerprints, provenance and the
- *               report (U13). A `--baseline` that does not read, is not JSON or has another
+ *               observations). Then the fingerprint verdict of every candidate pair
+ *               (verdict/fingerprint.ts), the mutation verdicts (U12) of the pairs whose tests both
+ *               ran in a mutated group ({@link mutationEvidence}), mutant fingerprints, provenance
+ *               and the report (U13). A `--baseline` that does not read, is not JSON or has another
  *               schema is not an error: the report gets the incompatible-baseline banner and no
  *               delta, and merge logs a warning.
- *   all         plan (one shard), value-flow, shard 0 of 1 and merge, in one process.
+ *   all         plan (one shard), value-flow, shard 0 of 1 (skipped when nothing is to be
+ *               mutated) and merge, in one process.
  *   controls    `all` in controls mode over the U17 fixture (extra root, its tsconfig, its own
  *               PDG index), then the verdict and rule of every expected.json pair compared; it
  *               also fails on an empty expected.json, on a repeat verdict (strong or weak) of a
@@ -101,6 +110,11 @@
  *                              `<os tmpdir>/gitnexus-scenario-map` (`…-controls` for controls)
  *   --mode normal|controls     plan, all: the run mode; `--controls` is `--mode controls`
  *   --seed <text>              plan, all, controls: seed of every sampled choice (spot audit)
+ *   --mutation <scope>         plan, all: how much mutation evidence the run gathers
+ *                              (types.ts `MutationScope`): `none` (fingerprint only, no shards),
+ *                              `possible-duplicates` (the groups with a possible duplicate,
+ *                              trimmed to its tests and the files they executed) or `all`
+ *                              (default; controls always `all`)
  *   --shards <n>               plan: number of shards (default `shardsNeeded`; all and
  *                              controls: 1)
  *   --concurrency <n>          plan, all, controls: Stryker concurrency of the estimate
@@ -283,6 +297,7 @@ import {
   type ShardStatus,
 } from './report/report.js';
 import {
+  MUTATION_SCOPES,
   extraRootsOf,
   fromPackagePath,
   productionRoots,
@@ -290,6 +305,7 @@ import {
   type Eligibility,
   type InventoryInstance,
   type JoinProblem,
+  type MutationScope,
   type RunMode,
   type TestAnchor,
 } from './types.js';
@@ -313,7 +329,7 @@ import {
   type ValueFlowPair,
 } from './value-flow/pdg-walk.js';
 import { runTrace, type PairTrace, type TraceRunResult } from './value-flow/trace.js';
-import { computeFingerprints } from './verdict/fingerprint.js';
+import { computeFingerprints, type FingerprintVerdict } from './verdict/fingerprint.js';
 import {
   computeVerdicts,
   type PairVerdict,
@@ -454,7 +470,8 @@ export const USAGE =
   'usage: npm run test:scenario-map -- <plan|value-flow|shards|shard|merge|all|controls> ' +
   '[--work <dir>]\n' +
   '  plan:       [--mode normal|controls | --controls] [--seed <text>] [--shards <n>] ' +
-  '[--deadline-minutes <m>] [--concurrency <n>] [--speed-factor <x>]\n' +
+  '[--mutation none|possible-duplicates|all] [--deadline-minutes <m>] [--concurrency <n>] ' +
+  '[--speed-factor <x>]\n' +
   '  shard:      --index <i> --of <n> [--deadline-minutes <m>] [--concurrency <n>] ' +
   '[--sample <n>] [--groups <id,…>]\n' +
   '  value-flow: [--concurrency <n>]\n' +
@@ -473,6 +490,8 @@ export interface CliOptions {
   workDir: string;
   mode: RunMode;
   seed: string;
+  /** `--mutation` (default `all`); the controls stage always gathers `all`. */
+  mutation: MutationScope;
   /** `--shards`; null lets the plan use `shardsNeeded`. */
   shards: number | null;
   /** Shard stage only; null otherwise. */
@@ -501,6 +520,7 @@ const FLAG_OPTIONS = {
   mode: { type: 'string' },
   controls: { type: 'boolean' },
   seed: { type: 'string' },
+  mutation: { type: 'string' },
   shards: { type: 'string' },
   index: { type: 'string' },
   of: { type: 'string' },
@@ -533,6 +553,7 @@ const STAGE_FLAGS: Readonly<Record<Stage, readonly Flag[]>> = {
     'mode',
     'controls',
     'seed',
+    'mutation',
     'shards',
     'deadline-minutes',
     'concurrency',
@@ -547,6 +568,7 @@ const STAGE_FLAGS: Readonly<Record<Stage, readonly Flag[]>> = {
     'mode',
     'controls',
     'seed',
+    'mutation',
     'deadline-minutes',
     'concurrency',
     'speed-factor',
@@ -573,6 +595,15 @@ function decimalFlag(flag: string, value: string | undefined): number | null {
     throw new UsageError(`--${flag} must be a positive number, got ${value}`);
   }
   return Number(value);
+}
+
+/** `--mutation <scope>`: one of {@link MUTATION_SCOPES}; default `all`. */
+function mutationFlag(value: string | undefined): MutationScope {
+  const scope = MUTATION_SCOPES.find((entry) => entry === (value ?? 'all'));
+  if (scope === undefined) {
+    throw new UsageError(`--mutation must be one of ${MUTATION_SCOPES.join(', ')}, got ${value}`);
+  }
+  return scope;
 }
 
 /** `--groups a,b`: distinct, non-empty group ids. */
@@ -640,6 +671,7 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
     workDir: path.resolve(cwd, values.work ?? defaultWork),
     mode,
     seed: values.seed ?? DEFAULT_SEED,
+    mutation: mutationFlag(values.mutation),
     shards: integerFlag('shards', values.shards, 1),
     index,
     of,
@@ -750,6 +782,8 @@ export interface PlanFile {
   schemaVersion: typeof WORK_SCHEMA_VERSION;
   mode: RunMode;
   seed: string;
+  /** How much mutation evidence the run gathers: the shard plan covers only that. */
+  mutation: MutationScope;
   eligibility: Eligibility;
   manifestDigest: string;
   /** The cost model at the target concurrency and speed factor. */
@@ -927,6 +961,7 @@ const versioned = (value: unknown): value is Record<string, unknown> =>
 const isPlanFile = (value: unknown): value is PlanFile =>
   versioned(value) &&
   isRecord(value.mode) &&
+  MUTATION_SCOPES.some((scope) => scope === value.mutation) &&
   isRecord(value.shardPlan) &&
   Array.isArray(value.pairs) &&
   Array.isArray(value.estimates) &&
@@ -1117,6 +1152,22 @@ export function planShards(input: ShardPlanningInput): ShardPlanning {
     }),
   );
   const runnable = groups.filter((group) => group.mutate.length > 0);
+  // Nothing to run (mutation scope `none`, or no possible duplicate): no shard at all.
+  if (runnable.length === 0) {
+    return {
+      shardPlan: {
+        schemaVersion: SHARD_PLAN_SCHEMA_VERSION,
+        budgetMs: input.budgetMs,
+        costModel: { ...input.model },
+        groups,
+        shards: [],
+        overBudget: [],
+      },
+      estimates: budgeted,
+      shardsNeeded: 0,
+      shardsCapped: false,
+    };
+  }
   const { model } = input;
   const reserve = Math.ceil(model.speedFactor * (model.shardFixedMs + model.rowDeletionBatchMs));
   const maxShards = input.maxShards ?? MAX_SHARDS;
@@ -1226,17 +1277,26 @@ export interface ReplanFacts {
 }
 
 /**
- * The shard plan re-built after value flow: the plan's groups, pairs, row-deletion plans, budget,
- * cost model and requested shard count, with the isolation term counting only the plan's
- * isolation candidates that value flow leaves able to be strong ({@link valueFlowPasses}). Pure
- * given `facts`; the view must be `used`.
+ * The shard plan re-built after value flow: the target's groups and pairs (default the plan's
+ * groups and pairs), the plan's row-deletion plans, budget, cost model and requested shard count,
+ * with the isolation term counting only the plan's isolation candidates in the target that value
+ * flow leaves able to be strong ({@link valueFlowPasses}; every one when the view is not `used`).
+ * Pure given `facts`.
  */
-export function replanShards(plan: PlanFile, view: ValueFlowView, facts: ReplanFacts): ShardReplan {
-  const survivors = plan.isolationCandidates.filter((key) => valueFlowPasses(view, key));
+export function replanShards(
+  plan: PlanFile,
+  view: ValueFlowView,
+  facts: ReplanFacts,
+  target: MutationTarget = { scopes: plan.shardPlan.groups, pairs: plan.pairs },
+): ShardReplan {
+  const targeted = new Set(target.pairs.map((pair) => pairKey(pair.a, pair.b)));
+  const survivors = plan.isolationCandidates.filter(
+    (key) => targeted.has(key) && valueFlowPasses(view, key),
+  );
   const surviving = new Set(survivors);
   const replanned = planShards({
-    scopes: plan.shardPlan.groups,
-    pairs: plan.pairs,
+    scopes: target.scopes,
+    pairs: target.pairs,
     potentialRepeat: (pair) => surviving.has(pairKey(pair.a, pair.b)),
     executedFiles: facts.executedFiles,
     rowDeletion: plan.rowDeletion,
@@ -1265,15 +1325,18 @@ export interface EffectiveShardPlan {
 
 /**
  * The shard plan shards and merge follow: value-flow.json's re-plan when that result is usable
- * for this run manifest ({@link valueFlowView}), else plan.json's provisional plan, exactly as
- * without a value-flow stage.
+ * for this run manifest ({@link valueFlowView}) or, for a mutation scope narrower than `all`,
+ * belongs to it (its target is then the plan-time target or narrower), else plan.json's
+ * provisional plan, exactly as without a value-flow stage.
  */
 export function effectiveShardPlan(
   plan: PlanFile,
   valueFlow: ValueFlowFile | null,
 ): EffectiveShardPlan {
   const replan = valueFlow?.replan ?? null;
-  if (replan !== null && valueFlowView(valueFlow, plan.manifestDigest).use === 'used') {
+  const view = valueFlowView(valueFlow, plan.manifestDigest);
+  const scoped = plan.mutation !== 'all' && view.use !== 'stale' && view.use !== 'missing';
+  if (replan !== null && (view.use === 'used' || scoped)) {
     return {
       source: 'value-flow',
       shardPlan: replan.shardPlan,
@@ -1398,6 +1461,113 @@ export function assembleVerdictInput(input: VerdictAssembly): VerdictInput {
     observations: input.observations,
     valueFlowDegraded: input.degraded,
   };
+}
+
+/**
+ * The fingerprint verdict of every candidate pair by {@link pairKey}, a kept pair excluded, with
+ * each pair's trace (null: not known yet, as at plan time).
+ */
+export function fingerprintVerdictsOf(
+  work: Pick<CoverageWorkFile, 'tests'>,
+  layer2: readonly Layer2Test[],
+  pairs: readonly CandidatePair[],
+  trace: (key: string) => VerdictPairInput['trace'],
+): Map<string, FingerprintVerdict> {
+  const evidence = assembleVerdictInput({
+    work,
+    layer2,
+    scopes: [],
+    pairs,
+    schedules: pairs.map(
+      (pair): PairSchedule => ({
+        ...pair,
+        status: 'inconclusive',
+        reason: 'not-scheduled',
+        shard: null,
+        detail: null,
+      }),
+    ),
+    stages: { isolation: () => null, rowDeletion: () => null, staticValueFlow: () => null, trace },
+    observations: { explicit: [], universes: [] },
+    degraded: [],
+  });
+  return new Map(
+    computeFingerprints(evidence).pairs.map((pair) => [pairKey(pair.a, pair.b), pair.verdict]),
+  );
+}
+
+/** The groups and pairs a run's mutation scope mutates. */
+export interface MutationTarget {
+  scopes: GroupScope[];
+  pairs: CandidatePair[];
+}
+
+/**
+ * The mutation target of a scope (plan F7): `all` every group and pair; `none` nothing;
+ * `possible-duplicates` the pairs whose fingerprint verdict is a possible duplicate and their
+ * groups, each trimmed to the tests of those pairs and, when every such test's provenance is
+ * known, to the mutate files they executed (no other file holds a mutant they can kill). Pure.
+ */
+export function mutationTarget(
+  scope: MutationScope,
+  scopes: readonly GroupScope[],
+  pairs: readonly CandidatePair[],
+  verdictOf: ReadonlyMap<string, FingerprintVerdict>,
+  executedFiles: (test: string) => readonly string[] | null,
+): MutationTarget {
+  if (scope === 'all') return { scopes: [...scopes], pairs: [...pairs] };
+  if (scope === 'none') return { scopes: [], pairs: [] };
+  const kept = pairs.filter(
+    (pair) => verdictOf.get(pairKey(pair.a, pair.b)) === 'possible-duplicate',
+  );
+  const testsOf = new Map<string, Set<string>>();
+  for (const pair of kept) {
+    const tests = testsOf.get(pair.group) ?? new Set<string>();
+    testsOf.set(pair.group, tests.add(pair.a).add(pair.b));
+  }
+  const trimmed = scopes.flatMap((group): GroupScope[] => {
+    const own = testsOf.get(group.id);
+    if (own === undefined) return [];
+    const tests = group.tests.filter((test) => own.has(test));
+    const executed = tests.map(executedFiles);
+    const reached = executed.every((files) => files !== null)
+      ? new Set(executed.flatMap((files) => files ?? []))
+      : null;
+    const files = new Set(tests.map((test) => parseTestId(test).file));
+    return [
+      {
+        id: group.id,
+        tests,
+        testFiles: group.testFiles.filter((file) => files.has(file)),
+        pairs: kept.filter((pair) => pair.group === group.id).length,
+        mutate:
+          reached === null ? [...group.mutate] : group.mutate.filter((file) => reached.has(file)),
+        excluded: group.excluded.filter((entry) => own.has(entry.test)),
+        closureIncomplete: group.closureIncomplete.filter((file) => files.has(file)),
+        provenanceUnknown: group.provenanceUnknown.filter((test) => own.has(test)),
+      },
+    ];
+  });
+  return { scopes: trimmed, pairs: kept };
+}
+
+/**
+ * The verdict engine's input for a mutation scope: every pair (`all`), else only the pairs whose
+ * two tests both ran in their mutated group, and those tests (none for `none`). Pure.
+ */
+export function mutationEvidence(
+  scope: MutationScope,
+  evidence: VerdictInput,
+  groups: readonly Pick<GroupScope, 'id' | 'tests'>[],
+): VerdictInput {
+  if (scope === 'all') return evidence;
+  const ran = new Map(groups.map((group) => [group.id, new Set(group.tests)]));
+  const pairs = evidence.pairs.filter((pair) => {
+    const tests = ran.get(pair.group);
+    return tests !== undefined && tests.has(pair.a) && tests.has(pair.b);
+  });
+  const tests = new Set(pairs.flatMap((pair) => [pair.a, pair.b]));
+  return { ...evidence, tests: evidence.tests.filter((test) => tests.has(test.id)), pairs };
 }
 
 /** The run universes of group or isolation results (null for a run without results). */
@@ -1553,6 +1723,7 @@ const facetEqual = (facets: ReadonlyMap<string, InputFacet>, pair: CandidatePair
 export interface PlanStageOptions {
   mode: RunMode;
   seed: string;
+  mutation: MutationScope;
   /** Null packs into `shardsNeeded`. */
   shards: number | null;
   budgetMs: number;
@@ -1714,10 +1885,23 @@ export async function runPlanStage(
     concurrency: options.concurrency,
     speedFactor: options.speedFactor,
   });
+  // The mutation target before the trace: a pair whose trace decides it counts as a possible
+  // duplicate, so value flow can only narrow this target (F7).
+  const target = mutationTarget(
+    options.mutation,
+    scopes,
+    candidates.pairs,
+    fingerprintVerdictsOf(work, layer2.tests, candidates.pairs, () => null),
+    (test) => executed.get(test) ?? null,
+  );
+  log(
+    `plan: mutation ${options.mutation}: ${target.scopes.length} of ${scopes.length} groups, ` +
+      `${target.pairs.length} of ${candidates.pairs.length} pairs`,
+  );
   const isolationCandidates: string[] = [];
   const { shardPlan, estimates, shardsNeeded, shardsCapped } = planShards({
-    scopes,
-    pairs: candidates.pairs,
+    scopes: target.scopes,
+    pairs: target.pairs,
     potentialRepeat: (pair) => {
       const keys = [checksContext.get(pair.a), checksContext.get(pair.b)];
       const [fa, fb] = [facets.get(pair.a), facets.get(pair.b)];
@@ -1750,6 +1934,7 @@ export async function runPlanStage(
     schemaVersion: WORK_SCHEMA_VERSION,
     mode: options.mode,
     seed: options.seed,
+    mutation: options.mutation,
     eligibility,
     manifestDigest: manifest.digest,
     costModel: model,
@@ -2527,7 +2712,9 @@ export async function runValueFlowStage(
     indexPrefix: '',
     wallClockMs: 0,
   };
-  if (differing.length > 0) {
+  // The static check only informs mutation verdicts of every group (scope `all`); a duplicate has
+  // equal values, so the fingerprint never needs it.
+  if (differing.length > 0 && plan.mutation === 'all') {
     const index = indexPdg(ctx, plan.mode);
     pdg = {
       status: index.status,
@@ -2634,7 +2821,21 @@ export async function runValueFlowStage(
   // The final shard plan: only the isolation candidates value flow leaves count (a degraded or
   // trace-less result re-plans nothing, so shards and merge follow the provisional plan).
   const view = valueFlowView(result, manifest.digest);
-  if (view.use === 'used') result.replan = replanShards(plan, view, replanFactsOf(repoRoot, work));
+  if (plan.mutation !== 'all') {
+    // The target after the trace: a usable trace decides more pairs, so the target narrows.
+    const traceOf = new Map(view.traceOf);
+    const facts = replanFactsOf(repoRoot, work);
+    const target = mutationTarget(
+      plan.mutation,
+      plan.shardPlan.groups,
+      plan.pairs,
+      fingerprintVerdictsOf(work, layer2.tests, plan.pairs, (key) => traceOf.get(key) ?? null),
+      facts.executedFiles,
+    );
+    result.replan = replanShards(plan, view, facts, target);
+  } else if (view.use === 'used') {
+    result.replan = replanShards(plan, view, replanFactsOf(repoRoot, work));
+  }
   const final = effectiveShardPlan(plan, result);
   log(
     `value-flow: ${final.source} shard plan: ${final.shardPlan.shards.length} shards ` +
@@ -2806,7 +3007,8 @@ export async function runMergeStage(
     observations: merged,
     degraded: valueFlow?.staticValueFlow.degraded ?? [],
   });
-  const verdicts = computeVerdicts(evidence);
+  const fingerprint = computeFingerprints(evidence);
+  const verdicts = computeVerdicts(mutationEvidence(plan.mutation, evidence, shardPlan.groups));
 
   const read = (file: string): string | null => {
     try {
@@ -2830,8 +3032,8 @@ export async function runMergeStage(
     shards: { planned: shardPlan.shards.length, complete: completeShards, incomplete },
     layer0: existsSync(layout.layer0) ? readJsonFile(layout.layer0) : null,
     evidence,
-    fingerprint: computeFingerprints(evidence),
-    mutation: 'all',
+    fingerprint,
+    mutation: plan.mutation,
     verdicts,
     anchors: new Map(layer2.tests.map((test) => [test.id, test.anchor])),
     fingerprints: fingerprintMutants(observedMutants(merged), read),
@@ -2849,7 +3051,8 @@ export async function runMergeStage(
   writeFileSync(layout.reportMarkdown, renderMarkdown(report));
   writeFileSync(layout.issueBody, renderIssueBody(report));
   log(
-    `merge: ${report.completeness.complete ? 'complete' : 'partial'} report: ` +
+    `merge: ${report.completeness.complete ? 'complete' : 'partial'} report: fingerprint ` +
+      `${JSON.stringify(report.fingerprint.byVerdict)}; mutation ${plan.mutation}: ` +
       `${report.summary.evaluated}; verdicts ${JSON.stringify(report.summary.byVerdict)}`,
   );
   for (const entry of incomplete) log(`merge: incomplete ${entry.shard}: ${entry.reason}`);
@@ -2996,6 +3199,8 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
     runPlanStage(ctx, {
       mode,
       seed: options.seed,
+      // The controls compare mutation verdicts: they always gather every group's evidence.
+      mutation: options.stage === 'controls' ? 'all' : options.mutation,
       shards,
       budgetMs: options.deadlineMs ?? SHARD_DEADLINE_MS,
       concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
@@ -3042,7 +3247,8 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
       // Value flow before the shard, as in CI: the shard isolates only what value flow leaves.
       await timed('plan', () => plan(options.mode, 1));
       await timed('value-flow', () => runValueFlowStage(ctx, { concurrency: options.concurrency }));
-      await timed('shard', () => shard(0, 1, false));
+      if (finalShardCount(ctx.layout) > 0) await timed('shard', () => shard(0, 1, false));
+      else ctx.log('scenario-map: no group to mutate: shard stage skipped');
       const merged = await timed('merge', merge);
       if (options.stage === 'all') return merged.complete ? 0 : 1;
       const fixtureRoot =
