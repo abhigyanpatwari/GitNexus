@@ -630,7 +630,8 @@ interface PairFacts {
   disqualifiers: Disqualifier[];
 }
 
-function facetRelation(
+/** How two facets relate: equal, differs, residual (D1) or missing; the discarded values when equal. */
+export function facetRelation(
   a: InputFacet | null,
   b: InputFacet | null,
 ): { facet: FacetRelation; residual: string[]; discarded: 'equal' | 'differ' | null } {
