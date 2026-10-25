@@ -7,7 +7,9 @@ accompanying receiver corpus and regression tests. See the [measurement audit](r
 for the benchmark commands, target checks, exclusions and test limits. R has no row in
 the receiver shape arm of that benchmark (no `bench/receiver-resolution` entry was added, as for
 Zig and Objective-C), so every state below comes from the dedicated corpus and
-regression tests named in each item, not from `baseline.json`. Broader ingestion is not
+regression tests named in each item, not from `baseline.json`. The benchmark's count arm
+still records R call drops (21 `receiver-unresolved` drops attributed to `.R` files in its baseline),
+but that is a count, not a state per shape. Broader ingestion is not
 exhaustively assessed. The supported behaviour is described in the [R provider guide](r-provider.md).
 
 ## Receiver shape snapshot
