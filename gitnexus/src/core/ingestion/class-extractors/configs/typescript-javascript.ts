@@ -64,6 +64,11 @@ export const createTsJsClassExtractor = (config: ClassExtractionConfig) => {
     extract,
     extractQualifiedName: (node: Parameters<typeof extract>[0], name: string) =>
       extract(node, { name })?.qualifiedName ?? null,
+    // TypeAlias nodes keep simple IDs, even inside qualified class owners.
+    qualifyScopeName: (node: Parameters<typeof extract>[0], name: string) =>
+      node.type === 'type_alias_declaration'
+        ? name
+        : (extractor.qualifyScopeName?.(node, name) ?? name),
   };
 };
 

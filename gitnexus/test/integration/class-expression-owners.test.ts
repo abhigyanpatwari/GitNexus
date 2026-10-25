@@ -28,6 +28,86 @@ import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
 import { findDanglingEdges } from './resolvers/helpers.js';
 
 describe('named class-expression owners through the real parse worker', () => {
+  it.each([
+    ['ts', '#0'],
+    ['tsx', '#0'],
+    ['vue', ''],
+  ])(
+    'keeps method-local type alias owners aligned with their members in .%s',
+    async (extension, methodSuffix) => {
+      const source = `class Named {
+  m() { type Shape = { p: number; f(): void }; }
+}
+const Expr = class Internal {
+  m() { type Local = { value: string; run(): void }; }
+};`;
+      const file = `alias.${extension}`;
+      const { graph } = await parseFilesWithWorkers([
+        {
+          path: file,
+          content: extension === 'vue' ? `<script setup lang="ts">\n${source}\n</script>` : source,
+        },
+      ]);
+      for (const [name, property, method] of [
+        ['Shape', 'p', 'f'],
+        ['Local', 'value', 'run'],
+      ]) {
+        const owner = `TypeAlias:${file}:${name}`;
+        expect(graph.getNode(owner)).toBeDefined();
+        const members = graph.relationships.filter(
+          (edge) =>
+            edge.sourceId === owner && (edge.type === 'HAS_PROPERTY' || edge.type === 'HAS_METHOD'),
+        );
+        expect(members.map((edge) => edge.targetId).sort()).toEqual([
+          `Method:${file}:${name}.${method}${methodSuffix}`,
+          `Property:${file}:${name}.${property}`,
+        ]);
+        for (const edge of members) expect(graph.getNode(edge.targetId)).toBeDefined();
+      }
+      expect(
+        graph.relationships.filter(
+          (edge) =>
+            (edge.type === 'HAS_METHOD' || edge.type === 'HAS_PROPERTY') &&
+            (!graph.getNode(edge.sourceId) || !graph.getNode(edge.targetId)),
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it('persists method-local type alias member relationships through native COPY', async () => {
+    const temp = await createTempDir();
+    try {
+      await fs.writeFile(
+        path.join(temp.dbPath, 'alias.ts'),
+        'class Named { m() { type Shape = { p: number; f(): void }; } }',
+      );
+      const result = await runPipelineFromRepo(temp.dbPath, () => {}, { workerPoolSize: 1 });
+      expect(result.usedWorkerPool).toBe(true);
+      await initLbug(path.join(temp.dbPath, 'lbug'), { skipFts: true });
+      await loadGraphToLbug(result.graph, temp.dbPath, path.join(temp.dbPath, 'storage'));
+      const aliases = await executeQuery('MATCH (a:TypeAlias) RETURN a.id AS id');
+      expect(aliases.map((row) => row.id)).toEqual(['TypeAlias:alias.ts:Shape']);
+      const members = await executeQuery(
+        "MATCH (a:TypeAlias)-[r:CodeRelation]->(m) WHERE r.type IN ['HAS_METHOD', 'HAS_PROPERTY'] RETURN a.id AS owner, m.id AS member, r.type AS type ORDER BY type",
+      );
+      expect(members).toEqual([
+        {
+          owner: 'TypeAlias:alias.ts:Shape',
+          member: 'Method:alias.ts:Shape.f#0',
+          type: 'HAS_METHOD',
+        },
+        {
+          owner: 'TypeAlias:alias.ts:Shape',
+          member: 'Property:alias.ts:Shape.p',
+          type: 'HAS_PROPERTY',
+        },
+      ]);
+    } finally {
+      await closeLbug();
+      await temp.cleanup();
+    }
+  });
+
   it.each(['ts', 'tsx', 'js', 'mjs'])(
     'resolves a declaration shadowing an outer class inside an expression in .%s',
     async (extension) => {
