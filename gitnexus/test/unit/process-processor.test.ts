@@ -800,6 +800,21 @@ describe('sink-terminated flows (R3-6)', () => {
     expect(sinks.has('func:outer')).toBe(true);
     expect(sinks.has('func:helper')).toBe(false);
   });
+
+  it('does not make a same-line callable a sink for a known module-scope request', () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'func:decode',
+      label: 'Function',
+      properties: { name: 'decode', filePath: 'src/a.ts', startLine: 3, endLine: 3 },
+    });
+
+    const sinks = buildSinkFunctionSet(graph, [
+      { filePath: 'src/a.ts', lineNumber: 3, enclosingId: null },
+    ]);
+
+    expect([...sinks]).toEqual([]);
+  });
 });
 
 describe('process selection diversity (R2-3)', () => {

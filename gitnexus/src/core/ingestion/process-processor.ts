@@ -731,8 +731,8 @@ export const traceFromEntryPoint = (
 export interface OutwardActionSite {
   readonly filePath: string;
   readonly lineNumber: number;
-  /** The parser's enclosing callable, when it recorded one; see `EnclosingCallableIndex`. */
-  readonly enclosingId?: string;
+  /** The parser's enclosing callable, null for module scope, or absent without AST attribution. */
+  readonly enclosingId?: string | null;
 }
 
 /**

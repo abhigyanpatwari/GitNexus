@@ -167,6 +167,15 @@ describe('FETCHES consumer attribution (#3644)', () => {
     expect(reasons(graph)).toEqual(['fetch-url-match|via:Function:src/client.ts:fetchRepos']);
   });
 
+  it('does not use a same-line callable when the parser identified module scope', () => {
+    const graph = createKnowledgeGraph();
+    addCallable(graph, 'Function:src/client.ts:decode', 3, 3);
+
+    processNextjsFetchRoutes(graph, [{ ...site(3), enclosingId: null }], REPOS);
+
+    expect(reasons(graph)).toEqual(['fetch-url-match']);
+  });
+
   it('leaves out an id that contains the field separator rather than splitting the reason', () => {
     const graph = createKnowledgeGraph();
     // A type tag from an overload collision can carry a union type.

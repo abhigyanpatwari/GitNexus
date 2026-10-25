@@ -43,6 +43,63 @@ describe('api_impact indirect consumers through a real analyze (#3644)', () => {
     vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '1');
     repo = path.join(root, 'repo');
     await fs.cp(FIXTURE, repo, { recursive: true });
+    // A top-level request can share a line with a callable without belonging
+    // to it. Also put a callable on the next line: wrapper sites use 1-based
+    // lines, which must not make that callable an indirect consumer either.
+    for (const [kind, request] of [
+      ['fetch', "fetch('/api/top-level-fetch')"],
+      ['wrapper', "apiFetch('/api/top-level-wrapper')"],
+      ['client', "axios.head('/api/top-level-client')"],
+    ]) {
+      await fs.writeFile(
+        path.join(repo, 'src', `top-level-${kind}.ts`),
+        [
+          "import { apiFetch } from './api';",
+          "import axios from 'axios';",
+          `export function decode(res: Response) { return res.json(); } ${request};`,
+          "export function afterRequest() { return 'local'; }",
+        ].join('\n'),
+      );
+      await fs.writeFile(
+        path.join(repo, 'src', `local-${kind}.ts`),
+        [
+          `import { decode, afterRequest } from './top-level-${kind}';`,
+          'export function parseLocal(res: Response) { return decode(res); }',
+          'export function describeLocal() { return afterRequest(); }',
+        ].join('\n'),
+      );
+    }
+    await fs.writeFile(
+      path.join(repo, 'src', 'lambda_client.py'),
+      "import requests\ncheck_health = lambda: requests.head('/api/lambda')\n",
+    );
+    for (const [kind, source] of [
+      [
+        'declaration',
+        "export const select = (r: Response) => r.json(), data = fetch('/api/top-level-declaration');",
+      ],
+      [
+        'argument',
+        "export const select = wrap((r: Response) => r.json(), fetch('/api/top-level-argument'));",
+      ],
+    ]) {
+      await fs.writeFile(path.join(repo, 'src', `top-level-${kind}.ts`), source);
+      await fs.writeFile(
+        path.join(repo, 'src', `local-${kind}.ts`),
+        `import { select } from './top-level-${kind}';\nexport function parseLocal(r: Response) { return select(r); }\n`,
+      );
+    }
+    await fs.writeFile(
+      path.join(repo, 'src', 'top-level-server.ts'),
+      [
+        "import express from 'express';",
+        'const app = express();',
+        "app.get('/api/lambda', (_req, res) => res.json({ ok: true }));",
+        ...['fetch', 'wrapper', 'client', 'declaration', 'argument'].map(
+          (kind) => `app.get('/api/top-level-${kind}', (_req, res) => res.json({ ok: true }));`,
+        ),
+      ].join('\n'),
+    );
     await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexus/\n');
     initGitRepo(repo);
     execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo });
@@ -90,5 +147,26 @@ describe('api_impact indirect consumers through a real analyze (#3644)', () => {
     expect(result.indirectConsumers).toEqual([
       { name: 'renderStatsPanel', file: 'src/stats-panel.ts', via: 'fetchStats' },
     ]);
+  });
+
+  it.each(['fetch', 'wrapper', 'client', 'declaration', 'argument'])(
+    'does not invent indirect consumers for a module-scope %s request',
+    async (kind) => {
+      const result = await impact(`/api/top-level-${kind}`);
+      expect(result.consumers.map((c: { file: string }) => c.file)).toEqual([
+        `src/top-level-${kind}.ts`,
+      ]);
+      expect(result).not.toHaveProperty('indirectConsumers');
+      expect(result.impactSummary).not.toHaveProperty('indirectConsumers');
+    },
+  );
+
+  it('keeps attribution when a callable definition is known but the enclosing-id walk cannot name it', async () => {
+    const result = await impact('/api/lambda');
+    expect(result.consumers.map((c: { file: string }) => c.file)).toEqual(['src/lambda_client.py']);
+    // An attributed request with no callers reports an empty list; a request
+    // incorrectly classified as module scope omits the field altogether.
+    expect(result.indirectConsumers).toEqual([]);
+    expect(result.impactSummary.indirectConsumers).toBe(0);
   });
 });

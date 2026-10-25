@@ -18,7 +18,8 @@ interface CallableSpan {
 export interface CallSite {
   readonly filePath: string;
   readonly lineNumber: number;
-  readonly enclosingId?: string;
+  /** null means the AST confirmed module scope; undefined means no AST attribution. */
+  readonly enclosingId?: string | null;
 }
 
 /**
@@ -35,7 +36,8 @@ export interface CallSite {
  * AST (`enclosingId`), and that identity is used first: a line alone cannot
  * tell a helper defined on the same line as the request apart from the
  * function that makes it. The span lookup remains for sites found by text
- * scan and for an identity the graph does not hold.
+ * scan and for an identity the graph does not hold. An explicit null records
+ * module scope and must not fall back to an overlapping callable's line span.
  *
  * Span rule: innermost wins, a nested closure that performs the call is the
  * callable, not the outer function that merely spans it. Among equal spans the
@@ -72,6 +74,7 @@ export class EnclosingCallableIndex {
 
   /** The callable that holds `site`: its recorded enclosing callable, else the innermost span. */
   of(site: CallSite): string | undefined {
+    if (site.enclosingId === null) return undefined;
     if (site.enclosingId !== undefined) {
       const node = this.graph.getNode(site.enclosingId);
       if (node !== undefined && CALLABLE_LABELS.has(node.label)) return node.id;
