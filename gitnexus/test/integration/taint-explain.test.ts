@@ -156,6 +156,8 @@ withTestLbugDB(
         expect(vuln.pathIncomplete).toBeUndefined();
         // The intra-procedural contract caveat reaches the consumer.
         expect(result.note).toMatch(/intra-procedural/i);
+        expect(result.note).toContain('Imported and wrapper validators');
+        expect(result.note).toContain('not runtime validation');
       });
 
       it('anchorless enumerate is deterministic across calls', async () => {
