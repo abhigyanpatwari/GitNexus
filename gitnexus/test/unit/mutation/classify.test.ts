@@ -45,6 +45,11 @@ const verdictIn = (result: Classification, file: string): FileVerdict | undefine
   result.files.find((verdict) => verdict.file === file);
 
 describe('classify on the real repo', () => {
+  // Walking the real import closures takes about 30 s on a busy host; do it once, with headroom.
+  beforeAll(() => {
+    real();
+  }, 120_000);
+
   it.each(REAL_ACCEPTED)('accepts %s', (file) => {
     expect(verdictIn(real(), file)).toMatchObject({ status: 'accepted', reasons: [] });
   });

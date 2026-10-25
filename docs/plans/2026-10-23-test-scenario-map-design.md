@@ -564,7 +564,7 @@ Each category becomes eligible for Layer 3 only after it passes the §5.4a gates
 1. **Pure-JS unit tests:** Layers 1–3, the value-flow check, the kill-validity protocol, the report and the scheduled job.
    - **Built 2026-10-25:** `gitnexus/tools/scenario-map/`, the `npm run test:scenario-map` CLI and `.github/workflows/test-scenario-map.yml`. The plan is `docs/plans/2026-10-24-0902-feat-test-scenario-map-phase1-plan.md`.
    - The controls fixture (`gitnexus/test/fixtures/mutation-scenario-map/`) matches all 16 expected verdicts and rules.
-   - Phase 1 full-run results: <to be filled from the local full run>
+   - Phase 1 full-run results come from the first weekly workflow run, or one manual dispatch on the default branch. A local full run was stopped on 2026-10-25 because it saturated the shared machine (maintainer decision). Measured before that, on a seeded slice of 16–20 groups: 263 evaluated pairs ended Inconclusive `non-assertion-outcome` 79, `kills-unknown` 60, Distinct 85, Review 37 (15 by a value-flow veto), Row 1, Weak 1. Runtime-class kills (367, against 852 assertion kills) make most real pairs Inconclusive, as R7 requires. The plan and value-flow stages ran over the whole category: 4,667 tests, 6,280 candidate pairs, 611 groups, 1,374 facet-equal pairs, 321 with differing values (value flow: 120 veto, 160 unknown, 41 clean).
 2. **Rest of the unit suite:**
    - a frozen cross-check scope, then validation, for the **native-backed** and **fixture-reading** categories
    - LadybugDB namespaces, then validation of the **LadybugDB** category
