@@ -698,6 +698,37 @@ describe('kill witnesses', () => {
   });
 });
 
+// ── Import failures ────────────────────────────────────────────────────────
+
+describe('a test file that fails to import under a static mutant', () => {
+  const failed = (test: string): MergedObservation =>
+    observation(test, M4, {
+      static: true,
+      covered: false,
+      outcome: 'killed-outside-test:collection',
+      sources: ['collection'],
+    });
+
+  it.each([
+    {
+      label: 'both tests',
+      observations: add(failed(A), failed(B)),
+      decided: ['repeat-strong', 'all-strong-conditions'],
+    },
+    {
+      label: 'one test',
+      observations: add(
+        failed(A),
+        observation(B, M4, { static: true, covered: false, ...SURVIVED }),
+      ),
+      decided: ['inconclusive', 'non-assertion-outcome'],
+    },
+  ])('decides a pair whose files failed for $label', ({ observations, decided }) => {
+    const verdict = verdictOf({ observations });
+    expect([verdict.verdict, verdict.rule]).toEqual(decided);
+  });
+});
+
 // ── Per-test properties ────────────────────────────────────────────────────
 
 describe('per-test Weak and Inconclusive', () => {

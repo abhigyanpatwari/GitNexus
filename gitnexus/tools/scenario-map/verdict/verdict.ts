@@ -40,7 +40,8 @@
  * rule wins:
  *   Inconclusive  the schedule reason (not evaluated); a concurrent test or an unattributable path;
  *                 a mutant of the run without a valid result for both (`kills-unknown`) or another
- *                 class on a universe mutant, each only without a kill witness (below); isolation
+ *                 class on a universe mutant (observations.ts `comparePair`: an import failure of
+ *                 both tests is none), each only without a kill witness (below); isolation
  *                 disagrees or unknown (U8); two valid
  *                 observations of one test and mutant in different runs with different classes
  *                 (`rerun-disagrees`); a member test per-test inconclusive; on the repeat path, a
@@ -111,7 +112,7 @@ import { byText, sortedUnique } from '../util.js';
 import type { PairTrace, TraceStatus } from '../value-flow/trace.js';
 
 /** Folded into the evidence hash (KTD12): a rule change resurfaces every pair it reclassifies. */
-export const VERDICT_ENGINE_VERSION = 2;
+export const VERDICT_ENGINE_VERSION = 3;
 
 /** Design §2 verdict categories; see {@link VERDICT_PRECEDENCE}. */
 export type Verdict =

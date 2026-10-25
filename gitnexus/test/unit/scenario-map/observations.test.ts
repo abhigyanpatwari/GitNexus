@@ -16,6 +16,7 @@ import type {
   NormalisedMutant,
   RunResults,
   SidecarAttempt,
+  SidecarSummary,
 } from '../../../tools/mutation/driver/normalise-results.js';
 import type { OutcomeClass } from '../../../tools/mutation/runner/classify-outcome.js';
 import {
@@ -328,6 +329,64 @@ describe('extractObservations', () => {
     const untrusted = mutant(M1, { attempts: [attempt(outcome)] });
     expect(summary(extractObservations(results([untrusted]), MAIN), T1, M1)).toEqual([
       ['killed-by-test:assertion', 'row', false, [reason]],
+    ]);
+  });
+
+  /** A static mutant whose latest attempt failed to collect `file`: no per-test rows. */
+  const importFailure = (file: string, run: OutcomeClass): NormalisedMutant => {
+    const latest = attempt(run);
+    const sidecar: SidecarSummary = {
+      ...latest,
+      reason: null,
+      failureMessage: null,
+      killedBy: [],
+      hitCount: 0,
+      mutantActivation: 'static',
+      outsideTest: [
+        {
+          file,
+          suiteTaskId: undefined,
+          outcome: 'killed-outside-test:collection',
+          attributedTo: [],
+          message: 'SyntaxError: Unexpected token',
+        },
+      ],
+    };
+    return mutant(M1, {
+      static: true,
+      coveredBy: [],
+      killedBy: [],
+      assertionKilledBy: [],
+      sidecar,
+      attempts: [latest],
+      perTest: [],
+    });
+  };
+
+  it.each([
+    {
+      label: "the test's file failed to collect",
+      file: 'test/unit/a.test.ts',
+      run: 'killed-outside-test:collection',
+      expected: ['killed-outside-test:collection', 'collection', true, []],
+    },
+    {
+      label: 'the collection failure belongs to an untrusted attempt',
+      file: 'test/unit/a.test.ts',
+      run: 'timeout',
+      expected: ['killed-outside-test:collection', 'collection', false, ['run-timeout']],
+    },
+    {
+      label: 'another file failed to collect',
+      file: 'test/unit/b.test.ts',
+      run: 'killed-outside-test:collection',
+      expected: [null, 'no-row', false, ['missing-result']],
+    },
+  ] as const)('records a test without a row when $label', ({ file, run, expected }) => {
+    const extracted = extractObservations(results([importFailure(file, run)]), MAIN);
+    expect([summary(extracted, T1, M1), summary(extracted, T2, M1)]).toEqual([
+      [expected],
+      [expected],
     ]);
   });
 
@@ -650,6 +709,24 @@ describe('comparePair', () => {
       observation({ test: T2, mutant: M2, outcome: 'survived' }),
     ]);
     expect(comparePair(merged, run, T1, T2).otherClasses).toEqual([M1, M2]);
+  });
+
+  it('counts a collection failure of both tests as a non-kill for both, of one as another class', () => {
+    const collection = { outcome: 'killed-outside-test:collection', source: 'collection' } as const;
+    const merged = indexed([
+      observation({ test: T1, mutant: M1 }),
+      observation({ test: T2, mutant: M1 }),
+      observation({ test: T1, mutant: M2, ...collection }),
+      observation({ test: T2, mutant: M2, ...collection }),
+      observation({ test: T1, mutant: M3, ...collection }),
+      observation({ test: T2, mutant: M3, outcome: 'survived' }),
+    ]);
+    const comparison = comparePair(merged, run, T1, T2);
+    expect([comparison.otherClasses, comparison.killsA, comparison.sameKills]).toEqual([
+      [M3],
+      [M1],
+      true,
+    ]);
   });
 });
 

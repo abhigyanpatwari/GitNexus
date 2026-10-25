@@ -16,9 +16,12 @@
  *   - one explicit observation per per-test row of every sidecar attempt (`source: row`), with the
  *     row's outcome class and the attempt's index (oldest first);
  *   - no row, and the mutant static, the test in its `coveredBy`, or no `coveredBy` at all:
- *     explicit; a Stryker timeout without a sidecar is a `timeout` that cannot be attributed to a
- *     test (`source: stryker-timeout`, invalid), anything else unknown, outcome null
- *     (`source: no-row`, invalid `missing-result`). A missing result is never a non-kill (§5.4);
+ *     explicit; the test's file failed to import or collect in the latest attempt (its file-level
+ *     `killed-outside-test:collection` row): that class (`source: collection`), trusted as that
+ *     attempt's rows are; a Stryker timeout without a sidecar is a `timeout` that cannot be
+ *     attributed to a test (`source: stryker-timeout`, invalid), anything else unknown, outcome
+ *     null (`source: no-row`, invalid `missing-result`). A missing result is never a non-kill
+ *     (§5.4);
  *   - no row, not covered, but a suite hook attributed the mutant to the test: explicit, a
  *     `survived` (`source: not-covered`) whose hook marker is true;
  *   - otherwise implied ({@link impliedObservation}): Stryker never ran the test against the
@@ -52,7 +55,10 @@
  * Comparison ({@link comparePair}) looks at one lineage only. The pair's universe is the mutants of
  * that run with a valid observation for both tests; a mutant of the run that either test lacks or
  * has invalid is unknown, and with any unknown mutant, or none at all (a run that was never
- * observed), the kill sets are not compared. Only `killed-by-test:assertion` is a kill (R6).
+ * observed), the kill sets are not compared. Only `killed-by-test:assertion` is a kill (R6). A
+ * mutant on which either test has another class is an other-class mutant of the pair, except when
+ * both test files failed to import (`killed-outside-test:collection`): neither test ran, so it
+ * cannot tell them apart and counts as a non-kill for both.
  *
  * Work files ({@link encodeObservations}, {@link decodeObservations}): a run's explicit
  * observations are written as rows indexing its universe's tests and mutants, so a file holds each
@@ -69,6 +75,7 @@ import type {
 } from '../../mutation/driver/normalise-results.js';
 import type { MutantStatus } from '../../mutation/prepare/mutant-identity.js';
 import type { OutcomeClass } from '../../mutation/runner/classify-outcome.js';
+import { parseTestId } from '../../mutation/runner/test-ids.js';
 import { byText, isRecord, sha1, sortedUnique } from '../util.js';
 
 /** The run kinds of Layer 3: the group run, and the isolation pass's together and alone runs. */
@@ -91,7 +98,7 @@ export interface RunRef {
 /** A run lineage: the runs of one group, kind and lineage, whichever shard ran them. */
 export type RunKey = Pick<RunRef, 'group' | 'kind' | 'lineage'>;
 
-export type ObservationSource = 'row' | 'not-covered' | 'stryker-timeout' | 'no-row';
+export type ObservationSource = 'row' | 'not-covered' | 'collection' | 'stryker-timeout' | 'no-row';
 
 export interface Observation extends RunRef {
   /** Index of the sidecar attempt (oldest first) the row came from; null without a row. */
@@ -185,6 +192,7 @@ const UNTRUSTED_RUN: ReadonlySet<OutcomeClass> = new Set([
 ]);
 
 const ASSERTION_KILL: OutcomeClass = 'killed-by-test:assertion';
+const COLLECTION: OutcomeClass = 'killed-outside-test:collection';
 
 const push = <K, V>(map: Map<K, V[]>, key: K, value: V): void => {
   const list = map.get(key);
@@ -246,6 +254,13 @@ function mutantObservations(
   const rows = new Map<string, PerTestRow[]>();
   for (const row of mutant.perTest) push(rows, row.testId, row);
   const exposedAll = entry.static || mutant.coveredBy === null;
+  // The latest attempt's test files that failed to import or collect (no per-test rows).
+  const latest = mutant.attempts.length - 1;
+  const collectionFailed = new Set(
+    (mutant.sidecar?.outsideTest ?? [])
+      .filter((row) => row.suiteTaskId === undefined && row.outcome === COLLECTION)
+      .map((row) => row.file),
+  );
   const ref = refOf(universe);
   const make = (
     test: string,
@@ -270,6 +285,11 @@ function mutantObservations(
       reasons: all,
     };
   };
+  /** Reasons not to trust a row of the attempt (its run class, KTD8). */
+  const distrustOf = (attempt: number): string[] => {
+    const run = mutant.attempts[attempt]?.outcome;
+    return run === undefined ? ['attempt-missing'] : UNTRUSTED_RUN.has(run) ? [`run-${run}`] : [];
+  };
   const explicit = exposedAll
     ? universe.tests
     : universe.tests.filter(
@@ -278,14 +298,12 @@ function mutantObservations(
   return explicit.flatMap((test): Observation[] => {
     const own = rows.get(test);
     if (own !== undefined) {
-      return own.map((row) => {
-        const run = mutant.attempts[row.attempt]?.outcome;
-        const distrust =
-          run === undefined ? ['attempt-missing'] : UNTRUSTED_RUN.has(run) ? [`run-${run}`] : [];
-        return make(test, row.attempt, row.outcome, 'row', distrust);
-      });
+      return own.map((row) => make(test, row.attempt, row.outcome, 'row', distrustOf(row.attempt)));
     }
     if (!exposedAll && !covered.has(test)) return [make(test, null, 'survived', 'not-covered', [])];
+    if (collectionFailed.has(parseTestId(test).file)) {
+      return [make(test, latest, COLLECTION, 'collection', distrustOf(latest))];
+    }
     if (mutant.outcomeSource === 'stryker-timeout') {
       return [make(test, null, 'timeout', 'stryker-timeout', ['stryker-timeout'])];
     }
@@ -685,6 +703,9 @@ export interface PairComparison {
 
 const ordinary = (entry: ObservationState): boolean =>
   entry.outcome === ASSERTION_KILL || entry.outcome === 'survived';
+/** Both tests' files failed to import: neither test ran, so the mutant cannot tell them apart. */
+const bothCollection = (x: ObservationState, y: ObservationState): boolean =>
+  x.outcome === COLLECTION && y.outcome === COLLECTION;
 
 /** `u` + 16 hex digits of sha1 over a lineage key and a universe. */
 const universeIdFor = (lineage: string, universe: readonly string[]): string =>
@@ -742,7 +763,7 @@ export function comparePair(
     universe.push(mutant);
     if (x.outcome === ASSERTION_KILL) killsA.push(mutant);
     if (y.outcome === ASSERTION_KILL) killsB.push(mutant);
-    if (!ordinary(x) || !ordinary(y)) otherClasses.push(mutant);
+    if ((!ordinary(x) || !ordinary(y)) && !bothCollection(x, y)) otherClasses.push(mutant);
   }
   return {
     group: run.group,
@@ -821,7 +842,13 @@ export function encodeObservations(
   });
 }
 
-const SOURCES: ReadonlySet<unknown> = new Set(['row', 'not-covered', 'stryker-timeout', 'no-row']);
+const SOURCES: ReadonlySet<unknown> = new Set([
+  'row',
+  'not-covered',
+  'collection',
+  'stryker-timeout',
+  'no-row',
+]);
 
 const isRow = (row: unknown, tests: number, mutants: number): row is ObservationRow =>
   Array.isArray(row) &&
