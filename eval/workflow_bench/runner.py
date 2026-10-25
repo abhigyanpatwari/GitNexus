@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -56,6 +57,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .mcp_transport import connector_config, isolated_mcp
 
 from .comparator_reuse import (
     REUSE_EXCLUDED_ERROR_KINDS,
@@ -458,6 +461,7 @@ def run_arm(
     enforce_phase_boundary: bool = False,
     ce_plugin_dir: str | None = None,
     oracle_snapshot: TaskOracleSnapshot | None = None,
+    mcp_config_json: str | None = None,
 ) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
     environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
@@ -491,7 +495,7 @@ def run_arm(
         "require_pid_namespace": getattr(sandbox, "require_pid_namespace", True),
         "settings_json": sandbox.settings_json,
         "strict_mcp_config": True,
-        "mcp_config_json": host_text(sandbox_mcp_config(unsafe_host=backend == "host-unsafe")),
+        "mcp_config_json": mcp_config_json or host_text(sandbox_mcp_config(unsafe_host=backend == "host-unsafe")),
         "transcript_projects": sandbox.transcript_projects,
         "transcript_cwd": Path(SANDBOX_WORKSPACE),
         "transcript_wait_seconds": 5,
@@ -1189,6 +1193,9 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
     cleanup_error: OSError | None = None
     execution_arm = CANDIDATE_ARMS.get(arm, arm)
     gitnexus_available = execution_arm != "baseline_nomcp"
+    isolated_baseline = execution_arm == "baseline" and ctx.sandbox_backend == "bwrap"
+    runtime_exposure = "none" if not gitnexus_available else "readable"
+    resources = ExitStack()
     try:
         if ctx.asset_snapshot_error is not None:
             raise RuntimeError(f"task asset snapshot preparation failed: {ctx.asset_snapshot_error}")
@@ -1222,6 +1229,12 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             else []
         )
         ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ctx.ce_plugin_snapshot)
+        if isolated_baseline:
+            endpoint = resources.enter_context(isolated_mcp(
+                clone=worktree, mounts=[*dependency_mounts, *gitnexus_mounts], bwrap_bin=ctx.bwrap_bin,
+            ))
+            gitnexus_mounts = [endpoint]
+            runtime_exposure = "stdio-only"
         with prepare_sandbox(
             clone=worktree,
             claude_bin=args.claude_bin,
@@ -1234,6 +1247,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             preflight=False,
             backend=ctx.sandbox_backend,
             gitnexus_available=gitnexus_available,
+            gitnexus_cli_available=not isolated_baseline,
         ) as sandbox:
             # Capture the BASE (pre-overlay) skill digest — identical
             # for the incumbent and candidate arms — then run the
@@ -1314,6 +1328,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 enforce_phase_boundary=True,
                 ce_plugin_dir=ce_plugin_dir_for_arm(execution_arm, ctx.ce_plugin_snapshot),
                 oracle_snapshot=ctx.oracle_snapshot,
+                mcp_config_json=connector_config() if isolated_baseline else None,
             )
             if execution_arm in ("review", "ce_review"):
                 review_source = review_output_path(sandbox, REVIEW_OUTPUT)
@@ -1345,6 +1360,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 after_digest=after_work_digest,
             )
             patch_bytes = capture_patch(sandbox, worktree, orig_sha)
+        resources.close()
         record["arm"] = arm
         record.update(
             {
@@ -1387,6 +1403,11 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         detail = redact_text(str(exc), credential_secrets(args))
         print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {detail}")
     finally:
+        try:
+            resources.close()
+        except (SandboxError, OSError, RuntimeError) as exc:
+            record = infra_error_record(exc)
+            record["arm"] = arm
         if worktree is not None and worktree.exists():
             try:
                 remove_clone(worktree)
@@ -1408,6 +1429,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             "class": task.get("class", ""),
             "run": run_idx,
             "sandbox_backend": ctx.sandbox_backend,
+            "runtime_exposure": runtime_exposure,
             "task_asset_snapshot_digest": (ctx.asset_snapshot.digest if ctx.asset_snapshot is not None else None),
             "task_asset_manifest_digest": (
                 ctx.asset_snapshot.manifest_digest if ctx.asset_snapshot is not None else None
