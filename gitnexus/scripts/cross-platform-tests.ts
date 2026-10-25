@@ -344,6 +344,7 @@ const WORKER_THREADS = [
   'test/integration/java-imported-return-types.test.ts',
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
+  'test/integration/class-expression-owners.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
   // Real parse workers and both on-disk parse stores must retain lexical
   // local-import ownership on each platform's native grammar/runtime pair.

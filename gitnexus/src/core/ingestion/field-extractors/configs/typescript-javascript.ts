@@ -34,6 +34,7 @@ export function constructedTypeOfFieldInitializer(node: SyntaxNode): string | un
 
 const shared: Omit<FieldExtractionConfig, 'language'> = {
   typeDeclarationNodes: [
+    'class',
     'class_declaration',
     'abstract_class_declaration',
     'interface_declaration',
