@@ -194,9 +194,9 @@ jobs:
     steps:
       - id: gen
         run: |
-          # Refreshed Windows timings leave eight shards too close to the
-          # 20-minute watchdog. Ten preserve headroom for runner variation.
-          TOTAL=10        # cross-platform (windows/macOS) shards per OS
+          # Keep the recorded native workload below 17 minutes, leaving
+          # headroom for runner variation under the 20-minute watchdog.
+          TOTAL=11        # cross-platform (windows/macOS) shards per OS
           # Four coverage shards exceeded the 25-minute job limit while tests
           # were still passing. Split the full suite further; keep the timeout
           # and merged coverage thresholds unchanged.
