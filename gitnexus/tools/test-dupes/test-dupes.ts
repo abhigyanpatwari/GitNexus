@@ -669,12 +669,10 @@ export function extract(files: SourceFile[], options: ExtractOptions = {}): Corp
       if (!t.isExpressionStatement(stmt) || !t.isCallExpression(stmt.expression)) return;
       const shape = shapeOf(stmt.expression.callee);
       const fn = fnArg(stmt.expression);
-      if (
-        !shape ||
-        !fn ||
-        !/^before/.test([shape.root, ...shape.mods].find((m) => HOOKS.has(m)) ?? '')
-      )
-        return;
+      // The hook name is part of the key: a beforeAll fixture is built once per suite, a
+      // beforeEach one per test, so the two are not the same setup.
+      const hook = shape ? ([shape.root, ...shape.mods].find((m) => HOOKS.has(m)) ?? '') : '';
+      if (!fn || !hook.startsWith('before')) return;
       t.traverseFast(fn.body, (n) => {
         if (!t.isAssignmentExpression(n) || !t.isIdentifier(n.left)) return;
         const rhs = t.isAwaitExpression(n.right) ? n.right.argument : n.right;
@@ -688,7 +686,7 @@ export function extract(files: SourceFile[], options: ExtractOptions = {}): Corp
           !/fixtures?\//.test([code(rhs), ...refs.filter((r) => r.startsWith('value:'))].join('\0'))
         )
           return;
-        const sig = [code(rhs), ...refs, envOrMockTag(chain)].join('\0');
+        const sig = [hook, code(rhs), ...refs, envOrMockTag(chain)].join('\0');
         corpus.hooks.push({ file, line: lineOf(n), endLine: endLineOf(n), key: hash(sig) });
       });
     };

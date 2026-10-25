@@ -127,10 +127,10 @@ describe('same-fixture-setup', () => {
     `export const FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'lang');`,
     `export async function runPipeline(p: string) { return p; }`,
   );
-  const describeWith = (hookBody: string, assertion: string): string[] => [
+  const describeWith = (hookBody: string, assertion: string, hook = 'beforeAll'): string[] => [
     `describe('d', () => {`,
     `  let r;`,
-    `  beforeAll(async () => { ${hookBody} });`,
+    `  ${hook}(async () => { ${hookBody} });`,
     `  it('t', () => { ${assertion} });`,
     `});`,
   ];
@@ -158,6 +158,23 @@ describe('same-fixture-setup', () => {
     expect(summary(scan([helpers, local, imported], touch(local.path)).findings)).toEqual([
       `same-fixture-setup ${local.path}:6 -> ${imported.path}:5`,
     ]);
+  });
+
+  it('keeps a beforeAll fixture apart from the same build in a beforeEach', () => {
+    const suite = (path: string, hook: string): SourceFile =>
+      file(
+        path,
+        `import path from 'path';`,
+        `import { FIXTURES, runPipeline } from './helpers.js';`,
+        ...describeWith(
+          `r = await runPipeline(path.join(FIXTURES, 'py'));`,
+          `expect(r).toBeDefined();`,
+          hook,
+        ),
+      );
+    const once = suite('gitnexus/test/integration/resolvers/a.test.ts', 'beforeAll');
+    const each = suite('gitnexus/test/integration/resolvers/b.test.ts', 'beforeEach');
+    expect(scan([helpers, once, each], touch(each.path)).findings).toEqual([]);
   });
 
   it('ignores temp dirs that are merely named fixture', () => {
