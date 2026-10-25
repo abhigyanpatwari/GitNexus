@@ -38,6 +38,7 @@ def evidence():
             "task_base_sha": "e" * 40,
             "oracle_digest": "f" * 64,
             "sandbox_backend": "bwrap",
+            "runtime_exposure": "none" if arm == "baseline_nomcp" else "stdio-only",
             "sandbox_dependency_content_digest": "9" * 64,
             "ok": True,
             "resolved": True,
@@ -64,6 +65,12 @@ def compare(evidence):
     return pr_evaluation.compare_candidate(
         rows, metadata, previous, candidate_sha=NEW, pr=3621, baseline_run=39039452570, now=NOW
     )
+
+
+def test_pr_comparison_rejects_readable_runtime_cells(evidence):
+    evidence[1][0]["runtime_exposure"] = "readable"
+    report = compare(evidence)
+    assert not report["complete"] and not report["improved"]
 
 
 def test_comparison_measures_only_new_mcp_cells_and_preserves_historical_cost(evidence):
