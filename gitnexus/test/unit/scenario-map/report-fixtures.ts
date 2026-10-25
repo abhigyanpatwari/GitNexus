@@ -15,6 +15,7 @@ import type {
   ReportInput,
 } from '../../../tools/scenario-map/report/report.js';
 import type { TestAnchor } from '../../../tools/scenario-map/types.js';
+import { computeFingerprints } from '../../../tools/scenario-map/verdict/fingerprint.js';
 import {
   computeVerdicts,
   type VerdictInput,
@@ -222,6 +223,8 @@ export function reportInput(options: InputOptions = {}): ReportInput {
     shards: { planned: 1, complete: 1, incomplete: [] },
     layer0: null,
     evidence,
+    fingerprint: computeFingerprints(evidence),
+    mutation: 'all',
     verdicts: options.verdicts === undefined ? computed : options.verdicts(computed),
     anchors: new Map([A, B, C].map((id) => [id, anchor(id)])),
     fingerprints: fingerprints([M1, M2, M3]),

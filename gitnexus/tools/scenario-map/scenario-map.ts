@@ -313,6 +313,7 @@ import {
   type ValueFlowPair,
 } from './value-flow/pdg-walk.js';
 import { runTrace, type PairTrace, type TraceRunResult } from './value-flow/trace.js';
+import { computeFingerprints } from './verdict/fingerprint.js';
 import {
   computeVerdicts,
   type PairVerdict,
@@ -2829,6 +2830,8 @@ export async function runMergeStage(
     shards: { planned: shardPlan.shards.length, complete: completeShards, incomplete },
     layer0: existsSync(layout.layer0) ? readJsonFile(layout.layer0) : null,
     evidence,
+    fingerprint: computeFingerprints(evidence),
+    mutation: 'all',
     verdicts,
     anchors: new Map(layer2.tests.map((test) => [test.id, test.anchor])),
     fingerprints: fingerprintMutants(observedMutants(merged), read),

@@ -26,6 +26,7 @@ import {
   type SpotAuditPick,
 } from '../../../tools/scenario-map/report/report.js';
 import { SCENARIO_MAP_SCHEMA_VERSION } from '../../../tools/scenario-map/types.js';
+import { computeFingerprints } from '../../../tools/scenario-map/verdict/fingerprint.js';
 import { VERDICT_ENGINE_VERSION } from '../../../tools/scenario-map/verdict/verdict.js';
 import { A, B, C, FILE, M1, M2, M3, fingerprints, reportInput } from './report-fixtures.js';
 
@@ -159,7 +160,7 @@ const candidates = (count: number): SpotAuditPick[] =>
   Array.from({ length: count }, (_, i) => ({ key: `pair:k${i}`, a: `a${i}`, b: `b${i}` }));
 
 describe('spot audit', () => {
-  it('picks the same 10 strong candidates with seed s1 on two runs, in any input order', () => {
+  it('picks the same 10 candidates with seed s1 on two runs, in any input order', () => {
     const first = spotAudit(candidates(25), 's1');
     expect(first.picks).toHaveLength(10);
     expect(spotAudit(candidates(25), 's1')).toEqual(first);
@@ -167,16 +168,29 @@ describe('spot audit', () => {
     expect(spotAudit(candidates(25), 's2').picks).not.toEqual(first.picks);
   });
 
-  it('picks every strong candidate when there are fewer than 10', () => {
+  it('picks every candidate when there are fewer than 10', () => {
     const audit = spotAudit(candidates(3), 's1');
     expect(audit.picks.map((pick) => pick.key).sort()).toEqual(['pair:k0', 'pair:k1', 'pair:k2']);
     expect(audit).toMatchObject({ seed: 's1', size: 10, candidates: 3 });
   });
 
-  it('records the seed and samples the strong repeats of a report', () => {
-    const report = buildReport(reportInput());
+  it('records the seed and samples the fingerprint duplicates of a report', () => {
+    const input = reportInput();
+    // B checks add(2, 3) as A does: the same path, input and expectation.
+    const facetOfA = input.evidence.tests.find((test) => test.id === A)?.facet ?? null;
+    const evidence = {
+      ...input.evidence,
+      tests: input.evidence.tests.map((test) =>
+        test.id === B ? { ...test, facet: facetOfA } : test,
+      ),
+    };
+    const report = buildReport({ ...input, fingerprint: computeFingerprints(evidence) });
+    const duplicates = report.fingerprint.pairs.filter((pair) => pair.verdict === 'duplicate');
     expect(report.seed).toBe('s1');
-    expect(report.spotAudit.picks).toEqual([{ key: report.pairs[0].key, a: A, b: B }]);
+    expect(report.spotAudit.picks).toEqual(
+      duplicates.map((pair) => ({ key: pair.key, a: A, b: B })),
+    );
+    expect(duplicates).toHaveLength(1);
   });
 });
 
@@ -330,6 +344,16 @@ describe('collectProvenance', () => {
 
 describe('renderMarkdown', () => {
   const markdown = renderMarkdown(buildReport(reportInput()));
+
+  it('leads with the scenario fingerprint and leaves the mutation sections out of a fingerprint-only run', () => {
+    const fingerprintOnly = renderMarkdown(buildReport({ ...reportInput(), mutation: 'none' }));
+    expect([
+      fingerprintOnly.includes('## Scenario fingerprint'),
+      fingerprintOnly.includes('## Table-row candidates (1)'),
+      fingerprintOnly.includes('**Mutation evidence**: not gathered'),
+      fingerprintOnly.includes('## Strong repeat candidates'),
+    ]).toEqual([true, true, true, false]);
+  });
 
   it.each([
     ['the title', '# Test scenario map'],

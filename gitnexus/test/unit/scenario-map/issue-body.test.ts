@@ -16,6 +16,7 @@ import {
 import { mdCode } from '../../../tools/scenario-map/report/markdown.js';
 import { PRECISION_NOT_MEASURED, buildReport } from '../../../tools/scenario-map/report/report.js';
 import type { DegradedFlag } from '../../../tools/scenario-map/value-flow/pdg-walk.js';
+import { computeFingerprints } from '../../../tools/scenario-map/verdict/fingerprint.js';
 import type { FileGaps } from '../../../tools/scenario-map/verdict/verdict.js';
 import { A, B, C, M2, M3, reportInput } from './report-fixtures.js';
 
@@ -84,6 +85,36 @@ describe('run id marker', () => {
   });
 });
 
+describe('issue body fingerprint sections', () => {
+  // B checks add(2, 3) as A does: the same path, input and expectation, so A + B is a duplicate.
+  const input = reportInput();
+  const facetOfA = input.evidence.tests.find((test) => test.id === A)?.facet ?? null;
+  const evidence = {
+    ...input.evidence,
+    tests: input.evidence.tests.map((test) =>
+      test.id === B ? { ...test, facet: facetOfA } : test,
+    ),
+  };
+  const withDuplicate = (mutation: 'none' | 'all') =>
+    renderIssueBody(
+      buildReport({ ...input, mutation, fingerprint: computeFingerprints(evidence) }),
+    );
+
+  it('lists the duplicates before every mutation section and names the mutation scope', () => {
+    const text = withDuplicate('all');
+    const duplicates = text.indexOf('### Duplicates (1)');
+    expect([duplicates > 0, text.indexOf('### Strong repeat candidates') > duplicates]).toEqual([
+      true,
+      true,
+    ]);
+    expect(headerOf(text)).toContain('**Mutation evidence**: gathered for every candidate group');
+  });
+
+  it('says mutation evidence was not gathered for a fingerprint-only run', () => {
+    expect(headerOf(withDuplicate('none'))).toContain('**Mutation evidence**: not gathered');
+  });
+});
+
 describe('issue body sections', () => {
   it('lists strong repeats, then weak tests, then gaps', () => {
     const strong = body.indexOf('### Strong repeat candidates (1)');
@@ -117,8 +148,9 @@ describe('issue body sections', () => {
     ]);
     expect(lines.at(-1)).toBe(
       'Truncated below 60,000 characters: ' +
-        `${5000 - shownGaps} more rows not shown (0 strong repeat candidates, 0 weak tests, ` +
-        `${5000 - shownGaps} gap files); the report artifact has every row.`,
+        `${5000 - shownGaps} more rows not shown (0 duplicates, 0 same-scenario pairs, ` +
+        `0 strong repeat candidates, 0 weak tests, ${5000 - shownGaps} gap files); the report ` +
+        'artifact has every row.',
     );
   });
 

@@ -13,9 +13,12 @@
  *    the mutant-fingerprint fallbacks, and the run's seed;
  *  - completeness: shards planned and complete, partial, and every value-flow degraded flag;
  *  - the R1 eligibility delta and the Layer 0 findings (test-dupes `--json`) on eligible files;
- *  - every pair verdict and kept pair with its evidence (U12), its continuity key, its KTD13
- *    universe id and its evidence hash; every test's properties; the per-file gaps;
- *  - the design §8 spot audit: 10 strong repeat candidates (all when fewer), ordered by sha256 of
+ *  - the scenario fingerprint verdict of every candidate pair (verdict/fingerprint.ts: same path,
+ *    input and expectation), with its continuity key, and the run's mutation scope;
+ *  - every mutation pair verdict and kept pair with its evidence (U12), its continuity key, its
+ *    KTD13 universe id and its evidence hash; every test's properties; the per-file gaps (empty
+ *    when the mutation scope is `none`);
+ *  - the design §8 spot audit: 10 fingerprint duplicates (all when fewer), ordered by sha256 of
  *    the seed and the pair's continuity key, so the same seed picks the same pairs;
  *  - "N of M eligible tests evaluated" and the scoped limits, the precision-not-measured statement
  *    first;
@@ -60,10 +63,17 @@ import {
   toPackagePath,
   type Eligibility,
   type EligibilityDelta,
+  type MutationScope,
   type TestAnchor,
 } from '../types.js';
 import { byText, isRecord, sha256, sortedUnique } from '../util.js';
 import type { DegradedFlag } from '../value-flow/pdg-walk.js';
+import {
+  FINGERPRINT_VERDICTS,
+  type FingerprintPair,
+  type FingerprintReport,
+  type FingerprintVerdict,
+} from '../verdict/fingerprint.js';
 import {
   VERDICT_PRECEDENCE,
   WORDING,
@@ -99,8 +109,9 @@ import {
 export const SPOT_AUDIT_SIZE = 10;
 
 export const PRECISION_NOT_MEASURED =
-  'Precision not measured: no strong repeat candidate has been independently adjudicated ' +
-  '(design §8), so each one is a lead for human scenario review, never a removal suggestion.';
+  'Precision not measured: no duplicate or strong repeat candidate has been independently ' +
+  'adjudicated (design §8), so each one is a lead for human scenario review, never a removal ' +
+  'suggestion.';
 
 /** The limits every report states (design §5.4, §8, R1), after {@link PRECISION_NOT_MEASURED}. */
 export const LIMITS: readonly string[] = Object.freeze([
@@ -292,6 +303,10 @@ export interface ReportInput {
   layer0: unknown;
   /** The inputs the verdicts were computed from (U12 `VerdictInput`). */
   evidence: VerdictInput;
+  /** The fingerprint verdicts of every candidate pair (verdict/fingerprint.ts). */
+  fingerprint: FingerprintReport;
+  /** How much mutation evidence the run gathered; `verdicts` covers only the mutated pairs. */
+  mutation: MutationScope;
   verdicts: VerdictReport;
   /** U3 anchor per test id; a missing or null anchor falls back to the execution identity. */
   anchors: ReadonlyMap<string, TestAnchor | null>;
@@ -396,9 +411,22 @@ export interface SpotAudit {
   seed: string;
   size: number;
   method: string;
-  /** Strong repeat candidates to pick from. */
+  /** Fingerprint duplicates to pick from. */
   candidates: number;
   picks: SpotAuditPick[];
+}
+
+/** A fingerprint verdict with its continuity key and its members' anchor keys. */
+export interface ReportFingerprintPair extends FingerprintPair {
+  key: string;
+  members: { a: string; b: string };
+}
+
+export interface FingerprintSection {
+  engineVersion: number;
+  byVerdict: Record<FingerprintVerdict, number>;
+  pairs: ReportFingerprintPair[];
+  kept: ReportFingerprintPair[];
 }
 
 export interface ScenarioMapReport {
@@ -409,6 +437,9 @@ export interface ScenarioMapReport {
   provenance: RunProvenance;
   completeness: Completeness;
   summary: ReportSummary;
+  /** How much mutation evidence the run gathered. */
+  mutation: MutationScope;
+  fingerprint: FingerprintSection;
   /** {@link LIMITS}, plus a fingerprint-fallback note when one applies. */
   limits: string[];
   eligibility: { mode: Eligibility['mode']; files: string[]; delta: EligibilityDelta | null };
@@ -701,6 +732,19 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
   };
   const pairs = verdicts.pairs.map(pairOf);
   const kept = verdicts.kept.map(pairOf);
+  const fingerprintPairOf = (pair: FingerprintPair): ReportFingerprintPair => {
+    const members = { a: anchorOf(pair.a).key, b: anchorOf(pair.b).key };
+    return { ...pair, key: itemKey('pair', [members.a, members.b]), members };
+  };
+  const fingerprint: FingerprintSection = {
+    engineVersion: input.fingerprint.engineVersion,
+    byVerdict: countBy(
+      FINGERPRINT_VERDICTS,
+      input.fingerprint.pairs.map((pair) => pair.verdict),
+    ),
+    pairs: input.fingerprint.pairs.map(fingerprintPairOf),
+    kept: input.fingerprint.kept.map(fingerprintPairOf),
+  };
 
   // Tests.
   const eligibleTests = new Set(input.eligibleTests);
@@ -863,8 +907,8 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
     mutants: { total: observedMutants.length, fallbacks },
   };
   const eligibleRepoFiles = new Set(input.eligibility.files.map(fromPackagePath));
-  const strong = pairs
-    .filter((pair) => pair.verdict === 'repeat-strong')
+  const duplicates = fingerprint.pairs
+    .filter((pair) => pair.verdict === 'duplicate')
     .map((pair): SpotAuditPick => ({ key: pair.key, a: pair.a, b: pair.b }));
 
   return {
@@ -880,6 +924,8 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
       degraded: sortedUnique(evidence.valueFlowDegraded) as DegradedFlag[],
     },
     summary,
+    mutation: input.mutation,
+    fingerprint,
     limits: [
       ...LIMITS,
       ...(fallbackTotal > 0
@@ -900,7 +946,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
     kept: kept.map(withChange),
     tests: tests.map(withChange),
     gaps: gaps.map(withChange),
-    spotAudit: spotAudit(strong, input.seed),
+    spotAudit: spotAudit(duplicates, input.seed),
     changes,
     continuity,
   };

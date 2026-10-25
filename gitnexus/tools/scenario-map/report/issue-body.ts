@@ -1,19 +1,21 @@
 /**
  * Tracking issue body of the scenario map (U13, R13, KTD13, design §5.5): one issue holds the
- * strong repeat candidates, the weak tests and the per-file gaps. Weak-evidence repeats, Row,
- * Review and Inconclusive pairs live in the report artifact only.
+ * fingerprint duplicates and same-scenario-different-checks pairs (verdict/fingerprint.ts), then,
+ * when the run gathered mutation evidence, the strong repeat candidates, the weak tests and the
+ * per-file gaps. Possible duplicates, table-row candidates, weak-evidence repeats, Row, Review and
+ * Inconclusive pairs live in the report artifact only.
  *
  * Body ({@link renderIssueBody}):
  *  1. a run marker, alone on the first line ({@link runMarker}): an HTML comment with the run id
  *     and attempt that a later upsert reads back ({@link parseRunMarker}) to skip the update when
  *     the issue already records a newer run (KTD13). Only the first line is read, so a marker-like
  *     string inside a test title cannot forge it;
- *  2. the header: run link, completeness, every degraded flag, "N of M eligible tests evaluated",
- *     the baseline line and the precision-not-measured statement;
- *  3. strong repeat candidates, then weak tests, then per-file gaps; a complete run without any
- *     says "no strong repeat candidates, weak tests or gaps found".
+ *  2. the header: run link, the mutation scope, completeness, every degraded flag, "N of M
+ *     eligible tests evaluated", the baseline line and the precision-not-measured statement;
+ *  3. duplicates, same scenario with different checks, strong repeat candidates, weak tests, then
+ *     per-file gaps; a complete run without any says so ({@link NO_FINDINGS}).
  * Truncation: the body stays below {@link ISSUE_BODY_LIMIT} characters (GitHub caps a body at
- * 65,536). Rows are kept in order (strong, weak, gaps) until the next one would not fit; the rest
+ * 65,536). Rows are kept in section order until the next one would not fit; the rest
  * are dropped, and a count line, the body's last line, says how many of each are not shown.
  *
  * {@link shouldUpdateIssue} is the R13 rule an upsert applies: only a complete run from the default
@@ -28,7 +30,9 @@ import {
   completenessLine,
   degradedLine,
   formatCount,
+  fingerprintEvidence,
   mdCode,
+  mutationLine,
   pairTests,
   runLink,
 } from './markdown.js';
@@ -36,7 +40,8 @@ import { PRECISION_NOT_MEASURED, type RunInfo, type ScenarioMapReport } from './
 
 /** Upper bound of the body's length, below GitHub's 65,536-character cap. */
 export const ISSUE_BODY_LIMIT = 60_000;
-export const NO_FINDINGS = 'no strong repeat candidates, weak tests or gaps found';
+export const NO_FINDINGS =
+  'no duplicates, same-scenario checks, strong repeat candidates, weak tests or gaps found';
 
 export interface RunMarker {
   runId: string;
@@ -81,11 +86,35 @@ interface Section {
 }
 
 function sectionsOf(report: ScenarioMapReport): Section[] {
+  const fingerprints = (verdict: 'duplicate' | 'different-checks') =>
+    report.fingerprint.pairs.filter((pair) => pair.verdict === verdict);
+  const duplicates = fingerprints('duplicate');
+  const differentChecks = fingerprints('different-checks');
   const strong = report.pairs.filter((pair) => pair.verdict === 'repeat-strong');
   const weak = report.tests.filter((test) => test.status === 'weak');
   const gaps = report.gaps.filter((gap) => gap.survived.length > 0 || gap.uncovered.length > 0);
   const change = (status: string | null): string => status ?? '—';
   return [
+    {
+      noun: 'duplicates',
+      title: `### Duplicates (${duplicates.length})`,
+      intro:
+        'Same execution path, same input data, same expectation; every input resolved and the ' +
+        'runtime trace clean. Keep one, or mark the other `// dupe-ok: <reason>`.',
+      head: '| Tests | Evidence |',
+      rows: duplicates.map(
+        (pair) => `| ${pairTests(pair)} | ${mdCode(fingerprintEvidence(pair))} |`,
+      ),
+    },
+    {
+      noun: 'same-scenario pairs',
+      title: `### Same scenario, different checks (${differentChecks.length})`,
+      intro: 'Same path and input, other assertions. Consider merging the checks into one test.',
+      head: '| Tests | Evidence |',
+      rows: differentChecks.map(
+        (pair) => `| ${pairTests(pair)} | ${mdCode(fingerprintEvidence(pair))} |`,
+      ),
+    },
     {
       noun: 'strong repeat candidates',
       title: `### Strong repeat candidates (${strong.length})`,
@@ -131,8 +160,10 @@ function headerOf(report: ScenarioMapReport): string[] {
     `Report of ${runLink(report.run)}` +
       (report.run.ref === null ? '' : ` on ${mdCode(report.run.ref)}`) +
       (revision === null ? '' : ` at ${mdCode(revision.slice(0, 12))}`) +
-      '. Weak-evidence repeats, Row, Review and Inconclusive pairs are in the report artifact.',
+      '. Possible duplicates, table-row candidates, weak-evidence repeats, Row, Review and ' +
+      'Inconclusive pairs are in the report artifact.',
     '',
+    `- ${mutationLine(report)}`,
     `- ${completenessLine(report)}`,
     `- ${degradedLine(report)}`,
     `- **${report.summary.evaluated}.**`,

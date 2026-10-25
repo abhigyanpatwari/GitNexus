@@ -1,8 +1,10 @@
 /**
  * Markdown rendering of the scenario map report (U13, R12): the full report (report.ts
- * `ScenarioMapReport`) for humans, written next to the JSON artifact. Every verdict category,
- * every pair with its evidence, the per-test properties, the gaps, Layer 0, eligibility and
- * provenance, so nothing in the JSON is only machine-readable. The tracking issue body
+ * `ScenarioMapReport`) for humans, written next to the JSON artifact. The scenario fingerprint
+ * first (verdict/fingerprint.ts: duplicates, possible duplicates, same scenario with different
+ * checks, table-row candidates; distinct pairs are only counted), then the mutation evidence when
+ * the run gathered it: every verdict category, every pair with its evidence, the per-test
+ * properties, the gaps; then Layer 0, eligibility and provenance. The tracking issue body
  * (issue-body.ts) is a shorter view built from the same helpers.
  *
  * Style follows the Layer 0 rendering of test-dupes findings (ci-report.yml "Possible duplicate
@@ -14,8 +16,16 @@
  */
 import { BANNERS } from './baseline.js';
 import { parseGlobalMutantId } from './anchors.js';
-import type { ReportPair, ReportTest, RunInfo, ScenarioMapReport } from './report.js';
+import type {
+  ReportFingerprintPair,
+  ReportPair,
+  ReportTest,
+  RunInfo,
+  ScenarioMapReport,
+} from './report.js';
+import { FINGERPRINT_VERDICTS, type FingerprintVerdict } from '../verdict/fingerprint.js';
 import { VERDICT_PRECEDENCE, WORDING, type Verdict } from '../verdict/verdict.js';
+import type { MutationScope } from '../types.js';
 import type { DegradedFlag } from '../value-flow/pdg-walk.js';
 
 /** What each value-flow degraded flag costs (U10, KTD11). */
@@ -51,6 +61,39 @@ const VERDICT_ACTIONS: Readonly<Record<Verdict, string>> = Object.freeze({
   review:
     'Same path, checks, context and kills, but the facet differs or the value-flow check vetoed or could not decide. A human decides.',
   distinct: 'Keep.',
+});
+
+export const FINGERPRINT_TITLES: Readonly<Record<FingerprintVerdict, string>> = Object.freeze({
+  duplicate: 'Duplicates',
+  'possible-duplicate': 'Possible duplicates',
+  'different-checks': 'Same scenario, different checks',
+  'table-row': 'Table-row candidates',
+  distinct: 'Distinct pairs',
+  inconclusive: 'Inconclusive fingerprints',
+  'out-of-scope': 'Out-of-scope pairs',
+});
+
+export const FINGERPRINT_ACTIONS: Readonly<Record<FingerprintVerdict, string>> = Object.freeze({
+  duplicate:
+    'Same execution path, same input data, same expectation; every input resolved and the ' +
+    'runtime trace clean. Keep one, or mark the other `// dupe-ok: <reason>`.',
+  'possible-duplicate':
+    'Nothing known differs, but an input, a check or the runtime trace could not be resolved. ' +
+    'A human decides; mutation evidence (dispatch) can add kill sets.',
+  'different-checks':
+    'Same path and input, other assertions. Consider merging the checks into one test.',
+  'table-row':
+    'Same path and checks, other input values. Consider folding into `it.each`; keep every row.',
+  distinct: 'Keep.',
+  inconclusive: 'A test ran concurrently: its path cannot be attributed.',
+  'out-of-scope': 'Not judged: a test is not eligible.',
+});
+
+/** What each mutation scope means, for the report header. */
+export const MUTATION_SCOPE_TEXT: Readonly<Record<MutationScope, string>> = Object.freeze({
+  none: 'not gathered (scope `none`): fingerprint verdicts only',
+  'possible-duplicates': 'gathered for the possible duplicates only (scope `possible-duplicates`)',
+  all: 'gathered for every candidate group (scope `all`)',
 });
 
 // ── Cells ──────────────────────────────────────────────────────────────────
@@ -123,6 +166,7 @@ export function runLine(report: ScenarioMapReport): string {
     `${report.eligibility.mode} mode`,
     `schema ${report.schemaVersion}`,
     `verdict engine ${report.engineVersion}`,
+    `fingerprint engine ${report.fingerprint.engineVersion}`,
     `seed ${mdCode(report.seed)}`,
   ].join(' · ');
 }
@@ -155,6 +199,71 @@ const mutantLabel = (id: string): string => {
 };
 
 // ── Sections ───────────────────────────────────────────────────────────────
+
+export function mutationLine(report: ScenarioMapReport): string {
+  return `**Mutation evidence**: ${MUTATION_SCOPE_TEXT[report.mutation]}.`;
+}
+
+/** A fingerprint's three parts and the trace, in one line. */
+export function fingerprintEvidence(pair: ReportFingerprintPair): string {
+  const e = pair.evidence;
+  const values = e.values === null ? '' : `, values ${e.values}`;
+  const unresolved = e.unresolved.length === 0 ? '' : `, ${e.unresolved.length} unresolved`;
+  return `path ${e.path}, checks ${e.checks}, input ${e.facet}${values}, trace ${e.trace}${unresolved}`;
+}
+
+function fingerprintSummarySection(report: ScenarioMapReport): string[] {
+  const { byVerdict } = report.fingerprint;
+  return [
+    '## Scenario fingerprint',
+    '',
+    'Two tests are duplicates when they run the same execution path on the same input data and ' +
+      'check the same expectation.',
+    '',
+    '| Fingerprint verdict | Pairs |',
+    '|---------------------|-------|',
+    ...FINGERPRINT_VERDICTS.map((verdict) => `| ${verdict} | ${byVerdict[verdict]} |`),
+  ];
+}
+
+function fingerprintSection(
+  verdict: FingerprintVerdict,
+  pairs: readonly ReportFingerprintPair[],
+): string[] {
+  if (pairs.length === 0) return [];
+  return [
+    '',
+    `## ${FINGERPRINT_TITLES[verdict]} (${pairs.length})`,
+    '',
+    FINGERPRINT_ACTIONS[verdict],
+    '',
+    '| Tests | Rule | Details | Evidence |',
+    '|-------|------|---------|----------|',
+    ...pairs.map(
+      (pair) =>
+        `| ${pairTests(pair)} | ${mdCode(pair.rule)} | ${codes(pair.details)} | ` +
+        `${mdCode(fingerprintEvidence(pair))} |`,
+    ),
+  ];
+}
+
+function fingerprintKeptSection(kept: readonly ReportFingerprintPair[]): string[] {
+  if (kept.length === 0) return [];
+  return [
+    '',
+    `## Fingerprint pairs kept by \`// dupe-ok:\` (${kept.length})`,
+    '',
+    'A human keep on either test (R15); the verdict and evidence are still recorded.',
+    '',
+    '| Tests | Keep | Verdict | Rule |',
+    '|-------|------|---------|------|',
+    ...kept.map(
+      (pair) =>
+        `| ${pairTests(pair)} | ${codes(pair.keep.map((mark) => mark.reason))} | ` +
+        `${pair.verdict} | ${mdCode(pair.rule)} |`,
+    ),
+  ];
+}
 
 function summarySection(report: ScenarioMapReport): string[] {
   const s = report.summary;
@@ -226,9 +335,9 @@ function strongSection(pairs: readonly ReportPair[]): string[] {
 function spotAuditSection(report: ScenarioMapReport): string[] {
   const audit = report.spotAudit;
   return [
-    `## Spot audit (seed ${mdCode(audit.seed)}, ${audit.picks.length} of ${audit.candidates} strong candidates)`,
+    `## Spot audit (seed ${mdCode(audit.seed)}, ${audit.picks.length} of ${audit.candidates} duplicates)`,
     '',
-    `For human verification (design §8): up to ${audit.size} strong repeat candidates, ` +
+    `For human verification (design §8): up to ${audit.size} fingerprint duplicates, ` +
       `ordered by ${audit.method}.`,
     ...(audit.picks.length === 0
       ? []
@@ -453,15 +562,47 @@ function provenanceSection(report: ScenarioMapReport): string[] {
 }
 
 /** The full report as markdown; see the module comment. */
-export function renderMarkdown(report: ScenarioMapReport): string {
+function mutationSections(report: ScenarioMapReport): string[] {
+  if (report.mutation === 'none') {
+    return [
+      '',
+      '## Mutation evidence',
+      '',
+      `${mutationLine(report)} Kill sets, weak tests and gaps need a run with mutation (workflow ` +
+        'dispatch input `mutation`, or the `scenario-map` label on a pull request).',
+    ];
+  }
   const byVerdict = (verdict: Verdict): ReportPair[] =>
     report.pairs.filter((pair) => pair.verdict === verdict);
+  return [
+    '',
+    '## Mutation evidence',
+    '',
+    `${mutationLine(report)} **${report.summary.evaluated}.**`,
+    '',
+    ...summarySection(report),
+    '',
+    ...changesSection(report),
+    '',
+    ...strongSection(byVerdict('repeat-strong')),
+    ...VERDICT_PRECEDENCE.filter((verdict) => verdict !== 'repeat-strong').flatMap((verdict) =>
+      verdictSection(verdict, byVerdict(verdict)),
+    ),
+    ...keptSection(report.kept),
+    ...testSections(report.tests),
+    ...gapsSection(report),
+  ];
+}
+
+export function renderMarkdown(report: ScenarioMapReport): string {
+  const fingerprints = (verdict: FingerprintVerdict): ReportFingerprintPair[] =>
+    report.fingerprint.pairs.filter((pair) => pair.verdict === verdict);
   const lines = [
     '# Test scenario map',
     '',
     runLine(report),
     '',
-    `- **${report.summary.evaluated}.**`,
+    `- ${mutationLine(report)}`,
     `- ${completenessLine(report)}`,
     `- ${degradedLine(report)}`,
     `- ${baselineLine(report)}`,
@@ -470,19 +611,15 @@ export function renderMarkdown(report: ScenarioMapReport): string {
     '',
     ...report.limits.map((limit) => `- ${limit}`),
     '',
-    ...summarySection(report),
-    '',
-    ...changesSection(report),
-    '',
-    ...strongSection(byVerdict('repeat-strong')),
+    ...fingerprintSummarySection(report),
+    ...fingerprintSection('duplicate', fingerprints('duplicate')),
     '',
     ...spotAuditSection(report),
-    ...VERDICT_PRECEDENCE.filter((verdict) => verdict !== 'repeat-strong').flatMap((verdict) =>
-      verdictSection(verdict, byVerdict(verdict)),
-    ),
-    ...keptSection(report.kept),
-    ...testSections(report.tests),
-    ...gapsSection(report),
+    ...FINGERPRINT_VERDICTS.filter(
+      (verdict) => verdict !== 'duplicate' && verdict !== 'distinct',
+    ).flatMap((verdict) => fingerprintSection(verdict, fingerprints(verdict))),
+    ...fingerprintKeptSection(report.fingerprint.kept),
+    ...mutationSections(report),
     ...layer0Lines(report),
     ...eligibilitySection(report),
     ...provenanceSection(report),

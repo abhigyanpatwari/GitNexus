@@ -16,7 +16,16 @@ import { buildPathMap, PACKAGE_DIR, PATH_MAP } from '../mutation/prepare/path-ma
 import type { CollectedTest, TestLocation } from '../mutation/runner/test-ids.js';
 import type { CaseRecord } from '../test-dupes/test-dupes.js';
 
-export const SCENARIO_MAP_SCHEMA_VERSION = 1;
+/** 2: the report gained the scenario fingerprint section and the mutation scope. */
+export const SCENARIO_MAP_SCHEMA_VERSION = 2;
+
+/**
+ * How much mutation evidence a run gathers (docs/plans/2026-10-25-1700-feat-scenario-fingerprint-
+ * plan.md F2, F3, F7): `none` (fingerprint only), `possible-duplicates` (the groups with a
+ * possible duplicate, trimmed to its tests) or `all` (every group, the Phase 1 run).
+ */
+export type MutationScope = 'none' | 'possible-duplicates' | 'all';
+export const MUTATION_SCOPES: readonly MutationScope[] = ['none', 'possible-duplicates', 'all'];
 
 // ── Run mode and paths ─────────────────────────────────────────────────────
 
