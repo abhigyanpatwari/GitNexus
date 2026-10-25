@@ -135,9 +135,9 @@ describe('ExtensionManager — install policies', () => {
     const manager = new ExtensionManager({ policy: 'auto', installExtension, warn });
     const query = vi.fn().mockRejectedValue(new Error('Extension "vector" not found'));
 
-    await expect(manager.ensure(query, 'vector', 'VECTOR', { installTimeoutMs: 10 })).resolves.toBe(
-      false,
-    );
+    await expect(
+      manager.ensure(query, 'vector', 'VECTOR', { ...noVendored, installTimeoutMs: 10 }),
+    ).resolves.toBe(false);
 
     expect(query.mock.calls.map(([sql]) => sql)).toEqual(['LOAD EXTENSION vector']);
     expect(warn).toHaveBeenCalledWith(
@@ -690,7 +690,54 @@ describe('ExtensionManager — vendored-first FTS (U2)', () => {
     expect(String(query.mock.calls[0][0])).not.toContain('vendor-evil');
   });
 
-  it('does not try a vendored path for VECTOR and records no tuple', async () => {
+  it.each(['vector', 'VECTOR'])(
+    'loads packaged %s before a broken home-cache copy',
+    async (name) => {
+      const vendorRoot = makeRoot();
+      const dir = path.join(vendorRoot, 'lbug-vector', 'prebuilds', 'linux-x64');
+      mkdirSync(dir, { recursive: true });
+      const artifact = path.join(dir, 'libvector.lbug_extension');
+      writeFileSync(artifact, 'placeholder');
+      const loadPackaged = `LOAD EXTENSION '${escapeCypherString(realpathSync(artifact))}'`;
+      const query = vi.fn(async (sql: string) => {
+        if (sql !== loadPackaged) throw new Error('cached VECTOR has an undefined native symbol');
+        return {};
+      });
+      const installExtension = vi.fn();
+      const manager = new ExtensionManager({
+        policy: 'load-only',
+        installExtension,
+        warn: noopWarn,
+      });
+
+      await expect(
+        manager.ensure(query, name, 'VECTOR', { vendorRoot, platformTuple: 'linux-x64' }),
+      ).resolves.toBe(true);
+      expect(query.mock.calls.map(([sql]) => sql)).toEqual([loadPackaged]);
+      expect(installExtension).not.toHaveBeenCalled();
+      expect(manager.getCapabilities()[0]?.attempts).toEqual([
+        { source: 'vendored', tuple: 'linux-x64' },
+      ]);
+    },
+  );
+
+  it('does not load packaged VECTOR under the never policy', async () => {
+    const vendorRoot = makeRoot();
+    const dir = path.join(vendorRoot, 'lbug-vector', 'prebuilds', 'linux-x64');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'libvector.lbug_extension'), 'placeholder');
+    const query = vi.fn();
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({ policy: 'never', installExtension, warn: noopWarn });
+
+    await expect(
+      manager.ensure(query, 'VECTOR', 'VECTOR', { vendorRoot, platformTuple: 'linux-x64' }),
+    ).resolves.toBe(false);
+    expect(query).not.toHaveBeenCalled();
+    expect(installExtension).not.toHaveBeenCalled();
+  });
+
+  it('falls back to named VECTOR when no packaged VECTOR artifact exists', async () => {
     const vendorRoot = makeRoot();
     writeVendorArtifact(vendorRoot, 'linux-x64');
     const query = vi.fn().mockResolvedValue({});

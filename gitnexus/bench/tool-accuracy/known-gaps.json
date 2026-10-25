@@ -1,12 +1,5 @@
 {
   "schemaVersion": 1,
   "baselineSourceSha": "dd096e690c06e5d54ab3595c63b83f15e04b6191",
-  "gaps": [
-    {
-      "id": "explain.guard",
-      "issue": 3490,
-      "reason": "Guard-style sanitizers are a documented taint limitation (#3490).",
-      "baselineActual": ["handleGuarded -> runGit command-injection"]
-    }
-  ]
+  "gaps": []
 }

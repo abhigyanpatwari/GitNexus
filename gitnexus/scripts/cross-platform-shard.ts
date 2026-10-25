@@ -59,13 +59,13 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/rename-provider-c.test.ts': 202,
   'test/integration/rename-provider-cobol.test.ts': 75,
   'test/integration/rename-provider-cpp.test.ts': 250,
-  'test/integration/rename-provider-csharp.test.ts': 200,
+  'test/integration/rename-provider-csharp.test.ts': 266,
   'test/integration/rename-provider-dart.test.ts': 425,
   'test/integration/rename-provider-go.test.ts': 221,
   'test/integration/rename-provider-java.test.ts': 300,
   'test/integration/rename-provider-javascript.test.ts': 225,
   'test/integration/rename-provider-kotlin.test.ts': 300,
-  'test/integration/rename-provider-objective-c.test.ts': 285,
+  'test/integration/rename-provider-objective-c.test.ts': 386,
   'test/integration/rename-provider-php.test.ts': 100,
   'test/integration/rename-provider-python.test.ts': 375,
   // Windows CI runs on 2026-10-17 (attempt 1: 749.5 s, rerun: 599.5 s):
@@ -88,7 +88,12 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   // Windows persisted-fixture profile above. Replace with observed CI timing.
   'test/integration/rename-preview-plan.test.ts': 175,
   'test/integration/mcp-index-generation.test.ts': 201,
-  'test/unit/incremental-dirty-recovery.test.ts': 76,
+  // Windows run 39934695864 timed out after undercharged native suites;
+  // 40172490240 supplies the query-symbol and dirty-recovery measurements.
+  'test/integration/incremental-method-integrity.test.ts': 145,
+  'test/integration/fts-repair-warm-session.test.ts': 62,
+  'test/integration/query-symbol-integrity.test.ts': 34,
+  'test/unit/incremental-dirty-recovery.test.ts': 128,
   // Re-measured after the analyze --watch e2e landed in #3072. The previous
   // 361 s entry undercharged this suite and left shard 1 close to the watchdog.
   'test/integration/cli-e2e.test.ts': 621,

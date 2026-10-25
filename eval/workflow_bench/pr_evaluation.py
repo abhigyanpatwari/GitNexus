@@ -321,6 +321,7 @@ def compare_candidate(
                 for field in ("model", "effort", "task_base_sha", "oracle_digest", "sandbox_dependency_content_digest")
             )
             and row.get("sandbox_backend") == "bwrap"
+            and row.get("runtime_exposure") == "stdio-only"
             and row.get("ok") is True
             and all(type(row.get(field)) is bool for field in ("resolved", "authored_tests_passed", "oracle_passed"))
             and row["resolved"] == (row["authored_tests_passed"] and row["oracle_passed"])

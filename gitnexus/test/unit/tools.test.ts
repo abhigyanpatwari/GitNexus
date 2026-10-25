@@ -489,7 +489,14 @@ describe('GITNEXUS_TOOLS', () => {
       'sources read inside inline callbacks and returned handlers can flow through helper functions',
     );
     expect(d.toLowerCase()).toContain('property/field');
-    expect(d.toLowerCase()).toContain('guard-style');
+    expect(d.toLowerCase()).toContain(
+      'modeled guards can refine unchanged primitive-string values',
+    );
+    expect(d.toLowerCase()).toContain('imported and wrapper validators');
+    expect(d.toLowerCase()).toContain(
+      'unsupported predicates or sink uses remain conservative findings',
+    );
+    expect(d.toLowerCase()).toContain('declared string types are analysis assumptions');
     expect(d.toLowerCase()).toContain('cross-function');
     expect(d.toLowerCase()).toContain('commonjs');
     expect(d.toLowerCase()).toContain('exception');

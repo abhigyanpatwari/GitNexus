@@ -1,0 +1,380 @@
+{
+  "measured_at": "2026-10-24T11:46:01.733Z",
+  "references": {
+    "target": "f3fa67b1445b8e8eeb23ae253fd3110044dc3624",
+    "original": "6ee7ce1cc463a8ad55cbdf2aea8325e0eb0396e0",
+    "integration": "09d2ebdb1f6d1571fded04ea917fb1935c4787e1"
+  },
+  "candidate_source_sha256": "19b0ca87758a18009b1f740ed4a22c81ccbc12ee756ba53f2d7fc823090e78ff",
+  "environment": {
+    "node": "v22.23.3",
+    "v8": "12.4.254.21-node.57",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "affinity_cpu": 23,
+    "shared_host": true
+  },
+  "protocol": {
+    "functions": 4000,
+    "warmup_repetitions": 3,
+    "pairs": 15,
+    "sample_order": "baseline/candidate, then candidate/baseline, alternating",
+    "parse": "once outside timing",
+    "gc": "before each timed sample",
+    "metric": "ratio of candidate and baseline sample medians minus one",
+    "serialization": "outside timing",
+    "target_percent": 5,
+    "correctness_gates": ["legacy_equal", "functions_complete", "forwarding_complete"],
+    "heap_diagnostic": "after-collection heap growth; not peak heap"
+  },
+  "comparisons": [
+    {
+      "baseline": "target",
+      "kind": "selection",
+      "iteration": 12,
+      "final": true,
+      "post_review_fix": true,
+      "exit_code": 0,
+      "blocks": [
+        {
+          "medians_ms": [926.980541, 939.893447],
+          "time_overhead_pct": 1.393007234657806
+        },
+        {
+          "medians_ms": [874.998572, 874.380178],
+          "time_overhead_pct": -0.07067371533949762
+        },
+        {
+          "medians_ms": [936.643365, 933.451269],
+          "time_overhead_pct": -0.3408016454587326
+        }
+      ],
+      "workload": "arguments",
+      "pairs": 15,
+      "time_overhead_pct": -1.1486265923677075,
+      "serialized_overhead_pct": 26.995850628583984,
+      "legacy_equal": 1,
+      "functions_complete": 1,
+      "forwarding_complete": 1,
+      "samples_ms": [
+        [
+          991.636407, 926.980541, 1052.223997, 874.353997, 814.005086, 846.39417, 939.310542,
+          968.675534, 850.55565, 874.998572, 924.263215, 816.897822, 936.643365, 960.946203,
+          952.875645
+        ],
+        [
+          939.893447, 835.342256, 1062.366743, 980.586552, 785.881103, 819.862887, 1108.397972,
+          916.332996, 874.380178, 863.18481, 874.130014, 873.202115, 1027.155567, 1014.473391,
+          933.451269
+        ]
+      ],
+      "medians_ms": [926.980541, 916.332996],
+      "bytes": [4030249, 5118249],
+      "heap_growth_medians": [22076336, 21050152],
+      "base_hash": "0ceb296402cd3a89e3d9141152bd56d9584a50634fe2b718cabb5ee0e9aeab15",
+      "source_hashes": [
+        "eb5449241b235c26ed92d6f629a89868d5b3612c47095f96d3eb20b474cb85aa",
+        "19b0ca87758a18009b1f740ed4a22c81ccbc12ee756ba53f2d7fc823090e78ff"
+      ]
+    },
+    {
+      "baseline": "target",
+      "kind": "holdout",
+      "iteration": 12,
+      "final": true,
+      "post_review_fix": true,
+      "exit_code": 0,
+      "blocks": [
+        {
+          "medians_ms": [1282.768951, 1290.729238],
+          "time_overhead_pct": 0.6205550106115565
+        },
+        {
+          "medians_ms": [1417.752374, 1384.478543],
+          "time_overhead_pct": -2.3469423582146653
+        },
+        {
+          "medians_ms": [1383.63807, 1370.441898],
+          "time_overhead_pct": -0.9537300458927089
+        }
+      ],
+      "workload": "transitive",
+      "pairs": 15,
+      "time_overhead_pct": 3.8279811568370237,
+      "serialized_overhead_pct": 37.40160977949929,
+      "legacy_equal": 1,
+      "functions_complete": 1,
+      "forwarding_complete": 1,
+      "samples_ms": [
+        [
+          1319.915771, 1288.475793, 1236.561698, 1282.768951, 1255.029194, 1430.325594, 1478.997302,
+          1351.424832, 1317.151013, 1417.752374, 1394.826591, 1299.54403, 1287.726552, 1383.63807,
+          1483.755553
+        ],
+        [
+          1290.729238, 1222.891716, 1303.250259, 1270.870905, 1489.054094, 1433.201519, 1567.401177,
+          1384.478543, 1383.860575, 1334.753843, 1386.789066, 1346.508798, 1370.441898, 1413.529929,
+          1272.542746
+        ]
+      ],
+      "medians_ms": [1319.915771, 1370.441898],
+      "bytes": [4502480, 6186480],
+      "heap_growth_medians": [30367416, 33670488],
+      "base_hash": "e9e120d2c163949405ae52dc5cd4d08a8d0c8647302f3fb1fafd3b431ab76930",
+      "source_hashes": [
+        "eb5449241b235c26ed92d6f629a89868d5b3612c47095f96d3eb20b474cb85aa",
+        "19b0ca87758a18009b1f740ed4a22c81ccbc12ee756ba53f2d7fc823090e78ff"
+      ]
+    },
+    {
+      "baseline": "target",
+      "kind": "selection",
+      "iteration": 12,
+      "final": true,
+      "post_review_fix": true,
+      "exit_code": 0,
+      "blocks": [
+        {
+          "medians_ms": [546.287538, 547.190939],
+          "time_overhead_pct": 0.16537096989386324
+        },
+        {
+          "medians_ms": [548.729001, 552.784326],
+          "time_overhead_pct": 0.7390396703307989
+        },
+        {
+          "medians_ms": [554.717647, 540.177424],
+          "time_overhead_pct": -2.6211935168523826
+        }
+      ],
+      "workload": "direct",
+      "pairs": 15,
+      "time_overhead_pct": -1.5555201172974042,
+      "serialized_overhead_pct": 23.685278087842153,
+      "legacy_equal": 1,
+      "functions_complete": 1,
+      "forwarding_complete": 1,
+      "samples_ms": [
+        [
+          585.832439, 604.653849, 508.324025, 528.45936, 546.287538, 590.143343, 542.103699,
+          506.672531, 548.729001, 653.093038, 566.802297, 554.717647, 556.273056, 510.102922,
+          519.793483
+        ],
+        [
+          576.02371, 637.452543, 547.190939, 530.045111, 524.659083, 539.414348, 572.697724,
+          511.161353, 552.784326, 558.685312, 532.658077, 501.323318, 540.193411, 560.527328,
+          540.177424
+        ]
+      ],
+      "medians_ms": [548.729001, 540.193411],
+      "bytes": [3174968, 3926968],
+      "heap_growth_medians": [11372208, 18987256],
+      "base_hash": "e32fa1876c674740fa2d85a0e1b9bc263799c704f4d537694427da2dd197f264",
+      "source_hashes": [
+        "eb5449241b235c26ed92d6f629a89868d5b3612c47095f96d3eb20b474cb85aa",
+        "19b0ca87758a18009b1f740ed4a22c81ccbc12ee756ba53f2d7fc823090e78ff"
+      ]
+    },
+    {
+      "baseline": "original",
+      "kind": "selection",
+      "iteration": 12,
+      "final": true,
+      "post_review_fix": true,
+      "exit_code": 0,
+      "blocks": [
+        {
+          "medians_ms": [839.997564, 715.49347],
+          "time_overhead_pct": -14.821958936061863
+        },
+        {
+          "medians_ms": [800.101563, 720.123923],
+          "time_overhead_pct": -9.995935978442782
+        },
+        {
+          "medians_ms": [801.435984, 675.281283],
+          "time_overhead_pct": -15.741082696381635
+        }
+      ],
+      "workload": "arguments",
+      "pairs": 15,
+      "time_overhead_pct": -12.551510290059543,
+      "serialized_overhead_pct": 0,
+      "legacy_equal": 1,
+      "functions_complete": 1,
+      "forwarding_complete": 1,
+      "samples_ms": [
+        [
+          839.997564, 738.463058, 857.906524, 842.421851, 799.280266, 960.616255, 902.391745,
+          782.451825, 800.101563, 792.380063, 801.435984, 770.546193, 862.753015, 757.292758,
+          802.344464
+        ],
+        [
+          659.721701, 715.49347, 700.843664, 742.920449, 842.665567, 751.378898, 864.312785,
+          694.810253, 682.495461, 720.123923, 635.26501, 668.832835, 705.642196, 687.253768,
+          675.281283
+        ]
+      ],
+      "medians_ms": [801.435984, 700.843664],
+      "bytes": [5118249, 5118249],
+      "heap_growth_medians": [30844760, 20766944],
+      "base_hash": "0ceb296402cd3a89e3d9141152bd56d9584a50634fe2b718cabb5ee0e9aeab15",
+      "source_hashes": [
+        "3b2a2bccf8254b61fd0ab1b8ab9423f89b29073afc402ad078189a31d67e0748",
+        "19b0ca87758a18009b1f740ed4a22c81ccbc12ee756ba53f2d7fc823090e78ff"
+      ]
+    },
+    {
+      "baseline": "original",
+      "kind": "holdout",
+      "iteration": 12,
+      "final": true,
+      "post_review_fix": true,
+      "exit_code": 0,
+      "blocks": [
+        {
+          "medians_ms": [1022.240662, 943.977474],
+          "time_overhead_pct": -7.656043328082762
+        },
+        {
+          "medians_ms": [1074.679531, 1071.170551],
+          "time_overhead_pct": -0.3265140815266965
+        },
+        {
+          "medians_ms": [1214.845854, 953.230029],
+          "time_overhead_pct": -21.53489878066456
+        }
+      ],
+      "workload": "transitive",
+      "pairs": 15,
+      "time_overhead_pct": -18.376410863434145,
+      "serialized_overhead_pct": 0,
+      "legacy_equal": 1,
+      "functions_complete": 1,
+      "forwarding_complete": 1,
+      "samples_ms": [
+        [
+          991.262411, 1022.240662, 954.091735, 1211.352262, 1328.408798, 994.117618, 1074.679531,
+          1113.739816, 1417.601299, 1056.288179, 1204.450932, 1214.845854, 1325.823707, 1225.401996,
+          1167.836454
+        ],
+        [
+          855.369854, 899.467318, 944.243232, 1123.037271, 943.977474, 944.358269, 1071.170551,
+          1109.569003, 1180.041345, 1034.802502, 904.834811, 910.174455, 1218.088988, 1315.290326,
+          953.230029
+        ]
+      ],
+      "medians_ms": [1167.836454, 953.230029],
+      "bytes": [6186480, 6186480],
+      "heap_growth_medians": [22416784, 33734328],
+      "base_hash": "e9e120d2c163949405ae52dc5cd4d08a8d0c8647302f3fb1fafd3b431ab76930",
+      "source_hashes": [
+        "3b2a2bccf8254b61fd0ab1b8ab9423f89b29073afc402ad078189a31d67e0748",
+        "19b0ca87758a18009b1f740ed4a22c81ccbc12ee756ba53f2d7fc823090e78ff"
+      ]
+    }
+  ],
+  "validation": {
+    "corrected_source_sha256": "19b0ca87758a18009b1f740ed4a22c81ccbc12ee756ba53f2d7fc823090e78ff",
+    "default_units": {
+      "files": 900,
+      "passed": 20696,
+      "skipped": 47,
+      "failed": 0
+    },
+    "cfg_integration": {
+      "files": 13,
+      "passed": 141,
+      "failed": 0
+    },
+    "cfg_scaling": {
+      "scenarios": 15,
+      "passed": 15
+    },
+    "tool_accuracy": {
+      "checks": 32,
+      "passed": 32
+    },
+    "build": true,
+    "source_typecheck": true,
+    "test_typecheck": true,
+    "changed_file_lint_errors": 0,
+    "fixture_equivalence": {
+      "files": 633,
+      "custom_cases": 30,
+      "cfgs": 1140,
+      "mismatches": 0,
+      "sha256": "0d663493b85105b8cd3f4eeb15dad0061473aef785a342344c6db1f511385cd0"
+    },
+    "malformed_equivalence": {
+      "cases": 2520,
+      "cfgs": 1651,
+      "malformed_literal_nodes": 40,
+      "mismatches": 0
+    },
+    "graph": {
+      "base": "11a49a15c6befbe4d5de1cebe74b5456aeb44b99",
+      "optimization": {
+        "changed_count": 77,
+        "affected_count": 3,
+        "changed_files": 6,
+        "risk_level": "medium"
+      },
+      "whole_pr": {
+        "changed_count": 399,
+        "affected_count": 16,
+        "changed_files": 42,
+        "risk_level": "critical"
+      },
+      "partial_flag": false,
+      "truncated_flag": false,
+      "pdg_layer": false
+    },
+    "full_suite": {
+      "source_sha256": "37624680cb858fddfab7f7dcd167606b62f91b89cca7694091e5ac827bf7279c",
+      "revision_note": "Frozen candidate before !node.hasError correction. Corrected source separately validated as detailed above.",
+      "shards": [
+        {
+          "shard": 1,
+          "files": 334,
+          "passed": 7835,
+          "skipped": 10,
+          "failed": 0,
+          "total": 7845
+        },
+        {
+          "shard": 2,
+          "files": 335,
+          "passed": 7030,
+          "skipped": 8,
+          "failed": 0,
+          "total": 7038
+        },
+        {
+          "shard": 3,
+          "files": 335,
+          "passed": 6410,
+          "skipped": 14,
+          "failed": 0,
+          "total": 6424
+        },
+        {
+          "shard": 4,
+          "files": 334,
+          "passed": 6992,
+          "skipped": 56,
+          "failed": 0,
+          "total": 7048
+        }
+      ],
+      "totals": {
+        "files": 1338,
+        "passed": 28267,
+        "skipped": 88,
+        "failed": 0,
+        "total": 28355
+      }
+    }
+  }
+}

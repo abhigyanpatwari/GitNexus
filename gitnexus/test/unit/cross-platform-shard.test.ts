@@ -151,13 +151,29 @@ describe('cross-platform shard partition', () => {
     const loads = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).map((files) =>
       files.reduce((sum, file) => sum + Math.max(weightOf(file), (observed[file] ?? 0) + floor), 0),
     );
-    // Leave at least two minutes for hosted-runner variation. Merely
+    // Leave at least three minutes for hosted-runner variation. Merely
     // fitting under 20 minutes left the previous partition prone to timeout.
-    // The ceiling was 17 minutes until the R rename provider suite (measured
-    // ~600 s on Windows) was charged its real weight: the table total grew by
-    // ~520 s, so even a perfect ten-way split averages ~1047 s per shard; the 695 s added by splitting the R
-    // suite into two files made it eleven shards.
-    expect(Math.max(...loads)).toBeLessThanOrEqual(18 * 60);
+    expect(Math.max(...loads)).toBeLessThanOrEqual(17 * 60);
+  });
+
+  it('leaves watchdog headroom for the October 23 native-suite timeout', () => {
+    // Windows run 39934695864: shard 10 timed out with Kotlin still pending.
+    // Use its completed suite times, plus the October 25 green run 40172490240
+    // for query-symbol-integrity and incremental-dirty-recovery. These measured
+    // costs must remain independent of the scheduling hints being tested.
+    const observed: Readonly<Record<string, number>> = {
+      'test/integration/rename-provider-objective-c.test.ts': 385.174,
+      'test/integration/rename-provider-csharp.test.ts': 265.99,
+      'test/integration/incremental-method-integrity.test.ts': 144.974,
+      'test/integration/fts-repair-warm-session.test.ts': 61.015,
+      'test/integration/query-symbol-integrity.test.ts': 33.892,
+      'test/unit/incremental-dirty-recovery.test.ts': 127.8,
+    };
+    const floor = weightOf('test/unmeasured.test.ts');
+    const loads = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).map((files) =>
+      files.reduce((sum, file) => sum + Math.max(weightOf(file), (observed[file] ?? 0) + floor), 0),
+    );
+    expect(Math.max(...loads)).toBeLessThanOrEqual(17 * 60);
   });
 
   it('keeps each shard within a shard of the ideal weight', () => {

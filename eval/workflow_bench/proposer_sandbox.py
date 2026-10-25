@@ -38,6 +38,7 @@ SANDBOX_CLAUDE = "/opt/claude/claude"
 SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
 SANDBOX_PYTHON3 = "/opt/claude/python3"
 SANDBOX_GITNEXUS_CLI = "/opt/claude/gitnexus"
+SANDBOX_MCP_SOCKET = "/run/gitnexus-mcp.sock"
 SANDBOX_GIT_EXCLUDES = "/opt/claude/git-excludes"
 SANDBOX_NODE = "/opt/claude/node"
 SANDBOX_BWRAP = "/opt/claude/bwrap"
@@ -1219,6 +1220,7 @@ def prepare_sandbox(
     preflight: bool = True,
     backend: str = "bwrap",
     gitnexus_available: bool = True,
+    gitnexus_cli_available: bool = True,
 ) -> Iterator[SandboxSession]:
     """Create private host backing dirs and one virtualized command."""
 
@@ -1235,6 +1237,7 @@ def prepare_sandbox(
             SANDBOX_GITNEXUS_SHARED,
             SANDBOX_GITNEXUS_REGISTRY,
             SANDBOX_GITNEXUS_CLI,
+            SANDBOX_MCP_SOCKET,
             f"{SANDBOX_WORKSPACE}/.gitnexus",
         )
         for mount in read_only_mounts:
@@ -1260,7 +1263,8 @@ def prepare_sandbox(
     for directory in (home, temp):
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)
-    shell_prefix = _create_shell_prefix_wrapper(private_root, gitnexus_available=gitnexus_available)
+    cli_available = gitnexus_available and gitnexus_cli_available
+    shell_prefix = _create_shell_prefix_wrapper(private_root, gitnexus_available=cli_available)
     python3_wrapper = _create_python3_wrapper(private_root)
     git_excludes = _create_git_excludes(private_root)
     # Claude may discover user-level skills below HOME.  Keep the rest of HOME
@@ -1280,7 +1284,7 @@ def prepare_sandbox(
             *read_only_mounts,
             *(
                 (ReadOnlyMount(source=bwrap, target=SANDBOX_BWRAP),)
-                if backend == "bwrap" and gitnexus_available
+                if backend == "bwrap" and cli_available
                 else ()
             ),
             ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
@@ -1288,7 +1292,7 @@ def prepare_sandbox(
             ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
             *(
                 (ReadOnlyMount(source=_create_gitnexus_wrapper(private_root), target=SANDBOX_GITNEXUS_CLI),)
-                if gitnexus_available
+                if cli_available
                 else baseline_mounts
             ),
             ReadOnlyMount(source=git_excludes, target=SANDBOX_GIT_EXCLUDES),
