@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
@@ -87,15 +87,23 @@ interface CjsModule {
 // `bunx --version`). resolveOnPath is now spawn-free — a pure PATH scan — so tests
 // pin it by passing an injected `{ platform, env }` (never the host PATH). Mode
 // tests inject a fake `probe` or force GITNEXUS_INVOCATION; version tests inject
-// `deps`. Any test whose `probe` reports a bunx PATH hit MUST also inject
-// `bunRuns`, or the liveness probe spawns the host's real bunx and the result
-// depends on whether bun is installed.
+// `deps`. Any test whose `probe` reports a pnpm/bunx PATH hit MUST also inject
+// `pnpmRuns`/`bunRuns`, or the liveness probe spawns the host's real tool and
+// the result depends on whether that tool is installed.
 // Keep new tests on one of those paths so results never depend on the host.
 const cjs = cjsRequire(CANONICAL_CJS) as CjsModule;
 
 describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
+  beforeEach(() => {
+    vi.stubEnv('PATH', '');
+    if (process.platform !== 'win32') {
+      vi.stubEnv('Path', '');
+      vi.stubEnv('path', '');
+    }
+    vi.stubEnv('GITNEXUS_INVOCATION', undefined);
+  });
   afterEach(() => {
-    delete process.env.GITNEXUS_INVOCATION;
+    vi.unstubAllEnvs();
   });
 
   it('standardizes the invocation ref on gitnexus@latest', () => {
@@ -140,7 +148,7 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
 
   it('auto-selects pnpm on npm 11+ when pnpm is on PATH', () => {
     const probe = (c: string) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null);
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11 })).toBe('pnpm');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, pnpmRuns: true })).toBe('pnpm');
   });
 
   it('auto-selects npx on npm 10 even when pnpm is on PATH', () => {
@@ -152,7 +160,7 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
     // npmMajor:null means "npm absent" and must be honored via the `in` seam —
     // not fall through to the host's real npm (npm 10.x on CI → would route npx).
     const probe = (c: string) => (c === 'pnpm' ? '/usr/local/bin/pnpm' : null);
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: null })).toBe('pnpm');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: null, pnpmRuns: true })).toBe('pnpm');
   });
 
   it('falls back to npx when npm is null-absent and pnpm is also absent', () => {
@@ -168,7 +176,7 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
 
   it('honors pnpmPresent:true — a present-but-unparseable pnpm selects pnpm, not the npx crash path', () => {
     // Windows headline regression guard: when probeVersion cannot read the
-    // version (timeout / Corepack banner) but pnpm is on PATH, formatAnalyzeCommand
+    // version after a successful probe (Corepack banner), formatAnalyzeCommand
     // sets pnpmPresent:true so npm-11 users still get pnpm rather than the npx crash.
     expect(cjs.resolveInvocationMode(() => null, { npmMajor: 11, pnpmPresent: true })).toBe('pnpm');
   });
@@ -247,7 +255,9 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
   it('still prefers pnpm over bunx on npm 11+ when both are present', () => {
     const probe = (c: string) =>
       c === 'pnpm' ? '/usr/local/bin/pnpm' : c === 'bunx' ? '/usr/local/bin/bunx' : null;
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, bunRuns: true })).toBe('pnpm');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, pnpmRuns: true, bunRuns: true })).toBe(
+      'pnpm',
+    );
   });
 
   it('still prefers npx on npm 10 even when bunx is present (no behavior change)', () => {
@@ -259,7 +269,9 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
   it('still prefers pnpm over bunx when npm is absent and both are present', () => {
     const probe = (c: string) =>
       c === 'pnpm' ? '/usr/local/bin/pnpm' : c === 'bunx' ? '/usr/local/bin/bunx' : null;
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: null, bunRuns: true })).toBe('pnpm');
+    expect(
+      cjs.resolveInvocationMode(probe, { npmMajor: null, pnpmRuns: true, bunRuns: true }),
+    ).toBe('pnpm');
   });
 
   it('honors bunPresent:false as explicit absence (overrides a PATH hit)', () => {
@@ -305,7 +317,12 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
 
   it('formatAnalyzeCommand falls through to bunx or npx when pnpm does not run (#3717)', () => {
     expect(
-      cjs.formatAnalyzeCommand(undefined, { npmMajor: 11, pnpmRuns: false, bunRuns: true }),
+      cjs.formatAnalyzeCommand(undefined, {
+        npmMajor: 11,
+        pnpmRuns: false,
+        bunPresent: true,
+        bunRuns: true,
+      }),
     ).toBe(`bunx ${cjs.NPX_REF} analyze`);
     expect(
       cjs.formatAnalyzeCommand(undefined, { npmMajor: 11, pnpmRuns: false, bunPresent: false }),
@@ -327,7 +344,7 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
       probed.push(c);
       return c === 'pnpm' ? '/usr/local/bin/pnpm' : null;
     };
-    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11 })).toBe('pnpm');
+    expect(cjs.resolveInvocationMode(probe, { npmMajor: 11, pnpmRuns: true })).toBe('pnpm');
     expect(probed).not.toContain('bunx');
   });
 
@@ -656,81 +673,99 @@ describe('resolveOnPath — pure-Node PATH scan (#1938, all-OS, spawn-free)', ()
 });
 
 describe('formatAnalyzeCommand end-to-end via the pure scan (#1938)', () => {
-  // Exercises the public entry through resolveOnPath against a real PATH (no
-  // mocks, no GITNEXUS_INVOCATION): with a launcher on PATH the hint resolves to
-  // `gitnexus analyze`. Because resolveOnPath is now spawn-free, this works
-  // identically on every OS — there is no `where`/`which` reachability caveat.
-  const savedPath = process.env.PATH;
-  let binDir: string | undefined;
+  // Real probes and runner execution, with every tool controlled by the fixture.
+  // Do not append the host PATH: npm 10 or a global gitnexus would win selection.
+  const { spawnSync } = cjsRequire('node:child_process') as typeof import('node:child_process');
+  const isWin = process.platform === 'win32';
+  let binDir: string;
+  beforeEach(() => {
+    binDir = mkdtempSync(path.join(os.tmpdir(), 'gn-runner-probe-'));
+    vi.stubEnv('PATH', binDir);
+    if (!isWin) {
+      vi.stubEnv('Path', '');
+      vi.stubEnv('path', '');
+    }
+    vi.stubEnv('PATHEXT', '.COM;.EXE;.BAT;.CMD');
+    vi.stubEnv('GITNEXUS_INVOCATION', undefined);
+  });
   afterEach(() => {
-    if (savedPath === undefined) delete process.env.PATH;
-    else process.env.PATH = savedPath;
-    if (binDir) rmSync(binDir, { recursive: true, force: true });
-    binDir = undefined;
-    delete process.env.GITNEXUS_INVOCATION;
+    vi.unstubAllEnvs();
+    rmSync(binDir, { recursive: true, force: true });
   });
 
-  it('resolves `gitnexus analyze` when a launcher is the only thing on PATH', () => {
-    binDir = mkdtempSync(path.join(os.tmpdir(), 'gn-e2e-'));
-    const isWin = process.platform === 'win32';
-    const launcher = path.join(binDir, isWin ? 'gitnexus.cmd' : 'gitnexus');
-    writeFileSync(launcher, isWin ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n');
+  function writeTool(name: string, version: string, versionExit = 0): void {
+    const launcher = path.join(binDir, isWin ? `${name}.cmd` : name);
+    writeFileSync(
+      launcher,
+      isWin
+        ? `@echo off\r\nif "%~1"=="--version" (\r\n  echo ${version}\r\n  exit /b ${versionExit}\r\n)\r\necho ${name} %*\r\nexit /b 23\r\n`
+        : `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo '${version}'\n  exit ${versionExit}\nfi\necho "${name} $@"\nexit 23\n`,
+    );
     if (!isWin) chmodSync(launcher, 0o755);
-    // PATH reduced to just the launcher dir — the former `where`/`which` resolver
-    // would have ENOENT'd here; the pure scan finds the launcher directly.
-    process.env.PATH = binDir;
+  }
+
+  function expectRunner(program: string, prefix = cjs.NPX_REF): void {
+    const result = spawnSync(process.execPath, [CANONICAL_CJS, 'analyze', '--index-only'], {
+      env: process.env,
+      cwd: binDir,
+      encoding: 'utf-8',
+      timeout: 15000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(23);
+    expect(result.stdout.trim()).toBe(`${program} ${prefix} analyze --index-only`);
+  }
+
+  it('resolves `gitnexus analyze` when a launcher is the only thing on PATH', () => {
+    writeTool('gitnexus', '1.6.12');
     expect(cjs.formatAnalyzeCommand()).toBe('gitnexus analyze');
   });
 
-  it.skipIf(process.platform === 'win32')(
-    'falls through to bunx when pnpm is an unusable shim on PATH (#3717)',
-    () => {
-      binDir = mkdtempSync(path.join(os.tmpdir(), 'gn-pnpm-shim-'));
-      const fakePnpm = path.join(binDir, 'pnpm');
-      // Fake unusable pnpm shim that exits 1 (mirrors NVM for Windows error).
-      writeFileSync(
-        fakePnpm,
-        `#!/bin/sh\necho "pnpm is not installed for this Node.js version" >&2\nexit 1\n`,
-      );
-      chmodSync(fakePnpm, 0o755);
-
-      const fakeBunx = path.join(binDir, 'bunx');
-      // Fake working bunx that answers --version.
-      writeFileSync(
-        fakeBunx,
-        `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "1.2.0"\n  exit 0\nfi\nexit 0\n`,
-      );
-      chmodSync(fakeBunx, 0o755);
-
-      // Prepend binDir to PATH so the broken pnpm and working bunx are found first.
-      process.env.PATH = `${binDir}:${savedPath}`;
-
-      // On npm 11+ (or when npm is absent), the unusable pnpm shim must be skipped
-      // in favor of working bunx instead of picking pnpm.
+  it.each([11, null])(
+    'falls through to bunx when pnpm fails and npm major is %s (#3717)',
+    (npmMajor) => {
+      if (npmMajor !== null) writeTool('npm', `${npmMajor}.0.0`);
+      writeTool('pnpm', 'pnpm is not installed for this Node.js version', 1);
+      writeTool('bunx', '1.2.0');
       expect(cjs.formatAnalyzeCommand()).toBe(`bunx ${cjs.NPX_REF} analyze`);
       expect(cjs.resolveInvocationMode()).toBe('bun');
+      expectRunner('bunx');
     },
   );
 
-  it.skipIf(process.platform === 'win32')(
-    'keeps pnpm when probe runs but prints unparseable banner (#3717 Corepack banner)',
-    () => {
-      binDir = mkdtempSync(path.join(os.tmpdir(), 'gn-pnpm-banner-'));
-      const fakePnpm = path.join(binDir, 'pnpm');
-      // Fake pnpm that exits 0 with a banner line but no parseable version.
-      writeFileSync(
-        fakePnpm,
-        `#!/bin/sh\necho "Corepack is downloading https://registry.npmjs.org/pnpm" >&2\necho "Notice: pnpm is active"\nexit 0\n`,
-      );
-      chmodSync(fakePnpm, 0o755);
+  it.each([11, null])(
+    'falls through to npx when pnpm fails, bunx is absent, and npm major is %s',
+    (npmMajor) => {
+      if (npmMajor !== null) writeTool('npm', `${npmMajor}.0.0`);
+      writeTool('pnpm', 'pnpm is not installed for this Node.js version', 1);
+      writeTool('npx', '11.0.0');
+      expect(cjs.formatAnalyzeCommand()).toBe(`npx ${cjs.NPX_REF} analyze`);
+      expect(cjs.resolveInvocationMode()).toBe('npx');
+      expectRunner('npx');
+    },
+  );
 
-      process.env.PATH = `${binDir}:${savedPath}`;
-
-      expect(cjs.formatAnalyzeCommand()).toContain('pnpm');
-      expect(cjs.formatAnalyzeCommand()).toContain('dlx');
+  it.each(['10.2.0', 'Notice: pnpm is active'])(
+    'keeps pnpm when a successful probe prints %s (#3717)',
+    (version) => {
+      writeTool('npm', '11.0.0');
+      writeTool('pnpm', version);
+      const prefix = `--allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx ${cjs.NPX_REF}`;
+      expect(cjs.formatAnalyzeCommand()).toBe(`pnpm ${prefix} analyze`);
       expect(cjs.resolveInvocationMode()).toBe('pnpm');
+      expectRunner('pnpm', prefix);
     },
   );
+
+  it('preserves the npx preference on npm 10 with a broken pnpm and working bunx', () => {
+    writeTool('npm', '10.9.0');
+    writeTool('pnpm', 'pnpm is not installed for this Node.js version', 1);
+    writeTool('bunx', '1.2.0');
+    writeTool('npx', '10.9.0');
+    expect(cjs.formatAnalyzeCommand()).toBe(`npx ${cjs.NPX_REF} analyze`);
+    expect(cjs.resolveInvocationMode()).toBe('npx');
+    expectRunner('npx');
+  });
 });
 
 describe('resolve-analyze-cmd.cjs parity', () => {
