@@ -41,12 +41,6 @@ name: Test Scenario Map
 # mutation-runner-validation.yml; this workflow cannot run from a PR branch.
 
 on:
-  # TEMPORARY (PR #3686; remove before merge): one full run on the PR when a maintainer adds the
-  # `run-ci` label, since schedule and workflow_dispatch only run from the default branch. A
-  # pull_request run never writes the tracking issue or a baseline (plan's default_branch output
-  # is false) and the baseline lookup ignores it.
-  pull_request:
-    types: [labeled]
   schedule:
     # Mondays 04:17 UTC, outside the busy CI hours.
     - cron: '17 4 * * 1'
@@ -90,9 +84,6 @@ jobs:
   # ── Plan: Layers 0-2, candidates, shard plan, run manifest ─────────
   plan:
     name: Plan
-    # TEMPORARY (PR #3686): only the `run-ci` label starts a pull_request run; every later job
-    # needs plan's artifact, so they skip with it.
-    if: github.event_name != 'pull_request' || github.event.label.name == 'run-ci'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     continue-on-error: true
