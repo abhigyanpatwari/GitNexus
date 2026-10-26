@@ -90,8 +90,7 @@ export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
   // registry without aiding narrowing — callers treat absence as
   // "types unknown".
   const hasAnyType = types.some((t) => t !== '' && t !== 'params');
-  const parameterTypes =
-    hasAnyType || hasRest ? (markedTypes.length > 0 ? markedTypes : undefined) : undefined;
+  const parameterTypes = hasAnyType || hasRest ? markedTypes : undefined;
 
   return {
     parameterCount,

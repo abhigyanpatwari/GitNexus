@@ -78,7 +78,6 @@ describe('shared parameter type projection', () => {
         );
         if (fixture.shared) expect(scope.parameterTypes).toBe(graph.parameterTypes);
         else expect(scope.parameterTypes).not.toBe(graph.parameterTypes);
-        // A second scope projection must not append a marker to the shared graph array.
         expect(arity(node)).toEqual(scope);
         expect(buildMethodProps(info)).toEqual(graph);
       });

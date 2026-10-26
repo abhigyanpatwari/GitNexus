@@ -231,15 +231,15 @@ async function makeCorpus(repo, corpus) {
     const methods = Number(option('--methods', '40'));
     assert(Number.isSafeInteger(files) && files > 0);
     assert(Number.isSafeInteger(methods) && methods > 0);
+    const ts = Array.from(
+      { length: methods },
+      (_, i) => `m${i}(a: number, b: string, c: Array<string>, d = 0): number { return a + d; }`,
+    ).join('\n');
+    const java = Array.from(
+      { length: methods },
+      (_, i) => `int m${i}(int a, String b, List<String> c, int d) { return a + d; }`,
+    ).join('\n');
     for (let file = 0; file < files; file++) {
-      const ts = Array.from(
-        { length: methods },
-        (_, i) => `m${i}(a: number, b: string, c: Array<string>, d = 0): number { return a + d; }`,
-      ).join('\n');
-      const java = Array.from(
-        { length: methods },
-        (_, i) => `int m${i}(int a, String b, List<String> c, int d) { return a + d; }`,
-      ).join('\n');
       await writeFile(
         path.join(repo, `T${file}.ts`),
         `export class T${file} {\n${ts}\n call() { return this.m0(1, "", [], 0); }\n}\n`,

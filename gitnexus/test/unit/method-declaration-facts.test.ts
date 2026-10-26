@@ -115,7 +115,6 @@ describe('shared callable declaration facts', () => {
         expect(info.name).toBe('f');
         expect(info.parameters.map((p) => p.rawType ?? p.type)).toEqual(fixture.expectedTypes);
         expect(info.parameters.map((p) => p.isVariadic)).toEqual([false, true]);
-        // Count the native parameter-list access, not calls to the config wrapper.
         expect(read.mock.calls.filter(([field]) => field === 'parameters')).toHaveLength(1);
         read.mockRestore();
       });
@@ -184,7 +183,6 @@ describe('shared callable declaration facts', () => {
           expect(info.parameters.map((p) => p.type)).toEqual(fixture.types);
           expect(scope.parameterTypes?.slice(0, 2)).toEqual(fixture.types);
           expect(spy).toHaveBeenCalledTimes(2);
-          // Both real consumers must receive the same facts, including through config copies.
           expect(info.parameters).toBe(spy.mock.results[0]!.value);
         } finally {
           spy.mockRestore();
