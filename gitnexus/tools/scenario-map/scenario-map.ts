@@ -713,6 +713,9 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
   if (changedSince !== null && values.coverage !== undefined) {
     throw new UsageError('--changed-since runs Layer 1 itself; it does not take --coverage');
   }
+  if (changedSince !== null && (values.controls === true || values.mode === 'controls')) {
+    throw new UsageError('--changed-since scopes a diff of the suite, not the controls fixture');
+  }
   const mode = modeOf(stage, values.mode, values.controls);
   const defaultWork = path.join(
     os.tmpdir(),
@@ -1819,12 +1822,18 @@ export function layer1FilesOf(
     : layer1Files(repoRoot, files).files;
 }
 
-/** The fingerprint's test files (package paths) among the repo paths a diff names. */
+/**
+ * The fingerprint's test files (package paths) among the repo paths a diff names, a changed
+ * `__snapshots__/<name>.snap` naming its test file `<name>` beside the directory. Changed helper
+ * modules and fixtures do not count (fingerprint plan E8).
+ */
 export function changedTestFiles(
   diffNames: readonly string[],
   fingerprintFiles: readonly string[],
 ): string[] {
-  const named = new Set(diffNames);
+  const named = new Set(
+    diffNames.map((name) => name.replace(/\/__snapshots__\/([^/]+)\.snap$/, '/$1')),
+  );
   return fingerprintFiles.filter((file) => named.has(fromPackagePath(file)));
 }
 
@@ -1930,13 +1939,16 @@ export async function runCoverageStage(
     `coverage: slice ${options.index} of ${options.of}: ${files.length} of the ${layer1.length} ` +
       `test files Layer 1 runs (${eligibility.fingerprintFiles.length} in the fingerprint's scope)`,
   );
-  const { work, wallClockMs } = await runCoverage({
-    repoRoot,
-    outDir: layout.coverageDir,
-    mode: options.mode,
-    maxWorkers: options.concurrency,
-    files,
-  });
+  const { work, wallClockMs } =
+    files.length === 0
+      ? { work: writeEmptyCoverage(ctx, options.mode), wallClockMs: 0 }
+      : await runCoverage({
+          repoRoot,
+          outDir: layout.coverageDir,
+          mode: options.mode,
+          maxWorkers: options.concurrency,
+          files,
+        });
   const slice: CoverageSliceFile = {
     schemaVersion: COVERAGE_SLICE_SCHEMA_VERSION,
     index: options.index,
@@ -3316,6 +3328,7 @@ export async function runMergeStage(
       .map((test) => test.id),
     shards: { planned: shardPlan.shards.length, complete: completeShards, incomplete },
     layer1Files: work.files.length,
+    unrecordedFiles: work.files.filter((file) => !file.recorded).length,
     changedFiles: plan.changedFiles,
     notRun: {
       skipped: work.tests.filter((test) => test.state === 'skipped').length,

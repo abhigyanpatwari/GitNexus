@@ -98,16 +98,14 @@ export function registersUnseenTests(statements: readonly t.Statement[]): boolea
         const root = rootOf(statement.expression);
         if (root === null || !KNOWN.has(root)) return true;
         if (!SUITES.has(root) || statement.expression.type !== 'CallExpression') return false;
+        // A suite whose callback is not written inline (`describe('x', defineCases)`) registers
+        // what the inventory cannot see.
         const callback = statement.expression.arguments.at(-1);
-        if (
-          callback === undefined ||
-          (callback.type !== 'ArrowFunctionExpression' && callback.type !== 'FunctionExpression')
-        ) {
-          return false;
-        }
-        return callback.body.type === 'BlockStatement'
-          ? registersUnseenTests(callback.body.body)
-          : true;
+        return callback === undefined ||
+          (callback.type !== 'ArrowFunctionExpression' && callback.type !== 'FunctionExpression') ||
+          callback.body.type !== 'BlockStatement'
+          ? true
+          : registersUnseenTests(callback.body.body);
       }
       default:
         return true;
@@ -132,7 +130,9 @@ export interface Layer1Files {
  * Splits package-path test files into those Layer 1 must run and the rest. With `changed` (a
  * diff-scoped run, fingerprint plan E8) only pairs with a changed file's test count: the changed
  * files the whole-suite rule keeps, plus every file with a test whose key a changed file's test
- * has. A changed file the static view cannot vouch for finds its pairs among those files only.
+ * has. Files the static view cannot vouch for are not added: a changed test's possible duplicate
+ * in one (a test without a static key) is not looked for, and a changed file the static view
+ * cannot vouch for finds its pairs among the files run only.
  */
 export function layer1Files(
   repoRoot: string,

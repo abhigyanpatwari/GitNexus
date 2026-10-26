@@ -223,6 +223,7 @@ export function reportInput(options: InputOptions = {}): ReportInput {
       extraRoots: [],
     },
     layer1Files: 1,
+    unrecordedFiles: 0,
     changedFiles: null,
     notRun: { skipped: 0, unfinished: 0 },
     eligibleTests: [A, B, C],

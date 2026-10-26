@@ -366,6 +366,11 @@ describe('renderMarkdown', () => {
       ],
     },
     {
+      scope: 'a run with a file that wrote no record',
+      overrides: { unrecordedFiles: 2 },
+      lines: ['2 test files wrote no Layer 1 record'],
+    },
+    {
       scope: 'a run with tests that did not run',
       overrides: { notRun: { skipped: 3, unfinished: 1 } },
       lines: ['No fingerprint for 3 tests skipped at run time'],
@@ -374,7 +379,9 @@ describe('renderMarkdown', () => {
     const text = renderMarkdown(buildReport(reportInput({ overrides })));
     const found = text
       .split('\n')
-      .filter((line) => /^(Diff scope|Layer 1 ran|No fingerprint for)/.test(line));
+      .filter((line) =>
+        /^(Diff scope|Layer 1 ran|No fingerprint for|\d+ test files? wrote no)/.test(line),
+      );
     expect([found.length, lines.every((prefix, index) => found[index].startsWith(prefix))]).toEqual(
       [lines.length, true],
     );

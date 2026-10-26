@@ -163,6 +163,20 @@ and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS en
   (the workflow passes the merge commit's first parent) keeps only candidate pairs with a test of a
   test file the diff added or modified, and Layer 1 runs only those files (when the prefilter would
   keep them) and the files sharing their tests' checks-and-context keys, in the plan job without
-  coverage slices. A changed file the static view cannot vouch for finds its pairs among those
-  files only; a pull request that changes no test file gets an empty report saying so. The report
-  names the changed files.
+  coverage slices. A changed `__snapshots__/<name>.snap` counts as a change of its test file;
+  changed helper modules and fixtures do not. Given up (recall, disclosed in the report): an
+  unchanged file whose tests have no static key (helper-registered, dynamic `it.each` counts,
+  file snapshots) is not run, so a changed test's possible duplicate in it is not looked for; a
+  changed file the static view cannot vouch for finds its pairs among the files run only. A pull
+  request that changes no test file gets an empty report saying so. The report names the changed
+  files. The largest scope one changed file pulls in is the file itself
+  (`incremental-orchestration`, about 11% of the suite's weighted cost; 1.7% at the 99th
+  percentile), so the plan job's 60 minutes hold it.
+- Review (2026-10-26, eight-angle code review of E1-E8, findings verified against the code):
+  fixed a suite callback passed by name (`describe('x', defineCases)`) slipping past the
+  registration guard, an empty coverage slice failing its job, `--changed-since` accepted with the
+  controls fixture, the report counting unreported slices' files as run (it now counts unrecorded
+  files), snapshot-only diffs scoping nothing, and the diff-scope report claiming more than it
+  checks. Not changed: mutation shards never get integration tests (`mutationTarget` keeps only
+  pairs of two mutation-eligible tests, the pure-JS envelope); a slice that disagrees with the
+  plan stops the merge on purpose.

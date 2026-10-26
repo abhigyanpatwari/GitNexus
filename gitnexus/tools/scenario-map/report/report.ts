@@ -296,8 +296,10 @@ export interface ReportInput {
   seed: string;
   provenance: CollectedProvenance;
   eligibility: Eligibility;
-  /** How many test files Layer 1 ran (the work file's files; E7 skips the rest). */
+  /** How many test files Layer 1 was given (the work file's files; E7 skips the rest). */
   layer1Files: number;
+  /** How many of them wrote no record: a failed run, or a coverage slice that did not report. */
+  unrecordedFiles: number;
   /** A diff-scoped run's changed test files (E8); null for the whole suite. */
   changedFiles: readonly string[] | null;
   /**
@@ -462,6 +464,8 @@ export interface ScenarioMapReport {
      * other test shares (path-coverage/prefilter.ts).
      */
     layer1Files: number;
+    /** How many of those wrote no record (a failed run, or a coverage slice that did not report). */
+    unrecordedFiles: number;
     /** A diff-scoped run's changed test files: every pair has a test of one. Null: whole suite. */
     changedFiles: string[] | null;
     /** Layer 1 tests without a fingerprint: skipped at run time, or never finished. */
@@ -966,6 +970,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
       files: sortedUnique(input.eligibility.files),
       fingerprintFiles: input.eligibility.fingerprintFiles.length,
       layer1Files: input.layer1Files,
+      unrecordedFiles: input.unrecordedFiles,
       changedFiles: input.changedFiles === null ? null : sortedUnique(input.changedFiles),
       notRun: { ...input.notRun },
       delta: input.eligibility.delta,

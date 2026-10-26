@@ -529,8 +529,16 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
               'key no other test shares, so none of their pairs can be a duplicate, a possible ' +
               'duplicate or a table row.'
             : `Layer 1 ran ${eligibility.layer1Files} of them: the changed files and the files ` +
-              "sharing their tests' checks-and-context keys; no test of another file can be a " +
-              "changed test's duplicate, possible duplicate or table row.",
+              "sharing their tests' checks-and-context keys. No other file's test shares a " +
+              "changed test's key; files with tests that have no static key (helper-registered, " +
+              'dynamic `it.each` counts, file snapshots) were not run, so a possible duplicate ' +
+              'of a changed test in one is not looked for.',
+        ]),
+    ...(eligibility.unrecordedFiles === 0
+      ? []
+      : [
+          `${plural(eligibility.unrecordedFiles, 'test file')} wrote no Layer 1 record (a failed ` +
+            'run, or a coverage slice that did not report): their tests have no fingerprint.',
         ]),
     ...(eligibility.notRun.skipped + eligibility.notRun.unfinished === 0
       ? []

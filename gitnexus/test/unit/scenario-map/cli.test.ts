@@ -219,6 +219,11 @@ describe('parseCliArgs', () => {
       /does not take --coverage/,
     ],
     [
+      'a diff scope of the controls fixture',
+      ['all', '--controls', '--changed-since', 'main'],
+      /not the controls fixture/,
+    ],
+    [
       'a diff scope on the coverage stage',
       ['coverage', '--index', '0', '--of', '2', '--changed-since', 'main'],
       /does not apply to the coverage stage/,
@@ -264,10 +269,15 @@ describe('runCli usage', () => {
   it('names the changed test files of a diff in the fingerprint scope, as package paths', () => {
     expect(
       changedTestFiles(
-        ['gitnexus/test/unit/a.test.ts', 'gitnexus/src/a.ts', 'README.md'],
-        ['test/unit/a.test.ts', 'test/unit/b.test.ts'],
+        [
+          'gitnexus/test/unit/a.test.ts',
+          'gitnexus/test/unit/__snapshots__/c.test.ts.snap',
+          'gitnexus/src/a.ts',
+          'gitnexus/test/helpers/h.ts',
+        ],
+        ['test/unit/a.test.ts', 'test/unit/b.test.ts', 'test/unit/c.test.ts'],
       ),
-    ).toEqual(['test/unit/a.test.ts']);
+    ).toEqual(['test/unit/a.test.ts', 'test/unit/c.test.ts']);
   });
 
   it('parses a diff base on plan and all', () => {

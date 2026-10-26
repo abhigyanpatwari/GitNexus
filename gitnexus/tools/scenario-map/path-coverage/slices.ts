@@ -10,7 +10,8 @@
  * slices' work files into the work file one Layer 1 run would write: one block table, every
  * test's indices remapped to it, files and tests in file order. A slice that did not report leaves
  * its files unrecorded with an error, so their tests are absent from the fingerprint and the report
- * counts the files as failed or unrecorded.
+ * counts the files as unrecorded. A slice that disagrees with the plan (other files, slice count,
+ * mode, extra roots or repeats: another checkout or `--mutation`) stops the merge.
  *
  * Slice file `coverage-slice-<index>.json` (schema version {@link COVERAGE_SLICE_SCHEMA_VERSION}):
  *   index, of     the slice and the number of slices

@@ -38,6 +38,12 @@ const SOURCES: Record<string, string> = {
     "  itSlow('twice', () => { expect(sub(sub(5, 1), 1)).toEqual(3); });",
     '});',
   ].join('\n'),
+  'test/unit/named-suite.test.ts': [
+    "import { defineCases } from '../helpers/cases';",
+    "import { div } from '../../src/div';",
+    "it('divides', () => { expect(div(6, 3)).toBe(2); });",
+    "describe('generated', defineCases);",
+  ].join('\n'),
   'test/unit/snapshot.test.ts': [
     "import { render } from '../../src/render';",
     "it('renders', () => { expect(render()).toMatchSnapshot(); });",
@@ -60,6 +66,7 @@ describe('layer1Files', () => {
         'test/unit/helper.test.ts',
         'test/unit/dynamic.test.ts',
         'test/unit/alias.test.ts',
+        'test/unit/named-suite.test.ts',
         'test/unit/snapshot.test.ts',
       ],
       skipped: ['test/unit/unique.test.ts'],
