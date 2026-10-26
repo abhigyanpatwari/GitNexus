@@ -356,6 +356,17 @@ accesses, value uses and inheritance edges. Register a `ScopeResolver` in
 `SCOPE_RESOLVERS` to participate; the old per-language migration flag and parallel
 call-resolution DAG were removed in RING4-1 #942.
 
+Method extraction still supplies graph properties and overload identity; scope
+extraction builds the declaration metadata used by resolution. Their repeated
+node-only signature callbacks share facts through `memoizeDeclarationFact`
+(`ingestion/method-extractors/declaration-facts.ts`). Each callback owns a WeakMap
+from the immutable parse tree to native node IDs, so separate traversal wrappers
+reuse one result without retaining old trees. Parameter facts are read-only;
+providers can map syntax wrappers to the same declaration identity. Each consumer
+keeps its own arity/type normalization. Owner-dependent flags and file-dependent
+receiver rules remain separate. The cache stays inside parser isolates; serialized
+graph/ParsedFile payloads and the persistent parse-cache format remain unchanged.
+
 A provider can explicitly restrict its edge mode. COBOL currently uses
 `callable-flow-only`: its established processor retains structural CALLS/IMPORTS,
 and scope resolution contributes procedure-pointer calls. Registration alone is

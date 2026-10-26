@@ -691,7 +691,8 @@ jobs:
   benchmarks:
     name: benchmarks (GITNEXUS_BENCH)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The callable size matrix runs 63 full analyses and 18 heap probes.
+    timeout-minutes: 30
     steps:
       # persist-credentials: false — this job only runs npm + vitest benchmarks
       # and never pushes; the default-persisted token in .git/config would be at
@@ -709,6 +710,19 @@ jobs:
           node --import tsx bench/python-scope/measure.mjs --check
           node --import tsx bench/python-scope/import-target-fingerprint.mjs --check
         working-directory: gitnexus
+
+      - name: Callable declaration facts / time / memory baseline
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/method-declaration-facts/measure.mjs --check --output method-declaration-facts.json
+        working-directory: gitnexus
+
+      - name: Upload callable declaration measurements
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: method-declaration-facts-benchmark
+          path: gitnexus/method-declaration-facts.json
+          retention-days: 5
 
       - name: Java wildcard-static route constant guards (#3110)
         if: ${{ !cancelled() }}

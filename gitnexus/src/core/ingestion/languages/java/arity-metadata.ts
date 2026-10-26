@@ -12,6 +12,7 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { javaMethodConfig } from '../../method-extractors/configs/jvm.js';
+import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 export interface JavaArityMetadata {
   readonly parameterCount: number | undefined;
@@ -23,12 +24,11 @@ export function computeJavaArityMetadata(fnNode: SyntaxNode): JavaArityMetadata 
   const params = javaMethodConfig.extractParameters?.(fnNode) ?? [];
 
   let hasVariadic = false;
-  const types: string[] = [];
+  let types = declarationParameterTypes(params);
   for (const p of params) {
     if (p.isVariadic) hasVariadic = true;
-    if (p.type !== null) types.push(p.type);
   }
-  if (hasVariadic) types.push('varargs');
+  if (hasVariadic) types = [...types, 'varargs'];
 
   const total = params.length;
   // For varargs methods, `parameterCount` (max) is unknown — any number of

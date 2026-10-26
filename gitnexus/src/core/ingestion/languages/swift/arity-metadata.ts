@@ -18,6 +18,7 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { swiftMethodConfig } from '../../method-extractors/configs/swift.js';
+import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 interface SwiftArityMetadata {
   readonly parameterCount: number | undefined;
@@ -30,13 +31,17 @@ export function computeSwiftArityMetadata(fnNode: SyntaxNode): SwiftArityMetadat
 
   let hasVariadic = false;
   let optionalCount = 0;
-  const types: string[] = [];
+  const sharedTypes = declarationParameterTypes(params);
+  // Scope signatures keep unknown positional slots; graph metadata omits them.
+  let types =
+    sharedTypes.length === params.length
+      ? sharedTypes
+      : params.map((parameter) => parameter.type ?? '');
   for (const p of params) {
     if (p.isVariadic) hasVariadic = true;
     else if (p.isOptional) optionalCount++;
-    types.push(p.type ?? '');
   }
-  if (hasVariadic) types.push('variadic');
+  if (hasVariadic) types = [...types, 'variadic'];
 
   const total = params.length;
   const parameterCount = hasVariadic ? undefined : total;

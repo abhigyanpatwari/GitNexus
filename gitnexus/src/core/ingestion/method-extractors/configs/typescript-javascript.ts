@@ -10,6 +10,7 @@ import type {
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { memoizeDeclarationFact } from '../declaration-facts.js';
 
 // ---------------------------------------------------------------------------
 // TS/JS helpers
@@ -308,7 +309,7 @@ const shared: Omit<MethodExtractionConfig, 'language'> = {
   },
 
   extractReturnType: extractTsJsReturnType,
-  extractParameters: extractTsJsParameters,
+  extractParameters: memoizeDeclarationFact(extractTsJsParameters),
   extractVisibility: extractTsJsVisibility,
 
   isStatic(node) {
