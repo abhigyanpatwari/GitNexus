@@ -28,6 +28,7 @@
 
 import { recordCommonJsModuleKind } from './module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { synthesizeTsJsClassIdentity } from './class-identity.js';
 import {
   findNodeAtRange,
   nodeToCapture,
@@ -420,6 +421,7 @@ export function emitTsScopeCaptures(
       groupedNodes[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+    synthesizeTsJsClassIdentity(grouped, groupedNodes);
 
     // Decompose each `import_statement` / re-export `export_statement`
     // so `interpretTsImport` sees the kind/source/name/alias markers
