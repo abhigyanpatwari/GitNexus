@@ -228,6 +228,13 @@ passes a route's URL to a callee not proven to be a wrapper is counted on the
 Route as `unverifiedConsumers` (proven consumers and the route's own file
 excluded), and `api_impact` then reports its consumer count as a lower bound.
 
+A `FETCHES` edge is file-level. Its reason also names the callables whose spans
+contain the request sites (`|via:<id>`, under the same containment rule as the
+R3-6 sink set). `api_impact` follows their `CALLS` edges one level up and lists
+those callers as `indirectConsumers`, apart from the direct count and outside
+the risk level: they never mention the URL, so no edge of their own could reach
+the route. An index built before this attribution carries no such list.
+
 An inline Express handler resolves to the anonymous Function node the capture
 layer names by position, so its Route carries a `handlerSymbolId`. In a file
 with several routes, response keys come from that handler's lines rather than
@@ -348,6 +355,17 @@ using `ParsedFile`, `SemanticModel` and provider hooks. It emits resolved calls,
 accesses, value uses and inheritance edges. Register a `ScopeResolver` in
 `SCOPE_RESOLVERS` to participate; the old per-language migration flag and parallel
 call-resolution DAG were removed in RING4-1 #942.
+
+Method extraction still supplies graph properties and overload identity; scope
+extraction builds the declaration metadata used by resolution. Their repeated
+node-only signature callbacks share facts through `memoizeDeclarationFact`
+(`ingestion/method-extractors/declaration-facts.ts`). Each callback owns a WeakMap
+from the immutable parse tree to native node IDs, so separate traversal wrappers
+reuse one result without retaining old trees. Parameter facts are read-only;
+providers can map syntax wrappers to the same declaration identity. Each consumer
+keeps its own arity/type normalization. Owner-dependent flags and file-dependent
+receiver rules remain separate. The cache stays inside parser isolates; serialized
+graph/ParsedFile payloads and the persistent parse-cache format remain unchanged.
 
 A provider can explicitly restrict its edge mode. COBOL currently uses
 `callable-flow-only`: its established processor retains structural CALLS/IMPORTS,

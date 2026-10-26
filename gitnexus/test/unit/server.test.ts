@@ -187,31 +187,44 @@ describe('createMCPServer', () => {
     }
   });
 
-  it('keeps repo optional when a default repo is configured', async () => {
-    const backend = createMockBackend({
-      listRepos: vi.fn().mockResolvedValue([
-        { name: 'alpha', path: '/tmp/alpha' },
-        { name: 'beta', path: '/tmp/beta' },
-      ]),
-    });
-    const repositoryPolicy = await createMcpRepositoryPolicy(backend, {
-      GITNEXUS_MCP_DEFAULT_REPO: 'alpha',
-    });
-    const server = createMCPServer(backend, { repositoryPolicy });
-    const client = new Client({ name: 'default-repo-client', version: '0.0.0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  it.each([{ GITNEXUS_MCP_DEFAULT_REPO: 'alpha' }, { GITNEXUS_MCP_ALLOWED_REPOS: 'alpha' }])(
+    'advertises the resolved repository default in tool schemas (%j)',
+    async (env) => {
+      const backend = createMockBackend({
+        listRepos: vi.fn().mockResolvedValue([
+          { name: 'alpha', path: '/tmp/alpha' },
+          { name: 'beta', path: '/tmp/beta' },
+        ]),
+      });
+      const repositoryPolicy = await createMcpRepositoryPolicy(backend, env);
+      const server = createMCPServer(backend, { repositoryPolicy });
+      const client = new Client({ name: 'default-repo-client', version: '0.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
-    try {
-      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-      const tools = await client.listTools();
-      const query = tools.tools.find((tool) => tool.name === 'query');
+      try {
+        await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+        const tools = await client.listTools();
+        const query = tools.tools.find((tool) => tool.name === 'query');
 
-      expect(query?.inputSchema.required).not.toContain('repo');
-    } finally {
-      await client.close();
-      await server.close();
-    }
-  });
+        expect(query?.inputSchema.required).not.toContain('repo');
+        expect(query?.inputSchema.properties?.repo).toMatchObject({
+          default: '/tmp/alpha',
+          description: expect.stringContaining('"alpha"'),
+        });
+        await client.callTool({ name: 'query', arguments: { search_query: 'auth' } });
+        expect(backend.callTool).toHaveBeenLastCalledWith('query', {
+          search_query: 'auth',
+          repo: '/tmp/alpha',
+        });
+        expect(
+          GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.properties.repo,
+        ).not.toHaveProperty('default');
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    },
+  );
 
   it('requires repo when multiple allowed repositories are visible without a default', async () => {
     const backend = createMockBackend({
@@ -261,9 +274,9 @@ describe('getNextStepHint (via tool call response)', () => {
   });
 
   const QUERY_HINT_BASE =
-    '\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>", repo: "demo"}) to see categorized refs and process participation.';
+    'Use context({uid: "<id>", repo: "demo"}) for a symbol\'s references and processes.';
 
-  it('query hint is unchanged when include_content is not set', async () => {
+  it('query hint uses the returned identity and repository', async () => {
     const backend = createMockBackend({
       callTool: vi.fn().mockResolvedValue({ processes: [] }),
     });
@@ -271,8 +284,8 @@ describe('getNextStepHint (via tool call response)', () => {
       search_query: 'auth',
       repo: 'demo',
     });
-    expect(text.endsWith(QUERY_HINT_BASE)).toBe(true);
-    expect(text).not.toContain('context({uid:');
+    expect(JSON.parse(text).next).toBe(QUERY_HINT_BASE);
+    expect(text).not.toContain('content_truncated');
   });
 
   it('query hint names the context({uid, include_content}) fallback when include_content is true', async () => {
@@ -284,11 +297,9 @@ describe('getNextStepHint (via tool call response)', () => {
       repo: 'demo',
       include_content: true,
     });
-    expect(
-      text.endsWith(
-        `${QUERY_HINT_BASE} For source of a process_symbols row without content, use context({uid: "<id>", include_content: true, repo: "demo"}).`,
-      ),
-    ).toBe(true);
+    expect(JSON.parse(text).next).toBe(
+      `${QUERY_HINT_BASE} Source previews marked content_truncated are incomplete; use context({uid: "<id>", include_content: true, repo: "demo"}) or read_file with a bounded line range for more.`,
+    );
   });
 
   it('grep hint converts the 1-based hit line to a 0-based read_file window', async () => {
@@ -384,7 +395,45 @@ describe('getNextStepHint rename', () => {
 });
 
 describe('MCP output budgets', () => {
-  it('leaves the complete formatted response unchanged when no budget is configured', async () => {
+  it('serializes query previews and diagnostics as one JSON document', async () => {
+    const result = {
+      processes: [{ id: 'process-1', symbol_count: 2 }],
+      process_symbols: [
+        { id: 'Function:small', process_id: 'process-1', content: 'function small() {}' },
+        {
+          id: 'Function:large',
+          process_id: 'process-1',
+          content: 'large preview',
+          content_truncated: true,
+        },
+      ],
+      definitions: [
+        {
+          id: 'File:large.ts',
+          filePath: 'large.ts',
+          content: 'file preview',
+          content_truncated: true,
+        },
+      ],
+      warning: 'Some keyword indexes are unavailable',
+      partial: true,
+      staleness: { status: 'behind', commitsBehind: 2 },
+      contentAvailability: 'available',
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const { text, isError } = await callToolThroughServer(backend, 'query', {
+      search_query: 'large',
+      include_content: true,
+    });
+
+    expect(isError).toBe(false);
+    const { next, ...body } = JSON.parse(text);
+    expect(body).toEqual(result);
+    expect(next).toContain('read_file');
+    expect(result).not.toHaveProperty('next');
+  });
+
+  it('preserves small query data and guidance without source omissions', async () => {
     const previous = process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
     delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
     try {
@@ -395,8 +444,10 @@ describe('MCP output budgets', () => {
         search_query: 'auth',
       });
       expect(isError).toBe(false);
-      expect(text).toContain('"payload":"complete"');
-      expect(text).toContain('**Next:**');
+      expect(JSON.parse(text)).toMatchObject({
+        payload: 'complete',
+        next: expect.stringContaining('context'),
+      });
       expect(text.endsWith('\n…')).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;

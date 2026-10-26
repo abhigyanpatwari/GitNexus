@@ -333,18 +333,31 @@ export class McpRepositoryPolicy {
   }
 
   toolForMcp(tool: GitNexusTool): GitNexusTool {
-    if (!this.restricted) return tool;
+    const defaultRepo =
+      this.defaultRepo ??
+      (this.restricted && this.allowed.length === 1 ? this.allowed[0] : undefined);
+    if (!this.restricted && !defaultRepo) return tool;
     const properties = { ...tool.inputSchema.properties };
     const repo = properties.repo;
     if (repo && typeof repo === 'object') {
+      const description = this.restricted
+        ? 'Allowed indexed repository name or path. Group-mode values are unavailable.'
+        : repo.description;
       properties.repo = {
         ...repo,
-        description: 'Allowed indexed repository name or path. Group-mode values are unavailable.',
+        description: defaultRepo
+          ? `${description} Default repository: ${JSON.stringify(defaultRepo.name)}.`
+          : description,
+        ...(defaultRepo ? { default: defaultRepo.path } : {}),
       };
     }
-    delete properties.subgroup;
-    delete properties.crossDepth;
-    const description = scrubGroupDescription(tool.description);
+    if (this.restricted) {
+      delete properties.subgroup;
+      delete properties.crossDepth;
+    }
+    const description = this.restricted
+      ? scrubGroupDescription(tool.description)
+      : tool.description;
     return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   }
 

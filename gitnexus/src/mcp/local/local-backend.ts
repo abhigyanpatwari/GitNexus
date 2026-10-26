@@ -154,6 +154,7 @@ import {
   QUERY_DEFAULT_MAX_SYMBOLS,
   QUERY_MAX_LIMIT,
   QUERY_MAX_MAX_SYMBOLS,
+  QUERY_CONTENT_MAX_CHARS,
   CONTEXT_CHAIN_MAX_DEPTH,
   CHECKOUT_SOURCE_TOOLS,
   READ_FILE_DEFAULT_MAX_LINES,
@@ -1444,6 +1445,13 @@ interface ApiImpactRoute {
   middlewareDetection?: 'partial';
   middlewareNote?: string;
   consumers: Array<{ name: string; file: string; accesses: string[]; attributionNote?: string }>;
+  /**
+   * Callers of the function that sends the request, one level up (#3644).
+   * Present only when a FETCHES edge names that function; an index built before
+   * the attribution has none. Direct consumer files and the handler file are
+   * left out, so an entry is a file the direct count does not already cover.
+   */
+  indirectConsumers?: ApiImpactIndirectConsumer[];
   mismatches?: Array<{
     consumer: string;
     field: string;
@@ -1459,7 +1467,62 @@ interface ApiImpactRoute {
     epistemic?: 'lower-bound';
     unverifiedConsumers?: number;
     boundaries?: string[];
+    /** Distinct files among `indirectConsumers`; not part of `riskLevel`. */
+    indirectConsumers?: number;
   };
+}
+
+interface ApiImpactIndirectConsumer {
+  name: string;
+  file: string;
+  /** Name of the requesting function this caller reaches the route through. */
+  via: string;
+}
+
+/** A CALLS edge into one of the requesting functions a FETCHES reason names. */
+interface RequestFunctionCaller {
+  viaId: string;
+  viaName: string;
+  name: string;
+  filePath: string;
+}
+
+/**
+ * The one-level callers of a route's requesting functions that the direct
+ * consumer list does not already cover. `undefined` when no consumer edge of
+ * the route names a requesting function, so the field stays absent instead of
+ * claiming an empty result the index could not have produced.
+ */
+function indirectConsumersOf(
+  route: {
+    filePath: string;
+    consumers: Array<{ filePath: string; viaSymbolIds?: string[] }>;
+  },
+  callersByVia: ReadonlyMap<string, RequestFunctionCaller[]>,
+): ApiImpactIndirectConsumer[] | undefined {
+  const directFiles = new Set(route.consumers.map((c) => c.filePath));
+  const seen = new Set<string>();
+  const out: ApiImpactIndirectConsumer[] = [];
+  let attributed = false;
+  for (const consumer of route.consumers) {
+    for (const viaId of consumer.viaSymbolIds ?? []) {
+      attributed = true;
+      for (const caller of callersByVia.get(viaId) ?? []) {
+        if (caller.filePath === route.filePath || directFiles.has(caller.filePath)) continue;
+        const key = `${caller.filePath}\u0000${caller.name}\u0000${caller.viaName}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ name: caller.name, file: caller.filePath, via: caller.viaName });
+      }
+    }
+  }
+  if (!attributed) return undefined;
+  return out.sort(
+    (a, b) =>
+      compareCodeUnits(a.file, b.file) ||
+      compareCodeUnits(a.name, b.name) ||
+      compareCodeUnits(a.via, b.via),
+  );
 }
 
 interface RouteRuntimeEvidence {
@@ -3454,21 +3517,10 @@ export class LocalBackend {
     >();
     const definitions: any[] = []; // standalone symbols not in any process
 
-    // Batch-fetch process participation, cohesion, and (optionally) content for
-    // ALL matched symbols in 2-3 graph queries instead of 2-3 *per symbol*. The
-    // previous per-symbol loop issued up to 3N sequential pool round-trips
-    // (searchLimit symbols × {STEP_IN_PROCESS, MEMBER_OF, content}); on a warm
-    // repo the IPC + query-setup overhead of those round-trips dominated query
-    // latency. Collapsing to `WHERE n.id IN $nodeIds` preserves identical output
-    // (the aggregation loop below is unchanged) while cutting the round-trips.
-    // Array params bind through the pool exactly as bm25Search's
-    // `WHERE n.id IN $nodeIds` already does. (Ported from gitnexus-enterprise
-    // PR #222 — N+1 → 2-3 batched queries.)
     const nodeIds = merged.map(([, m]) => m.data?.nodeId).filter((id): id is string => !!id);
 
     const processRowsByNode = new Map<string, any[]>();
     const cohesionByNode = new Map<string, { cohesion: number; module?: string }>();
-    const contentByNode = new Map<string, string>();
     // Set when a batched enrichment query throws a REAL failure (timeout, lock,
     // native fault) — NOT the benign "no Process/Community table" case, which is
     // a normal config (a repo analyzed without processes/communities) and must
@@ -3549,30 +3601,6 @@ export class LocalBackend {
         logQueryError('query:cluster-info', e);
         if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
       }
-
-      // Optionally fetch content for every matched symbol.
-      if (includeContent) {
-        try {
-          const rows = await executeParameterized(
-            repo.lbugPath,
-            `
-            MATCH (n)
-            WHERE n.id IN $nodeIds
-            RETURN n.id AS nodeId, n.content AS content
-          `,
-            { nodeIds: ids },
-          );
-          for (const row of rows) {
-            assertQueryIdentity(row, 'nodeId', 0);
-            const nid = row.nodeId ?? row[0];
-            contentByNode.set(nid, row.content ?? row[1]);
-          }
-        } catch (e) {
-          rethrowSymbolIdentityError(e);
-          logQueryError('query:content-fetch', e);
-          if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
-        }
-      }
     }
 
     // Aggregation is unchanged from the per-symbol version — it now reads the
@@ -3595,7 +3623,6 @@ export class LocalBackend {
       const coh = cohesionByNode.get(sym.nodeId);
       const cohesion = coh?.cohesion ?? 0;
       const module = coh?.module;
-      const content = includeContent ? contentByNode.get(sym.nodeId) : undefined;
 
       const symbolEntry = {
         id: sym.nodeId,
@@ -3605,7 +3632,6 @@ export class LocalBackend {
         startLine: toDisplayLine(sym.startLine),
         endLine: toDisplayLine(sym.endLine),
         ...(module ? { module } : {}),
-        ...(includeContent && content ? { content } : {}),
       };
 
       if (processRows.length === 0) {
@@ -3879,7 +3905,44 @@ export class LocalBackend {
       maxSymbolsPerProcess,
       chainByProcessId,
     });
+    const returnedDefinitions = definitions.slice(0, 20);
     timer.stop(); // formatting
+
+    if (includeContent) {
+      timer.start('content');
+      const targets = new Map<
+        string,
+        { id: string; content?: string; content_truncated?: boolean }
+      >();
+      for (const symbol of [...process_symbols, ...returnedDefinitions]) {
+        if (symbol.id && !targets.has(symbol.id)) targets.set(symbol.id, symbol);
+      }
+      const previewChars = Math.floor(QUERY_CONTENT_MAX_CHARS / Math.max(1, targets.size));
+      for (const ids of chunk([...targets.keys()], LBUG_QUERY_BATCH_SIZE)) {
+        try {
+          const rows = await executeParameterized(
+            repo.lbugPath,
+            `MATCH (n) WHERE n.id IN $nodeIds
+             RETURN n.id AS nodeId, substring(n.content, 1, $previewChars) AS content,
+                    size(n.content) > $previewChars AS contentTruncated`,
+            { nodeIds: ids, previewChars },
+          );
+          for (const row of rows) {
+            assertQueryIdentity(row, 'nodeId', 0);
+            const target = targets.get(row.nodeId ?? row[0]);
+            if (!target) continue;
+            const content = row.content ?? row[1];
+            if (content) target.content = content;
+            if (row.contentTruncated ?? row[2]) target.content_truncated = true;
+          }
+        } catch (e) {
+          rethrowSymbolIdentityError(e);
+          logQueryError('query:content-fetch', e);
+          if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+        }
+      }
+      timer.stop();
+    }
 
     // End-to-end wall time — deliberately a separate mark so callers can
     // compare sum(phases) vs wall to see how much Promise.all concurrency
@@ -4072,7 +4135,7 @@ export class LocalBackend {
     return {
       processes,
       process_symbols,
-      definitions: definitions.slice(0, 20), // cap standalone definitions
+      definitions: returnedDefinitions,
       timing,
       ...(contentAvailability ? { contentAvailability } : {}),
       ...(warnings.length > 0 && { warning: warnings.join(' ') }),
@@ -9739,6 +9802,7 @@ export class LocalBackend {
         filePath: string;
         accessedKeys?: string[];
         fetchCount?: number;
+        viaSymbolIds?: string[];
       }>;
     }>
   > {
@@ -9797,6 +9861,7 @@ export class LocalBackend {
           filePath: string;
           accessedKeys?: string[];
           fetchCount?: number;
+          viaSymbolIds?: string[];
         }>;
       }
     >();
@@ -9837,9 +9902,11 @@ export class LocalBackend {
         });
       }
       if (consumerName && consumerFile) {
-        // Parse accessed keys from reason field: "fetch-url-match|keys:data,pagination|fetches:3"
+        // Parse accessed keys from reason field:
+        // "fetch-url-match|keys:data,pagination|fetches:3|via:Function:src/api.ts:getGrants"
         let accessedKeys: string[] | undefined;
         let fetchCount: number | undefined;
+        let viaSymbolIds: string[] | undefined;
         if (fetchReason) {
           const keysMatch = fetchReason.match(/\|keys:([^|]+)/);
           if (keysMatch) {
@@ -9849,12 +9916,17 @@ export class LocalBackend {
           if (fetchesMatch) {
             fetchCount = parseInt(fetchesMatch[1], 10);
           }
+          // One field per requesting function (#3644); an id may hold any
+          // character but the separator.
+          const via = [...fetchReason.matchAll(/\|via:([^|]+)/g)].map((m) => m[1]);
+          if (via.length > 0) viaSymbolIds = via;
         }
         routeMap.get(id)!.consumers.push({
           name: consumerName,
           filePath: consumerFile,
           ...(accessedKeys ? { accessedKeys } : {}),
           ...(fetchCount && fetchCount > 1 ? { fetchCount } : {}),
+          ...(viaSymbolIds ? { viaSymbolIds } : {}),
         });
       }
     }
@@ -9897,6 +9969,49 @@ export class LocalBackend {
       }
     } catch {
       /* no ENTRY_POINT_OF edges yet */
+    }
+    return result;
+  }
+
+  /**
+   * Callers of the requesting functions a route's FETCHES reasons name, one
+   * CALLS hop up, keyed by the requesting function's id (#3644). One query for
+   * every route in the report. `undefined` when the query fails, so the caller
+   * leaves the field out rather than reporting an empty list it did not verify.
+   */
+  private async fetchRequestFunctionCallers(
+    repoId: string,
+    viaIds: string[],
+  ): Promise<Map<string, RequestFunctionCaller[]> | undefined> {
+    const result = new Map<string, RequestFunctionCaller[]>();
+    if (viaIds.length === 0) return result;
+    try {
+      const rows = await executeParameterized(
+        repoId,
+        `
+        MATCH (caller)-[r:CodeRelation]->(via)
+        WHERE r.type = 'CALLS' AND list_contains($viaIds, via.id)
+        RETURN DISTINCT via.id AS viaId, via.name AS viaName,
+               caller.name AS callerName, caller.filePath AS callerFile
+      `,
+        { viaIds },
+      );
+      for (const row of rows) {
+        const viaId = row.viaId ?? row[0];
+        const viaName = row.viaName ?? row[1];
+        const name = row.callerName ?? row[2];
+        const filePath = row.callerFile ?? row[3];
+        if (!viaId || !viaName || !name || !filePath) continue;
+        let list = result.get(viaId);
+        if (!list) {
+          list = [];
+          result.set(viaId, list);
+        }
+        list.push({ viaId, viaName, name, filePath });
+      }
+    } catch (e) {
+      logQueryError('api_impact:indirect-consumers', e);
+      return undefined;
     }
     return result;
   }
@@ -10307,6 +10422,15 @@ export class LocalBackend {
       routes.map((r) => r.id),
     );
 
+    // The FETCHES edge names the function that holds each request site; its
+    // callers, one level up, are consumers the file-level edge cannot see
+    // (#3644). Nothing to look up on an index built before that attribution.
+    const viaIds = new Set<string>();
+    for (const r of routes) {
+      for (const c of r.consumers) for (const id of c.viaSymbolIds ?? []) viaIds.add(id);
+    }
+    const callersByVia = await this.fetchRequestFunctionCallers(repo.lbugPath, [...viaIds]);
+
     // Count verbs per handler from the FULL match (before the method filter) so a
     // method-scoped query still flags a multi-verb handler's partial middleware.
     const routeCountByHandler = new Map<string, number>();
@@ -10360,6 +10484,9 @@ export class LocalBackend {
 
       const flows = flowMap.get(r.id) || [];
       const consumerCount = r.consumers.length;
+      const indirectConsumers =
+        callersByVia === undefined ? undefined : indirectConsumersOf(r, callersByVia);
+      const indirectFileCount = new Set(indirectConsumers?.map((c) => c.file)).size;
 
       // Risk level heuristic
       let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
@@ -10405,10 +10532,12 @@ export class LocalBackend {
             }
           : {}),
         consumers,
+        ...(indirectConsumers ? { indirectConsumers } : {}),
         ...(mismatches.length > 0 ? { mismatches } : {}),
         executionFlows: flows,
         impactSummary: {
           directConsumers: consumerCount,
+          ...(indirectConsumers ? { indirectConsumers: indirectFileCount } : {}),
           affectedFlows: flows.length,
           riskLevel,
           ...(warning ? { warning } : {}),

@@ -64,6 +64,7 @@ describe('mergeResult', () => {
       fetchURL: '/a',
       lineNumber: 1,
       target: { kind: 'unresolved' as const },
+      callPosition: { row: 0, column: 0 },
     };
     const second = {
       filePath: 'b.ts',
@@ -71,6 +72,7 @@ describe('mergeResult', () => {
       fetchURL: '/b',
       lineNumber: 2,
       target: { kind: 'member' as const },
+      callPosition: { row: 0, column: 0 },
     };
     mergeResult(target, { ...emptyResult(), fetchWrapperCalls: [first] });
     mergeResult(target, emptyResult());

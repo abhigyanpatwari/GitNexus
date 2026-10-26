@@ -409,11 +409,11 @@ the paid job. Only these watchdogs have Actions write permission.
 The protected `gitnexus-evolution` environment holds these four settings
 (configured and verified by the live probes below):
 
-| Setting | Kind | Purpose |
-| --- | --- | --- |
-| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN` | Secret | AWS role assumed through GitHub OIDC |
-| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID` | Secret | Dedicated runner instance |
-| `GITNEXUS_EVOLUTION_AWS_REGION` | Variable | Instance region |
+| Setting                                | Kind     | Purpose                                         |
+| -------------------------------------- | -------- | ----------------------------------------------- |
+| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN`      | Secret   | AWS role assumed through GitHub OIDC            |
+| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID`   | Secret   | Dedicated runner instance                       |
+| `GITNEXUS_EVOLUTION_AWS_REGION`        | Variable | Instance region                                 |
 | `GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC` | Variable | Actual weekly EventBridge stop, `DAY HH:MM` UTC |
 
 No long-lived AWS credential is stored. The AWS action obtains short-lived
@@ -874,6 +874,25 @@ ingestion quality and are not comparable with the replacement task. The new
 task ID, prompt, verification command, and oracle bytes produce a new task
 digest. Old agent patches are not available for rescoring; keep historical
 measurements unchanged and compare only runs with matching task contracts.
+
+## MCP response cost
+
+With `include_content: true`, queries share a 16,000-character preview allowance
+equally across unique symbols on the returned page. The database returns only
+those prefixes, after ranking and pagination. `content_truncated: true` marks
+incomplete source; every match remains present. Use `context` for a full symbol
+or `read_file` for a bounded file range. This applies to CLI, HTTP, and MCP
+queries; group queries already request no source content.
+
+MCP query guidance lives in the JSON `next` field. Explicit `maxTokens` retains
+its existing final text cap, which can truncate JSON; it does not change the
+query preview allowance. Payload reductions alone do not establish agent cost
+or completion-time improvements: previews can require follow-up reads.
+
+MCP tool schemas expose the configured default repository name and path. The
+sandbox already configures `/workspace` as its default, so the schema identifies
+`benchmark-target` without adding benchmark-specific instructions to task prompts.
+Compare stable and candidate runtimes using the same harness revision.
 
 ## Relation to the SWE-bench harness
 
