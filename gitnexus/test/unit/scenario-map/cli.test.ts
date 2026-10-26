@@ -61,6 +61,7 @@ import {
   effectiveShardPlan,
   estimateScenarioGroup,
   isolationOrder,
+  changedTestFiles,
   layer1FilesOf,
   mutationTarget,
   parseCliArgs,
@@ -211,6 +212,17 @@ describe('parseCliArgs', () => {
       /does not apply to the merge stage/,
     ],
     ['a coverage slice without its index', ['coverage', '--of', '4'], /coverage needs --index/],
+    ['a diff base that reads as a flag', ['plan', '--changed-since=-x'], /git revision/],
+    [
+      'a diff scope with slice files',
+      ['plan', '--changed-since', 'main', '--coverage', 'dir'],
+      /does not take --coverage/,
+    ],
+    [
+      'a diff scope on the coverage stage',
+      ['coverage', '--index', '0', '--of', '2', '--changed-since', 'main'],
+      /does not apply to the coverage stage/,
+    ],
     [
       'slice files on the coverage stage',
       ['coverage', '--index', '0', '--of', '4', '--coverage', 'dir'],
@@ -247,6 +259,23 @@ describe('runCli usage', () => {
       coverage.coverage,
       plan.coverage,
     ]).toEqual(['coverage', 3, 12, 'none', null, path.resolve('/base', 'slices')]);
+  });
+
+  it('names the changed test files of a diff in the fingerprint scope, as package paths', () => {
+    expect(
+      changedTestFiles(
+        ['gitnexus/test/unit/a.test.ts', 'gitnexus/src/a.ts', 'README.md'],
+        ['test/unit/a.test.ts', 'test/unit/b.test.ts'],
+      ),
+    ).toEqual(['test/unit/a.test.ts']);
+  });
+
+  it('parses a diff base on plan and all', () => {
+    expect(
+      ['plan', 'all'].map(
+        (stage) => parseCliArgs([stage, '--changed-since', 'HEAD^1'], '/base').changedSince,
+      ),
+    ).toEqual(['HEAD^1', 'HEAD^1']);
   });
 
   it.each([
@@ -385,6 +414,7 @@ function basePlan(): PlanFile {
       delta: { notValidated: [], rejected: [] },
       extraRoots: [],
     },
+    changedFiles: null,
     manifestDigest: DIGEST,
     costModel: { ...SCENARIO_COST_MODEL },
     shardPlan: {

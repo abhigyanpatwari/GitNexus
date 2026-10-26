@@ -511,13 +511,26 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
     '',
     `${eligibility.mode} mode: the fingerprint covers ${plural(eligibility.fingerprintFiles, 'test file')}; ` +
       `${plural(eligibility.files.length, 'test file')} are mutation-eligible.`,
+    ...(eligibility.changedFiles === null
+      ? []
+      : [
+          `Diff scope: only pairs with a test in the ${plural(eligibility.changedFiles.length, 'changed test file')} ` +
+            'were looked for' +
+            (eligibility.changedFiles.length === 0
+              ? '.'
+              : `: ${eligibility.changedFiles.map((file) => `\`${file}\``).join(', ')}.`),
+        ]),
     ...(eligibility.layer1Files === eligibility.fingerprintFiles
       ? []
       : [
-          `Layer 1 ran ${eligibility.layer1Files} of them; every test of the other ` +
-            `${eligibility.fingerprintFiles - eligibility.layer1Files} has a checks-and-context ` +
-            'key no other test shares, so none of their pairs can be a duplicate, a possible ' +
-            'duplicate or a table row.',
+          eligibility.changedFiles === null
+            ? `Layer 1 ran ${eligibility.layer1Files} of them; every test of the other ` +
+              `${eligibility.fingerprintFiles - eligibility.layer1Files} has a checks-and-context ` +
+              'key no other test shares, so none of their pairs can be a duplicate, a possible ' +
+              'duplicate or a table row.'
+            : `Layer 1 ran ${eligibility.layer1Files} of them: the changed files and the files ` +
+              "sharing their tests' checks-and-context keys; no test of another file can be a " +
+              "changed test's duplicate, possible duplicate or table row.",
         ]),
   ];
   const delta = eligibility.delta;

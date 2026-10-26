@@ -214,8 +214,15 @@ function components(pairs: readonly { a: string; b: string }[]): Map<string, str
   return byMember;
 }
 
-/** Candidate pairs, groups and stats of a set of tests (module header). Test ids must be unique. */
-export function findCandidates(tests: readonly CandidateTest[]): CandidateResult {
+/**
+ * Candidate pairs, groups and stats of a set of tests (module header). Test ids must be unique.
+ * `focus` (a diff-scoped run, fingerprint plan E8) keeps only the pairs with a focused test, before
+ * the groups are formed.
+ */
+export function findCandidates(
+  tests: readonly CandidateTest[],
+  focus: (id: string) => boolean = () => true,
+): CandidateResult {
   const items: Indexed[] = [...tests]
     .sort((p, q) => byText(p.id, q.id))
     .map((test) => ({ test, blocks: sortedBlocks(test.blocks) }));
@@ -240,6 +247,7 @@ export function findCandidates(tests: readonly CandidateTest[]): CandidateResult
 
   const raw = [...sources.values()]
     .sort((p, q) => p.i - q.i || p.j - q.j)
+    .filter(({ i, j }) => focus(items[i].test.id) || focus(items[j].test.id))
     .map(({ i, j, found }) => {
       const [x, y] = [items[i], items[j]];
       const shared = intersectionSize(x.blocks, y.blocks);

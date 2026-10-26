@@ -2,7 +2,8 @@
  * Locks the Layer 1 prefilter (tools/scenario-map/path-coverage/prefilter.ts): a file stays when a
  * test's checks-and-context key is shared, when its tests come from a helper or an alias the
  * inventory cannot see, when a call's instance count is not static, or when a body reads a file
- * snapshot; a file whose every test has a key no other test shares is skipped.
+ * snapshot; a file whose every test has a key no other test shares is skipped. A diff scope runs
+ * only the changed files the rule keeps and the files sharing a changed test's key.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -63,6 +64,25 @@ describe('layer1Files', () => {
       ],
       skipped: ['test/unit/unique.test.ts'],
     });
+  });
+
+  it.each([
+    { changed: 'test/unit/unique.test.ts', files: [] },
+    { changed: 'test/unit/shared.test.ts', files: ['test/unit/shared.test.ts'] },
+    { changed: 'test/unit/helper.test.ts', files: ['test/unit/helper.test.ts'] },
+  ])('in a diff scope, runs $changed only with what can pair with it', ({ changed, files }) => {
+    expect(layer1Files(root, FILES, new Set([changed])).files).toEqual(files);
+  });
+
+  it('in a diff scope, runs the files whose tests share a changed test key', () => {
+    const partner = 'test/unit/partner.test.ts';
+    writeFileSync(
+      path.join(root, 'gitnexus', partner),
+      SOURCES['test/unit/shared.test.ts'].split('\n').slice(0, 2).join('\n'),
+    );
+    expect(
+      layer1Files(root, [...FILES, partner], new Set(['test/unit/shared.test.ts'])).files,
+    ).toEqual(['test/unit/shared.test.ts', partner]);
   });
 
   it('keeps a file whose key another file shares', () => {

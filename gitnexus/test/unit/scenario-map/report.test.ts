@@ -345,6 +345,34 @@ describe('collectProvenance', () => {
 describe('renderMarkdown', () => {
   const markdown = renderMarkdown(buildReport(reportInput()));
 
+  it.each([
+    {
+      scope: 'a whole-suite run that ran every file',
+      overrides: {},
+      lines: [],
+    },
+    {
+      scope: 'a whole-suite run that skipped files',
+      overrides: { layer1Files: 0 },
+      lines: ['Layer 1 ran 0 of them; every test of the other 1 has a checks-and-context key'],
+    },
+    {
+      scope: 'a diff-scoped run',
+      overrides: { layer1Files: 0, changedFiles: ['test/unit/add.test.ts'] },
+      lines: [
+        'Diff scope: only pairs with a test in the 1 changed test file were looked for: ' +
+          '`test/unit/add.test.ts`.',
+        'Layer 1 ran 0 of them: the changed files and the files sharing',
+      ],
+    },
+  ])('says which files Layer 1 ran in $scope', ({ overrides, lines }) => {
+    const text = renderMarkdown(buildReport(reportInput({ overrides })));
+    const found = text.split('\n').filter((line) => /^(Diff scope|Layer 1 ran)/.test(line));
+    expect([found.length, lines.every((prefix, index) => found[index].startsWith(prefix))]).toEqual(
+      [lines.length, true],
+    );
+  });
+
   it('leads with the scenario fingerprint and leaves the mutation sections out of a fingerprint-only run', () => {
     const fingerprintOnly = renderMarkdown(buildReport({ ...reportInput(), mutation: 'none' }));
     expect([

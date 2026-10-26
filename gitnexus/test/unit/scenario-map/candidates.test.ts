@@ -3,7 +3,8 @@
  * (the size-ratio and rare-block prefix filters never drop a qualifying pair), pairs sharing a
  * checks-and-context key whatever their blocks, connected components with deterministic ids, the
  * identical-blocks flag (KTD5 caps a non-identical pair at weak), the path-unattributable flag of
- * concurrent tests (design §5.2) and the largest group's size for shard planning.
+ * concurrent tests (design §5.2), the largest group's size for shard planning, and the focus of a
+ * diff-scoped run (pairs without a focused test dropped before the groups form).
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -206,6 +207,31 @@ describe('findCandidates: concurrent tests', () => {
       ['a', 'b', true],
       ['a', 'c', false],
       ['b', 'c', true],
+    ]);
+  });
+});
+
+describe('findCandidates: focus', () => {
+  it('keeps only pairs with a focused test, and groups only those', () => {
+    const result = findCandidates(
+      [
+        test('a', [1, 2], { checksContext: 'k' }),
+        test('b', [1, 2], { checksContext: 'k' }),
+        test('c', [1, 2], { checksContext: 'k' }),
+        test('d', [7, 8], { checksContext: 'j' }),
+        test('e', [7, 8], { checksContext: 'j' }),
+      ],
+      (id) => id === 'a',
+    );
+    expect([
+      result.pairs.map((pair) => [pair.a, pair.b]),
+      result.groups.map((group) => group.tests),
+    ]).toEqual([
+      [
+        ['a', 'b'],
+        ['a', 'c'],
+      ],
+      [['a', 'b', 'c']],
     ]);
   });
 });

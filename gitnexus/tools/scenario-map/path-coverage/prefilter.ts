@@ -121,12 +121,24 @@ const FILE_SNAPSHOT = /\.(?:toMatchSnapshot|toMatchFileSnapshot|toThrowErrorMatc
 export interface Layer1Files {
   /** The files Layer 1 runs, in input order. */
   files: string[];
-  /** The others: every test has a checks-and-context key no other test shares. */
+  /**
+   * The others: every test has a checks-and-context key no other test shares, or (diff scope) the
+   * file is neither changed nor shares a key with a changed file's test.
+   */
   skipped: string[];
 }
 
-/** Splits package-path test files into those Layer 1 must run and the rest. */
-export function layer1Files(repoRoot: string, files: readonly string[]): Layer1Files {
+/**
+ * Splits package-path test files into those Layer 1 must run and the rest. With `changed` (a
+ * diff-scoped run, fingerprint plan E8) only pairs with a changed file's test count: the changed
+ * files the whole-suite rule keeps, plus every file with a test whose key a changed file's test
+ * has. A changed file the static view cannot vouch for finds its pairs among those files only.
+ */
+export function layer1Files(
+  repoRoot: string,
+  files: readonly string[],
+  changed: ReadonlySet<string> | null = null,
+): Layer1Files {
   const inventory = loadStaticInventory(repoRoot, files);
   const options = { snapshots: fsSnapshotReader(repoRoot), modules: fsModuleReader(repoRoot) };
   const keep = new Set(inventory.skipped);
@@ -158,6 +170,20 @@ export function layer1Files(repoRoot: string, files: readonly string[]): Layer1F
   const count = new Map<string, number>();
   for (const { key } of keys) count.set(key, (count.get(key) ?? 0) + 1);
   for (const { file, key } of keys) if ((count.get(key) ?? 0) > 1) keep.add(file);
+  if (changed !== null) {
+    // Keys another test also has: a key only one test has pairs with nothing.
+    const changedKeys = new Set(
+      keys
+        .filter(({ file, key }) => changed.has(file) && (count.get(key) ?? 0) > 1)
+        .map(({ key }) => key),
+    );
+    const scoped = new Set([
+      ...[...keep].filter((file) => changed.has(file)),
+      ...keys.filter(({ key }) => changedKeys.has(key)).map(({ file }) => file),
+    ]);
+    keep.clear();
+    for (const file of scoped) keep.add(file);
+  }
   return {
     files: files.filter((file) => keep.has(file)),
     skipped: files.filter((file) => !keep.has(file)),

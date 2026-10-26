@@ -149,3 +149,10 @@ and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS en
     plain run. The shared host's other suites made the local timings meaningless (a plain run of
     `resolvers/rust` skipped all 255 tests after 798 s while Layer 1 passed them in 192 s); the
     first CI run measures it.
+- **E8** (optimisation) A labelled pull request's run is diff-scoped: `plan --changed-since <ref>`
+  (the workflow passes the merge commit's first parent) keeps only candidate pairs with a test of a
+  test file the diff added or modified, and Layer 1 runs only those files (when the prefilter would
+  keep them) and the files sharing their tests' checks-and-context keys, in the plan job without
+  coverage slices. A changed file the static view cannot vouch for finds its pairs among those
+  files only; a pull request that changes no test file gets an empty report saying so. The report
+  names the changed files.

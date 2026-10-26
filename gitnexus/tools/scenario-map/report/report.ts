@@ -298,6 +298,8 @@ export interface ReportInput {
   eligibility: Eligibility;
   /** How many test files Layer 1 ran (the work file's files; E7 skips the rest). */
   layer1Files: number;
+  /** A diff-scoped run's changed test files (E8); null for the whole suite. */
+  changedFiles: readonly string[] | null;
   /** Phase 0 ids of every eligible test (the M of "N of M evaluated"). */
   eligibleTests: readonly string[];
   shards: ShardStatus;
@@ -455,6 +457,8 @@ export interface ScenarioMapReport {
      * other test shares (path-coverage/prefilter.ts).
      */
     layer1Files: number;
+    /** A diff-scoped run's changed test files: every pair has a test of one. Null: whole suite. */
+    changedFiles: string[] | null;
     delta: EligibilityDelta | null;
   };
   layer0: Layer0Section;
@@ -955,6 +959,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
       files: sortedUnique(input.eligibility.files),
       fingerprintFiles: input.eligibility.fingerprintFiles.length,
       layer1Files: input.layer1Files,
+      changedFiles: input.changedFiles === null ? null : sortedUnique(input.changedFiles),
       delta: input.eligibility.delta,
     },
     layer0: layer0Section(input.layer0, eligibleRepoFiles),
