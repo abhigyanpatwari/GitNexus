@@ -1,4 +1,4 @@
-name: Callable end-to-end experiment
+name: Callable time and memory experiment
 
 on:
   push:
@@ -18,8 +18,12 @@ jobs:
   measure:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      matrix:
+        corpus: [repository, declarations]
+      fail-fast: false
     env:
-      CORPUS: declarations
+      CORPUS: ${{ matrix.corpus }}
       GITNEXUS_MEMORY: 'off'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,13 +37,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for variant in control initial candidate; do
+          for variant in reference candidate; do
             runtime="$RUNNER_TEMP/callable-$variant"
             mkdir "$runtime"
-            revision=b31dfb73c368f3d1254cfafb6eb6b2ed7453e221
-            if [[ "$variant" == control ]]; then
-              revision=f759753794fda8e399d670ef7f04b9d7473d6082
-            fi
+            revision=e6744edcadbf93e789ab21a88e9e707cb3059ce7
             git archive "$revision" | tar -x -C "$runtime"
             ln -s "$GITHUB_WORKSPACE/gitnexus/node_modules" "$runtime/gitnexus/node_modules"
             if [[ "$variant" == candidate ]]; then
@@ -51,7 +52,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 docs/optimize/callable-end-to-end-experiment/measure.py \
+          python3 docs/optimize/callable-end-to-end-experiment/memory.py \
             --runtime-parent "$RUNNER_TEMP" --corpus "$CORPUS" \
             --harness "$GITHUB_WORKSPACE/gitnexus/bench/method-declaration-facts/measure.mjs" \
             --output "$RUNNER_TEMP/callable-results"

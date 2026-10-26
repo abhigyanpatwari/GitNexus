@@ -1,90 +1,357 @@
-diff --git a/gitnexus/src/core/analyzer-identity.ts b/gitnexus/src/core/analyzer-identity.ts
-index 5782a5724..9bd3902a1 100644
---- a/gitnexus/src/core/analyzer-identity.ts
-+++ b/gitnexus/src/core/analyzer-identity.ts
-@@ -2241,8 +2241,13 @@ function loadIdentityCache(
- }
-
- const CACHE_GUARD_PROBE_SCRIPT = String.raw`
--const fs = require('node:fs/promises');
-+const fs = require('node:fs');
-+const { performance } = require('node:perf_hooks');
- const crypto = require('node:crypto');
-+const syncFs = {
-+  lstat: fs.lstatSync, stat: fs.statSync,
-+  readlink: fs.readlinkSync, readdir: fs.readdirSync,
-+};
- const state = (value) => ({
-   dev: String(value.dev), ino: String(value.ino), mode: String(value.mode),
-   nlink: String(value.nlink), size: String(value.size),
-@@ -2272,30 +2277,30 @@ const inventoryDigest = (entries) => {
-   for (const entry of normalized) frame(hash, [entry.name, entry.kind]);
-   return 'sha256:' + hash.digest('hex');
- };
--const probe = async (request) => {
-+const probe = async (request, io) => {
-   try {
--    const link = await fs.lstat(request.absolutePath, { bigint: true });
-+    const link = await io.lstat(request.absolutePath, { bigint: true });
-     const type = link.isDirectory() ? 'directory'
-       : link.isFile() ? 'file'
-       : link.isSymbolicLink() ? 'symlink' : 'other';
-     if (request.mode === 'link') return {
-       type,
-       state: state(link),
--      ...(type === 'symlink' ? { symlinkTarget: await fs.readlink(request.absolutePath) } : {}),
-+      ...(type === 'symlink' ? { symlinkTarget: await io.readlink(request.absolutePath) } : {}),
-     };
-     if (request.mode === 'directory-inventory') {
-       if (!link.isDirectory() || link.isSymbolicLink()) return null;
-       const entriesDigest = inventoryDigest(
--        await fs.readdir(request.absolutePath, { withFileTypes: true }),
-+        await io.readdir(request.absolutePath, { withFileTypes: true }),
-       );
--      const after = await fs.lstat(request.absolutePath, { bigint: true });
-+      const after = await io.lstat(request.absolutePath, { bigint: true });
-       if (JSON.stringify(state(link)) !== JSON.stringify(state(after))) return null;
-       return { type: 'directory-inventory', state: state(after), entriesDigest };
+diff --git a/gitnexus/src/core/ingestion/languages/csharp/arity-metadata.ts b/gitnexus/src/core/ingestion/languages/csharp/arity-metadata.ts
+index 92b377352..20a63b375 100644
+--- a/gitnexus/src/core/ingestion/languages/csharp/arity-metadata.ts
++++ b/gitnexus/src/core/ingestion/languages/csharp/arity-metadata.ts
+@@ -19,6 +19,7 @@
+ 
+ import type { SyntaxNode } from '../../utils/ast-helpers.js';
+ import { csharpMethodConfig } from '../../method-extractors/configs/csharp.js';
++import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
+ 
+ interface CsharpArityMetadata {
+   readonly parameterCount: number | undefined;
+@@ -31,13 +32,12 @@ export function computeCsharpArityMetadata(fnNode: SyntaxNode): CsharpArityMetad
+ 
+   let hasVariadic = false;
+   let optionalCount = 0;
+-  const types: string[] = [];
++  let types = declarationParameterTypes(params);
+   for (const p of params) {
+     if (p.isVariadic) hasVariadic = true;
+     else if (p.isOptional) optionalCount++;
+-    if (p.type !== null) types.push(p.type);
+   }
+-  if (hasVariadic) types.push('params');
++  if (hasVariadic) types = [...types, 'params'];
+ 
+   const total = params.length;
+   // `params int[] args` declares one formal param but accepts any arg
+diff --git a/gitnexus/src/core/ingestion/languages/dart/arity-metadata.ts b/gitnexus/src/core/ingestion/languages/dart/arity-metadata.ts
+index 28ab666c7..6e569f6a8 100644
+--- a/gitnexus/src/core/ingestion/languages/dart/arity-metadata.ts
++++ b/gitnexus/src/core/ingestion/languages/dart/arity-metadata.ts
+@@ -12,6 +12,7 @@
+ 
+ import type { SyntaxNode } from '../../utils/ast-helpers.js';
+ import { dartMethodConfig } from '../../method-extractors/configs/dart.js';
++import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
+ 
+ interface DartArityMetadata {
+   parameterCount: number | undefined;
+@@ -29,10 +30,9 @@ export function computeDartArityMetadata(fnNode: SyntaxNode): DartArityMetadata
+   const params = dartMethodConfig.extractParameters?.(fnNode) ?? [];
+ 
+   let optionalCount = 0;
+-  const types: string[] = [];
++  const types = declarationParameterTypes(params);
+   for (const p of params) {
+     if (p.isOptional) optionalCount++;
+-    if (p.type !== null) types.push(p.type);
+   }
+ 
+   const total = params.length;
+diff --git a/gitnexus/src/core/ingestion/languages/java/arity-metadata.ts b/gitnexus/src/core/ingestion/languages/java/arity-metadata.ts
+index 47cccbff9..75a92a48a 100644
+--- a/gitnexus/src/core/ingestion/languages/java/arity-metadata.ts
++++ b/gitnexus/src/core/ingestion/languages/java/arity-metadata.ts
+@@ -12,6 +12,7 @@
+ 
+ import type { SyntaxNode } from '../../utils/ast-helpers.js';
+ import { javaMethodConfig } from '../../method-extractors/configs/jvm.js';
++import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
+ 
+ export interface JavaArityMetadata {
+   readonly parameterCount: number | undefined;
+@@ -23,12 +24,11 @@ export function computeJavaArityMetadata(fnNode: SyntaxNode): JavaArityMetadata
+   const params = javaMethodConfig.extractParameters?.(fnNode) ?? [];
+ 
+   let hasVariadic = false;
+-  const types: string[] = [];
++  let types = declarationParameterTypes(params);
+   for (const p of params) {
+     if (p.isVariadic) hasVariadic = true;
+-    if (p.type !== null) types.push(p.type);
+   }
+-  if (hasVariadic) types.push('varargs');
++  if (hasVariadic) types = [...types, 'varargs'];
+ 
+   const total = params.length;
+   // For varargs methods, `parameterCount` (max) is unknown — any number of
+diff --git a/gitnexus/src/core/ingestion/languages/kotlin/arity-metadata.ts b/gitnexus/src/core/ingestion/languages/kotlin/arity-metadata.ts
+index 5cdf76cf6..6f54ef673 100644
+--- a/gitnexus/src/core/ingestion/languages/kotlin/arity-metadata.ts
++++ b/gitnexus/src/core/ingestion/languages/kotlin/arity-metadata.ts
+@@ -1,5 +1,6 @@
+ import type { SyntaxNode } from '../../utils/ast-helpers.js';
+ import { kotlinMethodConfig } from '../../method-extractors/configs/jvm.js';
++import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
+ 
+ export interface KotlinArityMetadata {
+   readonly parameterCount: number | undefined;
+@@ -10,12 +11,11 @@ export interface KotlinArityMetadata {
+ export function computeKotlinArityMetadata(fnNode: SyntaxNode): KotlinArityMetadata {
+   const params = kotlinMethodConfig.extractParameters?.(fnNode) ?? [];
+   let hasVararg = false;
+-  const parameterTypes: string[] = [];
++  let parameterTypes = declarationParameterTypes(params);
+   for (const param of params) {
+     if (param.isVariadic) hasVararg = true;
+-    if (param.type !== null) parameterTypes.push(param.type);
+   }
+-  if (hasVararg) parameterTypes.push('vararg');
++  if (hasVararg) parameterTypes = [...parameterTypes, 'vararg'];
+ 
+   const required = params.filter((p) => !p.isOptional && !p.isVariadic).length;
+   return {
+diff --git a/gitnexus/src/core/ingestion/languages/php/arity-metadata.ts b/gitnexus/src/core/ingestion/languages/php/arity-metadata.ts
+index 40662bd61..95506884b 100644
+--- a/gitnexus/src/core/ingestion/languages/php/arity-metadata.ts
++++ b/gitnexus/src/core/ingestion/languages/php/arity-metadata.ts
+@@ -21,6 +21,7 @@
+ 
+ import type { SyntaxNode } from '../../utils/ast-helpers.js';
+ import { phpMethodConfig } from '../../method-extractors/configs/php.js';
++import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
+ 
+ interface PhpArityMetadata {
+   readonly parameterCount: number | undefined;
+@@ -33,7 +34,7 @@ export function computePhpArityMetadata(fnNode: SyntaxNode): PhpArityMetadata {
+ 
+   let hasVariadic = false;
+   let optionalCount = 0;
+-  const types: string[] = [];
++  let types = declarationParameterTypes(params);
+ 
+   for (const p of params) {
+     if (p.isVariadic) {
+@@ -41,7 +42,6 @@ export function computePhpArityMetadata(fnNode: SyntaxNode): PhpArityMetadata {
+     } else if (p.isOptional) {
+       optionalCount++;
      }
--    const target = link.isFile() ? link : await fs.stat(request.absolutePath, { bigint: true });
-+    const target = link.isFile() ? link : await io.stat(request.absolutePath, { bigint: true });
-     if (!target.isFile()) return null;
-     const result = { type: 'readable-file', state: { link: state(link), target: state(target) } };
--    if (link.isSymbolicLink()) result.state.symlinkTarget = await fs.readlink(request.absolutePath);
-+    if (link.isSymbolicLink()) result.state.symlinkTarget = await io.readlink(request.absolutePath);
-     return result;
-   } catch { return null; }
- };
-@@ -2305,9 +2310,29 @@ process.stdin.on('data', (chunk) => { input += chunk; });
- process.stdin.on('end', async () => {
-   try {
-     const requests = JSON.parse(input);
--    const results = [];
--    for (let offset = 0; offset < requests.length; offset += 512) {
--      results.push(...await Promise.all(requests.slice(offset, offset + 512).map(probe)));
-+    const results = new Array(requests.length);
-+    // Local stats are cheaper without thread-pool dispatch. Sample across the
-+    // install tree so slow dependency mounts still use concurrent async I/O.
-+    const sampleCount = Math.min(16, requests.length);
-+    const started = performance.now();
-+    for (let sample = 0; sample < sampleCount; sample += 1) {
-+      const index = Math.floor(sample * requests.length / sampleCount);
-+      results[index] = await probe(requests[index], syncFs);
-+      if (performance.now() - started >= 8) break;
+-    if (p.type !== null) types.push(p.type);
+   }
+   // PHP variadic marker convention: append the literal '...' string to
+   // `parameterTypes`. This is intentionally DIFFERENT from C#, which uses
+@@ -54,7 +54,7 @@ export function computePhpArityMetadata(fnNode: SyntaxNode): PhpArityMetadata {
+   // arity logic lives in `phpArityCompatibility` (arity.ts) and now
+   // also in `phpEmitUnresolvedReceiverEdges` (scope-resolver.ts), both
+   // of which check `'...'`. Finding 9 of PR #1497 adversarial review.
+-  if (hasVariadic) types.push('...');
++  if (hasVariadic) types = [...types, '...'];
+ 
+   const total = params.length;
+   // Variadic methods accept any arg count ≥ required — leave `parameterCount`
+diff --git a/gitnexus/src/core/ingestion/languages/python/arity-metadata.ts b/gitnexus/src/core/ingestion/languages/python/arity-metadata.ts
+index 6d5e38af2..5168a537f 100644
+--- a/gitnexus/src/core/ingestion/languages/python/arity-metadata.ts
++++ b/gitnexus/src/core/ingestion/languages/python/arity-metadata.ts
+@@ -18,6 +18,7 @@
+ 
+ import type { SyntaxNode } from '../../utils/ast-helpers.js';
+ import { pythonMethodConfig } from '../../method-extractors/configs/python.js';
++import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
+ 
+ interface PythonArityMetadata {
+   readonly parameterCount: number | undefined;
+@@ -31,11 +32,10 @@ export function computePythonArityMetadata(fnNode: SyntaxNode): PythonArityMetad
+ 
+   let hasVariadic = false;
+   let optionalCount = 0;
+-  const types: string[] = [];
++  const types = declarationParameterTypes(params);
+   for (const p of params) {
+     if (p.isVariadic) hasVariadic = true;
+     else if (p.isOptional) optionalCount++;
+-    if (p.type !== null) types.push(p.type);
+   }
+ 
+   const total = params.length;
+diff --git a/gitnexus/src/core/ingestion/languages/swift/arity-metadata.ts b/gitnexus/src/core/ingestion/languages/swift/arity-metadata.ts
+index da3efaa61..527b3b7a0 100644
+--- a/gitnexus/src/core/ingestion/languages/swift/arity-metadata.ts
++++ b/gitnexus/src/core/ingestion/languages/swift/arity-metadata.ts
+@@ -18,6 +18,7 @@
+ 
+ import type { SyntaxNode } from '../../utils/ast-helpers.js';
+ import { swiftMethodConfig } from '../../method-extractors/configs/swift.js';
++import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
+ 
+ interface SwiftArityMetadata {
+   readonly parameterCount: number | undefined;
+@@ -30,13 +31,17 @@ export function computeSwiftArityMetadata(fnNode: SyntaxNode): SwiftArityMetadat
+ 
+   let hasVariadic = false;
+   let optionalCount = 0;
+-  const types: string[] = [];
++  const sharedTypes = declarationParameterTypes(params);
++  // Scope signatures keep unknown positional slots; graph metadata omits them.
++  let types =
++    sharedTypes.length === params.length
++      ? sharedTypes
++      : params.map((parameter) => parameter.type ?? '');
+   for (const p of params) {
+     if (p.isVariadic) hasVariadic = true;
+     else if (p.isOptional) optionalCount++;
+-    types.push(p.type ?? '');
+   }
+-  if (hasVariadic) types.push('variadic');
++  if (hasVariadic) types = [...types, 'variadic'];
+ 
+   const total = params.length;
+   const parameterCount = hasVariadic ? undefined : total;
+diff --git a/gitnexus/src/core/ingestion/languages/typescript/arity-metadata.ts b/gitnexus/src/core/ingestion/languages/typescript/arity-metadata.ts
+index 97ac7a0c9..56549e655 100644
+--- a/gitnexus/src/core/ingestion/languages/typescript/arity-metadata.ts
++++ b/gitnexus/src/core/ingestion/languages/typescript/arity-metadata.ts
+@@ -52,6 +52,7 @@
+ 
+ import type { SyntaxNode } from '../../utils/ast-helpers.js';
+ import { typescriptMethodConfig } from '../../method-extractors/configs/typescript-javascript.js';
++import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
+ 
+ interface TsArityMetadata {
+   readonly parameterCount: number | undefined;
+@@ -64,14 +65,21 @@ export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
+ 
+   let hasRest = false;
+   let optionalCount = 0;
+-  const types: string[] = [];
++  const sharedTypes = declarationParameterTypes(params);
++  let normalized: string[] | undefined;
++  let index = 0;
+   for (const p of params) {
+     if (p.isVariadic) hasRest = true;
+     else if (p.isOptional) optionalCount++;
+     const t = p.type !== null && p.type !== undefined ? stripGenericsAndArraySuffix(p.type) : '';
+-    types.push(t);
++    if (t !== sharedTypes[index]) {
++      normalized ??= sharedTypes.slice();
++      normalized[index] = t;
 +    }
-+    const useSync = performance.now() - started < 8;
-+    if (useSync) {
-+      for (let index = 0; index < requests.length; index += 1) {
-+        if (results[index] === undefined) results[index] = await probe(requests[index], syncFs);
-+      }
-+    } else {
-+      for (let offset = 0; offset < requests.length; offset += 512) {
-+        await Promise.all(requests.slice(offset, offset + 512).map(async (request, index) => {
-+          if (results[offset + index] === undefined) {
-+            results[offset + index] = await probe(request, fs.promises);
-+          }
-+        }));
-+      }
-     }
-     process.stdout.write(JSON.stringify(results));
-   } catch { process.exitCode = 1; }
++    index++;
+   }
+-  if (hasRest) types.push('params');
++  const types = normalized ?? sharedTypes;
++  const markedTypes = hasRest ? [...types, 'params'] : types;
+ 
+   const total = params.length;
+   const parameterCount = hasRest ? undefined : total;
+@@ -82,7 +90,8 @@ export function computeTsArityMetadata(fnNode: SyntaxNode): TsArityMetadata {
+   // registry without aiding narrowing — callers treat absence as
+   // "types unknown".
+   const hasAnyType = types.some((t) => t !== '' && t !== 'params');
+-  const parameterTypes = hasAnyType || hasRest ? (types.length > 0 ? types : undefined) : undefined;
++  const parameterTypes =
++    hasAnyType || hasRest ? (markedTypes.length > 0 ? markedTypes : undefined) : undefined;
+ 
+   return {
+     parameterCount,
+diff --git a/gitnexus/src/core/ingestion/method-extractors/declaration-facts.ts b/gitnexus/src/core/ingestion/method-extractors/declaration-facts.ts
+index 26b2badfa..393dd0ea7 100644
+--- a/gitnexus/src/core/ingestion/method-extractors/declaration-facts.ts
++++ b/gitnexus/src/core/ingestion/method-extractors/declaration-facts.ts
+@@ -3,6 +3,28 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
+ 
+ type DeclarationFact = string | undefined | readonly Readonly<ParameterInfo>[];
+ 
++const parameterTypes = new WeakMap<readonly Readonly<ParameterInfo>[], readonly string[]>();
++const noTypes: readonly string[] = [];
++
++/** The common type projection of immutable declaration parameters. Consumers
++ * with positional unknowns, normalized types, or variadic markers copy only
++ * when their language policy differs. Neither keys nor values retain an AST.
++ */
++export function declarationParameterTypes(
++  parameters: readonly Readonly<ParameterInfo>[],
++): readonly string[] {
++  if (parameters.length === 0) return noTypes;
++  const cached = parameterTypes.get(parameters);
++  if (cached) return cached;
++  const types: string[] = [];
++  for (const parameter of parameters) {
++    if (parameter.type !== null) types.push(parameter.type);
++  }
++  if (types.length === 0) return noTypes;
++  parameterTypes.set(parameters, types);
++  return types;
++}
++
+ /** Share a pure, node-only fact across structure and scope extraction.
+  * Trees are immutable during ingestion. Native node IDs survive different JS
+  * wrappers; tree ownership keeps IDs from colliding across files or reparses.
+diff --git a/gitnexus/src/core/ingestion/utils/method-props.ts b/gitnexus/src/core/ingestion/utils/method-props.ts
+index 4ade74c8a..fcf913059 100644
+--- a/gitnexus/src/core/ingestion/utils/method-props.ts
++++ b/gitnexus/src/core/ingestion/utils/method-props.ts
+@@ -1,4 +1,5 @@
+ import type { MethodInfo } from '../method-types.js';
++import { declarationParameterTypes } from '../method-extractors/declaration-facts.js';
+ import { SupportedLanguages, type ParameterTypeClass } from 'gitnexus-shared';
+ 
+ /** Languages where class overload signatures are declaration-only contracts
+@@ -210,12 +211,11 @@ export function parameterShapeIdTag(
+ 
+ /** Convert MethodInfo from methodExtractor into flat properties for a graph node. */
+ export function buildMethodProps(info: MethodInfo): Record<string, unknown> {
+-  const types: string[] = [];
++  const types = declarationParameterTypes(info.parameters);
+   const typeClasses: ParameterTypeClass[] = [];
+   let optionalCount = 0;
+   let hasVariadic = false;
+   for (const p of info.parameters) {
+-    if (p.type !== null) types.push(p.type);
+     if (p.typeClass !== undefined) typeClasses.push(p.typeClass);
+     if (p.isOptional) optionalCount++;
+     if (p.isVariadic) hasVariadic = true;
+diff --git a/gitnexus/src/core/ingestion/workers/parse-worker.ts b/gitnexus/src/core/ingestion/workers/parse-worker.ts
+index 5d999ed24..fb0a43b2b 100644
+--- a/gitnexus/src/core/ingestion/workers/parse-worker.ts
++++ b/gitnexus/src/core/ingestion/workers/parse-worker.ts
+@@ -871,6 +871,20 @@ function selectFieldInfo(
+ // ============================================================================
+ 
+ const methodInfoCache = new Map<number, Map<string, MethodInfo>>();
++const methodCollisionGroups = new WeakMap<Map<string, MethodInfo>, Map<string, MethodInfo[]>>();
++
++/** Method maps are complete before publication and immutable for this file.
++ * Reuse their overload groups in both definition and enclosing-callable IDs.
++ * Weak ownership releases the groups with the per-file method cache.
++ */
++function getMethodCollisionGroups(methods: Map<string, MethodInfo>): Map<string, MethodInfo[]> {
++  let groups = methodCollisionGroups.get(methods);
++  if (!groups) {
++    groups = buildCollisionGroups(methods);
++    methodCollisionGroups.set(methods, groups);
++  }
++  return groups;
++}
+ 
+ /**
+  * Get (or extract and cache) method info for a class node.
+@@ -1183,7 +1197,7 @@ const findEnclosingFunctionId = (
+                   ? undefined
+                   : info.parameters.length;
+                 if (methodMap && arity !== undefined) {
+-                  const g = buildCollisionGroups(methodMap);
++                  const g = getMethodCollisionGroups(methodMap);
+                   encTypeTag =
+                     typeTagForId(methodMap, funcName, arity, info, encLang, g) +
+                     constTagForId(methodMap, funcName, arity, info, g);
+@@ -1251,7 +1265,7 @@ const findEnclosingFunctionId = (
+                 ? undefined
+                 : info2.parameters.length;
+               if (methodMap2 && arity2 !== undefined) {
+-                const g2 = buildCollisionGroups(methodMap2);
++                const g2 = getMethodCollisionGroups(methodMap2);
+                 encTypeTag2 =
+                   typeTagForId(methodMap2, customResult.funcName, arity2, info2, encLang2, g2) +
+                   constTagForId(methodMap2, customResult.funcName, arity2, info2, g2);
+@@ -2861,7 +2875,7 @@ const processFileGroup = (
+         const parameterTypes = methodProps.parameterTypes as string[] | undefined;
+         if (parameterTypes?.length) arityTag += `~${parameterTypes.join(',')}`;
+       } else if (arityTag && defMethodMap && defMethodInfo) {
+-        const groups = buildCollisionGroups(defMethodMap);
++        const groups = getMethodCollisionGroups(defMethodMap);
+         arityTag += typeTagForId(
+           defMethodMap,
+           nodeName,
