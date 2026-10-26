@@ -9,6 +9,7 @@ import path from 'node:path';
 import { performance, PerformanceObserver } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { evaluateScaling } from './scaling.mjs';
 
 const here = fileURLToPath(import.meta.url);
 const candidate = path.resolve(path.dirname(here), '../..');
@@ -193,6 +194,7 @@ async function retainedTrees() {
   const Parser = createRequire(path.join(root, 'package.json'))('tree-sitter');
   const { getLanguageGrammar } = await load('core/tree-sitter/parser-loader.js');
   const { javaMethodConfig } = await load('core/ingestion/method-extractors/configs/jvm.js');
+  const { javaExportChecker } = await load('core/ingestion/export-detection.js');
   const refs = (() => {
     const parser = new Parser();
     parser.setLanguage(getLanguageGrammar('java'));
@@ -201,6 +203,7 @@ async function retainedTrees() {
       const node = tree.rootNode.descendantsOfType('method_declaration')[0];
       javaMethodConfig.extractParameters(node);
       javaMethodConfig.extractParameters(node);
+      assert.equal(javaExportChecker(node.childForFieldName('name'), 'f'), false);
       return new WeakRef(tree);
     });
   })();
@@ -224,13 +227,17 @@ async function makeCorpus(repo, corpus) {
       await writeFile(path.join(repo, file), source + '\n');
     }
   } else if (corpus === 'declarations') {
-    for (let file = 0; file < 32; file++) {
+    const files = Number(option('--files', '32'));
+    const methods = Number(option('--methods', '40'));
+    assert(Number.isSafeInteger(files) && files > 0);
+    assert(Number.isSafeInteger(methods) && methods > 0);
+    for (let file = 0; file < files; file++) {
       const ts = Array.from(
-        { length: 40 },
+        { length: methods },
         (_, i) => `m${i}(a: number, b: string, c: Array<string>, d = 0): number { return a + d; }`,
       ).join('\n');
       const java = Array.from(
-        { length: 40 },
+        { length: methods },
         (_, i) => `int m${i}(int a, String b, List<String> c, int d) { return a + d; }`,
       ).join('\n');
       await writeFile(
@@ -378,6 +385,16 @@ async function measureAnalysis(corpus) {
         assert(pipeline.usedWorkerPool, 'cache misses must use real parser workers');
       if (scenario === 'warm') assert.equal(pipeline.reparsedFileCount, 0);
       if (scenario === 'changed') assert(pipeline.reparsedFileCount > 0);
+      if (corpus === 'declarations') {
+        const files = Number(option('--files', '32'));
+        const methods = Number(option('--methods', '40'));
+        let declarations = 0;
+        pipeline.graph.forEachNode((node) => {
+          if (node.label === 'Method' && /^m\d+$/.test(node.properties.name)) declarations++;
+        });
+        assert.equal(declarations, 2 * files * methods, 'Scaling workload lost declarations');
+        assert.equal(pipeline.reparsedFileCount + pipeline.parseCacheHitFileCount, 2 * files + 1);
+      }
       if (corpus === 'providers') {
         if (scenario === 'cold') {
           assert.equal(pipeline.reparsedFileCount, Object.keys(providerFixtures).length + 1);
@@ -421,7 +438,7 @@ async function measureAnalysis(corpus) {
   }
 }
 
-async function child(revision, mode, corpus) {
+async function child(revision, mode, corpus, extraArgs = []) {
   const cache = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-callable-identity-'));
   try {
     const memory = mode === 'memory';
@@ -435,8 +452,19 @@ async function child(revision, mode, corpus) {
             revision,
             '--language',
             corpus,
+            ...extraArgs,
           ]
-        : ['--expose-gc', here, '--child', mode, '--root', revision, '--corpus', corpus ?? ''],
+        : [
+            '--expose-gc',
+            here,
+            '--child',
+            mode,
+            '--root',
+            revision,
+            '--corpus',
+            corpus ?? '',
+            ...extraArgs,
+          ],
       {
         encoding: 'utf8',
         timeout: 600_000,
@@ -487,9 +515,17 @@ async function checkBenchmark() {
     trials: {},
     memory: {},
     measured: {},
+    scaling: {},
   };
-  const median = (rows, key) =>
-    [...rows].map((row) => row[key]).sort((a, b) => a - b)[Math.floor(rows.length / 2)];
+  const median = (rows, key) => {
+    assert(
+      rows.every(
+        (row) => Number.isFinite(row[key]) && (key === 'releasedDeltaBytes' || row[key] > 0),
+      ),
+      `Invalid ${key} sample`,
+    );
+    return rows.map((row) => row[key]).sort((a, b) => a - b)[Math.floor(rows.length / 2)];
+  };
   const summarize = (rows, keys) => Object.fromEntries(keys.map((key) => [key, median(rows, key)]));
   try {
     report.counts = await child(root, 'counts');
@@ -515,13 +551,44 @@ async function checkBenchmark() {
       memory: {},
       collectedTrees: report.lifetime.collected,
     };
-    for (const corpus of ['declarations', 'providers']) {
-      const trials = [];
-      report.trials[corpus] = trials;
-      for (let trial = 0; trial < samples; trial++) {
-        console.log(`${corpus} ${trial + 1}/${samples}`);
-        trials.push(await child(root, 'analysis', corpus));
+    const workloads = [
+      ...[8, 32, 128].map((files) => ({
+        name: files === 32 ? 'declarations' : `declarations-${files}`,
+        shape: 'spread',
+        files,
+        methods: 40,
+        corpus: 'declarations',
+      })),
+      ...[320, 1280, 5120].map((methods) => ({
+        name: `concentrated-${methods}`,
+        shape: 'concentrated',
+        files: 1,
+        methods,
+        corpus: 'declarations',
+      })),
+      { name: 'providers', corpus: 'providers' },
+    ];
+    report.workloads = workloads;
+    for (const { name } of workloads) report.trials[name] = [];
+    for (let trial = 0; trial < samples; trial++) {
+      for (const { name, corpus, files, methods } of trial % 2
+        ? [...workloads].reverse()
+        : workloads) {
+        console.log(`${name} ${trial + 1}/${samples}`);
+        const extraArgs =
+          corpus === 'declarations' ? ['--files', String(files), '--methods', String(methods)] : [];
+        report.trials[name].push(await child(root, 'analysis', corpus, extraArgs));
       }
+    }
+    const analysisMetrics = [
+      'wallMs',
+      'cpuMs',
+      'heapUsedMiB',
+      'sampledPeakRssMiB',
+      'cumulativeMaxRssMiB',
+    ];
+    for (const { name } of workloads) {
+      const trials = report.trials[name];
       const facts = (trial) => ({
         manifest: trial.manifest,
         runs: trial.runs.map(({ scenario, facts, reparsed, hits }) => ({
@@ -531,47 +598,90 @@ async function checkBenchmark() {
           hits,
         })),
       });
-      correctness.analysis[corpus] = facts(trials[0]);
+      correctness.analysis[name] = facts(trials[0]);
       for (const trial of trials) {
         assert.deepEqual(
           facts(trial),
-          correctness.analysis[corpus],
-          `${corpus}: nondeterministic graph or cache replay`,
+          correctness.analysis[name],
+          `${name}: nondeterministic graph or cache replay`,
         );
         assert.equal(trial.runs[2].reparsed, 1);
       }
       for (const scenario of ['cold', 'warm', 'changed']) {
-        report.measured[`${corpus}/${scenario}`] = summarize(
+        report.measured[`${name}/${scenario}`] = summarize(
           trials.map((trial) => trial.runs.find((run) => run.scenario === scenario)),
-          ['wallMs', 'cpuMs', 'heapUsedMiB', 'sampledPeakRssMiB', 'cumulativeMaxRssMiB'],
+          analysisMetrics,
         );
       }
     }
+    for (const shape of ['spread', 'concentrated']) {
+      for (const scenario of ['cold', 'warm', 'changed']) {
+        report.scaling[`${shape}/${scenario}`] = evaluateScaling(
+          workloads
+            .filter((row) => row.shape === shape)
+            .map(({ name, files, methods }) => ({
+              size: 2 * files * methods,
+              ...report.measured[`${name}/${scenario}`],
+            })),
+          analysisMetrics,
+        );
+      }
+    }
+    const memorySizes = [2500, 10000, 40000];
+    const memoryMetrics = ['extractionMs', 'extractionRetainedBytes', 'emittedRetainedBytes'];
     for (const language of ['java', 'typescript']) {
-      const trials = [];
-      report.memory[language] = trials;
-      for (let trial = 0; trial < samples; trial++)
-        trials.push(await child(root, 'memory', language));
-      assert(
-        trials.every((trial) => trial.treeCollected),
-        `${language}: heap probe retained trees`,
+      const nameFor = (size) => (size === 10000 ? language : `${language}-${size}`);
+      for (const size of memorySizes) report.memory[nameFor(size)] = [];
+      for (let trial = 0; trial < samples; trial++) {
+        for (const size of trial % 2 ? [...memorySizes].reverse() : memorySizes) {
+          console.log(`${language} retained ${size} ${trial + 1}/${samples}`);
+          report.memory[nameFor(size)].push(
+            await child(root, 'memory', language, ['--declarations', String(size)]),
+          );
+        }
+      }
+      for (const size of memorySizes) {
+        const name = nameFor(size);
+        const trials = report.memory[name];
+        assert(
+          trials.every((trial) => trial.treeCollected),
+          `${language}: heap probe retained trees`,
+        );
+        assert.equal(
+          new Set(trials.map((trial) => trial.digest)).size,
+          1,
+          `${language}: nondeterministic metadata`,
+        );
+        assert(
+          trials.every((trial) => trial.declarations === size),
+          `${name}: wrong declaration count`,
+        );
+        correctness.memory[name] = {
+          digest: trials[0].digest,
+          declarations: trials[0].declarations,
+        };
+        report.measured[`${name}/retained`] = summarize(trials, [
+          ...memoryMetrics,
+          'releasedDeltaBytes',
+        ]);
+      }
+      report.scaling[`${language}/retained`] = evaluateScaling(
+        memorySizes.map((size) => ({ size, ...report.measured[`${nameFor(size)}/retained`] })),
+        memoryMetrics,
       );
-      assert.equal(
-        new Set(trials.map((trial) => trial.digest)).size,
-        1,
-        `${language}: nondeterministic metadata`,
-      );
-      correctness.memory[language] = {
-        digest: trials[0].digest,
-        declarations: trials[0].declarations,
-      };
-      report.measured[`${language}/retained`] = summarize(trials, [
-        'extractionRetainedBytes',
-        'emittedRetainedBytes',
-        'releasedDeltaBytes',
-      ]);
     }
     report.correctness = correctness;
+    console.log(JSON.stringify({ scaling: report.scaling }, null, 2));
+    assert(
+      Object.values(report.scaling).every((row) => row.passed),
+      'Callable time or memory growth exceeds the 1.5 normalized scaling budget',
+    );
+    if (baseline)
+      assert.deepEqual(
+        correctness,
+        baseline.correctness,
+        'callable declaration facts or allocation counts differ from baseline.json',
+      );
     report.baselineMeasured = baseline?.measured;
     report.changesPercent = baseline
       ? Object.fromEntries(
@@ -589,19 +699,13 @@ async function checkBenchmark() {
     console.log(
       JSON.stringify({ measured: report.measured, changesPercent: report.changesPercent }, null, 2),
     );
-    if (baseline)
-      assert.deepEqual(
-        correctness,
-        baseline.correctness,
-        'callable declaration facts or allocation counts differ from baseline.json',
-      );
     if (record)
       await writeFile(
         baselinePath,
         JSON.stringify(
           {
             _note:
-              'Reviewed semantic and allocation baseline. --check compares fingerprints, cache counts and shared-array counts; timing and heap/RSS medians are references, not machine-independent thresholds. CI never records a baseline.',
+              'Reviewed semantic and allocation baseline. --check compares fingerprints, cache counts and shared-array counts and gates same-run normalized time/memory growth at 1.5. Absolute timing and heap/RSS medians are references. CI never records a baseline.',
             environment: report.environment,
             correctness,
             measured: report.measured,

@@ -1,5 +1,5 @@
 {
-  "_note": "Reviewed semantic and allocation baseline. --check compares fingerprints, cache counts and shared-array counts; timing and heap/RSS medians are references, not machine-independent thresholds. CI never records a baseline.",
+  "_note": "Reviewed semantic and allocation baseline. --check compares fingerprints, cache counts and shared-array counts and gates same-run normalized time/memory growth at 1.5. Absolute timing and heap/RSS medians are references. CI never records a baseline.",
   "environment": {
     "node": "v22.23.3",
     "platform": "linux",
@@ -58,6 +58,44 @@
       }
     ],
     "analysis": {
+      "declarations-8": {
+        "manifest": {
+          "files": 17,
+          "manifest": "353a6948d690eaba364c8d31df4937d1b969e855ccb7bed1ded1c95b6a528847"
+        },
+        "runs": [
+          {
+            "scenario": "cold",
+            "facts": {
+              "nodes": 691,
+              "edges": 690,
+              "hash": "c2918b76eea971e5d925afd2e912c53ce372da6abfd38ba4adcccade22c07ef9"
+            },
+            "reparsed": 17,
+            "hits": 0
+          },
+          {
+            "scenario": "warm",
+            "facts": {
+              "nodes": 691,
+              "edges": 690,
+              "hash": "c2918b76eea971e5d925afd2e912c53ce372da6abfd38ba4adcccade22c07ef9"
+            },
+            "reparsed": 0,
+            "hits": 17
+          },
+          {
+            "scenario": "changed",
+            "facts": {
+              "nodes": 691,
+              "edges": 690,
+              "hash": "e220495c5c40fba7820c452b44c6ced2302981e60a7428eb4bb73ec628d7daa8"
+            },
+            "reparsed": 1,
+            "hits": 16
+          }
+        ]
+      },
       "declarations": {
         "manifest": {
           "files": 65,
@@ -93,6 +131,158 @@
             },
             "reparsed": 1,
             "hits": 64
+          }
+        ]
+      },
+      "declarations-128": {
+        "manifest": {
+          "files": 257,
+          "manifest": "b9625a8c2fe98276a16847c4d77f9e4c46cd696a61d555440d7840faf0107780"
+        },
+        "runs": [
+          {
+            "scenario": "cold",
+            "facts": {
+              "nodes": 11011,
+              "edges": 11010,
+              "hash": "11fbfb9fdf42fb9ac78c11e359fb9d7a6aea448887a65650b9d54e039f3e73a2"
+            },
+            "reparsed": 257,
+            "hits": 0
+          },
+          {
+            "scenario": "warm",
+            "facts": {
+              "nodes": 11011,
+              "edges": 11010,
+              "hash": "11fbfb9fdf42fb9ac78c11e359fb9d7a6aea448887a65650b9d54e039f3e73a2"
+            },
+            "reparsed": 0,
+            "hits": 257
+          },
+          {
+            "scenario": "changed",
+            "facts": {
+              "nodes": 11011,
+              "edges": 11010,
+              "hash": "88a8baaa628aa037c02c83b6d912ef9ca206fd63c035a284dc55a9c3f1ed4903"
+            },
+            "reparsed": 1,
+            "hits": 256
+          }
+        ]
+      },
+      "concentrated-320": {
+        "manifest": {
+          "files": 3,
+          "manifest": "b2bcb40fa14120ac4ada96e78569ffa2413250ea3009dbf39b7d4d4c1bb533da"
+        },
+        "runs": [
+          {
+            "scenario": "cold",
+            "facts": {
+              "nodes": 649,
+              "edges": 648,
+              "hash": "4606ff07912fef5a01f2b057e6b9d9bc5df3cc3a40295fd558fca8d45df9527e"
+            },
+            "reparsed": 3,
+            "hits": 0
+          },
+          {
+            "scenario": "warm",
+            "facts": {
+              "nodes": 649,
+              "edges": 648,
+              "hash": "4606ff07912fef5a01f2b057e6b9d9bc5df3cc3a40295fd558fca8d45df9527e"
+            },
+            "reparsed": 0,
+            "hits": 3
+          },
+          {
+            "scenario": "changed",
+            "facts": {
+              "nodes": 649,
+              "edges": 648,
+              "hash": "562dc4337b5840e0a64c1b3f4d4f90cc1f2fd75a49ccb23a50b7c6adcbf3fd07"
+            },
+            "reparsed": 1,
+            "hits": 2
+          }
+        ]
+      },
+      "concentrated-1280": {
+        "manifest": {
+          "files": 3,
+          "manifest": "59d63e1f0a4b92388b4b9c9008e90338d50839ebc7c8779c86169f1adac57a06"
+        },
+        "runs": [
+          {
+            "scenario": "cold",
+            "facts": {
+              "nodes": 2569,
+              "edges": 2568,
+              "hash": "ad17f7f24a6948d140ccfdca0230f9562a3e44717a5931a29ae62af504899041"
+            },
+            "reparsed": 3,
+            "hits": 0
+          },
+          {
+            "scenario": "warm",
+            "facts": {
+              "nodes": 2569,
+              "edges": 2568,
+              "hash": "ad17f7f24a6948d140ccfdca0230f9562a3e44717a5931a29ae62af504899041"
+            },
+            "reparsed": 0,
+            "hits": 3
+          },
+          {
+            "scenario": "changed",
+            "facts": {
+              "nodes": 2569,
+              "edges": 2568,
+              "hash": "90625066c2e3ef78881ef820b573f5a1201cb5b50b96a3a5d9bb4a6572dbeb5a"
+            },
+            "reparsed": 1,
+            "hits": 2
+          }
+        ]
+      },
+      "concentrated-5120": {
+        "manifest": {
+          "files": 3,
+          "manifest": "8b2fb11e9b2a4ba1c124c1efdb22e55db91b8595e1a519f55da75e94af0a5ff1"
+        },
+        "runs": [
+          {
+            "scenario": "cold",
+            "facts": {
+              "nodes": 10249,
+              "edges": 10248,
+              "hash": "f1f7ef339c2ba2f15f1c38fc9c7caffc0d5d92a222059cc21352a17fb30a2879"
+            },
+            "reparsed": 3,
+            "hits": 0
+          },
+          {
+            "scenario": "warm",
+            "facts": {
+              "nodes": 10249,
+              "edges": 10248,
+              "hash": "f1f7ef339c2ba2f15f1c38fc9c7caffc0d5d92a222059cc21352a17fb30a2879"
+            },
+            "reparsed": 0,
+            "hits": 3
+          },
+          {
+            "scenario": "changed",
+            "facts": {
+              "nodes": 10249,
+              "edges": 10248,
+              "hash": "4b521b01aef30d967ea1ce113f8021a1f2c30319ef9102f303986c77390b4c27"
+            },
+            "reparsed": 1,
+            "hits": 2
           }
         ]
       },
@@ -136,69 +326,216 @@
       }
     },
     "memory": {
+      "java-2500": {
+        "digest": "5d72a942d521e860c36563aceb57cc32d17857273a18d0d428b4266bd617e06f",
+        "declarations": 2500
+      },
       "java": {
         "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
         "declarations": 10000
       },
+      "java-40000": {
+        "digest": "bb0f0b9a3281108e1aa910478e8f9171f0e375e96bf527e7020f46bb5e04cba3",
+        "declarations": 40000
+      },
+      "typescript-2500": {
+        "digest": "14e9b13d31e8874849cfd64f2367716b09ed9d6577912f75318f358bdc8c741d",
+        "declarations": 2500
+      },
       "typescript": {
         "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
         "declarations": 10000
+      },
+      "typescript-40000": {
+        "digest": "632331d244854ab84e4974e4ea7ef669460e3acc5e97e933cb822ca0e39844c2",
+        "declarations": 40000
       }
     },
     "collectedTrees": 100
   },
   "measured": {
+    "declarations-8/cold": {
+      "wallMs": 4598.0965830000005,
+      "cpuMs": 5028.881,
+      "heapUsedMiB": 69.43971252441406,
+      "sampledPeakRssMiB": 552.4375,
+      "cumulativeMaxRssMiB": 552.4375
+    },
+    "declarations-8/warm": {
+      "wallMs": 1469.5753610000002,
+      "cpuMs": 1310.647,
+      "heapUsedMiB": 100.86992645263672,
+      "sampledPeakRssMiB": 639.1484375,
+      "cumulativeMaxRssMiB": 639.1484375
+    },
+    "declarations-8/changed": {
+      "wallMs": 2224.902616000001,
+      "cpuMs": 2158.139,
+      "heapUsedMiB": 70.97301483154297,
+      "sampledPeakRssMiB": 691.4453125,
+      "cumulativeMaxRssMiB": 691.4453125
+    },
     "declarations/cold": {
-      "wallMs": 9491.255859,
-      "cpuMs": 12413.021,
-      "heapUsedMiB": 100.68425750732422,
-      "sampledPeakRssMiB": 562.76171875,
-      "cumulativeMaxRssMiB": 568.734375
+      "wallMs": 6287.4714890000005,
+      "cpuMs": 7338.656,
+      "heapUsedMiB": 102.16807556152344,
+      "sampledPeakRssMiB": 568.0625,
+      "cumulativeMaxRssMiB": 574.22265625
     },
     "declarations/warm": {
-      "wallMs": 2825.0413579999986,
-      "cpuMs": 3197.422,
-      "heapUsedMiB": 106.1380615234375,
-      "sampledPeakRssMiB": 670.35546875,
-      "cumulativeMaxRssMiB": 676.64453125
+      "wallMs": 1898.1291850000007,
+      "cpuMs": 2115.823,
+      "heapUsedMiB": 107.16117858886719,
+      "sampledPeakRssMiB": 672.890625,
+      "cumulativeMaxRssMiB": 679.06640625
     },
     "declarations/changed": {
-      "wallMs": 3547.4335059999994,
-      "cpuMs": 3785.397,
-      "heapUsedMiB": 100.31853485107422,
-      "sampledPeakRssMiB": 738.78125,
-      "cumulativeMaxRssMiB": 744.953125
+      "wallMs": 2573.0706090000003,
+      "cpuMs": 2741.011,
+      "heapUsedMiB": 101.39332580566406,
+      "sampledPeakRssMiB": 741.0625,
+      "cumulativeMaxRssMiB": 747.2890625
+    },
+    "declarations-128/cold": {
+      "wallMs": 11950.934368,
+      "cpuMs": 15088.994,
+      "heapUsedMiB": 96.21513366699219,
+      "sampledPeakRssMiB": 642.6796875,
+      "cumulativeMaxRssMiB": 642.8671875
+    },
+    "declarations-128/warm": {
+      "wallMs": 3071.7164410000005,
+      "cpuMs": 3799.132,
+      "heapUsedMiB": 151.96864318847656,
+      "sampledPeakRssMiB": 752.5546875,
+      "cumulativeMaxRssMiB": 758.421875
+    },
+    "declarations-128/changed": {
+      "wallMs": 3785.085203999999,
+      "cpuMs": 4623.536,
+      "heapUsedMiB": 165.27832794189453,
+      "sampledPeakRssMiB": 825.6484375,
+      "cumulativeMaxRssMiB": 832.015625
+    },
+    "concentrated-320/cold": {
+      "wallMs": 4694.445621,
+      "cpuMs": 4989.052,
+      "heapUsedMiB": 67.74372100830078,
+      "sampledPeakRssMiB": 543.921875,
+      "cumulativeMaxRssMiB": 543.921875
+    },
+    "concentrated-320/warm": {
+      "wallMs": 1478.7918250000002,
+      "cpuMs": 1216.909,
+      "heapUsedMiB": 98.2383804321289,
+      "sampledPeakRssMiB": 634.32421875,
+      "cumulativeMaxRssMiB": 634.32421875
+    },
+    "concentrated-320/changed": {
+      "wallMs": 2217.1457689999997,
+      "cpuMs": 2067.268,
+      "heapUsedMiB": 69.39957427978516,
+      "sampledPeakRssMiB": 703.64453125,
+      "cumulativeMaxRssMiB": 703.64453125
+    },
+    "concentrated-1280/cold": {
+      "wallMs": 8088.226249,
+      "cpuMs": 9146.62,
+      "heapUsedMiB": 110.2262191772461,
+      "sampledPeakRssMiB": 601.5078125,
+      "cumulativeMaxRssMiB": 602.08203125
+    },
+    "concentrated-1280/warm": {
+      "wallMs": 1780.5142610000003,
+      "cpuMs": 1871.551,
+      "heapUsedMiB": 116.76529693603516,
+      "sampledPeakRssMiB": 714.1328125,
+      "cumulativeMaxRssMiB": 714.75390625
+    },
+    "concentrated-1280/changed": {
+      "wallMs": 2454.9453699999995,
+      "cpuMs": 2596.301,
+      "heapUsedMiB": 117.36157989501953,
+      "sampledPeakRssMiB": 772.80078125,
+      "cumulativeMaxRssMiB": 772.80078125
+    },
+    "concentrated-5120/cold": {
+      "wallMs": 19038.470589,
+      "cpuMs": 21988.894,
+      "heapUsedMiB": 87.05318450927734,
+      "sampledPeakRssMiB": 806.7421875,
+      "cumulativeMaxRssMiB": 807.34765625
+    },
+    "concentrated-5120/warm": {
+      "wallMs": 2599.4626009999993,
+      "cpuMs": 3164.342,
+      "heapUsedMiB": 196.42921447753906,
+      "sampledPeakRssMiB": 931.328125,
+      "cumulativeMaxRssMiB": 931.328125
+    },
+    "concentrated-5120/changed": {
+      "wallMs": 3300.2307550000005,
+      "cpuMs": 3837.783,
+      "heapUsedMiB": 198.03103637695312,
+      "sampledPeakRssMiB": 1009.9921875,
+      "cumulativeMaxRssMiB": 1009.9921875
     },
     "providers/cold": {
-      "wallMs": 6830.893146,
-      "cpuMs": 7177.582,
-      "heapUsedMiB": 64.3858413696289,
-      "sampledPeakRssMiB": 596.99609375,
-      "cumulativeMaxRssMiB": 602.86328125
+      "wallMs": 5234.342168,
+      "cpuMs": 5416.471,
+      "heapUsedMiB": 64.36933135986328,
+      "sampledPeakRssMiB": 581.26953125,
+      "cumulativeMaxRssMiB": 587.6796875
     },
     "providers/warm": {
-      "wallMs": 2304.49326,
-      "cpuMs": 2281.247,
-      "heapUsedMiB": 80.3407211303711,
-      "sampledPeakRssMiB": 693.53515625,
-      "cumulativeMaxRssMiB": 699.69140625
+      "wallMs": 1649.076336,
+      "cpuMs": 1537.857,
+      "heapUsedMiB": 80.01580810546875,
+      "sampledPeakRssMiB": 682.64453125,
+      "cumulativeMaxRssMiB": 688.83984375
     },
     "providers/changed": {
-      "wallMs": 3418.0368609999987,
-      "cpuMs": 3310.594,
-      "heapUsedMiB": 64.62885284423828,
-      "sampledPeakRssMiB": 748.1953125,
-      "cumulativeMaxRssMiB": 754.38671875
+      "wallMs": 2417.3744080000006,
+      "cpuMs": 2417.786,
+      "heapUsedMiB": 65.51468658447266,
+      "sampledPeakRssMiB": 764.375,
+      "cumulativeMaxRssMiB": 770.55859375
+    },
+    "java-2500/retained": {
+      "extractionMs": 97.82188899999998,
+      "extractionRetainedBytes": 3176480,
+      "emittedRetainedBytes": 1596952,
+      "releasedDeltaBytes": 332792
     },
     "java/retained": {
-      "extractionRetainedBytes": 12057128,
+      "extractionMs": 378.996999,
+      "extractionRetainedBytes": 12057136,
       "emittedRetainedBytes": 5701312,
       "releasedDeltaBytes": 660560
     },
+    "java-40000/retained": {
+      "extractionMs": 1499.86337,
+      "extractionRetainedBytes": 47273448,
+      "emittedRetainedBytes": 21694640,
+      "releasedDeltaBytes": 1447192
+    },
+    "typescript-2500/retained": {
+      "extractionMs": 116.37295999999999,
+      "extractionRetainedBytes": 3198712,
+      "emittedRetainedBytes": 1619784,
+      "releasedDeltaBytes": 355624
+    },
     "typescript/retained": {
-      "extractionRetainedBytes": 12017312,
-      "emittedRetainedBytes": 5662200,
-      "releasedDeltaBytes": 621448
+      "extractionMs": 472.583266,
+      "extractionRetainedBytes": 12017024,
+      "emittedRetainedBytes": 5662008,
+      "releasedDeltaBytes": 621256
+    },
+    "typescript-40000/retained": {
+      "extractionMs": 1857.2782389999998,
+      "extractionRetainedBytes": 47241792,
+      "emittedRetainedBytes": 21663784,
+      "releasedDeltaBytes": 1416336
     }
   }
 }

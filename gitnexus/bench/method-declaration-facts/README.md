@@ -10,11 +10,39 @@ node --import tsx bench/method-declaration-facts/measure.mjs --check --output me
 
 `--check` compares the current build with committed `baseline.json`; no second
 checkout is required. It checks all eight providers' semantic fingerprints and
-shared parameter/type-array counts, cold/warm/changed graph and cache counts on
-fixed declaration and provider corpora, and tree collection. Three fresh-process
+shared parameter/type-array counts, cold/warm/changed graph and cache counts at
+each workload size, and tree collection. Three fresh-process
 samples report median wall/CPU time, endpoint heap, peak RSS, and retained heap,
 with percentage differences from the recorded measurements. Timing and heap/RSS
 are machine-dependent references, not absolute CI failure thresholds.
+
+Like the C# pipeline benchmark, this check increases input size and compares cost
+growth with input growth. It uses the stricter **1.5** normalized growth budget
+already used by the Python scope benchmark:
+
+```text
+normalized growth = (large cost / small cost) / (large input / small input)
+```
+
+| Workload | Sizes | Gated costs |
+| --- | --- | --- |
+| Java + TypeScript, spread across files | 8 / 32 / 128 files per language, 40 methods per class | Cold/warm/changed wall time, CPU, endpoint heap, sampled peak RSS and process maximum RSS |
+| Java + TypeScript, concentrated in one class per language | 320 / 1,280 / 5,120 methods per class | Same full-indexing measurements |
+| Retained declaration metadata, separately for Java and TypeScript | 2,500 / 10,000 / 40,000 declarations | Extraction time, extraction retained heap, emitted retained heap |
+
+Both indexing shapes contain 640 / 2,560 / 10,240 generated methods, plus fixed
+call and edit probes. The harness verifies the emitted method and parsed/cache-hit
+file counts, so silently dropping work cannot improve a scaling result. Size order
+alternates between repetitions. Every adjacent pair **and the full size span** must
+stay within the budget, using per-size medians from the same run. Missing, zero,
+negative or non-finite measurements fail. `--record` also enforces these guards.
+Unit tests demonstrate that quadratic time or memory growth fails the check.
+
+The artifact includes raw samples, median costs and normalized ratios. These
+bounded workloads guard against scaling regressions; they do not prove linear
+complexity for every repository. Fixed startup costs can mask growth at small
+sizes. Released heap deltas remain diagnostic because they can be zero or negative
+after collection.
 
 CI uploads raw samples and comparisons as `method-declaration-facts-benchmark`,
 using the same five-day retention as the other benchmark artifacts. The separate
