@@ -110,10 +110,23 @@ and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS en
 
 - **E1** Eligibility carries `fingerprintFiles` besides the mutation-eligible `files`; a test's
   verdict input carries `eligible` (mutation), `fingerprintEligible` and `passed`.
-- **E2** Layer 1 runs the base config's sequential `lbug-db` files with one worker, the rest with
-  `--concurrency` workers, and joins both into one work file.
+- **E2** Layer 1 runs the files of the base config's `fileParallelism: false` projects (`lbug-db`,
+  `cli-e2e`) with one worker, the rest with `--concurrency` workers, and joins both into one work
+  file.
 - **E3** The trace run uses the same two partitions.
 - **E4** Fingerprint rule `not-passing`: a test that did not pass in Layer 1 makes its pairs
   Inconclusive. The mutation target keeps only pairs whose two tests are mutation-eligible.
 - **E5** Measure Layer 1 on a sample of integration files locally; shard Layer 1 on CI when the
   whole set does not fit one plan job.
+  - Result (2026-10-26): a sample of 44 integration files (every tenth) ran past 35 min at
+    concurrency 4 on the shared host, against 8.2 min for all 4,632 unit tests, so one plan job
+    cannot hold Layer 1. The `coverage` stage runs one slice (`--index i --of n`,
+    `path-coverage/slices.ts`: split like the CI test shards by `test/helpers/shard-balance.ts`),
+    and `plan --coverage <dir>` merges the slice files; a slice that did not report leaves its
+    files unrecorded. The workflow runs 12 slices before the plan, sized from the CI coverage
+    timings (about 3.5 h of Layer 1 in all; the heaviest file about 25 min).
+- **E6** (found by E5) The prepare step (gate-3 hashed) leaves `vendor/` and `dist/` out of the
+  prepared copy, so half the sampled integration files failed to load (leiden, the parse worker,
+  the built CLI). Layer 1 and the trace copy both from the checkout into their prepared copy in
+  normal mode; every stage that runs tests (plan, value-flow, all, controls) requires a built
+  `dist/`, and the workflow's plan and value-flow jobs build it.

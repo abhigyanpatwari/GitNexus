@@ -5,12 +5,20 @@
  * jobs exchange those files as artifacts. Order (local and CI): plan, then value-flow, then the
  * shards, then merge; value flow runs before the shards so the final shard plan and a shard's
  * isolation count only the pairs value flow leaves able to be strong (a plan deviation from
- * KTD14's parallel value-flow job). CI reads the matrix size from the `shards` stage.
+ * KTD14's parallel value-flow job). CI reads the matrix size from the `shards` stage, and runs
+ * Layer 1 in coverage slices before the plan (fingerprint plan E5).
  *
  * Stages:
+ *   coverage    `--index <i> --of <n>`: Layer 1 over slice i of the fingerprint's test files
+ *               (path-coverage/slices.ts, balanced like the CI test shards), written as
+ *               `<work>/coverage-slice-<i>.json`; exit 1 when a file of the slice failed or wrote
+ *               no record.
  *   plan        eligibility (R1); the Layer 0 scan (test-dupes over the `--all` corpus plus the
  *               eligible files, findings on eligible files kept); a prepared copy and the run
- *               manifest built right after it (KTD14); Layer 1 (path-coverage `runCoverage`); the
+ *               manifest built right after it (KTD14); Layer 1 (path-coverage `runCoverage`, or
+ *               with `--coverage <dir>` the merge of the coverage stage's slice files in that
+ *               directory, outside `--work`: a slice that did not report leaves its files
+ *               unrecorded); the
  *               static inventory and runtime join (U3); checks and context (U5, with the file
  *               snapshot and helper-module readers); input facets (U6); candidates (U4, Jaccard
  *               and checks-and-context sources); each group's KTD7 mutate scope (U7); the
@@ -170,7 +178,9 @@
  * rule holds); 1 it finished with incomplete results: a shard with a manifest mismatch, groups not
  * started before the deadline, row deletion or isolation skipped, or sampled; a degraded value-flow
  * run or a trace that did not run or whose run is invalid; a partial report (`controls`: a verdict or rule differs); 2 a
- * usage or setup error, including a missing `dist/` build for value-flow, all and controls, or an
+ * usage or setup error, including a missing `dist/` build for plan, value-flow, all and controls
+ * (the fingerprint's integration tests load the built CLI; prepared copies get the checkout's
+ * `vendor/` and `dist/`, path-coverage/partitions.ts `copyBuildOutput`), or an
  * unexpected error. Codes are always set explicitly: an in-process Vitest run with a failing
  * baseline leaves `process.exitCode` at 1 (D9).
  */
@@ -285,6 +295,15 @@ import {
   type CoverageTest,
   type CoverageWorkFile,
 } from './path-coverage/run-coverage.js';
+import { sequentialMatcherFor } from './path-coverage/partitions.js';
+import {
+  COVERAGE_SLICE_SCHEMA_VERSION,
+  coverageSliceName,
+  coverageSlices,
+  mergeCoverageSlices,
+  readCoverageSlices,
+  type CoverageSliceFile,
+} from './path-coverage/slices.js';
 import { fingerprintMutants } from './report/anchors.js';
 import { UnreadableBaseline } from './report/baseline.js';
 import { renderIssueBody } from './report/issue-body.js';
@@ -346,6 +365,7 @@ import {
 // ── Constants ──────────────────────────────────────────────────────────────
 
 export const STAGES = [
+  'coverage',
   'plan',
   'shard',
   'value-flow',
@@ -471,11 +491,12 @@ export class UsageError extends Error {
 }
 
 export const USAGE =
-  'usage: npm run test:scenario-map -- <plan|value-flow|shards|shard|merge|all|controls> ' +
-  '[--work <dir>]\n' +
+  'usage: npm run test:scenario-map -- ' +
+  '<coverage|plan|value-flow|shards|shard|merge|all|controls> [--work <dir>]\n' +
+  '  coverage:   --index <i> --of <n> [--mode normal|controls | --controls] [--concurrency <n>]\n' +
   '  plan:       [--mode normal|controls | --controls] [--seed <text>] [--shards <n>] ' +
   '[--mutation none|possible-duplicates|all] [--deadline-minutes <m>] [--concurrency <n>] ' +
-  '[--speed-factor <x>]\n' +
+  '[--speed-factor <x>] [--coverage <dir>]\n' +
   '  shard:      --index <i> --of <n> [--deadline-minutes <m>] [--concurrency <n>] ' +
   '[--sample <n>] [--groups <id,…>]\n' +
   '  value-flow: [--concurrency <n>]\n' +
@@ -486,7 +507,7 @@ export const USAGE =
   '  controls:   [--seed <text>] [--deadline-minutes <m>] [--concurrency <n>] ' +
   '[--speed-factor <x>] and the merge flags\n' +
   '  --concurrency bounds both Stryker and every in-process Vitest run (its maxWorkers); ' +
-  `default the plan's, ${DEFAULT_CONCURRENCY} for plan, all and controls`;
+  `default the plan's, ${DEFAULT_CONCURRENCY} for coverage, plan, all and controls`;
 
 export interface CliOptions {
   stage: Stage;
@@ -498,7 +519,7 @@ export interface CliOptions {
   mutation: MutationScope;
   /** `--shards`; null lets the plan use `shardsNeeded`. */
   shards: number | null;
-  /** Shard stage only; null otherwise. */
+  /** Shard and coverage stages only; null otherwise. */
   index: number | null;
   of: number | null;
   /** Debug sample size of the shard stage; null runs every group. */
@@ -516,6 +537,8 @@ export interface CliOptions {
   speedFactor: number | null;
   /** Absolute path of the baseline report; null when none. */
   baseline: string | null;
+  /** Plan stage: absolute directory of the coverage stage's slice files; null runs Layer 1. */
+  coverage: string | null;
   run: RunInfo;
 }
 
@@ -539,6 +562,7 @@ const FLAG_OPTIONS = {
   'run-url': { type: 'string' },
   ref: { type: 'string' },
   'default-branch': { type: 'boolean' },
+  coverage: { type: 'string' },
 } as const;
 
 type Flag = keyof typeof FLAG_OPTIONS;
@@ -552,6 +576,7 @@ const REPORT_FLAGS: readonly Flag[] = [
   'default-branch',
 ];
 const STAGE_FLAGS: Readonly<Record<Stage, readonly Flag[]>> = {
+  coverage: ['work', 'mode', 'controls', 'index', 'of', 'concurrency'],
   plan: [
     'work',
     'mode',
@@ -562,6 +587,7 @@ const STAGE_FLAGS: Readonly<Record<Stage, readonly Flag[]>> = {
     'deadline-minutes',
     'concurrency',
     'speed-factor',
+    'coverage',
   ],
   shard: ['work', 'index', 'of', 'sample', 'groups', 'deadline-minutes', 'concurrency'],
   'value-flow': ['work', 'concurrency'],
@@ -658,8 +684,8 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
   }
   const index = integerFlag('index', values.index, 0);
   const of = integerFlag('of', values.of, 1);
-  if (stage === 'shard' && (index === null || of === null)) {
-    throw new UsageError('shard needs --index <i> and --of <n>');
+  if ((stage === 'shard' || stage === 'coverage') && (index === null || of === null)) {
+    throw new UsageError(`${stage} needs --index <i> and --of <n>`);
   }
   if (index !== null && of !== null && index >= of) {
     throw new UsageError(`--index ${index} is not below --of ${of}`);
@@ -685,6 +711,7 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
     concurrency: integerFlag('concurrency', values.concurrency, 1),
     speedFactor: decimalFlag('speed-factor', values['speed-factor']),
     baseline: values.baseline === undefined ? null : path.resolve(cwd, values.baseline),
+    coverage: values.coverage === undefined ? null : path.resolve(cwd, values.coverage),
     run: {
       id: values['run-id'] ?? 'local',
       attempt: integerFlag('run-attempt', values['run-attempt'], 1) ?? 1,
@@ -705,6 +732,8 @@ export interface WorkLayout {
   layer2: string;
   coverageDir: string;
   coverage: string;
+  /** The coverage stage's slice file. */
+  coverageSlice: (index: number) => string;
   candidates: string;
   planPrepared: string;
   shardReport: (shard: number) => string;
@@ -727,6 +756,7 @@ export function workLayout(root: string): WorkLayout {
     layer2: path.join(root, 'layer2.json'),
     coverageDir: path.join(root, 'coverage'),
     coverage: path.join(root, 'coverage', 'coverage.json'),
+    coverageSlice: (index) => path.join(root, coverageSliceName(index)),
     candidates: path.join(root, 'coverage', 'candidates.json'),
     planPrepared: path.join(root, 'plan', 'prepared'),
     shardReport: (shard) => path.join(root, `shard-${shard}.json`),
@@ -1742,6 +1772,91 @@ const facetEqual = (facets: ReadonlyMap<string, InputFacet>, pair: CandidatePair
   return a !== undefined && b !== undefined && a.fingerprint === b.fingerprint;
 };
 
+/**
+ * Layer 1 from the coverage stage's slice files in `dir`: merged (path-coverage/slices.ts) and
+ * written where one Layer 1 run writes its work file.
+ */
+function mergeCoverage(
+  ctx: StageContext,
+  dir: string,
+  files: readonly string[],
+  mode: RunMode,
+): CoverageWorkFile {
+  const reported = readCoverageSlices(dir);
+  const [first] = reported;
+  if (first === undefined) throw new UsageError(`${dir} holds no coverage slice file`);
+  const assignment = coverageSlices(
+    files,
+    first.of,
+    ctx.packageDir,
+    sequentialMatcherFor(mode.kind),
+  );
+  const work = mergeCoverageSlices(assignment, reported);
+  const missing = assignment.flatMap((_, index) =>
+    reported.some((slice) => slice.index === index) ? [] : [index],
+  );
+  ctx.log(
+    `plan: layer 1 from ${reported.length} of ${first.of} coverage slices` +
+      (missing.length === 0 ? '' : `; slices ${missing.join(', ')} did not report`),
+  );
+  mkdirSync(ctx.layout.coverageDir, { recursive: true });
+  writeFileSync(ctx.layout.coverage, JSON.stringify(work));
+  return work;
+}
+
+export interface CoverageStageOptions {
+  index: number;
+  of: number;
+  mode: RunMode;
+  concurrency: number;
+}
+
+/**
+ * The coverage stage: Layer 1 over slice `index` of `of` (path-coverage/slices.ts), written as
+ * the slice file the plan stage's `--coverage` merges. True when every file of the slice was
+ * recorded without errors.
+ */
+export async function runCoverageStage(
+  ctx: StageContext,
+  options: CoverageStageOptions,
+): Promise<boolean> {
+  const { repoRoot, layout, log } = ctx;
+  resetWorkDir(layout.root);
+  const eligibility = resolveEligibility({ repoRoot, mode: options.mode });
+  const assignment = coverageSlices(
+    eligibility.fingerprintFiles,
+    options.of,
+    ctx.packageDir,
+    sequentialMatcherFor(options.mode.kind),
+  );
+  const files = assignment[options.index] ?? [];
+  log(
+    `coverage: slice ${options.index} of ${options.of}: ${files.length} of ` +
+      `${eligibility.fingerprintFiles.length} test files`,
+  );
+  const { work, wallClockMs } = await runCoverage({
+    repoRoot,
+    outDir: layout.coverageDir,
+    mode: options.mode,
+    maxWorkers: options.concurrency,
+    files,
+  });
+  const slice: CoverageSliceFile = {
+    schemaVersion: COVERAGE_SLICE_SCHEMA_VERSION,
+    index: options.index,
+    of: options.of,
+    files,
+    work,
+  };
+  writeJson(layout.coverageSlice(options.index), slice);
+  const failed = work.files.filter((file) => !file.recorded || file.errors.length > 0);
+  log(
+    `coverage: ${work.tests.length} tests, ${failed.length} files failed or unrecorded, ` +
+      minutes(wallClockMs),
+  );
+  return failed.length === 0;
+}
+
 export interface PlanStageOptions {
   mode: RunMode;
   seed: string;
@@ -1752,6 +1867,8 @@ export interface PlanStageOptions {
   /** Stryker concurrency and wall-clock factor of the estimate. */
   concurrency: number;
   speedFactor: number;
+  /** The coverage stage's slice files to merge instead of running Layer 1; null runs it. */
+  coverage: string | null;
 }
 
 /** The plan stage; see the module comment. */
@@ -1798,13 +1915,15 @@ export async function runPlanStage(
     });
     return buildRunManifest({ preparedRoot: layout.planPrepared, mode: options.mode, tests: [] });
   });
-  const { work } = await timed('layer 1', () =>
-    runCoverage({
-      repoRoot,
-      outDir: layout.coverageDir,
-      mode: options.mode,
-      maxWorkers: options.concurrency,
-    }),
+  const { work } = await timed('layer 1', async () =>
+    options.coverage === null
+      ? runCoverage({
+          repoRoot,
+          outDir: layout.coverageDir,
+          mode: options.mode,
+          maxWorkers: options.concurrency,
+        })
+      : { work: mergeCoverage(ctx, options.coverage, eligibility.fingerprintFiles, options.mode) },
   );
   const ids = sortedUnique(work.tests.map((test) => test.id));
   const manifest: ScenarioRunManifest = {
@@ -2743,7 +2862,6 @@ export async function runValueFlowStage(
   // The static check only informs mutation verdicts of every group (scope `all`); a duplicate has
   // equal values, so the fingerprint never needs it.
   if (differing.length > 0 && plan.mutation === 'all') {
-    ensureDist(ctx.packageDir);
     const index = indexPdg(ctx, plan.mode);
     pdg = {
       status: index.status,
@@ -3244,18 +3362,22 @@ export interface CliDeps {
 }
 
 /**
- * Whether a stage needs dist/ before it starts: controls, and all with mutation scope `all` (the
- * PDG index spawns analyze workers from it). The value-flow stage checks its plan's scope itself.
+ * Whether a stage needs dist/ before it starts: every stage that runs the fingerprint's tests
+ * (coverage, plan without `--coverage`, value-flow, all, controls). Integration tests load the
+ * built CLI and its worker scripts (E6), and the PDG index of scope `all` spawns analyze workers
+ * from it.
  */
 const needsDist = (options: CliOptions): boolean =>
-  options.stage === 'controls' || (options.stage === 'all' && options.mutation === 'all');
+  options.stage === 'plan'
+    ? options.coverage === null
+    : options.stage !== 'shard' && options.stage !== 'shards' && options.stage !== 'merge';
 
 /** Throws a usage error naming the build step when `dist/` is missing (D11). */
 function ensureDist(packageDir: string): void {
   if (!existsSync(path.join(packageDir, DIST_ENTRY))) {
     throw new UsageError(
-      `${path.join(packageDir, DIST_ENTRY)} is missing: the PDG index needs the built CLI; ` +
-        `run \`${BUILD_COMMAND}\` from gitnexus/ first`,
+      `${path.join(packageDir, DIST_ENTRY)} is missing: the fingerprint's integration tests and ` +
+        `the PDG index need the built CLI; run \`${BUILD_COMMAND}\` from gitnexus/ first`,
     );
   }
 }
@@ -3271,6 +3393,7 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
       budgetMs: options.deadlineMs ?? SHARD_DEADLINE_MS,
       concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
       speedFactor: options.speedFactor ?? DEFAULT_SPEED_FACTOR,
+      coverage: options.stage === 'plan' ? options.coverage : null,
     });
   const shard = (index: number, of: number, selection: boolean): Promise<ShardStageReport> =>
     runShardStage(ctx, {
@@ -3290,6 +3413,17 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
     return result;
   };
   switch (options.stage) {
+    case 'coverage': {
+      const complete = await timed('coverage', () =>
+        runCoverageStage(ctx, {
+          index: options.index ?? 0,
+          of: options.of ?? 1,
+          mode: options.mode,
+          concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
+        }),
+      );
+      return complete ? 0 : 1;
+    }
     case 'plan':
       await timed('plan', () => plan(options.mode, options.shards));
       return 0;
@@ -3350,6 +3484,10 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
       throw new UsageError(
         `--work ${options.workDir} must lie outside the checkout ${deps.repoRoot}`,
       );
+    }
+    // The plan stage empties its work directory before it reads the slices.
+    if (options.coverage !== null && overlaps(options.workDir, options.coverage)) {
+      throw new UsageError(`--coverage ${options.coverage} must lie outside --work`);
     }
     if (needsDist(options)) ensureDist(deps.packageDir);
   } catch (error) {

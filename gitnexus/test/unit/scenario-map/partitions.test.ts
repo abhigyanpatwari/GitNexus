@@ -1,15 +1,21 @@
 /**
  * Locks the sequential and parallel partitions of scenario-map Vitest runs
- * (tools/scenario-map/path-coverage/partitions.ts): the base config's `lbug-db` include patterns,
- * glob matching, the split, the merge of partial runs and the partitioned runner.
+ * (tools/scenario-map/path-coverage/partitions.ts): the include patterns of the base config's
+ * `fileParallelism: false` projects,
+ * glob matching, the split, the merge of partial runs, the partitioned runner and the build output
+ * copied into a prepared package.
  */
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import type {
   VitestRunOptions,
   VitestRunResult,
 } from '../../../tools/scenario-map/mutation/vitest-run.js';
 import {
   baseSequentialMatcher,
+  copyBuildOutput,
   mergeVitestRuns,
   partitionFiles,
   runVitestPartitioned,
@@ -43,16 +49,32 @@ const test = (id: string): VitestRunResult['tests'][number] => ({
 });
 
 describe('sequential patterns', () => {
-  it('reads the lbug-db project includes and nothing else', () => {
+  it('reads the includes of every fileParallelism: false project and nothing else', () => {
     const config = {
       test: {
         projects: [
-          { test: { name: 'lbug-db', include: ['test/integration/lbug-*.test.ts', 7] } },
+          {
+            test: {
+              name: 'lbug-db',
+              include: ['test/integration/lbug-*.test.ts', 7],
+              fileParallelism: false,
+            },
+          },
           { test: { name: 'default', include: ['test/**/*.test.ts'] } },
+          {
+            test: {
+              name: 'cli-e2e',
+              include: ['test/integration/e2e.test.ts'],
+              fileParallelism: false,
+            },
+          },
         ],
       },
     };
-    expect(sequentialPatterns(config)).toEqual(['test/integration/lbug-*.test.ts']);
+    expect(sequentialPatterns(config)).toEqual([
+      'test/integration/lbug-*.test.ts',
+      'test/integration/e2e.test.ts',
+    ]);
   });
 
   it.each([
@@ -68,11 +90,13 @@ describe('sequential patterns', () => {
       'test/unit/a.test.ts',
       'test/integration/lbug-pool.test.ts',
       'test/integration/rename-provider-ts.test.ts',
+      'test/integration/skills-e2e.test.ts',
     ];
     expect(partitionFiles(files, baseSequentialMatcher())).toEqual({
       sequential: [
         'test/integration/lbug-pool.test.ts',
         'test/integration/rename-provider-ts.test.ts',
+        'test/integration/skills-e2e.test.ts',
       ],
       parallel: ['test/unit/a.test.ts'],
     });
@@ -145,5 +169,27 @@ describe('runVitestPartitioned', () => {
       isSequential,
     );
     expect(calls).toEqual([{ ...options, testIds: [PAR] }]);
+  });
+});
+
+describe('copyBuildOutput', () => {
+  const temps: string[] = [];
+  afterEach(() => {
+    for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('copies vendor/ and dist/ that the checkout has and skips the rest', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'scenario-map-build-output-'));
+    temps.push(base);
+    const checkout = path.join(base, 'checkout');
+    const prepared = path.join(base, 'prepared');
+    mkdirSync(path.join(checkout, 'vendor', 'leiden'), { recursive: true });
+    mkdirSync(prepared);
+    writeFileSync(path.join(checkout, 'vendor', 'leiden', 'index.cjs'), 'leiden');
+    copyBuildOutput(checkout, prepared);
+    expect([
+      readFileSync(path.join(prepared, 'vendor', 'leiden', 'index.cjs'), 'utf8'),
+      existsSync(path.join(prepared, 'dist')),
+    ]).toEqual(['leiden', false]);
   });
 });

@@ -66,7 +66,11 @@ import {
 } from '../mutation/vitest-run.js';
 import { extraRootsOf } from '../types.js';
 import { byText, isRecord, sortedUnique, toPosixSeparators } from '../util.js';
-import { baseSequentialMatcher, runVitestPartitioned } from '../path-coverage/partitions.js';
+import {
+  copyBuildOutput,
+  runVitestPartitioned,
+  sequentialMatcherFor,
+} from '../path-coverage/partitions.js';
 import { wrapListOf } from './builtins.js';
 import {
   RAW_TRACE_PREFIX,
@@ -521,6 +525,9 @@ export async function runTrace(
   if (!check.ok) return notRun(`manifest mismatch: ${check.mismatches.join('; ')}`);
   const preparedRoot = toPosixSeparators(realpathSync(layout.preparedRoot));
   const packageDir = path.posix.join(preparedRoot, PACKAGE_DIR);
+  if (manifest.mode.kind !== 'controls') {
+    copyBuildOutput(path.join(repoRoot, PACKAGE_DIR), packageDir);
+  }
   const vitest = vitestSelectionOf(manifest.mode);
   const context: TraceContext = {
     outDir: layout.rawDir,
@@ -532,7 +539,7 @@ export async function runTrace(
   let traced: VitestRunResult;
   try {
     // The base config's sequential files run in a partition of their own, one worker (E3).
-    const isSequential = manifest.mode.kind === 'controls' ? () => false : baseSequentialMatcher();
+    const isSequential = sequentialMatcherFor(manifest.mode.kind);
     baseline = await runVitestPartitioned(
       deps.runVitest,
       {

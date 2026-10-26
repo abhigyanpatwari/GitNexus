@@ -5,8 +5,10 @@
  *   1. The fingerprint's test files (inventory/eligible.ts `fingerprintFiles`: every unit and
  *      integration test in normal mode), or a `--file` subset of them.
  *   2. A prepared copy (tools/mutation/prepare/prepare.ts, nothing blanked), so `gitnexus-shared`
- *      runs from its relocated source and every path maps back through path-map.ts (KTD4).
- *   3. Two partitions (./partitions.ts): the base config's sequential `lbug-db` files with one
+ *      runs from its relocated source and every path maps back through path-map.ts (KTD4); in
+ *      normal mode the checkout's `vendor/` and `dist/` are copied in (./partitions.ts
+ *      `copyBuildOutput`).
+ *   3. Two partitions (./partitions.ts): the base config's sequential project files with one
  *      worker, then the rest; each has its `<out>/scope-<partition>.json`
  *      (tools/mutation/scope-file.ts) naming its files. They run in the prepared
  *      package, through the Vitest Node API with the environment `vitest run` sets, under
@@ -85,7 +87,7 @@ import {
 } from '../types.js';
 import { ascending, byText, sortedUnique, toPosixSeparators } from '../util.js';
 import { findCandidates, type CandidateResult, type CandidateTest } from './candidates.js';
-import { baseSequentialMatcher, partitionFiles } from './partitions.js';
+import { copyBuildOutput, partitionFiles, sequentialMatcherFor } from './partitions.js';
 import {
   COVERAGE_KEY,
   RAW_RECORD_PREFIX,
@@ -281,7 +283,7 @@ function provenanceOf(
 }
 
 /** Provenance of a test or file the hook did not observe (R4: caps at weak evidence). */
-const unknownProvenance = (): Provenance => ({
+export const unknownProvenance = (): Provenance => ({
   known: false,
   executedFiles: [],
   nativeEntries: [],
@@ -576,6 +578,8 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
   prepare({ repoRoot, outDir: layout.preparedRoot, mutate: [], pathMap });
   const preparedRoot = toPosixSeparators(realpathSync(layout.preparedRoot));
   const packageDir = `${preparedRoot}/gitnexus`;
+  if (options.mode.kind !== 'controls')
+    copyBuildOutput(path.join(repoRoot, 'gitnexus'), packageDir);
   const setupFile = path.join(packageDir, COVERAGE_SETUP_FILE);
   if (!existsSync(setupFile))
     throw new UsageError(`the prepared copy has no ${COVERAGE_SETUP_FILE}`);
@@ -589,10 +593,7 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
         }
       : { config: MUTATION_CONFIG, project: MUTATION_PROJECT };
   // The base config's sequential files run in a partition of their own, one worker (E2).
-  const { sequential, parallel } = partitionFiles(
-    files,
-    options.mode.kind === 'controls' ? () => false : baseSequentialMatcher(),
-  );
+  const { sequential, parallel } = partitionFiles(files, sequentialMatcherFor(options.mode.kind));
   const partitions = [
     { name: 'sequential', files: sequential, maxWorkers: 1 },
     { name: 'parallel', files: parallel, maxWorkers: options.maxWorkers },

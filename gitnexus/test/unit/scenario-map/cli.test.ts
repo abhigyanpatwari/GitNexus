@@ -1,7 +1,7 @@
 /**
  * Locks the scenario-map CLI (U14, R14, R16, KTD1, KTD17) without spawning Vitest or Stryker:
- * argument parsing and usage errors (exit 2), the controls stage refusing to run without a built
- * `dist/`, the merge stage over a small temp work directory whose second shard never reported
+ * argument parsing and usage errors (exit 2), the stages that run tests refusing to start without
+ * a built `dist/`, the merge stage over a small temp work directory whose second shard never reported
  * (the run is partial and that shard's pairs are Inconclusive) and whose group with an empty
  * mutate scope is never run (its pair is Out of scope), the final shard plan value-flow re-plans
  * and its fallback to plan.json's provisional plan (merge and the `shards` count follow it), and
@@ -209,6 +209,12 @@ describe('parseCliArgs', () => {
       ['merge', '--concurrency', '4'],
       /does not apply to the merge stage/,
     ],
+    ['a coverage slice without its index', ['coverage', '--of', '4'], /coverage needs --index/],
+    [
+      'slice files on the coverage stage',
+      ['coverage', '--index', '0', '--of', '4', '--coverage', 'dir'],
+      /does not apply to the coverage stage/,
+    ],
   ])('rejects %s', (_title, argv, message) => {
     expect(() => parseCliArgs(argv, '/base')).toThrow(UsageError);
     expect(() => parseCliArgs(argv, '/base')).toThrow(message);
@@ -226,13 +232,37 @@ describe('runCli usage', () => {
     ]);
   });
 
+  it('gives the coverage stage its slice and the plan its slice directory', () => {
+    const coverage = parseCliArgs(['coverage', '--index', '3', '--of', '12'], '/base');
+    const plan = parseCliArgs(['plan', '--coverage', 'slices'], '/base');
+    expect([coverage.stage, coverage.index, coverage.of, coverage.coverage, plan.coverage]).toEqual(
+      ['coverage', 3, 12, null, path.resolve('/base', 'slices')],
+    );
+  });
+
+  it('exits 2 for slice files inside the work directory, which plan empties', async () => {
+    const { deps, lines, work } = setup();
+    const code = await runCli(
+      ['plan', '--work', work, '--coverage', path.join(work, 'slices')],
+      deps,
+    );
+    expect([code, lines[0]]).toEqual([2, expect.stringMatching(/must lie outside --work/)]);
+  });
+
   it('exits 2 for a work directory inside the checkout', async () => {
     const { deps, lines, root } = setup();
     const code = await runCli(['plan', '--work', path.join(root, 'work')], deps);
     expect([code, lines[0]]).toEqual([2, expect.stringMatching(/must lie outside the checkout/)]);
   });
 
-  it.each([{ argv: ['controls'] }, { argv: ['all'] }, { argv: ['all', '--mutation', 'all'] }])(
+  it.each([
+    { argv: ['controls'] },
+    { argv: ['coverage', '--index', '0', '--of', '2'] },
+    { argv: ['plan'] },
+    { argv: ['value-flow'] },
+    { argv: ['all', '--mutation', 'none'] },
+    { argv: ['all', '--mutation', 'all'] },
+  ])(
     'exits 2 for $argv without a built dist/, naming the build step, before any stage runs',
     async ({ argv }) => {
       const { deps, lines, work } = setup();
@@ -245,14 +275,14 @@ describe('runCli usage', () => {
     },
   );
 
-  it('lets value-flow start without dist/: only a scope-all PDG index needs it', async () => {
-    const { deps, lines, work } = setup();
-    const code = await runCli(['value-flow', '--work', work], deps);
-    expect([code, lines.some((line) => line.includes('node scripts/build.js'))]).toEqual([
-      2,
-      false,
-    ]);
-  });
+  it.each([{ argv: ['shards'] }, { argv: ['merge'] }, { argv: ['plan', '--coverage', 'slices'] }])(
+    'lets $argv start without dist/: it runs no test',
+    async ({ argv }) => {
+      const { deps, lines, work } = setup();
+      await runCli([...argv, '--work', work], deps);
+      expect(lines.some((line) => line.includes('node scripts/build.js'))).toBe(false);
+    },
+  );
 });
 
 // ── Merge over a temp work directory ───────────────────────────────────────
