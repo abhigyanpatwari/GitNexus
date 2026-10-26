@@ -66,6 +66,7 @@ import {
 } from '../mutation/vitest-run.js';
 import { extraRootsOf } from '../types.js';
 import { byText, isRecord, sortedUnique, toPosixSeparators } from '../util.js';
+import { baseSequentialMatcher, runVitestPartitioned } from '../path-coverage/partitions.js';
 import { wrapListOf } from './builtins.js';
 import {
   RAW_TRACE_PREFIX,
@@ -530,24 +531,34 @@ export async function runTrace(
   let baseline: VitestRunResult;
   let traced: VitestRunResult;
   try {
-    baseline = await deps.runVitest({
-      packageDir,
-      testIds: ids,
-      vitest,
-      workDir: layout.baselineDir,
-      maxWorkers: options.maxWorkers,
-    });
+    // The base config's sequential files run in a partition of their own, one worker (E3).
+    const isSequential = manifest.mode.kind === 'controls' ? () => false : baseSequentialMatcher();
+    baseline = await runVitestPartitioned(
+      deps.runVitest,
+      {
+        packageDir,
+        testIds: ids,
+        vitest,
+        workDir: layout.baselineDir,
+        maxWorkers: options.maxWorkers,
+      },
+      isSequential,
+    );
     rmSync(layout.rawDir, { recursive: true, force: true });
     mkdirSync(layout.rawDir, { recursive: true });
-    traced = await deps.runVitest({
-      packageDir,
-      testIds: ids,
-      vitest,
-      workDir: layout.tracedDir,
-      setupFiles: [TRACE_SETUP_FILE],
-      provide: (project) => project.provide(TRACE_KEY, context),
-      maxWorkers: options.maxWorkers,
-    });
+    traced = await runVitestPartitioned(
+      deps.runVitest,
+      {
+        packageDir,
+        testIds: ids,
+        vitest,
+        workDir: layout.tracedDir,
+        setupFiles: [TRACE_SETUP_FILE],
+        provide: (project) => project.provide(TRACE_KEY, context),
+        maxWorkers: options.maxWorkers,
+      },
+      isSequential,
+    );
   } catch (error) {
     return notRun(`run error: ${errorMessage(error)}`);
   }

@@ -344,6 +344,8 @@ const smallRun = (): RunObservations =>
 const testInput = (id: string): VerdictTestInput => ({
   id,
   eligible: true,
+  fingerprintEligible: true,
+  passed: true,
   notOracleValidated: false,
   dupeOk: null,
   joinProblems: [],

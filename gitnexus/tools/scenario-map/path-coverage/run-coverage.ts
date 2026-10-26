@@ -2,10 +2,13 @@
  * Layer 1 of the scenario map: per-test V8 coverage, provenance and candidate retrieval (U4, R3,
  * R4, KTD4, KTD5, KTD7, design §5.2).
  *
- *   1. The eligible test files (inventory/eligible.ts), or a `--file` subset of them.
+ *   1. The fingerprint's test files (inventory/eligible.ts `fingerprintFiles`: every unit and
+ *      integration test in normal mode), or a `--file` subset of them.
  *   2. A prepared copy (tools/mutation/prepare/prepare.ts, nothing blanked), so `gitnexus-shared`
  *      runs from its relocated source and every path maps back through path-map.ts (KTD4).
- *   3. `<out>/scope.json` (tools/mutation/scope-file.ts) names the files; they run in the prepared
+ *   3. Two partitions (./partitions.ts): the base config's sequential `lbug-db` files with one
+ *      worker, then the rest; each has its `<out>/scope-<partition>.json`
+ *      (tools/mutation/scope-file.ts) naming its files. They run in the prepared
  *      package, through the Vitest Node API with the environment `vitest run` sets, under
  *      tools/mutation/vitest.mutation.config.ts (project `mutation`) or, in controls mode, the
  *      fixture project's own vitest.config.ts, with at most `maxWorkers` worker processes
@@ -82,6 +85,7 @@ import {
 } from '../types.js';
 import { ascending, byText, sortedUnique, toPosixSeparators } from '../util.js';
 import { findCandidates, type CandidateResult, type CandidateTest } from './candidates.js';
+import { baseSequentialMatcher, partitionFiles } from './partitions.js';
 import {
   COVERAGE_KEY,
   RAW_RECORD_PREFIX,
@@ -494,7 +498,6 @@ interface Layout {
   outDir: string;
   preparedRoot: string;
   packageDir: string;
-  scopeFile: string;
   rawDir: string;
   cacheDir: string;
   workFile: string;
@@ -505,7 +508,6 @@ const layoutOf = (outDir: string): Layout => ({
   outDir,
   preparedRoot: path.join(outDir, 'prepared'),
   packageDir: path.join(outDir, 'prepared', 'gitnexus'),
-  scopeFile: path.join(outDir, 'scope.json'),
   rawDir: path.join(outDir, 'raw'),
   cacheDir: path.join(outDir, 'vite-cache'),
   workFile: path.join(outDir, 'coverage.json'),
@@ -527,8 +529,8 @@ function resetOutDir(repoRoot: string, outDir: string): void {
 }
 
 function selectFiles(eligibility: Eligibility, subset: readonly string[] | undefined): string[] {
-  if (subset === undefined) return [...eligibility.files];
-  const eligible = new Set(eligibility.files);
+  if (subset === undefined) return [...eligibility.fingerprintFiles];
+  const eligible = new Set(eligibility.fingerprintFiles);
   const outside = subset.filter((file) => !eligible.has(file));
   if (outside.length > 0) throw new UsageError(`not eligible: ${outside.join(', ')}`);
   return sortedUnique(subset);
@@ -577,9 +579,6 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
   const setupFile = path.join(packageDir, COVERAGE_SETUP_FILE);
   if (!existsSync(setupFile))
     throw new UsageError(`the prepared copy has no ${COVERAGE_SETUP_FILE}`);
-  const scopeText = `${JSON.stringify({ testFiles: files }, null, 2)}\n`;
-  parseMutationScope(scopeText);
-  writeFileSync(layout.scopeFile, scopeText);
   mkdirSync(layout.rawDir, { recursive: true });
 
   const { config, project: projectName } =
@@ -589,72 +588,92 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
           project: undefined,
         }
       : { config: MUTATION_CONFIG, project: MUTATION_PROJECT };
+  // The base config's sequential files run in a partition of their own, one worker (E2).
+  const { sequential, parallel } = partitionFiles(
+    files,
+    options.mode.kind === 'controls' ? () => false : baseSequentialMatcher(),
+  );
+  const partitions = [
+    { name: 'sequential', files: sequential, maxWorkers: 1 },
+    { name: 'parallel', files: parallel, maxWorkers: options.maxWorkers },
+  ].filter((partition) => partition.files.length > 0);
   const savedEnv = new Map(ENV_NAMES.map((name) => [name, process.env[name]]));
   const savedCwd = process.cwd();
   // The environment startVitest/prepareVitest sets before creating Vitest, plus the scope file.
   process.env.TEST = 'true';
   process.env.VITEST = 'true';
   process.env.NODE_ENV ??= 'test';
-  process.env[MUTATION_SCOPE_ENV] = layout.scopeFile;
   process.chdir(packageDir);
-  let modules: RuntimeModule[];
-  let unhandledErrors: string[];
+  const modules: RuntimeModule[] = [];
+  const unhandledErrors: string[] = [];
   try {
     const { createVitest } = await import('vitest/node');
-    const vitest = await createVitest(
-      inProcessVitestOptions({
-        root: packageDir,
-        configFile: config,
-        projects: projectName === undefined ? undefined : [projectName],
-        maxWorkers: options.maxWorkers,
-        repeats: COVERAGE_REPEATS,
-      }),
-      { cacheDir: layout.cacheDir },
-    );
-    try {
-      if (vitest.projects.length !== 1) {
-        throw new UsageError(
-          `expected one Vitest project in ${config}, found ` +
-            JSON.stringify(vitest.projects.map((project) => project.name)),
-        );
-      }
-      const [project] = vitest.projects;
-      if (!project.config.includeTaskLocation) {
-        throw new UsageError(`${config}: includeTaskLocation is off; test ids need locations`);
-      }
-      project.config.setupFiles = [setupFile, ...project.config.setupFiles];
-      project.config.sequence.setupFiles = 'list';
-      const context: CoverageContext = {
-        outDir: layout.rawDir,
-        blockRoots: pathMap.map((entry) => `${preparedRoot}/${entry.prepared}`),
-      };
-      project.provide(COVERAGE_KEY, context);
-      const specs = files.map((file) => project.createSpecification(path.join(packageDir, file)));
-      const result = await vitest.runTestSpecifications(specs, true);
-      const byFile = new Map(
-        result.testModules.map((module) => [
-          path.posix.relative(packageDir, toPosixSeparators(module.moduleId)),
-          module,
-        ]),
+    for (const partition of partitions) {
+      const scopeFile = path.join(layout.outDir, `scope-${partition.name}.json`);
+      const scopeText = `${JSON.stringify({ testFiles: partition.files }, null, 2)}\n`;
+      parseMutationScope(scopeText);
+      writeFileSync(scopeFile, scopeText);
+      process.env[MUTATION_SCOPE_ENV] = scopeFile;
+      const vitest = await createVitest(
+        inProcessVitestOptions({
+          root: packageDir,
+          configFile: config,
+          projects: projectName === undefined ? undefined : [projectName],
+          maxWorkers: partition.maxWorkers,
+          repeats: COVERAGE_REPEATS,
+        }),
+        { cacheDir: path.join(layout.cacheDir, partition.name) },
       );
-      modules = files.map((file): RuntimeModule => {
-        const module = byFile.get(file);
-        if (module === undefined) return { file, errors: ['not run'], tests: [] };
-        return {
-          file,
-          errors: module.errors().map(errorText),
-          tests: [...module.children.allTests()].map((test) => ({
-            taskId: test.id,
-            fullName: test.fullName,
-            location: test.location,
-            state: test.result().state,
-            concurrent: test.options.concurrent === true,
-          })),
+      try {
+        if (vitest.projects.length !== 1) {
+          throw new UsageError(
+            `expected one Vitest project in ${config}, found ` +
+              JSON.stringify(vitest.projects.map((project) => project.name)),
+          );
+        }
+        const [project] = vitest.projects;
+        if (!project.config.includeTaskLocation) {
+          throw new UsageError(`${config}: includeTaskLocation is off; test ids need locations`);
+        }
+        project.config.setupFiles = [setupFile, ...project.config.setupFiles];
+        project.config.sequence.setupFiles = 'list';
+        const context: CoverageContext = {
+          outDir: layout.rawDir,
+          blockRoots: pathMap.map((entry) => `${preparedRoot}/${entry.prepared}`),
         };
-      });
-      unhandledErrors = result.unhandledErrors.map(errorText);
-    } finally {
-      await vitest.close();
+        project.provide(COVERAGE_KEY, context);
+        const specs = partition.files.map((file) =>
+          project.createSpecification(path.join(packageDir, file)),
+        );
+        const result = await vitest.runTestSpecifications(specs, true);
+        const byFile = new Map(
+          result.testModules.map((module) => [
+            path.posix.relative(packageDir, toPosixSeparators(module.moduleId)),
+            module,
+          ]),
+        );
+        for (const file of partition.files) {
+          const module = byFile.get(file);
+          modules.push(
+            module === undefined
+              ? { file, errors: ['not run'], tests: [] }
+              : {
+                  file,
+                  errors: module.errors().map(errorText),
+                  tests: [...module.children.allTests()].map((test) => ({
+                    taskId: test.id,
+                    fullName: test.fullName,
+                    location: test.location,
+                    state: test.result().state,
+                    concurrent: test.options.concurrent === true,
+                  })),
+                },
+          );
+        }
+        unhandledErrors.push(...result.unhandledErrors.map(errorText));
+      } finally {
+        await vitest.close();
+      }
     }
   } finally {
     process.chdir(savedCwd);
@@ -663,6 +682,9 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
       else process.env[name] = value;
     }
   }
+  // Every file in its eligible order, whichever partition ran it.
+  const order = new Map(files.map((file, index) => [file, index]));
+  modules.sort((x, y) => (order.get(x.file) ?? 0) - (order.get(y.file) ?? 0));
   const work = buildWorkFile({
     mode: options.mode,
     preparedRoot,

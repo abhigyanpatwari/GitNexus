@@ -45,7 +45,8 @@ const testInput = (
   overrides: Partial<FingerprintTestInput> = {},
 ): FingerprintTestInput => ({
   id,
-  eligible: true,
+  fingerprintEligible: true,
+  passed: true,
   dupeOk: null,
   joinProblems: [],
   inventoryUnresolved: [],
@@ -81,7 +82,8 @@ const verdictOf = (edit: WorldEdit = {}) =>
   }).pairs[0];
 
 const CASES: { rule: FingerprintRule; verdict: FingerprintVerdict; edit: WorldEdit }[] = [
-  { rule: 'not-eligible', verdict: 'out-of-scope', edit: { b: { eligible: false } } },
+  { rule: 'not-eligible', verdict: 'out-of-scope', edit: { b: { fingerprintEligible: false } } },
+  { rule: 'not-passing', verdict: 'inconclusive', edit: { a: { passed: false } } },
   { rule: 'path-unattributable', verdict: 'inconclusive', edit: { a: { concurrent: true } } },
   { rule: 'path-differs', verdict: 'distinct', edit: { pair: { identicalBlocks: false } } },
   {

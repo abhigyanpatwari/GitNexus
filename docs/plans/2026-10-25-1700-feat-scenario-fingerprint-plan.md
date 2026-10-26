@@ -101,3 +101,19 @@ U7's timings recorded in the design doc.
   duplicates mutation can reach (31 Row, 1 Distinct, 3 weak repeats; 3 Inconclusive); 71 test
   `tools/mutation/` code outside the mutation scope. Its merge missed the single shard artifact
   (unpacked into the download path itself); fixed in the workflow's placement step.
+
+## Extension: every unit and integration test (maintainer, 2026-10-26)
+
+The fingerprint needs no Stryker run, so its scope is no longer bound to the mutation runner's
+validated category. **F8:** the fingerprint covers every `*.test.ts` under `gitnexus/test/unit`
+and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS envelope.
+
+- **E1** Eligibility carries `fingerprintFiles` besides the mutation-eligible `files`; a test's
+  verdict input carries `eligible` (mutation), `fingerprintEligible` and `passed`.
+- **E2** Layer 1 runs the base config's sequential `lbug-db` files with one worker, the rest with
+  `--concurrency` workers, and joins both into one work file.
+- **E3** The trace run uses the same two partitions.
+- **E4** Fingerprint rule `not-passing`: a test that did not pass in Layer 1 makes its pairs
+  Inconclusive. The mutation target keeps only pairs whose two tests are mutation-eligible.
+- **E5** Measure Layer 1 on a sample of integration files locally; shard Layer 1 on CI when the
+  whole set does not fit one plan job.

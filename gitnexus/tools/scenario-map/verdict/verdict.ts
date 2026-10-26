@@ -198,8 +198,12 @@ export const WORDING = Object.freeze({
 export interface VerdictTestInput {
   /** Phase 0 test id. */
   id: string;
-  /** R1: in the eligible category (envelope and classifier; every controls fixture test). */
+  /** R1: in the mutation-eligible category (envelope and classifier; every controls test). */
   eligible: boolean;
+  /** In the scenario fingerprint's scope (every unit and integration test; fingerprint F8). */
+  fingerprintEligible: boolean;
+  /** The test passed its Layer 1 run; a test that did not has no trustworthy fingerprint. */
+  passed: boolean;
   /** Phase 0: gate 3 cannot validate the id (U3 `InventoryInstance.notOracleValidated`). */
   notOracleValidated: boolean;
   /** U3 `// dupe-ok:` reason (R15); null when absent. */

@@ -121,8 +121,14 @@ export interface EligibilityDelta {
 
 export interface Eligibility {
   mode: RunMode['kind'];
-  /** Package paths of the eligible test files, sorted. */
+  /** Package paths of the test files mutation may run (R1: the validated envelope), sorted. */
   files: string[];
+  /**
+   * Package paths of the test files the scenario fingerprint covers, sorted: every `*.test.ts`
+   * under `test/unit` and `test/integration` (normal mode; F8), or the fixture's case files.
+   * A superset of `files`.
+   */
+  fingerprintFiles: string[];
   /** R1 delta; null in `controls` mode, where the envelope is not consulted. */
   delta: EligibilityDelta | null;
   /** Extra path-map roots for {@link productionFilePredicate}. */

@@ -509,7 +509,8 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
     '',
     '## Eligibility',
     '',
-    `${eligibility.mode} mode: ${plural(eligibility.files.length, 'eligible test file')}.`,
+    `${eligibility.mode} mode: the fingerprint covers ${plural(eligibility.fingerprintFiles, 'test file')}; ` +
+      `${plural(eligibility.files.length, 'test file')} are mutation-eligible.`,
   ];
   const delta = eligibility.delta;
   if (delta === null) return [...lines, 'The Phase 0 envelope is not consulted in this mode.'];

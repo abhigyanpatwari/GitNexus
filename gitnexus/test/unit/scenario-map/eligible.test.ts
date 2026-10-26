@@ -47,12 +47,23 @@ describe('computeEligibility', () => {
     expect(computeEligibility([A, B, C], verdicts)).toEqual({
       mode: 'normal',
       files: [A, C],
+      fingerprintFiles: [A, C],
       delta: {
         notValidated: [D],
         rejected: [{ file: B, reasons: ['native package: tree-sitter'] }],
       },
       extraRoots: [],
     });
+  });
+
+  it('gives the fingerprint every listed test file and every mutation-eligible one', () => {
+    const integration = 'test/integration/e.test.ts';
+    expect(computeEligibility([A, B, C], verdicts, [integration, B]).fingerprintFiles).toEqual([
+      integration,
+      A,
+      B,
+      C,
+    ]);
   });
 
   it('reports an envelope file the classifier no longer sees as rejected, not found', () => {
@@ -87,6 +98,20 @@ describe('resolveEligibility', () => {
     expect(classifyTests).toHaveBeenCalledWith(repoRoot);
   });
 
+  it('normal mode gives the fingerprint every unit and integration test file, nothing else', () => {
+    const repoRoot = tempRepo({
+      [ENVELOPE_FILE]: envelope([A, C]),
+      'gitnexus/test/unit/nested/x.test.ts': '',
+      'gitnexus/test/integration/y.test.ts': '',
+      'gitnexus/test/unit/helper.ts': '',
+      'gitnexus/test/fixtures/z.test.ts': '',
+    });
+    const classifyTests = vi.fn((_root: string) => verdicts);
+    expect(
+      resolveEligibility({ repoRoot, mode: { kind: 'normal' }, classifyTests }).fingerprintFiles,
+    ).toEqual(['test/integration/y.test.ts', A, C, 'test/unit/nested/x.test.ts']);
+  });
+
   it('controls mode enrols the fixture case files and never consults the envelope', () => {
     const repoRoot = tempRepo({
       [`${FIXTURE}/rows.case.ts`]: '',
@@ -104,6 +129,10 @@ describe('resolveEligibility', () => {
     ).toEqual({
       mode: 'controls',
       files: [
+        'test/fixtures/mutation-scenario-map/nested/pairs.case.ts',
+        'test/fixtures/mutation-scenario-map/rows.case.ts',
+      ],
+      fingerprintFiles: [
         'test/fixtures/mutation-scenario-map/nested/pairs.case.ts',
         'test/fixtures/mutation-scenario-map/rows.case.ts',
       ],

@@ -442,7 +442,14 @@ export interface ScenarioMapReport {
   fingerprint: FingerprintSection;
   /** {@link LIMITS}, plus a fingerprint-fallback note when one applies. */
   limits: string[];
-  eligibility: { mode: Eligibility['mode']; files: string[]; delta: EligibilityDelta | null };
+  eligibility: {
+    mode: Eligibility['mode'];
+    /** The mutation-eligible test files. */
+    files: string[];
+    /** How many test files the fingerprint covers. */
+    fingerprintFiles: number;
+    delta: EligibilityDelta | null;
+  };
   layer0: Layer0Section;
   pairs: ReportPair[];
   kept: ReportPair[];
@@ -906,7 +913,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
     universes: sortedUnique(universes),
     mutants: { total: observedMutants.length, fallbacks },
   };
-  const eligibleRepoFiles = new Set(input.eligibility.files.map(fromPackagePath));
+  const eligibleRepoFiles = new Set(input.eligibility.fingerprintFiles.map(fromPackagePath));
   const duplicates = fingerprint.pairs
     .filter((pair) => pair.verdict === 'duplicate')
     .map((pair): SpotAuditPick => ({ key: pair.key, a: pair.a, b: pair.b }));
@@ -939,6 +946,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
     eligibility: {
       mode: input.eligibility.mode,
       files: sortedUnique(input.eligibility.files),
+      fingerprintFiles: input.eligibility.fingerprintFiles.length,
       delta: input.eligibility.delta,
     },
     layer0: layer0Section(input.layer0, eligibleRepoFiles),

@@ -339,6 +339,7 @@ function basePlan(): PlanFile {
     eligibility: {
       mode: 'normal',
       files: ['test/unit/a.test.ts', 'test/unit/b.test.ts', 'test/unit/c.test.ts'],
+      fingerprintFiles: ['test/unit/a.test.ts', 'test/unit/b.test.ts', 'test/unit/c.test.ts'],
       delta: { notValidated: [], rejected: [] },
       extraRoots: [],
     },
@@ -821,7 +822,7 @@ describe('mutationTarget', () => {
     },
     { scope: 'none', expected: [], pairs: 0 },
   ] as const)('keeps every group for $scope, or none', ({ scope, expected, pairs: count }) => {
-    const target = mutationTarget(scope, groups, pairs, verdicts, executed);
+    const target = mutationTarget(scope, groups, pairs, verdicts, executed, () => true);
     expect([
       target.scopes.map((group) => [group.id, group.tests.length]),
       target.pairs.length,
@@ -829,7 +830,14 @@ describe('mutationTarget', () => {
   });
 
   it('keeps the possible duplicates, trimmed to their tests and the files those tests executed', () => {
-    const target = mutationTarget('possible-duplicates', groups, pairs, verdicts, executed);
+    const target = mutationTarget(
+      'possible-duplicates',
+      groups,
+      pairs,
+      verdicts,
+      executed,
+      () => true,
+    );
     expect(target).toEqual({
       scopes: [
         {
@@ -847,9 +855,34 @@ describe('mutationTarget', () => {
     });
   });
 
+  it('mutates no pair with a test outside the mutation-eligible files, whatever the scope', () => {
+    const onlyA = (test: string): boolean => test.startsWith('test/unit/a.test.ts');
+    const all = mutationTarget('all', groups, pairs, verdicts, executed, onlyA);
+    const possible = mutationTarget(
+      'possible-duplicates',
+      groups,
+      pairs,
+      verdicts,
+      executed,
+      onlyA,
+    );
+    expect([all.pairs, all.scopes.map((group) => group.id), possible.pairs]).toEqual([
+      [pairs[0], pairs[1]],
+      ['ga'],
+      [pairs[0]],
+    ]);
+  });
+
   it('keeps every mutate file when a kept test has an unknown provenance', () => {
     const unknown = new Map(verdicts).set(pairKey(A1, A3), 'possible-duplicate');
-    const target = mutationTarget('possible-duplicates', groups, pairs, unknown, executed);
+    const target = mutationTarget(
+      'possible-duplicates',
+      groups,
+      pairs,
+      unknown,
+      executed,
+      () => true,
+    );
     expect(target.scopes.map((group) => [group.tests, group.mutate])).toEqual([
       [
         [A1, A2, A3],

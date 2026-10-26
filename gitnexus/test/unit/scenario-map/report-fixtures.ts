@@ -89,6 +89,8 @@ export const testInput = (
 ): VerdictTestInput => ({
   id,
   eligible: true,
+  fingerprintEligible: true,
+  passed: true,
   notOracleValidated: false,
   dupeOk: null,
   joinProblems: [],
@@ -216,6 +218,7 @@ export function reportInput(options: InputOptions = {}): ReportInput {
     eligibility: {
       mode: 'normal',
       files: ['test/unit/add.test.ts'],
+      fingerprintFiles: ['test/unit/add.test.ts'],
       delta: { notValidated: [], rejected: [] },
       extraRoots: [],
     },

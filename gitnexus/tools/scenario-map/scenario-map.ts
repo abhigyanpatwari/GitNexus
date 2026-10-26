@@ -1409,6 +1409,8 @@ export interface VerdictAssembly {
   stages: StageLookups;
   observations: MergedObservations;
   degraded: VerdictInput['valueFlowDegraded'];
+  /** Package paths of the mutation-eligible test files (`Eligibility.files`). */
+  mutationEligible: ReadonlySet<string>;
   /** Only these tests (default every test of the work file). */
   tests?: ReadonlySet<string>;
 }
@@ -1428,7 +1430,10 @@ export function assembleVerdictInput(input: VerdictAssembly): VerdictInput {
       if (record === undefined) throw new Error(`layer2.json has no record of ${test.id}`);
       return {
         id: test.id,
-        eligible: true,
+        eligible: input.mutationEligible.has(test.file),
+        // Every test Layer 1 ran is in the fingerprint's scope (fingerprint F8).
+        fingerprintEligible: true,
+        passed: test.state === 'passed',
         notOracleValidated: record.notOracleValidated,
         dupeOk: record.dupeOk,
         joinProblems: record.joinProblems,
@@ -1494,11 +1499,19 @@ export function fingerprintVerdictsOf(
     stages: { isolation: () => null, rowDeletion: () => null, staticValueFlow: () => null, trace },
     observations: { explicit: [], universes: [] },
     degraded: [],
+    // The fingerprint reads `fingerprintEligible`, never the mutation eligibility.
+    mutationEligible: new Set(),
   });
   return new Map(
     computeFingerprints(evidence).pairs.map((pair) => [pairKey(pair.a, pair.b), pair.verdict]),
   );
 }
+
+/** Whether a test id's file is one of the mutation-eligible files (package paths). */
+export const mutationEligibleTest = (files: readonly string[]): ((test: string) => boolean) => {
+  const eligible = new Set(files);
+  return (test) => eligible.has(parseTestId(test).file);
+};
 
 /** The groups and pairs a run's mutation scope mutates. */
 export interface MutationTarget {
@@ -1507,10 +1520,11 @@ export interface MutationTarget {
 }
 
 /**
- * The mutation target of a scope (plan F7): `all` every group and pair; `none` nothing;
- * `possible-duplicates` the pairs whose fingerprint verdict is a possible duplicate and their
- * groups, each trimmed to the tests of those pairs and, when every such test's provenance is
- * known, to the mutate files they executed (no other file holds a mutant they can kill). Pure.
+ * The mutation target of a scope (plan F7, E4): `none` nothing; `all` every pair whose two tests
+ * are mutation-eligible; `possible-duplicates` those whose fingerprint verdict is a possible
+ * duplicate. Each kept group is trimmed to the tests of its kept pairs and, when every such test's
+ * provenance is known, to the mutate files they executed (no other file holds a mutant they can
+ * kill); a group of scope `all` that keeps every test stays as planned. Pure.
  */
 export function mutationTarget(
   scope: MutationScope,
@@ -1518,11 +1532,14 @@ export function mutationTarget(
   pairs: readonly CandidatePair[],
   verdictOf: ReadonlyMap<string, FingerprintVerdict>,
   executedFiles: (test: string) => readonly string[] | null,
+  mutationEligible: (test: string) => boolean,
 ): MutationTarget {
-  if (scope === 'all') return { scopes: [...scopes], pairs: [...pairs] };
   if (scope === 'none') return { scopes: [], pairs: [] };
   const kept = pairs.filter(
-    (pair) => verdictOf.get(pairKey(pair.a, pair.b)) === 'possible-duplicate',
+    (pair) =>
+      mutationEligible(pair.a) &&
+      mutationEligible(pair.b) &&
+      (scope === 'all' || verdictOf.get(pairKey(pair.a, pair.b)) === 'possible-duplicate'),
   );
   const testsOf = new Map<string, Set<string>>();
   for (const pair of kept) {
@@ -1533,6 +1550,7 @@ export function mutationTarget(
     const own = testsOf.get(group.id);
     if (own === undefined) return [];
     const tests = group.tests.filter((test) => own.has(test));
+    if (scope === 'all' && tests.length === group.tests.length) return [group];
     const executed = tests.map(executedFiles);
     const reached = executed.every((files) => files !== null)
       ? new Set(executed.flatMap((files) => files ?? []))
@@ -1754,11 +1772,14 @@ export async function runPlanStage(
   const eligibility = await timed('eligibility', () =>
     resolveEligibility({ repoRoot, mode: options.mode }),
   );
-  if (eligibility.files.length === 0) throw new UsageError('no eligible test files');
-  log(`plan: ${eligibility.files.length} eligible test files (${options.mode.kind} mode)`);
+  if (eligibility.fingerprintFiles.length === 0) throw new UsageError('no eligible test files');
+  log(
+    `plan: ${eligibility.fingerprintFiles.length} test files in the fingerprint's scope, ` +
+      `${eligibility.files.length} mutation-eligible (${options.mode.kind} mode)`,
+  );
   const layer0 = await timed('layer 0', () => {
     try {
-      return scanLayer0(repoRoot, eligibility.files);
+      return scanLayer0(repoRoot, eligibility.fingerprintFiles);
     } catch (error) {
       log(`plan: layer 0 scan did not run: ${errorMessage(error)}`);
       return null;
@@ -1878,6 +1899,7 @@ export async function runPlanStage(
       },
       observations: { explicit: [], universes: [] },
       degraded: [],
+      mutationEligible: new Set(eligibility.files),
     }),
   );
   const strongCapable = new Set(
@@ -1897,6 +1919,7 @@ export async function runPlanStage(
     candidates.pairs,
     fingerprintVerdictsOf(work, layer2.tests, candidates.pairs, () => null),
     (test) => executed.get(test) ?? null,
+    mutationEligibleTest(eligibility.files),
   );
   log(
     `plan: mutation ${options.mutation}: ${target.scopes.length} of ${scopes.length} groups, ` +
@@ -2522,6 +2545,7 @@ export async function runShardStage(
       observations: mainObservations,
       degraded: [],
       tests: new Set(shardPairs.flatMap((pair) => [pair.a, pair.b])),
+      mutationEligible: new Set(plan.eligibility.files),
     }),
   );
   const strong = new Set(
@@ -2836,6 +2860,7 @@ export async function runValueFlowStage(
       plan.pairs,
       fingerprintVerdictsOf(work, layer2.tests, plan.pairs, (key) => traceOf.get(key) ?? null),
       facts.executedFiles,
+      mutationEligibleTest(plan.eligibility.files),
     );
     result.replan = replanShards(plan, view, facts, target);
   } else if (view.use === 'used') {
@@ -3011,6 +3036,7 @@ export async function runMergeStage(
     },
     observations: merged,
     degraded: valueFlow?.staticValueFlow.degraded ?? [],
+    mutationEligible: new Set(plan.eligibility.files),
   });
   const fingerprint = computeFingerprints(evidence);
   const verdicts = computeVerdicts(mutationEvidence(plan.mutation, evidence, shardPlan.groups));
@@ -3033,7 +3059,10 @@ export async function runMergeStage(
       sourceRevision: ctx.sourceRevision(),
     }),
     eligibility: plan.eligibility,
-    eligibleTests: work.tests.map((test) => test.id),
+    // The M of "N of M eligible tests evaluated": the mutation-eligible tests.
+    eligibleTests: work.tests
+      .filter((test) => plan.eligibility.files.includes(test.file))
+      .map((test) => test.id),
     shards: { planned: shardPlan.shards.length, complete: completeShards, incomplete },
     layer0: existsSync(layout.layer0) ? readJsonFile(layout.layer0) : null,
     evidence,

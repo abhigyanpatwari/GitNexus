@@ -16,8 +16,9 @@
  *                expected values are part of the discarded values.
  *
  * Per pair, the first rule that holds ({@link FINGERPRINT_RULES}):
- *   out-of-scope        a test outside the eligible category;
- *   inconclusive        a test ran concurrently (`path-unattributable`);
+ *   out-of-scope        a test outside the fingerprint's scope;
+ *   inconclusive        a test did not pass its Layer 1 run (`not-passing`), or ran concurrently
+ *                       (`path-unattributable`);
  *   distinct            the block sets differ (`path-differs`);
  *   different-checks    same path and the same, resolved input with a clean trace, other checks;
  *   distinct            other checks otherwise (`checks-differ`), or another call shape;
@@ -62,6 +63,7 @@ export const FINGERPRINT_VERDICTS: readonly FingerprintVerdict[] = [
 
 export type FingerprintRule =
   | 'not-eligible'
+  | 'not-passing'
   | 'path-unattributable'
   | 'path-differs'
   | 'same-input-different-checks'
@@ -110,7 +112,8 @@ export interface FingerprintReport {
 export type FingerprintTestInput = Pick<
   VerdictTestInput,
   | 'id'
-  | 'eligible'
+  | 'fingerprintEligible'
+  | 'passed'
   | 'dupeOk'
   | 'joinProblems'
   | 'inventoryUnresolved'
@@ -173,9 +176,18 @@ export const FINGERPRINT_RULES: readonly Rule[] = [
     verdict: 'out-of-scope',
     decide: (f) =>
       when(
-        !f.a.eligible || !f.b.eligible,
+        !f.a.fingerprintEligible || !f.b.fingerprintEligible,
         'not-eligible',
-        [f.a, f.b].filter((side) => !side.eligible).map((side) => side.id),
+        [f.a, f.b].filter((side) => !side.fingerprintEligible).map((side) => side.id),
+      ),
+  },
+  {
+    verdict: 'inconclusive',
+    decide: (f) =>
+      when(
+        !f.a.passed || !f.b.passed,
+        'not-passing',
+        [f.a, f.b].filter((side) => !side.passed).map((side) => `${side.id} did not pass`),
       ),
   },
   {

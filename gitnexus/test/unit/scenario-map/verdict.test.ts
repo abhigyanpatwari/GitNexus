@@ -137,6 +137,8 @@ const facet = (values: readonly string[], overrides: Partial<InputFacet> = {}): 
 const testInput = (id: string, overrides: Partial<VerdictTestInput> = {}): VerdictTestInput => ({
   id,
   eligible: true,
+  fingerprintEligible: true,
+  passed: true,
   notOracleValidated: false,
   dupeOk: null,
   joinProblems: [],
