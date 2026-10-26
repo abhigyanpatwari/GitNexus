@@ -101,6 +101,8 @@ export const QUERY_DEFAULT_MAX_SYMBOLS = 25;
 /** Advertised query page maxima (schema + LocalBackend.query reject, not clamp). */
 export const QUERY_MAX_LIMIT = 100;
 export const QUERY_MAX_MAX_SYMBOLS = 200;
+/** Source preview characters shared across unique symbols on a query result page. */
+export const QUERY_CONTENT_MAX_CHARS = 16_000;
 export const CONTEXT_CHAIN_MAX_DEPTH = 3;
 
 const CWD_AWARE_REPO_OMISSION =
@@ -222,8 +224,7 @@ ${HOT_READ_STALENESS_NOTE}`,
         },
         include_content: {
           type: 'boolean',
-          description:
-            'Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content. Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
+          description: `Include source text retained for matching symbols as previews (default: false), sharing ${QUERY_CONTENT_MAX_CHARS} characters equally across unique returned symbols per repository. content_truncated marks incomplete previews; all matches remain present. Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row. Use read_file line ranges for large sources. contentAvailability reports index retention. Query next is JSON guidance.`,
           default: false,
         },
         chain_depth: {

@@ -113,16 +113,23 @@ for (const entry of cases) {
     assert.equal(typeof text, 'string');
     const currentText = text as string;
     const hint = getNextStepHint(entry.tool, entry.args, false, entry.result);
-    assert.ok(currentText.endsWith(hint));
-    const body = hint ? currentText.slice(0, -hint.length) : currentText;
-    if (typeof entry.result === 'string') assert.equal(body, entry.result);
-    else assert.deepEqual(JSON.parse(body), entry.result);
+    if (entry.tool === 'query') {
+      const { next, ...body } = JSON.parse(currentText);
+      assert.equal(next, hint);
+      assert.deepEqual(body, entry.result);
+    } else {
+      assert.ok(currentText.endsWith(hint));
+      const body = hint ? currentText.slice(0, -hint.length) : currentText;
+      if (typeof entry.result === 'string') assert.equal(body, entry.result);
+      else assert.deepEqual(JSON.parse(body), entry.result);
+    }
     const prettyText =
       (typeof entry.result === 'string' ? entry.result : JSON.stringify(entry.result, null, 2)) +
       hint;
     const baselineBytes = Buffer.byteLength(prettyText);
     const currentBytes = Buffer.byteLength(currentText);
-    assert.ok(currentBytes <= baselineBytes);
+    // Moving the query hint into JSON adds a field even for an empty result.
+    assert.ok(currentBytes <= baselineBytes + (entry.tool === 'query' ? 64 : 0));
     measurements.push({
       name: entry.name,
       baselineBytes,
