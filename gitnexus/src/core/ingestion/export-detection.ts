@@ -41,25 +41,33 @@ export const tsExportChecker: ExportChecker = (node, _name) => {
 /** Python: public if no leading underscore (convention). */
 export const pythonExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
 
+// Parser trees are immutable during extraction; weak keys do not retain discarded trees.
+const javaPublicModifierCache = new WeakMap<SyntaxNode, boolean>();
+
 /** Java: check for 'public' modifier — modifiers are siblings of the name node, not parents. */
 export const javaExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
-    if (current.parent) {
-      const parent = current.parent;
-      for (let i = 0; i < parent.childCount; i++) {
-        const child = parent.child(i);
-        if (child?.type === 'modifiers' && child.text?.includes('public')) {
-          return true;
+    const parent: SyntaxNode | null = current.parent;
+    if (parent) {
+      let isPublic = javaPublicModifierCache.get(parent);
+      if (isPublic === undefined) {
+        isPublic = false;
+        for (let i = 0; i < parent.childCount; i++) {
+          const child = parent.child(i);
+          if (child?.type === 'modifiers' && child.text?.includes('public')) {
+            isPublic = true;
+            break;
+          }
         }
-      }
-      if (parent.type === 'method_declaration' || parent.type === 'constructor_declaration') {
-        if (parent.text?.trimStart().startsWith('public')) {
-          return true;
+        if (parent.type === 'method_declaration' || parent.type === 'constructor_declaration') {
+          isPublic ||= parent.text?.trimStart().startsWith('public') ?? false;
         }
+        javaPublicModifierCache.set(parent, isPublic);
       }
+      if (isPublic) return true;
     }
-    current = current.parent;
+    current = parent;
   }
   return false;
 };

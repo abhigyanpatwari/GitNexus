@@ -346,6 +346,7 @@ const WORKER_THREADS = [
   'test/integration/java-imported-return-types.test.ts',
   'test/unit/community-processor.test.ts',
   'test/integration/worker-pool.test.ts',
+  'test/integration/class-expression-owners.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
   // Real parse workers and both on-disk parse stores must retain lexical
   // local-import ownership on each platform's native grammar/runtime pair.
@@ -355,9 +356,11 @@ const WORKER_THREADS = [
   'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
 ];
 
-// Tree-sitter native addon smoke tests — verify that native grammars
-// load correctly on each platform (binary compatibility, .node loading)
+// Native addon smoke tests — verify binary compatibility and recovery on each OS.
 const NATIVE_ADDON_SMOKE = [
+  // bunx skips the native install copy; recover it before recording identity.
+  'test/unit/lbug-native-check.test.ts',
+  'test/unit/lazy-action.test.ts',
   'test/integration/tree-sitter-languages.test.ts',
   'test/integration/parsing.test.ts',
   'test/integration/pipeline.test.ts',

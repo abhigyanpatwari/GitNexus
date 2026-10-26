@@ -16,8 +16,9 @@
  * resolved to `npx` and the emitted command could not run at all. `bunx` is
  * bun's install-free one-shot runner and needs no allow-build equivalent — bun
  * skips lifecycle scripts unconditionally for a `bunx` fetch, which the native
- * loader recovers from directly (see core/lbug/native-check.ts). Both bun rungs
- * gate on `bunx` actually running, not merely existing on PATH — see `hasBun`.
+ * loader recovers from directly (see core/lbug/native-check.ts). Both pnpm and
+ * bun rungs gate on the tool actually running, not merely existing on PATH —
+ * see `hasPnpm` (#3717) and `hasBun`.
  *
  * The `--allow-build` flags MUST precede the `dlx` token. pnpm < 10.14 keeps
  * `dlx` in its argv escape list, so flags placed *after* `dlx` are parsed as
@@ -126,10 +127,10 @@ function resolveOnPath(
 // `ran` is liveness, kept separate from the version because a PATH hit proves a
 // file exists, not that it works, and the two answers differ: a banner-printing
 // or oddly-versioned tool is alive with `major: null`, while a stale shim left by
-// a partial uninstall is neither. Only the bun rung consults `ran` today (see
-// hasBun) — it is the one runner with no version to read, so a dedicated probe is
-// its only liveness signal; pnpm gets the same evidence for free from the version
-// spawn it must make anyway, and deliberately forgives an unreadable one (#1939).
+// a partial uninstall (or an unconfigured NVM shim) is neither. Both pnpm and
+// bun consult `ran` (see hasPnpm, hasBun) — pnpm gets the evidence for free
+// from the version spawn it must make anyway, deliberately forgiving an
+// unreadable version when the process actually ran (#1939, #3717).
 function probeVersion(command) {
   try {
     const output = execFileSync(command, ['--version'], {
@@ -214,18 +215,34 @@ function resolveInvocationMode(probe = resolveOnPath, deps = {}) {
   if (probe('gitnexus', true)) return 'gitnexus';
 
   const npmMajor = getNpmMajorVersion(deps);
-  // pnpm presence: prefer an explicit `pnpmPresent` flag (set by
-  // formatAnalyzeCommand, which falls back to a PATH probe when the version is
-  // unreadable) so a present-but-unparseable pnpm — slow probe, Corepack
-  // banner — still selects pnpm instead of the npx crash path. Otherwise an
-  // injected version (a successful `pnpm --version` proves presence)
-  // short-circuits the `which pnpm` probe; failing both, fall back to PATH.
-  const hasPnpm =
-    'pnpmPresent' in deps
-      ? deps.pnpmPresent
-      : 'pnpmMajor' in deps
-        ? deps.pnpmMajor !== null
-        : Boolean(probe('pnpm'));
+  // pnpm usability is resolved lazily, mirroring bun: prefer an explicit
+  // `pnpmPresent` flag (set by formatAnalyzeCommand, which captures whether
+  // `pnpm --version` actually ran) so a present-but-unparseable pnpm (Corepack
+  // banner) still selects pnpm instead of the npx crash path, while an
+  // unusable shim (e.g. NVM for Windows: non-zero exit) is rejected (#3717).
+  // Otherwise an injected version/presence short-circuits the spawn; failing
+  // both, check PATH presence then liveness (`pnpm --version`).
+  let pnpmCache;
+  const hasPnpm = () => {
+    if (pnpmCache === undefined) {
+      if ('pnpmPresent' in deps) {
+        pnpmCache =
+          Boolean(deps.pnpmPresent) && ('pnpmRuns' in deps ? Boolean(deps.pnpmRuns) : true);
+      } else if ('pnpmRuns' in deps && !deps.pnpmRuns) {
+        pnpmCache = false;
+      } else if ('pnpmMajor' in deps && deps.pnpmMajor !== null) {
+        pnpmCache = true;
+      } else if ('pnpmRuns' in deps && deps.pnpmRuns) {
+        pnpmCache = Boolean(probe('pnpm'));
+      } else if ('pnpmMajor' in deps && deps.pnpmMajor === null) {
+        pnpmCache = false;
+      } else {
+        const present = Boolean(probe('pnpm'));
+        pnpmCache = present && probeVersion('pnpm').ran;
+      }
+    }
+    return pnpmCache;
+  };
 
   // bun usability is resolved lazily: only the two branches below can select it,
   // so a machine with pnpm, or with npm < 11, never pays the PATH scan or the
@@ -243,13 +260,13 @@ function resolveInvocationMode(probe = resolveOnPath, deps = {}) {
   };
 
   // npm 11+ npx install crash (#1939) — prefer pnpm dlx when available.
-  if (hasPnpm && npmMajor !== null && npmMajor >= 11) return 'pnpm';
+  if (npmMajor !== null && npmMajor >= 11 && hasPnpm()) return 'pnpm';
   // Same crash, no pnpm to fall back on: bunx is install-free and unaffected.
   if (npmMajor !== null && npmMajor >= 11 && hasBun()) return 'bun';
   // npm 10 and earlier: npx works; prefer it over pnpm dlx when npm is present.
   if (npmMajor !== null && npmMajor < 11) return 'npx';
   // npm absent or unreadable — use pnpm if present (with allow-build flags).
-  if (hasPnpm) return 'pnpm';
+  if (hasPnpm()) return 'pnpm';
   // Neither npm nor pnpm — bunx is the only install-free runner left. Without
   // this rung a bun-only machine fell through to `npx`, which is not installed
   // there, so the emitted command failed with "npx: command not found".
@@ -304,12 +321,23 @@ function formatAnalyzeCommand(options = {}, deps = {}) {
     const mightUsePnpm =
       forced === 'pnpm' || (forced !== 'gitnexus' && forced !== 'npx' && forced !== 'bun');
     if (mightUsePnpm && (forced === 'pnpm' || !probe('gitnexus', true))) {
-      const { major, minor } = probeVersion('pnpm');
-      // Carry presence separately from version: when the version probe fails
-      // (timeout, Corepack banner) but pnpm is on PATH, still treat it as
-      // present so mode resolution picks pnpm over the npx crash path. The
-      // PATH probe is memoized and only runs when the version is unreadable.
-      const pnpmPresent = major !== null || Boolean(probe('pnpm'));
+      let ran;
+      let major = null;
+      let minor = null;
+      if ('pnpmRuns' in deps && !deps.pnpmRuns) {
+        ran = false;
+      } else {
+        const probed = probeVersion('pnpm');
+        ran = 'pnpmRuns' in deps ? Boolean(deps.pnpmRuns) : probed.ran;
+        major = probed.major;
+        minor = probed.minor;
+      }
+      // Carry presence separately from version: when the version probe runs
+      // but produces an unparseable version (e.g. Corepack banner), still treat
+      // it as present (ran: true, major: null) so mode resolution picks pnpm
+      // over the npx crash path. A failed probe (ran: false, non-zero exit or
+      // absent) marks pnpm not present so it falls through to bunx/npx (#3717).
+      const pnpmPresent = 'pnpmPresent' in deps ? Boolean(deps.pnpmPresent) : ran;
       resolved = { ...deps, pnpmMajor: major, pnpmMinor: minor, pnpmPresent };
     }
   }

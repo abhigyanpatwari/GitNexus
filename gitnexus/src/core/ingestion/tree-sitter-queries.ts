@@ -23,6 +23,11 @@ ${unboundCallableQuery('definition.function')}
 (class_declaration
   name: (type_identifier) @name) @definition.class
 
+; Named class expressions own members just like declarations. Anonymous
+; expressions have no name and deliberately do not match this pattern.
+(class
+  name: (type_identifier) @name) @definition.class
+
 (abstract_class_declaration
   name: (type_identifier) @name) @definition.class
 
@@ -793,6 +798,9 @@ ${unboundCallableQuery('definition.function')}
 export const JAVASCRIPT_QUERIES = `
 ${unboundCallableQuery('definition.function')}
 (class_declaration
+  name: (identifier) @name) @definition.class
+
+(class
   name: (identifier) @name) @definition.class
 
 (function_declaration

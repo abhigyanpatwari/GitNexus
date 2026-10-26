@@ -234,7 +234,8 @@
   },
   "typescript": {
     "_lexical_ownership_3532": "#3532: lexical ownership captures and fixture updates; fixture identities are relative to lang-resolution so serialized scope IDs are independent of checkout location. Full capture content remains hashed; scaling_budget is unchanged.",
-    "fingerprint": "112cb06df38cb8144aaf4cdb5e1209f5d74ff5fa38005299fb39c853df311a68",
+    "fingerprint": "c32c400ad55d97605af7d48320194f39387199c34bc78cd4208c69277d479fd6",
+    "_rebaselined_3725_class_expression_owners": "#3725 adds qualified class/member identities. Comparing base 34b873696 and head 7e0414915 over the identical 174 fixture entries attributes the entire drift to 356 added @declaration.qualified_name tags across 85 entries. Removing only those tags restores 112cb06df38cb8144aaf4cdb5e1209f5d74ff5fa38005299fb39c853df311a68 exactly; no capture groups are added or removed (2939 total). Synthetic counts remain 4503/14403 and the scaling budget is unchanged.",
     "_rebaselined_3489_inline_handlers": "#3489: Compared main 22a7608 and candidate 7456546 emitters on the same 174-entry TypeScript corpus. Exactly four callback declaration groups were added: two in typescript-hoc-wrapped/src/negative-bare-call.ts, one in typescript-hof-callbacks/src/store.ts, and one in typescript-mcp-tools/src/server.ts. Every added group has @callable.unbound; none was removed or changed. Capture groups 2935 -> 2939. JavaScript is byte-identical. Synthetic counts remain 4503/14403 and scaling budgets are unchanged; CI measured TypeScript 1.048 < 1.5 and JavaScript 0.911 < 1.5.",
     "_rebaselined_3446_mcp_tools_fixture": "#3446 adds typescript-mcp-tools/src/{handlers,server,tools}.ts: corpus growth only, with fixture_count 171 -> 174 and capture_groups_fp 2753 -> 2894. Excluding only that fixture directory restores the prior fingerprint 77c9b4ea654123a64972db8348190ec250b669472b150db65ea8c7f20b355467 exactly. The scope emitter, synthetic capture counts (4503/14403), scaling budget, and other language baselines are unchanged.",
     "_rebaselined_3190": "Capture matches now retain explicit ESM export/private evidence, including synthesized default HOCs; CommonJS surfaces remain undecided. Capture group counts unchanged. Scaling budget unchanged.",
@@ -266,7 +267,8 @@
   },
   "javascript": {
     "_lexical_ownership_3532": "#3532: lexical ownership captures and fixture updates; fixture identities are relative to lang-resolution so serialized scope IDs are independent of checkout location. Full capture content remains hashed; scaling_budget is unchanged.",
-    "fingerprint": "857b1257a001f8741412ea08a4f43d9253cc4addfa63421f3013b3ff77a390c9",
+    "fingerprint": "ae7b2a3dc4072c8e4cda166cb5ea11b50b8a4b9173144518129e19007f628013",
+    "_rebaselined_3725_class_expression_owners": "#3725 adds qualified class/member identities. Comparing base 34b873696 and head 7e0414915 over the identical 43 fixture entries attributes the entire drift to 107 added @declaration.qualified_name tags across 21 entries. Removing only those tags restores 857b1257a001f8741412ea08a4f43d9253cc4addfa63421f3013b3ff77a390c9 exactly; no capture groups are added or removed (856 total). Synthetic counts remain 3253/10403 and the scaling budget is unchanged.",
     "_rebaselined_3190": "Capture matches now retain explicit ESM export/private evidence, including synthesized default HOCs; CommonJS surfaces remain undecided. Capture group counts unchanged. Scaling budget unchanged.",
     "scaling_budget": 1.5,
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior b59fe8135b6a31a12bc3f872b224054b16592588153ae3661d03958d787c76f3 -> 479927409bbdd9852a36172c8260aa56df260e99129a7a9c20a0d1903dd5538b; scaling 1.050 < 1.5.",

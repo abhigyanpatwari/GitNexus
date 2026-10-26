@@ -13,6 +13,18 @@ entries. The count arm remains 138 call drops and 168 total drops.
 Earlier entries below retain their original measurement contracts and source pins;
 member-name-only RESOLVES claims in those entries are historical.
 
+## api_impact indirect-consumers fixture (#3644)
+
+The new `api-impact-indirect-consumers` fixture adds three `receiver-unresolved`
+sites, none of them a resolver change: two `.then(...)` calls whose receiver is
+the untyped return of `fetch(...)` (`src/client.ts`, external origin) and of the
+local wrapper `apiFetch(...)` (`src/stats.ts`, in-program origin), and one
+`req.query.path` read inside an inline Express handler whose `req` parameter is
+untyped (`src/server.ts`), the same shape as the `express-inline-handlers`
+entry below. Call drops move from 138 to 140 (`.ts` 16 -> 18, `no-chain`
+36 -> 38), reads from 30 to 31, all kinds from 168 to 171. Every shape-arm
+state is unchanged; no existing site changed state.
+
 ## Typed shape bodies for JavaScript, Ruby, PHP and C (#3498)
 
 The JavaScript and Ruby rows had no type information anywhere, so every chain
@@ -1478,7 +1490,6 @@ Main c30449394 is merged normally. Package-factory fallback declines inherited r
 
 The integrated build, both TypeScript configurations, 345 tests across ten files, Kotlin capture fingerprint and regenerated receiver check pass. The baseline remains 136 call drops, 166 drops across all kinds, 30 reads and zero writes, with unchanged shape states. The 5,521-record corpus is byte-identical to the candidate before the companion-header fix. These tests overlap earlier runs. Exact-head hosted CI remains required.
 
-
 ### Rust pointer fields on the prepared C#/PHP/Kotlin stack
 
 The reviewed C# parent `b74fe72b8` is merged normally, retaining PHP
@@ -1510,4 +1521,4 @@ The validated #3667 head `fb6316b90` is merged normally. Outside the three recei
 
 ### R receiver typing and rename-guard fixtures (#3513)
 
-The R audit fixes add R fixtures whose untyped receivers end as `receiver-unresolved` drops: a constructor that types a name only when every binding of it agrees, typed private members, dotted class names and `with()` limits. The count arm moves from 138 to 159 call drops and from 168 to 189 across all kinds; reads (30) and writes (0) are unchanged. All 21 added drops are `.R` files (`callDropsByExtension..R` goes from absent to 21), and no other extension moves. By shape: chain-field 56 to 63, no-chain 36 to 39, chain-call 32 to 35 and unclassified 13 to 21. By origin: in-program 57 to 64, unknown 49 to 55 and unclassified 2 to 10; external stays 30. The bench counts only `suppressed` outcomes with the reason `receiver-unresolved`, so the movement is that reason alone. No R arm is added to the shape corpora; only the count-arm numbers change. The baseline was refreshed with `--update-baseline` and `--check` passes.
+The R audit fixes add R fixtures whose untyped receivers end as `receiver-unresolved` drops: a constructor that types a name only when every binding of it agrees, typed private members, dotted class names and `with()` limits. The count arm moves from 140 to 161 call drops and from 171 to 192 across all kinds; reads (31) and writes (0) are unchanged. All 21 added drops are `.R` files (`callDropsByExtension..R` goes from absent to 21), and no other extension moves. By shape: chain-field 56 to 63, no-chain 38 to 41, chain-call 32 to 35 and unclassified 13 to 21. By origin: in-program 58 to 65, unknown 49 to 55 and unclassified 2 to 10; external stays 31. The bench counts only `suppressed` outcomes with the reason `receiver-unresolved`, so the movement is that reason alone. No R arm is added to the shape corpora; only the count-arm numbers change. The baseline was refreshed with `--update-baseline` and `--check` passes.

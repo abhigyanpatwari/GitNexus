@@ -274,18 +274,19 @@ describe('workflows that need the web UI install it themselves', () => {
     expect(steps.filter(installsWeb)).toHaveLength(0);
   });
 
-  it('packaged install smoke skips a pre-pack CLI build and keeps a 20-minute budget', () => {
+  it('packaged install smoke skips a pre-pack CLI build and allows the manager smoke budget', () => {
     const job = ciJobs['packaged-install-smoke'];
     const setup = job?.steps?.find((step) => step.uses === './.github/actions/setup-gitnexus');
-    expect(job?.['timeout-minutes']).toBe(20);
+    expect(job?.['timeout-minutes']).toBe(30);
     expect(setup?.with?.['lifecycle-scripts']).toBe('false');
     expect(setup?.with?.build).toBeUndefined();
   });
 
-  it('exercises the reported native ARM64 runtime alongside Windows and Linux x64', () => {
+  it('exercises the reported native ARM64 runtime alongside all three desktop OSes', () => {
     const job = ciJobs['packaged-install-smoke'];
     expect(job?.strategy?.matrix?.os).toEqual([
       'windows-latest',
+      'macos-latest',
       'ubuntu-latest',
       'ubuntu-24.04-arm',
     ]);
@@ -298,6 +299,18 @@ describe('workflows that need the web UI install it themselves', () => {
     expect(assertArch?.if).toContain("matrix.os == 'ubuntu-24.04-arm'");
     expect(String(assertArch?.run)).toContain("process.arch, 'arm64'");
     expect(String(assertArch?.run)).toContain("process.version, 'v22.23.1'");
+  });
+
+  it('indexes the freshly packed tarball with every manager on all three desktop OSes', () => {
+    const steps = ciJobs['packaged-install-smoke']?.steps ?? [];
+    const packIdx = stepIndex(steps, (step) => step.name === 'Pack gitnexus tarball');
+    const smokeIdx = stepIndex(
+      steps,
+      (step) => step.name === 'Index the PR tarball with npm, pnpm, and Bun',
+    );
+    expect(smokeIdx).toBeGreaterThan(packIdx);
+    expect(steps[smokeIdx]?.if).toBe("matrix.os != 'ubuntu-24.04-arm'");
+    expect(String(steps[smokeIdx]?.run)).toContain('node scripts/smoke-package-managers.mjs');
   });
 
   it('keeps consumer compilation guards after packing and checks both npm lockfile paths', () => {

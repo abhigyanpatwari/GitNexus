@@ -32,6 +32,7 @@
 
 import { recordCommonJsModuleKind } from '../typescript/module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { synthesizeTsJsClassIdentity } from '../typescript/class-identity.js';
 import {
   findNodeAtRange,
   nodeToCapture,
@@ -913,6 +914,7 @@ export function emitJsScopeCaptures(
       grouped[tag] = nodeToCapture(tag, c.node);
       groupedNodes[tag] = c.node;
     }
+    synthesizeTsJsClassIdentity(grouped, groupedNodes);
     if (Object.keys(grouped).length === 0) continue;
 
     // Decompose ESM import_statement / re-export export_statement.
