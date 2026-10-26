@@ -352,6 +352,62 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
     }
 
 
+def test_test_artifact_retries_cannot_hide_missing_evidence(ci_test_jobs):
+    repo_root = Path(__file__).resolve().parents[2]
+    action_path = ".github/actions/upload-test-artifact/action.yml"
+    action = yaml.safe_load((repo_root / action_path).read_text())
+    uploads = [step for step in action["runs"]["steps"] if "uses" in step]
+    assert len(uploads) == 3
+    first, second, final = uploads
+    assert first["if"] == "${{ always() }}"
+    assert second["if"] == "${{ !cancelled() && steps.first.outcome == 'failure' }}"
+    assert final["if"] == "${{ !cancelled() && steps.second.outcome == 'failure' }}"
+    assert first["id"] == "first" and second["id"] == "second"
+    assert first["continue-on-error"] is True
+    assert second["continue-on-error"] is True
+    assert not final.get("continue-on-error", False)
+    assert not first["with"].get("overwrite", False)
+    assert second["with"]["overwrite"] is True
+    assert final["with"]["overwrite"] is True
+    for step in uploads:
+        assert re.fullmatch(r"actions/upload-artifact@[a-f0-9]{40}", step["uses"])
+        assert step["with"]["if-no-files-found"] == "error"
+        for key in ("name", "path", "retention-days", "include-hidden-files"):
+            assert step["with"][key] == "${{ inputs." + key + " }}"
+
+    evidence_jobs = {
+        "tests", "coverage-merge", "cross-platform", "benchmarks",
+        "scope-resolution-benchmark", "eval-tests", "test-completeness",
+        "eval-containment-windows", "eval-containment-linux", "tool-accuracy",
+    }
+    for name in evidence_jobs:
+        job = ci_test_jobs[name]
+        reports = [
+            step for step in job["steps"]
+            if step.get("uses") == "./.github/actions/upload-test-artifact"
+        ]
+        assert reports, f"{name} must publish execution evidence"
+        assert not job.get("continue-on-error", False)
+        for step in reports:
+            assert not step.get("continue-on-error", False)
+            assert step["with"]["name"] and step["with"]["path"]
+
+    artifact_names = set()
+    for job in ci_test_jobs.values():
+        for step in job.get("steps", []):
+            assert not step.get("uses", "").startswith("actions/upload-artifact@")
+            if step.get("uses") != "./.github/actions/upload-test-artifact":
+                continue
+            name = step["with"]["name"]
+            assert name not in artifact_names, f"Retry could overwrite another job: {name}"
+            artifact_names.add(name)
+            for axis in job.get("strategy", {}).get("matrix", {}):
+                if axis not in {"include", "exclude"}:
+                    assert "${{ matrix." + axis + " }}" in name, (
+                        f"Artifact {name} must distinguish matrix axis {axis}"
+                    )
+
+
 @pytest.mark.parametrize("native_result", ["success", "failure", "cancelled", "skipped", ""])
 @pytest.mark.parametrize("execution_result", ["success", "failure", "cancelled", "skipped", ""])
 @pytest.mark.parametrize("scope_bench_result", ["success", "failure", "cancelled", "skipped", ""])

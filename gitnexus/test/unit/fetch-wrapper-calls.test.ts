@@ -179,6 +179,7 @@ for (const [name, grammar, provider] of grammars) {
           fetchURL: '/api/one',
           lineNumber: 12,
           target: { kind: 'unresolved' },
+          callPosition: { row: 1, column: 8 },
         },
         {
           filePath: 'consumer.ts',
@@ -186,6 +187,7 @@ for (const [name, grammar, provider] of grammars) {
           fetchURL: '/api/two',
           lineNumber: 13,
           target: { kind: 'member' },
+          callPosition: { row: 2, column: 8 },
         },
         {
           filePath: 'consumer.ts',
@@ -193,6 +195,7 @@ for (const [name, grammar, provider] of grammars) {
           fetchURL: '/api/three',
           lineNumber: 14,
           target: { kind: 'member' },
+          callPosition: { row: 3, column: 8 },
         },
         {
           filePath: 'consumer.ts',
@@ -200,6 +203,7 @@ for (const [name, grammar, provider] of grammars) {
           fetchURL: '/api/four',
           lineNumber: 15,
           target: { kind: 'unresolved' },
+          callPosition: { row: 4, column: 8 },
         },
       ]);
     });

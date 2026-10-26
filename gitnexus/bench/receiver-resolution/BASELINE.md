@@ -13,6 +13,18 @@ entries. The count arm remains 138 call drops and 168 total drops.
 Earlier entries below retain their original measurement contracts and source pins;
 member-name-only RESOLVES claims in those entries are historical.
 
+## api_impact indirect-consumers fixture (#3644)
+
+The new `api-impact-indirect-consumers` fixture adds three `receiver-unresolved`
+sites, none of them a resolver change: two `.then(...)` calls whose receiver is
+the untyped return of `fetch(...)` (`src/client.ts`, external origin) and of the
+local wrapper `apiFetch(...)` (`src/stats.ts`, in-program origin), and one
+`req.query.path` read inside an inline Express handler whose `req` parameter is
+untyped (`src/server.ts`), the same shape as the `express-inline-handlers`
+entry below. Call drops move from 138 to 140 (`.ts` 16 -> 18, `no-chain`
+36 -> 38), reads from 30 to 31, all kinds from 168 to 171. Every shape-arm
+state is unchanged; no existing site changed state.
+
 ## Typed shape bodies for JavaScript, Ruby, PHP and C (#3498)
 
 The JavaScript and Ruby rows had no type information anywhere, so every chain
@@ -1477,7 +1489,6 @@ return-result typing; its pre-existing direct CALLS behavior is outside this fix
 Main c30449394 is merged normally. Package-factory fallback declines inherited receivers whose captured bases cannot be re-established through current bindings and the canonical MRO. Global qualified names need one declared type; declaration-local facts remain available. Companions need captured proof that their header declares no supertype, and that proof survives the worker/cache carrier. Older carriers retain companion identity but supply no such proof. These conservative boundaries do not model a build-system classpath or complete companion inheritance.
 
 The integrated build, both TypeScript configurations, 345 tests across ten files, Kotlin capture fingerprint and regenerated receiver check pass. The baseline remains 136 call drops, 166 drops across all kinds, 30 reads and zero writes, with unchanged shape states. The 5,521-record corpus is byte-identical to the candidate before the companion-header fix. These tests overlap earlier runs. Exact-head hosted CI remains required.
-
 
 ### Rust pointer fields on the prepared C#/PHP/Kotlin stack
 

@@ -161,6 +161,10 @@ ${unboundCallableQuery('declaration.function')}
   name: (type_identifier) @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
 
+(class
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class @class.expression
+
 (abstract_class_declaration
   name: (type_identifier) @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class

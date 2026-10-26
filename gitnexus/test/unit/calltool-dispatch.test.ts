@@ -2685,6 +2685,55 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('No routes found');
   });
 
+  it('api_impact lists the callers of the requesting function as indirect consumers (#3644)', async () => {
+    const routeRow = (consumerName: string, consumerFile: string, fetchReason: string) => ({
+      routeId: 'Route:/api/grants',
+      routeName: '/api/grants',
+      handlerFile: 'app/api/grants/route.ts',
+      responseKeys: ['data'],
+      errorKeys: [],
+      middleware: [],
+      runtimeConfirmed: false,
+      runtimeSource: null,
+      runtimeStatus: null,
+      consumerName,
+      consumerFile,
+      fetchReason,
+    });
+    const via = 'Function:src/services/client.ts:fetchGrants';
+    const caller = (callerName: string, callerFile: string) => ({
+      viaId: via,
+      viaName: 'fetchGrants',
+      callerName,
+      callerFile,
+    });
+    (executeParameterized as any).mockImplementation(async (_repo: string, cypher: string) => {
+      if (cypher.includes("r.type = 'CALLS'")) {
+        return [
+          caller('Header', 'src/Header.tsx'),
+          caller('App', 'src/App.tsx'),
+          // Already a direct consumer file, and the handler file: neither is indirect.
+          caller('GrantsList', 'src/GrantsList.tsx'),
+          caller('GET', 'app/api/grants/route.ts'),
+        ];
+      }
+      return [
+        routeRow('client.ts', 'src/services/client.ts', `fetch-url-match|via:${via}`),
+        routeRow('GrantsList', 'src/GrantsList.tsx', 'fetch-url-match|keys:data'),
+      ];
+    });
+
+    const result = await backend.callTool('api_impact', { route: '/api/grants' });
+
+    expect(result.indirectConsumers).toEqual([
+      { name: 'App', file: 'src/App.tsx', via: 'fetchGrants' },
+      { name: 'Header', file: 'src/Header.tsx', via: 'fetchGrants' },
+    ]);
+    expect(result.impactSummary.directConsumers).toBe(2);
+    expect(result.impactSummary.indirectConsumers).toBe(2);
+    expect(result.impactSummary.riskLevel).toBe('LOW');
+  });
+
   it('api_impact detects mismatches and bumps risk level', async () => {
     (executeParameterized as any).mockResolvedValue([
       {
