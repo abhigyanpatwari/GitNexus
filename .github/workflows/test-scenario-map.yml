@@ -369,7 +369,11 @@ jobs:
         run: |
           shopt -s nullglob
           work="$RUNNER_TEMP/scenario-map"
-          found=("$RUNNER_TEMP"/scenario-map-shards/scenario-map-shard-*)
+          root="$RUNNER_TEMP/scenario-map-shards"
+          found=("$root"/scenario-map-shard-*)
+          # download-artifact unpacks a pattern that matches ONE artifact into the path itself, not
+          # into a directory named after it (a one-shard plan): the path is then that artifact.
+          if [ "${#found[@]}" -eq 0 ] && [ -d "$root" ]; then found=("$root"); fi
           # scenario-map-shard-<attempt>-<index>: oldest attempt first, so a later attempt wins.
           while IFS= read -r dir; do
             [ -n "$dir" ] || continue

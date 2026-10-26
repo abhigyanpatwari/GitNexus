@@ -96,5 +96,8 @@ U7's timings recorded in the design doc.
 - Fingerprint-only run, all 4,632 eligible tests, locally: 8.2 min (plan 5.4, trace 2.6), 2 GB
   peak RSS. 26 duplicates (the 26 the evidence predicted), 109 possible duplicates in 17 groups,
   945 table rows, 5,184 distinct.
-- Deep run over the possible duplicates: estimated at 0.2 h of mutation work before trimming;
-  the local measurement was stopped by host memory pressure and is still to be taken.
+- Deep run over the possible duplicates, on CI (run 40268120818, the `scenario-map` label): 5 min 42 s
+  end to end, the shard 1.3 min for 5 groups and 844 mutants. It settles 35 of the 38 possible
+  duplicates mutation can reach (31 Row, 1 Distinct, 3 weak repeats; 3 Inconclusive); 71 test
+  `tools/mutation/` code outside the mutation scope. Its merge missed the single shard artifact
+  (unpacked into the download path itself); fixed in the workflow's placement step.
