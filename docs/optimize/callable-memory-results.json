@@ -1574,5 +1574,493 @@
       }
     }
   },
-  "decision": "Retain: ~11.5% lower retained heap; no demonstrated end-to-end time/RSS regression >3%; exact graph/cache parity. No additional E2E speed or peak-RSS win claimed."
+  "decision": "Retain: ~11.5% lower retained heap; no demonstrated end-to-end time/RSS regression >3%; exact graph/cache parity. No additional E2E speed or peak-RSS win claimed.",
+  "retentionGuardVerification": {
+    "kind": "post-review method-root liveness verification",
+    "environment": "local shared Linux host; fresh Node process per sample; not an isolated latency or RSS claim",
+    "node": "v22.23.3",
+    "probeSha256": "cc0c7d047cda13c5cd7180a626d1235c4bb4a9e7a1d1eacc8c622699b1d0b6d6",
+    "roots": {
+      "reference": "/home/node/gitnexus-callable-memory-baseline/gitnexus",
+      "candidate": "/home/node/gitnexus-callable-memory/gitnexus"
+    },
+    "pairs": [
+      {
+        "language": "java",
+        "pair": 0,
+        "reference": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 1053.95462,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7299296,
+            "treeHeap": 9238808,
+            "liveHeap": 22865664,
+            "emittedWithTreeHeap": 20550264,
+            "emittedHeap": 14571288,
+            "releasedHeap": 7690536
+          },
+          "extractionRetainedBytes": 13626856,
+          "emittedRetainedBytes": 7271992,
+          "releasedDeltaBytes": 391240,
+          "processMaxRssMiB": 171.50390625,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "candidate": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 1075.646394,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7303432,
+            "treeHeap": 9242896,
+            "liveHeap": 21328808,
+            "emittedWithTreeHeap": 19013408,
+            "emittedHeap": 13034432,
+            "releasedHeap": 7993680
+          },
+          "extractionRetainedBytes": 12085912,
+          "emittedRetainedBytes": 5731000,
+          "releasedDeltaBytes": 690248,
+          "processMaxRssMiB": 157.36328125,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      },
+      {
+        "language": "java",
+        "pair": 1,
+        "candidate": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 937.8755569999998,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7303424,
+            "treeHeap": 9242984,
+            "liveHeap": 21329000,
+            "emittedWithTreeHeap": 19013600,
+            "emittedHeap": 13034624,
+            "releasedHeap": 7993872
+          },
+          "extractionRetainedBytes": 12086016,
+          "emittedRetainedBytes": 5731200,
+          "releasedDeltaBytes": 690448,
+          "processMaxRssMiB": 159.96875,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "reference": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 1041.980775,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7299208,
+            "treeHeap": 9238720,
+            "liveHeap": 22906288,
+            "emittedWithTreeHeap": 20590888,
+            "emittedHeap": 14611912,
+            "releasedHeap": 7731160
+          },
+          "extractionRetainedBytes": 13667568,
+          "emittedRetainedBytes": 7312704,
+          "releasedDeltaBytes": 431952,
+          "processMaxRssMiB": 171.9140625,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      },
+      {
+        "language": "java",
+        "pair": 2,
+        "reference": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 958.4554069999999,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7299304,
+            "treeHeap": 9236712,
+            "liveHeap": 22906192,
+            "emittedWithTreeHeap": 20590792,
+            "emittedHeap": 14611816,
+            "releasedHeap": 7731064
+          },
+          "extractionRetainedBytes": 13669480,
+          "emittedRetainedBytes": 7312512,
+          "releasedDeltaBytes": 431760,
+          "processMaxRssMiB": 171.4765625,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "candidate": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 1113.992508,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7303384,
+            "treeHeap": 9242896,
+            "liveHeap": 21341264,
+            "emittedWithTreeHeap": 19025864,
+            "emittedHeap": 13046888,
+            "releasedHeap": 8006136
+          },
+          "extractionRetainedBytes": 12098368,
+          "emittedRetainedBytes": 5743504,
+          "releasedDeltaBytes": 702752,
+          "processMaxRssMiB": 161.72265625,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      },
+      {
+        "language": "java",
+        "pair": 3,
+        "candidate": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 1009.079093,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7303432,
+            "treeHeap": 9242896,
+            "liveHeap": 21327688,
+            "emittedWithTreeHeap": 19012288,
+            "emittedHeap": 13033312,
+            "releasedHeap": 7992560
+          },
+          "extractionRetainedBytes": 12084792,
+          "emittedRetainedBytes": 5729880,
+          "releasedDeltaBytes": 689128,
+          "processMaxRssMiB": 162.171875,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "reference": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 1038.821168,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7299344,
+            "treeHeap": 9238856,
+            "liveHeap": 22906576,
+            "emittedWithTreeHeap": 20591176,
+            "emittedHeap": 14612200,
+            "releasedHeap": 7731448
+          },
+          "extractionRetainedBytes": 13667720,
+          "emittedRetainedBytes": 7312856,
+          "releasedDeltaBytes": 432104,
+          "processMaxRssMiB": 174.03125,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      },
+      {
+        "language": "java",
+        "pair": 4,
+        "reference": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 1223.038735,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7299248,
+            "treeHeap": 9238808,
+            "liveHeap": 22908408,
+            "emittedWithTreeHeap": 20593008,
+            "emittedHeap": 14614032,
+            "releasedHeap": 7733280
+          },
+          "extractionRetainedBytes": 13669600,
+          "emittedRetainedBytes": 7314784,
+          "releasedDeltaBytes": 434032,
+          "processMaxRssMiB": 175.6484375,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "candidate": {
+          "language": "java",
+          "declarations": 10000,
+          "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+          "extractionMs": 1071.640731,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7303496,
+            "treeHeap": 9240928,
+            "liveHeap": 21305824,
+            "emittedWithTreeHeap": 18990424,
+            "emittedHeap": 13011448,
+            "releasedHeap": 7970696
+          },
+          "extractionRetainedBytes": 12064896,
+          "emittedRetainedBytes": 5707952,
+          "releasedDeltaBytes": 667200,
+          "processMaxRssMiB": 159.296875,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      },
+      {
+        "language": "typescript",
+        "pair": 0,
+        "reference": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1323.6595929999999,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7641288,
+            "treeHeap": 9581480,
+            "liveHeap": 23203584,
+            "emittedWithTreeHeap": 20888184,
+            "emittedHeap": 14909208,
+            "releasedHeap": 8028456
+          },
+          "extractionRetainedBytes": 13622104,
+          "emittedRetainedBytes": 7267920,
+          "releasedDeltaBytes": 387168,
+          "processMaxRssMiB": 189.44140625,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "candidate": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1457.5668969999997,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7646792,
+            "treeHeap": 9585120,
+            "liveHeap": 21633408,
+            "emittedWithTreeHeap": 19318008,
+            "emittedHeap": 13339032,
+            "releasedHeap": 8298280
+          },
+          "extractionRetainedBytes": 12048288,
+          "emittedRetainedBytes": 5692240,
+          "releasedDeltaBytes": 651488,
+          "processMaxRssMiB": 188.8203125,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      },
+      {
+        "language": "typescript",
+        "pair": 1,
+        "candidate": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1478.1787209999998,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7646824,
+            "treeHeap": 9587088,
+            "liveHeap": 21632936,
+            "emittedWithTreeHeap": 19317536,
+            "emittedHeap": 13338560,
+            "releasedHeap": 8297808
+          },
+          "extractionRetainedBytes": 12045848,
+          "emittedRetainedBytes": 5691736,
+          "releasedDeltaBytes": 650984,
+          "processMaxRssMiB": 177.796875,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "reference": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1656.849518,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7641360,
+            "treeHeap": 9581744,
+            "liveHeap": 23196032,
+            "emittedWithTreeHeap": 20880632,
+            "emittedHeap": 14901656,
+            "releasedHeap": 8020904
+          },
+          "extractionRetainedBytes": 13614288,
+          "emittedRetainedBytes": 7260296,
+          "releasedDeltaBytes": 379544,
+          "processMaxRssMiB": 188.640625,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      },
+      {
+        "language": "typescript",
+        "pair": 2,
+        "reference": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1510.922829,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7641408,
+            "treeHeap": 9581672,
+            "liveHeap": 23201368,
+            "emittedWithTreeHeap": 20885968,
+            "emittedHeap": 14906992,
+            "releasedHeap": 8026240
+          },
+          "extractionRetainedBytes": 13619696,
+          "emittedRetainedBytes": 7265584,
+          "releasedDeltaBytes": 384832,
+          "processMaxRssMiB": 193.36328125,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "candidate": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1181.693937,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7646888,
+            "treeHeap": 9587176,
+            "liveHeap": 21633408,
+            "emittedWithTreeHeap": 19318008,
+            "emittedHeap": 13339032,
+            "releasedHeap": 8298280
+          },
+          "extractionRetainedBytes": 12046232,
+          "emittedRetainedBytes": 5692144,
+          "releasedDeltaBytes": 651392,
+          "processMaxRssMiB": 186.4921875,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      },
+      {
+        "language": "typescript",
+        "pair": 3,
+        "candidate": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1479.4955439999999,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7646680,
+            "treeHeap": 9586896,
+            "liveHeap": 21634872,
+            "emittedWithTreeHeap": 19319472,
+            "emittedHeap": 13340496,
+            "releasedHeap": 8299744
+          },
+          "extractionRetainedBytes": 12047976,
+          "emittedRetainedBytes": 5693816,
+          "releasedDeltaBytes": 653064,
+          "processMaxRssMiB": 180.69140625,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "reference": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1354.9721829999999,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7641408,
+            "treeHeap": 9581672,
+            "liveHeap": 23187360,
+            "emittedWithTreeHeap": 20871960,
+            "emittedHeap": 14892984,
+            "releasedHeap": 8012232
+          },
+          "extractionRetainedBytes": 13605688,
+          "emittedRetainedBytes": 7251576,
+          "releasedDeltaBytes": 370824,
+          "processMaxRssMiB": 189.171875,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      },
+      {
+        "language": "typescript",
+        "pair": 4,
+        "reference": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1332.4027409999999,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7641472,
+            "treeHeap": 9581760,
+            "liveHeap": 23191184,
+            "emittedWithTreeHeap": 20875784,
+            "emittedHeap": 14896808,
+            "releasedHeap": 8016056
+          },
+          "extractionRetainedBytes": 13609424,
+          "emittedRetainedBytes": 7255336,
+          "releasedDeltaBytes": 374584,
+          "processMaxRssMiB": 189.34375,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        },
+        "candidate": {
+          "language": "typescript",
+          "declarations": 10000,
+          "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+          "extractionMs": 1457.0522099999998,
+          "treeCollected": true,
+          "heapBytes": {
+            "emptyHeap": 7646864,
+            "treeHeap": 9587176,
+            "liveHeap": 21628728,
+            "emittedWithTreeHeap": 19313328,
+            "emittedHeap": 13334352,
+            "releasedHeap": 8293600
+          },
+          "extractionRetainedBytes": 12041552,
+          "emittedRetainedBytes": 5687488,
+          "releasedDeltaBytes": 646736,
+          "processMaxRssMiB": 188.1328125,
+          "note": "Fresh process; forced-GC JS heap, not native or worker heap. Extraction time excludes parse/GC. Peak RSS is for this probe only. Compare repeated same-runtime runs."
+        }
+      }
+    ],
+    "summary": {
+      "java": {
+        "extractionRetainedBytes": {
+          "reference": 13667720,
+          "candidate": 12085912,
+          "changePercent": -11.573312886128772
+        },
+        "emittedRetainedBytes": {
+          "reference": 7312704,
+          "candidate": 5731000,
+          "changePercent": -21.629536762324854
+        },
+        "releasedDeltaBytes": {
+          "reference": 431952,
+          "candidate": 690248,
+          "changePercent": 59.79738489461792
+        }
+      },
+      "typescript": {
+        "extractionRetainedBytes": {
+          "reference": 13614288,
+          "candidate": 12046232,
+          "changePercent": -11.517723144978277
+        },
+        "emittedRetainedBytes": {
+          "reference": 7260296,
+          "candidate": 5692144,
+          "changePercent": -21.59900918640232
+        },
+        "releasedDeltaBytes": {
+          "reference": 379544,
+          "candidate": 651392,
+          "changePercent": 71.62489724511518
+        }
+      }
+    }
+  }
 }

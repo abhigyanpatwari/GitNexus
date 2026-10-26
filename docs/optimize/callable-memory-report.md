@@ -3,6 +3,11 @@
 Measurement follow-up for PR #3726. Baseline for the new comparison:
 `e6744edcadbf93e789ab21a88e9e707cb3059ce7`.
 
+Ongoing measurements run in the permanent
+[Callable time and memory workflow](../../.github/workflows/callable-end-to-end.yml).
+Each run publishes a combined summary and keeps raw artifacts for 90 days; see
+[the benchmark instructions](../../gitnexus/bench/method-declaration-facts/README.md#continuous-measurements).
+
 ## What is shared
 
 The method extractor still supplies structure-only facts such as visibility,
@@ -92,6 +97,14 @@ savings already include that overhead. Full extraction in these small probes too
 about 2.0% longer for Java and 2.75% longer for TypeScript; whole-index timings above
 remain the latency acceptance measure. Probe-only RSS is retained in the JSON but
 is not substituted for whole-index RSS.
+
+After CodeQL flagged the unread methods variable, the probe gained an assertion
+after the live-heap sample to make retention explicit. Five fresh-process pairs
+per language on the local Node 22.23.3 runtime confirmed the result: extraction
+heap fell 11.57% for Java and 11.52% for TypeScript; emitted metadata fell 21.63%
+and 21.60%. All digests matched and all trees were collected. These local repeats
+validate retained heap only, not latency or RSS. Their raw samples are stored as
+`retentionGuardVerification` in the durable results.
 
 ### Repeated allocation
 

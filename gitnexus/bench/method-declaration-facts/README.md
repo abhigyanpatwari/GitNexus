@@ -1,5 +1,44 @@
 # Shared callable declaration facts
 
+## Continuous measurements
+
+The **Callable time and memory** workflow runs on pull requests that change
+ingestion, the analysis entry point, or this benchmark. Each corpus gets its own
+Ubuntu runner. It compares the PR head with its base commit using the same Node
+runtime and each revision's locked dependencies. Different lockfiles are called
+out in the report because dependency changes affect the comparison.
+
+The run summary puts indexing time, peak RSS, retained heap, and released-cache
+overhead together. Artifacts named `callable-time-memory-repository` and
+`callable-time-memory-declarations` retain raw samples, hashes, and child output
+for 90 days. The workflow and runner remain versioned here for future comparisons.
+
+Run it manually against a chosen baseline with:
+
+```sh
+gh workflow run callable-end-to-end.yml --ref <candidate-branch> \
+  -f baseline_ref=<baseline-commit>
+```
+
+Each job runs three alternating A/B indexing pairs, three identical-code A/A
+pairs to expose runner noise, and five heap pairs per language. Graph parity,
+cache replay, semantic digests, and tree collection are checked; failures keep
+partial evidence and mark the report incomplete. Time and RSS are reported
+without a hard regression threshold. An intentional graph change needs review
+before interpreting the comparison. This workflow does not change branch rules.
+
+For the same combined report locally, build both revisions and use a nonexistent
+output directory:
+
+```sh
+node bench/method-declaration-facts/ci.mjs \
+  --baseline-root /path/to/baseline/gitnexus \
+  --candidate-root /path/to/candidate/gitnexus \
+  --corpus repository --output /tmp/callable-measurements
+```
+
+## Detailed local measurements
+
 Build the pre-change revision and candidate with `npm run build` in each package,
 then run from the candidate's `gitnexus/` directory:
 

@@ -1,0 +1,77 @@
+name: Callable time and memory
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/callable-end-to-end.yml'
+      - '.github/actions/setup-gitnexus/**'
+      - 'gitnexus/src/core/ingestion/**'
+      - 'gitnexus/src/core/run-analyze.ts'
+      - 'gitnexus/bench/method-declaration-facts/**'
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Baseline branch or commit to compare with the selected run ref
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  measure:
+    name: time / memory (${{ matrix.corpus }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        corpus: [repository, declarations]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Checkout baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || inputs.baseline_ref || 'main' }}
+          path: callable-baseline
+          persist-credentials: false
+      - name: Build baseline with its locked dependencies
+        working-directory: callable-baseline/gitnexus
+        run: |
+          npm ci
+          npm run build
+      - name: Compare indexing time, RSS, and retained heap
+        env:
+          CORPUS: ${{ matrix.corpus }}
+        run: |
+          node gitnexus/bench/method-declaration-facts/ci.mjs \
+            --baseline-root "$GITHUB_WORKSPACE/callable-baseline/gitnexus" \
+            --candidate-root "$GITHUB_WORKSPACE/gitnexus" \
+            --corpus "$CORPUS" --output "$RUNNER_TEMP/callable-measurements"
+      - name: Publish measurement summary
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/callable-measurements/summary.md" ]]; then
+            cat "$RUNNER_TEMP/callable-measurements/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain measurements and child logs
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: callable-time-memory-${{ matrix.corpus }}
+          path: ${{ runner.temp }}/callable-measurements/
+          retention-days: 90

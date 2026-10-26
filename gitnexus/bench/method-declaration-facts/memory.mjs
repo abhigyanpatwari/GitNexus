@@ -77,6 +77,7 @@ function extract(declarations) {
 }
 let { methods, emitted, extractionMs } = extract(nodes);
 const liveHeap = await heap();
+assert.equal(methods.length, count); // Keep the method records live through the heap sample.
 const digest = createHash('sha256').update(JSON.stringify(emitted)).digest('hex');
 methods = null;
 const emittedWithTreeHeap = await heap();
