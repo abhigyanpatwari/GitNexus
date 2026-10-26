@@ -365,9 +365,16 @@ describe('renderMarkdown', () => {
         'Layer 1 ran 0 of them: the changed files and the files sharing',
       ],
     },
+    {
+      scope: 'a run with tests that did not run',
+      overrides: { notRun: { skipped: 3, unfinished: 1 } },
+      lines: ['No fingerprint for 3 tests skipped at run time'],
+    },
   ])('says which files Layer 1 ran in $scope', ({ overrides, lines }) => {
     const text = renderMarkdown(buildReport(reportInput({ overrides })));
-    const found = text.split('\n').filter((line) => /^(Diff scope|Layer 1 ran)/.test(line));
+    const found = text
+      .split('\n')
+      .filter((line) => /^(Diff scope|Layer 1 ran|No fingerprint for)/.test(line));
     expect([found.length, lines.every((prefix, index) => found[index].startsWith(prefix))]).toEqual(
       [lines.length, true],
     );

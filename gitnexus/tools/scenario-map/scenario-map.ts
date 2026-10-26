@@ -3317,6 +3317,10 @@ export async function runMergeStage(
     shards: { planned: shardPlan.shards.length, complete: completeShards, incomplete },
     layer1Files: work.files.length,
     changedFiles: plan.changedFiles,
+    notRun: {
+      skipped: work.tests.filter((test) => test.state === 'skipped').length,
+      unfinished: work.tests.filter((test) => test.state === 'pending').length,
+    },
     layer0: existsSync(layout.layer0) ? readJsonFile(layout.layer0) : null,
     evidence,
     fingerprint,

@@ -155,6 +155,10 @@ and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS en
     attempts re-ran 0.1 s of test bodies; a unit file of many tiny tests (`scenario-map/cli`)
     spends 2.5 s on snapshots against 0.3 s of test bodies. So Layer 1 costs little more than a
     plain run, and the slices are sized from the test workflow's shards: 4.
+  - Visible gaps: the report counts the Layer 1 tests without a fingerprint, those skipped at run
+    time (`skip`, `skipIf`, `todo`; the `GITNEXUS_BENCH` benchmark suites run only in the test
+    workflow's benchmarks job, as wall-clock and heap guards) and those that never finished
+    (their file's run ended first).
 - **E8** (optimisation) A labelled pull request's run is diff-scoped: `plan --changed-since <ref>`
   (the workflow passes the merge commit's first parent) keeps only candidate pairs with a test of a
   test file the diff added or modified, and Layer 1 runs only those files (when the prefilter would

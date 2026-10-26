@@ -224,6 +224,7 @@ export function reportInput(options: InputOptions = {}): ReportInput {
     },
     layer1Files: 1,
     changedFiles: null,
+    notRun: { skipped: 0, unfinished: 0 },
     eligibleTests: [A, B, C],
     shards: { planned: 1, complete: 1, incomplete: [] },
     layer0: null,

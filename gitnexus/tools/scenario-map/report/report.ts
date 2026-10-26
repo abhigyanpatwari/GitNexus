@@ -300,6 +300,11 @@ export interface ReportInput {
   layer1Files: number;
   /** A diff-scoped run's changed test files (E8); null for the whole suite. */
   changedFiles: readonly string[] | null;
+  /**
+   * Layer 1 tests without a result to fingerprint: `skipped` (skip, skipIf, todo, such as the
+   * `GITNEXUS_BENCH` benchmark suites) and `unfinished` (pending: their file's run ended first).
+   */
+  notRun: { skipped: number; unfinished: number };
   /** Phase 0 ids of every eligible test (the M of "N of M evaluated"). */
   eligibleTests: readonly string[];
   shards: ShardStatus;
@@ -459,6 +464,8 @@ export interface ScenarioMapReport {
     layer1Files: number;
     /** A diff-scoped run's changed test files: every pair has a test of one. Null: whole suite. */
     changedFiles: string[] | null;
+    /** Layer 1 tests without a fingerprint: skipped at run time, or never finished. */
+    notRun: { skipped: number; unfinished: number };
     delta: EligibilityDelta | null;
   };
   layer0: Layer0Section;
@@ -960,6 +967,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
       fingerprintFiles: input.eligibility.fingerprintFiles.length,
       layer1Files: input.layer1Files,
       changedFiles: input.changedFiles === null ? null : sortedUnique(input.changedFiles),
+      notRun: { ...input.notRun },
       delta: input.eligibility.delta,
     },
     layer0: layer0Section(input.layer0, eligibleRepoFiles),

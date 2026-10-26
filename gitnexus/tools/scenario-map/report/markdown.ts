@@ -532,6 +532,14 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
               "sharing their tests' checks-and-context keys; no test of another file can be a " +
               "changed test's duplicate, possible duplicate or table row.",
         ]),
+    ...(eligibility.notRun.skipped + eligibility.notRun.unfinished === 0
+      ? []
+      : [
+          `No fingerprint for ${plural(eligibility.notRun.skipped, 'test')} skipped at run time ` +
+            '(`skip`, `skipIf` or `todo`, such as the `GITNEXUS_BENCH` benchmark suites) and ' +
+            `${plural(eligibility.notRun.unfinished, 'test')} that never finished (their file's ` +
+            'run ended first).',
+        ]),
   ];
   const delta = eligibility.delta;
   if (delta === null) return [...lines, 'The Phase 0 envelope is not consulted in this mode.'];
