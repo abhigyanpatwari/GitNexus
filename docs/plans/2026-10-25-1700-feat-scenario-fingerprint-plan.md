@@ -1,7 +1,7 @@
 ---
 title: Scenario fingerprint — mutation-free duplicate verdicts for the test scenario map
 date: 2026-10-25
-status: active
+status: implemented
 origin: docs/plans/2026-10-23-test-scenario-map-design.md
 branch: feat/test-dupe-detector (PR #3686)
 ---
@@ -48,20 +48,20 @@ Inconclusive on runtime-class kills and hangs.
 
 Per candidate pair, first rule that holds:
 
-| Verdict | Rule | When |
-| --- | --- | --- |
-| out-of-scope | `not-eligible` | a test is outside the eligible category |
-| inconclusive | `path-unattributable` | a test ran concurrently |
-| distinct | `path-differs` | the V8 block sets differ |
-| possible-duplicate | `checks-unknown` / `facet-unknown` | a checks key or facet is missing and nothing known differs |
-| different-checks | `same-input-different-checks` | same path and input (equal, resolved), checks differ |
-| distinct | `checks-differ` | checks differ otherwise |
-| distinct | `input-shape-differs` | facet fingerprints differ |
-| table-row | `input-values-differ` | same shape, discarded values differ |
-| table-row | `runtime-values-differ` | equal static values, trace veto |
-| possible-duplicate | `input-unresolved` | equal, with an unresolved input (F6) |
-| possible-duplicate | `trace-unknown` | equal and resolved, trace not clean (inconclusive, missing, not run) |
-| duplicate | `same-path-input-expectation` | everything equal, resolved, trace clean |
+| Verdict            | Rule                               | When                                                                 |
+| ------------------ | ---------------------------------- | -------------------------------------------------------------------- |
+| out-of-scope       | `not-eligible`                     | a test is outside the eligible category                              |
+| inconclusive       | `path-unattributable`              | a test ran concurrently                                              |
+| distinct           | `path-differs`                     | the V8 block sets differ                                             |
+| possible-duplicate | `checks-unknown` / `facet-unknown` | a checks key or facet is missing and nothing known differs           |
+| different-checks   | `same-input-different-checks`      | same path and input (equal, resolved), checks differ                 |
+| distinct           | `checks-differ`                    | checks differ otherwise                                              |
+| distinct           | `input-shape-differs`              | facet fingerprints differ                                            |
+| table-row          | `input-values-differ`              | same shape, discarded values differ                                  |
+| table-row          | `runtime-values-differ`            | equal static values, trace veto                                      |
+| possible-duplicate | `input-unresolved`                 | equal, with an unresolved input (F6)                                 |
+| possible-duplicate | `trace-unknown`                    | equal and resolved, trace not clean (inconclusive, missing, not run) |
+| duplicate          | `same-path-input-expectation`      | everything equal, resolved, trace clean                              |
 
 A `// dupe-ok:` reason on either test moves the pair to `kept`.
 
@@ -88,3 +88,13 @@ A `// dupe-ok:` reason on either test moves the pair to `kept`.
 
 `tsc` (src and tests), eslint, prettier, the scenario-map unit tests, the local controls run, and
 U7's timings recorded in the design doc.
+
+## Results (2026-10-25)
+
+- U1-U5 committed on PR #3686. The controls fixture matches all 16 fingerprint and all 16 mutation
+  expectations (local run, 43 min).
+- Fingerprint-only run, all 4,632 eligible tests, locally: 8.2 min (plan 5.4, trace 2.6), 2 GB
+  peak RSS. 26 duplicates (the 26 the evidence predicted), 109 possible duplicates in 17 groups,
+  945 table rows, 5,184 distinct.
+- Deep run over the possible duplicates: estimated at 0.2 h of mutation work before trimming;
+  the local measurement was stopped by host memory pressure and is still to be taken.
