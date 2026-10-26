@@ -1,8 +1,9 @@
 # Measurement results — 2026-10-25
 
-For the latest combined time, peak-RSS, and retained-heap comparison, see the
-[memory follow-up report](../../../docs/optimize/callable-memory-report.md).
-The measurements below are the original extraction-cache experiment.
+The measurements below are the original extraction-cache experiment, before
+the later analyzer-identity and shared parameter-type optimizations. Ongoing CI
+measurements use the existing [scope-resolution benchmark](../scope-resolution/README.md).
+The later isolated experiments remain available in [GitHub Actions](https://github.com/abhigyanpatwari/GitNexus/actions/runs/40289711096).
 
 Baseline: `ee7eff97f7f4eb7d68f7090cba448f7cc8285db2`. Candidate: this refactor before commit. The SHA-256 of sorted changed production paths and file bytes, each separated by NUL, is `b6e82236a38c3a0cbd073f2ef162885613869a32c6da9c2d906ecc85a6ff5ea6`. Both revisions were built independently and used the same installed dependencies.
 
