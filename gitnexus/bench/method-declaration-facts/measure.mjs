@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Build both revisions, then pass --baseline-root /path/to/baseline/gitnexus.
+// Build first, then use --check; paired diagnostics accept --baseline-root.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -52,6 +52,7 @@ async function countFacts() {
   const Parser = require('tree-sitter');
   const { getLanguageGrammar } = await load('core/tree-sitter/parser-loader.js');
   const { createMethodExtractor } = await load('core/ingestion/method-extractors/generic.js');
+  const { buildMethodProps } = await load('core/ingestion/utils/method-props.js');
   const specs = [
     [
       'java',
@@ -146,10 +147,12 @@ async function countFacts() {
         language,
         filePath: 'fixture',
       });
+      const graph = buildMethodProps(method);
       result.push({
         language,
         nativeReads,
         parameterArrays: parameterResults.size,
+        parameterTypeArrays: new Set([scope.parameterTypes, graph.parameterTypes]).size,
         facts: digest(stable({ scope, method })),
       });
     } finally {
@@ -406,6 +409,7 @@ async function measureAnalysis(corpus) {
         gcMs,
         sampledPeakRssMiB: Math.max(peakRss, process.memoryUsage().rss) / 1048576,
         cumulativeMaxRssMiB: process.resourceUsage().maxRSS / 1024,
+        heapUsedMiB: process.memoryUsage().heapUsed / 1048576,
         reparsed: pipeline.reparsedFileCount,
         hits: pipeline.parseCacheHitFileCount,
         facts,
@@ -414,6 +418,205 @@ async function measureAnalysis(corpus) {
     return { manifest, runs };
   } finally {
     await rm(temp, { recursive: true, force: true });
+  }
+}
+
+async function child(revision, mode, corpus) {
+  const cache = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-callable-identity-'));
+  try {
+    const memory = mode === 'memory';
+    const output = execFileSync(
+      process.execPath,
+      memory
+        ? [
+            '--expose-gc',
+            fileURLToPath(new URL('./memory.mjs', import.meta.url)),
+            '--root',
+            revision,
+            '--language',
+            corpus,
+          ]
+        : ['--expose-gc', here, '--child', mode, '--root', revision, '--corpus', corpus ?? ''],
+      {
+        encoding: 'utf8',
+        timeout: 600_000,
+        maxBuffer: 32 * 1024 * 1024,
+        env: { ...process.env, GITNEXUS_MEMORY: 'off', XDG_RUNTIME_DIR: cache },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    if (memory) return JSON.parse(output);
+    const line = output.split('\n').find((line) => line.startsWith('BENCH_RESULT='));
+    assert(line, 'child did not return measurements');
+    return JSON.parse(line.slice('BENCH_RESULT='.length));
+  } finally {
+    await rm(cache, { recursive: true, force: true });
+  }
+}
+
+async function checkBenchmark() {
+  const record = args.includes('--record');
+  assert(!(record && args.includes('--check')), '--check cannot record a baseline');
+  assert(
+    !['--baseline-root', '--candidate-root', '--providers-only'].some((flag) =>
+      args.includes(flag),
+    ),
+    'CI modes use the fixed declaration and provider corpora',
+  );
+  const baselinePath = new URL('./baseline.json', import.meta.url);
+  const baseline = record ? undefined : JSON.parse(await readFile(baselinePath, 'utf8'));
+  const samples = Number(option('--samples', '3'));
+  assert(Number.isInteger(samples) && samples >= 3, '--samples must be at least 3');
+  const output = option('--output');
+  assert(
+    !output || path.resolve(output) !== fileURLToPath(baselinePath),
+    'Output must not overwrite baseline.json',
+  );
+  const outputFile = output ? await open(output, 'wx', 0o600) : undefined;
+  const report = {
+    passed: false,
+    environment: {
+      node: process.version,
+      platform: process.platform,
+      cpu: os.cpus()[0]?.model,
+      workers: 1,
+    },
+    samples,
+    counts: [],
+    lifetime: {},
+    trials: {},
+    memory: {},
+    measured: {},
+  };
+  const median = (rows, key) =>
+    [...rows].map((row) => row[key]).sort((a, b) => a - b)[Math.floor(rows.length / 2)];
+  const summarize = (rows, keys) => Object.fromEntries(keys.map((key) => [key, median(rows, key)]));
+  try {
+    report.counts = await child(root, 'counts');
+    assert.equal(report.counts.length, 8);
+    assert(
+      report.counts.every((row) => !row.skipped),
+      'All eight provider grammars are required',
+    );
+    report.lifetime = await child(root, 'lifetime');
+    assert.equal(
+      report.lifetime.collected,
+      report.lifetime.created,
+      'declaration cache retained trees',
+    );
+    const correctness = {
+      counts: report.counts.map(({ language, facts, parameterArrays, parameterTypeArrays }) => ({
+        language,
+        facts,
+        parameterArrays,
+        parameterTypeArrays,
+      })),
+      analysis: {},
+      memory: {},
+      collectedTrees: report.lifetime.collected,
+    };
+    for (const corpus of ['declarations', 'providers']) {
+      const trials = [];
+      report.trials[corpus] = trials;
+      for (let trial = 0; trial < samples; trial++) {
+        console.log(`${corpus} ${trial + 1}/${samples}`);
+        trials.push(await child(root, 'analysis', corpus));
+      }
+      const facts = (trial) => ({
+        manifest: trial.manifest,
+        runs: trial.runs.map(({ scenario, facts, reparsed, hits }) => ({
+          scenario,
+          facts,
+          reparsed,
+          hits,
+        })),
+      });
+      correctness.analysis[corpus] = facts(trials[0]);
+      for (const trial of trials) {
+        assert.deepEqual(
+          facts(trial),
+          correctness.analysis[corpus],
+          `${corpus}: nondeterministic graph or cache replay`,
+        );
+        assert.equal(trial.runs[2].reparsed, 1);
+      }
+      for (const scenario of ['cold', 'warm', 'changed']) {
+        report.measured[`${corpus}/${scenario}`] = summarize(
+          trials.map((trial) => trial.runs.find((run) => run.scenario === scenario)),
+          ['wallMs', 'cpuMs', 'heapUsedMiB', 'sampledPeakRssMiB', 'cumulativeMaxRssMiB'],
+        );
+      }
+    }
+    for (const language of ['java', 'typescript']) {
+      const trials = [];
+      report.memory[language] = trials;
+      for (let trial = 0; trial < samples; trial++)
+        trials.push(await child(root, 'memory', language));
+      assert(
+        trials.every((trial) => trial.treeCollected),
+        `${language}: heap probe retained trees`,
+      );
+      assert.equal(
+        new Set(trials.map((trial) => trial.digest)).size,
+        1,
+        `${language}: nondeterministic metadata`,
+      );
+      correctness.memory[language] = {
+        digest: trials[0].digest,
+        declarations: trials[0].declarations,
+      };
+      report.measured[`${language}/retained`] = summarize(trials, [
+        'extractionRetainedBytes',
+        'emittedRetainedBytes',
+        'releasedDeltaBytes',
+      ]);
+    }
+    report.correctness = correctness;
+    report.baselineMeasured = baseline?.measured;
+    report.changesPercent = baseline
+      ? Object.fromEntries(
+          Object.entries(report.measured).map(([name, metrics]) => [
+            name,
+            Object.fromEntries(
+              Object.entries(metrics).map(([key, value]) => [
+                key,
+                100 * (value / baseline.measured[name][key] - 1),
+              ]),
+            ),
+          ]),
+        )
+      : {};
+    console.log(
+      JSON.stringify({ measured: report.measured, changesPercent: report.changesPercent }, null, 2),
+    );
+    if (baseline)
+      assert.deepEqual(
+        correctness,
+        baseline.correctness,
+        'callable declaration facts or allocation counts differ from baseline.json',
+      );
+    if (record)
+      await writeFile(
+        baselinePath,
+        JSON.stringify(
+          {
+            _note:
+              'Reviewed semantic and allocation baseline. --check compares fingerprints, cache counts and shared-array counts; timing and heap/RSS medians are references, not machine-independent thresholds. CI never records a baseline.',
+            environment: report.environment,
+            correctness,
+            measured: report.measured,
+          },
+          null,
+          2,
+        ) + '\n',
+      );
+    report.passed = true;
+    console.log(`[method-declaration-facts ${record ? '--record' : '--check'}] PASS`);
+  } finally {
+    if (outputFile) {
+      await outputFile.writeFile(JSON.stringify(report, null, 2) + '\n');
+      await outputFile.close();
+    }
   }
 }
 
@@ -426,6 +629,8 @@ if (args.includes('--child')) {
         ? await retainedTrees()
         : await measureAnalysis(option('--corpus'));
   console.log('BENCH_RESULT=' + JSON.stringify(result));
+} else if (args.includes('--check') || args.includes('--record')) {
+  await checkBenchmark();
 } else {
   const baseline = option('--baseline-root');
   const candidateRuntime = path.resolve(option('--candidate-root', candidate));
@@ -437,21 +642,6 @@ if (args.includes('--child')) {
     path.join(await mkdtemp(path.join(os.tmpdir(), 'gitnexus-callable-results-')), 'results.json');
   const outputFile = await open(outputPath, 'wx', 0o600);
   try {
-    const child = (revision, mode, corpus) => {
-      const output = execFileSync(
-        process.execPath,
-        ['--expose-gc', here, '--child', mode, '--root', revision, '--corpus', corpus ?? ''],
-        {
-          encoding: 'utf8',
-          timeout: 600_000,
-          maxBuffer: 32 * 1024 * 1024,
-          env: { ...process.env, GITNEXUS_MEMORY: 'off' },
-        },
-      );
-      const line = output.split('\n').find((line) => line.startsWith('BENCH_RESULT='));
-      assert(line, 'child did not return measurements');
-      return JSON.parse(line.slice('BENCH_RESULT='.length));
-    };
     const results = {
       measuredAt: new Date().toISOString(),
       environment: {
@@ -468,8 +658,8 @@ if (args.includes('--child')) {
       ['baseline', baseline],
       ['candidate', candidateRuntime],
     ]) {
-      results.counts[name] = child(revision, 'counts');
-      results.lifetime[name] = child(revision, 'lifetime');
+      results.counts[name] = await child(revision, 'counts');
+      results.lifetime[name] = await child(revision, 'lifetime');
     }
     assert.deepEqual(
       results.counts.baseline.map((r) => [r.language, r.facts]),
@@ -482,7 +672,11 @@ if (args.includes('--child')) {
         const pair = {};
         for (const name of sample % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']) {
           console.log(`${corpus} pair ${sample + 1}/${samples}: ${name}`);
-          pair[name] = child(name === 'baseline' ? baseline : candidateRuntime, 'analysis', corpus);
+          pair[name] = await child(
+            name === 'baseline' ? baseline : candidateRuntime,
+            'analysis',
+            corpus,
+          );
         }
         assert.deepEqual(pair.baseline.manifest, pair.candidate.manifest);
         assert.deepEqual(

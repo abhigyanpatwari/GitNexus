@@ -710,6 +710,19 @@ jobs:
           node --import tsx bench/python-scope/import-target-fingerprint.mjs --check
         working-directory: gitnexus
 
+      - name: Callable declaration facts / time / memory baseline
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/method-declaration-facts/measure.mjs --check --output method-declaration-facts.json
+        working-directory: gitnexus
+
+      - name: Upload callable declaration measurements
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: method-declaration-facts-benchmark
+          path: gitnexus/method-declaration-facts.json
+          retention-days: 5
+
       - name: Java wildcard-static route constant guards (#3110)
         if: ${{ !cancelled() }}
         # Build-free: named-import control vs wildcard materialization;

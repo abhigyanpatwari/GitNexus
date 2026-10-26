@@ -1,0 +1,204 @@
+{
+  "_note": "Reviewed semantic and allocation baseline. --check compares fingerprints, cache counts and shared-array counts; timing and heap/RSS medians are references, not machine-independent thresholds. CI never records a baseline.",
+  "environment": {
+    "node": "v22.23.3",
+    "platform": "linux",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "workers": 1
+  },
+  "correctness": {
+    "counts": [
+      {
+        "language": "java",
+        "facts": "f1acdfa027c072521b69ca5b9b694ebb3a528e45f5383edffe0b9d4adfbe70d0",
+        "parameterArrays": 1,
+        "parameterTypeArrays": 1
+      },
+      {
+        "language": "typescript",
+        "facts": "51290686f9885e3ecc18c6de969b53a825d8677b3ffaeb82e752e1d996b3d56e",
+        "parameterArrays": 1,
+        "parameterTypeArrays": 1
+      },
+      {
+        "language": "kotlin",
+        "facts": "32250ca227cb267e75efd4856184dd96e17ec08c23cdbdc61b8301b602efe071",
+        "parameterArrays": 1,
+        "parameterTypeArrays": 1
+      },
+      {
+        "language": "csharp",
+        "facts": "e7158eb25c8b100ec6d835b32ca28df16246dbc32ac9a202e202e4bfc865ef30",
+        "parameterArrays": 1,
+        "parameterTypeArrays": 1
+      },
+      {
+        "language": "python",
+        "facts": "78ba377afae0198395d638d5ff9aa3a7c44504666184003b099e2709fe544a4d",
+        "parameterArrays": 1,
+        "parameterTypeArrays": 1
+      },
+      {
+        "language": "php",
+        "facts": "d23a4178521e676a4d267ff365dd6de11d9b5df8b0880ee380acadec5933158b",
+        "parameterArrays": 1,
+        "parameterTypeArrays": 1
+      },
+      {
+        "language": "swift",
+        "facts": "39ef708f6d9c3515fa0c95ce79b719e2c3ef7638fa5a9c59a1254a8766568c02",
+        "parameterArrays": 1,
+        "parameterTypeArrays": 1
+      },
+      {
+        "language": "dart",
+        "facts": "2379fc6fb6ce0ba092304790eebc1e36030e939c16bfe51f0aabca6112590f07",
+        "parameterArrays": 1,
+        "parameterTypeArrays": 1
+      }
+    ],
+    "analysis": {
+      "declarations": {
+        "manifest": {
+          "files": 65,
+          "manifest": "a8f8aa6206812f6bdcd24fce9d89dcf25d14eaf7b1c86ba49aea1ca64f729e40"
+        },
+        "runs": [
+          {
+            "scenario": "cold",
+            "facts": {
+              "nodes": 2755,
+              "edges": 2754,
+              "hash": "f9f0363efa933fcd0fdfbb64076e43bd7eb361f880251fda2de6dac1f716a0fa"
+            },
+            "reparsed": 65,
+            "hits": 0
+          },
+          {
+            "scenario": "warm",
+            "facts": {
+              "nodes": 2755,
+              "edges": 2754,
+              "hash": "f9f0363efa933fcd0fdfbb64076e43bd7eb361f880251fda2de6dac1f716a0fa"
+            },
+            "reparsed": 0,
+            "hits": 65
+          },
+          {
+            "scenario": "changed",
+            "facts": {
+              "nodes": 2755,
+              "edges": 2754,
+              "hash": "58969c80be830cff4ba91511587aec077106936e7abe80d95f77ad284be2fcd4"
+            },
+            "reparsed": 1,
+            "hits": 64
+          }
+        ]
+      },
+      "providers": {
+        "manifest": {
+          "files": 9,
+          "manifest": "0a75726a1e88b189f63675a9e12476ca3d928d1a25ed4abf9648efbd0c9b339f"
+        },
+        "runs": [
+          {
+            "scenario": "cold",
+            "facts": {
+              "nodes": 47,
+              "edges": 46,
+              "hash": "131f1043fb43b9635228595748bd1a15d853b10f86ed40902303612918b15169"
+            },
+            "reparsed": 9,
+            "hits": 0
+          },
+          {
+            "scenario": "warm",
+            "facts": {
+              "nodes": 47,
+              "edges": 46,
+              "hash": "131f1043fb43b9635228595748bd1a15d853b10f86ed40902303612918b15169"
+            },
+            "reparsed": 0,
+            "hits": 9
+          },
+          {
+            "scenario": "changed",
+            "facts": {
+              "nodes": 47,
+              "edges": 46,
+              "hash": "93734f2c8ea9ba0d8841e269467dc49cd2289be83aa18b13a8cebe871a6106ab"
+            },
+            "reparsed": 1,
+            "hits": 8
+          }
+        ]
+      }
+    },
+    "memory": {
+      "java": {
+        "digest": "44e5fc1e221e02a9644075284d18b3936d3afc36b1ff696341f7ab5a4a5b15b0",
+        "declarations": 10000
+      },
+      "typescript": {
+        "digest": "9e1ae4a2165a63a3f89aa97d474e799ffc18d09cb47578b5a112a7ed75c54e40",
+        "declarations": 10000
+      }
+    },
+    "collectedTrees": 100
+  },
+  "measured": {
+    "declarations/cold": {
+      "wallMs": 9491.255859,
+      "cpuMs": 12413.021,
+      "heapUsedMiB": 100.68425750732422,
+      "sampledPeakRssMiB": 562.76171875,
+      "cumulativeMaxRssMiB": 568.734375
+    },
+    "declarations/warm": {
+      "wallMs": 2825.0413579999986,
+      "cpuMs": 3197.422,
+      "heapUsedMiB": 106.1380615234375,
+      "sampledPeakRssMiB": 670.35546875,
+      "cumulativeMaxRssMiB": 676.64453125
+    },
+    "declarations/changed": {
+      "wallMs": 3547.4335059999994,
+      "cpuMs": 3785.397,
+      "heapUsedMiB": 100.31853485107422,
+      "sampledPeakRssMiB": 738.78125,
+      "cumulativeMaxRssMiB": 744.953125
+    },
+    "providers/cold": {
+      "wallMs": 6830.893146,
+      "cpuMs": 7177.582,
+      "heapUsedMiB": 64.3858413696289,
+      "sampledPeakRssMiB": 596.99609375,
+      "cumulativeMaxRssMiB": 602.86328125
+    },
+    "providers/warm": {
+      "wallMs": 2304.49326,
+      "cpuMs": 2281.247,
+      "heapUsedMiB": 80.3407211303711,
+      "sampledPeakRssMiB": 693.53515625,
+      "cumulativeMaxRssMiB": 699.69140625
+    },
+    "providers/changed": {
+      "wallMs": 3418.0368609999987,
+      "cpuMs": 3310.594,
+      "heapUsedMiB": 64.62885284423828,
+      "sampledPeakRssMiB": 748.1953125,
+      "cumulativeMaxRssMiB": 754.38671875
+    },
+    "java/retained": {
+      "extractionRetainedBytes": 12057128,
+      "emittedRetainedBytes": 5701312,
+      "releasedDeltaBytes": 660560
+    },
+    "typescript/retained": {
+      "extractionRetainedBytes": 12017312,
+      "emittedRetainedBytes": 5662200,
+      "releasedDeltaBytes": 621448
+    }
+  }
+}

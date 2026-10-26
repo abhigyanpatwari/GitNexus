@@ -2,15 +2,29 @@
 
 ## CI measurements
 
-Use the existing **scope resolution time / memory (all languages)** job in
-`.github/workflows/ci-tests.yml`. It already runs real worker parsing and scope
-resolution for every language, reporting parsing/resolution time, heap after each
-phase, process peak RSS, type-binding counts, and graph fingerprints. The job
-summary and `scope-resolution-benchmark` artifact use the established workload
-and committed baselines. See [its instructions](../scope-resolution/README.md).
+The existing **benchmarks (GITNEXUS_BENCH)** job in `ci-tests.yml` runs:
 
-The commands below are optional diagnostic probes used during this refactor.
-They do not add a separate CI workflow or replace the standard measurements.
+```sh
+node --import tsx bench/method-declaration-facts/measure.mjs --check --output method-declaration-facts.json
+```
+
+`--check` compares the current build with committed `baseline.json`; no second
+checkout is required. It checks all eight providers' semantic fingerprints and
+shared parameter/type-array counts, cold/warm/changed graph and cache counts on
+fixed declaration and provider corpora, and tree collection. Three fresh-process
+samples report median wall/CPU time, endpoint heap, peak RSS, and retained heap,
+with percentage differences from the recorded measurements. Timing and heap/RSS
+are machine-dependent references, not absolute CI failure thresholds.
+
+CI uploads raw samples and comparisons as `method-declaration-facts-benchmark`,
+using the same five-day retention as the other benchmark artifacts. The separate
+all-language [scope-resolution benchmark](../scope-resolution/README.md) remains
+unchanged.
+
+After reviewing an intentional fixture, semantic, or allocation change, run the
+same command with `--record` instead of `--check`, then inspect `baseline.json`.
+CI never records or accepts a new baseline automatically. Output files must not
+already exist. The two-checkout commands below remain available for diagnostics.
 
 ## Detailed local measurements
 
@@ -95,8 +109,8 @@ extraction timing are **not** end-to-end indexing measurements. Use `measure.mjs
 for complete cold/warm/changed indexing, including worker and native-memory RSS.
 Keep both runtimes on the same filesystem with the same dependencies and give
 every end-to-end child a fresh private `XDG_RUNTIME_DIR` so analyzer identity
-caches start equally cold. The existing scope-resolution CI artifact remains the standard
-time and memory report.
+caches start equally cold. The CI check includes this retained-heap probe in
+the same `method-declaration-facts-benchmark` report as the indexing measurements.
 
 To count requests and distinct parameter arrays in real workers, use the optional
 preload below from the candidate package. Repeat with the candidate runtime and a
