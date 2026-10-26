@@ -19,6 +19,7 @@
  *                 it from the slices instead of recomputing it, and re-splits it with
  *                 {@link coverageSlices} (each slice's work file lists exactly its share)
  *   mutation      the run's mutation scope, which chose `layer1`
+ *   changed       a diff-scoped run's changed test files (`--changed-since`); null for the suite
  *   revision      the checkout's commit (`git rev-parse HEAD`); null when unknown
  *   work          the slice's work file (run-coverage.ts {@link CoverageWorkFile})
  *
@@ -47,6 +48,7 @@ export interface CoverageSliceFile {
   of: number;
   layer1: string[];
   mutation: MutationScope;
+  changed: string[] | null;
   revision: string | null;
   work: CoverageWorkFile;
 }
@@ -79,8 +81,8 @@ export function coverageSlices(
 
 /**
  * The work file of the reported slices (`assignment` from {@link coverageSlices}); a slice that ran
- * other files, disagrees with the first on its Layer 1 files, mutation scope, revision, mode, extra
- * roots or repeats, or reports twice throws.
+ * other files, disagrees with the first on its Layer 1 files, mutation scope, changed files,
+ * revision, mode, extra roots or repeats, or reports twice throws.
  */
 export function mergeCoverageSlices(
   assignment: readonly (readonly string[])[],
@@ -111,6 +113,8 @@ export function mergeCoverageSlices(
     if (
       !sameList(slice.layer1, first.layer1) ||
       slice.mutation !== first.mutation ||
+      !sameList(slice.changed ?? [], first.changed ?? []) ||
+      (slice.changed === null) !== (first.changed === null) ||
       slice.revision !== first.revision ||
       mode !== first.work.mode ||
       repeats !== first.work.repeats ||
@@ -171,6 +175,9 @@ const isSliceFile = (value: unknown): value is CoverageSliceFile =>
   Array.isArray(value.layer1) &&
   value.layer1.every((file: unknown) => typeof file === 'string') &&
   MUTATION_SCOPES.some((scope) => scope === value.mutation) &&
+  (value.changed === null ||
+    (Array.isArray(value.changed) &&
+      value.changed.every((file: unknown) => typeof file === 'string'))) &&
   (value.revision === null || typeof value.revision === 'string') &&
   isRecord(value.work) &&
   value.work.schemaVersion === WORK_FILE_SCHEMA_VERSION;

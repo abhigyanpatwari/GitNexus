@@ -159,19 +159,19 @@ and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS en
     time (`skip`, `skipIf`, `todo`; the `GITNEXUS_BENCH` benchmark suites run only in the test
     workflow's benchmarks job, as wall-clock and heap guards) and those that never finished
     (their file's run ended first).
-- **E8** (optimisation) A labelled pull request's run is diff-scoped: `plan --changed-since <ref>`
-  (the workflow passes the merge commit's first parent) keeps only candidate pairs with a test of a
-  test file the diff added or modified, and Layer 1 runs only those files (when the prefilter would
-  keep them) and the files sharing their tests' checks-and-context keys, in the plan job without
-  coverage slices. A changed `__snapshots__/<name>.snap` counts as a change of its test file;
-  changed helper modules and fixtures do not. Given up (recall, disclosed in the report): an
-  unchanged file whose tests have no static key (helper-registered, dynamic `it.each` counts,
-  file snapshots) is not run, so a changed test's possible duplicate in it is not looked for; a
-  changed file the static view cannot vouch for finds its pairs among the files run only. A pull
-  request that changes no test file gets an empty report saying so. The report names the changed
-  files. The largest scope one changed file pulls in is the file itself
-  (`incremental-orchestration`, about 11% of the suite's weighted cost; 1.7% at the 99th
-  percentile), so the plan job's 60 minutes hold it.
+- **E8** (optimisation) A labelled pull request's run is diff-scoped: `--changed-since <ref>` (the
+  workflow passes the merge commit's first parent to the coverage slices; a local `all` takes it
+  directly) keeps only candidate pairs with a test of a test file the diff added or modified, and
+  Layer 1 runs only those files (when the prefilter would keep them), the files sharing their
+  tests' checks-and-context keys and the files below. A changed `__snapshots__/<name>.snap` counts as a change of its test file;
+  changed helper modules and fixtures do not. Full recall (maintainer, 2026-10-26): every file
+  with a test of no static key (helper-registered, dynamic `it.each` counts, file snapshots, no
+  assertion key, unparsed) runs too, since such a test can pair with any changed test. That floor
+  is 230 of 1,407 files, about 59% of the suite's weighted Layer 1 cost with 59 sequential
+  files, too much for the plan job alone, so a labelled pull request runs the coverage slices as
+  well: `coverage --changed-since` records the changed files in each slice, and the plan takes
+  the diff scope from the slices. A pull request that changes no test file still runs the floor;
+  the report names the changed files.
 - Review (2026-10-26, eight-angle code review of E1-E8, findings verified against the code):
   fixed a suite callback passed by name (`describe('x', defineCases)`) slipping past the
   registration guard, an empty coverage slice failing its job, `--changed-since` accepted with the

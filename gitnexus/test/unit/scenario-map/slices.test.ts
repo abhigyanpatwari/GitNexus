@@ -109,6 +109,7 @@ const slice = (index: number, body: CoverageWorkFile): CoverageSliceFile => ({
   of: 3,
   layer1: [A, B, C, D],
   mutation: 'none',
+  changed: null,
   revision: 'abc',
   work: body,
 });
@@ -180,6 +181,11 @@ describe('mergeCoverageSlices', () => {
     {
       name: 'slices of different mutation scopes',
       reported: [SLICE_0, { ...SLICE_1, mutation: 'all' as const }],
+      message: /is not the run of slice 0/,
+    },
+    {
+      name: 'slices of different diff scopes',
+      reported: [SLICE_0, { ...SLICE_1, changed: [A] }],
       message: /is not the run of slice 0/,
     },
     {

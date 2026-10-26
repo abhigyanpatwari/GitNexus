@@ -3,7 +3,8 @@
  * test's checks-and-context key is shared, when its tests come from a helper or an alias the
  * inventory cannot see, when a call's instance count is not static, or when a body reads a file
  * snapshot; a file whose every test has a key no other test shares is skipped. A diff scope runs
- * only the changed files the rule keeps and the files sharing a changed test's key.
+ * the changed files the rule keeps, the files sharing a changed test's key and every file with a
+ * test of no static key.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -80,10 +81,15 @@ describe('layer1Files', () => {
     });
   });
 
+  // Files with a test of no static key: they can pair with any test, so every diff scope runs them.
+  const UNKNOWN = FILES.filter(
+    (file) => !['test/unit/shared.test.ts', 'test/unit/unique.test.ts'].includes(file),
+  );
+
   it.each([
-    { changed: 'test/unit/unique.test.ts', files: [] },
-    { changed: 'test/unit/shared.test.ts', files: ['test/unit/shared.test.ts'] },
-    { changed: 'test/unit/helper.test.ts', files: ['test/unit/helper.test.ts'] },
+    { changed: 'test/unit/unique.test.ts', files: UNKNOWN },
+    { changed: 'test/unit/shared.test.ts', files: ['test/unit/shared.test.ts', ...UNKNOWN] },
+    { changed: 'test/unit/helper.test.ts', files: UNKNOWN },
   ])('in a diff scope, runs $changed only with what can pair with it', ({ changed, files }) => {
     expect(layer1Files(root, FILES, new Set([changed])).files).toEqual(files);
   });
@@ -96,7 +102,7 @@ describe('layer1Files', () => {
     );
     expect(
       layer1Files(root, [...FILES, partner], new Set(['test/unit/shared.test.ts'])).files,
-    ).toEqual(['test/unit/shared.test.ts', partner]);
+    ).toEqual(['test/unit/shared.test.ts', ...UNKNOWN, partner]);
   });
 
   it('keeps a file whose key another file shares', () => {

@@ -27,8 +27,8 @@ export interface Layer1Files {
   /** The files Layer 1 runs, in input order. */
   files: string[];
   /**
-   * The others: every test has a checks-and-context key no other test shares, or (diff scope) the
-   * file is neither changed nor shares a key with a changed file's test.
+   * The others: every test has a checks-and-context key no other test shares, or (diff scope) a
+   * static key, none of which a changed file's test has.
    */
   skipped: string[];
 }
@@ -36,10 +36,8 @@ export interface Layer1Files {
 /**
  * Splits package-path test files into those Layer 1 must run and the rest. With `changed` (a
  * diff-scoped run, fingerprint plan E8) only pairs with a changed file's test count: the changed
- * files the whole-suite rule keeps, plus every file with a test whose key a changed file's test
- * has. Files the static view cannot vouch for are not added: a changed test's possible duplicate
- * in one (a test without a static key) is not looked for, and a changed file the static view
- * cannot vouch for finds its pairs among the files run only.
+ * files the whole-suite rule keeps, every file with a test whose key a changed file's test has,
+ * and every file with a test of no static key, which can pair with any test.
  */
 export function layer1Files(
   repoRoot: string,
@@ -48,11 +46,12 @@ export function layer1Files(
 ): Layer1Files {
   const inventory = loadStaticInventory(repoRoot, files);
   const options = { snapshots: fsSnapshotReader(repoRoot), modules: fsModuleReader(repoRoot) };
-  const keep = new Set([...inventory.skipped, ...inventory.incomplete]);
+  // Files with a test of no static key: it can pair with any test.
+  const unknown = new Set([...inventory.skipped, ...inventory.incomplete]);
   const keys: { file: string; key: string }[] = [];
   for (const site of inventory.sites) {
     if (site.instances === null || FILE_SNAPSHOT.test(site.record.body)) {
-      keep.add(site.file);
+      unknown.add(site.file);
       continue;
     }
     for (const instance of site.instances) {
@@ -60,7 +59,7 @@ export function layer1Files(
         { record: site.record, instance, fullName: site.fullName },
         options,
       );
-      if (key === null) keep.add(site.file);
+      if (key === null) unknown.add(site.file);
       else keys.push({ file: site.file, key });
     }
   }
@@ -68,7 +67,7 @@ export function layer1Files(
   for (const { key } of keys) count.set(key, (count.get(key) ?? 0) + 1);
   // A key only one test has pairs with nothing.
   const shared = (key: string): boolean => (count.get(key) ?? 0) > 1;
-  for (const { file, key } of keys) if (shared(key)) keep.add(file);
+  const keep = new Set([...unknown, ...keys.filter((k) => shared(k.key)).map((k) => k.file)]);
   const changedKeys = new Set(
     keys.filter(({ file, key }) => changed?.has(file) === true && shared(key)).map((k) => k.key),
   );
@@ -78,6 +77,7 @@ export function layer1Files(
       : new Set([
           ...[...keep].filter((file) => changed.has(file)),
           ...keys.filter(({ key }) => changedKeys.has(key)).map(({ file }) => file),
+          ...unknown,
         ]);
   return {
     files: files.filter((file) => run.has(file)),

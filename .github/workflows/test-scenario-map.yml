@@ -15,10 +15,11 @@ name: Test Scenario Map
 #                       full Phase 1 run, hours over up to 20 shards);
 #   pull_request        when a maintainer adds the `scenario-map` label to a pull request:
 #                       `possible-duplicates`, the deep run for a suspicious change, diff-scoped
-#                       (`--changed-since`: only pairs with a test of a changed test file; Layer 1
-#                       over those files and the files sharing their checks-and-context keys, in the
-#                       plan job, no coverage slices). A PR run writes no tracking issue and no
-#                       baseline; its report is an artifact and the job summary.
+#                       (`--changed-since` on the coverage slices: only pairs with a test of a changed
+#                       test file; Layer 1 over those files, the files sharing their
+#                       checks-and-context keys and every file with a test of no static key). A PR
+#                       run writes no tracking issue and no baseline; its report is an artifact and
+#                       the job summary.
 #
 # Jobs, each one CLI stage over one work directory ($RUNNER_TEMP/scenario-map) exchanged as
 # artifacts:
@@ -110,8 +111,7 @@ jobs:
   # ── Coverage: Layer 1 in slices ────────────────────────────────────
   coverage:
     name: Coverage ${{ matrix.index }}
-    # A labelled pull request's diff-scoped run takes Layer 1 in the plan job.
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' || github.event.label.name == 'scenario-map'
     runs-on: ubuntu-latest
     # Four slices balanced like the CI test shards (test/helpers/shard-balance.ts): the whole unit
     # and integration suite runs with coverage in three 7-8 minute shards of the test workflow
@@ -126,9 +126,11 @@ jobs:
       matrix:
         index: [0, 1, 2, 3]
     steps:
+      # A pull request's merge commit needs its first parent (the base) for the diff scope.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       # Integration tests load dist/ (the built CLI and its worker scripts).
       - uses: ./.github/actions/setup-gitnexus
         with:
@@ -141,10 +143,14 @@ jobs:
           # The plan's scope (its "Choose the mutation scope" step): unless `all`, Layer 1 skips the
           # files whose tests all have a checks-and-context key no other test shares.
           MUTATION: ${{ github.event_name == 'pull_request' && 'possible-duplicates' || inputs.mutation || 'none' }}
+          EVENT: ${{ github.event_name }}
         run: |
+          args=(--index "$INDEX" --of "$OF" --mutation "$MUTATION"
+            --work "$RUNNER_TEMP/scenario-map" --concurrency "$SCENARIO_MAP_CONCURRENCY")
+          # The merge commit's first parent is the base: the pull request's own changes.
+          if [ "$EVENT" = "pull_request" ]; then args+=(--changed-since 'HEAD^1'); fi
           status=0
-          npm run test:scenario-map -- coverage --index "$INDEX" --of "$OF" --mutation "$MUTATION" \
-            --work "$RUNNER_TEMP/scenario-map" --concurrency "$SCENARIO_MAP_CONCURRENCY" || status=$?
+          npm run test:scenario-map -- coverage "${args[@]}" || status=$?
           if [ "$status" -eq 1 ]; then
             echo "::warning::a test file of slice $INDEX failed or wrote no record; the report counts it"
           elif [ "$status" -ne 0 ]; then
@@ -174,17 +180,12 @@ jobs:
       # Scheduled runs always run on the default branch; their event payload has no repository.
       default_branch: ${{ github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     steps:
-      # persist-credentials: false — the jobs upload artifacts and never push. A pull request's
-      # merge commit needs its first parent (the base) for the diff scope.
+      # persist-credentials: false — the jobs upload artifacts and never push.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
-      # Layer 1 comes from the slices (no test, no dist/), except in a pull request's diff-scoped
-      # run, whose plan runs it.
+      # Layer 1 comes from the slices: the plan runs no test and needs no dist/.
       - uses: ./.github/actions/setup-gitnexus
-        with:
-          build: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
       - name: Choose the mutation scope
         id: scope
         env:
@@ -193,14 +194,12 @@ jobs:
       # No slice at all fails the plan (nothing to merge); a missing slice leaves its files
       # unrecorded in the report.
       - name: Download the coverage slices
-        if: github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: scenario-map-coverage-*
           path: ${{ runner.temp }}/scenario-map-coverage
       - name: Place the coverage slices
-        if: github.event_name != 'pull_request'
         run: |
           shopt -s nullglob
           root="$RUNNER_TEMP/scenario-map-coverage"
@@ -220,14 +219,12 @@ jobs:
           SEED: ${{ inputs.seed || github.run_id }}
           SHARDS: ${{ inputs.shards }}
           MUTATION: ${{ steps.scope.outputs.mutation }}
-          EVENT: ${{ github.event_name }}
         run: |
+          # The slices carry Layer 1, and a pull request's diff scope with it.
           args=(--work "$RUNNER_TEMP/scenario-map" --seed "$SEED" --mutation "$MUTATION"
             --concurrency "$SCENARIO_MAP_CONCURRENCY"
-            --deadline-minutes "$SCENARIO_MAP_DEADLINE_MINUTES")
-          # The merge commit's first parent is the base: the pull request's own changes.
-          if [ "$EVENT" = "pull_request" ]; then args+=(--changed-since 'HEAD^1')
-          else args+=(--coverage "$RUNNER_TEMP/scenario-map-slices"); fi
+            --deadline-minutes "$SCENARIO_MAP_DEADLINE_MINUTES"
+            --coverage "$RUNNER_TEMP/scenario-map-slices")
           if [ -n "$SHARDS" ]; then args+=(--shards "$SHARDS"); fi
           npm run test:scenario-map -- plan "${args[@]}"
       - name: Upload the plan

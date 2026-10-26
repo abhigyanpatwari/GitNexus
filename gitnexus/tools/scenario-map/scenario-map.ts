@@ -10,8 +10,9 @@
  *
  * Stages:
  *   coverage    `--index <i> --of <n>`: Layer 1 over slice i of the files Layer 1 runs
- *               ({@link layer1FilesOf}; pass the plan's `--mutation`) (path-coverage/slices.ts,
- *               balanced like the CI test shards), written as
+ *               ({@link layer1FilesOf}; pass the plan's `--mutation`, and `--changed-since <ref>`
+ *               for a diff-scoped run, whose changed files the slice records for the plan)
+ *               (path-coverage/slices.ts, balanced like the CI test shards), written as
  *               `<work>/coverage-slice-<i>.json`; exit 1 when a file of the slice failed or wrote
  *               no record.
  *   plan        eligibility (R1); the Layer 0 scan (test-dupes over the `--all` corpus plus the
@@ -503,7 +504,7 @@ export const USAGE =
   'usage: npm run test:scenario-map -- ' +
   '<coverage|plan|value-flow|shards|shard|merge|all|controls> [--work <dir>]\n' +
   '  coverage:   --index <i> --of <n> [--mode normal|controls | --controls] ' +
-  '[--mutation none|possible-duplicates|all] [--concurrency <n>]\n' +
+  '[--mutation none|possible-duplicates|all] [--changed-since <ref>] [--concurrency <n>]\n' +
   '  plan:       [--mode normal|controls | --controls] [--seed <text>] [--shards <n>] ' +
   '[--mutation none|possible-duplicates|all] [--deadline-minutes <m>] [--concurrency <n>] ' +
   '[--speed-factor <x>] [--coverage <dir> | --changed-since <ref>]\n' +
@@ -589,7 +590,7 @@ const REPORT_FLAGS: readonly Flag[] = [
   'default-branch',
 ];
 const STAGE_FLAGS: Readonly<Record<Stage, readonly Flag[]>> = {
-  coverage: ['work', 'mode', 'controls', 'index', 'of', 'mutation', 'concurrency'],
+  coverage: ['work', 'mode', 'controls', 'index', 'of', 'mutation', 'changed-since', 'concurrency'],
   plan: [
     'work',
     'mode',
@@ -711,7 +712,9 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
     throw new UsageError(`--changed-since must name a git revision, got ${changedSince}`);
   }
   if (changedSince !== null && values.coverage !== undefined) {
-    throw new UsageError('--changed-since runs Layer 1 itself; it does not take --coverage');
+    throw new UsageError(
+      '--changed-since goes to the coverage stage; the plan takes the diff scope from --coverage',
+    );
   }
   const mode = modeOf(stage, values.mode, values.controls);
   if (changedSince !== null && mode.kind === 'controls') {
@@ -1914,6 +1917,8 @@ export interface CoverageStageOptions {
   mode: RunMode;
   /** The run's mutation scope: the plan stage must slice the same files (E7). */
   mutation: MutationScope;
+  /** A diff-scoped run's base revision (E8); null for the whole suite. */
+  changedSince: string | null;
   concurrency: number;
 }
 
@@ -1929,7 +1934,17 @@ export async function runCoverageStage(
   const { repoRoot, layout, log } = ctx;
   resetWorkDir(layout.root);
   const { fingerprintFiles } = fingerprintScope({ repoRoot, mode: options.mode });
-  const layer1 = layer1FilesOf(repoRoot, fingerprintFiles, options.mutation, options.mode);
+  const changed =
+    options.changedSince === null
+      ? null
+      : changedTestFiles(gitChangedFiles(repoRoot, options.changedSince), fingerprintFiles);
+  const layer1 = layer1FilesOf(
+    repoRoot,
+    fingerprintFiles,
+    options.mutation,
+    options.mode,
+    changed === null ? null : new Set(changed),
+  );
   const assignment = coverageSlices(
     layer1,
     options.of,
@@ -1954,6 +1969,7 @@ export async function runCoverageStage(
     of: options.of,
     layer1,
     mutation: options.mutation,
+    changed,
     revision: ctx.sourceRevision(),
     work,
   };
@@ -2046,19 +2062,21 @@ export async function runPlanStage(
     });
     return buildRunManifest({ preparedRoot: layout.planPrepared, mode: options.mode, tests: [] });
   });
-  const changed =
-    options.changedSince === null
-      ? null
-      : new Set(
-          changedTestFiles(
+  // A diff scope comes from the coverage slices, or from `--changed-since` without them.
+  const changedFiles =
+    slices !== null
+      ? slices[0].changed
+      : options.changedSince === null
+        ? null
+        : changedTestFiles(
             gitChangedFiles(repoRoot, options.changedSince),
             eligibility.fingerprintFiles,
-          ),
-        );
+          );
+  const changed = changedFiles === null ? null : new Set(changedFiles);
   if (changed !== null) {
     log(
-      `plan: diff scope since ${options.changedSince}: ${changed.size} changed test files in ` +
-        "the fingerprint's scope; candidate pairs need a test of one",
+      `plan: diff scope: ${changed.size} changed test files in the fingerprint's scope; ` +
+        'candidate pairs need a test of one',
     );
   }
   // The coverage slices carry the files they split (E5); otherwise the prefilter picks them.
@@ -3593,6 +3611,7 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
           of: options.of ?? 1,
           mode: options.mode,
           mutation: options.mutation,
+          changedSince: options.changedSince,
           concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
         }),
       );

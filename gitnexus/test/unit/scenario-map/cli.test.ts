@@ -217,18 +217,14 @@ describe('parseCliArgs', () => {
     [
       'a diff scope with slice files',
       ['plan', '--changed-since', 'main', '--coverage', 'dir'],
-      /does not take --coverage/,
+      /takes the diff scope from --coverage/,
     ],
     [
       'a diff scope of the controls fixture',
       ['all', '--controls', '--changed-since', 'main'],
       /not the controls fixture/,
     ],
-    [
-      'a diff scope on the coverage stage',
-      ['coverage', '--index', '0', '--of', '2', '--changed-since', 'main'],
-      /does not apply to the coverage stage/,
-    ],
+
     [
       'slice files on the coverage stage',
       ['coverage', '--index', '0', '--of', '4', '--coverage', 'dir'],
@@ -281,12 +277,12 @@ describe('runCli usage', () => {
     ).toEqual(['test/unit/a.test.ts', 'test/unit/c.test.ts']);
   });
 
-  it('parses a diff base on plan and all', () => {
+  it('parses a diff base on coverage, plan and all', () => {
     expect(
-      ['plan', 'all'].map(
-        (stage) => parseCliArgs([stage, '--changed-since', 'HEAD^1'], '/base').changedSince,
+      [['coverage', '--index', '0', '--of', '2'], ['plan'], ['all']].map(
+        (argv) => parseCliArgs([...argv, '--changed-since', 'HEAD^1'], '/base').changedSince,
       ),
-    ).toEqual(['HEAD^1', 'HEAD^1']);
+    ).toEqual(['HEAD^1', 'HEAD^1', 'HEAD^1']);
   });
 
   it.each([
