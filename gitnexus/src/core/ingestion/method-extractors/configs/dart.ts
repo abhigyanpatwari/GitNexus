@@ -9,6 +9,7 @@ import type {
 } from '../../method-types.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { memoizeDeclarationFact } from '../declaration-facts.js';
 
 // ---------------------------------------------------------------------------
 // Dart helpers
@@ -415,9 +416,9 @@ export const dartMethodConfig: MethodExtractionConfig = {
   methodNodeTypes: ['method_signature', 'declaration'],
   bodyNodeTypes: ['class_body', 'extension_body'],
 
-  extractName: extractDartName,
-  extractReturnType: extractDartReturnType,
-  extractParameters: extractDartParameters,
+  extractName: memoizeDeclarationFact(extractDartName, getInnerSignature),
+  extractReturnType: memoizeDeclarationFact(extractDartReturnType, getInnerSignature),
+  extractParameters: memoizeDeclarationFact(extractDartParameters, getInnerSignature),
   extractVisibility: extractDartVisibility,
 
   isStatic: isDartStatic,
