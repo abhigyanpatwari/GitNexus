@@ -7,6 +7,59 @@ permissions:
   contents: read
 
 jobs:
+  mcp-query-benchmark:
+    name: MCP query performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Pin comparison revision
+        id: baseline
+        shell: bash
+        run: printf 'sha=%s\n' "$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.baseline.outputs.sha }}
+          path: baseline
+          persist-credentials: false
+      - name: Build baseline runtime
+        working-directory: baseline/gitnexus
+        run: |
+          npm ci
+          npm run build
+          npx tsx scripts/ensure-fts.ts
+      - name: Install search extensions
+        working-directory: gitnexus
+        run: npx tsx scripts/ensure-fts.ts
+      - name: Measure paired MCP requests
+        working-directory: gitnexus
+        run: node bench/mcp-query/measure.mjs --baseline-root ../baseline/gitnexus --out "$RUNNER_TEMP/mcp-query" --check
+      - name: Publish performance summary
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/mcp-query/report.md" ]]; then
+            cat "$RUNNER_TEMP/mcp-query/report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Retain MCP measurements
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: mcp-query-performance
+          path: |
+            ${{ runner.temp }}/mcp-query/report.json
+            ${{ runner.temp }}/mcp-query/report.md
+            ${{ runner.temp }}/mcp-query/raw.jsonl
+            ${{ runner.temp }}/mcp-query/baseline.log
+            ${{ runner.temp }}/mcp-query/candidate.log
+            ${{ runner.temp }}/mcp-query/index.log
+          retention-days: 30
+
   tool-accuracy:
     name: release / deterministic tool accuracy
     runs-on: ubuntu-latest
