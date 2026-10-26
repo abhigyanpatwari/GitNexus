@@ -154,6 +154,7 @@ import {
   QUERY_DEFAULT_MAX_SYMBOLS,
   QUERY_MAX_LIMIT,
   QUERY_MAX_MAX_SYMBOLS,
+  QUERY_CONTENT_MAX_CHARS,
   CONTEXT_CHAIN_MAX_DEPTH,
   CHECKOUT_SOURCE_TOOLS,
   READ_FILE_DEFAULT_MAX_LINES,
@@ -3516,21 +3517,10 @@ export class LocalBackend {
     >();
     const definitions: any[] = []; // standalone symbols not in any process
 
-    // Batch-fetch process participation, cohesion, and (optionally) content for
-    // ALL matched symbols in 2-3 graph queries instead of 2-3 *per symbol*. The
-    // previous per-symbol loop issued up to 3N sequential pool round-trips
-    // (searchLimit symbols × {STEP_IN_PROCESS, MEMBER_OF, content}); on a warm
-    // repo the IPC + query-setup overhead of those round-trips dominated query
-    // latency. Collapsing to `WHERE n.id IN $nodeIds` preserves identical output
-    // (the aggregation loop below is unchanged) while cutting the round-trips.
-    // Array params bind through the pool exactly as bm25Search's
-    // `WHERE n.id IN $nodeIds` already does. (Ported from gitnexus-enterprise
-    // PR #222 — N+1 → 2-3 batched queries.)
     const nodeIds = merged.map(([, m]) => m.data?.nodeId).filter((id): id is string => !!id);
 
     const processRowsByNode = new Map<string, any[]>();
     const cohesionByNode = new Map<string, { cohesion: number; module?: string }>();
-    const contentByNode = new Map<string, string>();
     // Set when a batched enrichment query throws a REAL failure (timeout, lock,
     // native fault) — NOT the benign "no Process/Community table" case, which is
     // a normal config (a repo analyzed without processes/communities) and must
@@ -3611,30 +3601,6 @@ export class LocalBackend {
         logQueryError('query:cluster-info', e);
         if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
       }
-
-      // Optionally fetch content for every matched symbol.
-      if (includeContent) {
-        try {
-          const rows = await executeParameterized(
-            repo.lbugPath,
-            `
-            MATCH (n)
-            WHERE n.id IN $nodeIds
-            RETURN n.id AS nodeId, n.content AS content
-          `,
-            { nodeIds: ids },
-          );
-          for (const row of rows) {
-            assertQueryIdentity(row, 'nodeId', 0);
-            const nid = row.nodeId ?? row[0];
-            contentByNode.set(nid, row.content ?? row[1]);
-          }
-        } catch (e) {
-          rethrowSymbolIdentityError(e);
-          logQueryError('query:content-fetch', e);
-          if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
-        }
-      }
     }
 
     // Aggregation is unchanged from the per-symbol version — it now reads the
@@ -3657,7 +3623,6 @@ export class LocalBackend {
       const coh = cohesionByNode.get(sym.nodeId);
       const cohesion = coh?.cohesion ?? 0;
       const module = coh?.module;
-      const content = includeContent ? contentByNode.get(sym.nodeId) : undefined;
 
       const symbolEntry = {
         id: sym.nodeId,
@@ -3667,7 +3632,6 @@ export class LocalBackend {
         startLine: toDisplayLine(sym.startLine),
         endLine: toDisplayLine(sym.endLine),
         ...(module ? { module } : {}),
-        ...(includeContent && content ? { content } : {}),
       };
 
       if (processRows.length === 0) {
@@ -3941,7 +3905,44 @@ export class LocalBackend {
       maxSymbolsPerProcess,
       chainByProcessId,
     });
+    const returnedDefinitions = definitions.slice(0, 20);
     timer.stop(); // formatting
+
+    if (includeContent) {
+      timer.start('content');
+      const targets = new Map<
+        string,
+        { id: string; content?: string; content_truncated?: boolean }
+      >();
+      for (const symbol of [...process_symbols, ...returnedDefinitions]) {
+        if (symbol.id && !targets.has(symbol.id)) targets.set(symbol.id, symbol);
+      }
+      const previewChars = Math.floor(QUERY_CONTENT_MAX_CHARS / Math.max(1, targets.size));
+      for (const ids of chunk([...targets.keys()], LBUG_QUERY_BATCH_SIZE)) {
+        try {
+          const rows = await executeParameterized(
+            repo.lbugPath,
+            `MATCH (n) WHERE n.id IN $nodeIds
+             RETURN n.id AS nodeId, substring(n.content, 1, $previewChars) AS content,
+                    size(n.content) > $previewChars AS contentTruncated`,
+            { nodeIds: ids, previewChars },
+          );
+          for (const row of rows) {
+            assertQueryIdentity(row, 'nodeId', 0);
+            const target = targets.get(row.nodeId ?? row[0]);
+            if (!target) continue;
+            const content = row.content ?? row[1];
+            if (content) target.content = content;
+            if (row.contentTruncated ?? row[2]) target.content_truncated = true;
+          }
+        } catch (e) {
+          rethrowSymbolIdentityError(e);
+          logQueryError('query:content-fetch', e);
+          if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+        }
+      }
+      timer.stop();
+    }
 
     // End-to-end wall time — deliberately a separate mark so callers can
     // compare sum(phases) vs wall to see how much Promise.all concurrency
@@ -4134,7 +4135,7 @@ export class LocalBackend {
     return {
       processes,
       process_symbols,
-      definitions: definitions.slice(0, 20), // cap standalone definitions
+      definitions: returnedDefinitions,
       timing,
       ...(contentAvailability ? { contentAvailability } : {}),
       ...(warnings.length > 0 && { warning: warnings.join(' ') }),
