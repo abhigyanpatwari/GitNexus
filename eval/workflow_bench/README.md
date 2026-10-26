@@ -409,11 +409,11 @@ the paid job. Only these watchdogs have Actions write permission.
 The protected `gitnexus-evolution` environment holds these four settings
 (configured and verified by the live probes below):
 
-| Setting | Kind | Purpose |
-| --- | --- | --- |
-| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN` | Secret | AWS role assumed through GitHub OIDC |
-| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID` | Secret | Dedicated runner instance |
-| `GITNEXUS_EVOLUTION_AWS_REGION` | Variable | Instance region |
+| Setting                                | Kind     | Purpose                                         |
+| -------------------------------------- | -------- | ----------------------------------------------- |
+| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN`      | Secret   | AWS role assumed through GitHub OIDC            |
+| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID`   | Secret   | Dedicated runner instance                       |
+| `GITNEXUS_EVOLUTION_AWS_REGION`        | Variable | Instance region                                 |
 | `GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC` | Variable | Actual weekly EventBridge stop, `DAY HH:MM` UTC |
 
 No long-lived AWS credential is stored. The AWS action obtains short-lived
@@ -874,6 +874,37 @@ ingestion quality and are not comparable with the replacement task. The new
 task ID, prompt, verification command, and oracle bytes produce a new task
 digest. Old agent patches are not available for rescoring; keep historical
 measurements unchanged and compare only runs with matching task contracts.
+
+## Offline MCP response-cost check
+
+Before spending on another agent run, measure query formatting with repository
+source payloads:
+
+```bash
+cd gitnexus
+node --import tsx scripts/bench/mcp-query-content.ts
+```
+
+This compares compact JSON plus the former prose trailer with the current MCP
+query formatter. It checks match identity/order and diagnostics, reports payload
+bytes, corpus hashes, and median formatting time over alternating trials. Add
+`--include-text` to emit both texts for an offline tokenizer comparison. It does
+not measure database retrieval, indexing, model billing, or agent completion time.
+
+Single-repository query responses retain at most 4,000 serialized source bytes
+per symbol and 16,000 total by default. All matches remain present;
+`content_omitted` and `content_budget` identify source omitted from the response.
+Read a bounded file range for large sources, or use `context` for a specific
+symbol. Query guidance is the JSON `next` field, so default responses can be
+parsed directly. Configured `maxTokens` budgets override these source defaults
+and retain their existing final text cap, which can truncate JSON. Group queries
+and non-source metadata do not have this default source limit.
+
+The isolated MCP arms also receive the registry binding `benchmark-target` in
+their task prompt, preventing inherited repository names from causing discovery
+and retry calls. The no-MCP and host-unsafe prompts retain their existing behavior.
+Compare stable and candidate runtimes using the same harness revision; the
+binding change makes comparisons with older harness runs confounded.
 
 ## Relation to the SWE-bench harness
 

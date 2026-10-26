@@ -223,7 +223,7 @@ ${HOT_READ_STALENESS_NOTE}`,
         include_content: {
           type: 'boolean',
           description:
-            'Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content. Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
+            'Include source text retained for matching symbols (default: false). Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row. Single-repo defaults: 4000 serialized source bytes/symbol, 16000 total. content_omitted/content_budget mark omitted source, not missing matches. Configured maxTokens budgets override these defaults. contentAvailability reports index retention. Use read_file line ranges for large sources. Query next is JSON guidance.',
           default: false,
         },
         chain_depth: {

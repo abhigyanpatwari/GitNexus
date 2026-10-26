@@ -271,7 +271,7 @@ describe('getNextStepHint (via tool call response)', () => {
       search_query: 'auth',
       repo: 'demo',
     });
-    expect(text.endsWith(QUERY_HINT_BASE)).toBe(true);
+    expect(JSON.parse(text).next).toBe(QUERY_HINT_BASE.replace(/^\n\n---\n/, ''));
     expect(text).not.toContain('context({uid:');
   });
 
@@ -284,11 +284,12 @@ describe('getNextStepHint (via tool call response)', () => {
       repo: 'demo',
       include_content: true,
     });
-    expect(
-      text.endsWith(
-        `${QUERY_HINT_BASE} For source of a process_symbols row without content, use context({uid: "<id>", include_content: true, repo: "demo"}).`,
+    expect(JSON.parse(text).next).toBe(
+      `${QUERY_HINT_BASE} For source of a process_symbols row without content, use context({uid: "<id>", include_content: true, repo: "demo"}).`.replace(
+        /^\n\n---\n/,
+        '',
       ),
-    ).toBe(true);
+    );
   });
 
   it('grep hint converts the 1-based hit line to a 0-based read_file window', async () => {
@@ -384,7 +385,100 @@ describe('getNextStepHint rename', () => {
 });
 
 describe('MCP output budgets', () => {
-  it('leaves the complete formatted response unchanged when no budget is configured', async () => {
+  it('keeps large query results parseable while preserving every match and diagnostic', async () => {
+    const result = {
+      processes: [{ id: 'process-1', symbol_count: 2 }],
+      process_symbols: [
+        { id: 'Function:small', process_id: 'process-1', content: 'function small() {}' },
+        { id: 'Function:large', process_id: 'process-1', content: 'x'.repeat(538_895) },
+      ],
+      definitions: [{ id: 'File:large.ts', filePath: 'large.ts', content: 'y'.repeat(128_108) }],
+      warning: 'Some keyword indexes are unavailable',
+      partial: true,
+      staleness: { status: 'behind', commitsBehind: 2 },
+      contentAvailability: 'available',
+    };
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue(result) });
+    const { text, isError } = await callToolThroughServer(backend, 'query', {
+      search_query: 'large',
+      include_content: true,
+    });
+
+    expect(isError).toBe(false);
+    const response = JSON.parse(text);
+    expect(Buffer.byteLength(text)).toBeLessThan(20_000);
+    expect(response.processes).toEqual(result.processes);
+    expect(response.process_symbols).toEqual([
+      result.process_symbols[0],
+      { id: 'Function:large', process_id: 'process-1', content_omitted: true },
+    ]);
+    expect(response.definitions).toEqual([
+      { id: 'File:large.ts', filePath: 'large.ts', content_omitted: true },
+    ]);
+    expect(response).toMatchObject({
+      warning: result.warning,
+      partial: true,
+      staleness: result.staleness,
+      contentAvailability: 'available',
+      content_budget: { omitted: 2 },
+    });
+    expect(response.next).toContain('read_file');
+    expect(result.process_symbols[1].content).toHaveLength(538_895);
+  });
+
+  it('bounds aggregate query source without deleting rows or changing their order', async () => {
+    const definitions = Array.from({ length: 20 }, (_, i) => ({
+      id: `Function:${i}`,
+      name: `symbol${i}`,
+      content: '"\\\n😀'.repeat(200),
+    }));
+    const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue({ definitions }) });
+    const { text } = await callToolThroughServer(backend, 'query', {
+      search_query: 'symbols',
+      include_content: true,
+    });
+    const response = JSON.parse(text);
+    expect(response.definitions.map((row: { id: string }) => row.id)).toEqual(
+      definitions.map((row) => row.id),
+    );
+    expect(response.definitions[0].content).toBe(definitions[0].content);
+    const sourceBytes = response.definitions.reduce(
+      (total: number, row: { content?: string }) =>
+        total + (row.content === undefined ? 0 : Buffer.byteLength(JSON.stringify(row.content))),
+      0,
+    );
+    expect(sourceBytes).toBeLessThanOrEqual(16_000);
+    expect(response.content_budget.omitted).toBeGreaterThan(0);
+    expect(response.next).toContain('context');
+  });
+
+  it.each(['request', 'environment'])(
+    'lets a larger %s budget retain source above the default per-symbol limit',
+    async (source) => {
+      const previous = process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+      if (source === 'environment') process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = '4000';
+      else delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+      try {
+        const definitions = [{ id: 'Function:large', content: 'x'.repeat(6000) }];
+        const backend = createMockBackend({ callTool: vi.fn().mockResolvedValue({ definitions }) });
+        const { text, isError } = await callToolThroughServer(backend, 'query', {
+          search_query: 'large',
+          include_content: true,
+          ...(source === 'request' ? { maxTokens: 4000 } : {}),
+        });
+        expect(isError).toBe(false);
+        const response = JSON.parse(text);
+        expect(response.definitions).toEqual(definitions);
+        expect(response.content_budget).toBeUndefined();
+        expect(Buffer.byteLength(text)).toBeLessThanOrEqual(16000);
+      } finally {
+        if (previous === undefined) delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+        else process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = previous;
+      }
+    },
+  );
+
+  it('preserves small query data and guidance without source omissions', async () => {
     const previous = process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
     delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
     try {
@@ -395,8 +489,11 @@ describe('MCP output budgets', () => {
         search_query: 'auth',
       });
       expect(isError).toBe(false);
-      expect(text).toContain('"payload":"complete"');
-      expect(text).toContain('**Next:**');
+      expect(JSON.parse(text)).toMatchObject({
+        payload: 'complete',
+        next: expect.stringContaining('**Next:**'),
+      });
+      expect(JSON.parse(text).content_budget).toBeUndefined();
       expect(text.endsWith('\n…')).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;

@@ -9,7 +9,7 @@ import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { SYMBOL_IDENTITY_RECOVERY_SUGGESTION } from '../../src/mcp/local/query-result-integrity.js';
-import { createMCPServer, getNextStepHint } from '../../src/mcp/server.js';
+import { createMCPServer } from '../../src/mcp/server.js';
 import { getStoragePaths } from '../../src/storage/repo-manager.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -114,8 +114,7 @@ describe('query identity boundary through the real MCP server', () => {
       expect(result.isError).not.toBe(true);
       const content = result.content as Array<{ type: string; text: string }>;
       const text = content.find((item) => item.type === 'text')!.text;
-      const hint = getNextStepHint('query', args);
-      return JSON.parse(hint ? text.slice(0, -hint.length) : text);
+      return JSON.parse(text);
     } finally {
       await client.close();
       await server.close();

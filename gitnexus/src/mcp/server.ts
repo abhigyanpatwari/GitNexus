@@ -41,7 +41,12 @@ import {
   McpRepositoryPolicy,
   mcpRepositoryPolicyConfigured,
 } from './repository-policy.js';
-import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
+import {
+  applyMcpMaxTokens,
+  formatMcpQueryResult,
+  resolveMcpMaxTokens,
+  withoutMcpBudgetArg,
+} from './output-budget.js';
 import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-arguments.js';
 import {
   applyMcpResponseFilter,
@@ -284,15 +289,18 @@ export function createMCPServer(
         await scopedBackend.callTool(name, backendArgs),
         responseFilter,
       );
-      // Formatting whitespace costs model input tokens; keep every value and hint.
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result);
+      // Keep graph evidence intact; query source text gets its own bounded representation.
       const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly, result);
+      const resultText =
+        name === 'query' && result !== null && typeof result === 'object' && !Array.isArray(result)
+          ? formatMcpQueryResult(result as Record<string, unknown>, hint, maxTokens)
+          : (typeof result === 'string' ? result : JSON.stringify(result)) + hint;
 
       return {
         content: [
           {
             type: 'text',
-            text: applyMcpMaxTokens(resultText + hint, maxTokens),
+            text: applyMcpMaxTokens(resultText, maxTokens),
           },
         ],
       };
