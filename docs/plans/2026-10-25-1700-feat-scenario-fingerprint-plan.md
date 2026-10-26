@@ -180,3 +180,13 @@ and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS en
   checks. Not changed: mutation shards never get integration tests (`mutationTarget` keeps only
   pairs of two mutation-eligible tests, the pure-JS envelope); a slice that disagrees with the
   plan stops the merge on purpose.
+- Cleanup review (2026-10-26, reuse, simplification, efficiency and altitude): a shard's
+  row-deletion batch ran every planned pair of a complete group, including pairs whose tests the
+  mutation target trimmed away; it now runs only pairs of tests the trimmed group holds. Setup
+  cost: the coverage jobs list the fingerprint's files without the Phase 0 classifier (about
+  33 s each, twice per job); slice files carry Layer 1's file list, mutation scope and revision,
+  so the plan checks them instead of recomputing the prefilter (about 30 s); the
+  unseen-registration check moved into the static inventory (`incomplete`), which parses each
+  file once and uses test-dupes' `roleOf`. Not changed: `fingerprintEligible` is always true at
+  its only producer, so the fingerprint's `not-eligible` rule cannot fire (kept for a future scope
+  narrower than Layer 1's files).
