@@ -121,19 +121,34 @@ export interface ResolveEligibilityOptions {
 
 const classifyUnitTests = (repoRoot: string): ClassifierVerdicts => classify({ repoRoot });
 
+/**
+ * The fingerprint's test files and extra roots, without the classifier: all Layer 1 needs, as it
+ * never mutates. In normal mode these are the files {@link resolveEligibility} gives, whose
+ * mutation-eligible files are unit tests the fingerprint roots already hold.
+ */
+export function fingerprintScope(options: {
+  repoRoot: string;
+  mode: RunMode;
+}): Pick<Eligibility, 'fingerprintFiles' | 'extraRoots'> {
+  const { repoRoot, mode } = options;
+  const extraRoots = extraRootsOf(mode);
+  if (mode.kind === 'normal')
+    return { fingerprintFiles: listFingerprintFiles(repoRoot), extraRoots };
+  buildPathMap(extraRoots); // throws for a root outside gitnexus/test/fixtures/mutation-<name>
+  return { fingerprintFiles: listCaseFiles(repoRoot, mode.fixtureRoot), extraRoots };
+}
+
 /** The eligible set of a run (R1; `controls` mode enrols the fixture instead). */
 export function resolveEligibility(options: ResolveEligibilityOptions): Eligibility {
   const { repoRoot, mode } = options;
+  const { fingerprintFiles, extraRoots } = fingerprintScope({ repoRoot, mode });
   if (mode.kind === 'controls') {
-    const extraRoots = extraRootsOf(mode);
-    buildPathMap(extraRoots); // throws for a root outside gitnexus/test/fixtures/mutation-<name>
-    const files = listCaseFiles(repoRoot, mode.fixtureRoot);
-    return { mode: 'controls', files, fingerprintFiles: files, delta: null, extraRoots };
+    return { mode: 'controls', files: fingerprintFiles, fingerprintFiles, delta: null, extraRoots };
   }
   const envelopeFiles = parseEnvelopeFiles(readJsonFile(path.join(repoRoot, ENVELOPE_FILE)));
   return computeEligibility(
     envelopeFiles,
     (options.classifyTests ?? classifyUnitTests)(repoRoot),
-    listFingerprintFiles(repoRoot),
+    fingerprintFiles,
   );
 }

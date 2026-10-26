@@ -362,7 +362,7 @@ describe('renderMarkdown', () => {
       lines: [
         'Diff scope: only pairs with a test in the 1 changed test file were looked for: ' +
           '`test/unit/add.test.ts`.',
-        'Layer 1 ran 0 of them: the changed files and the files sharing',
+        'Layer 1 ran 0 of them: the changed files whose tests can pair with another test',
       ],
     },
     {
@@ -382,9 +382,7 @@ describe('renderMarkdown', () => {
       .filter((line) =>
         /^(Diff scope|Layer 1 ran|No fingerprint for|\d+ test files? wrote no)/.test(line),
       );
-    expect([found.length, lines.every((prefix, index) => found[index].startsWith(prefix))]).toEqual(
-      [lines.length, true],
-    );
+    expect(found).toEqual(lines.map((prefix) => expect.stringContaining(prefix)));
   });
 
   it('leads with the scenario fingerprint and leaves the mutation sections out of a fingerprint-only run', () => {

@@ -97,29 +97,30 @@ const work = (
   ...overrides,
 });
 
-const slice = (index: number, files: string[], body: CoverageWorkFile): CoverageSliceFile => ({
-  schemaVersion: COVERAGE_SLICE_SCHEMA_VERSION,
-  index,
-  of: 3,
-  files,
-  work: body,
-});
-
 const A = 'test/unit/a.test.ts';
 const B = 'test/unit/b.test.ts';
 const C = 'test/unit/c.test.ts';
 const D = 'test/unit/d.test.ts';
 const ASSIGNMENT = [[B], [A, C], [D]];
+
+const slice = (index: number, body: CoverageWorkFile): CoverageSliceFile => ({
+  schemaVersion: COVERAGE_SLICE_SCHEMA_VERSION,
+  index,
+  of: 3,
+  layer1: [A, B, C, D],
+  mutation: 'none',
+  revision: 'abc',
+  work: body,
+});
+
 const SLICE_0 = slice(
   0,
-  [B],
   work(['src/x.ts#f@1', 'src/z.ts#h@3'], [B], [test(B, 'one', [0, 1])], {
     unhandledErrors: ['boom'],
   }),
 );
 const SLICE_1 = slice(
   1,
-  [A, C],
   work(['src/y.ts#g@2', 'src/z.ts#h@3'], [A, C], [test(A, 'one', [1]), test(C, 'two', [0, 1])]),
 );
 
@@ -163,7 +164,7 @@ describe('mergeCoverageSlices', () => {
     { name: 'a slice twice', reported: [SLICE_0, SLICE_0], message: /reported twice/ },
     {
       name: 'a slice that ran other files',
-      reported: [{ ...SLICE_0, files: [A] }],
+      reported: [{ ...SLICE_0, work: work([], [A], []) }],
       message: /ran other files/,
     },
     {
@@ -172,8 +173,18 @@ describe('mergeCoverageSlices', () => {
       message: /slice 0 of 2, expected 3/,
     },
     {
-      name: 'slices of different runs',
+      name: 'slices of different repeats',
       reported: [SLICE_0, { ...SLICE_1, work: { ...SLICE_1.work, repeats: 0 } }],
+      message: /is not the run of slice 0/,
+    },
+    {
+      name: 'slices of different mutation scopes',
+      reported: [SLICE_0, { ...SLICE_1, mutation: 'all' as const }],
+      message: /is not the run of slice 0/,
+    },
+    {
+      name: 'slices of different revisions',
+      reported: [SLICE_0, { ...SLICE_1, revision: 'def' }],
       message: /is not the run of slice 0/,
     },
   ])('refuses $name', ({ reported, message }) => {

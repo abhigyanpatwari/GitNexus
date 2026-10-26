@@ -515,10 +515,7 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
       ? []
       : [
           `Diff scope: only pairs with a test in the ${plural(eligibility.changedFiles.length, 'changed test file')} ` +
-            'were looked for' +
-            (eligibility.changedFiles.length === 0
-              ? '.'
-              : `: ${eligibility.changedFiles.map((file) => `\`${file}\``).join(', ')}.`),
+            `were looked for: ${codeList(eligibility.changedFiles)}.`,
         ]),
     ...(eligibility.layer1Files === eligibility.fingerprintFiles
       ? []
@@ -528,8 +525,9 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
               `${eligibility.fingerprintFiles - eligibility.layer1Files} has a checks-and-context ` +
               'key no other test shares, so none of their pairs can be a duplicate, a possible ' +
               'duplicate or a table row.'
-            : `Layer 1 ran ${eligibility.layer1Files} of them: the changed files and the files ` +
-              "sharing their tests' checks-and-context keys. No other file's test shares a " +
+            : `Layer 1 ran ${eligibility.layer1Files} of them: the changed files whose tests can ` +
+              "pair with another test and the files sharing their tests' checks-and-context " +
+              "keys. No other file's test shares a " +
               "changed test's key; files with tests that have no static key (helper-registered, " +
               'dynamic `it.each` counts, file snapshots) were not run, so a possible duplicate ' +
               'of a changed test in one is not looked for.',

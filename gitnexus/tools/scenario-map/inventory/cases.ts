@@ -830,6 +830,61 @@ function callPaths(ast: t.File, calls: ReadonlySet<t.Node>): Map<t.Node, AnyPath
  * `tests` (repo paths; default every file) give records; the others only resolve constants for
  * Layer 0's context hash. Sites come per file in the order given, then in walk order.
  */
+/** Callees that register no test: the Vitest utilities and the around hooks. */
+const REGISTERS_NOTHING = new Set(['vi', 'expect', 'bench', 'aroundAll', 'aroundEach']);
+
+const DECLARATIONS = new Set([
+  'ImportDeclaration',
+  'ExportNamedDeclaration',
+  'ExportDefaultDeclaration',
+  'ExportAllDeclaration',
+  'VariableDeclaration',
+  'FunctionDeclaration',
+  'ClassDeclaration',
+  'TSInterfaceDeclaration',
+  'TSTypeAliasDeclaration',
+  'TSEnumDeclaration',
+  'TSModuleDeclaration',
+  'TSImportEqualsDeclaration',
+  'TSDeclareFunction',
+  'EmptyStatement',
+]);
+
+/**
+ * Whether statements at a registration level (the module, a suite's inline callback, a block,
+ * branch or loop in either) may register tests the inventory does not record: a call whose
+ * test-dupes role is neither test, suite nor hook (`roleOf`) and that is no Vitest utility, a
+ * suite whose callback is not written inline, or any other statement.
+ */
+function registersUnseen(statements: readonly t.Statement[]): boolean {
+  return statements.some((statement): boolean => {
+    if (DECLARATIONS.has(statement.type)) return false;
+    if (t.isBlockStatement(statement)) return registersUnseen(statement.body);
+    if (t.isIfStatement(statement)) {
+      return [statement.consequent, statement.alternate].some(
+        (branch) => branch !== null && registersUnseen([branch]),
+      );
+    }
+    if (t.isLoop(statement)) return registersUnseen([statement.body]);
+    if (!t.isExpressionStatement(statement)) return true;
+    const expression = t.isAwaitExpression(statement.expression)
+      ? statement.expression.argument
+      : statement.expression;
+    if (!t.isCallExpression(expression)) return true;
+    const shape = shapeOf(expression.callee);
+    const role = roleOf(expression, shape);
+    if (role === 'test' || role === 'hook') return false;
+    if (role === 'other') return !REGISTERS_NOTHING.has(shape?.root ?? '');
+    const callback = expression.arguments.at(-1);
+    return (
+      callback === undefined ||
+      !(t.isArrowFunctionExpression(callback) || t.isFunctionExpression(callback)) ||
+      !t.isBlockStatement(callback.body) ||
+      registersUnseen(callback.body.body)
+    );
+  });
+}
+
 export function expandCases(
   files: readonly SourceFile[],
   tests: ReadonlySet<string> = new Set(files.map((file) => file.path)),
@@ -866,6 +921,14 @@ export function expandCases(
   return {
     sites,
     skipped: corpus.skipped.filter((file) => tests.has(file)).map(toPackagePath),
+    incomplete: files.flatMap(({ path: file }) => {
+      const ast = corpus.asts.get(file);
+      const unseen =
+        tests.has(file) &&
+        ast !== undefined &&
+        (!byFile.has(file) || registersUnseen(ast.program.body));
+      return unseen ? [toPackagePath(file)] : [];
+    }),
   };
 }
 

@@ -44,6 +44,12 @@ const SOURCES: Record<string, string> = {
     "it('divides', () => { expect(div(6, 3)).toBe(2); });",
     "describe('generated', defineCases);",
   ].join('\n'),
+  'test/unit/test-describe.test.ts': [
+    "import { defineCases } from '../helpers/cases';",
+    "import { pow } from '../../src/pow';",
+    "it('powers', () => { expect(pow(2, 3)).toBe(8); });",
+    "test.describe('generated', defineCases);",
+  ].join('\n'),
   'test/unit/snapshot.test.ts': [
     "import { render } from '../../src/render';",
     "it('renders', () => { expect(render()).toMatchSnapshot(); });",
@@ -67,6 +73,7 @@ describe('layer1Files', () => {
         'test/unit/dynamic.test.ts',
         'test/unit/alias.test.ts',
         'test/unit/named-suite.test.ts',
+        'test/unit/test-describe.test.ts',
         'test/unit/snapshot.test.ts',
       ],
       skipped: ['test/unit/unique.test.ts'],

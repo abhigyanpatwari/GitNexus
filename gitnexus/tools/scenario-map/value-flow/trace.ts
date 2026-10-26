@@ -525,9 +525,7 @@ export async function runTrace(
   if (!check.ok) return notRun(`manifest mismatch: ${check.mismatches.join('; ')}`);
   const preparedRoot = toPosixSeparators(realpathSync(layout.preparedRoot));
   const packageDir = path.posix.join(preparedRoot, PACKAGE_DIR);
-  if (manifest.mode.kind !== 'controls') {
-    copyBuildOutput(path.join(repoRoot, PACKAGE_DIR), packageDir);
-  }
+  copyBuildOutput(manifest.mode.kind, path.join(repoRoot, PACKAGE_DIR), packageDir);
   const vitest = vitestSelectionOf(manifest.mode);
   const context: TraceContext = {
     outDir: layout.rawDir,

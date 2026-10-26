@@ -213,6 +213,12 @@ export interface StaticInventory {
   sites: StaticCallSite[];
   /** Package paths of eligible files that did not parse. */
   skipped: string[];
+  /**
+   * Package paths of parsed test files whose tests the inventory may not all see: no test call,
+   * or a registration-level call that registers what it does not record (a helper, an alias, a
+   * suite or test whose callback is not written inline).
+   */
+  incomplete: string[];
 }
 
 // ── Runtime join and anchors (identity.ts) ─────────────────────────────────

@@ -24,8 +24,9 @@
  *               only those files and the files sharing their tests' keys, the candidate pairs
  *               then kept only when they have a test of a changed file (path-coverage `runCoverage`, or
  *               with `--coverage <dir>` the merge of the coverage stage's slice files in that
- *               directory, outside `--work`: a slice that did not report leaves its files
- *               unrecorded); the
+ *               directory, read before the work directory is emptied and checked against the
+ *               plan's mutation scope, mode and revision; their Layer 1 file list replaces the
+ *               prefilter, and a slice that did not report leaves its files unrecorded); the
  *               static inventory and runtime join (U3); checks and context (U5, with the file
  *               snapshot and helper-module readers); input facets (U6); candidates (U4, Jaccard
  *               and checks-and-context sources); each group's KTD7 mutate scope (U7); the
@@ -236,7 +237,7 @@ import {
   type InputFacet,
 } from './facet/input-facet.js';
 import { loadStaticInventory } from './inventory/cases.js';
-import { resolveEligibility } from './inventory/eligible.js';
+import { fingerprintScope, resolveEligibility } from './inventory/eligible.js';
 import { joinRuntime } from './inventory/identity.js';
 import {
   evaluateIsolation,
@@ -294,7 +295,6 @@ import {
 } from './mutation/run-group.js';
 import { findCandidates, type CandidatePair } from './path-coverage/candidates.js';
 import {
-  COVERAGE_REPEATS,
   DEFAULT_FIXTURE_ROOT,
   WORK_FILE_SCHEMA_VERSION,
   candidateTestsOf,
@@ -713,10 +713,10 @@ export function parseCliArgs(argv: readonly string[], cwd: string): CliOptions {
   if (changedSince !== null && values.coverage !== undefined) {
     throw new UsageError('--changed-since runs Layer 1 itself; it does not take --coverage');
   }
-  if (changedSince !== null && (values.controls === true || values.mode === 'controls')) {
+  const mode = modeOf(stage, values.mode, values.controls);
+  if (changedSince !== null && mode.kind === 'controls') {
     throw new UsageError('--changed-since scopes a diff of the suite, not the controls fixture');
   }
-  const mode = modeOf(stage, values.mode, values.controls);
   const defaultWork = path.join(
     os.tmpdir(),
     mode.kind === 'controls' ? 'gitnexus-scenario-map-controls' : 'gitnexus-scenario-map',
@@ -1816,10 +1816,18 @@ export function layer1FilesOf(
   mode: RunMode,
   changed: ReadonlySet<string> | null = null,
 ): string[] {
-  if (changed !== null) return layer1Files(repoRoot, files, changed).files;
-  return mutation === 'all' || mode.kind === 'controls'
-    ? [...files]
-    : layer1Files(repoRoot, files).files;
+  if (changed === null && (mutation === 'all' || mode.kind === 'controls')) return [...files];
+  return layer1Files(repoRoot, files, changed).files;
+}
+
+/** Why Layer 1 left `skipped` files out (the plan's log); empty when it left none. */
+function skippedNote(skipped: number, diffScoped: boolean): string {
+  if (skipped === 0) return '';
+  if (diffScoped) return `; the other ${skipped} can hold no finding with a changed test`;
+  return (
+    `; the other ${skipped} hold only tests whose checks-and-context key no other test shares, ` +
+    'so none of their pairs can be a duplicate'
+  );
 }
 
 /**
@@ -1853,51 +1861,50 @@ function gitChangedFiles(repoRoot: string, ref: string): string[] {
 }
 
 /**
- * Layer 1 from the coverage stage's slice files in `dir`: merged (path-coverage/slices.ts) and
- * written where one Layer 1 run writes its work file.
+ * The coverage stage's slice files in `dir`, read before the plan empties its work directory and
+ * checked against the plan's run: the slices' mutation scope, mode and revision must be its own.
  */
-function mergeCoverage(
+function readSlicesFor(
   ctx: StageContext,
   dir: string,
-  files: readonly string[],
-  mode: RunMode,
-): CoverageWorkFile {
+  run: { mutation: MutationScope; mode: RunMode },
+): CoverageSliceFile[] {
   const reported = readCoverageSlices(dir);
   const [first] = reported;
   if (first === undefined) throw new UsageError(`${dir} holds no coverage slice file`);
+  const revision = ctx.sourceRevision();
+  const problems = [
+    first.mutation === run.mutation ? null : `mutation ${first.mutation}, not ${run.mutation}`,
+    first.work.mode === run.mode.kind ? null : `mode ${first.work.mode}, not ${run.mode.kind}`,
+    first.revision === null || revision === null || first.revision === revision
+      ? null
+      : `revision ${first.revision}, not ${revision}`,
+  ].filter((problem): problem is string => problem !== null);
+  if (problems.length > 0) {
+    throw new UsageError(`${dir}: the coverage slices are another run's: ${problems.join('; ')}`);
+  }
+  return reported;
+}
+
+/**
+ * Layer 1 from the coverage slices (path-coverage/slices.ts): their Layer 1 files re-split, the
+ * slices merged and written where one Layer 1 run writes its work file.
+ */
+function mergeCoverage(
+  ctx: StageContext,
+  reported: readonly CoverageSliceFile[],
+  mode: RunMode,
+): CoverageWorkFile {
+  const [first] = reported;
   const assignment = coverageSlices(
-    files,
+    first.layer1,
     first.of,
     ctx.packageDir,
     sequentialMatcherFor(mode.kind),
   );
   const work = mergeCoverageSlices(assignment, reported);
-  const missing = assignment.flatMap((_, index) =>
-    reported.some((slice) => slice.index === index) ? [] : [index],
-  );
-  ctx.log(
-    `plan: layer 1 from ${reported.length} of ${first.of} coverage slices` +
-      (missing.length === 0 ? '' : `; slices ${missing.join(', ')} did not report`),
-  );
-  mkdirSync(ctx.layout.coverageDir, { recursive: true });
-  writeFileSync(ctx.layout.coverage, JSON.stringify(work));
-  return work;
-}
-
-/** Layer 1 with nothing to run (a diff that changed no test file worth a run), written. */
-function writeEmptyCoverage(ctx: StageContext, mode: RunMode): CoverageWorkFile {
-  const work: CoverageWorkFile = {
-    schemaVersion: WORK_FILE_SCHEMA_VERSION,
-    mode: mode.kind,
-    extraRoots: extraRootsOf(mode),
-    repeats: COVERAGE_REPEATS,
-    blocks: [],
-    files: [],
-    tests: [],
-    unhandledErrors: [],
-  };
-  mkdirSync(ctx.layout.coverageDir, { recursive: true });
-  writeFileSync(ctx.layout.coverage, JSON.stringify(work));
+  ctx.log(`plan: layer 1 from ${reported.length} of ${first.of} coverage slices`);
+  writeJson(ctx.layout.coverage, work);
   return work;
 }
 
@@ -1921,13 +1928,8 @@ export async function runCoverageStage(
 ): Promise<boolean> {
   const { repoRoot, layout, log } = ctx;
   resetWorkDir(layout.root);
-  const eligibility = resolveEligibility({ repoRoot, mode: options.mode });
-  const layer1 = layer1FilesOf(
-    repoRoot,
-    eligibility.fingerprintFiles,
-    options.mutation,
-    options.mode,
-  );
+  const { fingerprintFiles } = fingerprintScope({ repoRoot, mode: options.mode });
+  const layer1 = layer1FilesOf(repoRoot, fingerprintFiles, options.mutation, options.mode);
   const assignment = coverageSlices(
     layer1,
     options.of,
@@ -1937,23 +1939,22 @@ export async function runCoverageStage(
   const files = assignment[options.index] ?? [];
   log(
     `coverage: slice ${options.index} of ${options.of}: ${files.length} of the ${layer1.length} ` +
-      `test files Layer 1 runs (${eligibility.fingerprintFiles.length} in the fingerprint's scope)`,
+      `test files Layer 1 runs (${fingerprintFiles.length} in the fingerprint's scope)`,
   );
-  const { work, wallClockMs } =
-    files.length === 0
-      ? { work: writeEmptyCoverage(ctx, options.mode), wallClockMs: 0 }
-      : await runCoverage({
-          repoRoot,
-          outDir: layout.coverageDir,
-          mode: options.mode,
-          maxWorkers: options.concurrency,
-          files,
-        });
+  const { work, wallClockMs } = await runCoverage({
+    repoRoot,
+    outDir: layout.coverageDir,
+    mode: options.mode,
+    maxWorkers: options.concurrency,
+    files,
+  });
   const slice: CoverageSliceFile = {
     schemaVersion: COVERAGE_SLICE_SCHEMA_VERSION,
     index: options.index,
     of: options.of,
-    files,
+    layer1,
+    mutation: options.mutation,
+    revision: ctx.sourceRevision(),
     work,
   };
   writeJson(layout.coverageSlice(options.index), slice);
@@ -1963,6 +1964,24 @@ export async function runCoverageStage(
       minutes(wallClockMs),
   );
   return failed.length === 0;
+}
+
+/**
+ * The row-deletion plans a shard runs: those of its complete groups whose two tests the group
+ * still holds after the mutation target's trim (both mutation-eligible and in scope).
+ */
+export function shardRowPlans(
+  rowDeletion: readonly RowDeletionPlan[],
+  pairs: readonly CandidatePair[],
+  groups: ReadonlyMap<string, { tests: readonly string[] }>,
+  complete: ReadonlySet<string>,
+): RowDeletionPlan[] {
+  const groupOfPair = new Map(pairs.map((pair) => [pairKey(pair.a, pair.b), pair.group]));
+  return rowDeletion.filter((entry) => {
+    const group = groupOfPair.get(pairKey(entry.a, entry.b)) ?? '';
+    const tests = new Set(groups.get(group)?.tests ?? []);
+    return complete.has(group) && tests.has(entry.a) && tests.has(entry.b);
+  });
 }
 
 export interface PlanStageOptions {
@@ -1995,6 +2014,8 @@ export async function runPlanStage(
     log(`plan: ${name} ${minutes(wallClockMs[name])}`);
     return result;
   };
+  // Read before the reset: the slice directory may lie inside the work directory.
+  const slices = options.coverage === null ? null : readSlicesFor(ctx, options.coverage, options);
   resetWorkDir(layout.root);
   const eligibility = await timed('eligibility', () =>
     resolveEligibility({ repoRoot, mode: options.mode }),
@@ -2040,31 +2061,32 @@ export async function runPlanStage(
         "the fingerprint's scope; candidate pairs need a test of one",
     );
   }
-  const layer1 = await timed('layer 1 files', () =>
-    layer1FilesOf(repoRoot, eligibility.fingerprintFiles, options.mutation, options.mode, changed),
-  );
-  const skipped = eligibility.fingerprintFiles.length - layer1.length;
+  // The coverage slices carry the files they split (E5); otherwise the prefilter picks them.
+  const layer1 =
+    slices?.[0].layer1 ??
+    (await timed('layer 1 files', () =>
+      layer1FilesOf(
+        repoRoot,
+        eligibility.fingerprintFiles,
+        options.mutation,
+        options.mode,
+        changed,
+      ),
+    ));
   log(
     `plan: Layer 1 runs ${layer1.length} of ${eligibility.fingerprintFiles.length} test files` +
-      (skipped === 0
-        ? ''
-        : changed === null
-          ? `; the other ${skipped} hold only tests whose checks-and-context key no other test ` +
-            'shares, so none of their pairs can be a duplicate'
-          : `; the other ${skipped} share no checks-and-context key with a changed test`),
+      skippedNote(eligibility.fingerprintFiles.length - layer1.length, changed !== null),
   );
   const { work } = await timed('layer 1', async () =>
-    options.coverage === null && layer1.length === 0
-      ? { work: writeEmptyCoverage(ctx, options.mode) }
-      : options.coverage === null
-        ? runCoverage({
-            repoRoot,
-            outDir: layout.coverageDir,
-            mode: options.mode,
-            maxWorkers: options.concurrency,
-            files: layer1,
-          })
-        : { work: mergeCoverage(ctx, options.coverage, layer1, options.mode) },
+    slices === null
+      ? runCoverage({
+          repoRoot,
+          outDir: layout.coverageDir,
+          mode: options.mode,
+          maxWorkers: options.concurrency,
+          files: layer1,
+        })
+      : { work: mergeCoverage(ctx, slices, options.mode) },
   );
   const ids = sortedUnique(work.tests.map((test) => test.id));
   const manifest: ScenarioRunManifest = {
@@ -2078,7 +2100,7 @@ export async function runPlanStage(
   const candidates = await timed('candidates', () =>
     findCandidates(
       candidateTestsOf(work, checksContext),
-      changed === null ? undefined : (id) => changed.has(parseTestId(id).file),
+      (id) => changed === null || changed.has(parseTestId(id).file),
     ),
   );
   writeJson(layout.candidates, { schemaVersion: WORK_FILE_SCHEMA_VERSION, ...candidates });
@@ -2733,12 +2755,9 @@ export async function runShardStage(
     }
   }
 
-  // One row-deletion batch for the pairs of the complete groups (U9, D10).
+  // One row-deletion batch (U9, D10).
   const complete = new Set(results.filter((r) => r.status === 'complete').map((r) => r.group));
-  const groupOfPair = new Map(plan.pairs.map((pair) => [pairKey(pair.a, pair.b), pair.group]));
-  const rowPlans = plan.rowDeletion.filter((entry) =>
-    complete.has(groupOfPair.get(pairKey(entry.a, entry.b)) ?? ''),
-  );
+  const rowPlans = shardRowPlans(plan.rowDeletion, plan.pairs, planned, complete);
   const withDeletions = rowPlans.filter((entry) => entry.deletions.length > 0);
   const rowRuns = sum(withDeletions.map((entry) => 1 + entry.deletions.length));
   const rowEstimate =
@@ -3285,6 +3304,7 @@ export async function runMergeStage(
   const [isolationOf, rowOf] = [byKey<IsolationResult>(isolation), byKey(rowResults)];
   const staticOf = byKey(valueFlow?.staticValueFlow.pairs ?? []);
   const traceOf = byKey(valueFlow?.trace.pairs ?? []);
+  const mutationEligible = new Set(plan.eligibility.files);
   const evidence = assembleVerdictInput({
     work,
     layer2: layer2.tests,
@@ -3299,7 +3319,7 @@ export async function runMergeStage(
     },
     observations: merged,
     degraded: valueFlow?.staticValueFlow.degraded ?? [],
-    mutationEligible: new Set(plan.eligibility.files),
+    mutationEligible,
   });
   const fingerprint = computeFingerprints(evidence);
   const verdicts = computeVerdicts(mutationEvidence(plan.mutation, evidence, shardPlan.groups));
@@ -3324,7 +3344,7 @@ export async function runMergeStage(
     eligibility: plan.eligibility,
     // The M of "N of M eligible tests evaluated": the mutation-eligible tests.
     eligibleTests: work.tests
-      .filter((test) => plan.eligibility.files.includes(test.file))
+      .filter((test) => mutationEligible.has(test.file))
       .map((test) => test.id),
     shards: { planned: shardPlan.shards.length, complete: completeShards, incomplete },
     layer1Files: work.files.length,
@@ -3545,7 +3565,7 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
       budgetMs: options.deadlineMs ?? SHARD_DEADLINE_MS,
       concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
       speedFactor: options.speedFactor ?? DEFAULT_SPEED_FACTOR,
-      coverage: options.stage === 'plan' ? options.coverage : null,
+      coverage: options.coverage,
       changedSince: options.changedSince,
     });
   const shard = (index: number, of: number, selection: boolean): Promise<ShardStageReport> =>
@@ -3638,10 +3658,6 @@ export async function runCli(argv: readonly string[], deps: CliDeps): Promise<nu
       throw new UsageError(
         `--work ${options.workDir} must lie outside the checkout ${deps.repoRoot}`,
       );
-    }
-    // The plan stage empties its work directory before it reads the slices.
-    if (options.coverage !== null && overlaps(options.workDir, options.coverage)) {
-      throw new UsageError(`--coverage ${options.coverage} must lie outside --work`);
     }
     if (needsDist(options)) ensureDist(deps.packageDir);
   } catch (error) {

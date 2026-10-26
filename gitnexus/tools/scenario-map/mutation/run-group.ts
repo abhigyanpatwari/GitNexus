@@ -82,7 +82,7 @@ import { parseTestId, type TestLocation } from '../../mutation/runner/test-ids.j
 import { errorMessage } from '../../mutation/shared/cli.js';
 import { overlaps, readJsonFile } from '../../mutation/shared/fs.js';
 import { extraRootsOf, toPackagePath, type RunMode } from '../types.js';
-import { byText, isRecord, sha256, writeJson } from '../util.js';
+import { byText, isRecord, sameList, sha256, writeJson } from '../util.js';
 import {
   MAIN_LINEAGE,
   decodeObservations,
@@ -304,9 +304,6 @@ export function summarizeBaseline(run: VitestRunResult): BaselineSummary {
     problems: [...run.problems, ...run.unhandledErrors.map((error) => `unhandled error: ${error}`)],
   };
 }
-
-const sameList = (a: readonly string[], b: readonly string[]): boolean =>
-  a.length === b.length && a.every((entry, index) => b[index] === entry);
 
 const listDifference = (a: readonly string[], b: readonly string[]): string[] =>
   a.filter((entry) => !b.includes(entry));

@@ -8,7 +8,7 @@
  * shares needs no run. A file stays when one of its tests has a key another test shares or no key,
  * when a call's instance count is not static, when a body reads a file snapshot (the runtime full
  * name picks the entry, and the static one may differ), when it may register tests the inventory
- * cannot see ({@link registersUnseenTests}: a helper such as
+ * cannot see (inventory/cases.ts `incomplete`: a helper such as
  * test/helpers/rename-integration-cases.ts `defineRenameFixtureTests`), or when it did not parse.
  *
  * Given up: `different-checks` (the same path and input, other checks) between a test of a skipped
@@ -17,101 +17,8 @@
  *
  * Library only; it reads the test files and their snapshot and helper modules.
  */
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { parse, type ParserPlugin } from '@babel/parser';
-import type * as t from '@babel/types';
 import { checksContextKey, fsModuleReader, fsSnapshotReader } from '../facet/checks.js';
 import { loadStaticInventory } from '../inventory/cases.js';
-import { fromPackagePath } from '../types.js';
-
-const PLUGINS: ParserPlugin[] = ['typescript', 'jsx', 'decorators-legacy'];
-
-/** Callees that register tests or hooks themselves; a suite's callback registers in turn. */
-const SUITES = new Set(['describe', 'suite']);
-const KNOWN = new Set([
-  ...SUITES,
-  'it',
-  'test',
-  'bench',
-  'beforeAll',
-  'afterAll',
-  'beforeEach',
-  'afterEach',
-  'aroundAll',
-  'aroundEach',
-  'vi',
-  'expect',
-]);
-
-/** The identifier a call chain starts from: `it` of `it.each(rows)('t', fn)`; null otherwise. */
-function rootOf(node: t.Node): string | null {
-  let current = node;
-  for (;;) {
-    if (current.type === 'CallExpression') current = current.callee;
-    else if (current.type === 'MemberExpression') current = current.object;
-    else if (current.type === 'TaggedTemplateExpression') current = current.tag;
-    else if (current.type === 'AwaitExpression') current = current.argument;
-    else return current.type === 'Identifier' ? current.name : null;
-  }
-}
-
-const DECLARATIONS = new Set([
-  'ImportDeclaration',
-  'ExportNamedDeclaration',
-  'ExportDefaultDeclaration',
-  'ExportAllDeclaration',
-  'VariableDeclaration',
-  'FunctionDeclaration',
-  'ClassDeclaration',
-  'TSInterfaceDeclaration',
-  'TSTypeAliasDeclaration',
-  'TSEnumDeclaration',
-  'TSModuleDeclaration',
-  'TSImportEqualsDeclaration',
-  'TSDeclareFunction',
-  'EmptyStatement',
-]);
-
-/**
- * Whether statements at a registration level (the module, a suite callback, a loop or branch in
- * either) call anything but the test API: such a call may register tests the inventory does not
- * see, so its file always runs. Declarations never register; a suite's callback is walked.
- */
-export function registersUnseenTests(statements: readonly t.Statement[]): boolean {
-  return statements.some((statement): boolean => {
-    if (DECLARATIONS.has(statement.type)) return false;
-    switch (statement.type) {
-      case 'BlockStatement':
-        return registersUnseenTests(statement.body);
-      case 'IfStatement':
-        return [statement.consequent, statement.alternate].some(
-          (branch) => branch !== null && registersUnseenTests([branch]),
-        );
-      case 'ForStatement':
-      case 'ForInStatement':
-      case 'ForOfStatement':
-      case 'WhileStatement':
-      case 'DoWhileStatement':
-        return registersUnseenTests([statement.body]);
-      case 'ExpressionStatement': {
-        const root = rootOf(statement.expression);
-        if (root === null || !KNOWN.has(root)) return true;
-        if (!SUITES.has(root) || statement.expression.type !== 'CallExpression') return false;
-        // A suite whose callback is not written inline (`describe('x', defineCases)`) registers
-        // what the inventory cannot see.
-        const callback = statement.expression.arguments.at(-1);
-        return callback === undefined ||
-          (callback.type !== 'ArrowFunctionExpression' && callback.type !== 'FunctionExpression') ||
-          callback.body.type !== 'BlockStatement'
-          ? true
-          : registersUnseenTests(callback.body.body);
-      }
-      default:
-        return true;
-    }
-  });
-}
 
 /** Matchers that read a `.snap` file entry named after the runtime test name. */
 const FILE_SNAPSHOT = /\.(?:toMatchSnapshot|toMatchFileSnapshot|toThrowErrorMatchingSnapshot)\(/;
@@ -141,17 +48,7 @@ export function layer1Files(
 ): Layer1Files {
   const inventory = loadStaticInventory(repoRoot, files);
   const options = { snapshots: fsSnapshotReader(repoRoot), modules: fsModuleReader(repoRoot) };
-  const keep = new Set(inventory.skipped);
-  const seen = new Set(inventory.sites.map((site) => site.file));
-  for (const file of files) {
-    if (!seen.has(file)) {
-      keep.add(file);
-      continue;
-    }
-    const source = readFileSync(path.join(repoRoot, fromPackagePath(file)), 'utf8');
-    const ast = parse(source, { sourceType: 'module', plugins: PLUGINS, errorRecovery: true });
-    if (registersUnseenTests(ast.program.body)) keep.add(file);
-  }
+  const keep = new Set([...inventory.skipped, ...inventory.incomplete]);
   const keys: { file: string; key: string }[] = [];
   for (const site of inventory.sites) {
     if (site.instances === null || FILE_SNAPSHOT.test(site.record.body)) {
@@ -169,23 +66,21 @@ export function layer1Files(
   }
   const count = new Map<string, number>();
   for (const { key } of keys) count.set(key, (count.get(key) ?? 0) + 1);
-  for (const { file, key } of keys) if ((count.get(key) ?? 0) > 1) keep.add(file);
-  if (changed !== null) {
-    // Keys another test also has: a key only one test has pairs with nothing.
-    const changedKeys = new Set(
-      keys
-        .filter(({ file, key }) => changed.has(file) && (count.get(key) ?? 0) > 1)
-        .map(({ key }) => key),
-    );
-    const scoped = new Set([
-      ...[...keep].filter((file) => changed.has(file)),
-      ...keys.filter(({ key }) => changedKeys.has(key)).map(({ file }) => file),
-    ]);
-    keep.clear();
-    for (const file of scoped) keep.add(file);
-  }
+  // A key only one test has pairs with nothing.
+  const shared = (key: string): boolean => (count.get(key) ?? 0) > 1;
+  for (const { file, key } of keys) if (shared(key)) keep.add(file);
+  const changedKeys = new Set(
+    keys.filter(({ file, key }) => changed?.has(file) === true && shared(key)).map((k) => k.key),
+  );
+  const run =
+    changed === null
+      ? keep
+      : new Set([
+          ...[...keep].filter((file) => changed.has(file)),
+          ...keys.filter(({ key }) => changedKeys.has(key)).map(({ file }) => file),
+        ]);
   return {
-    files: files.filter((file) => keep.has(file)),
-    skipped: files.filter((file) => !keep.has(file)),
+    files: files.filter((file) => run.has(file)),
+    skipped: files.filter((file) => !run.has(file)),
   };
 }

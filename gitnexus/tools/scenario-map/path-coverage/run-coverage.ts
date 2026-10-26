@@ -75,7 +75,7 @@ import { errorMessage, isMainModule } from '../../mutation/shared/cli.js';
 import { overlaps, readJsonFile } from '../../mutation/shared/fs.js';
 import { checksContextKey, fsModuleReader, fsSnapshotReader } from '../facet/checks.js';
 import { loadStaticInventory } from '../inventory/cases.js';
-import { resolveEligibility } from '../inventory/eligible.js';
+import { fingerprintScope } from '../inventory/eligible.js';
 import { joinRuntime } from '../inventory/identity.js';
 import { inProcessVitestOptions } from '../mutation/vitest-run.js';
 import {
@@ -489,7 +489,6 @@ export interface CoverageOptions {
 export const DEFAULT_COVERAGE_CONCURRENCY = 2;
 
 export interface CoverageRun {
-  eligibility: Eligibility;
   work: CoverageWorkFile;
   workFile: string;
   /** Prepare and Vitest run, in milliseconds. */
@@ -530,9 +529,12 @@ function resetOutDir(repoRoot: string, outDir: string): void {
   writeFileSync(path.join(outDir, OUT_MARKER_FILE), '');
 }
 
-function selectFiles(eligibility: Eligibility, subset: readonly string[] | undefined): string[] {
-  if (subset === undefined) return [...eligibility.fingerprintFiles];
-  const eligible = new Set(eligibility.fingerprintFiles);
+function selectFiles(
+  scope: Pick<Eligibility, 'fingerprintFiles'>,
+  subset: readonly string[] | undefined,
+): string[] {
+  if (subset === undefined) return [...scope.fingerprintFiles];
+  const eligible = new Set(scope.fingerprintFiles);
   const outside = subset.filter((file) => !eligible.has(file));
   if (outside.length > 0) throw new UsageError(`not eligible: ${outside.join(', ')}`);
   return sortedUnique(subset);
@@ -564,22 +566,39 @@ const errorText = (error: unknown): string =>
 
 const ENV_NAMES = ['TEST', 'VITEST', 'NODE_ENV', MUTATION_SCOPE_ENV] as const;
 
-/** Prepares the copy, runs the files under the coverage hook and writes the work file. */
+/**
+ * Prepares the copy, runs the files under the coverage hook and writes the work file. An explicit
+ * empty `files` (a slice or diff scope with nothing to run) writes an empty work file and prepares
+ * nothing.
+ */
 export async function runCoverage(options: CoverageOptions): Promise<CoverageRun> {
   const repoRoot = path.resolve(options.repoRoot);
-  const eligibility = resolveEligibility({ repoRoot, mode: options.mode });
-  const files = selectFiles(eligibility, options.files);
-  if (files.length === 0) throw new UsageError('no eligible test files');
+  const scope = fingerprintScope({ repoRoot, mode: options.mode });
+  const files = selectFiles(scope, options.files);
+  if (files.length === 0 && options.files === undefined) {
+    throw new UsageError('no eligible test files');
+  }
   const layout = layoutOf(path.resolve(options.outDir));
   resetOutDir(repoRoot, layout.outDir);
+  if (files.length === 0) {
+    const work = buildWorkFile({
+      mode: options.mode,
+      preparedRoot: layout.preparedRoot,
+      repeats: COVERAGE_REPEATS,
+      modules: [],
+      raws: [],
+      unhandledErrors: [],
+    });
+    writeFileSync(layout.workFile, JSON.stringify(work));
+    return { work, workFile: layout.workFile, wallClockMs: 0 };
+  }
   const started = performance.now();
 
-  const pathMap = buildPathMap(eligibility.extraRoots);
+  const pathMap = buildPathMap(scope.extraRoots);
   prepare({ repoRoot, outDir: layout.preparedRoot, mutate: [], pathMap });
   const preparedRoot = toPosixSeparators(realpathSync(layout.preparedRoot));
   const packageDir = `${preparedRoot}/gitnexus`;
-  if (options.mode.kind !== 'controls')
-    copyBuildOutput(path.join(repoRoot, 'gitnexus'), packageDir);
+  copyBuildOutput(options.mode.kind, path.join(repoRoot, 'gitnexus'), packageDir);
   const setupFile = path.join(packageDir, COVERAGE_SETUP_FILE);
   if (!existsSync(setupFile))
     throw new UsageError(`the prepared copy has no ${COVERAGE_SETUP_FILE}`);
@@ -683,9 +702,6 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
       else process.env[name] = value;
     }
   }
-  // Every file in its eligible order, whichever partition ran it.
-  const order = new Map(files.map((file, index) => [file, index]));
-  modules.sort((x, y) => (order.get(x.file) ?? 0) - (order.get(y.file) ?? 0));
   const work = buildWorkFile({
     mode: options.mode,
     preparedRoot,
@@ -696,7 +712,7 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
   });
   const wallClockMs = Math.round(performance.now() - started);
   writeFileSync(layout.workFile, JSON.stringify(work));
-  return { eligibility, work, workFile: layout.workFile, wallClockMs };
+  return { work, workFile: layout.workFile, wallClockMs };
 }
 
 // ── CLI ────────────────────────────────────────────────────────────────────

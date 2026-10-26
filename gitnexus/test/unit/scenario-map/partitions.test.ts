@@ -14,12 +14,12 @@ import type {
   VitestRunResult,
 } from '../../../tools/scenario-map/mutation/vitest-run.js';
 import {
-  baseSequentialMatcher,
   copyBuildOutput,
   mergeVitestRuns,
   partitionFiles,
   runVitestPartitioned,
   sequentialMatcher,
+  sequentialMatcherFor,
   sequentialPatterns,
 } from '../../../tools/scenario-map/path-coverage/partitions.js';
 
@@ -85,6 +85,10 @@ describe('sequential patterns', () => {
     expect(sequentialMatcher(['test/integration/lbug-*.test.ts'])(file)).toBe(match);
   });
 
+  it('matches like Vitest: a ** segment may be empty', () => {
+    expect(sequentialMatcher(['test/**/*.test.ts'])('test/a.test.ts')).toBe(true);
+  });
+
   it('puts the base config sequential files apart, keeping their order', () => {
     const files = [
       'test/unit/a.test.ts',
@@ -92,7 +96,7 @@ describe('sequential patterns', () => {
       'test/integration/rename-provider-ts.test.ts',
       'test/integration/skills-e2e.test.ts',
     ];
-    expect(partitionFiles(files, baseSequentialMatcher())).toEqual({
+    expect(partitionFiles(files, sequentialMatcherFor('normal'))).toEqual({
       sequential: [
         'test/integration/lbug-pool.test.ts',
         'test/integration/rename-provider-ts.test.ts',
@@ -178,7 +182,7 @@ describe('copyBuildOutput', () => {
     for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  it('copies vendor/ and dist/ that the checkout has and skips the rest', () => {
+  it('copies vendor/ and dist/ that the checkout has into a normal-mode copy only', () => {
     const base = mkdtempSync(path.join(os.tmpdir(), 'scenario-map-build-output-'));
     temps.push(base);
     const checkout = path.join(base, 'checkout');
@@ -186,10 +190,14 @@ describe('copyBuildOutput', () => {
     mkdirSync(path.join(checkout, 'vendor', 'leiden'), { recursive: true });
     mkdirSync(prepared);
     writeFileSync(path.join(checkout, 'vendor', 'leiden', 'index.cjs'), 'leiden');
-    copyBuildOutput(checkout, prepared);
+    const controls = path.join(base, 'controls');
+    mkdirSync(controls);
+    copyBuildOutput('normal', checkout, prepared);
+    copyBuildOutput('controls', checkout, controls);
     expect([
       readFileSync(path.join(prepared, 'vendor', 'leiden', 'index.cjs'), 'utf8'),
       existsSync(path.join(prepared, 'dist')),
-    ]).toEqual(['leiden', false]);
+      existsSync(path.join(controls, 'vendor')),
+    ]).toEqual(['leiden', false, false]);
   });
 });

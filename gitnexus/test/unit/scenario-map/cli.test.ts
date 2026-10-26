@@ -64,6 +64,7 @@ import {
   changedTestFiles,
   layer1FilesOf,
   mutationTarget,
+  shardRowPlans,
   parseCliArgs,
   parseExpectedControls,
   planShards,
@@ -1807,5 +1808,37 @@ describe('compareControls', () => {
       ['s.case.ts', 'o.case.ts', 'g.case.ts'],
     );
     expect(comparison.differences).toEqual(['other', 'gone', 'gone fingerprint']);
+  });
+});
+
+describe('shardRowPlans', () => {
+  const rowPlan = (a: string, b: string): RowDeletionPlan => ({
+    a,
+    b,
+    status: 'planned',
+    reasons: [],
+    positions: [],
+    deletions: [],
+  });
+  const pairs = [
+    candidatePair(A1, A2, 'ga'),
+    candidatePair(B1, B2, 'gb'),
+    candidatePair(C1, C2, 'gc'),
+  ];
+  const groups = new Map([
+    ['ga', { tests: [A1, A2] }],
+    ['gb', { tests: [B1] }],
+    ['gc', { tests: [C1, C2] }],
+  ]);
+
+  it("runs a complete group's pairs whose two tests the trimmed group still holds", () => {
+    expect(
+      shardRowPlans(
+        [rowPlan(A1, A2), rowPlan(B1, B2), rowPlan(C1, C2)],
+        pairs,
+        groups,
+        new Set(['ga', 'gb']),
+      ).map((entry) => [entry.a, entry.b]),
+    ).toEqual([[A1, A2]]);
   });
 });

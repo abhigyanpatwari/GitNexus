@@ -7,15 +7,15 @@
  * The mutation config (tools/mutation/vitest.mutation.config.ts, gate-3 hashed) replaces the
  * projects with one, so a scenario-map run that holds such files (the fingerprint's unit and
  * integration tests, F8) runs them in a partition of their own with one worker, and every other
- * file with the caller's workers. {@link sequentialMatcher} reads those projects' `include`
- * patterns (paths and `*` / `**` globs, package-relative) from the base config.
+ * file with the caller's workers. {@link sequentialMatcherFor} reads those projects' `include`
+ * patterns (package-relative globs) from the base config.
  *
  * The prepare step (tools/mutation/prepare/prepare.ts, gate-3 hashed) leaves `vendor/` and `dist/`
  * out of the prepared copy; integration tests load both (vendored grammars, leiden, native
  * extensions; the built CLI and its worker scripts), so {@link copyBuildOutput} copies them from
- * the checkout into the copy the fingerprint's runs use (fingerprint plan E6).
+ * the checkout into the copy a normal-mode fingerprint run uses (fingerprint plan E6).
  *
- * Library only; pure but for {@link baseSequentialMatcher}, which reads the base config module,
+ * Library only; pure but for {@link sequentialMatcherFor}, which reads the base config module,
  * {@link runVitestPartitioned}, which runs the injected Vitest runner, and {@link copyBuildOutput}.
  */
 import { cpSync, existsSync } from 'node:fs';
@@ -39,32 +39,14 @@ export function sequentialPatterns(config: unknown): string[] {
   });
 }
 
-const globToRegExp = (pattern: string): RegExp =>
-  new RegExp(
-    `^${pattern
-      .split('**')
-      .map((part) =>
-        part
-          .split('*')
-          .map((text) => text.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-          .join('[^/]*'),
-      )
-      .join('.*')}$`,
-  );
-
-/** Whether a package path matches any of the patterns. */
+/** Whether a package path matches any of the patterns (Node's glob matching, as Vitest's). */
 export function sequentialMatcher(patterns: readonly string[]): (file: string) => boolean {
-  const expressions = patterns.map(globToRegExp);
-  return (file) => expressions.some((expression) => expression.test(file));
+  return (file) => patterns.some((pattern) => path.posix.matchesGlob(file, pattern));
 }
-
-/** The matcher of gitnexus/vitest.config.ts's sequential projects. */
-export const baseSequentialMatcher = (): ((file: string) => boolean) =>
-  sequentialMatcher(sequentialPatterns(baseConfig));
 
 /** A run mode's sequential files: the base config's in normal mode, none in controls mode. */
 export const sequentialMatcherFor = (mode: RunMode['kind']): ((file: string) => boolean) =>
-  mode === 'controls' ? () => false : baseSequentialMatcher();
+  mode === 'controls' ? () => false : sequentialMatcher(sequentialPatterns(baseConfig));
 
 /** Splits package paths into the sequential and the parallel partition, keeping their order. */
 export function partitionFiles(
@@ -117,8 +99,9 @@ export async function runVitestPartitioned(
   options: VitestRunOptions,
   isSequential: (file: string) => boolean,
 ): Promise<VitestRunResult> {
-  const sequential = options.testIds.filter((id) => isSequential(parseTestId(id).file));
-  const parallel = options.testIds.filter((id) => !isSequential(parseTestId(id).file));
+  const { sequential, parallel } = partitionFiles(options.testIds, (id) =>
+    isSequential(parseTestId(id).file),
+  );
   if (sequential.length === 0 || parallel.length === 0) {
     return run(sequential.length === 0 ? options : { ...options, maxWorkers: 1 });
   }
@@ -135,14 +118,19 @@ export async function runVitestPartitioned(
 }
 
 /** Package entries the prepare step leaves out and integration tests load (E6). */
-export const BUILD_OUTPUT = ['vendor', 'dist'] as const;
+const BUILD_OUTPUT = ['vendor', 'dist'] as const;
 
 /**
- * Copies {@link BUILD_OUTPUT} from the checkout's package into a prepared package; an entry the
- * checkout lacks is skipped (the tests that load it fail, and the fingerprint holds their pairs
- * Inconclusive).
+ * Copies {@link BUILD_OUTPUT} from the checkout's package into a prepared package of a normal-mode
+ * run (the controls fixture needs neither); an entry the checkout lacks is skipped (the tests that
+ * load it fail, and the fingerprint holds their pairs Inconclusive).
  */
-export function copyBuildOutput(checkoutPackage: string, preparedPackage: string): void {
+export function copyBuildOutput(
+  mode: RunMode['kind'],
+  checkoutPackage: string,
+  preparedPackage: string,
+): void {
+  if (mode === 'controls') return;
   for (const entry of BUILD_OUTPUT) {
     const from = path.join(checkoutPackage, entry);
     if (existsSync(from)) cpSync(from, path.join(preparedPackage, entry), { recursive: true });

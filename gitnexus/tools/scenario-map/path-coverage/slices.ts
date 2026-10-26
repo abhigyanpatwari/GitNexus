@@ -15,7 +15,11 @@
  *
  * Slice file `coverage-slice-<index>.json` (schema version {@link COVERAGE_SLICE_SCHEMA_VERSION}):
  *   index, of     the slice and the number of slices
- *   files         its test files (package paths), as {@link coverageSlices} assigned them
+ *   layer1        every test file Layer 1 runs (package paths), before the split: the plan takes
+ *                 it from the slices instead of recomputing it, and re-splits it with
+ *                 {@link coverageSlices} (each slice's work file lists exactly its share)
+ *   mutation      the run's mutation scope, which chose `layer1`
+ *   revision      the checkout's commit (`git rev-parse HEAD`); null when unknown
  *   work          the slice's work file (run-coverage.ts {@link CoverageWorkFile})
  *
  * Library only; pure but for {@link coverageSlices}, which stats the test files, and
@@ -25,7 +29,8 @@ import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { assignShards, specWeight } from '../../../test/helpers/shard-balance.js';
 import { readJsonFile } from '../../mutation/shared/fs.js';
-import { byText, isRecord, sortedUnique } from '../util.js';
+import { MUTATION_SCOPES, type MutationScope } from '../types.js';
+import { byText, isRecord, sameList, sortedUnique } from '../util.js';
 import {
   WORK_FILE_SCHEMA_VERSION,
   unknownProvenance,
@@ -40,7 +45,9 @@ export interface CoverageSliceFile {
   schemaVersion: typeof COVERAGE_SLICE_SCHEMA_VERSION;
   index: number;
   of: number;
-  files: string[];
+  layer1: string[];
+  mutation: MutationScope;
+  revision: string | null;
   work: CoverageWorkFile;
 }
 
@@ -70,12 +77,10 @@ export function coverageSlices(
   ).map((slice) => [...slice].sort(byText));
 }
 
-const sameList = (a: readonly string[], b: readonly string[]): boolean =>
-  a.length === b.length && a.every((value, index) => value === b[index]);
-
 /**
  * The work file of the reported slices (`assignment` from {@link coverageSlices}); a slice that ran
- * other files, disagrees on the run's mode, extra roots or repeats, or reports twice throws.
+ * other files, disagrees with the first on its Layer 1 files, mutation scope, revision, mode, extra
+ * roots or repeats, or reports twice throws.
  */
 export function mergeCoverageSlices(
   assignment: readonly (readonly string[])[],
@@ -94,11 +99,19 @@ export function mergeCoverageSlices(
     }
     if (seen.has(slice.index)) throw new Error(`coverage: slice ${slice.index} reported twice`);
     seen.add(slice.index);
-    if (!sameList(slice.files, expected)) {
-      throw new Error(`coverage: slice ${slice.index} ran other files than this checkout assigns`);
+    if (
+      !sameList(
+        slice.work.files.map((file) => file.file),
+        expected,
+      )
+    ) {
+      throw new Error(`coverage: slice ${slice.index} ran other files than its share`);
     }
     const { mode, repeats, extraRoots } = slice.work;
     if (
+      !sameList(slice.layer1, first.layer1) ||
+      slice.mutation !== first.mutation ||
+      slice.revision !== first.revision ||
       mode !== first.work.mode ||
       repeats !== first.work.repeats ||
       !sameList(extraRoots, first.work.extraRoots)
@@ -155,8 +168,10 @@ const isSliceFile = (value: unknown): value is CoverageSliceFile =>
   isIndex(value.index) &&
   isIndex(value.of) &&
   value.index < value.of &&
-  Array.isArray(value.files) &&
-  value.files.every((file: unknown) => typeof file === 'string') &&
+  Array.isArray(value.layer1) &&
+  value.layer1.every((file: unknown) => typeof file === 'string') &&
+  MUTATION_SCOPES.some((scope) => scope === value.mutation) &&
+  (value.revision === null || typeof value.revision === 'string') &&
   isRecord(value.work) &&
   value.work.schemaVersion === WORK_FILE_SCHEMA_VERSION;
 
