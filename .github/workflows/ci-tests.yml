@@ -691,7 +691,8 @@ jobs:
   benchmarks:
     name: benchmarks (GITNEXUS_BENCH)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The callable size matrix runs 63 full analyses and 18 heap probes.
+    timeout-minutes: 30
     steps:
       # persist-credentials: false — this job only runs npm + vitest benchmarks
       # and never pushes; the default-persisted token in .git/config would be at
