@@ -21,6 +21,7 @@ import {
   _tryBuildPrettyTransport,
   _resetPrettyAvailableCache,
   flushLoggerSync,
+  configureLoggerSink,
 } from '../../src/core/logger.js';
 
 describe('createLogger — API surface', () => {
@@ -275,5 +276,204 @@ describe('_tryBuildPrettyTransport — pino-pretty availability probe', () => {
     } finally {
       stderrSpy.mockRestore();
     }
+  });
+});
+
+// #3620: a host that embeds GitNexus routes the records into its own sink.
+describe('configureLoggerSink — host sink', () => {
+  it('routes the singleton and later children to the destination, with mixin fields, and never builds the stderr destination', async () => {
+    // A fresh module instance, so no earlier test has built the stderr
+    // destination: if the sink works, `pino.destination` is never called.
+    vi.resetModules();
+    const pinoModule = await import('pino');
+    const destinationSpy = vi.spyOn(pinoModule.default, 'destination');
+    const fresh = await import('../../src/core/logger.js');
+    const sink = new fresh.MemoryWritable();
+    let requestId = 'req-1';
+    const restore = fresh.configureLoggerSink({
+      destination: sink,
+      mixin: () => ({ requestId }),
+    });
+    try {
+      fresh.logger.warn({ k: 'v' }, 'from the singleton');
+      requestId = 'req-2';
+      fresh.createLogger('child').info('from a child');
+      const recs = sink.records();
+      expect(recs.map((r) => [r.name, r.msg, r.requestId])).toEqual([
+        ['gitnexus', 'from the singleton', 'req-1'],
+        ['child', 'from a child', 'req-2'],
+      ]);
+      expect(recs[0].k).toBe('v');
+      expect(destinationSpy).not.toHaveBeenCalled();
+    } finally {
+      restore();
+      destinationSpy.mockRestore();
+      vi.resetModules();
+    }
+  });
+
+  it('applies the sink level, and a child debugEnvVar still wins', () => {
+    const sink = new MemoryWritable();
+    const restore = configureLoggerSink({ destination: sink, level: 'debug' });
+    try {
+      logger.debug('singleton debug');
+      createLogger('quiet').trace('child trace');
+      process.env.GITNEXUS_TEST_SINK_DEBUG = '1';
+      try {
+        createLogger('loud', { debugEnvVar: 'GITNEXUS_TEST_SINK_DEBUG' }).debug('child debug');
+      } finally {
+        delete process.env.GITNEXUS_TEST_SINK_DEBUG;
+      }
+      expect(sink.records().map((r) => r.msg)).toEqual(['singleton debug', 'child debug']);
+    } finally {
+      restore();
+    }
+  });
+
+  it('restore() returns the singleton to the previous destination', () => {
+    const sink = new MemoryWritable();
+    const restore = configureLoggerSink({ destination: sink });
+    logger.warn('while routed');
+    restore();
+    // A test capture is the previous-destination seam that can be observed.
+    const cap = _captureLogger();
+    try {
+      logger.warn('after restore');
+      expect(cap.records().map((r) => r.msg)).toEqual(['after restore']);
+      expect(sink.records().map((r) => r.msg)).toEqual(['while routed']);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('a later sink replaces the earlier one, whose restore is then a no-op', () => {
+    const first = new MemoryWritable();
+    const second = new MemoryWritable();
+    const restoreFirst = configureLoggerSink({ destination: first });
+    const restoreSecond = configureLoggerSink({ destination: second });
+    try {
+      logger.warn('to the second');
+      restoreFirst();
+      logger.warn('still the second');
+      expect(second.records().map((r) => r.msg)).toEqual(['to the second', 'still the second']);
+      expect(first.records()).toEqual([]);
+    } finally {
+      restoreSecond();
+    }
+  });
+
+  it('a test capture takes precedence over the sink while it is active', () => {
+    const sink = new MemoryWritable();
+    const restore = configureLoggerSink({ destination: sink });
+    try {
+      const cap = _captureLogger();
+      try {
+        logger.warn('captured, not sunk');
+        expect(cap.records().map((r) => r.msg)).toEqual(['captured, not sunk']);
+      } finally {
+        cap.restore();
+      }
+      logger.warn('sunk again');
+      expect(sink.records().map((r) => r.msg)).toEqual(['sunk again']);
+    } finally {
+      restore();
+    }
+  });
+
+  it('restores through a chain: second, then first, then the previous destination', () => {
+    const first = new MemoryWritable();
+    const second = new MemoryWritable();
+    const restoreFirst = configureLoggerSink({ destination: first });
+    const restoreSecond = configureLoggerSink({ destination: second });
+    restoreSecond();
+    logger.warn('back on the first');
+    restoreFirst();
+    const cap = _captureLogger();
+    try {
+      logger.warn('back on the default');
+      expect(first.records().map((r) => r.msg)).toEqual(['back on the first']);
+      expect(second.records()).toEqual([]);
+      expect(cap.records().map((r) => r.msg)).toEqual(['back on the default']);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('reads the level case-insensitively and lets it win over GITNEXUS_LOG_LEVEL', () => {
+    const sink = new MemoryWritable();
+    const previous = process.env.GITNEXUS_LOG_LEVEL;
+    process.env.GITNEXUS_LOG_LEVEL = 'debug';
+    const restore = configureLoggerSink({ destination: sink, level: 'WARN' });
+    try {
+      logger.info('dropped by the sink level');
+      logger.warn('kept');
+      expect(sink.records().map((r) => r.msg)).toEqual(['kept']);
+    } finally {
+      restore();
+      if (previous === undefined) delete process.env.GITNEXUS_LOG_LEVEL;
+      else process.env.GITNEXUS_LOG_LEVEL = previous;
+    }
+  });
+
+  it("a record's own field wins over the mixin's", () => {
+    const sink = new MemoryWritable();
+    const restore = configureLoggerSink({
+      destination: sink,
+      mixin: () => ({ requestId: 'from-mixin', host: 'h' }),
+    });
+    try {
+      logger.warn({ requestId: 'own' }, 'precedence');
+      const [rec] = sink.records();
+      expect(rec.requestId).toBe('own');
+      expect(rec.host).toBe('h');
+    } finally {
+      restore();
+    }
+  });
+
+  it('a mixin that throws does not lose the record, and is reported on stderr once', () => {
+    const sink = new MemoryWritable();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const restore = configureLoggerSink({
+      destination: sink,
+      mixin: () => {
+        throw new Error('host bug');
+      },
+    });
+    try {
+      logger.warn('first');
+      createLogger('child').warn('second');
+      expect(sink.records().map((r) => r.msg)).toEqual(['first', 'second']);
+      const warnings = stderr.mock.calls
+        .map((c) => String(c[0]))
+        .filter((line) => line.includes('host mixin threw'));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('host bug');
+    } finally {
+      restore();
+      stderr.mockRestore();
+    }
+  });
+
+  it('flushLoggerSync flushes a sink destination that has flushSync', () => {
+    const flushSync = vi.fn();
+    const sink = Object.assign(new MemoryWritable(), { flushSync });
+    const restore = configureLoggerSink({ destination: sink });
+    try {
+      flushLoggerSync();
+      expect(flushSync).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+    }
+  });
+
+  it('rejects a destination without write(), an unknown level, and a non-function mixin', () => {
+    expect(() => configureLoggerSink({ destination: {} as never })).toThrow(TypeError);
+    expect(() => configureLoggerSink({ destination: new MemoryWritable(), level: 'loud' })).toThrow(
+      RangeError,
+    );
+    expect(() =>
+      configureLoggerSink({ destination: new MemoryWritable(), mixin: 42 as never }),
+    ).toThrow(TypeError);
   });
 });
