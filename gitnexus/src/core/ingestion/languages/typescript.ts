@@ -13,10 +13,11 @@ import { unboundCallableName } from './typescript/unbound-callables.js';
 import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
-import { createClassExtractor } from '../class-extractors/generic.js';
 import {
   typescriptClassConfig,
   javascriptClassConfig,
+  resolveTsJsContainerTypeOwner,
+  createTsJsClassExtractor,
 } from '../class-extractors/configs/typescript-javascript.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import {
@@ -524,7 +525,8 @@ export const typescriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   definitionPropertiesExtractor: extractConvexEndpointProperties,
-  classExtractor: createClassExtractor(typescriptClassConfig),
+  classExtractor: createTsJsClassExtractor(typescriptClassConfig),
+  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({
@@ -627,7 +629,8 @@ export const javascriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),
   definitionPropertiesExtractor: extractConvexEndpointProperties,
-  classExtractor: createClassExtractor(javascriptClassConfig),
+  classExtractor: createTsJsClassExtractor(javascriptClassConfig),
+  resolveContainerTypeOwner: resolveTsJsContainerTypeOwner,
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({

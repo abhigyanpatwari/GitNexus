@@ -30,6 +30,7 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
    * Node types that represent type declarations with fields in TypeScript
    */
   private static readonly TYPE_DECLARATION_NODES = new Set([
+    'class',
     'class_declaration',
     'interface_declaration',
     'abstract_class_declaration',
@@ -258,7 +259,11 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
     const nestedTypes: string[] = [];
 
     // Handle different declaration types
-    if (node.type === 'class_declaration' || node.type === 'abstract_class_declaration') {
+    if (
+      node.type === 'class' ||
+      node.type === 'class_declaration' ||
+      node.type === 'abstract_class_declaration'
+    ) {
       // Find the class body
       const bodyNode = node.childForFieldName('body');
       if (bodyNode) {
