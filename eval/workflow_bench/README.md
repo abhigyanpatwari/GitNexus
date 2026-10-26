@@ -875,36 +875,24 @@ task ID, prompt, verification command, and oracle bytes produce a new task
 digest. Old agent patches are not available for rescoring; keep historical
 measurements unchanged and compare only runs with matching task contracts.
 
-## Offline MCP response-cost check
+## MCP response cost
 
-Before spending on another agent run, measure query formatting with repository
-source payloads:
+With `include_content: true`, queries share a 16,000-character preview allowance
+equally across unique symbols on the returned page. The database returns only
+those prefixes, after ranking and pagination. `content_truncated: true` marks
+incomplete source; every match remains present. Use `context` for a full symbol
+or `read_file` for a bounded file range. This applies to CLI, HTTP, and MCP
+queries; group queries already request no source content.
 
-```bash
-cd gitnexus
-node --import tsx scripts/bench/mcp-query-content.ts
-```
+MCP query guidance lives in the JSON `next` field. Explicit `maxTokens` retains
+its existing final text cap, which can truncate JSON; it does not change the
+query preview allowance. Payload reductions alone do not establish agent cost
+or completion-time improvements: previews can require follow-up reads.
 
-This compares compact JSON plus the former prose trailer with the current MCP
-query formatter. It checks match identity/order and diagnostics, reports payload
-bytes, corpus hashes, and median formatting time over alternating trials. Add
-`--include-text` to emit both texts for an offline tokenizer comparison. It does
-not measure database retrieval, indexing, model billing, or agent completion time.
-
-Single-repository query responses retain at most 4,000 serialized source bytes
-per symbol and 16,000 total by default. All matches remain present;
-`content_omitted` and `content_budget` identify source omitted from the response.
-Read a bounded file range for large sources, or use `context` for a specific
-symbol. Query guidance is the JSON `next` field, so default responses can be
-parsed directly. Configured `maxTokens` budgets override these source defaults
-and retain their existing final text cap, which can truncate JSON. Group queries
-and non-source metadata do not have this default source limit.
-
-The isolated MCP arms also receive the registry binding `benchmark-target` in
-their task prompt, preventing inherited repository names from causing discovery
-and retry calls. The no-MCP and host-unsafe prompts retain their existing behavior.
-Compare stable and candidate runtimes using the same harness revision; the
-binding change makes comparisons with older harness runs confounded.
+MCP tool schemas expose the configured default repository name and path. The
+sandbox already configures `/workspace` as its default, so the schema identifies
+`benchmark-target` without adding benchmark-specific instructions to task prompts.
+Compare stable and candidate runtimes using the same harness revision.
 
 ## Relation to the SWE-bench harness
 

@@ -41,12 +41,7 @@ import {
   McpRepositoryPolicy,
   mcpRepositoryPolicyConfigured,
 } from './repository-policy.js';
-import {
-  applyMcpMaxTokens,
-  formatMcpQueryResult,
-  resolveMcpMaxTokens,
-  withoutMcpBudgetArg,
-} from './output-budget.js';
+import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
 import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-arguments.js';
 import {
   applyMcpResponseFilter,
@@ -78,7 +73,7 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness. If pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset to fetch the rest.`;
 
     case 'query':
-      return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.${args?.include_content === true ? ` For source of a process_symbols row without content, use context({uid: "<id>", include_content: true${repoParam}}).` : ''}`;
+      return `Use context({uid: "<id>"${repoParam}}) for a symbol's references and processes.${args?.include_content === true ? ` Source previews marked content_truncated are incomplete; use context({uid: "<id>", include_content: true${repoParam}}) or read_file with a bounded line range for more.` : ''}`;
 
     case 'context':
       return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
@@ -289,11 +284,10 @@ export function createMCPServer(
         await scopedBackend.callTool(name, backendArgs),
         responseFilter,
       );
-      // Keep graph evidence intact; query source text gets its own bounded representation.
       const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly, result);
       const resultText =
         name === 'query' && result !== null && typeof result === 'object' && !Array.isArray(result)
-          ? formatMcpQueryResult(result as Record<string, unknown>, hint, maxTokens)
+          ? JSON.stringify({ ...result, next: hint })
           : (typeof result === 'string' ? result : JSON.stringify(result)) + hint;
 
       return {

@@ -468,13 +468,6 @@ def run_arm(
     host_text = getattr(sandbox, "host_text", _unchanged)
     host_path = getattr(sandbox, "host_path", lambda value: str(value))
     backend = getattr(sandbox, "backend", "bwrap")
-    if backend == "bwrap" and arm != "baseline_nomcp":
-        task = {
-            **task,
-            "prompt": task["prompt"] + '\n\nThe supplied MCP registry names this workspace "benchmark-target". '
-            'Use repo: "benchmark-target" for GitNexus calls, even if inherited repository instructions '
-            'name another index. This binding is already established; no repository discovery is needed.',
-        }
     env = model_session_environment(
         auth_token=args.auth_token,
         base_url=args.base_url,

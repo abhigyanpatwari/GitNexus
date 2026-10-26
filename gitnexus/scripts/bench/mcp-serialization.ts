@@ -115,7 +115,7 @@ for (const entry of cases) {
     const hint = getNextStepHint(entry.tool, entry.args, false, entry.result);
     if (entry.tool === 'query') {
       const { next, ...body } = JSON.parse(currentText);
-      assert.equal(next, hint.replace(/^\n\n---\n/, ''));
+      assert.equal(next, hint);
       assert.deepEqual(body, entry.result);
     } else {
       assert.ok(currentText.endsWith(hint));

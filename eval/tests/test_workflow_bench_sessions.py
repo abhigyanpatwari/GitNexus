@@ -380,29 +380,6 @@ def test_nomcp_and_tool_arms_load_repository_context_with_the_same_startup_mode(
         assert settings["disableAllHooks"] is True
 
 
-@pytest.mark.parametrize("backend", ["bwrap", "host-unsafe"])
-def test_isolated_mcp_prompt_binds_the_actual_registry_name(monkeypatch, tmp_path, backend):
-    prompts = []
-
-    def capture_prompt(prompt, *_args, **_kwargs):
-        prompts.append(prompt)
-        return session_record()
-
-    monkeypatch.setattr(runner, "run_claude", capture_prompt)
-    monkeypatch.setattr(runner, "run_verify", lambda *_a, **_k: (True, "ok"))
-    task = {"prompt": "Edit source and run its tests.", "verify": "true"}
-    sandbox = fake_sandbox(tmp_path)
-    sandbox.backend = backend
-    for arm in ("baseline", "baseline_nomcp"):
-        runner.run_arm(arm, task, tmp_path, bench_args(), sandbox=sandbox)
-
-    assert ('repo: "benchmark-target"' in prompts[0]) == (backend == "bwrap")
-    assert ("inherited repository instructions" in prompts[0]) == (backend == "bwrap")
-    assert "benchmark-target" not in prompts[1]
-    assert "GitNexus tools are unavailable" in prompts[1]
-    assert task["prompt"] == "Edit source and run its tests."
-
-
 def _probe_cell_provisioning(monkeypatch, tmp_path):
     clone = tmp_path / "clone"
     clone.mkdir()
