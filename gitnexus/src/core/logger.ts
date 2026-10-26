@@ -263,9 +263,20 @@ interface ActiveSink {
   readonly destination: DestinationStream;
   readonly level: string | undefined;
   readonly mixin: (() => Record<string, unknown>) | undefined;
+  /** The sink that was active when this one was configured. */
+  readonly previous: ActiveSink | undefined;
+  /** Set by this sink's restore; a retired sink is never made active again. */
+  retired: boolean;
 }
 
 let _sink: ActiveSink | undefined;
+
+/** The nearest sink in the chain whose owner has not restored it yet. */
+function nearestLiveSink(from: ActiveSink | undefined): ActiveSink | undefined {
+  let sink = from;
+  while (sink !== undefined && sink.retired) sink = sink.previous;
+  return sink;
+}
 
 /**
  * A host mixin runs inside every log call of GitNexus, so a bug in it must not
@@ -299,9 +310,12 @@ function guardMixin(mixin: () => Record<string, unknown>): () => Record<string, 
  * it before this call pick the sink up on their next record; a named child
  * built before this call keeps the destination it was built with.
  *
- * Returns a function that puts back whatever was active before this call. It
- * does nothing if a later `configureLoggerSink()` has replaced this sink in the
- * meantime: that sink's own restore owns the state.
+ * Returns a function that retires this sink. When it is the active one, the
+ * nearest earlier sink that has not been retired itself becomes active again,
+ * or stderr when there is none. When a later `configureLoggerSink()` has
+ * replaced it, the active state is left alone, but the sink stays retired, so
+ * a later restore never brings it back: host and plugin lifetimes do not have
+ * to end in strict LIFO order.
  *
  * No pretty transport and no `beforeExit` flush hook are installed for a host
  * sink: the destination belongs to the host, which decides how it is flushed
@@ -322,18 +336,20 @@ export function configureLoggerSink(opts: LoggerSinkOptions): () => void {
   if (opts.mixin !== undefined && typeof opts.mixin !== 'function') {
     throw new TypeError('configureLoggerSink: `mixin` must be a function returning an object');
   }
-  const previous = _sink;
   const sink: ActiveSink = {
     destination: opts.destination,
     level: opts.level?.toLowerCase(),
     mixin: opts.mixin ? guardMixin(opts.mixin) : undefined,
+    previous: _sink,
+    retired: false,
   };
   _sink = sink;
   // The singleton is rebuilt on its next call so it picks the sink up.
   _cached = undefined;
   return () => {
+    sink.retired = true;
     if (_sink !== sink) return;
-    _sink = previous;
+    _sink = nearestLiveSink(sink.previous);
     _cached = undefined;
   };
 }

@@ -346,7 +346,43 @@ describe('configureLoggerSink — host sink', () => {
     }
   });
 
-  it('a later sink replaces the earlier one, whose restore is then a no-op', () => {
+  it('a sink restored out of order never comes back: restoreFirst then restoreSecond ends on stderr', () => {
+    // Host and plugin lifetimes do not end in strict LIFO order. The first
+    // owner's restore ran while the second sink was active; once the second
+    // owner restores too, nothing may resurrect the first.
+    const first = new MemoryWritable();
+    const second = new MemoryWritable();
+    const restoreFirst = configureLoggerSink({ destination: first });
+    const restoreSecond = configureLoggerSink({ destination: second });
+    restoreFirst();
+    restoreSecond();
+    // No capture here: a capture would take precedence over any sink and hide
+    // a resurrected one. The record goes to stderr, and neither stream sees it.
+    logger.warn('after both owners restored');
+    expect(first.records()).toEqual([]);
+    expect(second.records()).toEqual([]);
+  });
+
+  it('skips every retired predecessor, not only the nearest one', () => {
+    const first = new MemoryWritable();
+    const second = new MemoryWritable();
+    const third = new MemoryWritable();
+    const restoreFirst = configureLoggerSink({ destination: first });
+    const restoreSecond = configureLoggerSink({ destination: second });
+    const restoreThird = configureLoggerSink({ destination: third });
+    restoreSecond();
+    restoreThird();
+    try {
+      logger.warn('back on the first, the only live owner');
+      expect(first.records().map((r) => r.msg)).toEqual(['back on the first, the only live owner']);
+      expect(second.records()).toEqual([]);
+      expect(third.records()).toEqual([]);
+    } finally {
+      restoreFirst();
+    }
+  });
+
+  it('a later sink replaces the earlier one, whose restore leaves the active state alone', () => {
     const first = new MemoryWritable();
     const second = new MemoryWritable();
     const restoreFirst = configureLoggerSink({ destination: first });
