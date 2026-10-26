@@ -460,7 +460,7 @@ Applies §2 with its precedence. Emits evidence for each pair and each test, inc
 | Surface       | Layers                                                   | Trigger                  | Output                                                                                                                                                                                          |
 | ------------- | -------------------------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | PR            | 0                                                        | every PR                 | Sticky CI comment (exists)                                                                                                                                                                      |
-| Scheduled job | 0–2 and the scenario fingerprint on `gitnexus/test/unit` and `gitnexus/test/integration` (Layer 1 in 12 CI slices) | weekly (mutation `none`) | Artifact (JSON + markdown); one tracking issue updated in place                                                                                                                                 |
+| Scheduled job | 0–2 and the scenario fingerprint on `gitnexus/test/unit` and `gitnexus/test/integration` (Layer 1 in 4 CI slices) | weekly (mutation `none`) | Artifact (JSON + markdown); one tracking issue updated in place                                                                                                                                 |
 | Manual run    | as scheduled, plus 3 at the chosen mutation scope        | workflow dispatch        | As the scheduled job; mutation `possible-duplicates` or `all` adds kill sets, weak tests and gaps                                                                                               |
 | Labelled PR   | as scheduled but diff-scoped (pairs with a changed test file), plus 3 over the possible duplicates | `scenario-map` label     | Artifact and job summary; no issue, no baseline                                                                                                                                                 |
 | Local CLI     | any                                                      | developer                | Same report                                                                                                                                                                                     |
@@ -609,7 +609,7 @@ Phase 1 choices: the tool lives in `gitnexus/tools/scenario-map/`. The supported
 
 Maintainer (2026-10-26):
 
-- **Fingerprint scope:** the fingerprint covers every unit and integration test of `gitnexus/`; mutation stays on the validated pure-JS category. Layer 1 runs in CI slices when one job cannot hold it (fingerprint plan E5, E6).
+- **Fingerprint scope:** the fingerprint covers every unit and integration test of `gitnexus/`; mutation stays on the validated pure-JS category. Layer 1 runs in CI slices (fingerprint plan E5, E6, E7).
 
 Maintainer (2026-10-25):
 

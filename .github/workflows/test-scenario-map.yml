@@ -22,8 +22,8 @@ name: Test Scenario Map
 #
 # Jobs, each one CLI stage over one work directory ($RUNNER_TEMP/scenario-map) exchanged as
 # artifacts:
-#   coverage    one matrix job per Layer 1 slice (12, fail-fast off): the fingerprint's unit and
-#               integration test files, split like the CI test shards; one Layer 1 job does not fit.
+#   coverage    one matrix job per Layer 1 slice (4, fail-fast off): the fingerprint's unit and
+#               integration test files, split like the CI test shards.
 #   plan        eligibility, Layer 0, the prepared copy and run manifest, Layer 1 merged from the
 #               slices (a slice that did not report leaves its files unrecorded), Layer 2,
 #               candidates and the provisional shard plan.
@@ -113,9 +113,10 @@ jobs:
     # A labelled pull request's diff-scoped run takes Layer 1 in the plan job.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    # Twelve slices balanced like the CI test shards (test/helpers/shard-balance.ts), about 3.5 h
-    # of Layer 1 in all (every test runs twice under per-test coverage); the heaviest file alone
-    # (incremental-orchestration, 8 min with coverage in the test workflow) takes about 25 min.
+    # Four slices balanced like the CI test shards (test/helpers/shard-balance.ts): the whole unit
+    # and integration suite runs with coverage in three 7-8 minute shards of the test workflow
+    # (ci.yml run 30014110469). Layer 1 repeats only test bodies and snapshots per test (about 5%
+    # of an integration file whose work sits in beforeAll), and the prefilter drops a quarter.
     timeout-minutes: 75
     continue-on-error: true
     permissions:
@@ -123,7 +124,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        index: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

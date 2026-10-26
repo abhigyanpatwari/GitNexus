@@ -119,12 +119,15 @@ and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS en
 - **E5** Measure Layer 1 on a sample of integration files locally; shard Layer 1 on CI when the
   whole set does not fit one plan job.
   - Result (2026-10-26): a sample of 44 integration files (every tenth) ran past 35 min at
-    concurrency 4 on the shared host, against 8.2 min for all 4,632 unit tests, so one plan job
-    cannot hold Layer 1. The `coverage` stage runs one slice (`--index i --of n`,
+    concurrency 4 on the shared host, against 8.2 min for all 4,632 unit tests. That host was
+    loaded by other suites (see E7), so the sample overstated the cost; Layer 1 still runs in
+    slices, which keeps the plan job small and the wall clock short. The `coverage` stage runs one
+    slice (`--index i --of n`,
     `path-coverage/slices.ts`: split like the CI test shards by `test/helpers/shard-balance.ts`),
     and `plan --coverage <dir>` merges the slice files; a slice that did not report leaves its
-    files unrecorded. The workflow runs 12 slices before the plan, sized from the CI coverage
-    timings (about 3.5 h of Layer 1 in all; the heaviest file about 25 min).
+    files unrecorded. The workflow runs 4 slices before the plan (first sized at 12 from an
+    over-pessimistic estimate; corrected under E7: the whole suite with coverage runs in three
+    7-8 minute shards of the test workflow, ci.yml run 30014110469).
 - **E6** (found by E5) The prepare step (gate-3 hashed) leaves `vendor/` and `dist/` out of the
   prepared copy, so half the sampled integration files failed to load (leiden, the parse worker,
   the built CLI). Layer 1 and the trace copy both from the checkout into their prepared copy in
@@ -145,10 +148,13 @@ and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS en
     Layer 1 cost (`test/helpers/shard-balance.ts`); Vitest's runtime collection
     (`vitest list --no-static-parse`) of the skipped files finds no test the static inventory
     misses (434 equal counts, 15 with fewer runtime tests: benchmarks skipped at collection).
-  - Not measured: the Layer 1 overhead per test (two attempts, two coverage takes each) against a
-    plain run. The shared host's other suites made the local timings meaningless (a plain run of
-    `resolvers/rust` skipped all 255 tests after 798 s while Layer 1 passed them in 192 s); the
-    first CI run measures it.
+  - Layer 1 overhead, measured as ratios inside one instrumented run (absolute times on the shared
+    host are meaningless: a plain run of `resolvers/rust` skipped all 255 tests after 798 s): the
+    coverage snapshots of `resolvers/rust` (1,022 takes) cost 10.1 s against about 190 s for the
+    file, whose work sits in `beforeAll` (not repeated, not snapshotted per test), and its repeat
+    attempts re-ran 0.1 s of test bodies; a unit file of many tiny tests (`scenario-map/cli`)
+    spends 2.5 s on snapshots against 0.3 s of test bodies. So Layer 1 costs little more than a
+    plain run, and the slices are sized from the test workflow's shards: 4.
 - **E8** (optimisation) A labelled pull request's run is diff-scoped: `plan --changed-since <ref>`
   (the workflow passes the merge commit's first parent) keeps only candidate pairs with a test of a
   test file the diff added or modified, and Layer 1 runs only those files (when the prefilter would
