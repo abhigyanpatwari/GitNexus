@@ -6,7 +6,7 @@
     "`verdict` uses the ids of `verdicts` (design §2 labels). `rule` names the deciding design rule. `stages` gives the design's expected result for each stage on the pair's decision path (Verdict decision diagram of the plan); a stage not listed is off the path and does not affect the verdict. Stage values: facet equal | differs | equal-unresolved; discardedValues equal | differ; killSets equal (always non-empty here) | differ; rowDeletion not-applicable | symmetric | asymmetric; trace clean | veto; staticValueFlow clean | veto | unknown | not-required (discarded values equal); isolation agrees | disagrees.",
     "Every test passes unmutated in file order. No production mutant throws, loops or times out in any test, so every kill is an assertion failure and no pair is Inconclusive by accident; only order-dependent is built to be Inconclusive.",
     "Plan conflicts, recorded on the pairs in `planConflict`: enum-member (the residual-difference guard alone yields repeat-weak; expected review), set-membership (the design yields row, not the strong repeat U17 lists for positive controls), repo-arithmetic (design §5.3 rule 3 keeps the literal 1 exact). set-non-member is a positive control added beyond the U17 list: it is the only pair that checks a table read through Set.prototype.has is not vetoed as opaque.",
-    "`fingerprint` is the scenario fingerprint verdict and rule (tools/scenario-map/verdict/fingerprint.ts; docs/plans/2026-10-25-1700-feat-scenario-fingerprint-plan.md), written from its rules before any run, like the rest: every pair runs one path in both tests (no expected mutation rule is path-differs), so a pair whose discarded values differ is a table row whatever the values feed (the opaque built-ins, the expected-only literal 'alpha' against 'beta', the table keys and Set members, the order-dependent labels); numeric-boundary's facets differ (distinct); enum-member's residual difference holds it at possible-duplicate; verbatim-duplicate is the one duplicate. A fingerprint duplicate of a pair this file does not list fails the oracle."
+    "`fingerprint` is the scenario fingerprint verdict and rule (tools/scenario-map/verdict/fingerprint.ts; docs/plans/2026-10-25-1700-feat-scenario-fingerprint-plan.md), written from its rules before any run, like the rest: every pair runs one path in both tests (no expected mutation rule is path-differs), so a pair whose discarded values differ is a table row whatever the values feed (the opaque built-ins, the expected-only literal 'alpha' against 'beta', the table keys and Set members); order-dependent is Inconclusive (not-passing): Layer 1 runs every test twice in a row (repeats 1, design §5.2), the shared counter makes each test's second attempt fail, and Vitest reports a test failed when any repetition fails; numeric-boundary's facets differ (distinct); enum-member's residual difference holds it at possible-duplicate; verbatim-duplicate is the one duplicate. A fingerprint duplicate of a pair this file does not list fails the oracle."
   ],
   "schemaVersion": 1,
   "verdicts": {
@@ -302,8 +302,8 @@
       "verdict": "inconclusive",
       "rule": "isolation-disagrees",
       "fingerprint": {
-        "verdict": "table-row",
-        "rule": "input-values-differ"
+        "verdict": "inconclusive",
+        "rule": "not-passing"
       },
       "stages": {
         "facet": "equal",
