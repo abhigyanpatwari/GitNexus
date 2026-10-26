@@ -9,13 +9,17 @@
  * Layer 1 in coverage slices before the plan (fingerprint plan E5).
  *
  * Stages:
- *   coverage    `--index <i> --of <n>`: Layer 1 over slice i of the fingerprint's test files
- *               (path-coverage/slices.ts, balanced like the CI test shards), written as
+ *   coverage    `--index <i> --of <n>`: Layer 1 over slice i of the files Layer 1 runs
+ *               ({@link layer1FilesOf}; pass the plan's `--mutation`) (path-coverage/slices.ts,
+ *               balanced like the CI test shards), written as
  *               `<work>/coverage-slice-<i>.json`; exit 1 when a file of the slice failed or wrote
  *               no record.
  *   plan        eligibility (R1); the Layer 0 scan (test-dupes over the `--all` corpus plus the
  *               eligible files, findings on eligible files kept); a prepared copy and the run
- *               manifest built right after it (KTD14); Layer 1 (path-coverage `runCoverage`, or
+ *               manifest built right after it (KTD14); Layer 1 over {@link layer1FilesOf}: every
+ *               fingerprint file for `--mutation all` and controls, otherwise only the files with a
+ *               test whose static checks-and-context key another test shares or that has none
+ *               (path-coverage/prefilter.ts; E7) (path-coverage `runCoverage`, or
  *               with `--coverage <dir>` the merge of the coverage stage's slice files in that
  *               directory, outside `--work`: a slice that did not report leaves its files
  *               unrecorded); the
@@ -296,6 +300,7 @@ import {
   type CoverageWorkFile,
 } from './path-coverage/run-coverage.js';
 import { sequentialMatcherFor } from './path-coverage/partitions.js';
+import { layer1Files } from './path-coverage/prefilter.js';
 import {
   COVERAGE_SLICE_SCHEMA_VERSION,
   coverageSliceName,
@@ -493,7 +498,8 @@ export class UsageError extends Error {
 export const USAGE =
   'usage: npm run test:scenario-map -- ' +
   '<coverage|plan|value-flow|shards|shard|merge|all|controls> [--work <dir>]\n' +
-  '  coverage:   --index <i> --of <n> [--mode normal|controls | --controls] [--concurrency <n>]\n' +
+  '  coverage:   --index <i> --of <n> [--mode normal|controls | --controls] ' +
+  '[--mutation none|possible-duplicates|all] [--concurrency <n>]\n' +
   '  plan:       [--mode normal|controls | --controls] [--seed <text>] [--shards <n>] ' +
   '[--mutation none|possible-duplicates|all] [--deadline-minutes <m>] [--concurrency <n>] ' +
   '[--speed-factor <x>] [--coverage <dir>]\n' +
@@ -576,7 +582,7 @@ const REPORT_FLAGS: readonly Flag[] = [
   'default-branch',
 ];
 const STAGE_FLAGS: Readonly<Record<Stage, readonly Flag[]>> = {
-  coverage: ['work', 'mode', 'controls', 'index', 'of', 'concurrency'],
+  coverage: ['work', 'mode', 'controls', 'index', 'of', 'mutation', 'concurrency'],
   plan: [
     'work',
     'mode',
@@ -1773,6 +1779,21 @@ const facetEqual = (facets: ReadonlyMap<string, InputFacet>, pair: CandidatePair
 };
 
 /**
+ * The test files Layer 1 runs (E7): every fingerprint file for mutation scope `all` and in controls
+ * mode (every candidate group's evidence), else path-coverage/prefilter.ts's.
+ */
+export function layer1FilesOf(
+  repoRoot: string,
+  files: readonly string[],
+  mutation: MutationScope,
+  mode: RunMode,
+): string[] {
+  return mutation === 'all' || mode.kind === 'controls'
+    ? [...files]
+    : layer1Files(repoRoot, files).files;
+}
+
+/**
  * Layer 1 from the coverage stage's slice files in `dir`: merged (path-coverage/slices.ts) and
  * written where one Layer 1 run writes its work file.
  */
@@ -1808,6 +1829,8 @@ export interface CoverageStageOptions {
   index: number;
   of: number;
   mode: RunMode;
+  /** The run's mutation scope: the plan stage must slice the same files (E7). */
+  mutation: MutationScope;
   concurrency: number;
 }
 
@@ -1823,16 +1846,22 @@ export async function runCoverageStage(
   const { repoRoot, layout, log } = ctx;
   resetWorkDir(layout.root);
   const eligibility = resolveEligibility({ repoRoot, mode: options.mode });
-  const assignment = coverageSlices(
+  const layer1 = layer1FilesOf(
+    repoRoot,
     eligibility.fingerprintFiles,
+    options.mutation,
+    options.mode,
+  );
+  const assignment = coverageSlices(
+    layer1,
     options.of,
     ctx.packageDir,
     sequentialMatcherFor(options.mode.kind),
   );
   const files = assignment[options.index] ?? [];
   log(
-    `coverage: slice ${options.index} of ${options.of}: ${files.length} of ` +
-      `${eligibility.fingerprintFiles.length} test files`,
+    `coverage: slice ${options.index} of ${options.of}: ${files.length} of the ${layer1.length} ` +
+      `test files Layer 1 runs (${eligibility.fingerprintFiles.length} in the fingerprint's scope)`,
   );
   const { work, wallClockMs } = await runCoverage({
     repoRoot,
@@ -1915,6 +1944,17 @@ export async function runPlanStage(
     });
     return buildRunManifest({ preparedRoot: layout.planPrepared, mode: options.mode, tests: [] });
   });
+  const layer1 = await timed('layer 1 files', () =>
+    layer1FilesOf(repoRoot, eligibility.fingerprintFiles, options.mutation, options.mode),
+  );
+  const skipped = eligibility.fingerprintFiles.length - layer1.length;
+  log(
+    `plan: Layer 1 runs ${layer1.length} of ${eligibility.fingerprintFiles.length} test files` +
+      (skipped === 0
+        ? ''
+        : `; the other ${skipped} hold only tests whose checks-and-context key no other test ` +
+          'shares, so none of their pairs can be a duplicate'),
+  );
   const { work } = await timed('layer 1', async () =>
     options.coverage === null
       ? runCoverage({
@@ -1922,8 +1962,9 @@ export async function runPlanStage(
           outDir: layout.coverageDir,
           mode: options.mode,
           maxWorkers: options.concurrency,
+          files: layer1,
         })
-      : { work: mergeCoverage(ctx, options.coverage, eligibility.fingerprintFiles, options.mode) },
+      : { work: mergeCoverage(ctx, options.coverage, layer1, options.mode) },
   );
   const ids = sortedUnique(work.tests.map((test) => test.id));
   const manifest: ScenarioRunManifest = {
@@ -3182,6 +3223,7 @@ export async function runMergeStage(
       .filter((test) => plan.eligibility.files.includes(test.file))
       .map((test) => test.id),
     shards: { planned: shardPlan.shards.length, complete: completeShards, incomplete },
+    layer1Files: work.files.length,
     layer0: existsSync(layout.layer0) ? readJsonFile(layout.layer0) : null,
     evidence,
     fingerprint,
@@ -3419,6 +3461,7 @@ async function runStage(options: CliOptions, ctx: StageContext): Promise<number>
           index: options.index ?? 0,
           of: options.of ?? 1,
           mode: options.mode,
+          mutation: options.mutation,
           concurrency: options.concurrency ?? DEFAULT_CONCURRENCY,
         }),
       );

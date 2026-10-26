@@ -222,6 +222,7 @@ export function reportInput(options: InputOptions = {}): ReportInput {
       delta: { notValidated: [], rejected: [] },
       extraRoots: [],
     },
+    layer1Files: 1,
     eligibleTests: [A, B, C],
     shards: { planned: 1, complete: 1, incomplete: [] },
     layer0: null,

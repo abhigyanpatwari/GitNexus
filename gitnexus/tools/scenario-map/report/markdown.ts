@@ -511,6 +511,14 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
     '',
     `${eligibility.mode} mode: the fingerprint covers ${plural(eligibility.fingerprintFiles, 'test file')}; ` +
       `${plural(eligibility.files.length, 'test file')} are mutation-eligible.`,
+    ...(eligibility.layer1Files === eligibility.fingerprintFiles
+      ? []
+      : [
+          `Layer 1 ran ${eligibility.layer1Files} of them; every test of the other ` +
+            `${eligibility.fingerprintFiles - eligibility.layer1Files} has a checks-and-context ` +
+            'key no other test shares, so none of their pairs can be a duplicate, a possible ' +
+            'duplicate or a table row.',
+        ]),
   ];
   const delta = eligibility.delta;
   if (delta === null) return [...lines, 'The Phase 0 envelope is not consulted in this mode.'];

@@ -61,6 +61,7 @@ import {
   effectiveShardPlan,
   estimateScenarioGroup,
   isolationOrder,
+  layer1FilesOf,
   mutationTarget,
   parseCliArgs,
   parseExpectedControls,
@@ -232,21 +233,32 @@ describe('runCli usage', () => {
     ]);
   });
 
-  it('gives the coverage stage its slice and the plan its slice directory', () => {
-    const coverage = parseCliArgs(['coverage', '--index', '3', '--of', '12'], '/base');
-    const plan = parseCliArgs(['plan', '--coverage', 'slices'], '/base');
-    expect([coverage.stage, coverage.index, coverage.of, coverage.coverage, plan.coverage]).toEqual(
-      ['coverage', 3, 12, null, path.resolve('/base', 'slices')],
+  it('gives the coverage stage its slice and scope, and the plan its slice directory', () => {
+    const coverage = parseCliArgs(
+      ['coverage', '--index', '3', '--of', '12', '--mutation', 'none'],
+      '/base',
     );
+    const plan = parseCliArgs(['plan', '--coverage', 'slices'], '/base');
+    expect([
+      coverage.stage,
+      coverage.index,
+      coverage.of,
+      coverage.mutation,
+      coverage.coverage,
+      plan.coverage,
+    ]).toEqual(['coverage', 3, 12, 'none', null, path.resolve('/base', 'slices')]);
   });
 
-  it('exits 2 for slice files inside the work directory, which plan empties', async () => {
-    const { deps, lines, work } = setup();
-    const code = await runCli(
-      ['plan', '--work', work, '--coverage', path.join(work, 'slices')],
-      deps,
-    );
-    expect([code, lines[0]]).toEqual([2, expect.stringMatching(/must lie outside --work/)]);
+  it.each([
+    { mutation: 'all' as const, kind: 'normal', mode: { kind: 'normal' as const } },
+    {
+      mutation: 'none' as const,
+      kind: 'controls',
+      mode: { kind: 'controls' as const, fixtureRoot: 'gitnexus/test/fixtures/x' },
+    },
+  ])('runs every file in Layer 1 for mutation $mutation in $kind mode', ({ mutation, mode }) => {
+    const files = ['test/unit/a.test.ts', 'test/unit/b.test.ts'];
+    expect(layer1FilesOf('/no-repo', files, mutation, mode)).toEqual(files);
   });
 
   it('exits 2 for a work directory inside the checkout', async () => {

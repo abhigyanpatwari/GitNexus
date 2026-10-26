@@ -130,3 +130,22 @@ and `gitnexus/test/integration`; mutation stays on the gate-validated pure-JS en
   the built CLI). Layer 1 and the trace copy both from the checkout into their prepared copy in
   normal mode; every stage that runs tests (plan, value-flow, all, controls) requires a built
   `dist/`, and the workflow's plan and value-flow jobs build it.
+- **E7** (optimisation, maintainer 2026-10-26: "can we optimise the tool?") Layer 1 skips the files
+  no fingerprint finding can come from. Past the path rule a pair is a duplicate, a possible
+  duplicate or a table row only when the two checks-and-context keys are equal or one is unknown,
+  and the key is static, so `path-coverage/prefilter.ts` keeps a file only when a test's key is
+  shared or unknown, a call's instance count is not static, a body reads a file snapshot, the file
+  may register tests the inventory cannot see (a call at registration level that is not the test
+  API, such as `defineRenameFixtureTests`, `describeGrammarPresence` or an `it` alias), or it did
+  not parse. Given up: `different-checks` between a test of a skipped file and another test (0 on
+  the last full unit run). `--mutation all` and the controls run every file.
+  - Evidence: on the 250 unit files of the last full fingerprint run, the static keys reproduce
+    all 3,313 runtime keys and select exactly the 172 files the runtime keys select. On the current
+    checkout the prefilter skips 449 of 1,399 files (149 integration), about 24% of the weighted
+    Layer 1 cost (`test/helpers/shard-balance.ts`); Vitest's runtime collection
+    (`vitest list --no-static-parse`) of the skipped files finds no test the static inventory
+    misses (434 equal counts, 15 with fewer runtime tests: benchmarks skipped at collection).
+  - Not measured: the Layer 1 overhead per test (two attempts, two coverage takes each) against a
+    plain run. The shared host's other suites made the local timings meaningless (a plain run of
+    `resolvers/rust` skipped all 255 tests after 798 s while Layer 1 passed them in 192 s); the
+    first CI run measures it.

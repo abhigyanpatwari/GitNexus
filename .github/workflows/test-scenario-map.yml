@@ -134,9 +134,12 @@ jobs:
         env:
           INDEX: ${{ matrix.index }}
           OF: ${{ strategy.job-total }}
+          # The plan's scope (its "Choose the mutation scope" step): unless `all`, Layer 1 skips the
+          # files whose tests all have a checks-and-context key no other test shares.
+          MUTATION: ${{ github.event_name == 'pull_request' && 'possible-duplicates' || inputs.mutation || 'none' }}
         run: |
           status=0
-          npm run test:scenario-map -- coverage --index "$INDEX" --of "$OF" \
+          npm run test:scenario-map -- coverage --index "$INDEX" --of "$OF" --mutation "$MUTATION" \
             --work "$RUNNER_TEMP/scenario-map" --concurrency "$SCENARIO_MAP_CONCURRENCY" || status=$?
           if [ "$status" -eq 1 ]; then
             echo "::warning::a test file of slice $INDEX failed or wrote no record; the report counts it"

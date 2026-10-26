@@ -296,6 +296,8 @@ export interface ReportInput {
   seed: string;
   provenance: CollectedProvenance;
   eligibility: Eligibility;
+  /** How many test files Layer 1 ran (the work file's files; E7 skips the rest). */
+  layer1Files: number;
   /** Phase 0 ids of every eligible test (the M of "N of M evaluated"). */
   eligibleTests: readonly string[];
   shards: ShardStatus;
@@ -448,6 +450,11 @@ export interface ScenarioMapReport {
     files: string[];
     /** How many test files the fingerprint covers. */
     fingerprintFiles: number;
+    /**
+     * How many of them Layer 1 ran; the others hold only tests whose checks-and-context key no
+     * other test shares (path-coverage/prefilter.ts).
+     */
+    layer1Files: number;
     delta: EligibilityDelta | null;
   };
   layer0: Layer0Section;
@@ -947,6 +954,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
       mode: input.eligibility.mode,
       files: sortedUnique(input.eligibility.files),
       fingerprintFiles: input.eligibility.fingerprintFiles.length,
+      layer1Files: input.layer1Files,
       delta: input.eligibility.delta,
     },
     layer0: layer0Section(input.layer0, eligibleRepoFiles),
