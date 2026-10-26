@@ -1,0 +1,65 @@
+name: Callable end-to-end experiment
+
+on:
+  push:
+    branches: [optimize/callable-end-to-end]
+    paths:
+      - .github/workflows/callable-end-to-end.yml
+      - docs/optimize/callable-end-to-end-experiment/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: callable-end-to-end-experiment
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CORPUS: repository
+      GITNEXUS_MEMORY: 'off'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Build pinned runtimes with the same dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in control initial candidate; do
+            runtime="$RUNNER_TEMP/callable-$variant"
+            mkdir "$runtime"
+            revision=b31dfb73c368f3d1254cfafb6eb6b2ed7453e221
+            if [[ "$variant" == control ]]; then
+              revision=f759753794fda8e399d670ef7f04b9d7473d6082
+            fi
+            git archive "$revision" | tar -x -C "$runtime"
+            ln -s "$GITHUB_WORKSPACE/gitnexus/node_modules" "$runtime/gitnexus/node_modules"
+            if [[ "$variant" == candidate ]]; then
+              (cd "$runtime" && git apply "$GITHUB_WORKSPACE/docs/optimize/callable-end-to-end-experiment/candidate.patch")
+            fi
+            (cd "$runtime/gitnexus" && npm run build)
+          done
+      - name: Run serial paired measurements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 docs/optimize/callable-end-to-end-experiment/measure.py \
+            --runtime-parent "$RUNNER_TEMP" --corpus "$CORPUS" \
+            --harness "$GITHUB_WORKSPACE/gitnexus/bench/method-declaration-facts/measure.mjs" \
+            --output "$RUNNER_TEMP/callable-results"
+      - name: Upload raw evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: callable-end-to-end-${{ env.CORPUS }}
+          path: ${{ runner.temp }}/callable-results/
+          if-no-files-found: error
+          retention-days: 14
