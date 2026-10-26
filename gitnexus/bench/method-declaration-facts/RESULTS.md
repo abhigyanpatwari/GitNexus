@@ -1,5 +1,9 @@
 # Measurement results — 2026-10-25
 
+For the latest combined time, peak-RSS, and retained-heap comparison, see the
+[memory follow-up report](../../../docs/optimize/callable-memory-report.md).
+The measurements below are the original extraction-cache experiment.
+
 Baseline: `ee7eff97f7f4eb7d68f7090cba448f7cc8285db2`. Candidate: this refactor before commit. The SHA-256 of sorted changed production paths and file bytes, each separated by NUL, is `b6e82236a38c3a0cbd073f2ef162885613869a32c6da9c2d906ecc85a6ff5ea6`. Both revisions were built independently and used the same installed dependencies.
 
 Runtime: Node v22.23.3, Linux, 12th Gen Intel(R) Core(TM) i9-12900K, one parse worker. Runtimes, dependencies, and temporary corpora were on the same native filesystem. This was a shared development host, without CPU isolation. Full tests and graph indexing were started only after these measurements.

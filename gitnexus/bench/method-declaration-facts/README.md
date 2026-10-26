@@ -56,6 +56,34 @@ do not establish an end-to-end speedup.
 
 See [the recorded results](RESULTS.md) for the initial measurements and their limits.
 
+## Retained memory
+
+Run the same probe against both built revisions, alternating their order across
+at least five fresh-process pairs for each language:
+
+```sh
+node --expose-gc bench/method-declaration-facts/memory.mjs \
+  --root /path/to/runtime/gitnexus --language java --declarations 10000
+node --expose-gc bench/method-declaration-facts/memory.mjs \
+  --root /path/to/runtime/gitnexus --language typescript --declarations 10000
+```
+
+The probe holds the parsed tree, runs scope arity and structure extraction, then
+releases method records, the tree, and emitted metadata in stages. It reports
+forced-GC JavaScript heap at each stage, a semantic digest, and whether the native
+tree became collectible. `extractionRetainedBytes` subtracts the tree-only heap;
+`emittedRetainedBytes` subtracts the initialized empty heap after releasing the
+tree. `releasedDeltaBytes` includes remaining cache capacity and runtime warmup.
+Compare those deltas rather than absolute process heap.
+
+This probe measures one isolate and a small declaration shape. Its RSS and
+extraction timing are **not** end-to-end indexing measurements. Use `measure.mjs`
+for complete cold/warm/changed indexing, including worker and native-memory RSS.
+Keep both runtimes on the same filesystem with the same dependencies and give
+every end-to-end child a fresh private `XDG_RUNTIME_DIR` so analyzer identity
+caches start equally cold. Time, RSS, and retained-heap results are consolidated
+in [the memory follow-up report](../../../docs/optimize/callable-memory-report.md).
+
 To count requests and distinct parameter arrays in real workers, use the optional
 preload below from the candidate package. Repeat with the candidate runtime and a
 different, nonexistent output file. The preload also runs inside parser workers;

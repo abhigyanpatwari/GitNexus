@@ -871,6 +871,20 @@ function selectFieldInfo(
 // ============================================================================
 
 const methodInfoCache = new Map<number, Map<string, MethodInfo>>();
+const methodCollisionGroups = new WeakMap<Map<string, MethodInfo>, Map<string, MethodInfo[]>>();
+
+/** Method maps are complete before publication and immutable for this file.
+ * Reuse their overload groups in both definition and enclosing-callable IDs.
+ * Weak ownership releases the groups with the per-file method cache.
+ */
+function getMethodCollisionGroups(methods: Map<string, MethodInfo>): Map<string, MethodInfo[]> {
+  let groups = methodCollisionGroups.get(methods);
+  if (!groups) {
+    groups = buildCollisionGroups(methods);
+    methodCollisionGroups.set(methods, groups);
+  }
+  return groups;
+}
 
 /**
  * Get (or extract and cache) method info for a class node.
@@ -1183,7 +1197,7 @@ const findEnclosingFunctionId = (
                   ? undefined
                   : info.parameters.length;
                 if (methodMap && arity !== undefined) {
-                  const g = buildCollisionGroups(methodMap);
+                  const g = getMethodCollisionGroups(methodMap);
                   encTypeTag =
                     typeTagForId(methodMap, funcName, arity, info, encLang, g) +
                     constTagForId(methodMap, funcName, arity, info, g);
@@ -1251,7 +1265,7 @@ const findEnclosingFunctionId = (
                 ? undefined
                 : info2.parameters.length;
               if (methodMap2 && arity2 !== undefined) {
-                const g2 = buildCollisionGroups(methodMap2);
+                const g2 = getMethodCollisionGroups(methodMap2);
                 encTypeTag2 =
                   typeTagForId(methodMap2, customResult.funcName, arity2, info2, encLang2, g2) +
                   constTagForId(methodMap2, customResult.funcName, arity2, info2, g2);
@@ -2861,7 +2875,7 @@ const processFileGroup = (
         const parameterTypes = methodProps.parameterTypes as string[] | undefined;
         if (parameterTypes?.length) arityTag += `~${parameterTypes.join(',')}`;
       } else if (arityTag && defMethodMap && defMethodInfo) {
-        const groups = buildCollisionGroups(defMethodMap);
+        const groups = getMethodCollisionGroups(defMethodMap);
         arityTag += typeTagForId(
           defMethodMap,
           nodeName,

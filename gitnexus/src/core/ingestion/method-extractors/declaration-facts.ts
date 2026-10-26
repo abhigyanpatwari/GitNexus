@@ -3,6 +3,28 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 type DeclarationFact = string | undefined | readonly Readonly<ParameterInfo>[];
 
+const parameterTypes = new WeakMap<readonly Readonly<ParameterInfo>[], readonly string[]>();
+const noTypes: readonly string[] = [];
+
+/** The common type projection of immutable declaration parameters. Consumers
+ * with positional unknowns, normalized types, or variadic markers copy only
+ * when their language policy differs. Neither keys nor values retain an AST.
+ */
+export function declarationParameterTypes(
+  parameters: readonly Readonly<ParameterInfo>[],
+): readonly string[] {
+  if (parameters.length === 0) return noTypes;
+  const cached = parameterTypes.get(parameters);
+  if (cached) return cached;
+  const types: string[] = [];
+  for (const parameter of parameters) {
+    if (parameter.type !== null) types.push(parameter.type);
+  }
+  if (types.length === 0) return noTypes;
+  parameterTypes.set(parameters, types);
+  return types;
+}
+
 /** Share a pure, node-only fact across structure and scope extraction.
  * Trees are immutable during ingestion. Native node IDs survive different JS
  * wrappers; tree ownership keeps IDs from colliding across files or reparses.
