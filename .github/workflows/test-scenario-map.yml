@@ -13,7 +13,10 @@ name: Test Scenario Map
 #   schedule            weekly, `none`: the fingerprint only, minutes, no shard;
 #   workflow_dispatch   input `mutation`: `none` (default), `possible-duplicates` or `all` (the
 #                       full Phase 1 run, hours over up to 20 shards);
-#   pull_request        when a maintainer adds the `scenario-map` label to a pull request:
+#   pull_request        TEMPORARY, remove before merge: the `scenario-map-test` label, added by
+#                       magyargergo on PR #3686 only, runs the whole suite (no diff scope) with
+#                       mutation `possible-duplicates`, to test every stage on CI before merge.
+#                       When a maintainer adds the `scenario-map` label to a pull request:
 #                       `possible-duplicates`, the deep run for a suspicious change, diff-scoped
 #                       (`--changed-since` on the coverage slices: only pairs with a test of a changed
 #                       test file; Layer 1 over those files, the files sharing their
@@ -80,7 +83,8 @@ on:
         required: false
         default: ''
   # The deep run of one pull request: only the `scenario-map` label starts it (the plan job's
-  # `if`); any other label event leaves every job skipped.
+  # `if`), and the TEMPORARY `scenario-map-test` label on PR #3686 by magyargergo; any other
+  # label event leaves every job skipped.
   pull_request:
     types: [labeled]
 
@@ -111,7 +115,8 @@ jobs:
   # ── Coverage: Layer 1 in slices ────────────────────────────────────
   coverage:
     name: Coverage ${{ matrix.index }}
-    if: github.event_name != 'pull_request' || github.event.label.name == 'scenario-map'
+    # TEMPORARY: the `scenario-map-test` clause (PR #3686 testing); remove before merge.
+    if: github.event_name != 'pull_request' || github.event.label.name == 'scenario-map' || (github.event.label.name == 'scenario-map-test' && github.event.sender.login == 'magyargergo' && github.event.pull_request.number == 3686)
     runs-on: ubuntu-latest
     # Four slices balanced like the CI test shards (test/helpers/shard-balance.ts): the whole unit
     # and integration suite runs with coverage in three 7-8 minute shards of the test workflow
@@ -144,11 +149,15 @@ jobs:
           # files whose tests all have a checks-and-context key no other test shares.
           MUTATION: ${{ github.event_name == 'pull_request' && 'possible-duplicates' || inputs.mutation || 'none' }}
           EVENT: ${{ github.event_name }}
+          LABEL: ${{ github.event.label.name }}
         run: |
           args=(--index "$INDEX" --of "$OF" --mutation "$MUTATION"
             --work "$RUNNER_TEMP/scenario-map" --concurrency "$SCENARIO_MAP_CONCURRENCY")
-          # The merge commit's first parent is the base: the pull request's own changes.
-          if [ "$EVENT" = "pull_request" ]; then args+=(--changed-since 'HEAD^1'); fi
+          # The merge commit's first parent is the base: the pull request's own changes. The
+          # TEMPORARY `scenario-map-test` run covers the whole suite.
+          if [ "$EVENT" = "pull_request" ] && [ "$LABEL" = "scenario-map" ]; then
+            args+=(--changed-since 'HEAD^1')
+          fi
           status=0
           npm run test:scenario-map -- coverage "${args[@]}" || status=$?
           if [ "$status" -eq 1 ]; then
@@ -168,7 +177,8 @@ jobs:
   plan:
     name: Plan
     needs: coverage
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.label.name == 'scenario-map') }}
+    # TEMPORARY: the `scenario-map-test` clause (PR #3686 testing); remove before merge.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.label.name == 'scenario-map' || (github.event.label.name == 'scenario-map-test' && github.event.sender.login == 'magyargergo' && github.event.pull_request.number == 3686)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     continue-on-error: true
