@@ -101,6 +101,8 @@ export const QUERY_DEFAULT_MAX_SYMBOLS = 25;
 /** Advertised query page maxima (schema + LocalBackend.query reject, not clamp). */
 export const QUERY_MAX_LIMIT = 100;
 export const QUERY_MAX_MAX_SYMBOLS = 200;
+/** Source preview characters shared across unique symbols on a query result page. */
+export const QUERY_CONTENT_MAX_CHARS = 16_000;
 export const CONTEXT_CHAIN_MAX_DEPTH = 3;
 
 const CWD_AWARE_REPO_OMISSION =
@@ -222,8 +224,7 @@ ${HOT_READ_STALENESS_NOTE}`,
         },
         include_content: {
           type: 'boolean',
-          description:
-            'Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content. Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
+          description: `Include source text retained for matching symbols as previews (default: false), sharing ${QUERY_CONTENT_MAX_CHARS} characters equally across unique returned symbols per repository. content_truncated marks incomplete previews; all matches remain present. Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row. Use read_file line ranges for large sources. contentAvailability reports index retention. Query next is JSON guidance.`,
           default: false,
         },
         chain_depth: {
@@ -908,7 +909,7 @@ Returns routes that have both detected response keys AND consumers. Shows top-le
 
 WHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend on, what response fields they access, what middleware protects the route, and what execution flows it triggers. Requires at least "route" or "file" parameter.
 
-Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate. When impactSummary.epistemic is "lower-bound", impactSummary.unverifiedConsumers more files pass the route's URL to a function not proven to send HTTP requests, so directConsumers is a floor; riskLevel counts proven consumers only.
+Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate. When impactSummary.epistemic is "lower-bound", impactSummary.unverifiedConsumers more files pass the route's URL to a function not proven to send HTTP requests, so directConsumers is a floor; riskLevel counts proven consumers only. "indirectConsumers" lists the callers of the function that sends the request, one level up, each with that function's name in "via"; impactSummary.indirectConsumers counts their distinct files. They are reported apart from the direct consumers and do not feed riskLevel. The field is absent on an index built before the requesting function was recorded.
 
 Response shape is keyed on how many routes match, not on the data: exactly one match returns a single route object; two or more return { routes: [...], total: N }. The same URL can expose multiple HTTP verbs (e.g. GET and POST /api/orders are distinct routes that share the URL), so a bare-URL lookup may return the wrapped form — every route object carries its own "method" so verbs are distinguishable. Pass "method" to narrow to one verb; the single-object shape is returned only when exactly one route remains after filtering — a substring route/file match spanning several URLs can still return the wrapped form. A URL/file that exists but has no route for the given verb returns an error. Each route's "method" is the literal "*" for method-agnostic routes (e.g. Django function views), which match any "method" selector, or null for method-less routes (filesystem, Laravel resource), which never match a selector. Every route also carries "runtimeEvidence"; treat it as authoritative only when runtimeEvidence.confirmed is true. Combines route_map, shape_check, and impact data.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,

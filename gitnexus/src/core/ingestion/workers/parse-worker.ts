@@ -22,7 +22,7 @@ import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { buildPositionIndex, SupportedLanguages, type PositionIndex } from 'gitnexus-shared';
 import { getLanguageForFileContent, getProvider } from '../languages/index.js';
 import {
   getTreeSitterBufferSize,
@@ -346,6 +346,12 @@ export interface ExtractedFetchCall {
   filePath: string;
   fetchURL: string;
   lineNumber: number;
+  /**
+   * generateId of the callable whose body holds the call, from the AST;
+   * null for a confirmed top-level call, absent when attribution is unknown
+   * (text scans or callable forms the identity walk cannot name) (#3644).
+   */
+  enclosingId?: string | null;
 }
 
 export interface FetchWrapperDef extends FetchWrapperFacts {
@@ -1729,6 +1735,19 @@ const processFileGroup = (
       sourceLineMap,
     );
     if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
+    let requestScopeIndex: PositionIndex | undefined;
+    const requestEnclosingId = (node: SyntaxNode): string | null | undefined => {
+      const id = findEnclosingFunctionId(node, file.path, provider);
+      if (id !== null) return id;
+      if (parsedFile === undefined || scopeExtractionFailed) return undefined;
+      requestScopeIndex ??= buildPositionIndex(
+        parsedFile.scopes.filter((scope) => scope.kind === 'Function'),
+      );
+      const { row, column } = node.startPosition;
+      return requestScopeIndex.atPosition(file.path, mapRow(row) + 1, column) === undefined
+        ? null
+        : undefined;
+    };
     if (parsedFile !== undefined) {
       // Capture-time side-channel (#1983): `extractParsedFile` just ran the
       // provider's `emitScopeCaptures`, which (for C++ ADL/namespace marks,
@@ -2031,10 +2050,12 @@ const processFileGroup = (
         // Measured before this: 44 of 47 fetch calls in this repo pass a
         // variable, so the sink signal was absent from 94% of them and
         // sink-terminated flows could effectively never fire.
+        const fetchEnclosingId = requestEnclosingId(captureMap['route.fetch']);
         result.fetchCalls.push({
           filePath: file.path,
           fetchURL: urlNode ? urlNode.text : '',
           lineNumber: captureMap['route.fetch'].startPosition.row + lineOffset,
+          enclosingId: fetchEnclosingId,
         });
         continue;
       }
@@ -2045,10 +2066,12 @@ const processFileGroup = (
         const method = captureMap['http_client.method']?.text;
         const url = captureMap['http_client.url'].text;
         if (method && HTTP_CLIENT_ONLY_METHODS.has(method) && url.startsWith('/')) {
+          const clientEnclosingId = requestEnclosingId(captureMap['http_client']);
           result.fetchCalls.push({
             filePath: file.path,
             fetchURL: url,
             lineNumber: captureMap['http_client'].startPosition.row + lineOffset,
+            enclosingId: clientEnclosingId,
           });
         }
         continue;
@@ -3309,7 +3332,13 @@ const processFileGroup = (
         const calls = provider.extractFetchWrapperCalls?.(tree, parsedFile, lineOffset);
         const reexports = provider.extractFetchWrapperReexports?.(tree, parsedFile, lineOffset);
         const routeFacts = provider.extractRouteFacts?.(tree, parsedFile, lineOffset);
-        for (const call of calls ?? []) (result.fetchWrapperCalls ??= []).push(call);
+        for (const call of calls ?? []) {
+          // The wrapper call is a request site too (#3644): record the callable
+          // that holds it, as the direct fetch sites do.
+          const callNode = tree.rootNode.descendantForPosition(call.callPosition);
+          const callEnclosingId = requestEnclosingId(callNode);
+          (result.fetchWrapperCalls ??= []).push({ ...call, enclosingId: callEnclosingId });
+        }
         for (const reexport of reexports ?? [])
           (result.fetchWrapperReexports ??= []).push(reexport);
         if (routeFacts)

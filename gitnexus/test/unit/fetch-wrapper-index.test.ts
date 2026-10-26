@@ -26,7 +26,14 @@ function definition(id: string, overrides: Partial<FetchWrapperDef> = {}): Fetch
 }
 
 function call(target: CalleeTarget, functionName = 'request'): FetchWrapperCall {
-  return { filePath: 'client.ts', functionName, target, fetchURL: '/api/items', lineNumber: 1 };
+  return {
+    filePath: 'client.ts',
+    functionName,
+    target,
+    fetchURL: '/api/items',
+    lineNumber: 1,
+    callPosition: { row: 0, column: 0 },
+  };
 }
 
 describe('fetch wrapper target classification', () => {
