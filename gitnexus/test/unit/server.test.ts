@@ -12,7 +12,7 @@
  * NOTE: We test the server handler logic by calling the request handlers
  * directly through the MCP Server's handler dispatch.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -21,6 +21,7 @@ import {
   createMCPServer,
   getNextStepHint,
   installSignalShutdown,
+  installParentShutdown,
   startMCPServer,
   SHUTDOWN_EXIT_CODES,
 } from '../../src/mcp/server.js';
@@ -682,6 +683,7 @@ describe('prompt registration', () => {
 
 describe('startMCPServer', () => {
   it('registers stdin shutdown listeners before awaiting Server.prototype.connect', async () => {
+    vi.useFakeTimers();
     // P1 finding: startMCPServer must register process.stdin end/close/error
     // shutdown listeners before calling server.connect(), so that a stdin
     // closure during transport setup is safely handled.
@@ -718,6 +720,8 @@ describe('startMCPServer', () => {
     try {
       await startMCPServer(backend);
     } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
       connectSpy.mockRestore();
       exitStub.mockRestore();
       // Remove only listeners added by startMCPServer so no side effects leak.
@@ -760,6 +764,81 @@ describe('startMCPServer', () => {
       }
     }
   });
+});
+
+describe('installParentShutdown', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(process, 'ppid', 'get').mockReturnValue(1234);
+    vi.spyOn(process, 'kill').mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('leaves a live parent alone and stops probing when disposed', () => {
+    const shutdown = vi.fn();
+    const stop = installParentShutdown(shutdown);
+    vi.advanceTimersByTime(1_000);
+    expect(process.kill).toHaveBeenCalledWith(1234, 0);
+    expect(shutdown).not.toHaveBeenCalled();
+    stop();
+    vi.advanceTimersByTime(2_000);
+    expect(process.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('shuts down once after reparenting, including adoption by a subreaper', () => {
+    const shutdown = vi.fn();
+    installParentShutdown(shutdown);
+    vi.spyOn(process, 'ppid', 'get').mockReturnValue(4321);
+    vi.advanceTimersByTime(3_000);
+    expect(shutdown).toHaveBeenCalledExactlyOnceWith(0);
+    expect(process.kill).not.toHaveBeenCalled();
+  });
+
+  it('detects a missing parent even when the OS retains the original PPID', () => {
+    const shutdown = vi.fn();
+    installParentShutdown(shutdown);
+    vi.mocked(process.kill).mockImplementation(() => {
+      throw Object.assign(new Error('No such process'), { code: 'ESRCH' });
+    });
+    vi.advanceTimersByTime(3_000);
+    expect(shutdown).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it.each(['EPERM', 'EACCES', undefined])(
+    'keeps serving after an inconclusive probe (%s)',
+    (code) => {
+      const shutdown = vi.fn();
+      installParentShutdown(shutdown);
+      vi.mocked(process.kill).mockImplementation(() => {
+        throw Object.assign(new Error('Cannot inspect parent'), { code });
+      });
+      vi.advanceTimersByTime(2_000);
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(process.kill).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('does not keep the event loop alive', () => {
+    const interval = vi.spyOn(globalThis, 'setInterval');
+    const stop = installParentShutdown(vi.fn());
+    expect(interval.mock.results[0].value.hasRef()).toBe(false);
+    stop();
+  });
+
+  it.each([0, 1])(
+    'does not probe a process group or init when started under PPID %s',
+    (parentPid) => {
+      const shutdown = vi.fn();
+      installParentShutdown(shutdown, parentPid)();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(shutdown).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // ─── Graceful shutdown signal handling (#1132) ────────────────────────

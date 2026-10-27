@@ -433,10 +433,37 @@ export function installSignalShutdown(
   on('SIGTERM', () => void shutdown(SHUTDOWN_EXIT_CODES.SIGTERM));
 }
 
+/** Stdio can outlive its launcher when another process holds the pipe open. */
+export function installParentShutdown(
+  shutdown: (exitCode?: number) => unknown,
+  parentPid = process.ppid,
+): () => void {
+  if (parentPid <= 1) return () => {};
+  const timer = setInterval(() => {
+    // Reparenting also detects death when the original PID has been reused.
+    let parentGone = process.ppid !== parentPid;
+    if (!parentGone) {
+      try {
+        process.kill(parentPid, 0);
+      } catch (error) {
+        // EPERM (or any unrecognized failure) is not proof of parent death.
+        parentGone = (error as NodeJS.ErrnoException).code === 'ESRCH';
+      }
+    }
+    if (parentGone) {
+      clearInterval(timer);
+      void shutdown(0);
+    }
+  }, 1_000);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
 export async function startMCPServer(
   backend: LocalBackend,
   repositoryPolicy?: McpRepositoryPolicy,
 ): Promise<void> {
+  const parentPid = process.ppid;
   const validatedRepositoryPolicy = repositoryPolicy ?? (await createMcpRepositoryPolicy(backend));
   const server = createMCPServer(backend, { repositoryPolicy: validatedRepositoryPolicy });
 
@@ -473,6 +500,7 @@ export async function startMCPServer(
   const shutdown = async (exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    stopParentWatch();
     // Safety net: if backend.disconnect()/server.close() hangs, still exit so a
     // SIGINT/SIGTERM reliably terminates the process. Unref'd so the timer alone
     // never keeps the event loop alive.
@@ -489,6 +517,7 @@ export async function startMCPServer(
     clearTimeout(forceExit);
     process.exit(exitCode);
   };
+  const stopParentWatch = installParentShutdown(shutdown, parentPid);
 
   // Handle graceful shutdown. Node invokes signal listeners with the signal
   // NAME (e.g. 'SIGTERM') as the first argument; registering `shutdown`
