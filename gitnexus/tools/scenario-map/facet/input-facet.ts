@@ -26,9 +26,9 @@
  *
  * Every slot not kept exact is a discarded value, recorded with its position (slot index), its
  * value and its source location for the value-flow check (U10, R9). `unresolved` lists why the
- * facet may not stand for the instance (a row value that is not static, a free name under an
- * untracked outer row, unknown provenance or import closure, a fixture file that cannot be
- * shaped); it blocks strong evidence.
+ * facet may not stand for the instance (a row value that is not static, an unevaluated captured
+ * loop binding, a free name under an untracked outer row, unknown provenance or import closure,
+ * a fixture file that cannot be shaped); it blocks strong evidence.
  *
  * Residual-difference guard (R5, KTD6, D1): {@link residualDifference} diffs the anonymised body
  * skeletons of two facet-equal instances (slots and row reads as placeholders, body locals
@@ -47,7 +47,7 @@ import { parse } from '@babel/parser';
 import * as t from '@babel/types';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { classify, type FileVerdict } from '../../mutation/classify/classify.js';
-import type { CaseRecord } from '../../test-dupes/test-dupes.js';
+import { resolveName, type CaseRecord } from '../../test-dupes/test-dupes.js';
 import {
   normalizeRelativePath,
   productionFilePredicate,
@@ -662,6 +662,40 @@ function collectSlots(
   const found: { start: number; seq: number; slot: Slot }[] = [];
   const keys: string[] = [];
   const placeholders = new Map<t.Node, string>();
+  // Direct loop bindings have per-instance values in scope.rows. Declarations inside an
+  // enclosing loop can capture those values too, but their initializers/closures are not
+  // evaluated here. Identical body text must not make those inputs look resolved.
+  const loopFrame =
+    record.loop === null
+      ? -1
+      : record.chain.findIndex(
+          (frame) =>
+            frame.extra.length === 2 &&
+            (t.isVariableDeclaration(frame.extra[0]) || t.isLVal(frame.extra[0])),
+        );
+  const loopDeclarations = new Set(
+    (loopFrame < 0 ? [] : record.chain.slice(loopFrame)).flatMap((frame) =>
+      [...frame.decls.values()].flatMap((decl) => (decl.kind === 'node' ? [decl.node] : [])),
+    ),
+  );
+  // scope.locals also contains nested callback parameters. Those must not hide an outer
+  // capture read elsewhere in the test; only bindings in the test's own scope shadow it.
+  const bodyBindings = new Set<string>();
+  for (const param of record.fn.params) {
+    for (const name of Object.keys(t.getBindingIdentifiers(param))) bodyBindings.add(name);
+  }
+  if (t.isBlockStatement(record.fn.body)) {
+    for (const statement of record.fn.body.body) {
+      if (t.isVariableDeclaration(statement)) {
+        for (const name of Object.keys(t.getBindingIdentifiers(statement))) bodyBindings.add(name);
+      } else if (
+        (t.isFunctionDeclaration(statement) || t.isClassDeclaration(statement)) &&
+        statement.id
+      ) {
+        bodyBindings.add(statement.id.name);
+      }
+    }
+  }
   let seq = 0;
   const push = (node: t.Node, slot: Omit<Slot, 'node' | 'selector'>, at: t.Node): void => {
     found.push({
@@ -706,6 +740,12 @@ function collectSlots(
   };
   const walk = (node: t.Node | null | undefined): void => {
     if (!isNode(node) || isTypeNode(node)) return;
+    if (loopDeclarations.size > 0 && t.isIdentifier(node) && !bodyBindings.has(node.name)) {
+      const decl = resolveName(node.name, record.chain);
+      if (decl?.kind === 'node' && loopDeclarations.has(decl.node)) {
+        unresolved.add(`captured loop binding ${node.name}: instance value unknown`);
+      }
+    }
     if (t.isIdentifier(node) || t.isMemberExpression(node) || t.isOptionalMemberExpression(node)) {
       const row = rowValueOf(node, scope);
       // `name.trim()`, `row[i]`: the read itself is not static but its object is, so the object

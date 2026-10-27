@@ -338,6 +338,65 @@ describe('computeFacet: discarded values', () => {
 });
 
 describe('computeFacet: per-instance rows', () => {
+  it.each([
+    ['conditional alias', `const input = flag ? 'pool' : undefined;`],
+    ['transitive alias', `const selected = flag ? 'pool' : undefined; const input = selected;`],
+    ['captured helper', `function input() { return flag ? 'pool' : undefined; }`],
+  ])('does not resolve a captured loop %s from identical body text', async (_name, setup) => {
+    const facets = await facetsOf(
+      NONE,
+      `for (const flag of [false, true]) {`,
+      setup,
+      `it(String(flag), () => { expect(run(input, 'disabled')).toBe(false); });`,
+      `}`,
+    );
+    expect(facets).toHaveLength(2);
+    for (const facet of facets) {
+      expect(facet.unresolved).toContain('captured loop binding input: instance value unknown');
+    }
+  });
+
+  it('marks an outer loop alias captured inside an inner loop unresolved', async () => {
+    const facets = await facetsOf(
+      NONE,
+      `for (const flag of [false, true]) {`,
+      `const expected = flag ? 'pool' : undefined;`,
+      `for (const count of [1, 2]) {`,
+      `it(String(count), () => { expect(run(count)).toBe(expected); });`,
+      `}}`,
+    );
+    expect(facets).toHaveLength(4);
+    for (const facet of facets) {
+      expect(facet.unresolved).toContain('captured loop binding expected: instance value unknown');
+    }
+  });
+
+  it('leaves unused loop aliases and locally shadowed names out of input uncertainty', async () => {
+    const facets = await facetsOf(
+      NONE,
+      `for (const flag of [false, true]) {`,
+      `const input = flag ? 'pool' : undefined;`,
+      `it(String(flag), () => { const input = 'same'; expect(run(input)).toBe(false); });`,
+      `}`,
+    );
+    expect(facets).toHaveLength(2);
+    expect(facets.map((facet) => facet.unresolved)).toEqual([[], []]);
+  });
+
+  it('does not let a nested callback parameter hide a captured loop input', async () => {
+    const facets = await facetsOf(
+      NONE,
+      `for (const flag of [false, true]) {`,
+      `const input = flag ? 'pool' : undefined;`,
+      `it(String(flag), () => { [1].map(input => input); expect(run(input)).toBe(false); });`,
+      `}`,
+    );
+    expect(facets).toHaveLength(2);
+    for (const facet of facets) {
+      expect(facet.unresolved).toContain('captured loop binding input: instance value unknown');
+    }
+  });
+
   it('evaluates each it.each row, keeping its discarded value', async () => {
     const facets = await facetsOf(
       TABLE,
