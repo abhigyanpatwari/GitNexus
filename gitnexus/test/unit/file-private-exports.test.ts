@@ -10,6 +10,13 @@ it.each([
   ['renamed export', 'entry.ts', 'interface Entry {}\nexport { Entry as Public };', false],
   ['default export', 'entry.ts', 'class Entry {}\nexport default Entry;', false],
   ['assignment export', 'entry.ts', 'class Entry {}\nexport = Entry;', false],
+  ['type alias', 'entry.ts', 'interface Entry {}\nexport type Public = Entry;', false],
+  [
+    'wrapped type alias',
+    'entry.ts',
+    'class Entry {}\nexport type Public = Readonly<Entry>;',
+    false,
+  ],
   ['CommonJS', 'entry.js', 'class Entry {}\nmodule.exports = Entry;', false],
   ['bracket CommonJS', 'entry.js', "class Entry {}\nmodule['exports'] = Entry;", false],
   [

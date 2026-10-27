@@ -23,6 +23,18 @@ const sources: Record<string, string> = {
     "import type { ClauseEntry } from './clause';\nexport function consume(x: ClauseEntry) { return x.value; }\n",
   'default.ts': 'class DefaultEntry {}\nexport default DefaultEntry;\n',
   'default-use.ts': "import Entry from './default';\nexport { Entry };\n",
+  'type-alias.ts':
+    'interface AliasedEntry { value: string }\nexport type PublicEntry = AliasedEntry;\n',
+  'type-alias-use.ts':
+    "import type { PublicEntry } from './type-alias';\nexport function consumeAlias(x: PublicEntry) { return x.value; }\n",
+  'wrapped-alias.ts':
+    "class AliasedClass { value = ''; }\nexport type PublicClass = Readonly<AliasedClass>;\n",
+  'wrapped-alias-use.ts':
+    "import type { PublicClass } from './wrapped-alias';\nexport function consumeWrapped(x: PublicClass) { return x.value; }\n",
+  'value-alias.js':
+    'class ValueAliasedClass {}\nexport const PublishedClass = ValueAliasedClass;\n',
+  'value-alias-use.js':
+    "import { PublishedClass } from './value-alias';\nexport function constructAlias() { return new PublishedClass(); }\n",
   'cjs.js': 'class CjsEntry {}\nmodule.exports = CjsEntry;\n',
   'cjs-use.js': "const Entry = require('./cjs');\nmodule.exports = Entry;\n",
   'ambient.d.ts': 'interface AmbientEntry { value: string }\n',
@@ -52,6 +64,8 @@ withTestLbugDB(
       ['ClauseEntry', 'clause-use.ts'],
       ['CommentedEntry', 'commented-use.ts'],
       ['DefaultEntry', 'default-use.ts'],
+      ['AliasedEntry', 'type-alias-use.ts'],
+      ['AliasedClass', 'wrapped-alias-use.ts'],
       ['CjsEntry', 'cjs-use.js'],
       ['AmbientEntry', 'ambient-use.ts'],
       ['GlobalEntry', 'global-use.ts'],
@@ -63,6 +77,19 @@ withTestLbugDB(
           .filter((item: { id: string }) => item.id.startsWith('File:'))
           .map((item: { id: string }) => item.id),
       ).toEqual([`File:${importer}`]);
+    });
+
+    it('retains importers of a class exposed through an exported value alias', async () => {
+      expect(exportFlags.get('ValueAliasedClass')).toBe(false);
+      const result = await backend.callTool('impact', {
+        target: 'ValueAliasedClass',
+        direction: 'upstream',
+      });
+      expect(
+        Object.values(result.byDepth as Record<string, { id: string }[]>)
+          .flat()
+          .map((item) => item.id),
+      ).toContain('File:value-alias-use.js');
     });
 
     it.each(['PrivateEntry', 'PrivateClass'])(

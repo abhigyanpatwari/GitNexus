@@ -31,8 +31,10 @@ export function hasFilePrivateExportSemantics(filePath: string, content: string)
       if (statement.type !== 'export_statement') continue;
       isModule = true;
       // `export { T }`, `export default T`, and `export = T` may publish a
-      // declaration stored as false. Retain the file seed for the whole file.
-      if (!statement.childForFieldName('declaration')) return false;
+      // declaration stored as false. Type aliases can do the same without a
+      // graph edge to the underlying type. Retain the file seed for the whole file.
+      const declaration = statement.childForFieldName('declaration');
+      if (!declaration || declaration.type === 'type_alias_declaration') return false;
     }
     // Script declarations may be global across files without any exports.
     return isModule;
