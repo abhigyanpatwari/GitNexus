@@ -13,6 +13,7 @@ import {
 } from '../../field-extractors/configs/helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { memoizeDeclarationFact } from '../declaration-facts.js';
 
 // ---------------------------------------------------------------------------
 // Shared JVM helpers
@@ -131,7 +132,7 @@ export const javaMethodConfig: MethodExtractionConfig = {
 
   extractReturnType: extractReturnTypeFromField,
 
-  extractParameters: extractJavaParameters,
+  extractParameters: memoizeDeclarationFact(extractJavaParameters),
 
   extractVisibility(node) {
     return findVisibility(node, JAVA_VIS, 'package', 'modifiers');
@@ -289,7 +290,7 @@ export const kotlinMethodConfig: MethodExtractionConfig = {
 
   extractReturnType: extractKotlinReturnType,
 
-  extractParameters: extractKotlinParameters,
+  extractParameters: memoizeDeclarationFact(extractKotlinParameters),
 
   extractVisibility(node) {
     return findVisibility(node, KOTLIN_VIS, 'public', 'modifiers');

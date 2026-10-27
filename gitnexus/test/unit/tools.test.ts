@@ -23,6 +23,12 @@ const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
 const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
+  it('keeps the complete tool catalog below 70 KB of recurring agent context', () => {
+    // Every exposed tool is sent before the agent chooses one. This is a byte
+    // budget, not a tokenizer estimate or a claim about end-to-end dollar cost.
+    expect(Buffer.byteLength(JSON.stringify(GITNEXUS_TOOLS), 'utf8')).toBeLessThanOrEqual(70_000);
+  });
+
   it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group + read_file + grep)', () => {
     expect(GITNEXUS_TOOLS).toHaveLength(19);
   });
