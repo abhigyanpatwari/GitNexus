@@ -51,3 +51,27 @@ node --import tsx bench/scope-resolution/measure.mts --language java --sizes 10,
 To establish baselines after reviewing a fixture, semantic, or allocation change,
 run the default all-language workload with `--record` instead of `--check` and inspect
 `baselines.json`. CI never records or accepts a new baseline automatically.
+
+## Finalization import-miss probe
+
+To reproduce the allocation trigger isolated while investigating #3695:
+
+```sh
+node --expose-gc --import tsx bench/scope-resolution/finalize-miss.mts 500
+```
+
+Run in fresh processes on each revision after building. This constructs 500
+files with chained wildcard imports, a terminal module, and a consumer importing
+a missing name from that terminal module. The missing name cannot be supplied by
+re-exports, so it should not trigger construction of the unrelated chain's
+transitive export tables. The JSON reports finalization time, endpoint heap
+growth, process peak RSS, and a fingerprint of all finalized imports, bindings,
+SCCs and statistics. It is a synthetic finalizer workload, not a full Java
+indexing run or a reproduction of the reporter's private repository.
+
+For a real indexing run, the existing `GITNEXUS_DEBUG_HEAP=1` and
+`GITNEXUS_HEAP_PROBE_FILE` settings now include `sr-finalize-*` markers for input
+preparation, import-target resolution, SCCs, ambiguity checks, transitive exports
+(only if requested), linking, wildcard expansion, bindings and workspace indexes.
+`sr-extract-start` precedes `sr-post-nodeLookup`; a last `sr-post-nodeLookup`
+marker therefore points into finalization after extraction.

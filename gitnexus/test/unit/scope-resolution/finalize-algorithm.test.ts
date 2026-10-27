@@ -316,6 +316,44 @@ describe('finalize', () => {
   });
 
   describe('wildcard expansion', () => {
+    it.each([
+      { hasOrdinaryImport: false, filteredWildcards: false },
+      { hasOrdinaryImport: true, filteredWildcards: false },
+      { hasOrdinaryImport: false, filteredWildcards: true },
+      { hasOrdinaryImport: true, filteredWildcards: true },
+    ])(
+      'does not inspect unrelated exports after a terminal miss ($hasOrdinaryImport, $filteredWildcards)',
+      ({ hasOrdinaryImport, filteredWildcards }) => {
+        const leaf = file('leaf', [def('def:Leaf', 'Class', 'Leaf')]);
+        const target = file('target', [], hasOrdinaryImport ? [named('Leaf', 'Leaf', 'leaf')] : []);
+        let exportSurfaceReads = 0;
+        const unrelated: FinalizeFile = {
+          ...file('unrelated', [def('def:Unrelated', 'Class', 'Unrelated')]),
+          get localExports() {
+            exportSurfaceReads++;
+            return new Map([['Unrelated', def('def:Unrelated', 'Class', 'Unrelated')]]);
+          },
+        };
+        const wildcardImporter = file('wildcard-importer', [], [wildcard('unrelated')]);
+        const consumer = file('consumer', [], [named('Missing', 'Missing', 'target')]);
+        const files = [consumer, target, leaf, wildcardImporter, unrelated];
+        const hooks = defaultHooks(files);
+        const out = finalize(
+          { files, workspaceIndex: undefined },
+          {
+            ...hooks,
+            ...(filteredWildcards ? { filterWildcardNames: (_scope, names) => names } : {}),
+          },
+        );
+
+        expect(firstImport(out, consumer.moduleScope)?.linkStatus).toBe('unresolved');
+        expect(firstImport(out, wildcardImporter.moduleScope)?.targetDefId).toBe('def:Unrelated');
+        // Only ordinary wildcard expansion reads this surface. A missing
+        // import from a terminal module must not build every re-export table.
+        expect(exportSurfaceReads).toBe(filteredWildcards ? 2 : 1);
+      },
+    );
+
     it('expands `wildcard` into one ImportEdge per exported name', () => {
       const b = file('b', [
         def('def:b.X', 'Class', 'b.X'),
@@ -360,8 +398,12 @@ describe('finalize', () => {
       const c = file('c', [def('def:c.X', 'Class', 'c.X')]);
       const b = file('b', [], [reexport('X', 'X', 'c')]);
       const a = file('a', [], [named('X', 'X', 'b')]);
-      const files = [a, b, c];
+      // A terminal miss must not cache an empty answer for a later genuine
+      // re-export lookup in the same finalization.
+      const missing = file('missing', [], [named('Absent', 'Absent', 'c')]);
+      const files = [missing, a, b, c];
       const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(firstImport(out, missing.moduleScope)?.linkStatus).toBe('unresolved');
       const reexportEdge = firstImport(out, b.moduleScope)!;
       expect(reexportEdge.kind).toBe('reexport');
       expect(reexportEdge.transitiveVia).toEqual(['c']);
