@@ -3006,13 +3006,21 @@ export interface ValueFlowStageOptions {
   concurrency: number | null;
 }
 
-/** A failed Layer 1 test already makes its fingerprint pairs inconclusive. */
+/**
+ * Retries make a trace inconclusive even when coverage passed. Full mutation runs still admit
+ * non-passing tests to investigate order dependence; fingerprint runs cannot promote them.
+ */
 export function passingTracePairs<T extends { a: string; b: string }>(
-  tests: readonly Pick<CoverageTest, 'id' | 'state'>[],
+  tests: readonly Pick<CoverageTest, 'id' | 'state' | 'retry'>[],
   pairs: readonly T[],
+  mutation: MutationScope = 'none',
 ): T[] {
-  const passed = new Set(tests.filter((test) => test.state === 'passed').map((test) => test.id));
-  return pairs.filter((pair) => passed.has(pair.a) && passed.has(pair.b));
+  const eligible = new Set(
+    tests
+      .filter((test) => (mutation === 'all' || test.state === 'passed') && (test.retry ?? 0) === 0)
+      .map((test) => test.id),
+  );
+  return pairs.filter((pair) => eligible.has(pair.a) && eligible.has(pair.b));
 }
 
 /** The value-flow stage; see the module comment. */
@@ -3129,11 +3137,9 @@ export async function runValueFlowStage(
   }
 
   const traceStarted = ctx.now();
-  // Full mutation runs still investigate order-dependent tests that fail Layer 1's repeats.
-  // Fingerprint runs cannot promote those pairs; do not let them invalidate every other trace.
-  const tracePairs = plan.mutation === 'all' ? equal : passingTracePairs(work.tests, equal);
+  const tracePairs = passingTracePairs(work.tests, equal, plan.mutation);
   log(
-    `value-flow: tracing ${tracePairs.length} pairs (${equal.length - tracePairs.length} non-passing pairs left inconclusive)`,
+    `value-flow: tracing ${tracePairs.length} pairs (${equal.length - tracePairs.length} ineligible pairs left inconclusive)`,
   );
   const trace = await runTrace({
     repoRoot,

@@ -89,6 +89,31 @@ import {
 const temps: string[] = [];
 
 describe('trace selection', () => {
+  it.each(['none', 'possible-duplicates', 'all'] as const)(
+    'excludes configured retries from %s traces even when coverage passed',
+    (mutation) => {
+      const pairs = [
+        { a: 'a', b: 'b' },
+        { a: 'a', b: 'retry' },
+        { a: 'a', b: 'failed' },
+        { a: 'a', b: 'failed-retry' },
+      ];
+      expect(
+        passingTracePairs(
+          [
+            { id: 'a', state: 'passed', retry: 0 },
+            { id: 'b', state: 'passed' },
+            { id: 'retry', state: 'passed', retry: 1 },
+            { id: 'failed', state: 'failed' },
+            { id: 'failed-retry', state: 'failed', retry: 2 },
+          ],
+          pairs,
+          mutation,
+        ),
+      ).toEqual(mutation === 'all' ? [pairs[0], pairs[2]] : [pairs[0]]);
+    },
+  );
+
   it('keeps non-passing coverage tests out of the shared trace without losing valid pairs', () => {
     const pairs = [
       { a: 'a', b: 'b' },

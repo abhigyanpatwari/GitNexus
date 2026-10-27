@@ -141,6 +141,8 @@ export interface CoverageTest {
   location: TestLocation | null;
   state: TestState;
   concurrent: boolean;
+  /** Configured retries, even if no retry ran; absent in older version 1 work files. */
+  retry?: number;
   attempts: number;
   blocks: number[];
   suiteBlocks: number[];
@@ -173,6 +175,7 @@ export interface RuntimeTest {
   location: TestLocation | undefined;
   state: TestState;
   concurrent: boolean;
+  retry?: number | { count?: number };
 }
 
 /** One test file's collected tests, in collection order. */
@@ -367,6 +370,7 @@ export function buildWorkFile(input: WorkFileInput): CoverageWorkFile {
         location: test.location ?? null,
         state: test.state,
         concurrent,
+        retry: typeof test.retry === 'number' ? test.retry : (test.retry?.count ?? 0),
         attempts,
       };
       if (raw === undefined || rawTest === undefined || attempts === 0) {
@@ -691,6 +695,7 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
                     location: test.location,
                     state: test.result().state,
                     concurrent: test.options.concurrent === true,
+                    retry: test.options.retry,
                   })),
                 },
           );

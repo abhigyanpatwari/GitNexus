@@ -351,6 +351,20 @@ describe('isNativeEntry', () => {
 });
 
 describe('buildWorkFile: concurrent and unrun tests', () => {
+  it.each([
+    { retry: undefined, expected: 0 },
+    { retry: 0, expected: 0 },
+    { retry: 1, expected: 1 },
+    { retry: { count: 2 }, expected: 2 },
+    { retry: {}, expected: 0 },
+  ])(
+    'records configured retries ($retry) independently of observed attempts',
+    ({ retry, expected }) => {
+      const file = work([], [rt('t', 't', 3, { retry })]);
+      expect(file.tests[0]).toMatchObject({ state: 'passed', retry: expected, attempts: 0 });
+    },
+  );
+
   const record = new FileRun()
     .load()
     .start('c1', ['f'], [], true)
