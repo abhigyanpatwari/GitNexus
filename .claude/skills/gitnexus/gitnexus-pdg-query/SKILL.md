@@ -36,7 +36,8 @@ All three are `BasicBlock → BasicBlock` edges in the single `CodeRelation` tab
 
 - `pdg_query({ mode: 'controls', target })` — CDG. For the anchored function,
   each edge: controlling predicate block → dependent block + branch sense in
-  `reason` (`'T'` = predicate's true/taken arm, `'F'` = false/fall-through). An
+  `label` (`'T'` = predicate's true/taken arm, `'F'` = false/fall-through).
+  The tool maps the stored edge's `reason` to this response field. An
   edge into a `return`, `throw`, `continue`, or `break` block is flagged
   `guard: true` (early control transfer, not just a function exit).
 - `pdg_query({ mode: 'flows', target, variable? })` — REACHING_DEF def→use
@@ -63,8 +64,9 @@ cannot accidentally turn a local guard lookup into a repository-wide CDG scan.
 If you are debugging the graph and truly need raw Cypher, keep the same two
 constraints explicit: anchor the blocks to one known function/file span **and**
 add a deterministic `LIMIT`. CDG edges are values of the single `CodeRelation`
-table's `type` property, and the branch sense is in `reason`, not a `label`
-column. For example, after resolving a function to its file and line span:
+table's `type` property. Raw Cypher reads the branch sense from `r.reason`
+(not a `label` column); `pdg_query` exposes the same value as `label`.
+For example, after resolving a function to its file and line span:
 
 ```cypher
 MATCH (pred:BasicBlock)-[r:CodeRelation {type: 'CDG'}]->(dep:BasicBlock)
