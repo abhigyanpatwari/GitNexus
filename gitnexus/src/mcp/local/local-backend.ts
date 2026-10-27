@@ -8524,9 +8524,23 @@ export class LocalBackend {
     // The owning File is kept only as an internal seed (frontier/visited) and
     // is NOT added to impacted — it is the definition container, not an
     // upstream dependent. The BFS will discover IMPORTS edges on it naturally.
+    //
+    // #3602: the file's importers stand in for the type's importers, which
+    // only holds when the type can leave the file. A type recorded as not
+    // exported (`isExported = false`, module-private in TS/JS, non-public in
+    // Java) cannot be named by any importer, so seeding its file would report
+    // every importer of the file as a direct dependant. The seed is skipped
+    // for it; its real dependants still arrive through USES/EXTENDS/
+    // IMPLEMENTS edges inside the file. A missing verdict (NULL, CommonJS or
+    // ambient files) keeps the seed, since "not under export" proves nothing
+    // there.
     if (symType === 'Class' || symType === 'Interface') {
       try {
         // Run both seed queries in parallel — they are independent.
+        // The label is literal: only these two tables reach this branch, and
+        // not every node table carries `isExported` (Protocol/Category do
+        // not), so an untyped `n.isExported` is not a safe projection.
+        const typeLabel = symType === 'Class' ? 'Class' : 'Interface';
         const [ctorRows, fileRows] = await Promise.all([
           executeParameterized(
             repo.lbugPath,
@@ -8542,9 +8556,9 @@ export class LocalBackend {
           executeParameterized(
             repo.lbugPath,
             `
-            MATCH (f:File)-[rel:CodeRelation]->(n)
+            MATCH (f:File)-[rel:CodeRelation]->(n:${typeLabel})
             WHERE n.id = $symId AND rel.type = 'DEFINES'
-            RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath
+            RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath, n.isExported AS isExported
           `,
             { symId },
           ),
@@ -8560,6 +8574,8 @@ export class LocalBackend {
         }
         for (const r of fileRows) {
           assertSymbolRowIdentity(r);
+          const exported = r.isExported ?? r[4];
+          if (exported === false) continue;
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
