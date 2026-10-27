@@ -127,6 +127,18 @@ const CASES: { rule: FingerprintRule; verdict: FingerprintVerdict; edit: WorldEd
 ];
 
 describe('fingerprint rules', () => {
+  it.each(['a', 'b'] as const)(
+    'does not compare an assertion-only key on side %s with a legacy combined key',
+    (side) => {
+      const pair = verdictOf({ [side]: { checks: 'checks-toBe' } });
+      expect([pair.verdict, pair.rule, pair.evidence.checks]).toEqual([
+        'possible-duplicate',
+        'checks-unknown',
+        'missing',
+      ]);
+    },
+  );
+
   it('keeps equal assertions with different setup as a review lead, not different checks', () => {
     const pair = verdictOf({
       a: { checks: 'same-expectation' },

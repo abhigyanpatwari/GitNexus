@@ -1825,8 +1825,6 @@ const facetEqual = (facets: ReadonlyMap<string, InputFacet>, pair: CandidatePair
 export function layer1FilesOf(
   repoRoot: string,
   files: readonly string[],
-  mutation: MutationScope,
-  mode: RunMode,
   changed: ReadonlySet<string> | null = null,
 ): string[] {
   if (changed === null) return [...files];
@@ -1950,8 +1948,6 @@ export async function runCoverageStage(
   const layer1 = layer1FilesOf(
     repoRoot,
     fingerprintFiles,
-    options.mutation,
-    options.mode,
     changed === null ? null : new Set(changed),
   );
   const assignment = coverageSlices(
@@ -2093,13 +2089,7 @@ export async function runPlanStage(
   const layer1 =
     slices?.[0].layer1 ??
     (await timed('layer 1 files', () =>
-      layer1FilesOf(
-        repoRoot,
-        eligibility.fingerprintFiles,
-        options.mutation,
-        options.mode,
-        changed,
-      ),
+      layer1FilesOf(repoRoot, eligibility.fingerprintFiles, changed),
     ));
   log(
     `plan: Layer 1 runs ${layer1.length} of ${eligibility.fingerprintFiles.length} test files` +

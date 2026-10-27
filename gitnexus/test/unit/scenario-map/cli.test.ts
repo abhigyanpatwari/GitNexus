@@ -335,18 +335,9 @@ describe('runCli usage', () => {
     ).toEqual(['HEAD^1', 'HEAD^1', 'HEAD^1']);
   });
 
-  it.each([
-    { mutation: 'none' as const, kind: 'normal', mode: { kind: 'normal' as const } },
-    { mutation: 'possible-duplicates' as const, kind: 'normal', mode: { kind: 'normal' as const } },
-    { mutation: 'all' as const, kind: 'normal', mode: { kind: 'normal' as const } },
-    {
-      mutation: 'none' as const,
-      kind: 'controls',
-      mode: { kind: 'controls' as const, fixtureRoot: 'gitnexus/test/fixtures/x' },
-    },
-  ])('runs every file in Layer 1 for mutation $mutation in $kind mode', ({ mutation, mode }) => {
+  it('runs every file in Layer 1 for a whole-suite run', () => {
     const files = ['test/unit/a.test.ts', 'test/unit/b.test.ts'];
-    expect(layer1FilesOf('/no-repo', files, mutation, mode)).toEqual(files);
+    expect(layer1FilesOf('/no-repo', files)).toEqual(files);
   });
 
   it('exits 2 for a work directory inside the checkout', async () => {
