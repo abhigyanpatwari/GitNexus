@@ -187,9 +187,14 @@ describe('createMCPServer', () => {
     }
   });
 
-  it.each([{ GITNEXUS_MCP_DEFAULT_REPO: 'alpha' }, { GITNEXUS_MCP_ALLOWED_REPOS: 'alpha' }])(
+  it.each(
+    [{ GITNEXUS_MCP_DEFAULT_REPO: 'alpha' }, { GITNEXUS_MCP_ALLOWED_REPOS: 'alpha' }].flatMap(
+      (env) => [false, true].map((readOnly) => ({ env, readOnly })),
+    ),
+  )(
     'advertises the resolved repository default in tool schemas (%j)',
-    async (env) => {
+    async ({ env, readOnly }) => {
+      vi.stubEnv('GITNEXUS_MCP_READ_ONLY', readOnly ? '1' : '0');
       const backend = createMockBackend({
         listRepos: vi.fn().mockResolvedValue([
           { name: 'alpha', path: '/tmp/alpha' },
@@ -220,6 +225,7 @@ describe('createMCPServer', () => {
           GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.properties.repo,
         ).not.toHaveProperty('default');
       } finally {
+        vi.unstubAllEnvs();
         await client.close();
         await server.close();
       }
