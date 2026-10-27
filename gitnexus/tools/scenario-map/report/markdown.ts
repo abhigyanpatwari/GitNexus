@@ -506,6 +506,7 @@ function layer0Lines(report: ScenarioMapReport): string[] {
 function eligibilitySection(report: ScenarioMapReport): string[] {
   const { eligibility } = report;
   const inventory = report.inventory;
+  const uncomparedFiles = eligibility.fingerprintFiles - eligibility.layer1Files;
   const lines = [
     '',
     '## Eligibility',
@@ -515,14 +516,14 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
     ...(inventory == null
       ? []
       : [
-          `Runtime inventory: ${inventory.tests.collected} test cases collected; ` +
+          `Runtime inventory: ${plural(inventory.tests.collected, 'test case')} collected; ` +
             `${inventory.tests.passed} passed, ${inventory.tests.failed} failed, ` +
             `${inventory.tests.skipped} skipped, ${inventory.tests.pending} pending.`,
           ...(inventory.collectionComplete
             ? []
             : [
-                'Collection is incomplete: omitted or errored files may contain additional cases. ' +
-                  'These counts are not a whole-suite total.',
+                'Collection is incomplete: files may be omitted, unrecorded or errored, ' +
+                  'or the runner may have unhandled errors. These counts are not a verified whole-suite total.',
               ]),
         ]),
     ...(eligibility.changedFiles === null
@@ -536,7 +537,7 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
       : [
           eligibility.changedFiles === null
             ? `Layer 1 ran ${eligibility.layer1Files} of them; the other ` +
-              `${eligibility.fingerprintFiles - eligibility.layer1Files} files were not compared. ` +
+              `${plural(uncomparedFiles, 'file')} ${uncomparedFiles === 1 ? 'was' : 'were'} not compared. ` +
               'No duplicate-recall claim applies to their tests.'
             : `Layer 1 ran ${eligibility.layer1Files} of them: the changed files whose tests can ` +
               "pair with another test, the files sharing their tests' checks-and-context or body keys, " +

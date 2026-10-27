@@ -1933,8 +1933,8 @@ export interface CoverageStageOptions {
 
 /**
  * The coverage stage: Layer 1 over slice `index` of `of` (path-coverage/slices.ts), written as
- * the slice file the plan stage's `--coverage` merges. True when every file of the slice was
- * recorded without errors.
+ * the slice file the plan stage's `--coverage` merges. True when every slice file is accounted
+ * for without file or unhandled runner errors. Fully skipped modules need no execution record.
  */
 export async function runCoverageStage(
   ctx: StageContext,
