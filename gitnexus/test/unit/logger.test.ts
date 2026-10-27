@@ -330,6 +330,28 @@ describe('configureLoggerSink — host sink', () => {
     }
   });
 
+  it('a restrictive sink level drops an ordinary child debug record, and debugEnvVar still emits one', () => {
+    // The sink above already enables debug, so it cannot tell whether the
+    // child honoured debugEnvVar or only inherited the sink level.
+    const sink = new MemoryWritable();
+    const restore = configureLoggerSink({ destination: sink, level: 'warn' });
+    process.env.GITNEXUS_TEST_SINK_DEBUG = '1';
+    try {
+      createLogger('quiet').debug('dropped by the sink level');
+      createLogger('loud', { debugEnvVar: 'GITNEXUS_TEST_SINK_DEBUG' }).debug(
+        'kept by debugEnvVar',
+      );
+      createLogger('quiet').warn('kept by the sink level');
+      expect(sink.records().map((r) => [r.name, r.msg])).toEqual([
+        ['loud', 'kept by debugEnvVar'],
+        ['quiet', 'kept by the sink level'],
+      ]);
+    } finally {
+      delete process.env.GITNEXUS_TEST_SINK_DEBUG;
+      restore();
+    }
+  });
+
   it('restore() returns the singleton to the previous destination', () => {
     const sink = new MemoryWritable();
     const restore = configureLoggerSink({ destination: sink });
@@ -377,6 +399,32 @@ describe('configureLoggerSink — host sink', () => {
       expect(first.records().map((r) => r.msg)).toEqual(['back on the first, the only live owner']);
       expect(second.records()).toEqual([]);
       expect(third.records()).toEqual([]);
+    } finally {
+      restoreFirst();
+    }
+  });
+
+  it('restoring the newest sink walks past two retired owners to the oldest live one', () => {
+    // Two middle owners retire while the newest sink is active; their sinks
+    // stay in the chain as retired links. The newest owner's restore must skip
+    // both, not only the nearest one.
+    const first = new MemoryWritable();
+    const second = new MemoryWritable();
+    const third = new MemoryWritable();
+    const fourth = new MemoryWritable();
+    const restoreFirst = configureLoggerSink({ destination: first });
+    const restoreSecond = configureLoggerSink({ destination: second });
+    const restoreThird = configureLoggerSink({ destination: third });
+    const restoreFourth = configureLoggerSink({ destination: fourth });
+    restoreSecond();
+    restoreThird();
+    restoreFourth();
+    try {
+      logger.warn('only the oldest owner is still live');
+      expect(first.records().map((r) => r.msg)).toEqual(['only the oldest owner is still live']);
+      expect(second.records()).toEqual([]);
+      expect(third.records()).toEqual([]);
+      expect(fourth.records()).toEqual([]);
     } finally {
       restoreFirst();
     }
