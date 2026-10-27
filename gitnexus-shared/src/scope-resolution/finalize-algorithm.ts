@@ -91,6 +91,8 @@ export interface FinalizeInput {
   readonly files: readonly FinalizeFile[];
   /** Opaque workspace context forwarded to provider hooks. */
   readonly workspaceIndex: WorkspaceIndex;
+  /** Optional phase-boundary diagnostics; receives no source or symbol data. */
+  readonly onProgress?: (phase: string) => void;
 }
 
 /**
@@ -258,6 +260,7 @@ export interface FinalizeOutput {
 // ─── Entry point ───────────────────────────────────────────────────────────
 
 export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOutput {
+  input.onProgress?.('imports-start');
   const byFilePath = new Map<string, FinalizeFile>();
   for (const f of input.files) byFilePath.set(f.filePath, f);
 
@@ -277,6 +280,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     }
     edgeIndex.set(file.filePath, drafts);
   }
+  input.onProgress?.('imports-end');
 
   // ── Phase 1: build file-level import graph (only resolvable edges form
   // graph edges; unresolvable ones are terminal and contribute no
@@ -297,6 +301,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
 
   // ── Phase 2: Tarjan SCC → reverse-topological list of SCCs.
   const sccs = tarjanSccs(graph);
+  input.onProgress?.('scc-end');
 
   // ── Phase 2.5: prepare the per-file re-export closure (iterative,
   // SCC-condensed). Eliminates the recursive crawl that the per-edge
@@ -304,11 +309,22 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   // See `buildReexportClosures` for the algorithm.
   // A local import is a dependency of its file, not a re-export of that file.
   const moduleEdgeIndex = new Map<string, ImportEdgeDraft[]>();
+  const reexportingFiles = new Set<string>();
   for (const file of input.files) {
-    moduleEdgeIndex.set(
-      file.filePath,
-      (edgeIndex.get(file.filePath) ?? []).filter((d) => d.fromScope === file.moduleScope),
+    const drafts = (edgeIndex.get(file.filePath) ?? []).filter(
+      (d) => d.fromScope === file.moduleScope,
     );
+    moduleEdgeIndex.set(file.filePath, drafts);
+    if (
+      drafts.some(
+        (draft) =>
+          draft.targetFile !== null &&
+          byFilePath.has(draft.targetFile) &&
+          contributesReexportEdge(draft),
+      )
+    ) {
+      reexportingFiles.add(file.filePath);
+    }
   }
   const ambiguityByFile = collectAmbiguityByFile(
     input.files,
@@ -322,20 +338,31 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     ambiguousByFile.set(filePath, new Set(byName.keys()));
   }
   const topLevelOnly = hooks.namedImportsBindTopLevelOnly === true;
+  input.onProgress?.('ambiguity-end');
   // Direct imports and unfiltered wildcards never read these closures. Build
   // them once, on demand, so those workspaces do not allocate transitive tables
   // (and their provenance paths) that are discarded without a single lookup.
   let reexportClosures: ReadonlyMap<string, FileReexportClosure> | undefined;
-  const getReexportClosures = () =>
-    (reexportClosures ??= buildReexportClosures(
-      input.files,
-      byFilePath,
-      moduleEdgeIndex,
-      ambiguousByFile,
-      topLevelOnly,
-      hooks.filterWildcardNames,
-      input.workspaceIndex,
-    ));
+  const getReexportClosures = (targetFile: string) => {
+    // #3695: a terminal miss must not allocate unrelated wildcard closures.
+    if (!reexportingFiles.has(targetFile)) {
+      return EMPTY_REEXPORT_CLOSURES;
+    }
+    if (reexportClosures === undefined) {
+      input.onProgress?.('reexports-start');
+      reexportClosures = buildReexportClosures(
+        input.files,
+        byFilePath,
+        moduleEdgeIndex,
+        ambiguousByFile,
+        topLevelOnly,
+        hooks.filterWildcardNames,
+        input.workspaceIndex,
+      );
+      input.onProgress?.('reexports-end');
+    }
+    return reexportClosures;
+  };
 
   // ── Phase 3: process SCCs in reverse-topological order (leaves first).
   // Within each SCC, run a bounded fixpoint that resolves intra-SCC edges.
@@ -397,6 +424,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     }
   }
 
+  input.onProgress?.('link-end');
   // ── Phase 4: collect finalized `ImportEdge[]` per binding scope, preserving
   // input order within each file, and wildcard-expand where applicable.
   for (const file of input.files) {
@@ -447,9 +475,11 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
       linkedByScope.set(scopeId, Object.freeze(edges));
   }
 
+  input.onProgress?.('wildcards-end');
   // ── Phase 5: materialize bindings (local + scoped imports + wildcards),
   // delegating precedence to `provider.mergeBindings`.
   const bindingsByScope = materializeBindings(input.files, linkedByScope, hooks);
+  input.onProgress?.('bindings-end');
 
   // ── Stats.
   const sccCount = sccs.length;
@@ -697,7 +727,7 @@ function extractExportedName(parsed: ParsedImport): string {
 function tryFinalize(
   draft: ImportEdgeDraft,
   byFilePath: Map<string, FinalizeFile>,
-  getReexportClosures: () => ReadonlyMap<string, FileReexportClosure>,
+  getReexportClosures: (targetFile: string) => ReadonlyMap<string, FileReexportClosure>,
   topLevelOnly: boolean,
 ): ImportEdge | null {
   const targetFile = draft.targetFile;
@@ -759,7 +789,7 @@ function tryFinalize(
   // already encodes every name reachable through that file's named and
   // wildcard re-exports — including transitively through cyclic SCCs —
   // so the lookup is O(1) and never recurses.
-  const followed = lookupReexportedName(getReexportClosures(), targetFile, importedName);
+  const followed = lookupReexportedName(getReexportClosures(targetFile), targetFile, importedName);
   if (followed === null) {
     // Target resolvable but the name isn't exported — keep trying in case a
     // re-export inside the target's SCC surfaces it in a later iteration.
@@ -793,6 +823,7 @@ function tryFinalize(
  */
 type ReexportClosureEntry = { readonly def: SymbolDefinition; readonly via: readonly string[] };
 type FileReexportClosure = ReadonlyMap<string, ReexportClosureEntry>;
+const EMPTY_REEXPORT_CLOSURES: ReadonlyMap<string, FileReexportClosure> = new Map();
 
 /**
  * Build per-file re-export closures.
@@ -1610,7 +1641,7 @@ function expandWildcard(
   byFilePath: Map<string, FinalizeFile>,
   hooks: FinalizeHooks,
   workspace: WorkspaceIndex,
-  getReexportClosures: () => ReadonlyMap<string, FileReexportClosure>,
+  getReexportClosures: (targetFile: string) => ReadonlyMap<string, FileReexportClosure>,
 ): readonly ImportEdge[] {
   if (edge.targetModuleScope === undefined || edge.targetFile === null) {
     return [edge]; // unresolvable wildcard survives as a single unlinked edge
@@ -1621,7 +1652,7 @@ function expandWildcard(
   const targetClosure =
     hooks.filterWildcardNames === undefined
       ? undefined
-      : getReexportClosures().get(edge.targetFile);
+      : getReexportClosures(edge.targetFile).get(edge.targetFile);
   const names =
     hooks.filterWildcardNames?.(
       edge.targetModuleScope,
