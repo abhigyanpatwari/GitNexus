@@ -58,6 +58,13 @@ describe('runtime inventory accounting', () => {
     expect(result.tests).toMatchObject({ collected: 1, passed: 0, skipped: 1 });
   });
 
+  it('reports collection errors even when the file has an execution record', () => {
+    const result = coverageInventory(work('passed', true, ['collection failed']), ['a.test.ts']);
+    expect(result.files.unrecorded).toEqual([]);
+    expect(result.files.errors).toEqual(['a.test.ts']);
+    expect(result.collectionComplete).toBe(false);
+  });
+
   it.each([
     { state: 'passed' as const, errors: [] },
     { state: 'skipped' as const, errors: ['collection failed'] },

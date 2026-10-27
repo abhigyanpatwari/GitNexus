@@ -198,7 +198,7 @@ describe('copyBuildOutput', () => {
     execFileSync('git', ['init', '--quiet', checkout]);
     const git = (root: string, ...args: string[]) =>
       execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
-    git(checkout, 'add', 'gitnexus/case.ts', 'public-manifest.json', '.env');
+    git(checkout, 'add', '--force', '--', 'gitnexus/case.ts', 'public-manifest.json', '.env');
     git(checkout, 'remote', 'add', 'origin', 'https://example.com/source.git');
     copyBuildOutput('normal', path.join(checkout, 'gitnexus'), path.join(prepared, 'gitnexus'));
     expect(git(prepared, 'rev-parse', '--show-toplevel')).toBe(prepared.split(path.sep).join('/'));
@@ -242,7 +242,7 @@ describe('copyBuildOutput', () => {
     }
     writeFileSync(path.join(checkout, '..', '.env'), 'private');
     execFileSync('git', ['init', '--quiet', path.dirname(checkout)]);
-    execFileSync('git', ['add', '--', ...fixtures], { cwd: path.dirname(checkout) });
+    execFileSync('git', ['add', '--force', '--', ...fixtures], { cwd: path.dirname(checkout) });
     copyBuildOutput('normal', checkout, prepared);
     expect(fixtures.map((file) => readFileSync(path.join(prepared, '..', file), 'utf8'))).toEqual(
       fixtures,
