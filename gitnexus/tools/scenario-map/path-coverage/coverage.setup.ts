@@ -28,6 +28,7 @@
 import { createHash } from 'node:crypto';
 import { Session } from 'node:inspector/promises';
 import { syncBuiltinESMExports } from 'node:module';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { WorkerOptions } from 'node:worker_threads';
 import {
@@ -60,9 +61,12 @@ if (context === undefined || context === null) {
   );
 }
 
+// Avoid Vite's browser rewrite of new URL(..., import.meta.url), which injects a
+// reference to `self` while this local binding is still being initialized in jsdom.
+const hookFile = fileURLToPath(import.meta.url);
 const self = new Set(
-  [import.meta.url, new URL('./records.ts', import.meta.url).href].map(
-    (url) => scriptPath(url) ?? fileURLToPath(url),
+  [hookFile, path.join(path.dirname(hookFile), 'records.ts')].map(
+    (file) => scriptPath(file) ?? file,
   ),
 );
 const isSelf = (file: string): boolean => self.has(file);

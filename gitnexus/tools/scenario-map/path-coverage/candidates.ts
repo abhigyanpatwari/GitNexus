@@ -1,7 +1,7 @@
 /**
  * Layer 1 candidate retrieval of the scenario map (U4, R3, KTD5, KTD17, design §5.2).
  *
- * Two sources make a pair of tests a candidate:
+ * Three sources make a pair of tests a candidate:
  *  - `jaccard`: exact Jaccard similarity of their V8 block sets (the work file's block indices,
  *    run-coverage.ts) of at least {@link JACCARD_THRESHOLD}, checked in integers. All pairs are
  *    found without comparing every pair: blocks are ordered rarest first (by how many tests cover
@@ -11,7 +11,9 @@
  *    filters drop no qualifying pair. Empty block sets (tests that ran no production code) never
  *    pair through this source;
  *  - `checks-context`: both tests have the same checks-and-context key (facet/checks.ts
- *    `checksContextKey`), whatever their blocks.
+ *    `checksContextKey`), whatever their blocks;
+ *  - `body`: identical callback text, even when setup/import context and blocks differ. This
+ *    source only retrieves review leads; it cannot prove equal inputs or expectations.
  *
  * Each pair records its exact Jaccard (null when a set is empty), whether the block sets are
  * identical (KTD5: a pair that is not caps at weak evidence) and whether it is path-unattributable
@@ -28,7 +30,7 @@ import { ascending, byText, sha1 } from '../util.js';
 /** Jaccard >= 99 / 100 makes a candidate (R3). */
 export const JACCARD_THRESHOLD = Object.freeze({ numerator: 99, denominator: 100 });
 
-export type CandidateSource = 'jaccard' | 'checks-context';
+export type CandidateSource = 'jaccard' | 'checks-context' | 'body';
 
 export interface CandidateTest {
   /** Phase 0 test id. */
@@ -38,13 +40,15 @@ export interface CandidateTest {
   concurrent: boolean;
   /** Checks-and-context key; null when the test has none (no call site, no assertion). */
   checksContext: string | null;
+  /** Same callback text, independent of surrounding setup. Retrieval only, never proof. */
+  bodyKey?: string | null;
 }
 
 export interface CandidatePair {
   /** The smaller test id. */
   a: string;
   b: string;
-  /** In the order `jaccard`, `checks-context`. */
+  /** In the order `jaccard`, `checks-context`, `body`. */
   sources: CandidateSource[];
   /** Exact Jaccard of the block sets; null when either set is empty. */
   jaccard: number | null;
@@ -68,8 +72,8 @@ export interface CandidateStats {
   /** Tests given. */
   tests: number;
   pairs: number;
-  /** Pairs found only by Jaccard, only by checks and context, and by both. */
-  bySource: { jaccard: number; checksContext: number; both: number };
+  /** Disjoint counts: Jaccard only, checks/context only, both, or any body match. */
+  bySource: { jaccard: number; checksContext: number; both: number; body: number };
   groups: number;
   /** The group with the most tests, then the most pairs, then the smallest id. */
   largestGroup: { id: string; tests: number; pairs: number } | null;
@@ -159,12 +163,15 @@ function jaccardPairs(items: readonly Indexed[]): [number, number][] {
   return found;
 }
 
-/** Index pairs (into `items`) sharing a non-null checks-and-context key. */
-function checksContextPairs(items: readonly Indexed[]): [number, number][] {
+/** Index pairs (into `items`) sharing a non-null key of the selected field. */
+function checksContextPairs(
+  items: readonly Indexed[],
+  field: 'checksContext' | 'bodyKey' = 'checksContext',
+): [number, number][] {
   const buckets = new Map<string, number[]>();
   items.forEach((item, index) => {
-    const key = item.test.checksContext;
-    if (key === null) return;
+    const key = item.test[field];
+    if (key == null) return;
     const bucket = buckets.get(key);
     if (bucket) bucket.push(index);
     else buckets.set(key, [index]);
@@ -244,6 +251,7 @@ export function findCandidates(
   };
   add(jaccardPairs(items), 'jaccard');
   add(checksContextPairs(items), 'checks-context');
+  add(checksContextPairs(items, 'bodyKey'), 'body');
 
   const raw = [...sources.values()]
     .sort((p, q) => p.i - q.i || p.j - q.j)
@@ -256,7 +264,7 @@ export function findCandidates(
       return {
         a: x.test.id,
         b: y.test.id,
-        sources: (['jaccard', 'checks-context'] as const).filter((s) => found.has(s)),
+        sources: (['jaccard', 'checks-context', 'body'] as const).filter((s) => found.has(s)),
         jaccard: empty ? null : shared / union,
         identicalBlocks: shared === x.blocks.length && shared === y.blocks.length,
         pathUnattributable: x.test.concurrent || y.test.concurrent,
@@ -291,6 +299,7 @@ export function findCandidates(
         jaccard: count(['jaccard']),
         checksContext: count(['checks-context']),
         both: count(['jaccard', 'checks-context']),
+        body: pairs.filter((pair) => pair.sources.includes('body')).length,
       },
       groups: groups.length,
       largestGroup:

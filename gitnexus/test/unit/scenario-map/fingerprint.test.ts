@@ -127,6 +127,66 @@ const CASES: { rule: FingerprintRule; verdict: FingerprintVerdict; edit: WorldEd
 ];
 
 describe('fingerprint rules', () => {
+  it('keeps equal assertions with different setup as a review lead, not different checks', () => {
+    const pair = verdictOf({
+      a: { checks: 'same-expectation' },
+      b: { checks: 'same-expectation', checksContext: 'cleanup-context' },
+    });
+    expect([pair.verdict, pair.rule, pair.evidence.checks]).toEqual([
+      'possible-duplicate',
+      'context-differs',
+      'same',
+    ]);
+  });
+
+  it('cannot confirm a duplicate when assertion-only keys exist but context is missing', () => {
+    const pair = verdictOf({
+      a: { checks: 'same-expectation', checksContext: null },
+      b: { checks: 'same-expectation', checksContext: null },
+    });
+    expect([pair.verdict, pair.rule]).toEqual(['possible-duplicate', 'context-unknown']);
+  });
+
+  it('retains known input differences when setup also differs', () => {
+    const pair = verdictOf({
+      a: { checks: 'same-expectation' },
+      b: {
+        checks: 'same-expectation',
+        checksContext: 'other-setup',
+        facet: facet(['Number[]', 'Number']),
+      },
+    });
+    expect([pair.verdict, pair.rule]).toEqual(['table-row', 'input-values-differ']);
+  });
+
+  it.each(['args-differ', 'receiver-differs'] as const)(
+    'retains a proven runtime value difference (%s) when setup also differs',
+    (reason) => {
+      const pair = verdictOf({
+        a: { checks: 'same-expectation' },
+        b: { checks: 'same-expectation', checksContext: 'other-setup' },
+        pair: { trace: { status: 'veto', reasons: [reason] } },
+      });
+      expect([pair.verdict, pair.rule]).toEqual(['table-row', 'runtime-values-differ']);
+    },
+  );
+
+  it('does not prove distinctness from incomplete native/worker paths', () => {
+    const pair = verdictOf({
+      a: { provenance: { known: true, nativeEntries: ['tree-sitter.node'], workerSpawns: [] } },
+      pair: { identicalBlocks: false },
+    });
+    expect([pair.verdict, pair.rule]).toEqual(['possible-duplicate', 'path-incomplete']);
+  });
+
+  it.each(['asymmetric-sites', 'asymmetric-counts'] as const)(
+    'does not call a cold/warm trace difference (%s) different input values',
+    (reason) => {
+      const pair = verdictOf({ pair: { trace: { status: 'veto', reasons: [reason] } } });
+      expect([pair.verdict, pair.rule]).toEqual(['possible-duplicate', 'trace-unknown']);
+    },
+  );
+
   it.each(CASES)('rule $rule decides $verdict', ({ rule, verdict, edit }) => {
     const decided = verdictOf(edit);
     expect([decided.verdict, decided.rule]).toEqual([verdict, rule]);

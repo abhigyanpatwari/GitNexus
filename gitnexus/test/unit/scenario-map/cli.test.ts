@@ -336,6 +336,8 @@ describe('runCli usage', () => {
   });
 
   it.each([
+    { mutation: 'none' as const, kind: 'normal', mode: { kind: 'normal' as const } },
+    { mutation: 'possible-duplicates' as const, kind: 'normal', mode: { kind: 'normal' as const } },
     { mutation: 'all' as const, kind: 'normal', mode: { kind: 'normal' as const } },
     {
       mutation: 'none' as const,
@@ -531,7 +533,18 @@ function writeTwoShardRun(work: string, replan: ShardReplan | null = null): void
     extraRoots: [],
     repeats: 1,
     blocks: ['gitnexus/src/a.ts#f@0'],
-    files: [],
+    files: plan.eligibility.fingerprintFiles.map((file) => ({
+      file,
+      recorded: true,
+      errors: [],
+      unattributed: {
+        known: true,
+        executedFiles: [],
+        nativeEntries: [],
+        workerSpawns: [],
+        excludedCandidates: [],
+      },
+    })),
     tests: tests.map((id, i) => coverageTest(id, i + 1)),
     unhandledErrors: [],
   };
@@ -620,6 +633,28 @@ function writeTwoShardRun(work: string, replan: ShardReplan | null = null): void
 }
 
 describe('merge stage', () => {
+  it('marks missing coverage partial and reports cases independently of candidate pairs', async () => {
+    const { deps, work } = setup();
+    writeTwoShardRun(work, ONE_SHARD_REPLAN);
+    const layout = workLayout(work);
+    const coverage = JSON.parse(readFileSync(layout.coverage, 'utf8')) as CoverageWorkFile;
+    coverage.files[0].recorded = false;
+    writeFileSync(layout.coverage, JSON.stringify(coverage));
+    const code = await runCli(['merge', '--work', work], deps);
+    const report = JSON.parse(readFileSync(layout.reportJson, 'utf8')) as ScenarioMapReport;
+    expect(code).toBe(1);
+    expect(report.completeness.partial).toBe(true);
+    expect(report.completeness.shards.incomplete).toContainEqual({
+      shard: 'coverage',
+      reason: '1 files missing or errored; 0 unhandled errors',
+    });
+    expect(report.inventory?.tests.collected).toBe(6);
+    expect(report.inventory?.files.unrecorded).toEqual(['test/unit/a.test.ts']);
+    expect(readFileSync(layout.reportMarkdown, 'utf8')).toContain(
+      'Runtime inventory: 6 test cases collected',
+    );
+  });
+
   it('reports the fingerprint of every pair and no mutation verdict for a fingerprint-only run', async () => {
     const { deps, work } = setup();
     writeTwoShardRun(work);

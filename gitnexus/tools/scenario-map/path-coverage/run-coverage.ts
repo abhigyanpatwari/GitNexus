@@ -465,6 +465,7 @@ export function checksContextKeys(
 export function candidateTestsOf(
   work: CoverageWorkFile,
   keys: ReadonlyMap<string, string | null>,
+  bodyKeys?: ReadonlyMap<string, string | null>,
 ): CandidateTest[] {
   return work.tests
     .filter((test) => test.attempts > 0 || test.state === 'passed' || test.state === 'failed')
@@ -473,6 +474,7 @@ export function candidateTestsOf(
       blocks: test.blocks,
       concurrent: test.concurrent,
       checksContext: keys.get(test.id) ?? null,
+      ...(bodyKeys === undefined ? {} : { bodyKey: bodyKeys.get(test.id) ?? null }),
     }));
 }
 

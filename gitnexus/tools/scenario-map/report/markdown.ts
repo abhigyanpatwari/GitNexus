@@ -505,12 +505,26 @@ function layer0Lines(report: ScenarioMapReport): string[] {
 
 function eligibilitySection(report: ScenarioMapReport): string[] {
   const { eligibility } = report;
+  const inventory = report.inventory;
   const lines = [
     '',
     '## Eligibility',
     '',
     `${eligibility.mode} mode: the fingerprint covers ${plural(eligibility.fingerprintFiles, 'test file')}; ` +
       `${plural(eligibility.files.length, 'test file')} are mutation-eligible.`,
+    ...(inventory == null
+      ? []
+      : [
+          `Runtime inventory: ${inventory.tests.collected} test cases collected; ` +
+            `${inventory.tests.passed} passed, ${inventory.tests.failed} failed, ` +
+            `${inventory.tests.skipped} skipped, ${inventory.tests.pending} pending.`,
+          ...(inventory.collectionComplete
+            ? []
+            : [
+                'Collection is incomplete: omitted or errored files may contain additional cases. ' +
+                  'These counts are not a whole-suite total.',
+              ]),
+        ]),
     ...(eligibility.changedFiles === null
       ? []
       : [
@@ -521,15 +535,13 @@ function eligibilitySection(report: ScenarioMapReport): string[] {
       ? []
       : [
           eligibility.changedFiles === null
-            ? `Layer 1 ran ${eligibility.layer1Files} of them; every test of the other ` +
-              `${eligibility.fingerprintFiles - eligibility.layer1Files} has a checks-and-context ` +
-              'key no other test shares, so none of their pairs can be a duplicate, a possible ' +
-              'duplicate or a table row.'
+            ? `Layer 1 ran ${eligibility.layer1Files} of them; the other ` +
+              `${eligibility.fingerprintFiles - eligibility.layer1Files} files were not compared. ` +
+              'No duplicate-recall claim applies to their tests.'
             : `Layer 1 ran ${eligibility.layer1Files} of them: the changed files whose tests can ` +
-              "pair with another test, the files sharing their tests' checks-and-context keys, " +
+              "pair with another test, the files sharing their tests' checks-and-context or body keys, " +
               'and every file with a test of no static key (helper-registered, dynamic ' +
-              "`it.each` counts, file snapshots), which can pair with any test. No other file's " +
-              "test can be a changed test's duplicate, possible duplicate or table row.",
+              '`it.each` counts, file snapshots), which can pair with any test. Other files were not compared.',
         ]),
     ...(eligibility.unrecordedFiles === 0
       ? []

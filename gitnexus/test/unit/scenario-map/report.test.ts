@@ -354,7 +354,7 @@ describe('renderMarkdown', () => {
     {
       scope: 'a whole-suite run that skipped files',
       overrides: { layer1Files: 0 },
-      lines: ['Layer 1 ran 0 of them; every test of the other 1 has a checks-and-context key'],
+      lines: ['Layer 1 ran 0 of them; the other 1 files were not compared.'],
     },
     {
       scope: 'a diff-scoped run',

@@ -220,6 +220,8 @@ export interface VerdictTestInput {
   excludedFiles: readonly string[];
   /** U5 checks-and-context key; null when the test has none. */
   checksContext: string | null;
+  /** Assertion fingerprint without setup context; absent in older stage artifacts. */
+  checks?: string | null;
   /** U5 unsupported assertion forms (`InstanceChecks.unsupported`). */
   unsupportedForms: readonly UnsupportedForm[];
   /** U5 selectors whose instance value is not static (`InstanceChecks.unresolved`). */
