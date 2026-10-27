@@ -15,6 +15,12 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 // importers into direct dependants of `Entry`, a name none of them can reach.
 const ROUTE_COUNT = 8;
 const SIBLING_COUNT = 3;
+const SIBLING_EXTENSION: Record<string, string> = {
+  java: 'java',
+  kotlin: 'kt',
+  cjs: 'js',
+  script: 'ts',
+};
 const routeFiles = Array.from(
   { length: ROUTE_COUNT },
   (_, index) =>
@@ -48,25 +54,44 @@ const SEED = [
   // class and a Kotlin `internal` class are both recorded `isExported: false`
   // and both stay nameable from the other files of their package / module, so
   // the file seed must survive for them.
-  ...packageScopedCase('java', 'src/main/java/app/Svc.java', 'PackageEntry'),
-  ...packageScopedCase('kotlin', 'src/main/kotlin/app/Svc.kt', 'InternalEntry'),
+  // Each file also declares a public class, so the file has a `true` row the
+  // way an ES module does: only the provider's verdict keeps the seed here.
+  ...packageScopedCase('java', 'src/main/java/app/Svc.java', 'PackageEntry', 'JavaApi'),
+  ...packageScopedCase('kotlin', 'src/main/kotlin/app/Svc.kt', 'InternalEntry', 'KotlinApi'),
+  // Same `false`, same provider flag, but the file's export surface is not an
+  // ES one: a CommonJS module (`module.exports = Widget`) and a global script
+  // record every declaration `false` and never a `true`. Both stay nameable
+  // from other files, so the seed must survive for them.
+  ...packageScopedCase('cjs', 'src/legacy/widget.js', 'Widget'),
+  ...packageScopedCase('script', 'src/global/registry.ts', 'Registry'),
 ];
 
 function siblingFiles(lang: string): string[] {
-  const ext = lang === 'java' ? 'java' : 'kt';
   return Array.from(
     { length: SIBLING_COUNT },
-    (_, index) => `src/main/${lang}/app/Use${index}.${ext}`,
+    (_, index) => `src/use/${lang}/Use${index}.${SIBLING_EXTENSION[lang]}`,
   );
 }
 
-function packageScopedCase(lang: string, ownerPath: string, className: string): string[] {
+function packageScopedCase(
+  lang: string,
+  ownerPath: string,
+  className: string,
+  exportedSibling?: string,
+): string[] {
   const ownerId = `File:${ownerPath}`;
   const classId = `Class:${ownerPath}:${className}`;
+  const siblingId = `Class:${ownerPath}:${exportedSibling}`;
   return [
     `CREATE (f:File {id: '${ownerId}', name: '${ownerPath.slice(ownerPath.lastIndexOf('/') + 1)}', filePath: '${ownerPath}', content: ''})`,
     `CREATE (c:Class {id: '${classId}', name: '${className}', filePath: '${ownerPath}', startLine: 1, endLine: 3, isExported: false, content: '', description: ''})`,
     `MATCH (f:File {id:'${ownerId}'}), (c:Class {id:'${classId}'}) CREATE (f)-[:CodeRelation {type:'DEFINES', confidence:1.0, reason:'', step:0}]->(c)`,
+    ...(exportedSibling === undefined
+      ? []
+      : [
+          `CREATE (c:Class {id: '${siblingId}', name: '${exportedSibling}', filePath: '${ownerPath}', startLine: 4, endLine: 6, isExported: true, content: '', description: ''})`,
+          `MATCH (f:File {id:'${ownerId}'}), (c:Class {id:'${siblingId}'}) CREATE (f)-[:CodeRelation {type:'DEFINES', confidence:1.0, reason:'', step:0}]->(c)`,
+        ]),
     ...siblingFiles(lang).flatMap((filePath) => [
       `CREATE (f:File {id: 'File:${filePath}', name: '${filePath.slice(filePath.lastIndexOf('/') + 1)}', filePath: '${filePath}', content: ''})`,
       `MATCH (a:File {id:'File:${filePath}'}), (b:File {id:'${ownerId}'}) CREATE (a)-[:CodeRelation {type:'IMPORTS', confidence:1.0, reason:'import', step:0}]->(b)`,
@@ -156,6 +181,38 @@ withTestLbugDB(
       expect(result.target.id).toBe('Class:src/main/kotlin/app/Svc.kt:InternalEntry');
       expect(ids(result, 1)).toEqual(
         siblingFiles('kotlin')
+          .map((p) => `File:${p}`)
+          .sort(),
+      );
+      expect(result.impactedCount).toBe(SIBLING_COUNT);
+    });
+
+    it('keeps the file seed for a class of a CommonJS module: no ES export in the file, so false is no verdict', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'Widget',
+        kind: 'Class',
+        direction: 'upstream',
+      });
+
+      expect(result.target.id).toBe('Class:src/legacy/widget.js:Widget');
+      expect(ids(result, 1)).toEqual(
+        siblingFiles('cjs')
+          .map((p) => `File:${p}`)
+          .sort(),
+      );
+      expect(result.impactedCount).toBe(SIBLING_COUNT);
+    });
+
+    it('keeps the file seed for a declaration of a global TS script for the same reason', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'Registry',
+        kind: 'Class',
+        direction: 'upstream',
+      });
+
+      expect(result.target.id).toBe('Class:src/global/registry.ts:Registry');
+      expect(ids(result, 1)).toEqual(
+        siblingFiles('script')
           .map((p) => `File:${p}`)
           .sort(),
       );

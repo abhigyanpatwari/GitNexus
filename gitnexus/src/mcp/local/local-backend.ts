@@ -8534,10 +8534,21 @@ export class LocalBackend {
     // importer of the file as a direct dependant. The seed is skipped for it;
     // its real dependants still arrive through USES/EXTENDS/IMPLEMENTS edges
     // inside the file. Everything else keeps the seed: a missing verdict
-    // (NULL, CommonJS or ambient files) proves nothing, and in languages where
-    // `false` means package-, assembly- or module-private (Java, C#, Kotlin,
-    // Go, …) a sibling file can still name the type, so the over-approximation
-    // is the safe side.
+    // (NULL) proves nothing, and in languages where `false` means package-,
+    // assembly- or module-private (Java, C#, Kotlin, Go, …) a sibling file
+    // can still name the type, so the over-approximation is the safe side.
+    //
+    // The stored verdict is the provider's export checker, which for an
+    // ECMAScript file answers "under an `export` statement?" whatever the
+    // file's module kind: a CommonJS class (`module.exports = Foo`) and a
+    // top-level declaration of a global script are both recorded `false`, and
+    // both can be named from other files. The index does not record the
+    // module kind, but it does record the checker's `true`, which only ES
+    // `export` syntax produces: a file with at least one `true` declaration is
+    // an ES module, where `false` is file-private. So the skip also requires
+    // such a declaration in the same file; a CommonJS file, a script, or a
+    // module whose exports all live in tables without the column (`Const`,
+    // `TypeAlias`) keeps the seed.
     if (symType === 'Class' || symType === 'Interface') {
       try {
         // Run both seed queries in parallel — they are independent.
@@ -8585,7 +8596,29 @@ export class LocalBackend {
             // only reader on the impact path.
             const { getProviderForFile } = await import('../../core/ingestion/languages/index.js');
             const provider = getProviderForFile(String(r.filePath ?? r[3] ?? ''));
-            if (provider?.notExportedIsFilePrivate === true) continue;
+            if (provider?.notExportedIsFilePrivate === true) {
+              // Per label: not every node table has the column, and a File
+              // DEFINES its top-level declarations only, so these three cover
+              // the ES `export` forms the checker can mark.
+              const exportedSiblings = await executeParameterized(
+                repo.lbugPath,
+                `
+                MATCH (f:File)-[d:CodeRelation]->(e:Function)
+                WHERE f.id = $fileId AND d.type = 'DEFINES' AND e.isExported = true
+                RETURN e.id AS id
+                UNION ALL
+                MATCH (f:File)-[d:CodeRelation]->(e:Class)
+                WHERE f.id = $fileId AND d.type = 'DEFINES' AND e.isExported = true
+                RETURN e.id AS id
+                UNION ALL
+                MATCH (f:File)-[d:CodeRelation]->(e:Interface)
+                WHERE f.id = $fileId AND d.type = 'DEFINES' AND e.isExported = true
+                RETURN e.id AS id
+              `,
+                { fileId: String(r.id || r[0]) },
+              );
+              if (exportedSiblings.length > 0) continue;
+            }
           }
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
