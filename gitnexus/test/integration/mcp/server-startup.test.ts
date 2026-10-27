@@ -21,7 +21,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { once } from 'node:events';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -172,6 +174,7 @@ function spawnMcpServer(): SpawnedServer {
       proc.stdin.write(frame);
     },
     close: async () => {
+      if (proc.exitCode !== null || proc.signalCode !== null) return;
       proc.stdin.end();
       // Give the server a moment to clean up; force-kill if it hangs.
       await new Promise<void>((resolve) => {
@@ -314,4 +317,152 @@ describe('MCP server end-to-end startup', () => {
       await server.close();
     }
   }, 60_000);
+});
+
+async function within<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('MCP lifecycle operation timed out')),
+          milliseconds,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
+const initializeMessage = {
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: {
+    protocolVersion: '2025-06-18',
+    capabilities: {},
+    clientInfo: { name: 'gitnexus-lifecycle-test', version: '0.0.0' },
+  },
+};
+
+describe('MCP stdio process lifecycle', () => {
+  it.each(['before', 'after'] as const)('exits cleanly on EOF %s the handshake', async (when) => {
+    const server = spawnMcpServer();
+    try {
+      if (when === 'after') {
+        server.send(initializeMessage);
+        expect(await server.nextMessage()).toMatchObject({ id: 1, result: {} });
+      }
+      const exited = once(server.proc, 'exit');
+      server.proc.stdin.end();
+      expect(await within(exited, TOTAL_BUDGET_MS)).toEqual([0, null]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('keeps a second MCP client usable when the first client disconnects', async () => {
+    const first = spawnMcpServer();
+    const second = spawnMcpServer();
+    try {
+      first.send(initializeMessage);
+      second.send(initializeMessage);
+      expect(await first.nextMessage()).toMatchObject({ id: 1, result: {} });
+      expect(await second.nextMessage()).toMatchObject({ id: 1, result: {} });
+      const firstExited = once(first.proc, 'exit');
+      first.proc.stdin.end();
+      expect(await within(firstExited, TOTAL_BUDGET_MS)).toEqual([0, null]);
+      second.send({ jsonrpc: '2.0', id: 2, method: 'ping' });
+      expect(await second.nextMessage()).toMatchObject({ id: 2, result: {} });
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
+  // A FIFO lets the client keep stdin open independently of the launching
+  // parent. ChildProcess.stdin would close automatically when that parent dies,
+  // accidentally testing EOF again. Windows has no mkfifo; unit tests cover its
+  // unchanged-PPID / missing-parent liveness probe instead.
+  it.skipIf(process.platform === 'win32')(
+    'exits when its parent dies even if stdin stays open',
+    async () => {
+      const home = fs.mkdtempSync(path.join(tmpdir(), 'gitnexus-parent-exit-'));
+      const fifo = path.join(home, 'stdin');
+      execFileSync('mkfifo', [fifo]);
+      const fd = fs.openSync(fifo, fs.constants.O_RDWR);
+      const parent = spawn(
+        process.execPath,
+        [
+          '-e',
+          `
+      const { spawn } = require('node:child_process');
+      const child = spawn(process.execPath, [process.argv[1], 'mcp'], { stdio: [0, 1, 2] });
+      process.send({ pid: child.pid });
+      setInterval(() => {}, 1000);
+    `,
+          DIST_CLI,
+        ],
+        {
+          cwd: REPO_ROOT,
+          env: { ...process.env, GITNEXUS_HOME: home, NODE_OPTIONS: '' },
+          stdio: [fd, 'pipe', 'pipe', 'ipc'],
+        },
+      );
+      let serverPid: number | undefined;
+      let stdoutEnded = false;
+      let output = '';
+      let errors = '';
+      parent.stdout!.setEncoding('utf8');
+      parent.stdout!.on('data', (chunk: string) => {
+        output += chunk;
+      });
+      parent.stdout!.on('end', () => {
+        stdoutEnded = true;
+      });
+      parent.stderr!.on('data', (chunk: Buffer) => {
+        errors += chunk.toString();
+      });
+      try {
+        const [message] = await within(once(parent, 'message'), TOTAL_BUDGET_MS);
+        serverPid = (message as { pid: number }).pid;
+        fs.writeSync(fd, JSON.stringify(initializeMessage) + '\n');
+        await expect.poll(() => output, { timeout: FIRST_FRAME_BUDGET_MS }).toContain('"id":1');
+        expect(JSON.parse(output.trim())).toMatchObject({ id: 1, result: {} });
+
+        // A live, idle parent must not be mistaken for a disconnected client.
+        await new Promise((resolve) => setTimeout(resolve, 1_200));
+        expect(stdoutEnded).toBe(false);
+        output = '';
+        fs.writeSync(fd, JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' }) + '\n');
+        await expect.poll(() => output, { timeout: FIRST_FRAME_BUDGET_MS }).toContain('"id":2');
+
+        const parentExited = once(parent, 'exit');
+        parent.kill('SIGKILL');
+        await within(parentExited, TOTAL_BUDGET_MS);
+        await expect
+          .poll(() => stdoutEnded, { timeout: TOTAL_BUDGET_MS, message: errors })
+          .toBe(true);
+        expect(errors).not.toMatch(/uncaughtException|unhandledRejection/);
+      } finally {
+        if (!stdoutEnded && serverPid !== undefined) {
+          try {
+            process.kill(serverPid, 'SIGKILL');
+          } catch {
+            /* already exited */
+          }
+        }
+        if (parent.exitCode === null && parent.signalCode === null) {
+          const exited = once(parent, 'exit');
+          parent.kill('SIGKILL');
+          await within(exited, TOTAL_BUDGET_MS);
+        }
+        fs.closeSync(fd);
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
 });
