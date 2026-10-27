@@ -33,9 +33,11 @@ const routeImports = Array.from(
 );
 
 const SEED = [
-  `CREATE (f:File {id: 'File:src/lib/svc.ts', name: 'svc.ts', filePath: 'src/lib/svc.ts', content: ''})`,
+  `CREATE (f:File {id: 'File:src/lib/svc.ts', name: 'svc.ts', filePath: 'src/lib/svc.ts', content: 'interface Entry {}\\nexport function verify() {}'})`,
   ...routeFiles,
   ...routeImports,
+  `CREATE (:File {id: 'File:src/lib/dependency.ts', name: 'dependency.ts', filePath: 'src/lib/dependency.ts', content: ''})`,
+  `MATCH (a:File {id:'File:src/lib/svc.ts'}), (b:File {id:'File:src/lib/dependency.ts'}) CREATE (a)-[:CodeRelation {type:'IMPORTS', confidence:1.0, reason:'import', step:0}]->(b)`,
   // Module-private: a recorded `false` verdict.
   `CREATE (i:Interface {id: 'Interface:src/lib/svc.ts:Entry', name: 'Entry', filePath: 'src/lib/svc.ts', startLine: 1, endLine: 3, isExported: false, content: '', description: ''})`,
   // Exported sibling in the same file: the file seed must stay for it.
@@ -142,6 +144,15 @@ withTestLbugDB(
         Array.from({ length: ROUTE_COUNT }, (_, index) => `File:src/app/v${index}/route.ts`).sort(),
       );
       expect(result.impactedCount).toBe(ROUTE_COUNT);
+    });
+
+    it('preserves downstream file dependencies even for a private type', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'Entry',
+        kind: 'Interface',
+        direction: 'downstream',
+      });
+      expect(ids(result, 1)).toEqual(['File:src/lib/dependency.ts']);
     });
 
     it('keeps the file seed when the index recorded no export verdict', async () => {

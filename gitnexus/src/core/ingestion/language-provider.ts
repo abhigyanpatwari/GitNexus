@@ -355,9 +355,11 @@ interface LanguageProviderConfig {
   readonly exportChecker: ExportChecker;
 
   /**
-   * Does a `false` from `exportChecker` prove that NO other file can name the
-   * symbol? True where the unit of visibility is the file: an ES module (not
-   * under `export`), Swift `private`/`fileprivate`, a Zig declaration without
+   * Does a stored `false` from `exportChecker` prove file privacy? A function
+   * can confirm this against the indexed file content; missing content must
+   * retain the fallback. The graph flag is NOT SymbolDefinition's tri-state
+   * export evidence: JS/TS export clauses and CommonJS can also store false.
+   * True for Swift `private`/`fileprivate`, a Zig declaration without
    * `pub` (an `export fn` without `pub` is recorded true for its C linkage, so
    * `false` never hides an FFI symbol).
    *
@@ -377,7 +379,7 @@ interface LanguageProviderConfig {
    *
    * Default: undefined, read as `false`.
    */
-  readonly notExportedIsFilePrivate?: boolean;
+  readonly notExportedIsFilePrivate?: boolean | ((filePath: string, content: string) => boolean);
 
   // ── Calls & Imports (optional) ────────────────────────────────────
   /** Call routing for languages that express imports/heritage as calls (e.g., Ruby).
