@@ -412,15 +412,11 @@ describe('MCP stdio process lifecycle', () => {
         },
       );
       let serverPid: number | undefined;
-      let stdoutEnded = false;
       let output = '';
       let errors = '';
       parent.stdout!.setEncoding('utf8');
       parent.stdout!.on('data', (chunk: string) => {
         output += chunk;
-      });
-      parent.stdout!.on('end', () => {
-        stdoutEnded = true;
       });
       parent.stderr!.on('data', (chunk: Buffer) => {
         errors += chunk.toString();
@@ -434,7 +430,7 @@ describe('MCP stdio process lifecycle', () => {
 
         // A live, idle parent must not be mistaken for a disconnected client.
         await new Promise((resolve) => setTimeout(resolve, 1_200));
-        expect(stdoutEnded).toBe(false);
+        expect(parent.stdout!.readableEnded).toBe(false);
         output = '';
         fs.writeSync(fd, JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' }) + '\n');
         await expect.poll(() => output, { timeout: FIRST_FRAME_BUDGET_MS }).toContain('"id":2');
@@ -443,11 +439,11 @@ describe('MCP stdio process lifecycle', () => {
         parent.kill('SIGKILL');
         await within(parentExited, TOTAL_BUDGET_MS);
         await expect
-          .poll(() => stdoutEnded, { timeout: TOTAL_BUDGET_MS, message: errors })
+          .poll(() => parent.stdout!.readableEnded, { timeout: TOTAL_BUDGET_MS, message: errors })
           .toBe(true);
         expect(errors).not.toMatch(/uncaughtException|unhandledRejection/);
       } finally {
-        if (!stdoutEnded && serverPid !== undefined) {
+        if (!parent.stdout!.readableEnded && serverPid !== undefined) {
           try {
             process.kill(serverPid, 'SIGKILL');
           } catch {
