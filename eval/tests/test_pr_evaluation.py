@@ -510,6 +510,56 @@ def test_baseline_download_authenticates_run_artifact_and_recomputes_report(gith
 
 
 @pytest.mark.parametrize(
+    "model,effort",
+    [
+        ("gpt-5.6-sol", "low"),
+        ("gpt-5.5", "medium"),
+        ("gpt-5.6-sol\nOTHER=value", "low"),
+        ("gpt-5.6-sol", "low\rOTHER=value"),
+    ],
+)
+def test_baseline_cli_inherits_authenticated_settings(github, tmp_path, monkeypatch, model, effort):
+    previous = github["report"]
+    metadata = {**previous, "model": model, "effort": effort}
+    rows = [{**row, "model": model, "effort": effort} for row in previous["per_run"]]
+    github["report"] = build_report(rows, metadata, now=NOW)
+    report, environment = tmp_path / "previous.json", tmp_path / "github-env"
+    environment.write_text("EXISTING=value\n")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "pr_evaluation",
+            "baseline",
+            "--repo",
+            REPO,
+            "--run-id",
+            "42",
+            "--harness-sha",
+            HARNESS,
+            "--out",
+            str(report),
+            "--env-out",
+            str(environment),
+        ],
+    )
+    if "\n" in model or "\r" in effort:
+        with pytest.raises(ValueError, match="single-line"):
+            pr_evaluation.main()
+        assert environment.read_text() == "EXISTING=value\n"
+        assert not report.exists()
+        return
+    pr_evaluation.main()
+    assert json.loads(report.read_text()) == github["report"]
+    assert environment.read_text() == f"EXISTING=value\nMODEL={model}\nEFFORT={effort}\n"
+
+
+@pytest.mark.parametrize("model,effort", [("gpt-5.5", "xhigh"), ("gpt-5.6-sol", "low")])
+def test_explicit_baseline_settings_still_require_an_exact_match(github, model, effort):
+    with pytest.raises(ValueError, match="does not match"):
+        pr_evaluation.fetch_baseline(REPO, 42, HARNESS, model, effort)
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         lambda g: g["run"].update(conclusion="failure"),
@@ -526,10 +576,11 @@ def test_baseline_download_authenticates_run_artifact_and_recomputes_report(gith
         lambda g: g["report"]["arms"]["baseline"].update(mean_cost_usd=0),
     ],
 )
-def test_untrusted_or_tampered_historical_evidence_is_rejected_before_paid_work(github, mutation):
+@pytest.mark.parametrize("settings", [(), ("gpt-5.6-sol", "xhigh")])
+def test_untrusted_or_tampered_historical_evidence_is_rejected_before_paid_work(github, mutation, settings):
     mutation(github)
     with pytest.raises(ValueError):
-        pr_evaluation.fetch_baseline(REPO, 42, HARNESS, "gpt-5.6-sol", "xhigh")
+        pr_evaluation.fetch_baseline(REPO, 42, HARNESS, *settings)
 
 
 def test_cli_writes_sanitized_candidate_report_and_marks_missing_measurements_incomplete(

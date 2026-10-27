@@ -294,7 +294,7 @@ jobs:
         run: |
           uv run --locked --extra dev python -m workflow_bench.pr_evaluation baseline \
             --repo "$GITHUB_REPOSITORY" --run-id "$COMPARISON_RUN_ID" \
-            --harness-sha "$GITHUB_SHA" --model "$MODEL" --effort "$EFFORT" \
+            --harness-sha "$GITHUB_SHA" --env-out "$GITHUB_ENV" \
             --out "$RUNNER_TEMP/release-evaluation/previous.json"
       # Both runtimes grade the pinned task source against one dependency tree
       # built from that commit's lockfile, never the runtime under test's.
