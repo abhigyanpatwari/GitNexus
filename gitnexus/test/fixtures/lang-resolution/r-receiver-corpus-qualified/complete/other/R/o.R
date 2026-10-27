@@ -1,0 +1,1 @@
+fmt <- function() "other fmt"

@@ -1,0 +1,22 @@
+{
+  "language": "r",
+  "description": "Refuse when a function body assigns the name a value that may be a function and calls it (probe d1): the call reaches the local, and the planner cannot prove which binding each occurrence means.",
+  "categories": [
+    "assignment-shadowing",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

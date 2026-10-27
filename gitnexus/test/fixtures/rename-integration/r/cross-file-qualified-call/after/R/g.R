@@ -1,0 +1,1 @@
+g <- function() pk::secret()

@@ -1,0 +1,2 @@
+# Valid R on purpose (see analysis.Rmd).
+qmd_fn <- function() 1

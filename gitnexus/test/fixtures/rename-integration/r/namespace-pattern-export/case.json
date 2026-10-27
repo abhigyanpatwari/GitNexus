@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a package function that an exportPattern() entry matches, because the pattern would silently stop matching its new name.",
+  "categories": ["namespace", "package-export", "export-pattern", "negative", "unchanged-on-error"],
+  "target": { "name": "api_run", "kind": "Function", "file": "R/lib.R", "startLine": 0 },
+  "newName": "run_api",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

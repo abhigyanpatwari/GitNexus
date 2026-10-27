@@ -195,8 +195,9 @@ jobs:
       - id: gen
         run: |
           # Keep the recorded native workload below 17 minutes, leaving
-          # headroom for runner variation under the 20-minute watchdog.
-          TOTAL=11        # cross-platform (windows/macOS) shards per OS
+          # headroom for runner variation under the 20-minute watchdog. The two
+          # R rename suites (695 s each) need a twelfth shard to stay below it.
+          TOTAL=12        # cross-platform (windows/macOS) shards per OS
           # Four coverage shards exceeded the 25-minute job limit while tests
           # were still passing. Split the full suite further; keep the timeout
           # and merged coverage thresholds unchanged.

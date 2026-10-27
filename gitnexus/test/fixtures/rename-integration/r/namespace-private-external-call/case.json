@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a private package function whose file also calls an external package (stats::sd): the dropped external qualified call must not hide the plan-time NAMESPACE read, so the rename still succeeds.",
+  "categories": ["namespace", "package-export", "qualified-call", "positive"],
+  "target": { "name": "hidden", "kind": "Function", "file": "R/pub.R", "startLine": 0 },
+  "newName": "secret",
+  "expect": { "status": "success", "edits": 2 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "pub", "kind": "Function", "file": "R/pub.R", "startLine": 2 },
+      "to": { "name": "hidden", "kind": "Function", "file": "R/pub.R", "startLine": 0 }
+    }
+  ]
+}

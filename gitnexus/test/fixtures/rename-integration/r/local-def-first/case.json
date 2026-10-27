@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename the function only: the local function literal is a direct statement of the body before every call, so each call reaches the local definition.",
+  "categories": ["assignment-shadowing", "call-order", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 1
+  },
+  "edges": []
+}

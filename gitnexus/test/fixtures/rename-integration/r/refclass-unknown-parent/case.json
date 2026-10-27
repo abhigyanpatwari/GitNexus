@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a RefClass method calls the name bare and its parent class is not in the indexed sources: the parent may define a method of that name.",
+  "categories": ["refclass", "inheritance", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

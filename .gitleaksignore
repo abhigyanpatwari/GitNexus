@@ -2,3 +2,6 @@
 c9fdab17f25ebaf332fba6e6ba55ee328f20fe66:README.md:curl-auth-header:348
 # Synthetic Kotlin Actuator fixture value from PR #3107; no credential was present.
 3951079300a18b14e79f5b5f5dd778ae19ced6e3:gitnexus/test/integration/spring-actuator-kotlin-runtime-pipeline.test.ts:generic-api-key:8
+# Rcpp's public generator-token UUID in an R rename fixture (generated-rcpp-wrapper); no credential was present.
+ab0a3acf132b3a97f78d39a97988fb5b325ad3fc:gitnexus/test/fixtures/rename-integration/r/generated-rcpp-wrapper/before/R/RcppExports.R:generic-api-key:2
+ab0a3acf132b3a97f78d39a97988fb5b325ad3fc:gitnexus/test/fixtures/rename-integration/r/generated-rcpp-wrapper/after/R/RcppExports.R:generic-api-key:2

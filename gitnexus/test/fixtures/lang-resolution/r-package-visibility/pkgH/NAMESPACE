@@ -1,0 +1,2 @@
+importFrom(pkgB, b_only)
+export(h_main)

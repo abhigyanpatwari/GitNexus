@@ -1,0 +1,2 @@
+export(g_main)
+if (getRversion() >= "4.0.0") import(pkgB)

@@ -372,6 +372,8 @@ A provider can explicitly restrict its edge mode. COBOL currently uses
 and scope resolution contributes procedure-pointer calls. Registration alone is
 not a claim that every language feature uses identical resolution rules.
 
+Shared code does not name languages. When a language needs an extension point that does not exist yet, it is added as an optional `LanguageProvider` hook that no other language has to implement (R's `postParse` and `resolveMemberOwnerNode`; see the hook table below).
+
 ### Pipeline stages
 
 ```
@@ -514,7 +516,7 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 
 ## Language-agnostic graph feeding
 
-18 languages → single unified graph. Four abstraction layers:
+19 languages → single unified graph. Four abstraction layers:
 
 ```
  Unified Graph Schema (44 node types, 21 relationship types)
@@ -540,8 +542,10 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 | `mroStrategy`          | `first-wins` / `c3` / `none`                                                                                                                                                                                                                                                                                                      |
 | `descriptionExtractor` | Optional hook returning a symbol's doc-comment text as its `description`; feeds the embedding metadata header so doc-only terms are semantically searchable (issue #2270). Most languages register `createLeadingDocDescriptionExtractor` (shared, language-neutral; per-language comment/wrapper config passed at the call site) |
 | `definitionPropertiesExtractor` | Optional language-owned hook for structured, clone-safe definition metadata. Shared ingestion persists these properties opaquely; the owning provider supplies the extraction semantics. |
+| `postParse` | Optional. Whole-graph pass a language runs once after every chunk is merged and before scope resolution (deferred owner resolution, manifest-driven export refinement). Called once per analyze, awaited, only when the language has parsed files; a throw aborts the parse phase. Incremental analyse writes back only changed files, so a mutation of an unchanged file's nodes is not persisted; a hook whose result depends on manifests that are not parsed sources needs `--force` after such an edit. R: deferred `setMethod`/R6 owners + NAMESPACE exports. |
+| `resolveMemberOwnerNode` | Optional. For languages whose members are owned by a call/assignment rather than an enclosing container node (R: R6/RefClass): returns the node the method and field extractors read members from, or null. Consulted by the enclosing-owner slot after the container walk and `resolveFileTypeOwner` (same slot; Zig file-owner is the precedent). Not an S4 mechanism: R's `setMethod(...)` returns null (its owner is a string-literal class name, not a node); S4 ownership arrives only through the `ownerNameHint` → `postParse` path. |
 
-18 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
+19 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
 
 ### Unified capture tags
 
@@ -740,4 +744,5 @@ Node IDs use arity suffix (`#<paramCount>`): `Method:file:Class.method#1` vs `#2
 - [GUARDRAILS.md](GUARDRAILS.md) — safety boundaries for humans and agents
 - [TESTING.md](TESTING.md) — how to run tests
 - [docs/languages/objective-c-provider.md](docs/languages/objective-c-provider.md) — Objective-C provider behavior and limits
+- [docs/languages/r-provider.md](docs/languages/r-provider.md) — R provider behavior and limits
 - `AGENTS.md` / `CLAUDE.md` — agent workflows and tool usage
