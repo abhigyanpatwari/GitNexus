@@ -8526,14 +8526,18 @@ export class LocalBackend {
     // upstream dependent. The BFS will discover IMPORTS edges on it naturally.
     //
     // #3602: the file's importers stand in for the type's importers, which
-    // only holds when the type can leave the file. A type recorded as not
-    // exported (`isExported = false`, module-private in TS/JS, non-public in
-    // Java) cannot be named by any importer, so seeding its file would report
-    // every importer of the file as a direct dependant. The seed is skipped
-    // for it; its real dependants still arrive through USES/EXTENDS/
-    // IMPLEMENTS edges inside the file. A missing verdict (NULL, CommonJS or
-    // ambient files) keeps the seed, since "not under export" proves nothing
-    // there.
+    // only holds when the type can leave the file. Where the index recorded
+    // `isExported = false` AND the language's provider says that verdict is
+    // file-private (`notExportedIsFilePrivate`: an ES module declaration not
+    // under `export`, Swift `private`/`fileprivate`, Zig without `pub`), no
+    // importer can name the type, so seeding its file would report every
+    // importer of the file as a direct dependant. The seed is skipped for it;
+    // its real dependants still arrive through USES/EXTENDS/IMPLEMENTS edges
+    // inside the file. Everything else keeps the seed: a missing verdict
+    // (NULL, CommonJS or ambient files) proves nothing, and in languages where
+    // `false` means package-, assembly- or module-private (Java, C#, Kotlin,
+    // Go, …) a sibling file can still name the type, so the over-approximation
+    // is the safe side.
     if (symType === 'Class' || symType === 'Interface') {
       try {
         // Run both seed queries in parallel — they are independent.
@@ -8575,7 +8579,14 @@ export class LocalBackend {
         for (const r of fileRows) {
           assertSymbolRowIdentity(r);
           const exported = r.isExported ?? r[4];
-          if (exported === false) continue;
+          if (exported === false) {
+            // Lazy like the other provider lookups on this backend: the
+            // registry pulls every language module, and this branch is the
+            // only reader on the impact path.
+            const { getProviderForFile } = await import('../../core/ingestion/languages/index.js');
+            const provider = getProviderForFile(String(r.filePath ?? r[3] ?? ''));
+            if (provider?.notExportedIsFilePrivate === true) continue;
+          }
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);

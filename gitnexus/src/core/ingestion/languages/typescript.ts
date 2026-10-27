@@ -517,6 +517,9 @@ export const typescriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
+  // An ES module is a file: a declaration not under `export` is unreachable
+  // from any other file. See `LanguageProvider.notExportedIsFilePrivate`.
+  notExportedIsFilePrivate: true,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   methodExtractor: createMethodExtractor({
@@ -621,6 +624,8 @@ export const javascriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
+  // Same unit of visibility as TypeScript: the ES module is the file.
+  notExportedIsFilePrivate: true,
   callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({

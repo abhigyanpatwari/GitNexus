@@ -91,6 +91,8 @@ export const vueProvider = defineLanguage({
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
+  // The `<script>` block is an ES module scoped to the SFC file.
+  notExportedIsFilePrivate: true,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   variableExtractor: createVariableExtractor(typescriptVariableConfig),

@@ -14,6 +14,7 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 // files import `verify`. The owning-file seed (#480) turned those eight
 // importers into direct dependants of `Entry`, a name none of them can reach.
 const ROUTE_COUNT = 8;
+const SIBLING_COUNT = 3;
 const routeFiles = Array.from(
   { length: ROUTE_COUNT },
   (_, index) =>
@@ -43,7 +44,35 @@ const SEED = [
   ),
   `MATCH (a:Function {id:'Function:src/lib/svc.ts:parse'}), (b:Interface {id:'Interface:src/lib/svc.ts:Entry'}) CREATE (a)-[:CodeRelation {type:'USES', confidence:1.0, reason:'type-reference', step:0}]->(b)`,
   `MATCH (a:Function {id:'Function:src/lib/svc.ts:verify'}), (b:Function {id:'Function:src/lib/svc.ts:parse'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:1.0, reason:'direct', step:0}]->(b)`,
+  // Sibling path: `false` that is NOT file-private. A Java package-private
+  // class and a Kotlin `internal` class are both recorded `isExported: false`
+  // and both stay nameable from the other files of their package / module, so
+  // the file seed must survive for them.
+  ...packageScopedCase('java', 'src/main/java/app/Svc.java', 'PackageEntry'),
+  ...packageScopedCase('kotlin', 'src/main/kotlin/app/Svc.kt', 'InternalEntry'),
 ];
+
+function siblingFiles(lang: string): string[] {
+  const ext = lang === 'java' ? 'java' : 'kt';
+  return Array.from(
+    { length: SIBLING_COUNT },
+    (_, index) => `src/main/${lang}/app/Use${index}.${ext}`,
+  );
+}
+
+function packageScopedCase(lang: string, ownerPath: string, className: string): string[] {
+  const ownerId = `File:${ownerPath}`;
+  const classId = `Class:${ownerPath}:${className}`;
+  return [
+    `CREATE (f:File {id: '${ownerId}', name: '${ownerPath.slice(ownerPath.lastIndexOf('/') + 1)}', filePath: '${ownerPath}', content: ''})`,
+    `CREATE (c:Class {id: '${classId}', name: '${className}', filePath: '${ownerPath}', startLine: 1, endLine: 3, isExported: false, content: '', description: ''})`,
+    `MATCH (f:File {id:'${ownerId}'}), (c:Class {id:'${classId}'}) CREATE (f)-[:CodeRelation {type:'DEFINES', confidence:1.0, reason:'', step:0}]->(c)`,
+    ...siblingFiles(lang).flatMap((filePath) => [
+      `CREATE (f:File {id: 'File:${filePath}', name: '${filePath.slice(filePath.lastIndexOf('/') + 1)}', filePath: '${filePath}', content: ''})`,
+      `MATCH (a:File {id:'File:${filePath}'}), (b:File {id:'${ownerId}'}) CREATE (a)-[:CodeRelation {type:'IMPORTS', confidence:1.0, reason:'import', step:0}]->(b)`,
+    ]),
+  ];
+}
 
 type BackendHandle = IndexedDBHandle & { _backend?: LocalBackend };
 
@@ -99,6 +128,38 @@ withTestLbugDB(
 
       expect(result.impactedCount).toBe(ROUTE_COUNT);
       expect(ids(result, 1).every((id) => id.startsWith('File:src/app/'))).toBe(true);
+    });
+
+    it('keeps the file seed for a Java package-private class: false is not file-private there', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'PackageEntry',
+        kind: 'Class',
+        direction: 'upstream',
+      });
+
+      expect(result.target.id).toBe('Class:src/main/java/app/Svc.java:PackageEntry');
+      expect(ids(result, 1)).toEqual(
+        siblingFiles('java')
+          .map((p) => `File:${p}`)
+          .sort(),
+      );
+      expect(result.impactedCount).toBe(SIBLING_COUNT);
+    });
+
+    it('keeps the file seed for a Kotlin internal class: false is module-wide there', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'InternalEntry',
+        kind: 'Class',
+        direction: 'upstream',
+      });
+
+      expect(result.target.id).toBe('Class:src/main/kotlin/app/Svc.kt:InternalEntry');
+      expect(ids(result, 1)).toEqual(
+        siblingFiles('kotlin')
+          .map((p) => `File:${p}`)
+          .sort(),
+      );
+      expect(result.impactedCount).toBe(SIBLING_COUNT);
     });
   },
   {
