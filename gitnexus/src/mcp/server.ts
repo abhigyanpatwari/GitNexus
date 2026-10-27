@@ -242,7 +242,7 @@ export function createMCPServer(
           (!readOnly || MCP_READ_ONLY_TOOLS.has(tool.name)) &&
           repositoryPolicy.toolAllowed(tool.name),
       )
-        .map((tool) => toolForReadOnlyMcp(repositoryPolicy.toolForMcp(tool), readOnly))
+        .map((tool) => repositoryPolicy.toolForMcp(toolForReadOnlyMcp(tool, readOnly)))
         .map((tool) => ({
           name: tool.name,
           description: tool.description,
@@ -271,7 +271,7 @@ export function createMCPServer(
       const schemaSource = schemaSourceToolName(name);
       const advertisedTool = GITNEXUS_TOOLS.find((tool) => tool.name === schemaSource);
       if (advertisedTool) {
-        const listed = toolForReadOnlyMcp(repositoryPolicy.toolForMcp(advertisedTool), readOnly);
+        const listed = repositoryPolicy.toolForMcp(toolForReadOnlyMcp(advertisedTool, readOnly));
         assertKnownMcpToolArguments(name, typedArgs, listed.inputSchema.properties);
       }
       const responseFilter = resolveMcpResponseFilter(schemaSource, typedArgs);
