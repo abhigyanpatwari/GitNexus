@@ -17,6 +17,7 @@
  * scope's files, assigns these ids, and maps the requested ids to Vitest task ids with
  * {@link selectRequestedTests}; it then runs one task-id specification per file.
  */
+import path from 'node:path';
 
 export const TEST_ID_SEPARATOR = '#';
 
@@ -116,6 +117,36 @@ export function assignTestIds(file: string, tests: readonly CollectedTest[]): Id
     seen.add(test.id);
   }
   return identified;
+}
+
+/** Remove only the current copy's path prefixes from titles that interpolate fixture paths. */
+export function portableTestName(name: string, packageRoot: string): string {
+  const root = packageRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const prefixes = [
+    [root, '<package>'],
+    [path.posix.dirname(root), '<repo>'],
+  ] as const;
+  for (const [prefix, replacement] of prefixes) {
+    if (prefix === '/' || prefix === '.') continue;
+    name = name.replaceAll(`${prefix}/`, `${replacement}/`);
+    name = name.replaceAll(`${prefix.replaceAll('/', '\\')}\\`, `${replacement}/`);
+  }
+  return name;
+}
+
+/** Portable ids; keep raw full names for Vitest's collection/execution consistency check. */
+export function assignPortableTestIds(
+  file: string,
+  tests: readonly CollectedTest[],
+  packageRoot: string,
+): IdentifiedTest[] {
+  return assignTestIds(
+    file,
+    tests.map((test) => ({
+      ...test,
+      fullName: portableTestName(test.fullName, packageRoot),
+    })),
+  ).map((test, index) => ({ ...test, fullName: tests[index].fullName }));
 }
 
 export interface FileTestSelection {

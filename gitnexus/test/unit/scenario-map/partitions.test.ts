@@ -200,4 +200,29 @@ describe('copyBuildOutput', () => {
       existsSync(path.join(controls, 'vendor')),
     ]).toEqual(['leiden', false, false]);
   });
+
+  it('includes the sibling hook fixtures read by package tests', () => {
+    const base = mkdtempSync(path.join(os.tmpdir(), 'scenario-map-hook-fixtures-'));
+    temps.push(base);
+    const checkout = path.join(base, 'checkout', 'gitnexus');
+    const prepared = path.join(base, 'prepared', 'gitnexus');
+    mkdirSync(checkout, { recursive: true });
+    mkdirSync(prepared, { recursive: true });
+    const hooks = [
+      'gitnexus-claude-plugin',
+      'gitnexus-cursor-integration',
+      'gitnexus-factory-plugin',
+    ];
+    for (const plugin of hooks) {
+      const dir = path.join(checkout, '..', plugin, 'hooks');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, 'registry-query.cjs'), plugin);
+    }
+    copyBuildOutput('normal', checkout, prepared);
+    expect(
+      hooks.map((plugin) =>
+        readFileSync(path.join(prepared, '..', plugin, 'hooks', 'registry-query.cjs'), 'utf8'),
+      ),
+    ).toEqual(hooks);
+  });
 });

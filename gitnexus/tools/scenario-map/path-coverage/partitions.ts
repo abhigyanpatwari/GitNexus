@@ -135,4 +135,15 @@ export function copyBuildOutput(
     const from = path.join(checkoutPackage, entry);
     if (existsSync(from)) cpSync(from, path.join(preparedPackage, entry), { recursive: true });
   }
+  // Package tests compare and execute the shipped copies of the registry hook.
+  for (const plugin of [
+    'gitnexus-claude-plugin',
+    'gitnexus-cursor-integration',
+    'gitnexus-factory-plugin',
+  ]) {
+    const from = path.join(checkoutPackage, '..', plugin, 'hooks');
+    if (existsSync(from)) {
+      cpSync(from, path.join(preparedPackage, '..', plugin, 'hooks'), { recursive: true });
+    }
+  }
 }

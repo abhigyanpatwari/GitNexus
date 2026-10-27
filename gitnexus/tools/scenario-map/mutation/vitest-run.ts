@@ -52,7 +52,7 @@ import {
 } from '../../mutation/runner/classify-outcome.js';
 import { PROTOCOL_KEY, type WorkerContext } from '../../mutation/runner/protocol.js';
 import {
-  assignTestIds,
+  assignPortableTestIds,
   parseTestId,
   selectRequestedTests,
   type CollectedTest,
@@ -298,7 +298,7 @@ async function runSelected(
       .map((module) => ({ module, file: relative(module.moduleId) }))
       .filter(({ file }) => files.includes(file))
       .sort((a, b) => byText(a.file, b.file))
-      .map(({ module, file }) => [file, assignTestIds(file, collectedTests(module))]),
+      .map(({ module, file }) => [file, assignPortableTestIds(file, collectedTests(module), root)]),
   );
   const selection = selectRequestedTests(identified, testIds);
   const problems = [

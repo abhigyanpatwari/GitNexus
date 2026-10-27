@@ -64,6 +64,7 @@ import {
   changedTestFiles,
   layer1FilesOf,
   mutationTarget,
+  passingTracePairs,
   shardRowPlans,
   parseCliArgs,
   parseExpectedControls,
@@ -86,6 +87,30 @@ import {
 } from '../../../tools/scenario-map/scenario-map.js';
 
 const temps: string[] = [];
+
+describe('trace selection', () => {
+  it('keeps non-passing coverage tests out of the shared trace without losing valid pairs', () => {
+    const pairs = [
+      { a: 'a', b: 'b' },
+      { a: 'a', b: 'failed' },
+      { a: 'skipped', b: 'b' },
+      { a: 'pending', b: 'b' },
+      { a: 'missing', b: 'b' },
+    ];
+    expect(
+      passingTracePairs(
+        [
+          { id: 'a', state: 'passed' },
+          { id: 'b', state: 'passed' },
+          { id: 'failed', state: 'failed' },
+          { id: 'skipped', state: 'skipped' },
+          { id: 'pending', state: 'pending' },
+        ],
+        pairs,
+      ),
+    ).toEqual([pairs[0]]);
+  });
+});
 const tempDir = (): string => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'scenario-map-u14-'));
   temps.push(dir);

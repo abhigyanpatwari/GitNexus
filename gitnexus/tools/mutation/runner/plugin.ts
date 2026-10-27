@@ -66,7 +66,7 @@ import {
 } from './run-manifest.js';
 import { writeSidecar, type SidecarDraft } from './sidecar.js';
 import {
-  assignTestIds,
+  assignPortableTestIds,
   parseTestId,
   selectRequestedTests,
   selectionProblems,
@@ -420,7 +420,10 @@ export class Vitest5TestRunner implements TestRunner {
       modules
         .map((module) => ({ module, file: relativeFile(this.#root, module.moduleId) }))
         .sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0))
-        .map(({ module, file }) => [file, assignTestIds(file, collectedTests(module))] as const),
+        .map(
+          ({ module, file }) =>
+            [file, assignPortableTestIds(file, collectedTests(module), this.#root)] as const,
+        ),
     );
     const selection = selectRequestedTests(identified, testIds);
     const problems = [
@@ -478,7 +481,10 @@ export class Vitest5TestRunner implements TestRunner {
 
     const identified = new Map<string, IdentifiedTest[]>();
     for (const report of reports) {
-      identified.set(report.file, assignTestIds(report.file, collectedTests(report.module)));
+      identified.set(
+        report.file,
+        assignPortableTestIds(report.file, collectedTests(report.module), this.#root),
+      );
     }
     const stateOf = new Map(
       reports.flatMap((report) => report.observed.tests.map((test) => [test.taskId, test.state])),

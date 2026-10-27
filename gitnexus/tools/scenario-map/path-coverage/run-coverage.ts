@@ -69,7 +69,11 @@ import { parseArgs } from 'node:util';
 import { isHarnessModule } from '../../mutation/fidelity/record.js';
 import { buildPathMap, toRepoPath, type PathMapEntry } from '../../mutation/prepare/path-map.js';
 import { prepare } from '../../mutation/prepare/prepare.js';
-import { assignTestIds, type TestLocation } from '../../mutation/runner/test-ids.js';
+import {
+  assignPortableTestIds,
+  portableTestName,
+  type TestLocation,
+} from '../../mutation/runner/test-ids.js';
 import { MUTATION_SCOPE_ENV, parseMutationScope } from '../../mutation/scope-file.js';
 import { errorMessage, isMainModule } from '../../mutation/shared/cli.js';
 import { overlaps, readJsonFile } from '../../mutation/shared/fs.js';
@@ -345,9 +349,10 @@ export function buildWorkFile(input: WorkFileInput): CoverageWorkFile {
           ? unknownProvenance()
           : provenanceOf([raw.unattributed], raw, context, production, true),
     });
-    const identified = assignTestIds(
+    const identified = assignPortableTestIds(
       module.file,
       module.tests.map(({ taskId, fullName, location }) => ({ taskId, fullName, location })),
+      packageDir,
     );
     const rawTests = new Map((raw?.tests ?? []).map((test) => [test.taskId, test]));
     module.tests.forEach((test, index) => {
@@ -358,7 +363,7 @@ export function buildWorkFile(input: WorkFileInput): CoverageWorkFile {
         id: identified[index].id,
         taskId: test.taskId,
         file: module.file,
-        fullName: test.fullName,
+        fullName: portableTestName(test.fullName, packageDir),
         location: test.location ?? null,
         state: test.state,
         concurrent,

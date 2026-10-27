@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   assignTestIds,
+  assignPortableTestIds,
   formatTestId,
   parseTestId,
   selectRequestedTests,
@@ -22,6 +23,56 @@ const collected = (
   line: number,
   column: number,
 ): CollectedTest => ({ taskId, fullName, location: { line, column } });
+
+describe('portable test identity', () => {
+  it('matches coverage, trace and Stryker copies while retaining the runtime title', () => {
+    const roots = [
+      '/work/coverage/prepared/gitnexus',
+      '/work/trace/prepared/gitnexus',
+      '/work/.stryker-tmp/sandbox-1',
+    ];
+    const runs = roots.map((root) => {
+      const fullName = `hooks > reads ${root}/hooks/registry.cjs`;
+      const [test] = assignPortableTestIds(FILE, [collected('task', fullName, 20, 3)], root);
+      expect(test.fullName).toBe(fullName);
+      return test.id;
+    });
+    expect(new Set(runs).size).toBe(1);
+  });
+
+  it('keeps sibling plugin paths and package paths distinct across prepared copies', () => {
+    const runs = ['/coverage/prepared', '/trace/prepared'].map((root) =>
+      assignPortableTestIds(
+        FILE,
+        ['gitnexus', 'gitnexus-claude-plugin'].map((dir, i) =>
+          collected(`task-${i}`, `reads ${root}/${dir}/hooks/registry.cjs`, 20, 3),
+        ),
+        `${root}/gitnexus`,
+      ).map((test) => test.id),
+    );
+    expect(runs[0]).toEqual(runs[1]);
+    expect(new Set(runs[0]).size).toBe(2);
+  });
+
+  it('does not rewrite other absolute paths or a root prefix in a sibling directory', () => {
+    const tests = [collected('a', 'reads /outside/a and /copycat/gitnexus/a', 1, 1)];
+    expect(assignPortableTestIds(FILE, tests, '/copy/gitnexus')).toEqual(
+      assignTestIds(FILE, tests),
+    );
+  });
+
+  it('retains collision suffixes when normalization makes titles equal', () => {
+    const tests = [
+      collected('a', 'reads /copy/gitnexus/a', 1, 1),
+      collected('b', 'reads <package>/a', 2, 1),
+    ];
+    const ids = assignPortableTestIds(FILE, tests, '/copy/gitnexus');
+    expect(ids.map((test) => test.id)).toEqual([
+      `${FILE}#reads <package>/a:1:1`,
+      `${FILE}#reads <package>/a:2:1`,
+    ]);
+  });
+});
 
 describe('formatTestId and parseTestId', () => {
   it('joins the file and the full name with the first #', () => {
