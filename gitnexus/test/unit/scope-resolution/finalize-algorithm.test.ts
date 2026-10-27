@@ -316,16 +316,22 @@ describe('finalize', () => {
   });
 
   describe('wildcard expansion', () => {
-    it.each([
-      { hasOrdinaryImport: false, filteredWildcards: false },
-      { hasOrdinaryImport: true, filteredWildcards: false },
-      { hasOrdinaryImport: false, filteredWildcards: true },
-      { hasOrdinaryImport: true, filteredWildcards: true },
-    ])(
-      'does not inspect unrelated exports after a terminal miss ($hasOrdinaryImport, $filteredWildcards)',
-      ({ hasOrdinaryImport, filteredWildcards }) => {
+    it.each(
+      [
+        { importKind: 'none', parsedImports: [] },
+        { importKind: 'ordinary', parsedImports: [named('Leaf', 'Leaf', 'leaf')] },
+        { importKind: 'unresolved wildcard', parsedImports: [wildcard('missing')] },
+        { importKind: 'external wildcard', parsedImports: [wildcard('external')] },
+        { importKind: 'unresolved reexport', parsedImports: [reexport('X', 'X', 'missing')] },
+        { importKind: 'external reexport', parsedImports: [reexport('X', 'X', 'external')] },
+      ].flatMap((testCase) =>
+        [false, true].map((filteredWildcards) => ({ ...testCase, filteredWildcards })),
+      ),
+    )(
+      'does not inspect unrelated exports after a terminal miss ($importKind, filtered=$filteredWildcards)',
+      ({ parsedImports, filteredWildcards }) => {
         const leaf = file('leaf', [def('def:Leaf', 'Class', 'Leaf')]);
-        const target = file('target', [], hasOrdinaryImport ? [named('Leaf', 'Leaf', 'leaf')] : []);
+        const target = file('target', [], parsedImports);
         let exportSurfaceReads = 0;
         const unrelated: FinalizeFile = {
           ...file('unrelated', [def('def:Unrelated', 'Class', 'Unrelated')]),
@@ -342,14 +348,16 @@ describe('finalize', () => {
           { files, workspaceIndex: undefined },
           {
             ...hooks,
+            resolveImportTarget: (targetRaw, fromFile, workspace) =>
+              targetRaw === 'external'
+                ? targetRaw
+                : hooks.resolveImportTarget(targetRaw, fromFile, workspace),
             ...(filteredWildcards ? { filterWildcardNames: (_scope, names) => names } : {}),
           },
         );
 
         expect(firstImport(out, consumer.moduleScope)?.linkStatus).toBe('unresolved');
         expect(firstImport(out, wildcardImporter.moduleScope)?.targetDefId).toBe('def:Unrelated');
-        // Only ordinary wildcard expansion reads this surface. A missing
-        // import from a terminal module must not build every re-export table.
         expect(exportSurfaceReads).toBe(filteredWildcards ? 2 : 1);
       },
     );
@@ -394,16 +402,19 @@ describe('finalize', () => {
   });
 
   describe('re-export flattening', () => {
-    it('sets transitiveVia on reexport edges', () => {
+    it('resolves a reexport and its consumer after a terminal miss', () => {
       const c = file('c', [def('def:c.X', 'Class', 'c.X')]);
       const b = file('b', [], [reexport('X', 'X', 'c')]);
-      const a = file('a', [], [named('X', 'X', 'b')]);
-      // A terminal miss must not cache an empty answer for a later genuine
-      // re-export lookup in the same finalization.
-      const missing = file('missing', [], [named('Absent', 'Absent', 'c')]);
-      const files = [missing, a, b, c];
+      const a = file('a', [], [named('Absent', 'Absent', 'c'), named('X', 'X', 'b')]);
+      const files = [a, b, c];
       const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
-      expect(firstImport(out, missing.moduleScope)?.linkStatus).toBe('unresolved');
+      const imports = out.imports.get(a.moduleScope);
+      expect(imports).toHaveLength(2);
+      expect(imports?.[0].linkStatus).toBe('unresolved');
+      expect(imports?.[1]).toMatchObject({
+        targetDefId: 'def:c.X',
+        transitiveVia: ['b', 'c'],
+      });
       const reexportEdge = firstImport(out, b.moduleScope)!;
       expect(reexportEdge.kind).toBe('reexport');
       expect(reexportEdge.transitiveVia).toEqual(['c']);

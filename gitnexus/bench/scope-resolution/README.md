@@ -61,9 +61,10 @@ node --expose-gc --import tsx bench/scope-resolution/finalize-miss.mts 500
 ```
 
 Run in fresh processes on each revision after building. This constructs 500
-files with chained wildcard imports, a terminal module, and a consumer importing
-a missing name from that terminal module. The missing name cannot be supplied by
-re-exports, so it should not trigger construction of the unrelated chain's
+files with chained wildcard imports, a terminal module with an unresolved external
+wildcard import, and a consumer importing a missing name from that terminal module.
+The missing name cannot be supplied by re-exports, so it should not trigger
+construction of the unrelated chain's
 transitive export tables. The JSON reports finalization time, endpoint heap
 growth, process peak RSS, and a fingerprint of all finalized imports, bindings,
 SCCs and statistics. It is a synthetic finalizer workload, not a full Java

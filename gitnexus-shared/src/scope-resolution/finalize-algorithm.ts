@@ -315,7 +315,16 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
       (d) => d.fromScope === file.moduleScope,
     );
     moduleEdgeIndex.set(file.filePath, drafts);
-    if (drafts.some(contributesReexportEdge)) reexportingFiles.add(file.filePath);
+    if (
+      drafts.some(
+        (draft) =>
+          draft.targetFile !== null &&
+          byFilePath.has(draft.targetFile) &&
+          contributesReexportEdge(draft),
+      )
+    ) {
+      reexportingFiles.add(file.filePath);
+    }
   }
   const ambiguityByFile = collectAmbiguityByFile(
     input.files,

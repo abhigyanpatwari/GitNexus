@@ -21,7 +21,7 @@ files.push({
   filePath: 'leaf.java',
   moduleScope: 'scope:leaf',
   localDefs: [{ nodeId: 'def:Leaf', filePath: 'leaf.java', type: 'Class', qualifiedName: 'Leaf' }],
-  parsedImports: [],
+  parsedImports: [{ kind: 'wildcard', targetRaw: 'java/util' }],
 });
 files.push({
   filePath: 'consumer.java',
@@ -48,7 +48,7 @@ const edges = result.imports.get('scope:consumer');
 assert.equal(edges?.length, 1);
 assert.equal(edges[0].linkStatus, 'unresolved');
 assert.equal(result.stats.totalFiles, count + 2);
-assert.equal(result.stats.totalEdges, count);
+assert.equal(result.stats.totalEdges, count + 1);
 assert.equal(result.bindings.size, count + 2);
 const serialized = JSON.stringify({
   imports: [...result.imports],
