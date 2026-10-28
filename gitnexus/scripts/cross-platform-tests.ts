@@ -31,6 +31,9 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
+  'test/unit/opencode-plugin.test.ts',
+  'test/integration/opencode-plugin.test.ts',
+  'test/unit/uninstall.test.ts',
   'test/unit/resolve-invocation.test.ts',
   // CLI-spawn entry-point resolution; its path-separator assertion (cli[/\\]index)
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
@@ -161,6 +164,8 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/impact-private-type-file-seed.test.ts',
+  'test/integration/impact-private-type-source.test.ts',
   // Inline-handler findings must survive native persistence and cold explain
   // readers on each OS; passing the Ubuntu-only taint suite is insufficient.
   'test/integration/taint-explain.test.ts',
@@ -265,6 +270,8 @@ const LBUG_NATIVE = [
 // process spawning, which behaves differently across platforms (shell
 // quoting, path resolution, signal handling)
 const SPAWN_CLI = [
+  // Real shard/blob/JSON roundtrip: path identities and child invocation vary by OS.
+  'test/unit/shard-timings-roundtrip.test.ts',
   'test/integration/cli-e2e.test.ts',
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
@@ -319,9 +326,8 @@ const SPAWN_CLI = [
   // earlier attempt to register them still turned the matrix red — not from
   // their own cost, but because vitest sharded by file COUNT, so inserting any
   // file re-partitioned the list and happened to cluster `cli-e2e` (621 s) with
-  // `cli-limit-e2e` (75 s) on one shard. The split is weight-aware now
-  // (`scripts/cross-platform-shard.ts`), so a cheap file can no longer move a
-  // heavy one.
+  // `cli-limit-e2e` (75 s) on one shard. PerfSequencer now uses recorded timings
+  // through vitest-shard-balancer, shared by all shards in each workflow run.
   //
   // #2802: MCP startup must not eagerly load the analyze-only language
   // provider registry or the group contract extractors.

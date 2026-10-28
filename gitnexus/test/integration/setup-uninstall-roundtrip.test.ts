@@ -146,6 +146,12 @@ describe('setup → uninstall round-trip', () => {
       ).toBe(true);
       expect(await exists(h.scriptDir), `setup should install ${h.label} hook scripts`).toBe(true);
     }
+    for (const p of targets.plugins) {
+      expect(await exists(p.file), `setup should install ${p.label} plugin`).toBe(true);
+      const content = await fs.readFile(p.file, 'utf-8');
+      expect(content).toContain('GitNexusPlugin');
+      expect(content).toContain('tool.execute.after');
+    }
 
     // ── Round-trip: uninstall removes everything setup wrote ──
     const { uninstallCommand } = await import('../../src/cli/uninstall.js');
@@ -175,6 +181,9 @@ describe('setup → uninstall round-trip', () => {
       expect(await exists(h.scriptDir), `uninstall should remove ${h.label} hook scripts`).toBe(
         false,
       );
+    }
+    for (const p of targets.plugins) {
+      expect(await exists(p.file), `uninstall should remove ${p.label} plugin`).toBe(false);
     }
   });
 

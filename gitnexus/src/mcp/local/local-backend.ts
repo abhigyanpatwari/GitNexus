@@ -218,6 +218,12 @@ const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable',
 const CANDIDATE_WINDOW = 20;
 
 /**
+ * Most relationship rows `_runImpactBFS` reads per depth level (#3696). Real
+ * hub walks stay in the tens of thousands.
+ */
+export const IMPACT_FRONTIER_ROW_CAP = 100_000;
+
+/**
  * Concurrent BFS walks when `query()` attaches per-process `chain`. Each walk
  * is already node-capped inside `_computeContextChain`; this bounds how many
  * of those walks run at once so a page of processes (and each group member
@@ -8513,6 +8519,7 @@ export class LocalBackend {
     let frontier = [symId];
     const objectCallableFrontier: string[] = [];
     let traversalComplete = true;
+    let traversalCappedAtDepth: number | undefined;
     // Fetch one sentinel row beyond the cap so generated object bindings
     // degrade visibly instead of allocating an unbounded seed frontier.
     const OBJECT_CALLABLE_MEMBER_CAP = 5000;
@@ -8524,9 +8531,28 @@ export class LocalBackend {
     // The owning File is kept only as an internal seed (frontier/visited) and
     // is NOT added to impacted — it is the definition container, not an
     // upstream dependent. The BFS will discover IMPORTS edges on it naturally.
+    //
+    // #3602: the file's importers stand in for the type's importers, which
+    // only holds when the type can leave the file. Where the index recorded
+    // `isExported = false` AND the language's provider confirms that verdict
+    // is file-private (checking indexed source where needed), no
+    // importer can name the type, so seeding its file would report every
+    // importer of the file as a direct dependant. The seed is skipped for it;
+    // its real dependants still arrive through USES/EXTENDS/IMPLEMENTS edges
+    // inside the file. Everything else keeps the seed: a missing verdict
+    // (NULL) proves nothing; JS/TS also need to exclude indirect exports,
+    // CommonJS and ambient files even when the stored flag is false. Where
+    // `false` means package-, assembly- or module-private (Java, C#, Kotlin,
+    // Go, …) a sibling file can still name the type, so the over-approximation
+    // is the safe side. Downstream still needs the file's imports: a private
+    // type can depend on other files even though they cannot import its name.
     if (symType === 'Class' || symType === 'Interface') {
       try {
         // Run both seed queries in parallel — they are independent.
+        // The label is literal: only these two tables reach this branch, and
+        // not every node table carries `isExported` (Protocol/Category do
+        // not), so an untyped `n.isExported` is not a safe projection.
+        const typeLabel = symType === 'Class' ? 'Class' : 'Interface';
         const [ctorRows, fileRows] = await Promise.all([
           executeParameterized(
             repo.lbugPath,
@@ -8542,9 +8568,10 @@ export class LocalBackend {
           executeParameterized(
             repo.lbugPath,
             `
-            MATCH (f:File)-[rel:CodeRelation]->(n)
+            MATCH (f:File)-[rel:CodeRelation]->(n:${typeLabel})
             WHERE n.id = $symId AND rel.type = 'DEFINES'
-            RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath
+            RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath, n.isExported AS isExported,
+                   CASE WHEN n.isExported = false THEN f.content ELSE NULL END AS content
           `,
             { symId },
           ),
@@ -8560,6 +8587,21 @@ export class LocalBackend {
         }
         for (const r of fileRows) {
           assertSymbolRowIdentity(r);
+          const exported = r.isExported ?? r[4];
+          if (direction === 'upstream' && exported === false) {
+            // Lazy like the other provider lookups on this backend: the
+            // registry pulls every language module, and this branch is the
+            // only reader on the impact path.
+            const { getProviderForFile } = await import('../../core/ingestion/languages/index.js');
+            const filePath = String(r.filePath ?? r[3] ?? '');
+            const filePrivate = getProviderForFile(filePath)?.notExportedIsFilePrivate;
+            if (
+              filePrivate === true ||
+              (typeof filePrivate === 'function' &&
+                filePrivate(filePath, String(r.content ?? r[5] ?? '')))
+            )
+              continue;
+          }
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
@@ -8698,17 +8740,29 @@ export class LocalBackend {
       // strongest edge makes the stamped pair fully determined by the key AND
       // retains the strongest evidence, the safer default for a blast-radius
       // tool. `sourceId` closes the order for edges that tie on both.
+      //
+      // `LIMIT` bounds one level's rows (#3696); the sentinel row past the cap
+      // marks the level as cut. A cut level is an arbitrary subset, so the
+      // walk stops there and reports partial.
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated`;
+          ? // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
+            `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`
+          : // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
+            `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`;
 
       try {
-        const related = await executeParameterized(repo.lbugPath, query, {
+        const fetched = await executeParameterized(repo.lbugPath, query, {
           frontierIds: frontier,
           relTypes: relationTypes,
           ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
         });
+        const levelCapped = fetched.length > IMPACT_FRONTIER_ROW_CAP;
+        const related = levelCapped ? fetched.slice(0, IMPACT_FRONTIER_ROW_CAP) : fetched;
+        if (levelCapped) {
+          traversalComplete = false;
+          traversalCappedAtDepth = depth;
+        }
         // Validate before filtering/deduplication; a discarded corrupt edge is
         // still evidence that this result's counts cannot be trusted.
         for (const row of related) {
@@ -8826,6 +8880,8 @@ export class LocalBackend {
         traversalComplete = false;
         break;
       }
+
+      if (traversalCappedAtDepth !== undefined) break;
 
       frontier =
         depth === 1 && objectCallableFrontier.length > 0
@@ -9271,7 +9327,11 @@ export class LocalBackend {
       enrichmentTruncated:
         !skipEnrichment && MAX_CHUNKS > 0 && impacted.length > MAX_CHUNKS * CHUNK_SIZE,
     });
-    const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
+    const {
+      risk: scoredRisk,
+      riskSharedAxes: scoredSharedAxes,
+      riskScale,
+    } = scoreImpactRisk({
       direction,
       directCount,
       processCount,
@@ -9279,6 +9339,12 @@ export class LocalBackend {
       impactedCount: impacted.length,
       unusedAxes,
     });
+    // Capped counts are lower bounds: keep a proven HIGH/CRITICAL, never a LOW/MEDIUM (#3442).
+    const traversalCapped = traversalCappedAtDepth !== undefined;
+    const riskAfterCap = (score: typeof scoredRisk) =>
+      traversalCapped && (score === 'LOW' || score === 'MEDIUM') ? 'UNKNOWN' : score;
+    const risk = riskAfterCap(scoredRisk);
+    const riskSharedAxes = riskAfterCap(scoredSharedAxes);
 
     // Build per-depth counts (always included, even in summaryOnly mode)
     const byDepthCounts: Record<number, number> = {};
@@ -9310,8 +9376,12 @@ export class LocalBackend {
       riskScale,
       ...(risk === 'UNKNOWN'
         ? {
-            riskNote:
-              processQueryFailed || moduleQueryFailed
+            riskNote: traversalCapped
+              ? `Risk is unresolved because depth ${traversalCappedAtDepth} returned more than ` +
+                `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
+                'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
+                'before treating the change as safe.'
+              : processQueryFailed || moduleQueryFailed
                 ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
                   'are lower bounds; retry impact before treating the change as safe.'
                 : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
