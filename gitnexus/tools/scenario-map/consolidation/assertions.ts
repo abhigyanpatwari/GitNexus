@@ -18,6 +18,8 @@ export interface AssertionAtom {
   line: number;
   shape: string;
   shapeKey: string;
+  /** Subject structure with literal imported-call inputs abstracted; selectors remain exact. */
+  subjectShapeKey?: string;
   /** Exact expected literals/snapshot and subject shape, or null for unresolved values. */
   key: string | null;
   expected: string | null;
@@ -229,7 +231,14 @@ function helperIdentity(
   return closed ? sha1(generate(copy, { compact: true, comments: false }).code) : null;
 }
 
-function preserveValues(node: t.Node, scope: Scope): t.Node {
+function containsRegExp(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(containsRegExp);
+  const record = value as Record<string, unknown>;
+  return record.kind === 'regexp' || Object.values(record).some(containsRegExp);
+}
+
+function preserveValues(node: t.Node, scope: Scope, abstractInputs = false): t.Node {
   const value = literal(node, scope);
   if (value !== undefined) {
     const marker = t.identifier('_value');
@@ -266,15 +275,29 @@ function preserveValues(node: t.Node, scope: Scope): t.Node {
     return t.callExpression(
       marker,
       node.quasis.flatMap((quasi, index) => [
-        preserveValues(t.stringLiteral(quasi.value.cooked ?? quasi.value.raw), scope),
+        preserveValues(
+          t.stringLiteral(quasi.value.cooked ?? quasi.value.raw),
+          scope,
+          abstractInputs,
+        ),
         ...(node.expressions[index]
-          ? [preserveValues(node.expressions[index], scope) as t.Expression]
+          ? [preserveValues(node.expressions[index], scope, abstractInputs) as t.Expression]
           : []),
       ]) as t.Expression[],
     );
   }
   const copy = t.cloneNode(node, false);
   const object = copy as unknown as Record<string, unknown>;
+  const literalInputs =
+    abstractInputs &&
+    t.isCallExpression(node) &&
+    t.isIdentifier(node.callee) &&
+    !scope.locals.has(node.callee.name) &&
+    resolveName(node.callee.name, scope.record.chain)?.kind === 'import' &&
+    node.arguments.every((arg) => {
+      const value = literal(arg, scope);
+      return value !== undefined && !containsRegExp(value);
+    });
   for (const key of t.VISITOR_KEYS[node.type] ?? []) {
     if (
       (key === 'property' &&
@@ -285,9 +308,15 @@ function preserveValues(node: t.Node, scope: Scope): t.Node {
       continue;
     const child = object[key];
     object[key] = Array.isArray(child)
-      ? child.map((v) => (t.isNode(v) ? preserveValues(v, scope) : v))
+      ? child.map((v) =>
+          !t.isNode(v)
+            ? v
+            : literalInputs && key === 'arguments'
+              ? abstractNode(v, scope, false, false)
+              : preserveValues(v, scope, abstractInputs),
+        )
       : t.isNode(child)
-        ? preserveValues(child, scope)
+        ? preserveValues(child, scope, abstractInputs)
         : child;
   }
   return copy;
@@ -342,16 +371,21 @@ export function assertionEvidence(
     if (expected === null) unresolved.push(`${check.line}: expected value is not static`);
     // Existing check.shape has the assertion parser's selector/negation rules.
     const observed = assertedSubject(call);
+    const expanded = observed === null ? null : expand(observed, before);
     const originNode =
-      observed === null
-        ? null
-        : abstractNode(preserveValues(expand(observed, before), scope), scope, true, false);
+      expanded === null ? null : abstractNode(preserveValues(expanded, scope), scope, true, false);
     let knownOrigin = originNode !== null;
     if (originNode !== null)
       t.traverseFast(originNode, (node) => {
         if (t.isIdentifier(node) && /^(?:<v\d+>|<unknown>)$/.test(node.name)) knownOrigin = false;
       });
     const origin = originNode === null ? null : generate(originNode, { compact: true }).code;
+    const subjectShape =
+      expanded === null || !knownOrigin
+        ? check.shape
+        : generate(abstractNode(preserveValues(expanded, scope, true), scope, true, false), {
+            compact: true,
+          }).code;
     if (!knownOrigin) unresolved.push(`${check.line}: asserted local origin is unresolved`);
     const shapeKey = sha1(
       JSON.stringify([
@@ -365,6 +399,9 @@ export function assertionEvidence(
       line: check.line,
       shape: check.shape,
       shapeKey,
+      subjectShapeKey: sha1(
+        JSON.stringify([subjectShape, check.form, check.modifiers, check.matcher]),
+      ),
       expected,
       observed: origin,
       key:

@@ -42,7 +42,7 @@ import { byText, sortedUnique } from '../util.js';
 import { facetRelation, type VerdictPairInput, type VerdictTestInput } from './verdict.js';
 
 /** Folded into the report: a rule change resurfaces every pair it reclassifies. */
-export const FINGERPRINT_ENGINE_VERSION = 3;
+export const FINGERPRINT_ENGINE_VERSION = 4;
 
 export type FingerprintVerdict =
   | 'duplicate'
@@ -344,8 +344,8 @@ function factsOf(
     detailed &&
     !helperBindingsDiffer &&
     [...atomsA, ...atomsB].every((atom) => atom.key !== null) &&
-    JSON.stringify(atomsA.map((atom) => atom.shapeKey)) !==
-      JSON.stringify(atomsB.map((atom) => atom.shapeKey));
+    JSON.stringify(atomsA.map((atom) => atom.subjectShapeKey ?? atom.shapeKey)) !==
+      JSON.stringify(atomsB.map((atom) => atom.subjectShapeKey ?? atom.shapeKey));
   const expectationsDiffer =
     detailed &&
     [...atomsA, ...atomsB].every((atom) => atom.expected !== null) &&

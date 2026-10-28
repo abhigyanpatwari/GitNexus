@@ -5,6 +5,9 @@
  * dupe-ok keep list, the orientation and determinism.
  */
 import { describe, expect, it } from 'vitest';
+import { assertionEvidence } from '../../../tools/scenario-map/consolidation/assertions.js';
+import { computeChecks } from '../../../tools/scenario-map/facet/checks.js';
+import { expandCases } from '../../../tools/scenario-map/inventory/cases.js';
 import type { InputFacet } from '../../../tools/scenario-map/facet/input-facet.js';
 import {
   FINGERPRINT_ENGINE_VERSION,
@@ -127,6 +130,68 @@ const CASES: { rule: FingerprintRule; verdict: FingerprintVerdict; edit: WorldEd
 ];
 
 describe('fingerprint rules', () => {
+  it.each([
+    ['roundScore(2.4)', 'roundScore(2.5)'],
+    ['roundScore({ scores: [2.4] })', 'roundScore({ scores: [2.5] })'],
+  ])('keeps changed literal inputs to %s as table rows', (left, right) => {
+    const evidence = expandCases([
+      {
+        path: 'gitnexus/test/unit/input-shapes.test.ts',
+        source: `import { roundScore } from './scores.js';
+          it('left', () => { const actual = ${left}; expect(actual).toBe(2); });
+          it('right', () => { const actual = ${right}; expect(actual).toBe(3); });`,
+      },
+    ]).sites.map((site) => {
+      const subject = {
+        record: site.record,
+        instance: site.instances![0],
+        fullName: site.fullName,
+      };
+      return assertionEvidence(subject, computeChecks(subject));
+    });
+    expect(evidence.every((item) => item.atoms[0].key !== null)).toBe(true);
+    expect(evidence[0].atoms[0].key).not.toBe(evidence[1].atoms[0].key);
+    const inputs = {
+      a: { checks: 'same-check', assertionEvidence: evidence[0], facet: facet(['2.4', '2']) },
+      b: { checks: 'same-check', assertionEvidence: evidence[1], facet: facet(['2.5', '3']) },
+    };
+    expect(verdictOf(inputs)).toMatchObject({ verdict: 'table-row', rule: 'input-values-differ' });
+  });
+
+  it.each([
+    [
+      "getNodes(result).find(n => n.name === 'save')",
+      "getNodes(result).find(n => n.name === 'load')",
+    ],
+    ["getNodes(result, 'CALLS')", "getNodes(result, 'IMPORTS')"],
+    ['getNodes(/save/)', 'getNodes(/load/)'],
+    ['getNodes({ patterns: [/save/] })', 'getNodes({ patterns: [/load/] })'],
+    ['getNodes(2).length', 'getEdges(2).length'],
+    ['getNodes(2).length', 'getNodes(2).size'],
+  ])('preserves queried subjects when comparing %s', (left, right) => {
+    const evidence = expandCases([
+      {
+        path: 'gitnexus/test/unit/queried-subjects.test.ts',
+        source: `import { getNodes, getEdges } from './graph.js';
+          it('left', () => { const actual = ${left}; expect(actual).toBeDefined(); });
+          it('right', () => { const actual = ${right}; expect(actual).toBeDefined(); });`,
+      },
+    ]).sites.map((site) => {
+      const subject = {
+        record: site.record,
+        instance: site.instances![0],
+        fullName: site.fullName,
+      };
+      return assertionEvidence(subject, computeChecks(subject));
+    });
+    expect(
+      verdictOf({
+        a: { checks: 'coarse', assertionEvidence: evidence[0] },
+        b: { checks: 'coarse', assertionEvidence: evidence[1] },
+      }),
+    ).toMatchObject({ verdict: 'distinct', rule: 'checks-differ' });
+  });
+
   it('does not promote different assertion subjects or literals through a coarse checks key', () => {
     const assertions = (shapeKey: string, expected: string, known = true) => ({
       atoms: [
