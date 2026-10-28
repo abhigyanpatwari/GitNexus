@@ -179,12 +179,12 @@ def parse(tool, argv):
                 raise SystemExit("gitnexus: --json needs a JSON object")
             arguments.update(json.loads(argv[index]))
         elif token.startswith("--") and len(token) > 2:
-            flag, _, inline = token[2:].partition("=")
+            flag, separator, inline = token[2:].partition("=")
             name = by_key.get(key(flag))
             if name is None:
                 raise SystemExit(f"gitnexus: unknown option --{flag} for {tool['name']}; "
                                  f"options: {', '.join('--' + n for n in properties)}")
-            if inline:
+            if separator:
                 raw = inline
             elif index + 1 < len(argv) and not argv[index + 1].startswith("--"):
                 index += 1
