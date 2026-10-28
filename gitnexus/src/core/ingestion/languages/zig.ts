@@ -88,6 +88,9 @@ export const zigProvider = defineLanguage({
   typeConfig: zigTypeConfig,
   cfgVisitor: createZigCfgVisitor(),
   exportChecker: zigExportChecker,
+  // No `pub` → unreachable through `@import` from another file. `export fn`
+  // without `pub` is recorded true (C linkage), so false never hides FFI.
+  notExportedIsFilePrivate: true,
   isExternalModuleSpecifier: (specifier) => ZIG_RESERVED_MODULES.has(specifier),
   callExtractor: createCallExtractor(zigCallConfig),
   classExtractor: createClassExtractor(zigClassConfig),
