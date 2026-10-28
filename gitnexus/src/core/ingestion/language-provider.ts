@@ -373,6 +373,33 @@ interface LanguageProviderConfig {
   /** Export detection: is this AST node a public/exported symbol? */
   readonly exportChecker: ExportChecker;
 
+  /**
+   * Does a stored `false` from `exportChecker` prove file privacy? A function
+   * can confirm this against the indexed file content; missing content must
+   * retain the fallback. The graph flag is NOT SymbolDefinition's tri-state
+   * export evidence: JS/TS export clauses and CommonJS can also store false.
+   * True for Swift `private`/`fileprivate`, a Zig declaration without
+   * `pub` (an `export fn` without `pub` is recorded true for its C linkage, so
+   * `false` never hides an FFI symbol).
+   *
+   * Absent where `false` is a narrower fact than "file-private": Java
+   * package-private, C# and Kotlin `internal`, Go lowercase (the rest of the
+   * package / assembly / module still sees it); Python and Dart `_name` (a
+   * convention, `from m import _x` works and a Dart `part` shares its
+   * library's privates); Rust (a child module reaches `super::` privates);
+   * C/C++ (`static` or an anonymous namespace in a header is visible to every
+   * file that `#include`s it).
+   *
+   * Read by consumers that drop a file-level fallback for a not-exported
+   * symbol — the owning-file seed of `impact` (#3602) — which must otherwise
+   * keep the fallback and over-approximate rather than miss a dependant. A
+   * capability on the provider rather than a language set in `mcp/`: the
+   * meaning of a stored `isExported` is a property of the language.
+   *
+   * Default: undefined, read as `false`.
+   */
+  readonly notExportedIsFilePrivate?: boolean | ((filePath: string, content: string) => boolean);
+
   // ── Calls & Imports (optional) ────────────────────────────────────
   /** Call routing for languages that express imports/heritage as calls (e.g., Ruby).
    *  Default: no routing (all calls are normal call expressions). */

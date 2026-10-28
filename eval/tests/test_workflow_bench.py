@@ -321,7 +321,7 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
         for platform in ("windows-latest", "macos-latest")
         for check in (1, 2, 3)
     }
-    plan = jobs["shard-plan"]["steps"][0]["run"]
+    plan = next(step["run"] for step in jobs["shard-plan"]["steps"] if step.get("id") == "gen")
     total = int(re.search(r"^TOTAL=(\d+)\b", plan, re.MULTILINE)[1])
     native_names = {
         "tests / "
@@ -406,6 +406,24 @@ def test_test_artifact_retries_cannot_hide_missing_evidence(ci_test_jobs):
                     assert "${{ matrix." + axis + " }}" in name, (
                         f"Artifact {name} must distinguish matrix axis {axis}"
                     )
+
+
+def test_shard_plan_retry_cannot_replace_frozen_timing_input(ci_test_jobs):
+    steps = ci_test_jobs["shard-plan"]["steps"]
+    restore = next(step for step in steps if step.get("id") == "previous-input")
+    assert restore["if"] == "github.run_attempt > 1"
+    assert not restore.get("continue-on-error", False)
+    assert restore["with"]["name"] == "shard-timing-input"
+
+    # A failed restore must never fall through to newer history, including
+    # upload retries that may overwrite an artifact left by a previous attempt.
+    for name in (
+        "Restore last trusted timing history",
+        "Prepare timing snapshot",
+        "Freeze timing input for every shard and retry",
+    ):
+        step = next(step for step in steps if step.get("name") == name)
+        assert step["if"] == "github.run_attempt == 1", name
 
 
 @pytest.mark.parametrize("native_result", ["success", "failure", "cancelled", "skipped", ""])

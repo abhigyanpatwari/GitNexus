@@ -51,10 +51,8 @@ export default defineConfig({
       },
     },
 
-    // Balance shards by estimated work rather than file count, so the
-    // spawn-heavy sequential suites spread evenly across shard runners instead
-    // of clustering onto one (see test/helpers/perf-sequencer.ts). Only shard()
-    // is overridden — groupOrder and sort order are left to the base sequencer.
+    // Balance shards using vitest-shard-balancer and the frozen CI timing history.
+    // groupOrder and sort order are left to the base sequencer.
     sequence: {
       sequencer: PerfSequencer,
     },
@@ -79,6 +77,8 @@ export default defineConfig({
             'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
+            'test/integration/impact-private-type-file-seed.test.ts',
+            'test/integration/impact-private-type-source.test.ts',
             'test/integration/impact-context-integrity.test.ts',
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
@@ -163,7 +163,7 @@ export default defineConfig({
             // file-lock exposure this project exists to serialize (TESTING.md
             // § Vitest projects). Registering it here does NOT narrow where it
             // runs: vitest applies `--shard` once to the combined cross-project
-            // spec list (PerfSequencer/assignShards is a complete, disjoint
+            // spec list (PerfSequencer is a complete, disjoint
             // partition), and run-cross-platform.ts hands vitest explicit file
             // paths, which resolve against every project's include list. Its
             // `incremental-vector-extension-ordering` /
@@ -188,6 +188,8 @@ export default defineConfig({
             'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
+            'test/integration/impact-private-type-file-seed.test.ts',
+            'test/integration/impact-private-type-source.test.ts',
             'test/integration/impact-context-integrity.test.ts',
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
