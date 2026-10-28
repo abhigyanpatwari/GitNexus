@@ -5,6 +5,7 @@ import { resolveName } from '../../test-dupes/test-dupes.js';
 import type { RowValue } from '../types.js';
 import {
   abstractNode,
+  assertionCallOf,
   buildScope,
   rowValueOf,
   type CheckSubject,
@@ -316,12 +317,6 @@ export function assertionEvidence(
   checks: InstanceChecks,
 ): AssertionEvidence {
   const scope = buildScope(subject);
-  const calls: t.CallExpression[] = [];
-  t.traverseFast(subject.record.fn.body, (node) => {
-    if (t.isCallExpression(node)) calls.push(node);
-  });
-  calls.sort((a, b) => (a.start ?? 0) - (b.start ?? 0));
-  const used = new Set<t.CallExpression>();
   const unresolved = [
     ...checks.unresolved,
     ...checks.unsupported.map((form) => `${form.line}: ${form.reason}`),
@@ -330,20 +325,11 @@ export function assertionEvidence(
   let origins: ReturnType<typeof localOrigins> | undefined;
   for (const check of checks.checks) {
     if (check.matcher === '') continue; // Counts of assertions are not behavioral checks.
-    const call = calls.find(
-      (node) =>
-        !used.has(node) &&
-        node.loc?.start.line === check.line &&
-        t.isMemberExpression(node.callee) &&
-        !node.callee.computed &&
-        t.isIdentifier(node.callee.property, { name: check.matcher }) &&
-        assertedSubject(node) !== null,
-    );
-    if (call === undefined) {
+    const call = assertionCallOf(check);
+    if (call === null) {
       unresolved.push(`${check.line}: assertion call not located`);
       continue;
     }
-    used.add(call);
     const expand = (origins ??= localOrigins(subject, scope));
     const before = call.start ?? 0;
     const values = call.arguments.map((arg) => literal(expand(arg, before), scope));

@@ -585,6 +585,46 @@ it('keeps negative zero distinct and locates the real assertion on a shared line
   expect(found[0].atoms[0].key).not.toBe(found[1].atoms[0].key);
 });
 
+it.each([
+  ['duplicate modifier', 'expect(x).not.not.toBe(2);'],
+  ['conditional', 'if (flag) expect(x).toBe(2);'],
+  ['loop', 'for (const value of values) expect(x).toBe(2);'],
+  ['nested function', 'const helper = () => expect(x).toBe(2);'],
+  ['unsupported expect arguments', "expect(x, 'message', 'extra').toBe(2);"],
+])('uses the supported assertion after a same-line %s', (_kind, prefix) => {
+  const [mixed, direct] = assertions(`
+    it('mixed', () => { ${prefix} expect(y).toBe(3); });
+    it('direct', () => { expect(y).toBe(3); });
+  `);
+  expect(mixed.atoms).toHaveLength(1);
+  expect(mixed.atoms[0].observed).toBe('y');
+  expect(mixed.atoms[0].key).toBeTruthy();
+  expect(mixed.atoms[0].key).toBe(direct.atoms[0].key);
+  expect(mixed.unresolved.length).toBeGreaterThan(0);
+});
+
+it('reports missing assertion provenance instead of guessing a call for detached checks', () => {
+  const [site] = expandCases([
+    {
+      path: 'gitnexus/test/unit/provenance.test.ts',
+      source: "it('case', () => expect(result).toBe(3));",
+    },
+  ]).sites;
+  const subject = {
+    record: site.record,
+    instance: site.instances?.[0] ?? null,
+    fullName: site.fullName,
+  };
+  const checks = computeChecks(subject);
+  expect(assertionEvidence(subject, checks).atoms[0].key).toBeTruthy();
+  const detached = { ...checks, checks: checks.checks.map((check) => ({ ...check })) };
+  expect(JSON.stringify(detached)).toBe(JSON.stringify(checks));
+  expect(assertionEvidence(subject, detached)).toEqual({
+    atoms: [],
+    unresolved: ['1: assertion call not located'],
+  });
+});
+
 it('resolves assertion aliases by lexical binding without importing nested declarations', () => {
   const found = assertions(`
     it('parameter', (value) => { function helper() { const value = graph.nodes.length; } expect(value).toBe(2); });
