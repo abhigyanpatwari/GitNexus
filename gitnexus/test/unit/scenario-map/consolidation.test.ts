@@ -84,7 +84,7 @@ const detail = (id: string, assertions = evidence(), fixture = profile): Layer2T
 });
 const work = (tests: CoverageTest[]): CoverageWorkFile => ({
   schemaVersion: 1,
-  fixtureCaptureVersion: 1,
+  fixtureCaptureVersion: 2,
   fixtureSources: sources,
   mode: 'normal',
   extraRoots: [],
@@ -122,6 +122,17 @@ it('does not mistake shared uncovered branch ranges for shared execution', () =>
   expect(result.opportunities).toEqual([]);
 });
 
+it('requires a fresh capture before treating archived read profiles as fixture inputs', () => {
+  const old = { ...work([test('a'), test('b')]), fixtureCaptureVersion: 1 as const };
+  const result = consolidationReport(
+    old,
+    [detail('a'), detail('b')],
+    new FixtureCloneIndex(sources, noClones),
+  );
+  expect(result.opportunities).toEqual([]);
+  expect(result.summary.excluded['unverified-input-provenance']).toBe(2);
+});
+
 it('reports partial shared checks and retains unique assertions and executed branches', () => {
   const result = report(
     [test('a', [0, 1]), test('b', [0, 3])],
@@ -147,6 +158,45 @@ it('keeps different expected values as parameter rows, not equal assertions', ()
     kind: 'parameterize-expectations',
     assertions: { shared: 0 },
     assertionShapes: { shared: 1 },
+  });
+});
+
+it('retains existing tables and intentional controls separately from actionable consolidation', () => {
+  const cases = [test('row-a'), test('row-b'), test('control'), test('separate')];
+  const details = [
+    { ...detail('row-a'), declarationKey: 'table' },
+    { ...detail('row-b', evidence([atom('3')])), declarationKey: 'table' },
+    { ...detail('control'), declarationKey: 'control', dupeOk: 'detector positive control' },
+    { ...detail('separate'), declarationKey: 'separate' },
+  ];
+  const result = report(cases, details);
+  expect(result.opportunities.some((o) => o.review === 'already-parameterized')).toBe(true);
+  expect(result.opportunities.some((o) => o.review === 'intentional-keep')).toBe(true);
+  expect(result.opportunities.some((o) => o.review === 'actionable')).toBe(true);
+  expect(result.summary.actionableOpportunities).toBeLessThan(result.summary.opportunities);
+  expect(result.summary.representedPairs).toBe(6);
+});
+
+it('keeps equal observed table rows actionable and separates keep reasons from evidence gaps', () => {
+  const equalRows = report(
+    [test('a'), test('b')],
+    ['a', 'b'].map((id) => ({
+      ...detail(id),
+      declarationKey: 'same-table',
+    })),
+  );
+  expect(equalRows.opportunities[0].review).toBe('actionable');
+  const kept = report(
+    [test('a'), test('b')],
+    ['a', 'b'].map((id) => ({
+      ...detail(id),
+      dupeOk: 'control',
+    })),
+  );
+  expect(kept.opportunities[0]).toMatchObject({
+    review: 'intentional-keep',
+    kind: 'same-observed-input-path-assertions',
+    limitations: [],
   });
 });
 
@@ -339,6 +389,52 @@ function assertions(source: string) {
       }),
   );
 }
+
+it('does not conflate same-named file-local assertion helpers from different engines', () => {
+  const found = ['fingerprint', 'mutation'].map((engine) => {
+    const [site] = expandCases([
+      {
+        path: `gitnexus/test/unit/${engine}.test.ts`,
+        source: `
+      import { compute } from './${engine}-engine.js';
+      const verdictOf = () => compute();
+      it('rule', () => { expect(verdictOf().rule).toBe('same'); });
+    `,
+      },
+    ]).sites;
+    const subject = { record: site.record, instance: site.instances![0], fullName: site.fullName };
+    return assertionEvidence(subject, computeChecks(subject));
+  });
+  expect(found[0].atoms[0].key).not.toBeNull();
+  expect(found[0].atoms[0].key).not.toBe(found[1].atoms[0].key);
+});
+
+it('matches copied helpers with the same import and preserves unresolved closure identity', () => {
+  const evidenceFor = (file: string, closure: boolean) => {
+    const [site] = expandCases([
+      {
+        path: `gitnexus/test/unit/${file}.test.ts`,
+        source: `
+      import { compute } from './engine.js';
+      let state = 1;
+      const run = (value) => compute(${closure ? 'state' : 'value'});
+      it('rule', () => expect(run(1).rule).toBe('same'));
+    `,
+      },
+    ]).sites;
+    const subject = {
+      record: site.record,
+      instance: site.instances?.[0] ?? null,
+      fullName: site.fullName,
+    };
+    return assertionEvidence(subject, computeChecks(subject));
+  };
+  const a = evidenceFor('a', false),
+    b = evidenceFor('b', false);
+  expect(a.atoms[0].key).not.toBeNull();
+  expect(a.atoms[0].key).toBe(b.atoms[0].key);
+  expect(evidenceFor('a', true).atoms[0].key).not.toBe(evidenceFor('b', true).atoms[0].key);
+});
 
 it('resolves asserted const origins and distinguishes different queried quantities', () => {
   const found = assertions(`

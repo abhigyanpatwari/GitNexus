@@ -24,14 +24,17 @@ describe.each(inputs)('%s generated repository', (_name, extension, source) => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 60_000);
+  // dupe-ok: intentional detector control; preserve fixture and capture ground truth
   it('finds declarations', () => {
     expect(count).toBeGreaterThan(0);
   });
+  // dupe-ok: intentional detector control; preserve fixture and capture ground truth
   it('retains the result after fixture cleanup', () => {
     expect(count).toBeGreaterThan(0);
   });
 });
 
+// dupe-ok: intentional detector control; preserve fixture and capture ground truth
 it.each(['sync', 'promise'])('dynamic %s read survives cleanup', async (api) => {
   const root = mkdtempSync(path.join(tmpdir(), 'scenario-runtime-read-'));
   let text: string;

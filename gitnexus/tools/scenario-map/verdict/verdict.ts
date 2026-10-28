@@ -86,6 +86,7 @@
  */
 import type { OutcomeClass } from '../../mutation/runner/classify-outcome.js';
 import type { UnsupportedForm } from '../facet/checks.js';
+import type { AssertionEvidence } from '../consolidation/assertions.js';
 import { residualDifference, sameDiscardedValues, type InputFacet } from '../facet/input-facet.js';
 import type { IsolationResult, IsolationStatus } from '../mutation/isolation.js';
 import {
@@ -222,6 +223,9 @@ export interface VerdictTestInput {
   checksContext: string | null;
   /** Assertion fingerprint without setup context; absent in older stage artifacts. */
   checks?: string | null;
+  assertionEvidence?: AssertionEvidence;
+  /** Source declaration identity; multiple runtime instances already share this test body. */
+  declarationKey?: string | null;
   /** U5 unsupported assertion forms (`InstanceChecks.unsupported`). */
   unsupportedForms: readonly UnsupportedForm[];
   /** U5 selectors whose instance value is not static (`InstanceChecks.unresolved`). */

@@ -170,7 +170,7 @@ export interface CoverageFile {
 export interface CoverageWorkFile {
   schemaVersion: typeof WORK_FILE_SCHEMA_VERSION;
   /** Pipeline instrumentation changes V8 offsets; do not mix with uninstrumented slices. */
-  fixtureCaptureVersion?: 1;
+  fixtureCaptureVersion?: 1 | 2;
   fixtureSources?: FixtureSources;
   mode: RunMode['kind'];
   extraRoots: string[];
@@ -627,7 +627,7 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
       raws: [],
       unhandledErrors: [],
     });
-    work.fixtureCaptureVersion = 1;
+    work.fixtureCaptureVersion = 2;
     writeFileSync(layout.workFile, JSON.stringify(work));
     return { work, workFile: layout.workFile, wallClockMs: 0 };
   }
@@ -757,7 +757,7 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
     unhandledErrors,
   });
   const wallClockMs = Math.round(performance.now() - started);
-  work.fixtureCaptureVersion = 1;
+  work.fixtureCaptureVersion = 2;
   work.fixtureSources = capturedFixtureSources(raws);
   writeFileSync(layout.workFile, JSON.stringify(work));
   return { work, workFile: layout.workFile, wallClockMs };

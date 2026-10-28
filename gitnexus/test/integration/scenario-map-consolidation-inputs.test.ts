@@ -22,35 +22,43 @@ async function ingest(source: string, extension = 'ts'): Promise<void> {
   }
 }
 
+// dupe-ok: intentional detector control; preserve fixture and capture ground truth
 it('exact A', async () => {
   await ingest(BASE);
   expect(count).toBeGreaterThan(0);
 });
+// dupe-ok: intentional detector control; preserve fixture and capture ground truth
 it('exact B', async () => {
   await ingest(BASE);
   expect(count).toBeGreaterThan(0);
 });
+// dupe-ok: intentional detector control; preserve fixture and capture ground truth
 it('renamed fixture', async () => {
   await ingest(RENAMED);
   expect(count).toBeGreaterThan(0);
 });
+// dupe-ok: intentional detector control; preserve fixture and capture ground truth
 it('partial fixture and unique check', async () => {
   await ingest(EXTRA);
   expect(count).toBeGreaterThan(0);
   expect(count).toBeGreaterThan(2);
 });
+// dupe-ok: intentional detector control; preserve fixture and capture ground truth
 it('different expectation', async () => {
   await ingest(BASE);
   expect(count).toBeGreaterThan(1);
 });
+// dupe-ok: intentional detector control; preserve fixture and capture ground truth
 it('unrelated assertion', async () => {
   await ingest(BASE);
   expect(count).toBeTypeOf('number');
 });
+// dupe-ok: intentional detector control; preserve fixture and capture ground truth
 it('unrelated fixture', async () => {
   await ingest(UNRELATED);
   expect(count).toBeGreaterThan(0);
 });
+// dupe-ok: intentional detector control; preserve fixture and capture ground truth
 it('equivalent Python scenario', async () => {
   await ingest('def calculate(value):\n    return value + 1\n', 'py');
   expect(count).toBeGreaterThan(0);

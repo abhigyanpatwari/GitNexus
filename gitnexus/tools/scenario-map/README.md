@@ -36,6 +36,13 @@ non-source assets. Pass-through wrappers retain the returned contents of synchro
 promise, and callback `readFile` calls made directly by tests or test helpers, including
 file URLs. Production files on disk are not modified by instrumentation.
 
+Reads made by a test can also be assertions over generated output. Their contents
+remain available for diagnosis, but their input role is marked unverified and they
+cannot establish fixture identity or a consolidation lead. Repository-entry snapshots
+establish which files were supplied to ingestion; this does not prove that every other
+input was observed. Re-capture archived version-1 coverage before evaluating runtime
+fixture consolidation: version 2 records this distinction.
+
 Snapshots follow coverage windows: the last test attempt and its suite setup feed that
 test's profile. Setup hooks carry their suite identity across async calls, so nested
 setup does not leak into sibling suites. Changed input contents across attempts,
@@ -69,6 +76,14 @@ The HTML report can be filtered by test name or recommendation. It shows both
 directions of overlap and the assertions, blocks, and fixture spans that remain
 unique. Groups represent repeated evidence without enumerating every test pair.
 
+The default HTML view shows actionable opportunities. Cases from one test declaration
+(including existing `it.each` and `describe.each` rows) and tests annotated with
+`// dupe-ok: <reason>` are retained under separate review filters. The JSON keeps every
+group and reports `actionableOpportunities` separately. Detector controls use this
+annotation so their intentional overlap remains available for acceptance checks.
+The fingerprint report likewise retains existing table pairs in its `kept` list.
+The CI plan artifact includes `consolidation.html`, `consolidation.json`, and `fixtures.json`.
+
 Fixture text is compared locally with the pinned **jscpd 5.4.2** development
 dependency. Exact, consistently renamed, and near-miss fragments contribute to
 byte overlap; comments and whitespace are ignored by the clone engine. The
@@ -98,8 +113,11 @@ Assertions retain exact expected literals, row values, snapshots, negation and
 selectors. Single preceding `const` bindings and scoped callback parameters are
 traced, so `find(edge => edge.target === 'save')` does not equal a `getName` query.
 Unknown expected values or local origins cannot become equal assertion atoms.
+File-local callable identities also remain distinct across files. Fingerprint verdicts
+use this detailed evidence to reject unrelated assertion subjects or literal expectations
+even when the coarse matcher shape agrees.
 Unknown checks remain in overlap denominators. This comparison does not execute
-arbitrary expected-value expressions or establish helper semantic equivalence.
+arbitrary expected-value expressions or establish general helper semantic equivalence. Copied helpers with identical bodies and resolved imports share identity; helpers that close over other bindings remain scope-specific, and comparisons between those bindings stay unresolved.
 
 Default retrieval requires 0.50 fixture containment and 0.50 executed-block
 containment in either direction, plus 0.25 exact-assertion containment. Fully known
@@ -148,6 +166,13 @@ cannot clear static input gaps or confirm duplicates by itself. A complete stati
 corroborated by identical runtime contents retains its existing confirmation checks.
 Skipped or failed tests cannot establish duplicate safety.
 
+Value tracing identifies native `Dirent` directory metadata relative to repository
+roots captured in that test attempt. The identity includes exact bytes, relative layout,
+and separate ordinals for multiple repositories. Incomplete captures, arbitrary path
+strings, relative file names, and lookalike objects are not normalized. This removes
+temporary-root noise from directory-entry comparisons without relaxing native/worker
+or unresolved-input gates.
+
 Structural fingerprints inherit provider behavior, including parser or CFG instability;
 exact text and external clone spans are separate evidence. The comparison uses pre-resolution features. It does not prove cross-file binding,
 data-flow, operator, or runtime equivalence. Providers without CFG support contribute
@@ -172,3 +197,5 @@ node --import tsx tools/scenario-map/path-coverage/run-coverage.ts \
   --file test/integration/scenario-map-runtime-inputs.test.ts \
   --out /tmp/scenario-map-runtime-controls --concurrency 1
 ```
+
+Existing table declarations retain uncertain or differing rows outside the default queue. Proven duplicate rows remain actionable in the fingerprint report; exact observed fixture/path/assertion matches remain actionable in the consolidation report. Keep reasons are separate from evidence gaps and do not change an opportunity’s evidence classification.

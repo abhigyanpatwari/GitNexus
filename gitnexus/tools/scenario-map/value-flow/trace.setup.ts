@@ -19,6 +19,8 @@
  */
 import { createHash } from 'node:crypto';
 import { TestRunner, aroundAll, aroundEach, inject, type RunnerTestCase } from 'vitest';
+import { FIXTURE_CAPTURE_KEY } from '../path-coverage/fixture-capture.js';
+import { TraceFixtureRoots } from './trace-fixtures.js';
 import {
   TRACE_KEY,
   TraceRecorder,
@@ -38,9 +40,12 @@ const currentTest = (): CurrentTest | null => {
   return test === undefined ? null : { id: test.id, concurrent: test.concurrent === true };
 };
 
+const fixtures = new TraceFixtureRoots();
+Reflect.set(globalThis, FIXTURE_CAPTURE_KEY, (root: unknown) => fixtures.capture(root));
 const recorder = new TraceRecorder({
   currentTest,
   production: productionResolver(context.preparedRoot, context.extraRoots),
+  fixtureRoots: fixtures.roots,
 });
 recorder.install(globalThis, context.wrap);
 
@@ -57,6 +62,7 @@ aroundAll(async (runSuite, {}, suite) => {
 
 // The `{}` is required: Vitest parses this parameter as a fixture pattern.
 aroundEach(async (runTest, {}) => {
+  fixtures.clear();
   const test = currentTest();
   if (test !== null) recorder.testStarted(test);
   await runTest();

@@ -34,7 +34,13 @@ export async function profileRuntimeFixtures(
         );
       }
       const profile = await profiler.profile([root]);
-      const unresolved = sortedUnique([...profile.unresolved, ...snapshot.unresolved]);
+      const unresolved = sortedUnique([
+        ...profile.unresolved,
+        ...snapshot.unresolved,
+        ...(snapshot.kind === 'read'
+          ? ['test read may be assertion output; input role is unverified']
+          : []),
+      ]);
       perFile.set(id, {
         ...profile,
         sourceKeys: [sha1(JSON.stringify(snapshot.files))],
@@ -42,7 +48,7 @@ export async function profileRuntimeFixtures(
         files: snapshot.files.map(([file]) =>
           snapshot.kind === 'read' ? snapshot.root : `${snapshot.root}/${file}`,
         ),
-        contentKey: snapshot.unresolved.length ? null : profile.contentKey,
+        contentKey: unresolved.length ? null : profile.contentKey,
         unresolved,
       });
     }

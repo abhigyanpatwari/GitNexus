@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { TraceFixtureRoots } from '../../../tools/scenario-map/value-flow/trace-fixtures.js';
 import type { PrepareOptions, PrepareReport } from '../../../tools/mutation/prepare/prepare.js';
 import type { OutcomeClass } from '../../../tools/mutation/runner/classify-outcome.js';
 import { scriptPath } from '../../../tools/scenario-map/path-coverage/records.js';
@@ -206,6 +207,52 @@ describe('serializeValue', () => {
 
   it('names known objects by token', () => {
     expect(serializeValue([Math], new Map<object, string>([[Math, 'Math']])).text).toBe('[[Math]]');
+  });
+
+  it('compares captured repository Dirents independently of their temporary root', async () => {
+    const fs = await import('node:fs');
+    const roots = [tempDir(), tempDir()];
+    for (const root of roots) fs.writeFileSync(path.join(root, 'main.ts'), 'export const n = 1;');
+    const entries = roots.map((root) => fs.readdirSync(root, { withFileTypes: true }));
+    const names = new Map(roots.map((root) => [root.replace(/\\/g, '/'), 'fixture:0:same-bytes']));
+    expect(serializeValue(entries[0], new Map(), names)).toEqual(
+      serializeValue(entries[1], new Map(), names),
+    );
+    // Arbitrary strings and lookalike objects can be meaningful application inputs.
+    expect(serializeValue(roots[0], new Map(), names)).not.toEqual(
+      serializeValue(roots[1], new Map(), names),
+    );
+    expect(serializeValue({ parentPath: roots[0] }, new Map(), names)).not.toEqual(
+      serializeValue({ parentPath: roots[1] }, new Map(), names),
+    );
+    expect(serializeValue(entries[0])).not.toEqual(serializeValue(entries[1]));
+    names.set(roots[1].replace(/\\/g, '/'), 'fixture:0:different-bytes');
+    expect(serializeValue(entries[0], new Map(), names)).not.toEqual(
+      serializeValue(entries[1], new Map(), names),
+    );
+  });
+
+  it('keeps fixture bytes, layout, aliases, and incomplete captures visible in trace identity', () => {
+    const a = tempDir(),
+      b = tempDir();
+    for (const root of [a, b]) writeFileSync(path.join(root, 'main.ts'), 'export const n = 1;');
+    const left = new TraceFixtureRoots(),
+      right = new TraceFixtureRoots();
+    left.capture(a);
+    right.capture(b);
+    const key = (roots: TraceFixtureRoots, root: string) =>
+      roots.roots.get(root.replace(/\\/g, '/'));
+    expect(key(left, a)).toBe(key(right, b));
+    left.capture(b);
+    expect(key(left, a)).not.toBe(key(left, b));
+    writeFileSync(path.join(b, 'main.ts'), 'export const n = 2;');
+    right.capture(b);
+    expect(key(left, a)).not.toBe(key(right, b));
+    writeFileSync(path.join(b, 'huge.ts'), 'x'.repeat(200_000));
+    right.capture(b);
+    expect(key(right, b)).toBeUndefined();
+    left.clear();
+    expect(left.roots.size).toBe(0);
   });
 
   it('serialises an Intl instance by its resolved options', () => {

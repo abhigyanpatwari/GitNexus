@@ -251,9 +251,9 @@ function fingerprintKeptSection(kept: readonly ReportFingerprintPair[]): string[
   if (kept.length === 0) return [];
   return [
     '',
-    `## Fingerprint pairs kept by \`// dupe-ok:\` (${kept.length})`,
+    `## Retained fingerprint pairs (${kept.length})`,
     '',
-    'A human keep on either test (R15); the verdict and evidence are still recorded.',
+    'Explicit keeps and existing parameterized cases; the verdict and evidence are still recorded. Proven duplicate rows remain actionable.',
     '',
     '| Tests | Keep | Verdict | Rule |',
     '|-------|------|---------|------|',

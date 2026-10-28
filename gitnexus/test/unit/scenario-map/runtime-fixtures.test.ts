@@ -266,7 +266,21 @@ it('captures real sync, promise, callback and URL reads without changing results
   const p = await profile(record(capture));
   expect(p.languages).toEqual(['typescript']);
   expect(p.files).toEqual([file]);
-  expect(p.unresolved).toEqual([]);
+  expect(p.contentKey).toBeNull();
+  expect(p.unresolved).toContain('test read may be assertion output; input role is unverified');
+});
+
+it('does not turn an identical generated output into proof of identical fixture inputs', async () => {
+  const capture = new FixtureCapture();
+  capture.read(
+    '/tmp/setup-home/.claude.json',
+    '{"mcpServers":{"gitnexus":{"command":"gitnexus.cmd"}}}',
+  );
+  const p = await profile(record(capture));
+  expect(p.contentKey).toBeNull();
+  expect(p.unresolved).toContain('test read may be assertion output; input role is unverified');
+  // Keep the read available for diagnosis without promoting it to an ingestion input.
+  expect(p.files).toEqual(['/tmp/setup-home/.claude.json']);
 });
 
 it('reports excluded, missing, oversized and symbolic inputs without leaking contents', async () => {

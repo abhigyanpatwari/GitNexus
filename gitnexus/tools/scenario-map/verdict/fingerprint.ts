@@ -42,7 +42,7 @@ import { byText, sortedUnique } from '../util.js';
 import { facetRelation, type VerdictPairInput, type VerdictTestInput } from './verdict.js';
 
 /** Folded into the report: a rule change resurfaces every pair it reclassifies. */
-export const FINGERPRINT_ENGINE_VERSION = 2;
+export const FINGERPRINT_ENGINE_VERSION = 3;
 
 export type FingerprintVerdict =
   | 'duplicate'
@@ -127,6 +127,8 @@ export type FingerprintTestInput = Pick<
   | 'concurrent'
   | 'checksContext'
   | 'checks'
+  | 'assertionEvidence'
+  | 'declarationKey'
   | 'unsupportedForms'
   | 'unresolvedSelectors'
   | 'facet'
@@ -146,6 +148,7 @@ function unresolvedOf(test: FingerprintTestInput): string[] {
     ...test.unresolvedSelectors.map((name) => `selector ${name}`),
     ...test.joinProblems.map((problem) => `join ${problem}`),
     ...test.unsupportedForms.map((form) => `assertion ${form.form} (${form.reason})`),
+    ...(test.assertionEvidence?.unresolved ?? []).map((reason) => `assertion ${reason}`),
     ...(provenance === null
       ? ['path: no provenance record']
       : [
@@ -330,11 +333,41 @@ function factsOf(
   // Older artifacts have only the combined key. Never compare a new assertion key with one.
   const legacy = a.checks === undefined && b.checks === undefined;
   const keys = legacy ? [a.checksContext, b.checksContext] : [a.checks ?? null, b.checks ?? null];
-  const unresolved = sortedUnique([...unresolvedOf(a), ...unresolvedOf(b)]);
+  const atomsA = a.assertionEvidence?.atoms,
+    atomsB = b.assertionEvidence?.atoms;
+  const detailed = atomsA?.length && atomsB?.length;
+  const localHelpers = (atoms: typeof atomsA) =>
+    (atoms ?? []).flatMap((atom) => atom.observed?.match(/<local:[^>]+>/g) ?? []);
+  const helperBindingsDiffer =
+    JSON.stringify(localHelpers(atomsA)) !== JSON.stringify(localHelpers(atomsB));
+  const subjectsDiffer =
+    detailed &&
+    !helperBindingsDiffer &&
+    [...atomsA, ...atomsB].every((atom) => atom.key !== null) &&
+    JSON.stringify(atomsA.map((atom) => atom.shapeKey)) !==
+      JSON.stringify(atomsB.map((atom) => atom.shapeKey));
+  const expectationsDiffer =
+    detailed &&
+    [...atomsA, ...atomsB].every((atom) => atom.expected !== null) &&
+    JSON.stringify(atomsA.map((atom) => atom.expected)) !==
+      JSON.stringify(atomsB.map((atom) => atom.expected));
+  const checksDiffer =
+    subjectsDiffer ||
+    (expectationsDiffer && !(relation.facet === 'equal' && relation.discarded === 'differ'));
+  const unresolved = sortedUnique([
+    ...unresolvedOf(a),
+    ...unresolvedOf(b),
+    ...(helperBindingsDiffer ? ['assertion helper equivalence is unresolved'] : []),
+  ]);
   const evidence: FingerprintEvidence = {
     path: pair.identicalBlocks ? 'same' : 'differs',
-    checks:
-      keys[0] === null || keys[1] === null ? 'missing' : keys[0] === keys[1] ? 'same' : 'differs',
+    checks: checksDiffer
+      ? 'differs'
+      : keys[0] === null || keys[1] === null
+        ? 'missing'
+        : keys[0] === keys[1]
+          ? 'same'
+          : 'differs',
     facet: relation.facet,
     values: relation.discarded,
     trace: pair.trace?.status ?? 'not-run',
@@ -390,9 +423,21 @@ export function computeFingerprints(input: {
         rule: decided.rule,
         details: decided.details,
         evidence: facts.evidence,
-        keep: [a, b].flatMap((side) =>
-          side.dupeOk === null ? [] : [{ test: side.id, reason: side.dupeOk }],
-        ),
+        keep: [
+          ...[a, b].flatMap((side) =>
+            side.dupeOk === null ? [] : [{ test: side.id, reason: side.dupeOk }],
+          ),
+          ...(decided.verdict !== 'duplicate' &&
+          a.declarationKey &&
+          a.declarationKey === b.declarationKey
+            ? [
+                {
+                  test: a.id,
+                  reason: 'already parameterized: both instances share one test declaration',
+                },
+              ]
+            : []),
+        ],
       };
     });
   return {

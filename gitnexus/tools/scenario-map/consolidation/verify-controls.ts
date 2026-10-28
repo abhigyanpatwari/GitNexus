@@ -52,7 +52,12 @@ assert.equal(exact.path.coverageB, 1);
 assert.equal(exact.assertions.coverageA, 1);
 assert.equal(exact.assertions.coverageB, 1);
 // Capturing inputs is not exhaustive proof; native execution and static gaps remain visible.
-assert(exact.limitations.length > 0);
+assert.equal(exact.review, 'intentional-keep');
+assert(
+  exact.limitations.includes('native execution is not represented by JavaScript blocks') ||
+    exact.limitations.includes('worker execution is not represented by parent JavaScript blocks'),
+);
+assert(exact.limitations.includes('fixture: runtime input coverage is not exhaustive'));
 assert.notEqual(exact.kind, 'same-observed-input-path-assertions');
 const partial = pair('exact A', 'partial fixture and unique check');
 assert(partial);

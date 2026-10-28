@@ -246,6 +246,9 @@ jobs:
             ${{ runner.temp }}/scenario-map/scenario-run-manifest.json
             ${{ runner.temp }}/scenario-map/layer0.json
             ${{ runner.temp }}/scenario-map/layer2.json
+            ${{ runner.temp }}/scenario-map/consolidation.json
+            ${{ runner.temp }}/scenario-map/consolidation.html
+            ${{ runner.temp }}/scenario-map/fixtures.json
             ${{ runner.temp }}/scenario-map/coverage/coverage.json
           if-no-files-found: error
           retention-days: 14

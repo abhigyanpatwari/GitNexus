@@ -72,6 +72,7 @@ import {
   sequentialMatcherFor,
 } from '../path-coverage/partitions.js';
 import { wrapListOf } from './builtins.js';
+import { fixtureCapturePlugin } from '../path-coverage/fixture-plugin.js';
 import {
   RAW_TRACE_PREFIX,
   RAW_TRACE_SCHEMA_VERSION,
@@ -559,6 +560,7 @@ export async function runTrace(
         vitest,
         workDir: layout.tracedDir,
         setupFiles: [TRACE_SETUP_FILE],
+        plugins: [fixtureCapturePlugin(path.join(packageDir, 'src/core/ingestion/pipeline.ts'))],
         provide: (project) => project.provide(TRACE_KEY, context),
         maxWorkers: options.maxWorkers,
       },

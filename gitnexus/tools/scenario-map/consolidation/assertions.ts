@@ -204,6 +204,30 @@ function localOrigins(
   };
 }
 
+function helperIdentity(
+  fn: t.FunctionDeclaration | t.FunctionExpression | t.ArrowFunctionExpression,
+  declaration: t.Node,
+  scope: Scope,
+): string | null {
+  const copy = t.cloneNode(fn, true);
+  const statement = t.isFunctionDeclaration(copy) ? copy : t.expressionStatement(copy);
+  const frame = scope.record.chain.findIndex((item) =>
+    [...item.decls.values()].some((decl) => decl.kind === 'node' && decl.node === declaration),
+  );
+  if (frame < 0) return null;
+  const chain = scope.record.chain.slice(0, frame + 1);
+  let closed = true;
+  traverse(t.file(t.program([statement])), {
+    ReferencedIdentifier(path) {
+      if (path.scope.getBinding(path.node.name)) return;
+      const decl = resolveName(path.node.name, chain);
+      if (decl?.kind === 'import') path.node.name = `<${decl.key}>`;
+      else closed = false;
+    },
+  });
+  return closed ? sha1(generate(copy, { compact: true, comments: false }).code) : null;
+}
+
 function preserveValues(node: t.Node, scope: Scope): t.Node {
   const value = literal(node, scope);
   if (value !== undefined) {
@@ -217,6 +241,22 @@ function preserveValues(node: t.Node, scope: Scope): t.Node {
       const marker = t.identifier('_import');
       marker.name = `<${decl.key}>`;
       return marker;
+    }
+    if (decl?.kind === 'node') {
+      const fn = t.isVariableDeclarator(decl.node) ? decl.node.init : decl.node;
+      if (
+        t.isFunctionDeclaration(fn) ||
+        t.isFunctionExpression(fn) ||
+        t.isArrowFunctionExpression(fn)
+      ) {
+        const marker = t.identifier('_local');
+        const identity = helperIdentity(fn, decl.node, scope);
+        marker.name =
+          identity === null
+            ? `<local:${scope.record.file}:${decl.node.start}:${node.name}>`
+            : `<helper:${identity}>`;
+        return marker;
+      }
     }
   }
   if (t.isTemplateLiteral(node)) {

@@ -20,11 +20,16 @@ export interface ConsolidationGroup {
   blocks: number[];
   assertions: AssertionEvidence;
   limitations: string[];
+  declarationKey?: string | null;
+  keepReasons?: string[];
 }
 export interface ConsolidationOpportunity {
   a: string;
   b: string;
   representedPairs: number;
+  /** Retained evidence stays inspectable without filling the default review queue. */
+  review?: 'actionable' | 'already-parameterized' | 'intentional-keep';
+  keepReasons?: string[];
   kind:
     | 'same-observed-input-path-assertions'
     | 'parameterize-expectations'
@@ -67,6 +72,7 @@ export interface ConsolidationReport {
     groups: number;
     comparisons: number;
     opportunities: number;
+    actionableOpportunities?: number;
     representedPairs: number;
     excluded: Record<string, number>;
   };
@@ -136,6 +142,10 @@ export function consolidationReport(
       reject('no-fixture-evidence');
       continue;
     }
+    if ((fixture.sourceKeys?.length ?? 0) > 0 && work.fixtureCaptureVersion !== 2) {
+      reject('unverified-input-provenance');
+      continue;
+    }
     if (fixture.unresolved.length) {
       reject('incomplete-fixture');
       continue;
@@ -179,6 +189,8 @@ export function consolidationReport(
         blocks,
         assertions.atoms.map((a) => [a.shapeKey, a.key]),
         limitations,
+        detail?.declarationKey,
+        detail?.dupeOk,
       ]),
     );
     const group = grouped.get(signature);
@@ -191,6 +203,8 @@ export function consolidationReport(
         blocks,
         assertions,
         limitations,
+        declarationKey: detail?.declarationKey,
+        keepReasons: detail?.dupeOk ? [detail.dupeOk] : [],
       });
   }
   const groups = [...grouped.values()].sort((a, b) => a.id.localeCompare(b.id));
@@ -286,6 +300,15 @@ export function consolidationReport(
       a: a.id,
       b: b.id,
       representedPairs,
+      keepReasons: sortedUnique([...(a.keepReasons ?? []), ...(b.keepReasons ?? [])]),
+      review:
+        (a.keepReasons?.length ?? 0) + (b.keepReasons?.length ?? 0) > 0
+          ? 'intentional-keep'
+          : a.declarationKey &&
+              a.declarationKey === b.declarationKey &&
+              !(fixture.kind === 'content' && equal(path) && equal(assertions))
+            ? 'already-parameterized'
+            : 'actionable',
       kind,
       fixture,
       path,
@@ -350,6 +373,7 @@ export function consolidationReport(
       groups: groups.length,
       comparisons,
       opportunities: opportunities.length,
+      actionableOpportunities: opportunities.filter((o) => o.review === 'actionable').length,
       representedPairs: opportunities.reduce((n, o) => n + o.representedPairs, 0),
       excluded,
     },
@@ -363,5 +387,5 @@ export function renderConsolidationReport(report: ConsolidationReport): string {
     ...report,
     groups: report.groups.map(({ id, tests }) => ({ id, tests })),
   }).replace(/</g, '\\u003c');
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><title>Test consolidation opportunities</title><style>body{font:16px/1.5 system-ui;margin:36px;color:#173042}input,select{font:inherit;padding:8px}article{border:1px solid #bbcbd5;border-radius:8px;padding:18px;margin:16px 0}pre{white-space:pre-wrap;font-size:12px}small{color:#526777}.metrics{font-weight:600}summary{cursor:pointer}</style><h1>Test consolidation opportunities</h1><p>Each lead compares fixture inputs, executed JavaScript blocks, and assertions. Partial matches retain the unique checks and paths listed below. Cross-language suggestions preserve each language's coverage. Observed equality describes this captured execution, not a proof for all future inputs.</p><p id="summary"></p><details><summary>Inventory coverage and exclusions</summary><pre id="coverage"></pre></details><input id="query" placeholder="Filter test, language, or opportunity"><select id="kind"><option value="">All kinds</option></select><main id="results"></main><script>const report=${data};document.getElementById('coverage').textContent=JSON.stringify({inventory:report.summary,fixtureEngine:report.tool},null,2);const groups=new Map(report.groups.map(g=>[g.id,g]));const kinds=[...new Set(report.opportunities.map(o=>o.kind))];const select=document.getElementById('kind');for(const k of kinds){const o=document.createElement('option');o.value=k;o.textContent=k;select.append(o);}function add(parent,tag,text){const el=document.createElement(tag);el.textContent=text;parent.append(el);return el;}function render(){const q=document.getElementById('query').value.toLowerCase();const found=report.opportunities.filter(o=>(!select.value||o.kind===select.value)&&JSON.stringify([o,groups.get(o.a).tests,groups.get(o.b).tests]).toLowerCase().includes(q));const root=document.getElementById('results');root.replaceChildren();document.getElementById('summary').textContent=report.summary.inventoryTests+' inventory cases; '+report.summary.eligibleTests+' eligible cases; '+found.length+' opportunity groups shown by this filter. First 200 rendered; all evidence is in consolidation.json. Fixture engine: '+report.tool.name+' '+report.tool.version;for(const o of found.slice(0,200)){const box=add(root,'article','');add(box,'h2',o.kind+' · '+o.representedPairs+' test pairs');add(box,'p',groups.get(o.a).tests.join(' | ')+' ↔ '+groups.get(o.b).tests.join(' | '));add(box,'p',(o.fixture.kind==='cross-language-structure'?'Fixture structure similarity ':'Fixture byte overlap ')+(100*o.fixture.coverageA).toFixed(1)+'% / '+(100*o.fixture.coverageB).toFixed(1)+'%; path overlap '+(100*o.path.coverageA).toFixed(1)+'% / '+(100*o.path.coverageB).toFixed(1)+'%; exact assertions '+o.assertions.shared+' shared ('+o.assertions.totalA+' / '+o.assertions.totalB+').');const details=add(box,'details','');add(details,'summary','Shared and unique evidence to preserve');add(details,'pre',JSON.stringify({sharedAssertions:o.sharedAssertions,uniqueAssertionsA:o.onlyAssertionsA,uniqueAssertionsB:o.onlyAssertionsB,sharedPathSamples:o.sharedBlocks,uniquePathSamplesA:o.onlyBlocksA,uniquePathSamplesB:o.onlyBlocksB,fixtureFragments:o.fixture.matches,unmatchedFixtureSpansA:o.fixture.unmatchedA,unmatchedFixtureSpansB:o.fixture.unmatchedB,limitations:o.limitations},null,2));}}document.getElementById('query').addEventListener('input',render);select.addEventListener('change',render);render();</script></html>`;
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><title>Test consolidation opportunities</title><style>body{font:16px/1.5 system-ui;margin:36px;color:#173042}input,select{font:inherit;padding:8px}article{border:1px solid #bbcbd5;border-radius:8px;padding:18px;margin:16px 0}pre{white-space:pre-wrap;font-size:12px}small{color:#526777}.metrics{font-weight:600}summary{cursor:pointer}</style><h1>Test consolidation opportunities</h1><p>Each lead compares fixture inputs, executed JavaScript blocks, and assertions. Partial matches retain the unique checks and paths listed below. Cross-language suggestions preserve each language's coverage. Observed equality describes this captured execution, not a proof for all future inputs.</p><p id="summary"></p><details><summary>Inventory coverage and exclusions</summary><pre id="coverage"></pre></details><input id="query" placeholder="Filter test, language, or opportunity"><select id="kind"><option value="">All kinds</option></select><label>Review <select id="review"><option value="actionable">Actionable opportunities</option><option value="">All evidence</option><option value="already-parameterized">Already parameterized</option><option value="intentional-keep">Intentional controls / keeps</option></select></label><main id="results"></main><script>const report=${data};document.getElementById('coverage').textContent=JSON.stringify({inventory:report.summary,fixtureEngine:report.tool},null,2);const groups=new Map(report.groups.map(g=>[g.id,g]));const kinds=[...new Set(report.opportunities.map(o=>o.kind))];const select=document.getElementById('kind');for(const k of kinds){const o=document.createElement('option');o.value=k;o.textContent=k;select.append(o);}function add(parent,tag,text){const el=document.createElement(tag);el.textContent=text;parent.append(el);return el;}function render(){const q=document.getElementById('query').value.toLowerCase();const review=document.getElementById('review').value;const found=report.opportunities.filter(o=>(!review||(o.review||'actionable')===review)&&(!select.value||o.kind===select.value)&&JSON.stringify([o,groups.get(o.a).tests,groups.get(o.b).tests]).toLowerCase().includes(q));const root=document.getElementById('results');root.replaceChildren();document.getElementById('summary').textContent=report.summary.inventoryTests+' inventory cases; '+report.summary.eligibleTests+' eligible cases; '+found.length+' opportunity groups shown by this filter. First 200 rendered; all evidence is in consolidation.json. Fixture engine: '+report.tool.name+' '+report.tool.version;for(const o of found.slice(0,200)){const box=add(root,'article','');add(box,'h2',o.kind+' · '+o.representedPairs+' test pairs');add(box,'p','Review: '+(o.review||'actionable'));add(box,'p',groups.get(o.a).tests.join(' | ')+' ↔ '+groups.get(o.b).tests.join(' | '));add(box,'p',(o.fixture.kind==='cross-language-structure'?'Fixture structure similarity ':'Fixture byte overlap ')+(100*o.fixture.coverageA).toFixed(1)+'% / '+(100*o.fixture.coverageB).toFixed(1)+'%; path overlap '+(100*o.path.coverageA).toFixed(1)+'% / '+(100*o.path.coverageB).toFixed(1)+'%; exact assertions '+o.assertions.shared+' shared ('+o.assertions.totalA+' / '+o.assertions.totalB+').');const details=add(box,'details','');add(details,'summary','Shared and unique evidence to preserve');add(details,'pre',JSON.stringify({keepReasons:o.keepReasons,sharedAssertions:o.sharedAssertions,uniqueAssertionsA:o.onlyAssertionsA,uniqueAssertionsB:o.onlyAssertionsB,sharedPathSamples:o.sharedBlocks,uniquePathSamplesA:o.onlyBlocksA,uniquePathSamplesB:o.onlyBlocksB,fixtureFragments:o.fixture.matches,unmatchedFixtureSpansA:o.fixture.unmatchedA,unmatchedFixtureSpansB:o.fixture.unmatchedB,limitations:o.limitations},null,2));}}document.getElementById('query').addEventListener('input',render);select.addEventListener('change',render);document.getElementById('review').addEventListener('change',render);render();</script></html>`;
 }

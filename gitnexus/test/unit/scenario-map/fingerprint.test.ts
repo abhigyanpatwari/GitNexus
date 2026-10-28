@@ -127,6 +127,77 @@ const CASES: { rule: FingerprintRule; verdict: FingerprintVerdict; edit: WorldEd
 ];
 
 describe('fingerprint rules', () => {
+  it('does not promote different assertion subjects or literals through a coarse checks key', () => {
+    const assertions = (shapeKey: string, expected: string, known = true) => ({
+      atoms: [
+        {
+          line: 1,
+          shape: 'expect(<v1>).toContain(<string>)',
+          shapeKey,
+          key: known ? `${shapeKey}:${expected}` : null,
+          expected,
+        },
+      ],
+      unresolved: known ? [] : ['asserted local origin is unresolved'],
+    });
+    const a = { checks: 'coarse', facet: null, assertionEvidence: assertions('nodes', 'greet') };
+    for (const b of [assertions('text', 'greet'), assertions('nodes', 'function twice', false)]) {
+      expect(
+        verdictOf({
+          a,
+          b: { checks: 'coarse', checksContext: 'other', facet: null, assertionEvidence: b },
+        }),
+      ).toMatchObject({ verdict: 'distinct', rule: 'checks-differ' });
+    }
+    expect(verdictOf({ a, b: { ...a, checksContext: 'other' } }).verdict).toBe(
+      'possible-duplicate',
+    );
+  });
+
+  it('retains existing table rows outside the actionable pair list without hiding other declarations', () => {
+    const result = computeFingerprints({
+      tests: [
+        testInput(A, { declarationKey: 'same-table', facet: null }),
+        testInput(B, { declarationKey: 'same-table', facet: null }),
+      ],
+      pairs: [pairInput()],
+    });
+    expect(result.pairs).toEqual([]);
+    expect(result.kept[0].keep[0].reason).toContain('already parameterized');
+    expect(
+      verdictOf({ a: { declarationKey: 'first' }, b: { declarationKey: 'second' } }).verdict,
+    ).toBe('duplicate');
+  });
+  it('leaves proven duplicate rows actionable and uncertain helper equivalence unresolved', () => {
+    const identical = computeFingerprints({
+      tests: [
+        testInput(A, { declarationKey: 'same-table' }),
+        testInput(B, { declarationKey: 'same-table' }),
+      ],
+      pairs: [pairInput()],
+    });
+    expect(identical.pairs[0]?.verdict).toBe('duplicate');
+    expect(identical.kept).toEqual([]);
+    const evidence = (file: string) => ({
+      atoms: [
+        {
+          line: 1,
+          shape: 'expect(run()).toBe(1)',
+          shapeKey: file,
+          key: file,
+          expected: '1',
+          observed: `<local:${file}:1:run>()`,
+        },
+      ],
+      unresolved: [],
+    });
+    expect(
+      verdictOf({
+        a: { assertionEvidence: evidence('a') },
+        b: { assertionEvidence: evidence('b') },
+      }).verdict,
+    ).toBe('possible-duplicate');
+  });
   it.each(['a', 'b'] as const)(
     'does not compare an assertion-only key on side %s with a legacy combined key',
     (side) => {

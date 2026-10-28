@@ -906,6 +906,8 @@ export interface Layer2Test {
   /** Fixture content and structural retrieval evidence; absent in older artifacts. */
   fixture?: FixtureProfile | null;
   assertionEvidence?: AssertionEvidence;
+  /** File and exact declaration location, independent of the table row. */
+  declarationKey?: string | null;
   unsupportedForms: UnsupportedForm[];
   unresolvedSelectors: string[];
   facet: InputFacet | null;
@@ -1519,6 +1521,8 @@ export function assembleVerdictInput(input: VerdictAssembly): VerdictInput {
         excludedFiles: excluded.get(test.id) ?? [],
         checksContext: record.checksContext,
         checks: record.checks,
+        assertionEvidence: record.assertionEvidence,
+        declarationKey: record.declarationKey,
         unsupportedForms: record.unsupportedForms,
         unresolvedSelectors: record.unresolvedSelectors,
         facet: record.facet,
@@ -1834,6 +1838,14 @@ async function computeLayer2(repoRoot: string, work: CoverageWorkFile): Promise<
       inventoryUnresolved: instance.unresolved,
       checksContext: checksContextKey(instance, checkOptions),
       checks: hasChecks ? checks.fingerprint : null,
+      declarationKey:
+        instance.site === null
+          ? null
+          : JSON.stringify([
+              instance.file,
+              instance.site.location.line,
+              instance.site.location.column,
+            ]),
       bodyKey: checkSubject === null || !hasChecks ? null : bodyKeyOf(checkSubject.record),
       unsupportedForms: checks?.unsupported ?? [],
       unresolvedSelectors: checks?.unresolved ?? [],
