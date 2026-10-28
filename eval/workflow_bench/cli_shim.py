@@ -184,8 +184,16 @@ def parse(tool, argv):
             if name is None:
                 raise SystemExit(f"gitnexus: unknown option --{flag} for {tool['name']}; "
                                  f"options: {', '.join('--' + n for n in properties)}")
+            kinds = set(types_of(properties[name]))
             if separator:
                 raw = inline
+            elif "boolean" in kinds and kinds <= {"boolean", "null"}:
+                # A switch takes only an explicit true/false, never the next positional.
+                if index + 1 < len(argv) and argv[index + 1].lower() in ("true", "false"):
+                    index += 1
+                    raw = argv[index]
+                else:
+                    raw = True
             elif index + 1 < len(argv) and not argv[index + 1].startswith("--"):
                 index += 1
                 raw = argv[index]

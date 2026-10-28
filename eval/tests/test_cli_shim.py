@@ -74,6 +74,9 @@ def test_shim_maps_positionals_and_flags_to_the_tool_schema():
     assert parse(IMPACT, ["baz", "--json", '{"maxDepth": 1}']) == {"target": "baz", "maxDepth": 1}
     # An explicit empty value is forwarded, not mistaken for a missing one.
     assert parse(IMPACT, ["--direction=", "qux"]) == {"direction": "", "target": "qux"}
+    # A boolean switch before the positional leaves the positional alone.
+    assert parse(IMPACT, ["--include-tests", "foo"]) == {"includeTests": True, "target": "foo"}
+    assert parse(IMPACT, ["--include-tests", "false", "foo"]) == {"includeTests": False, "target": "foo"}
 
 
 def test_shim_rejects_unknown_options_and_extra_values():
