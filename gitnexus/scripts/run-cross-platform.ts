@@ -15,7 +15,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { ALL_CROSS_PLATFORM } from './cross-platform-tests.js';
 import { parseShardArg } from './shard-arg.js';
-import { shardFiles, shardWeight } from './cross-platform-shard.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -29,14 +28,8 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-// Optional sharding (CI): `--shard=<i>/<n>` splits the fixed file list across
-// parallel matrix shards. The split is computed HERE, by measured weight, and
-// only this shard's files are handed to vitest — it is NOT passed through,
-// because vitest partitions by file COUNT and this suite's runtimes span three
-// orders of magnitude (see cross-platform-shard.ts). The
-// Windows runner is ~5x slower than macOS/Linux on this spawn-heavy suite (~50
-// CLI/worker process spawns), so a single shard was creeping past the watchdog
-// below; sharding keeps each runner well under it (see ci-tests.yml matrix).
+// Pass the complete subset and --shard to the configured timing sequencer.
+// Every runner reads the same snapshot, selected once by CI's shard-plan job.
 // Fail loud on a malformed --shard arg (mirrors the missing-files check above):
 // a silently-dropped shard flag would run the full unsharded suite and re-trip
 // the watchdog. Kept outside the execFileSync try/catch below so the message
@@ -49,13 +42,7 @@ try {
   process.exit(1);
 }
 
-// Per-shard watchdog, default 15 min. Sharding splits the file list by COUNT, not
-// runtime, so the heaviest spawn suites can cluster on one shard — what this
-// bounds is the *busiest* shard, not an even 1/n of wall-clock. The busiest
-// Windows shard has grown to the default (14m57s on the v1.6.10-rc.19 green
-// run, one observed timeout since — #2449), so CI raises the budget to 20
-// minutes via GITNEXUS_CROSS_PLATFORM_TIMEOUT_MINUTES; the default stays 15
-// for local runs.
+// Preserve the 15-minute local watchdog and the 20-minute CI override.
 const DEFAULT_TIMEOUT_MIN = 15;
 const timeoutMinutes = Number.parseInt(
   process.env.GITNEXUS_CROSS_PLATFORM_TIMEOUT_MINUTES ?? String(DEFAULT_TIMEOUT_MIN),
@@ -66,17 +53,9 @@ const timeoutMs =
     ? timeoutMinutes * 60 * 1000
     : DEFAULT_TIMEOUT_MIN * 60 * 1000;
 
-// Resolve the shard to an explicit file list. `--shard=i/n` is consumed here,
-// never forwarded: forwarding it as well would re-partition this slice a second
-// time and silently drop most of it.
-const shardParts = shardArg?.replace('--shard=', '').split('/');
-const shardIndex = shardParts ? Number(shardParts[0]) : 1;
-const shardTotal = shardParts ? Number(shardParts[1]) : 1;
-const files = shardFiles(ALL_CROSS_PLATFORM, shardIndex, shardTotal);
-
 console.log(
-  `Running ${files.length} of ${ALL_CROSS_PLATFORM.length} platform-sensitive tests` +
-    `${shardArg ? ` (shard ${shardIndex}/${shardTotal}, ~${shardWeight(files)}s measured weight)` : ''}...\n`,
+  `Running platform-sensitive test suite (${ALL_CROSS_PLATFORM.length} files total)` +
+    `${shardArg ? ` (${shardArg}, balanced by timing history)` : ''}...\n`,
 );
 
 const startedAt = Date.now();
@@ -88,16 +67,22 @@ const reportArgs = reportName
   ? [
       '--reporter=default',
       '--reporter=./scripts/execution-reporter.ts',
-      `--outputFile=${reportName}`,
+      '--reporter=blob',
+      `--outputFile.json=${reportName}`,
+      `--outputFile.blob=.vitest/blob/${reportName}`,
     ]
   : [];
 try {
-  execFileSync('npx', ['vitest', 'run', ...files, ...reportArgs], {
-    cwd: ROOT,
-    stdio: 'inherit',
-    timeout: timeoutMs,
-    shell: true,
-  });
+  execFileSync(
+    'npx',
+    ['vitest', 'run', ...ALL_CROSS_PLATFORM, ...(shardArg ? [shardArg] : []), ...reportArgs],
+    {
+      cwd: ROOT,
+      stdio: 'inherit',
+      timeout: timeoutMs,
+      shell: true,
+    },
+  );
 } catch (err) {
   // execFileSync sets `killed`/`signal` when the watchdog above kills vitest.
   const e = err as {
