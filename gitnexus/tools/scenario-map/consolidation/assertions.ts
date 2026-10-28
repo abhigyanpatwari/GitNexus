@@ -120,8 +120,7 @@ function literal(node: t.Node, scope: Scope): unknown | undefined {
 function localOrigins(
   subject: CheckSubject,
   scope: Scope,
-  before: number,
-): (node: t.Node) => t.Node {
+): (node: t.Node, before: number) => t.Node {
   const references = new WeakSet<t.Node>();
   const declarations = new WeakMap<t.Node, Binding>();
   traverse(t.file(t.program([t.expressionStatement(subject.record.fn)])), {
@@ -135,6 +134,7 @@ function localOrigins(
   let visited = 0;
   const expand = (
     node: t.Node,
+    before: number,
     seen = new Set<Binding>(),
     bindings = new Map<Binding, t.Identifier>(),
   ): t.Node => {
@@ -165,7 +165,7 @@ function localOrigins(
         seen.has(declaration)
       )
         return unknown();
-      return expand(decl.init, new Set([...seen, declaration]), bindings);
+      return expand(decl.init, before, new Set([...seen, declaration]), bindings);
     }
     const copy = t.cloneNode(node, false);
     if (t.isFunction(copy) && copy.params.every((param) => t.isIdentifier(param))) {
@@ -190,17 +190,17 @@ function localOrigins(
         continue;
       const value = object[key];
       object[key] = Array.isArray(value)
-        ? value.map((child) => (t.isNode(child) ? expand(child, seen, bindings) : child))
+        ? value.map((child) => (t.isNode(child) ? expand(child, before, seen, bindings) : child))
         : t.isNode(value)
-          ? expand(value, seen, bindings)
+          ? expand(value, before, seen, bindings)
           : value;
     }
     return copy;
   };
-  return (node) => {
+  return (node, before) => {
     nextBinding = 0;
     visited = 0;
-    return expand(node);
+    return expand(node, before);
   };
 }
 
@@ -327,6 +327,7 @@ export function assertionEvidence(
     ...checks.unsupported.map((form) => `${form.line}: ${form.reason}`),
   ];
   const atoms: AssertionAtom[] = [];
+  let origins: ReturnType<typeof localOrigins> | undefined;
   for (const check of checks.checks) {
     if (check.matcher === '') continue; // Counts of assertions are not behavioral checks.
     const call = calls.find(
@@ -343,8 +344,9 @@ export function assertionEvidence(
       continue;
     }
     used.add(call);
-    const expand = localOrigins(subject, scope, call.start ?? 0);
-    const values = call.arguments.map((arg) => literal(expand(arg), scope));
+    const expand = (origins ??= localOrigins(subject, scope));
+    const before = call.start ?? 0;
+    const values = call.arguments.map((arg) => literal(expand(arg, before), scope));
     const expected =
       check.snapshot !== null
         ? `snapshot:${check.snapshot}`
@@ -357,7 +359,7 @@ export function assertionEvidence(
     const originNode =
       observed === null
         ? null
-        : abstractNode(preserveValues(expand(observed), scope), scope, true, false);
+        : abstractNode(preserveValues(expand(observed, before), scope), scope, true, false);
     let knownOrigin = originNode !== null;
     if (originNode !== null)
       t.traverseFast(originNode, (node) => {

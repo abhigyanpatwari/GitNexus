@@ -449,6 +449,28 @@ it('resolves asserted const origins and distinguishes different queried quantiti
   expect(found[3].atoms[0].key).toBeNull();
 });
 
+it('keeps statement order and callback bindings independent across assertions in one test', () => {
+  const [combined, direct] = assertions(`
+    it('combined', () => {
+      expect(count).toBe(2);
+      const count = graph.nodes.length;
+      expect(count).toBe(2);
+      expect(items.map(item => item.name)).toEqual(items.map(expected => expected.name));
+      expect(items.map(value => value.name)).toEqual([]);
+      expect(items.map(other => other.name)).toEqual([]);
+    });
+    it('direct', () => { expect(graph.nodes.length).toBe(2); });
+  `);
+  const [before, after, dynamic, first, second] = combined.atoms;
+  expect(before.key).toBeNull();
+  expect(after.key).toBeTruthy();
+  expect(after.key).toBe(direct.atoms[0].key);
+  expect(dynamic.key).toBeNull();
+  expect(dynamic.observed).toBe(first.observed);
+  expect(first.key).toBeTruthy();
+  expect(first.key).toBe(second.key);
+});
+
 it('retains exact expected values, negation, selectors, and row values', () => {
   const found = assertions(`
     it.each([2, 3])('row %i', (n) => { expect(graph.nodes.length).toBe(n); });

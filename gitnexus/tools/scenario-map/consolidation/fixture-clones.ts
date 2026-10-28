@@ -291,9 +291,7 @@ export class FixtureCloneCandidates {
 type Interval = { start: number; end: number; weight: number };
 /** Weighted union, so overlapping clone fragments and near-miss gaps cannot inflate coverage. */
 function covered(prefix: Uint32Array, intervals: Interval[]): number {
-  const points = sortedUnique(intervals.flatMap((i) => [String(i.start), String(i.end)]))
-    .map(Number)
-    .sort((a, b) => a - b);
+  const points = [...new Set(intervals.flatMap((i) => [i.start, i.end]))].sort((a, b) => a - b);
   let total = 0;
   for (let i = 1; i < points.length; i++) {
     const start = points[i - 1],
