@@ -1,6 +1,5 @@
 import { logger } from '../../logger.js';
-import type { IgnoreLike } from 'glob';
-import type { Path } from 'path-scurry';
+import type { IgnoreLike, Path } from 'glob';
 
 /**
  * Directory names that must never be indexed, even when listed. These hold

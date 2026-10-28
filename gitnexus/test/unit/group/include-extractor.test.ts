@@ -663,7 +663,7 @@ int auto_main() { return 0; }`,
     it('registers headers in a dot directory only when GITNEXUS_INCLUDE_DOT_DIRS lists it', async () => {
       const previous = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
       writeFile('.config/listed.h', '#pragma once');
-      writeFile('.cache/unlisted.h', '#pragma once');
+      writeFile('.unlisted-source/unlisted.h', '#pragma once');
       try {
         delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
         const before = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
@@ -674,7 +674,13 @@ int auto_main() { return 0; }`,
         const providerIds = contracts.filter((c) => c.role === 'provider').map((p) => p.contractId);
 
         expect(providerIds).toContain('include::.config/listed.h');
-        expect(providerIds).not.toContain('include::.cache/unlisted.h');
+        expect(providerIds).not.toContain('include::.unlisted-source/unlisted.h');
+
+        process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.config,.unlisted-source';
+        const both = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+        expect(both.filter((c) => c.role === 'provider').map((p) => p.contractId)).toContain(
+          'include::.unlisted-source/unlisted.h',
+        );
       } finally {
         if (previous === undefined) delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
         else process.env.GITNEXUS_INCLUDE_DOT_DIRS = previous;
