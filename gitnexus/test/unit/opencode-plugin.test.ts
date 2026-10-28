@@ -142,6 +142,8 @@ describe('stale-index hints', () => {
     'git pull',
     'cd src && git commit -m x',
     'npm test || git pull',
+    'git status\ngit commit -m x',
+    'git status\r\ngit merge main',
   ])('checks %s', async (command) => {
     execFileMock.mockImplementation(
       (_cmd: string, _argv: string[], _options: unknown, callback: Callback) =>

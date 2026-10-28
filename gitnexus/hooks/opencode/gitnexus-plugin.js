@@ -240,7 +240,7 @@ function extractOpenCodePattern(tool, args) {
 function isGitMutationCommand(command) {
   if (typeof command !== 'string') return false;
   return command
-    .split(/&&|\|\||;|\|/)
+    .split(/&&|\|\||;|\||[\r\n]/)
     .some((seg) => /^\s*git\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(seg));
 }
 
