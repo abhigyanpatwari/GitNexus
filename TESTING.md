@@ -114,6 +114,10 @@ profile because native startup and coverage costs differ.
 The `shard-plan` job restores history once and uploads `shard-timing-input`.
 Every shard and report merge downloads that same snapshot. Retries reuse it,
 so a newly published history cannot change the partition halfway through a run.
+Fork approval can increment the attempt number before any job executes. Attempt
+2 initializes a snapshot only when GitHub confirms attempt 1 required approval
+and ran zero jobs. Later retries always require the frozen snapshot.
+
 If the snapshot cannot be restored, the retry fails. If it was never uploaded,
 deleted, or expired, trigger a fresh workflow run with a new commit; rerunning
 the old run must not replace its timing input.

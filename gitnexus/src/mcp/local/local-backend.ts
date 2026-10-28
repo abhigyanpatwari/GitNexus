@@ -218,6 +218,12 @@ const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable',
 const CANDIDATE_WINDOW = 20;
 
 /**
+ * Most relationship rows `_runImpactBFS` reads per depth level (#3696). Real
+ * hub walks stay in the tens of thousands.
+ */
+export const IMPACT_FRONTIER_ROW_CAP = 100_000;
+
+/**
  * Concurrent BFS walks when `query()` attaches per-process `chain`. Each walk
  * is already node-capped inside `_computeContextChain`; this bounds how many
  * of those walks run at once so a page of processes (and each group member
@@ -8513,6 +8519,7 @@ export class LocalBackend {
     let frontier = [symId];
     const objectCallableFrontier: string[] = [];
     let traversalComplete = true;
+    let traversalCappedAtDepth: number | undefined;
     // Fetch one sentinel row beyond the cap so generated object bindings
     // degrade visibly instead of allocating an unbounded seed frontier.
     const OBJECT_CALLABLE_MEMBER_CAP = 5000;
@@ -8733,17 +8740,29 @@ export class LocalBackend {
       // strongest edge makes the stamped pair fully determined by the key AND
       // retains the strongest evidence, the safer default for a blast-radius
       // tool. `sourceId` closes the order for edges that tie on both.
+      //
+      // `LIMIT` bounds one level's rows (#3696); the sentinel row past the cap
+      // marks the level as cut. A cut level is an arbitrary subset, so the
+      // walk stops there and reports partial.
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated`;
+          ? // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
+            `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`
+          : // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
+            `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`;
 
       try {
-        const related = await executeParameterized(repo.lbugPath, query, {
+        const fetched = await executeParameterized(repo.lbugPath, query, {
           frontierIds: frontier,
           relTypes: relationTypes,
           ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
         });
+        const levelCapped = fetched.length > IMPACT_FRONTIER_ROW_CAP;
+        const related = levelCapped ? fetched.slice(0, IMPACT_FRONTIER_ROW_CAP) : fetched;
+        if (levelCapped) {
+          traversalComplete = false;
+          traversalCappedAtDepth = depth;
+        }
         // Validate before filtering/deduplication; a discarded corrupt edge is
         // still evidence that this result's counts cannot be trusted.
         for (const row of related) {
@@ -8861,6 +8880,8 @@ export class LocalBackend {
         traversalComplete = false;
         break;
       }
+
+      if (traversalCappedAtDepth !== undefined) break;
 
       frontier =
         depth === 1 && objectCallableFrontier.length > 0
@@ -9306,7 +9327,11 @@ export class LocalBackend {
       enrichmentTruncated:
         !skipEnrichment && MAX_CHUNKS > 0 && impacted.length > MAX_CHUNKS * CHUNK_SIZE,
     });
-    const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
+    const {
+      risk: scoredRisk,
+      riskSharedAxes: scoredSharedAxes,
+      riskScale,
+    } = scoreImpactRisk({
       direction,
       directCount,
       processCount,
@@ -9314,6 +9339,12 @@ export class LocalBackend {
       impactedCount: impacted.length,
       unusedAxes,
     });
+    // Capped counts are lower bounds: keep a proven HIGH/CRITICAL, never a LOW/MEDIUM (#3442).
+    const traversalCapped = traversalCappedAtDepth !== undefined;
+    const riskAfterCap = (score: typeof scoredRisk) =>
+      traversalCapped && (score === 'LOW' || score === 'MEDIUM') ? 'UNKNOWN' : score;
+    const risk = riskAfterCap(scoredRisk);
+    const riskSharedAxes = riskAfterCap(scoredSharedAxes);
 
     // Build per-depth counts (always included, even in summaryOnly mode)
     const byDepthCounts: Record<number, number> = {};
@@ -9345,8 +9376,12 @@ export class LocalBackend {
       riskScale,
       ...(risk === 'UNKNOWN'
         ? {
-            riskNote:
-              processQueryFailed || moduleQueryFailed
+            riskNote: traversalCapped
+              ? `Risk is unresolved because depth ${traversalCappedAtDepth} returned more than ` +
+                `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
+                'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
+                'before treating the change as safe.'
+              : processQueryFailed || moduleQueryFailed
                 ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
                   'are lower bounds; retry impact before treating the change as safe.'
                 : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
