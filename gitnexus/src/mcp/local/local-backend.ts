@@ -8524,9 +8524,28 @@ export class LocalBackend {
     // The owning File is kept only as an internal seed (frontier/visited) and
     // is NOT added to impacted — it is the definition container, not an
     // upstream dependent. The BFS will discover IMPORTS edges on it naturally.
+    //
+    // #3602: the file's importers stand in for the type's importers, which
+    // only holds when the type can leave the file. Where the index recorded
+    // `isExported = false` AND the language's provider confirms that verdict
+    // is file-private (checking indexed source where needed), no
+    // importer can name the type, so seeding its file would report every
+    // importer of the file as a direct dependant. The seed is skipped for it;
+    // its real dependants still arrive through USES/EXTENDS/IMPLEMENTS edges
+    // inside the file. Everything else keeps the seed: a missing verdict
+    // (NULL) proves nothing; JS/TS also need to exclude indirect exports,
+    // CommonJS and ambient files even when the stored flag is false. Where
+    // `false` means package-, assembly- or module-private (Java, C#, Kotlin,
+    // Go, …) a sibling file can still name the type, so the over-approximation
+    // is the safe side. Downstream still needs the file's imports: a private
+    // type can depend on other files even though they cannot import its name.
     if (symType === 'Class' || symType === 'Interface') {
       try {
         // Run both seed queries in parallel — they are independent.
+        // The label is literal: only these two tables reach this branch, and
+        // not every node table carries `isExported` (Protocol/Category do
+        // not), so an untyped `n.isExported` is not a safe projection.
+        const typeLabel = symType === 'Class' ? 'Class' : 'Interface';
         const [ctorRows, fileRows] = await Promise.all([
           executeParameterized(
             repo.lbugPath,
@@ -8542,9 +8561,10 @@ export class LocalBackend {
           executeParameterized(
             repo.lbugPath,
             `
-            MATCH (f:File)-[rel:CodeRelation]->(n)
+            MATCH (f:File)-[rel:CodeRelation]->(n:${typeLabel})
             WHERE n.id = $symId AND rel.type = 'DEFINES'
-            RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath
+            RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath, n.isExported AS isExported,
+                   CASE WHEN n.isExported = false THEN f.content ELSE NULL END AS content
           `,
             { symId },
           ),
@@ -8560,6 +8580,21 @@ export class LocalBackend {
         }
         for (const r of fileRows) {
           assertSymbolRowIdentity(r);
+          const exported = r.isExported ?? r[4];
+          if (direction === 'upstream' && exported === false) {
+            // Lazy like the other provider lookups on this backend: the
+            // registry pulls every language module, and this branch is the
+            // only reader on the impact path.
+            const { getProviderForFile } = await import('../../core/ingestion/languages/index.js');
+            const filePath = String(r.filePath ?? r[3] ?? '');
+            const filePrivate = getProviderForFile(filePath)?.notExportedIsFilePrivate;
+            if (
+              filePrivate === true ||
+              (typeof filePrivate === 'function' &&
+                filePrivate(filePath, String(r.content ?? r[5] ?? '')))
+            )
+              continue;
+          }
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
