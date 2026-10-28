@@ -1,7 +1,7 @@
-<!-- version: 1.17.0 -->
-<!-- Last updated: 2026-09-24 -->
+<!-- version: 1.18.0 -->
+<!-- Last updated: 2026-10-17 -->
 
-Last reviewed: 2026-09-24
+Last reviewed: 2026-10-17
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -92,6 +92,7 @@ mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Toke
 
 | Date       | Version | Change                                                                                                                                                                                                                                                               |
 | ---------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-17 | 1.18.0  | Require the reviewed preview's single-use `plan_token` when applying semantic rename (#2973). |
 | 2026-09-24 | 1.17.0  | Clones with the same `origin` URL now share a store automatically; `--no-share` records a lasting opt-out (#3352).                                                                                                                                                   |
 | 2026-09-24 | 1.16.0  | Documented the shared worktree index store (`<GITNEXUS_HOME>/stores/`, `analyze --share-with`, `GITNEXUS_SHARED_STORE=off`) in the storage notes (#3352).                                                                                                            |
 | 2026-09-07 | 1.15.0  | Added the Objective-C provider guide as the required reference before changing Objective-C parsing or resolution.                                                                                                                                                    |
@@ -136,7 +137,7 @@ This project is indexed by GitNexus as **GitNexus** (248612 symbols, 565510 rela
 
 - NEVER edit a function, class, or method before MCP/CLI impact analysis.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read `UNKNOWN` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
-- NEVER rename symbols with find-and-replace — use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false`.
+- NEVER rename symbols with find-and-replace — use `rename` with `dry_run: true` first, review the graph-backed semantic spans and coverage, then apply with `dry_run: false` and that preview's `plan_token`.
 - NEVER commit before MCP/CLI graph change analysis.
 
 ## Resources

@@ -14,6 +14,8 @@ import {
   scoreImpactRisk,
   unusedAxesForImpactWalk,
   getLanguageFromFilename,
+  blockedRenameResult,
+  RenameFailure,
   type ImpactRiskResult,
   type GraphNode,
   type NodeLabel,
@@ -30,6 +32,7 @@ import {
   getLbugDbIdentity,
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
+import { GUARD_TAINT_LIMITATION } from '../taint-limitations.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
 import {
   SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
@@ -45,6 +48,7 @@ import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
 import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
+import type { BM25SearchResult } from '../../core/search/bm25-index.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
 import { isCobolFile, isJclFile } from '../../core/ingestion/cobol/file-types.js';
@@ -150,6 +154,7 @@ import {
   QUERY_DEFAULT_MAX_SYMBOLS,
   QUERY_MAX_LIMIT,
   QUERY_MAX_MAX_SYMBOLS,
+  QUERY_CONTENT_MAX_CHARS,
   CONTEXT_CHAIN_MAX_DEPTH,
   CHECKOUT_SOURCE_TOOLS,
   READ_FILE_DEFAULT_MAX_LINES,
@@ -159,7 +164,6 @@ import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
-import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
 import { compareCodeUnits } from '../../lib/utils.js';
 import {
   lookupExternalCallCount,
@@ -298,21 +302,14 @@ function ambiguityReport(
   };
 }
 
-/** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
- *  excluding the empty entry and the `/index.*` forms — used to decide whether
- *  an `explain` target is a file path vs a (possibly dotted) symbol name. */
-const SOURCE_FILE_EXTENSIONS: readonly string[] = EXTENSIONS.filter(
-  (e) => e.startsWith('.') && !e.includes('/'),
-);
 /** Recognize indexed source files and existing import suffixes; a bare dotted
  *  symbol (`UserController.create`) remains a symbol target. */
-function looksLikeFilePath(target: string): boolean {
-  if (/[\\/]/.test(target)) return true;
+async function looksLikeFilePath(target: string): Promise<boolean> {
+  if (/[\\/]/.test(target) || getLanguageFromFilename(target) !== null) return true;
+  // Keep analyze-only language modules out of the MCP startup closure (#2802).
+  const { EXTENSIONS } = await import('../../core/ingestion/languages/import-candidates.js');
   const lower = target.toLowerCase();
-  return (
-    getLanguageFromFilename(target) !== null ||
-    SOURCE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext))
-  );
+  return EXTENSIONS.some((ext) => ext.startsWith('.') && !ext.includes('/') && lower.endsWith(ext));
 }
 
 /**
@@ -1448,6 +1445,13 @@ interface ApiImpactRoute {
   middlewareDetection?: 'partial';
   middlewareNote?: string;
   consumers: Array<{ name: string; file: string; accesses: string[]; attributionNote?: string }>;
+  /**
+   * Callers of the function that sends the request, one level up (#3644).
+   * Present only when a FETCHES edge names that function; an index built before
+   * the attribution has none. Direct consumer files and the handler file are
+   * left out, so an entry is a file the direct count does not already cover.
+   */
+  indirectConsumers?: ApiImpactIndirectConsumer[];
   mismatches?: Array<{
     consumer: string;
     field: string;
@@ -1460,7 +1464,65 @@ interface ApiImpactRoute {
     affectedFlows: number;
     riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
     warning?: string;
+    epistemic?: 'lower-bound';
+    unverifiedConsumers?: number;
+    boundaries?: string[];
+    /** Distinct files among `indirectConsumers`; not part of `riskLevel`. */
+    indirectConsumers?: number;
   };
+}
+
+interface ApiImpactIndirectConsumer {
+  name: string;
+  file: string;
+  /** Name of the requesting function this caller reaches the route through. */
+  via: string;
+}
+
+/** A CALLS edge into one of the requesting functions a FETCHES reason names. */
+interface RequestFunctionCaller {
+  viaId: string;
+  viaName: string;
+  name: string;
+  filePath: string;
+}
+
+/**
+ * The one-level callers of a route's requesting functions that the direct
+ * consumer list does not already cover. `undefined` when no consumer edge of
+ * the route names a requesting function, so the field stays absent instead of
+ * claiming an empty result the index could not have produced.
+ */
+function indirectConsumersOf(
+  route: {
+    filePath: string;
+    consumers: Array<{ filePath: string; viaSymbolIds?: string[] }>;
+  },
+  callersByVia: ReadonlyMap<string, RequestFunctionCaller[]>,
+): ApiImpactIndirectConsumer[] | undefined {
+  const directFiles = new Set(route.consumers.map((c) => c.filePath));
+  const seen = new Set<string>();
+  const out: ApiImpactIndirectConsumer[] = [];
+  let attributed = false;
+  for (const consumer of route.consumers) {
+    for (const viaId of consumer.viaSymbolIds ?? []) {
+      attributed = true;
+      for (const caller of callersByVia.get(viaId) ?? []) {
+        if (caller.filePath === route.filePath || directFiles.has(caller.filePath)) continue;
+        const key = `${caller.filePath}\u0000${caller.name}\u0000${caller.viaName}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ name: caller.name, file: caller.filePath, via: caller.viaName });
+      }
+    }
+  }
+  if (!attributed) return undefined;
+  return out.sort(
+    (a, b) =>
+      compareCodeUnits(a.file, b.file) ||
+      compareCodeUnits(a.name, b.name) ||
+      compareCodeUnits(a.via, b.via),
+  );
 }
 
 interface RouteRuntimeEvidence {
@@ -1475,10 +1537,11 @@ const routeRuntimeEvidence = (route: RouteRuntimeEvidence) => ({
   ...(route.runtimeStatus === null ? {} : { status: route.runtimeStatus }),
 });
 
-const isMissingRouteRuntimePropertyError = (error: unknown): boolean => {
+/** An index built before a Route column existed lacks it; the query retries without. */
+const isMissingRouteOptionalPropertyError = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error);
   return (
-    ['runtimeConfirmed', 'runtimeSource', 'runtimeStatus'].some((property) =>
+    ['runtimeConfirmed', 'runtimeSource', 'runtimeStatus', 'unverifiedConsumers'].some((property) =>
       message.includes(property),
     ) &&
     (/cannot find property/i.test(message) ||
@@ -3355,10 +3418,19 @@ export class LocalBackend {
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
     const vectorDegraded = { reason: undefined as string | undefined };
-    const [bm25SearchResult, semanticResults] = await Promise.all([
+    const [bm25Outcome, semanticOutcome] = await Promise.allSettled([
       timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit, vectorDegraded)),
     ]);
+    // A rejected lane must not let the other lane outlive query(). In particular,
+    // semantic search may still be importing the embedder and can start its
+    // sidecar after a one-shot CLI has already run disconnect() in `finally`.
+    // Settle both lanes first, then preserve Promise.all's left-to-right error
+    // precedence for callers.
+    if (bm25Outcome.status === 'rejected') throw bm25Outcome.reason;
+    if (semanticOutcome.status === 'rejected') throw semanticOutcome.reason;
+    const bm25SearchResult = bm25Outcome.value;
+    const semanticResults = semanticOutcome.value;
 
     // Guard against undefined results (#1489) — when FTS is entirely
     // unavailable the search helper may return an unexpected shape.
@@ -3445,21 +3517,10 @@ export class LocalBackend {
     >();
     const definitions: any[] = []; // standalone symbols not in any process
 
-    // Batch-fetch process participation, cohesion, and (optionally) content for
-    // ALL matched symbols in 2-3 graph queries instead of 2-3 *per symbol*. The
-    // previous per-symbol loop issued up to 3N sequential pool round-trips
-    // (searchLimit symbols × {STEP_IN_PROCESS, MEMBER_OF, content}); on a warm
-    // repo the IPC + query-setup overhead of those round-trips dominated query
-    // latency. Collapsing to `WHERE n.id IN $nodeIds` preserves identical output
-    // (the aggregation loop below is unchanged) while cutting the round-trips.
-    // Array params bind through the pool exactly as bm25Search's
-    // `WHERE n.id IN $nodeIds` already does. (Ported from gitnexus-enterprise
-    // PR #222 — N+1 → 2-3 batched queries.)
     const nodeIds = merged.map(([, m]) => m.data?.nodeId).filter((id): id is string => !!id);
 
     const processRowsByNode = new Map<string, any[]>();
     const cohesionByNode = new Map<string, { cohesion: number; module?: string }>();
-    const contentByNode = new Map<string, string>();
     // Set when a batched enrichment query throws a REAL failure (timeout, lock,
     // native fault) — NOT the benign "no Process/Community table" case, which is
     // a normal config (a repo analyzed without processes/communities) and must
@@ -3540,30 +3601,6 @@ export class LocalBackend {
         logQueryError('query:cluster-info', e);
         if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
       }
-
-      // Optionally fetch content for every matched symbol.
-      if (includeContent) {
-        try {
-          const rows = await executeParameterized(
-            repo.lbugPath,
-            `
-            MATCH (n)
-            WHERE n.id IN $nodeIds
-            RETURN n.id AS nodeId, n.content AS content
-          `,
-            { nodeIds: ids },
-          );
-          for (const row of rows) {
-            assertQueryIdentity(row, 'nodeId', 0);
-            const nid = row.nodeId ?? row[0];
-            contentByNode.set(nid, row.content ?? row[1]);
-          }
-        } catch (e) {
-          rethrowSymbolIdentityError(e);
-          logQueryError('query:content-fetch', e);
-          if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
-        }
-      }
     }
 
     // Aggregation is unchanged from the per-symbol version — it now reads the
@@ -3586,7 +3623,6 @@ export class LocalBackend {
       const coh = cohesionByNode.get(sym.nodeId);
       const cohesion = coh?.cohesion ?? 0;
       const module = coh?.module;
-      const content = includeContent ? contentByNode.get(sym.nodeId) : undefined;
 
       const symbolEntry = {
         id: sym.nodeId,
@@ -3596,7 +3632,6 @@ export class LocalBackend {
         startLine: toDisplayLine(sym.startLine),
         endLine: toDisplayLine(sym.endLine),
         ...(module ? { module } : {}),
-        ...(includeContent && content ? { content } : {}),
       };
 
       if (processRows.length === 0) {
@@ -3870,7 +3905,44 @@ export class LocalBackend {
       maxSymbolsPerProcess,
       chainByProcessId,
     });
+    const returnedDefinitions = definitions.slice(0, 20);
     timer.stop(); // formatting
+
+    if (includeContent) {
+      timer.start('content');
+      const targets = new Map<
+        string,
+        { id: string; content?: string; content_truncated?: boolean }
+      >();
+      for (const symbol of [...process_symbols, ...returnedDefinitions]) {
+        if (symbol.id && !targets.has(symbol.id)) targets.set(symbol.id, symbol);
+      }
+      const previewChars = Math.floor(QUERY_CONTENT_MAX_CHARS / Math.max(1, targets.size));
+      for (const ids of chunk([...targets.keys()], LBUG_QUERY_BATCH_SIZE)) {
+        try {
+          const rows = await executeParameterized(
+            repo.lbugPath,
+            `MATCH (n) WHERE n.id IN $nodeIds
+             RETURN n.id AS nodeId, substring(n.content, 1, $previewChars) AS content,
+                    size(n.content) > $previewChars AS contentTruncated`,
+            { nodeIds: ids, previewChars },
+          );
+          for (const row of rows) {
+            assertQueryIdentity(row, 'nodeId', 0);
+            const target = targets.get(row.nodeId ?? row[0]);
+            if (!target) continue;
+            const content = row.content ?? row[1];
+            if (content) target.content = content;
+            if (row.contentTruncated ?? row[2]) target.content_truncated = true;
+          }
+        } catch (e) {
+          rethrowSymbolIdentityError(e);
+          logQueryError('query:content-fetch', e);
+          if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+        }
+      }
+      timer.stop();
+    }
 
     // End-to-end wall time — deliberately a separate mark so callers can
     // compare sum(phases) vs wall to see how much Promise.all concurrency
@@ -4063,7 +4135,7 @@ export class LocalBackend {
     return {
       processes,
       process_symbols,
-      definitions: definitions.slice(0, 20), // cap standalone definitions
+      definitions: returnedDefinitions,
       timing,
       ...(contentAvailability ? { contentAvailability } : {}),
       ...(warnings.length > 0 && { warning: warnings.join(' ') }),
@@ -4117,12 +4189,56 @@ export class LocalBackend {
 
     // Guard against unexpected response shape (#1489) — ftsResponse.results
     // could be undefined when the FTS extension is unavailable in the MCP process.
-    const bm25Results = ftsResponse?.results ?? [];
+    const bm25Results: BM25SearchResult[] = ftsResponse?.results ?? [];
     const ftsUsed = ftsResponse?.ftsAvailable ?? false;
     const nonBenignErrors = ftsResponse?.nonBenignErrors;
     const missingIndexes = ftsResponse?.missingIndexes;
 
     const results: any[] = [];
+
+    // FTS supplies at most three exact symbol IDs per file. Fetch a bounded
+    // batch of files together instead of scanning the graph once per file.
+    // Keep the database's ORDER BY for each file, including null line values.
+    const hydratedSymbols = new Map<BM25SearchResult, any[]>();
+    for (const hit of bm25Results) {
+      assertIdentityFields(hit.filePath);
+      for (const nodeId of hit.nodeIds ?? []) assertSymbolIdentity(nodeId);
+    }
+    for (const hits of chunk(
+      bm25Results.filter((hit) => hit.nodeIds?.length),
+      LBUG_QUERY_BATCH_SIZE,
+    )) {
+      const hitsByNodeId = new Map<string, Set<BM25SearchResult>>();
+      for (const hit of hits) {
+        for (const nodeId of hit.nodeIds!) {
+          if (!hitsByNodeId.has(nodeId)) hitsByNodeId.set(nodeId, new Set());
+          hitsByNodeId.get(nodeId)!.add(hit);
+        }
+      }
+      try {
+        const symbols = await executeParameterized(
+          repo.lbugPath,
+          `
+              MATCH (n)
+              WHERE n.id IN $nodeIds
+              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              ORDER BY startLine, id
+            `,
+          { nodeIds: [...hitsByNodeId.keys()] },
+        );
+        for (const sym of symbols) assertSymbolRowIdentity(sym);
+        for (const hit of hits) hydratedSymbols.set(hit, []);
+        for (const sym of symbols) {
+          for (const hit of hitsByNodeId.get(sym.id ?? sym[0]) ?? []) {
+            hydratedSymbols.get(hit)!.push(sym);
+          }
+        }
+      } catch (err) {
+        rethrowSymbolIdentityError(err);
+        // A batch failure must not downgrade otherwise-readable files. Retry
+        // those files individually through the existing fallback below.
+      }
+    }
 
     for (const bm25Result of bm25Results) {
       const fullPath = bm25Result.filePath;
@@ -4133,24 +4249,26 @@ export class LocalBackend {
         // Without this, LIMIT 3 on filePath returns arbitrary symbols rather than
         // the nodes that actually scored highest in the BM25 index.
         const nodeIds = bm25Result.nodeIds?.length ? bm25Result.nodeIds : null;
-        const symbols = nodeIds
-          ? await executeParameterized(
-              repo.lbugPath,
-              `
+        const symbols =
+          hydratedSymbols.get(bm25Result) ??
+          (nodeIds
+            ? await executeParameterized(
+                repo.lbugPath,
+                `
               MATCH (n)
               WHERE n.id IN $nodeIds
               RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
               ORDER BY startLine, id
             `,
-              { nodeIds },
-            )
-          : await executeParameterized(
-              repo.lbugPath,
-              // Same BasicBlock exclusion as detect_changes (#2082 U7): on a
-              // --pdg index a function-heavy file has far more BasicBlock rows
-              // than symbols, so an unfiltered LIMIT 3 would surface nameless
-              // substrate rows and displace the real symbols.
-              `
+                { nodeIds },
+              )
+            : await executeParameterized(
+                repo.lbugPath,
+                // Same BasicBlock exclusion as detect_changes (#2082 U7): on a
+                // --pdg index a function-heavy file has far more BasicBlock rows
+                // than symbols, so an unfiltered LIMIT 3 would surface nameless
+                // substrate rows and displace the real symbols.
+                `
               MATCH (n)
               WHERE n.filePath = $filePath
                 AND NOT n.id STARTS WITH 'BasicBlock:'
@@ -4158,8 +4276,8 @@ export class LocalBackend {
               ORDER BY startLine, id
               LIMIT 3
             `,
-              { filePath: fullPath },
-            );
+                { filePath: fullPath },
+              ));
 
         if (symbols.length > 0) {
           for (const sym of symbols) {
@@ -5858,7 +5976,7 @@ export class LocalBackend {
     anchor: { file: string; symbol?: string; startLine?: number; endLine?: number };
     early?: Record<string, unknown>;
   }> {
-    if (looksLikeFilePath(target)) {
+    if (await looksLikeFilePath(target)) {
       return {
         anchorClause:
           '(a.id STARTS WITH $idPrefix OR a.filePath = $targetPath OR a.filePath ENDS WITH $targetSuffix)',
@@ -6090,15 +6208,27 @@ export class LocalBackend {
       const total = Number((ipCountRows[0] as any)?.total ?? (ipCountRows[0] as any)?.[0] ?? 0);
       const findings = ipRows.map((r: any) => {
         const decoded = decodeTaintPath(r.reason ?? r[5]);
+        // Cross-function lines are the endpoints' and hops' 0-based symbol
+        // `startLine` (the Function node property, and what interproc-emit
+        // encodes into the path codec), unlike the intra-procedural rows
+        // above, whose PDG statement lines are already 1-based. Convert at
+        // the response boundary like `context`/`query`/`impact` (#2377), so
+        // both layers of one response agree with the editor (#3491).
         const hops = decoded.ok
-          ? decoded.hops.map((h) => ({ function: h.variable, line: h.line }))
+          ? decoded.hops.map((h) => ({ function: h.variable, line: toDisplayLine(h.line) }))
           : [];
         return {
           interprocedural: true,
           file: String(r.file ?? r[0] ?? ''),
           sinkKind: decoded.ok ? (decoded.kind ?? 'unknown') : 'unknown',
-          source: { function: String(r.sourceFn ?? r[1] ?? ''), line: r.sourceLine ?? r[2] },
-          sink: { function: String(r.sinkFn ?? r[3] ?? ''), line: r.sinkLine ?? r[4] },
+          source: {
+            function: String(r.sourceFn ?? r[1] ?? ''),
+            line: toDisplayLine(r.sourceLine ?? r[2]),
+          },
+          sink: {
+            function: String(r.sinkFn ?? r[3] ?? ''),
+            line: toDisplayLine(r.sinkLine ?? r[4]),
+          },
           hops,
           ...(decoded.ok && decoded.truncated ? { pathIncomplete: true } : {}),
         };
@@ -6213,7 +6343,10 @@ export class LocalBackend {
       findings: pageFindings,
       totalFindings: totalFindings + interprocTotal,
       ...(truncated ? { truncated: true } : {}),
-      note: 'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled. Closure/callback, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. Cross-function findings are context-insensitive and may over-attribute among same-named callees. SANITIZES (kill) edges are queryable via cypher.',
+      note:
+        'Intra-procedural (TAINTED, statement hops) AND cross-function (TAINT_PATH, function hops, `interprocedural: true`) flows are modeled, including sources read inside inline callbacks and returned handlers. Captured closure-variable, property/field, and implicit flows are NOT modeled; absence of a finding is not proof of safety. ' +
+        GUARD_TAINT_LIMITATION +
+        ' Cross-function findings are context-insensitive and may over-attribute among same-named callees. All line numbers are 1-based; for cross-function findings, `source.line`, `sink.line` and `hops[].line` are the declaration lines of the functions, not statement lines. SANITIZES (kill) edges are queryable via cypher.',
     };
   }
 
@@ -6939,9 +7072,25 @@ export class LocalBackend {
       new_name: string;
       file_path?: string;
       dry_run?: boolean;
+      plan_token?: string;
     },
   ): Promise<any> {
     await this.ensureInitialized(repo);
+    if (params.dry_run === false && (typeof params.plan_token !== 'string' || !params.plan_token)) {
+      return blockedRenameResult(
+        {
+          uid: params.symbol_uid,
+          name: params.symbol_name ?? '',
+          filePath: params.file_path ?? '',
+          startLine: 0,
+        },
+        params.new_name,
+        new RenameFailure(
+          'plan_required',
+          'Apply requires plan_token from a successful rename preview. Preview and review the exact edits first.',
+        ),
+      );
+    }
     if (!params.symbol_name && !params.symbol_uid) {
       return { error: 'Either symbol_name or symbol_uid is required.' };
     }
@@ -9647,15 +9796,17 @@ export class LocalBackend {
       runtimeConfirmed: boolean;
       runtimeSource: string | null;
       runtimeStatus: string | null;
+      unverifiedConsumers: number;
       consumers: Array<{
         name: string;
         filePath: string;
         accessedKeys?: string[];
         fetchCount?: number;
+        viaSymbolIds?: string[];
       }>;
     }>
   > {
-    const routeQuery = (includeRuntimeEvidence: boolean) => `
+    const routeQuery = (optionalColumns: string) => `
       MATCH (n:Route)
       WHERE n.id STARTS WITH 'Route:' ${routeFilter}
       OPTIONAL MATCH (consumer)-[r:CodeRelation]->(n)
@@ -9663,18 +9814,27 @@ export class LocalBackend {
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
              n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
-             r.reason AS fetchReason, n.method AS method${
-               includeRuntimeEvidence
-                 ? ', n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus'
-                 : ''
-             }
+             r.reason AS fetchReason, n.method AS method${optionalColumns}
     `;
+    const runtimeColumns =
+      ', n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus';
+    // Newest columns first: an older index lacks `unverifiedConsumers`, an
+    // older one still the runtime evidence.
+    const queries = [
+      `${runtimeColumns}, n.unverifiedConsumers AS unverifiedConsumers`,
+      runtimeColumns,
+      '',
+    ].map(routeQuery);
     let rows;
-    try {
-      rows = await executeParameterized(repoId, routeQuery(true), params);
-    } catch (error) {
-      if (!isMissingRouteRuntimePropertyError(error)) throw error;
-      rows = await executeParameterized(repoId, routeQuery(false), params);
+    for (const [attempt, query] of queries.entries()) {
+      try {
+        rows = await executeParameterized(repoId, query, params);
+        break;
+      } catch (error) {
+        if (attempt === queries.length - 1 || !isMissingRouteOptionalPropertyError(error)) {
+          throw error;
+        }
+      }
     }
 
     // Strip wrapping quotes from DB array elements — CSV COPY stores ['key'] which
@@ -9695,11 +9855,13 @@ export class LocalBackend {
         runtimeConfirmed: boolean;
         runtimeSource: string | null;
         runtimeStatus: string | null;
+        unverifiedConsumers: number;
         consumers: Array<{
           name: string;
           filePath: string;
           accessedKeys?: string[];
           fetchCount?: number;
+          viaSymbolIds?: string[];
         }>;
       }
     >();
@@ -9721,6 +9883,7 @@ export class LocalBackend {
       const runtimeConfirmed = (row.runtimeConfirmed ?? row[10]) === true;
       const runtimeSource: string | null = row.runtimeSource ?? row[11] ?? null;
       const runtimeStatus: string | null = row.runtimeStatus ?? row[12] ?? null;
+      const unverifiedConsumers = Number(row.unverifiedConsumers ?? row[13] ?? 0);
 
       if (!routeMap.has(id)) {
         routeMap.set(id, {
@@ -9734,13 +9897,16 @@ export class LocalBackend {
           runtimeConfirmed,
           runtimeSource,
           runtimeStatus,
+          unverifiedConsumers,
           consumers: [],
         });
       }
       if (consumerName && consumerFile) {
-        // Parse accessed keys from reason field: "fetch-url-match|keys:data,pagination|fetches:3"
+        // Parse accessed keys from reason field:
+        // "fetch-url-match|keys:data,pagination|fetches:3|via:Function:src/api.ts:getGrants"
         let accessedKeys: string[] | undefined;
         let fetchCount: number | undefined;
+        let viaSymbolIds: string[] | undefined;
         if (fetchReason) {
           const keysMatch = fetchReason.match(/\|keys:([^|]+)/);
           if (keysMatch) {
@@ -9750,12 +9916,17 @@ export class LocalBackend {
           if (fetchesMatch) {
             fetchCount = parseInt(fetchesMatch[1], 10);
           }
+          // One field per requesting function (#3644); an id may hold any
+          // character but the separator.
+          const via = [...fetchReason.matchAll(/\|via:([^|]+)/g)].map((m) => m[1]);
+          if (via.length > 0) viaSymbolIds = via;
         }
         routeMap.get(id)!.consumers.push({
           name: consumerName,
           filePath: consumerFile,
           ...(accessedKeys ? { accessedKeys } : {}),
           ...(fetchCount && fetchCount > 1 ? { fetchCount } : {}),
+          ...(viaSymbolIds ? { viaSymbolIds } : {}),
         });
       }
     }
@@ -9798,6 +9969,49 @@ export class LocalBackend {
       }
     } catch {
       /* no ENTRY_POINT_OF edges yet */
+    }
+    return result;
+  }
+
+  /**
+   * Callers of the requesting functions a route's FETCHES reasons name, one
+   * CALLS hop up, keyed by the requesting function's id (#3644). One query for
+   * every route in the report. `undefined` when the query fails, so the caller
+   * leaves the field out rather than reporting an empty list it did not verify.
+   */
+  private async fetchRequestFunctionCallers(
+    repoId: string,
+    viaIds: string[],
+  ): Promise<Map<string, RequestFunctionCaller[]> | undefined> {
+    const result = new Map<string, RequestFunctionCaller[]>();
+    if (viaIds.length === 0) return result;
+    try {
+      const rows = await executeParameterized(
+        repoId,
+        `
+        MATCH (caller)-[r:CodeRelation]->(via)
+        WHERE r.type = 'CALLS' AND list_contains($viaIds, via.id)
+        RETURN DISTINCT via.id AS viaId, via.name AS viaName,
+               caller.name AS callerName, caller.filePath AS callerFile
+      `,
+        { viaIds },
+      );
+      for (const row of rows) {
+        const viaId = row.viaId ?? row[0];
+        const viaName = row.viaName ?? row[1];
+        const name = row.callerName ?? row[2];
+        const filePath = row.callerFile ?? row[3];
+        if (!viaId || !viaName || !name || !filePath) continue;
+        let list = result.get(viaId);
+        if (!list) {
+          list = [];
+          result.set(viaId, list);
+        }
+        list.push({ viaId, viaName, name, filePath });
+      }
+    } catch (e) {
+      logQueryError('api_impact:indirect-consumers', e);
+      return undefined;
     }
     return result;
   }
@@ -10208,6 +10422,15 @@ export class LocalBackend {
       routes.map((r) => r.id),
     );
 
+    // The FETCHES edge names the function that holds each request site; its
+    // callers, one level up, are consumers the file-level edge cannot see
+    // (#3644). Nothing to look up on an index built before that attribution.
+    const viaIds = new Set<string>();
+    for (const r of routes) {
+      for (const c of r.consumers) for (const id of c.viaSymbolIds ?? []) viaIds.add(id);
+    }
+    const callersByVia = await this.fetchRequestFunctionCallers(repo.lbugPath, [...viaIds]);
+
     // Count verbs per handler from the FULL match (before the method filter) so a
     // method-scoped query still flags a multi-verb handler's partial middleware.
     const routeCountByHandler = new Map<string, number>();
@@ -10261,6 +10484,9 @@ export class LocalBackend {
 
       const flows = flowMap.get(r.id) || [];
       const consumerCount = r.consumers.length;
+      const indirectConsumers =
+        callersByVia === undefined ? undefined : indirectConsumersOf(r, callersByVia);
+      const indirectFileCount = new Set(indirectConsumers?.map((c) => c.file)).size;
 
       // Risk level heuristic
       let riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
@@ -10306,13 +10532,25 @@ export class LocalBackend {
             }
           : {}),
         consumers,
+        ...(indirectConsumers ? { indirectConsumers } : {}),
         ...(mismatches.length > 0 ? { mismatches } : {}),
         executionFlows: flows,
         impactSummary: {
           directConsumers: consumerCount,
+          ...(indirectConsumers ? { indirectConsumers: indirectFileCount } : {}),
           affectedFlows: flows.length,
           riskLevel,
           ...(warning ? { warning } : {}),
+          // No `exact` verdict: URLs the analyzer could not resolve are unseen.
+          ...(r.unverifiedConsumers > 0
+            ? {
+                epistemic: 'lower-bound' as const,
+                unverifiedConsumers: r.unverifiedConsumers,
+                boundaries: [
+                  `${r.unverifiedConsumers} more file${r.unverifiedConsumers === 1 ? '' : 's'} pass this route's URL to a function not proven to send HTTP requests; directConsumers is a lower bound.`,
+                ],
+              }
+            : {}),
         },
       };
     });

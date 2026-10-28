@@ -96,6 +96,7 @@ const CLI_PATH_SOURCE_LITERAL =
 // OpenCode plugin (which has no __dirname and resolves from import.meta).
 const OPENCODE_CLI_PATH_SOURCE_LITERAL =
   "let cliPath = path.resolve(HERE_DIR, '..', '..', 'dist', 'cli', 'index.js');";
+const OPENCODE_RUNTIME_PATH_SOURCE_LITERAL = "let runtimePath = 'node';";
 
 interface SetupResult {
   configured: string[];
@@ -1349,13 +1350,21 @@ async function installOpenCodePlugin(result: SetupResult): Promise<void> {
     const resolvedCli = path.join(__dirname, '..', 'cli', 'index.js');
     const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
     const jsonCli = JSON.stringify(normalizedCli);
-    if (!content.includes(OPENCODE_CLI_PATH_SOURCE_LITERAL)) {
+    if (
+      !content.includes(OPENCODE_CLI_PATH_SOURCE_LITERAL) ||
+      !content.includes(OPENCODE_RUNTIME_PATH_SOURCE_LITERAL)
+    ) {
       result.errors.push(
-        'OpenCode hooks: gitnexus-plugin.js no longer contains the cliPath literal to patch — skipping plugin install (the unpatched relative cliPath would resolve under the OpenCode config dir). Update OPENCODE_CLI_PATH_SOURCE_LITERAL in setup.ts.',
+        'OpenCode hooks: gitnexus-plugin.js no longer contains the CLI/runtime path literals to patch — skipping plugin install. Update the OPENCODE_*_SOURCE_LITERAL constants in setup.ts.',
       );
       return;
     }
-    content = content.replace(OPENCODE_CLI_PATH_SOURCE_LITERAL, `let cliPath = ${jsonCli};`);
+    content = content
+      .replace(OPENCODE_CLI_PATH_SOURCE_LITERAL, () => `let cliPath = ${jsonCli};`)
+      .replace(
+        OPENCODE_RUNTIME_PATH_SOURCE_LITERAL,
+        () => `let runtimePath = ${JSON.stringify(process.execPath)};`,
+      );
     // Sanity: the installed copy must export the plugin initializer OpenCode calls.
     if (!content.includes('GitNexusPlugin')) {
       result.errors.push(

@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -10,7 +11,6 @@ import { summarizeUnresolvedReceivers } from '../../../src/core/ingestion/scope-
 import {
   loadParseCache,
   loadParseCacheChunk,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -25,6 +25,8 @@ import {
 } from '../../../src/storage/parsedfile-store.js';
 import { describeGrammarPresence, optionalGrammarGate } from '../../helpers/optional-grammar.js';
 import { runPipelineFromRepo, writeFixtureRepo, type PipelineResult } from './helpers.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const zig = optionalGrammarGate(SupportedLanguages.Zig);
 describeGrammarPresence(zig);
@@ -263,7 +265,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
     const keys = await saveParseCache(storageDir, cache);
     await pruneAndSaveDurableParsedFileStore(
       getDurableParsedFileDir(storageDir),
-      PARSE_CACHE_VERSION,
+      parseIdentity.base,
       new Set(keys),
     );
   }
@@ -272,7 +274,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
     await clearParsedFileStore(storageDir);
     const index = await loadDurableParsedFileIndex(
       getDurableParsedFileDir(storageDir),
-      PARSE_CACHE_VERSION,
+      parseIdentity.base,
     );
     expect(index.size).toBeGreaterThan(0);
     const paths = new Set<string>();
@@ -342,7 +344,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
     );
     const extract = vi.spyOn(scopeBridge, 'extractParsedFile');
     try {
-      const coldCache = await loadParseCache(storageDir);
+      const coldCache = await loadParseCache(storageDir, parseIdentity, storageDir);
       const cold = await run(coldCache);
       expect(cold.usedWorkerPool).toBe(true);
       expect(cold.reparsedFileCount).toBe(parsedPaths.length);
@@ -490,7 +492,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
           .scopes.find((scope) => scope.id === dependency!.callerScope)?.kind,
       ).toBe('Function');
 
-      const warmCache = await loadParseCache(storageDir);
+      const warmCache = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(warmCache.entries.size).toBe(0);
       expect(warmCache.onDiskKeys!.size).toBeGreaterThan(0);
       let persistedFileCount = 0;
@@ -527,7 +529,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
           'import a as namespace',
         ),
       });
-      const editedCache = await loadParseCache(storageDir);
+      const editedCache = await loadParseCache(storageDir, parseIdentity, storageDir);
       const edited = await run(editedCache);
       expect(edited.usedWorkerPool).toBe(true);
       expect(edited.reparsedFileCount).toBeGreaterThanOrEqual(4);
@@ -578,7 +580,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       }
 
       fs.rmSync(marker);
-      const editedWarm = await run(await loadParseCache(storageDir));
+      const editedWarm = await run(await loadParseCache(storageDir, parseIdentity, storageDir));
       expect(editedWarm.usedWorkerPool).toBe(false);
       expect(editedWarm.reparsedFileCount).toBe(0);
       expect(editedWarm.parseCacheHitFileCount).toBe(parsedPaths.length);
@@ -590,8 +592,8 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       // Both stores reject the pre-accessor schema. run() constructs a fresh
       // graph, proving the full-rebuild upgrade path with unchanged sources;
       // cache invalidation alone is not evidence of persisted graph-row updates.
-      const previousVersion = PARSE_CACHE_VERSION.replace(/^\d+\+/, '136+');
-      expect(previousVersion).not.toBe(PARSE_CACHE_VERSION);
+      const previousVersion = '136+0.0.0-legacy';
+      expect(previousVersion).not.toBe(parseIdentity.base);
       for (const indexPath of [
         path.join(storageDir, 'parse-cache', 'index.json'),
         path.join(getDurableParsedFileDir(storageDir), 'index.json'),
@@ -601,9 +603,9 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       }
       await clearParsedFileStore(storageDir);
       expect(
-        await loadDurableParsedFileIndex(getDurableParsedFileDir(storageDir), PARSE_CACHE_VERSION),
+        await loadDurableParsedFileIndex(getDurableParsedFileDir(storageDir), parseIdentity.base),
       ).toEqual(new Map());
-      const upgradedCache = await loadParseCache(storageDir);
+      const upgradedCache = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(upgradedCache.entries.size).toBe(0);
       expect(upgradedCache.onDiskKeys?.size ?? 0).toBe(0);
       const rebuilt = await run(upgradedCache);

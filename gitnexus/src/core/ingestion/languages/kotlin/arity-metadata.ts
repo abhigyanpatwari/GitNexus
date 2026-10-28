@@ -1,5 +1,6 @@
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { kotlinMethodConfig } from '../../method-extractors/configs/jvm.js';
+import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 export interface KotlinArityMetadata {
   readonly parameterCount: number | undefined;
@@ -10,12 +11,11 @@ export interface KotlinArityMetadata {
 export function computeKotlinArityMetadata(fnNode: SyntaxNode): KotlinArityMetadata {
   const params = kotlinMethodConfig.extractParameters?.(fnNode) ?? [];
   let hasVararg = false;
-  const parameterTypes: string[] = [];
+  let parameterTypes = declarationParameterTypes(params);
   for (const param of params) {
     if (param.isVariadic) hasVararg = true;
-    if (param.type !== null) parameterTypes.push(param.type);
   }
-  if (hasVararg) parameterTypes.push('vararg');
+  if (hasVararg) parameterTypes = [...parameterTypes, 'vararg'];
 
   const required = params.filter((p) => !p.isOptional && !p.isVariadic).length;
   return {

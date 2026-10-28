@@ -74,6 +74,7 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
@@ -92,6 +93,7 @@ export default defineConfig({
             'test/integration/lbug-pool.test.ts',
             'test/integration/lbug-pool-stability.test.ts',
             'test/integration/local-backend.test.ts',
+            'test/integration/bm25-symbol-hydration.test.ts',
             'test/integration/local-backend-calltool.test.ts',
             'test/integration/spring-aop-mcp.test.ts',
             // Native @ladybugdb/core: loads a real graph through loadGraphToLbug
@@ -114,11 +116,14 @@ export default defineConfig({
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
+            'test/integration/lbug-checkpoint-accounting.test.ts',
             'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             // Shared sibling store (#3352): each file runs real analyses and opens
             // the resulting LadybugDB graphs.
             'test/integration/shared-store-analyze.test.ts',
+            'test/integration/parse-cache-identity-lifecycle.test.ts',
+            'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',
             'test/integration/shared-store-cache.test.ts',
             'test/integration/shared-store-clean.test.ts',
@@ -178,6 +183,7 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
@@ -196,6 +202,7 @@ export default defineConfig({
             'test/integration/lbug-pool.test.ts',
             'test/integration/lbug-pool-stability.test.ts',
             'test/integration/local-backend.test.ts',
+            'test/integration/bm25-symbol-hydration.test.ts',
             'test/integration/local-backend-calltool.test.ts',
             'test/integration/spring-aop-mcp.test.ts',
             'test/integration/spring-destinations-lbug.test.ts',
@@ -216,6 +223,7 @@ export default defineConfig({
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
+            'test/integration/lbug-checkpoint-accounting.test.ts',
             'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
@@ -244,6 +252,8 @@ export default defineConfig({
             // in two projects would be collected (and run) twice.
             'test/unit/incremental-index-extension-dml-gate.test.ts',
             'test/integration/shared-store-analyze.test.ts',
+            'test/integration/parse-cache-identity-lifecycle.test.ts',
+            'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',
             'test/integration/shared-store-cache.test.ts',
             'test/integration/shared-store-clean.test.ts',

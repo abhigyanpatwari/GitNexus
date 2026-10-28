@@ -32,6 +32,7 @@
   },
   "files": [
     "dist",
+    "prebuilds/bundled",
     "hooks",
     "scripts",
     "skills",
@@ -44,7 +45,8 @@
     "vendor/**/README.md",
     "vendor/leiden/index.cjs",
     "vendor/leiden/utils.cjs",
-    "vendor/lbug-fts/manifest.json"
+    "vendor/lbug-fts/manifest.json",
+    "vendor/lbug-vector/manifest.json"
   ],
   "scripts": {
     "build": "node scripts/build.js",
@@ -60,10 +62,22 @@
     "test:coverage": "vitest run --coverage",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
     "test:benchmarks": "node --import tsx scripts/run-benchmarks.ts",
+    "test:dupes": "node --import tsx tools/test-dupes/test-dupes.ts",
+    "test:mutation:prepare": "node --import tsx tools/mutation/prepare/prepare.ts",
+    "test:mutation:run": "node --import tsx tools/mutation/driver/run-scope.ts",
+    "test:mutation:conformance": "node --import tsx tools/mutation/conformance/run-conformance.ts",
+    "test:mutation:classify": "node --import tsx tools/mutation/classify/classify.ts",
+    "test:mutation:fidelity": "node --import tsx tools/mutation/fidelity/fidelity.ts",
+    "test:mutation:oracle": "node --import tsx tools/mutation/oracle/compare.ts",
+    "test:mutation:oracle:command": "node --import tsx tools/mutation/oracle/command-run.ts",
+    "test:mutation:oracle:freeze": "node --import tsx tools/mutation/oracle/freeze.ts",
+    "test:mutation:bench": "node --import tsx tools/mutation/bench/oracle-cost.ts",
+    "test:mutation:controls": "node --import tsx tools/mutation/controls/run-controls.ts",
+    "test:scenario-map": "node --import tsx tools/scenario-map/scenario-map.ts",
     "postinstall": "node scripts/prepare-tree-sitter-bundle.cjs && node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/prepare-tree-sitter-bundle.cjs && node scripts/assert-publish-grammar-coverage.cjs && node scripts/assert-publish-fts-coverage.cjs && node scripts/build.js --web && node scripts/assert-web-assets.mjs web",
+    "prepack": "node scripts/prepare-tree-sitter-bundle.cjs --for-publication && node scripts/assert-publish-grammar-coverage.cjs && node scripts/assert-publish-fts-coverage.cjs && node scripts/build.js --web && node scripts/assert-web-assets.mjs web",
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
@@ -122,6 +136,9 @@
     "@babel/parser": "^8.0.0",
     "@babel/traverse": "^8.0.0",
     "@babel/types": "^8.0.0",
+    "@mermaid-js/tiny": "12.0.0",
+    "@stryker-mutator/api": "10.0.0",
+    "@stryker-mutator/core": "10.0.0",
     "@types/busboy": "^1.5.4",
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",
@@ -130,6 +147,7 @@
     "@types/proxy-addr": "^2.0.3",
     "@vitest/coverage-v8": "^5.0.0",
     "gitnexus-shared": "file:../gitnexus-shared",
+    "jsdom": "30.1.1",
     "tsx": "^4.0.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"

@@ -26,10 +26,13 @@
  *      instanceof narrowing passes are duplicated from `typescript/captures.ts`
  *      (they are pure AST operations with no grammar-specific logic).
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * Derives captures from its inputs and records CommonJS classification for
+ * immediate side-channel collection. Performs no I/O.
  */
 
+import { recordCommonJsModuleKind } from '../typescript/module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { synthesizeTsJsClassIdentity } from '../typescript/class-identity.js';
 import {
   findNodeAtRange,
   nodeToCapture,
@@ -41,6 +44,7 @@ import { splitImportStatement } from '../typescript/import-decomposer.js';
 import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './query.js';
 import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
+import { unboundCallableName } from '../typescript/unbound-callables.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
 import { isStaticClassFieldBinding } from '../typescript/captures.js';
 import { reducesToContainedType } from '../typescript/interpret.js';
@@ -889,6 +893,8 @@ export function emitJsScopeCaptures(
     });
   }
 
+  recordCommonJsModuleKind(tree.rootNode, filePath);
+
   const rawMatches = getJsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
   const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
@@ -908,6 +914,7 @@ export function emitJsScopeCaptures(
       grouped[tag] = nodeToCapture(tag, c.node);
       groupedNodes[tag] = c.node;
     }
+    synthesizeTsJsClassIdentity(grouped, groupedNodes);
     if (Object.keys(grouped).length === 0) continue;
 
     // Decompose ESM import_statement / re-export export_statement.
@@ -988,13 +995,28 @@ export function emitJsScopeCaptures(
     // untouched, so inner-call attribution falls through to the enclosing
     // scope instead of a phantom Function.
     const fnDeclAnchor = grouped['@declaration.function'];
+    const unbound = groupedNodes['@callable.unbound'];
+    if (unbound !== undefined) {
+      grouped['@declaration.name'] = syntheticCapture(
+        '@declaration.name',
+        unbound,
+        unboundCallableName(unbound)!,
+      );
+      if (unbound.childForFieldName('name') === null) {
+        grouped['@declaration.binding-name'] = syntheticCapture(
+          '@declaration.binding-name',
+          unbound,
+          '',
+        );
+      }
+    }
     if (fnDeclAnchor !== undefined) {
       const arrowNode = findFunctionNode(
         tree.rootNode,
         fnDeclAnchor.range,
         groupedNodes['@declaration.function'],
       );
-      if (arrowNode !== null && isArrayMethodCallbackArrow(arrowNode)) {
+      if (unbound === undefined && arrowNode !== null && isArrayMethodCallbackArrow(arrowNode)) {
         continue;
       }
       if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {

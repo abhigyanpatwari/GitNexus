@@ -37,7 +37,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 
 const MARKER = '[GitNexus]';
 
@@ -58,6 +58,9 @@ const HERE_DIR = getHereDir();
 /** Resolved at install time by `gitnexus setup` (same patch pattern as the
  * Claude/Antigravity adapters). Falls back to PATH lookup at runtime. */
 let cliPath = path.resolve(HERE_DIR, '..', '..', 'dist', 'cli', 'index.js');
+// Setup preserves the interpreter that installed GitNexus. In a compiled
+// OpenCode host, process.execPath is OpenCode itself, not a JS interpreter.
+let runtimePath = 'node';
 
 function isDebugEnabled() {
   return process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
@@ -72,7 +75,7 @@ function debugLog(message) {
  * writes diagnostics there too — see `augment.ts`). Returns '' when the
  * marker is absent.
  */
-export function extractAugmentContext(stderr) {
+function extractAugmentContext(stderr) {
   const output = (stderr || '').trim();
   const marker = output.indexOf(MARKER);
   if (marker === -1) return '';
@@ -95,6 +98,8 @@ const FLAGS_WITH_VALUES = new Set([
   '-B',
   '-C',
   '-g',
+  '-M',
+  '--max-columns',
   '--glob',
   '-t',
   '--type',
@@ -138,7 +143,7 @@ function tokenizeArgv(command) {
  * Parse the first search positional out of an rg/grep argv string.
  * Returns null when the command is not a search or the token is too short.
  */
-export function extractBashSearchPattern(command) {
+function extractBashSearchPattern(command) {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
   const tokens = tokenizeArgv(command);
   let foundCmd = false;
@@ -176,7 +181,7 @@ export function extractBashSearchPattern(command) {
  * Returns null for anything else (incl. `read`: file reads need no
  * augmentation, matching the Claude adapter's Grep|Glob|Bash scope).
  */
-export function extractOpenCodePattern(tool, args) {
+function extractOpenCodePattern(tool, args) {
   const input = args && typeof args === 'object' ? args : {};
   if (tool === 'grep') {
     const q = input.pattern ?? input.query ?? '';
@@ -204,7 +209,7 @@ export function extractOpenCodePattern(tool, args) {
  * START with `git`, so `echo 'git commit'` or `grep 'git commit' file` don't
  * count as mutations while `cd x && git commit` still does.
  */
-export function isGitMutationCommand(command) {
+function isGitMutationCommand(command) {
   if (typeof command !== 'string') return false;
   return command
     .split(/&&|\|\||;|\|/)
@@ -218,12 +223,12 @@ export function isGitMutationCommand(command) {
  * 3) a `gitnexus` binary on PATH (shell mode on Windows). Never returns
  * null — the PATH arm is the last resort; callers still guard defensively.
  */
-export function resolveCliInvocation() {
+function resolveCliInvocation() {
   const fromEnv = process.env.GITNEXUS_HOOK_CLI_PATH;
   if (fromEnv && String(fromEnv).trim()) {
     try {
       if (fs.existsSync(String(fromEnv))) {
-        return { cmd: process.execPath, argv: [String(fromEnv)], useShell: false };
+        return { cmd: runtimePath, argv: [String(fromEnv)], useShell: false };
       }
     } catch {
       /* unreadable env path — fall through */
@@ -231,7 +236,7 @@ export function resolveCliInvocation() {
   }
   try {
     if (typeof cliPath === 'string' && cliPath && fs.existsSync(cliPath)) {
-      return { cmd: process.execPath, argv: [cliPath], useShell: false };
+      return { cmd: runtimePath, argv: [cliPath], useShell: false };
     }
   } catch {
     /* fall through to PATH lookup */
@@ -249,7 +254,7 @@ export function resolveCliInvocation() {
 const SHELL_UNSAFE_RE = /[&|<>^"`$;()\r\n%']/;
 
 /** True when pattern must not be forwarded through a shell invocation. */
-export function isShellMetaUnsafe(pattern) {
+function isShellMetaUnsafe(pattern) {
   return typeof pattern === 'string' && SHELL_UNSAFE_RE.test(pattern);
 }
 
@@ -257,15 +262,38 @@ export function isShellMetaUnsafe(pattern) {
  * Shell-mode guard used by runAugment: refuse to spawn when the resolved
  * invocation needs a shell AND the pattern carries metacharacters.
  */
-export function shouldSkipAugmentForShell(invocation, pattern) {
+function shouldSkipAugmentForShell(invocation, pattern) {
   return Boolean(invocation && invocation.useShell && isShellMetaUnsafe(pattern));
+}
+
+// Hooks share OpenCode's event loop. Wait asynchronously for the bounded CLI
+// process so a slow index cannot freeze the UI or other sessions.
+function runCli(invocation, args, cwd, timeout) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      invocation.cmd,
+      [...invocation.argv, ...args],
+      {
+        encoding: 'utf-8',
+        timeout,
+        maxBuffer: 1024 * 1024,
+        cwd,
+        windowsHide: true,
+        ...(invocation.useShell ? { shell: true } : {}),
+      },
+      (error, stdout, stderr) => {
+        if (error) reject(error);
+        else resolve({ stdout, stderr });
+      },
+    );
+  });
 }
 
 /**
  * Run `gitnexus augment <pattern>` in `cwd` and return the marked context,
  * or '' on any failure (no repo, no index, lock contention, timeout).
  */
-export function runAugment(pattern, cwd) {
+async function runAugment(pattern, cwd) {
   const invocation = resolveCliInvocation();
   if (!invocation) return '';
   // The pattern originates from tool arguments (agent- and repo-influenced).
@@ -277,15 +305,7 @@ export function runAugment(pattern, cwd) {
   // already dropped any pattern containing a quote or other metacharacter.
   const forwarded = invocation.useShell ? `"${pattern}"` : pattern;
   try {
-    const child = spawnSync(invocation.cmd, [...invocation.argv, 'augment', '--', forwarded], {
-      encoding: 'utf-8',
-      timeout: 10000,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      ...(invocation.useShell ? { shell: true } : {}),
-    });
-    if (child.error || child.status !== 0) return '';
+    const child = await runCli(invocation, ['augment', '--', forwarded], cwd, 10000);
     return extractAugmentContext(child.stderr || '');
   } catch {
     return '';
@@ -295,7 +315,7 @@ export function runAugment(pattern, cwd) {
 /**
  * Parse `gitnexus status --json` stdout. Returns the parsed payload or null.
  */
-export function parseStatusPayload(stdout) {
+function parseStatusPayload(stdout) {
   try {
     const payload = JSON.parse(String(stdout || ''));
     if (payload && typeof payload === 'object') return payload;
@@ -311,19 +331,11 @@ export function parseStatusPayload(stdout) {
  * null so the hook stays silent. Cheap on the stale path: when HEAD moved,
  * the metadata check already disagrees and the content scan is skipped.
  */
-export function checkIndexStale(cwd) {
+async function checkIndexStale(cwd) {
   const invocation = resolveCliInvocation();
   if (!invocation) return null;
   try {
-    const child = spawnSync(invocation.cmd, [...invocation.argv, 'status', '--json'], {
-      encoding: 'utf-8',
-      timeout: 15000,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      ...(invocation.useShell ? { shell: true } : {}),
-    });
-    if (child.error || child.status !== 0) return null;
+    const child = await runCli(invocation, ['status', '--json'], cwd, 15000);
     const payload = parseStatusPayload(child.stdout || '');
     if (!payload || typeof payload.status !== 'string') return null;
     if (payload.status !== 'stale') return null;
@@ -352,7 +364,7 @@ function appendOutput(output, text) {
  * `tool.execute.after` handler: augment searches, hint on stale index.
  * `directory` is the project directory captured at plugin init.
  */
-export function createAfterHook(directory) {
+function createAfterHook(directory) {
   return async (input, output) => {
     try {
       if (!input || !output || typeof output !== 'object') return;
@@ -363,11 +375,11 @@ export function createAfterHook(directory) {
       if (tool === 'grep' || tool === 'glob' || tool === 'bash') {
         const pattern = extractOpenCodePattern(tool, args);
         if (pattern) {
-          const context = runAugment(pattern, cwd);
+          const context = await runAugment(pattern, cwd);
           if (context) appendOutput(output, context);
         }
         if (tool === 'bash' && isGitMutationCommand(args.command)) {
-          const hint = checkIndexStale(cwd);
+          const hint = await checkIndexStale(cwd);
           if (hint) appendOutput(output, hint);
         }
       }
@@ -377,6 +389,7 @@ export function createAfterHook(directory) {
   };
 }
 
+// Every export is invoked as a plugin initializer by OpenCode's loader.
 export const GitNexusPlugin = async ({ directory, worktree } = {}) => {
   const projectDir =
     (typeof directory === 'string' && directory) ||

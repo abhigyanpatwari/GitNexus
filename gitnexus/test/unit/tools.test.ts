@@ -23,6 +23,12 @@ const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
 const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
+  it('keeps the complete tool catalog below 70 KB of recurring agent context', () => {
+    // Every exposed tool is sent before the agent chooses one. This is a byte
+    // budget, not a tokenizer estimate or a claim about end-to-end dollar cost.
+    expect(Buffer.byteLength(JSON.stringify(GITNEXUS_TOOLS), 'utf8')).toBeLessThanOrEqual(70_000);
+  });
+
   it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group + read_file + grep)', () => {
     expect(GITNEXUS_TOOLS).toHaveLength(19);
   });
@@ -35,7 +41,8 @@ describe('GITNEXUS_TOOLS', () => {
     expect(rename.inputSchema.properties.dry_run).toMatchObject({ type: 'boolean', default: true });
     expect(rename.inputSchema.required).toEqual(['new_name']);
     expect(rename.description).toMatch(/dry_run omitted or true never writes/);
-    expect(rename.description).toMatch(/dry_run:false applies/);
+    expect(rename.description).toMatch(/dry_run:false requires the plan_token/);
+    expect(rename.inputSchema.properties.plan_token).toMatchObject({ type: 'string' });
     expect(rename.description).not.toContain('rename_preview');
   });
 
@@ -483,9 +490,19 @@ describe('GITNEXUS_TOOLS', () => {
     expect(d).toContain('--pdg');
     expect(d).toContain('intra-procedural');
     // The named blind-spot classes (plan KTD10) must reach the consumer.
-    expect(d.toLowerCase()).toContain('closure/callback');
+    expect(d.toLowerCase()).toContain('captured closure-variable flows are not modeled');
+    expect(d.toLowerCase()).toContain(
+      'sources read inside inline callbacks and returned handlers can flow through helper functions',
+    );
     expect(d.toLowerCase()).toContain('property/field');
-    expect(d.toLowerCase()).toContain('guard-style');
+    expect(d.toLowerCase()).toContain(
+      'modeled guards can refine unchanged primitive-string values',
+    );
+    expect(d.toLowerCase()).toContain('imported and wrapper validators');
+    expect(d.toLowerCase()).toContain(
+      'unsupported predicates or sink uses remain conservative findings',
+    );
+    expect(d.toLowerCase()).toContain('declared string types are analysis assumptions');
     expect(d.toLowerCase()).toContain('cross-function');
     expect(d.toLowerCase()).toContain('commonjs');
     expect(d.toLowerCase()).toContain('exception');

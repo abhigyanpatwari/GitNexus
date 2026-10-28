@@ -205,7 +205,8 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // analyses. `undefined` when no storage path (tests / direct calls) — those
     // runs use the in-heap `workerParsedFiles` above or fall back to a fresh
     // extract per file inside runScopeResolution.
-    const parsedFileStorePath = ctx.options?.parseCache?.storagePath;
+    const parsedFileStorePath =
+      ctx.options?.parsedFileStorePath ?? ctx.options?.parseCache?.writeStoragePath;
 
     // Standalone providers are re-extracted from source on the main thread;
     // workers intentionally do not serialize ParsedFile artifacts for them.

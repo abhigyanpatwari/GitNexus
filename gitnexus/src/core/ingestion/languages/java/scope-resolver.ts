@@ -15,6 +15,7 @@ import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-l
 import {
   isClassLike,
   lookupBindingsAt,
+  lookupNameClaim,
   namesAtScope,
   populateClassOwnedMembers,
 } from '../../scope-resolution/scope/walkers.js';
@@ -28,7 +29,7 @@ import {
   resolveJavaImportTarget,
   type JavaResolveContext,
 } from './index.js';
-import { populateJavaPackageSiblings } from './package-siblings.js';
+import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
 import { attachSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachJavaSpringAopMetadata } from './spring-aop.js';
 import { attachJavaSpringConfigBindings } from './spring-config-bindings.js';
@@ -90,6 +91,7 @@ const javaScopeResolver: ScopeResolver = {
   freeCallsRequireInstanceOwnership: true,
 
   populateNamespaceSiblings: populateJavaPackageSiblings,
+  resolveImplicitInheritanceBase: resolveJavaSamePackageBase,
   populateRangeBindings: populateJavaCrossFileReturnTypes,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes, ctx) => {
     attachSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);
@@ -109,10 +111,35 @@ function populateJavaCrossFileReturnTypes(
   indexes: ScopeResolutionIndexes,
 ): void {
   const moduleScopeByFile = new Map<string, ParsedFile['scopes'][number]>();
+  const moduleReturnTypesByFile = new Map<string, Map<string, TypeRef>>();
+  const returnNames = new Set<string>();
+  const importedFamiliesByFile = new Map<string, string[][]>();
+  const ambiguousByFile = new Map<string, Set<string>>();
+  const returnTypeIds = new Map<TypeRef, string | undefined>();
+  const returnTypeId = (ref: TypeRef): string | undefined => {
+    if (!returnTypeIds.has(ref)) {
+      const ids = new Set(
+        lookupNameClaim(ref.declaredAtScope, ref.rawName, indexes, { purpose: 'type' })
+          .bindings.filter((binding) => isClassLike(binding.def.type))
+          .map((binding) => binding.def.nodeId),
+      );
+      returnTypeIds.set(ref, ids.size === 1 ? ids.values().next().value : undefined);
+    }
+    return returnTypeIds.get(ref);
+  };
   const classScopesByFile = new Map<string, ParsedFile['scopes'][number][]>();
   for (const parsed of parsedFiles) {
     const ms = parsed.scopes.find((s) => s.kind === 'Module');
-    if (ms !== undefined) moduleScopeByFile.set(parsed.filePath, ms);
+    if (ms !== undefined) {
+      moduleScopeByFile.set(parsed.filePath, ms);
+      // Keep producer facts once. Missing transitive facts are looked up on
+      // demand below instead of copying every dependency's table (#3695).
+      const returns = new Map(
+        [...ms.typeBindings].filter(([, ref]) => ref.source === 'return-annotation'),
+      );
+      moduleReturnTypesByFile.set(parsed.filePath, returns);
+      for (const name of returns.keys()) returnNames.add(name);
+    }
     const cs = parsed.scopes.filter((s) => s.kind === 'Class');
     if (cs.length > 0) classScopesByFile.set(parsed.filePath, cs);
   }
@@ -122,6 +149,9 @@ function populateJavaCrossFileReturnTypes(
     if (importerModule === undefined) continue;
 
     const ambiguousMirrors = new Set<string>();
+    ambiguousByFile.set(parsed.filePath, ambiguousMirrors);
+    const importedFamilies: string[][] = [];
+    importedFamiliesByFile.set(parsed.filePath, importedFamilies);
     for (const name of namesAtScope(importerModule.id, indexes)) {
       const refs = lookupBindingsAt(importerModule.id, name, indexes);
       for (const ref of refs) {
@@ -132,16 +162,26 @@ function populateJavaCrossFileReturnTypes(
         if (sourceModule === undefined) continue;
 
         const tb = importerModule.typeBindings as Map<string, TypeRef>;
-        for (const [srcName, srcRef] of sourceModule.typeBindings) {
-          if (srcRef.source !== 'return-annotation') continue;
-          if (ambiguousMirrors.has(srcName)) continue;
-          const existing = tb.get(srcName);
-          if (existing !== undefined && existing.rawName !== srcRef.rawName) {
-            ambiguousMirrors.add(srcName);
-            tb.delete(srcName);
-            continue;
+        const sourceFiles = new Set([ref.def.filePath]);
+        for (const ancestorId of indexes.methodDispatch.mroFor(ref.def.nodeId)) {
+          const ancestor = indexes.defs.get(ancestorId);
+          if (ancestor !== undefined) sourceFiles.add(ancestor.filePath);
+        }
+        importedFamilies.push([...sourceFiles]);
+        const familyNames = new Set<string>();
+        for (const sourceFile of sourceFiles) {
+          for (const [srcName, srcRef] of moduleReturnTypesByFile.get(sourceFile) ?? []) {
+            if (familyNames.has(srcName)) continue;
+            familyNames.add(srcName);
+            if (ambiguousMirrors.has(srcName)) continue;
+            const existing = tb.get(srcName);
+            if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+              ambiguousMirrors.add(srcName);
+              tb.delete(srcName);
+              continue;
+            }
+            if (existing === undefined) tb.set(srcName, srcRef);
           }
-          if (existing === undefined) tb.set(srcName, srcRef);
         }
 
         for (const classScope of classScopesByFile.get(ref.def.filePath) ?? []) {
@@ -158,6 +198,58 @@ function populateJavaCrossFileReturnTypes(
           }
         }
       }
+    }
+  }
+
+  for (const parsed of parsedFiles) {
+    const importerModule = moduleScopeByFile.get(parsed.filePath);
+    if (importerModule === undefined) continue;
+    const tb = importerModule.typeBindings as Map<string, TypeRef>;
+    const needed = new Set(parsed.referenceSites.map((site) => site.name));
+    for (const scope of parsed.scopes) {
+      for (const ref of scope.typeBindings.values()) needed.add(ref.rawName);
+    }
+
+    for (const name of needed) {
+      if (tb.has(name) || !returnNames.has(name) || ambiguousByFile.get(parsed.filePath)?.has(name))
+        continue;
+      const pending = [...(importedFamiliesByFile.get(parsed.filePath) ?? [])];
+      const visited = new Set([parsed.filePath]);
+      let candidate: TypeRef | undefined;
+      let ambiguous = false;
+      while (pending.length > 0) {
+        const family = pending.pop();
+        if (family === undefined) break;
+        let found: TypeRef | undefined;
+        // The first declaration in the MRO owns an overridden method.
+        for (const file of family) {
+          found = moduleReturnTypesByFile.get(file)?.get(name);
+          if (found !== undefined) break;
+        }
+        if (found !== undefined) {
+          if (candidate !== undefined) {
+            // A simple name can denote different classes in different packages.
+            // Preserve shared return types only when their producer scopes agree.
+            const sameType =
+              candidate.rawName === found.rawName &&
+              (candidate.declaredAtScope === found.declaredAtScope ||
+                (returnTypeId(candidate) !== undefined &&
+                  returnTypeId(candidate) === returnTypeId(found)));
+            if (!sameType) {
+              ambiguous = true;
+              break;
+            }
+          }
+          candidate ??= found;
+          continue;
+        }
+        for (const file of family) {
+          if (visited.has(file)) continue;
+          visited.add(file);
+          for (const dependency of importedFamiliesByFile.get(file) ?? []) pending.push(dependency);
+        }
+      }
+      if (!ambiguous && candidate !== undefined) tb.set(name, candidate);
     }
 
     for (const [name, ref] of importerModule.typeBindings) {

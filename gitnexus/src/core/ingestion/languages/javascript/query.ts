@@ -47,6 +47,7 @@
  */
 
 import Parser from 'tree-sitter';
+import { unboundCallableQuery } from '../typescript/unbound-callables.js';
 import JS from 'tree-sitter-javascript';
 import {
   ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
@@ -61,6 +62,7 @@ function isJsxFile(filePath: string): boolean {
 }
 
 export const JAVASCRIPT_SCOPE_QUERY = `
+${unboundCallableQuery('declaration.function')}
 ;; Scopes — module / class-likes / function-likes
 (program) @scope.module
 
@@ -98,6 +100,9 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 ;; Declarations — classes
 (class_declaration
   name: (identifier) @declaration.name) @declaration.class
+
+(class
+  name: (identifier) @declaration.name) @declaration.class @class.expression
 
 ;; Declarations — methods (inside class bodies)
 (method_definition

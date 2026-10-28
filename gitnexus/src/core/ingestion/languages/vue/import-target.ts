@@ -8,7 +8,7 @@
  * Vue-specific guessing is required — the exact-path branch finds them first.
  */
 
-import type { NodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
+import type { NodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { resolveTsTarget } from '../typescript/import-target.js';
 import type { TsconfigIndex } from '../typescript/tsconfig.js';
 

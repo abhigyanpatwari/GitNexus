@@ -1,0 +1,642 @@
+{
+  "schemaVersion": 1,
+  "description": "Gate 1 (U6): the vitest5 runner’s unmutated run matched a normal Vitest 5 run on the pure-JS category under these versions and settings. Results from other Vitest or Stryker versions are unvalidated until gates 2 and 3 pass again (KTD2). Regenerate with `npm run test:mutation:fidelity` (from gitnexus/).",
+  "versions": {
+    "vitest": "5.0.5",
+    "stryker": "10.0.0",
+    "node": "v22.23.3"
+  },
+  "platform": {
+    "os": "linux",
+    "release": "6.6.114.1-microsoft-standard-WSL2",
+    "arch": "x64"
+  },
+  "stryker": {
+    "concurrency": 2,
+    "maxTestRunnerReuse": 0,
+    "testRunner": "vitest5",
+    "coverageAnalysis": "perTest",
+    "disableTypeChecks": false,
+    "timeoutMS": 10000
+  },
+  "config": {
+    "base": {
+      "file": "gitnexus/vitest.config.ts",
+      "project": "default"
+    },
+    "run": {
+      "file": "gitnexus/tools/mutation/vitest.mutation.config.ts",
+      "project": "mutation"
+    },
+    "settings": {
+      "pool": "forks",
+      "isolate": true,
+      "maxWorkers": 23,
+      "globals": true,
+      "environment": "node",
+      "testTimeout": 30000,
+      "hookTimeout": 120000,
+      "teardownTimeout": 3000,
+      "clearMocks": false,
+      "mockReset": false,
+      "restoreMocks": false,
+      "unstubEnvs": false,
+      "unstubGlobals": false,
+      "includeTaskLocation": true,
+      "env": {
+        "GITNEXUS_ATOMIC_INCREMENTAL": "",
+        "GITNEXUS_LANG": "en",
+        "GITNEXUS_MEMORY": "off"
+      },
+      "sequence": {
+        "groupOrder": 3,
+        "hooks": "stack",
+        "sequencer": "[function PerfSequencer]"
+      }
+    },
+    "allowedDifferences": [
+      {
+        "name": "setupFiles",
+        "paths": [
+          "project.setupFiles"
+        ],
+        "reason": "The runner prepends its own setup file (tools/mutation/runner/setup.ts, loaded from the prepared copy next to the plugin) for coverage and mutant activation (KTD4). The gate 1 recorder is installed in both runs the same way."
+      },
+      {
+        "name": "coverage",
+        "paths": [
+          "global.coverage.exclude",
+          "project.coverage.exclude"
+        ],
+        "reason": "Vitest coverage is off in both runs; its resolved exclude list names the config file. Stryker records its own per-test coverage through the runner setup file."
+      },
+      {
+        "name": "KTD8 aliases",
+        "paths": [
+          "vite.resolve.alias"
+        ],
+        "reason": "The mutation config resolves `gitnexus-shared` imports to the relocated sources inside the sandbox (KTD8); the base run resolves the package to its built `dist`. The module comparison checks both resolve to the same modules."
+      },
+      {
+        "name": "dangerouslyIgnoreUnhandledErrors",
+        "paths": [
+          "global._rawTestConfig.dangerouslyIgnoreUnhandledErrors",
+          "global.dangerouslyIgnoreUnhandledErrors",
+          "project.dangerouslyIgnoreUnhandledErrors"
+        ],
+        "reason": "Off in the mutation config so an unhandled error fails the run (KTD9); gate 1 reports any unhandled error of the base run separately."
+      },
+      {
+        "name": "cacheDir",
+        "paths": [
+          "global.cache",
+          "global.cliOptions.cache",
+          "global.cliOptions.fsModuleCache",
+          "global.fsModuleCache",
+          "global.providedOptions.fsModuleCache",
+          "global.viteOverrides.cacheDir",
+          "project.cache.dir",
+          "project.fsModuleCache",
+          "vite.cacheDir"
+        ],
+        "reason": "The runner uses a per-process Vite cache directory inside the sandbox and turns the results and fs module caches off (KTD5), so no run reuses another run’s transforms."
+      },
+      {
+        "name": "project name",
+        "paths": [
+          "global.cliOptions.project",
+          "global.project",
+          "project.name"
+        ],
+        "reason": "The runner runs the single `mutation` project; Vitest task ids depend on the name, which is why tests are compared by file, titles and location instead."
+      },
+      {
+        "name": "include and exclude lists",
+        "paths": [
+          "env.GITNEXUS_MUTATION_SCOPE",
+          "project.exclude",
+          "project.include"
+        ],
+        "reason": "The mutation project includes exactly the scope file’s test files (named by GITNEXUS_MUTATION_SCOPE); gate 1 runs the same file list on both sides."
+      },
+      {
+        "name": "projects array",
+        "paths": [
+          "global.projects",
+          "global.resolvedProjects"
+        ],
+        "reason": "The mutation config replaces the three repo projects with one (KTD9); the resolved project list follows it. The run project’s own config is compared key by key."
+      },
+      {
+        "name": "sequence.groupOrder",
+        "paths": [
+          "project.sequence.groupOrder"
+        ],
+        "reason": "Orders projects against each other; a single-project run has nothing to order."
+      },
+      {
+        "name": "config file (addition)",
+        "paths": [
+          "global.cliOptions.config",
+          "global.config"
+        ],
+        "reason": "Addition to the plan’s list: the name of the config file. The Stryker run loads tools/mutation/vitest.mutation.config.ts (KTD9) through the gate 1 wrapper tools/mutation/fidelity/vitest.fidelity.config.ts; their settings are compared key by key."
+      }
+    ],
+    "ignoredVolatileValues": [
+      {
+        "name": "sequence.seed",
+        "paths": [
+          "global.sequence.seed",
+          "project.sequence.seed"
+        ],
+        "reason": "Defaults to the start time when unset and only drives shuffling; ignored only while shuffling is off in both runs."
+      }
+    ]
+  },
+  "envReadsAtLoad": [
+    {
+      "name": "DEBUG",
+      "set": false,
+      "value": null,
+      "readers": [
+        "node_modules/debug/src/node.js"
+      ]
+    },
+    {
+      "name": "FORCE_COLOR",
+      "set": false,
+      "value": null,
+      "readers": [
+        "node_modules/supports-color/index.js"
+      ]
+    },
+    {
+      "name": "GITNEXUS_CONTENT_RETENTION",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/content-retention.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_EMBEDDING_API_KEY",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/http-embedding-body-retry.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_EMBEDDING_DIMS",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/src/core/lbug/schema.ts",
+        "gitnexus/test/unit/http-embedding-body-retry.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_EMBEDDING_MAX_ATTEMPTS",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/http-embedding-body-retry.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_EMBEDDING_MIN_INTERVAL_MS",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/http-embedding-body-retry.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_EMBEDDING_MODEL",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/http-embedding-body-retry.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_EMBEDDING_RETRY_CAP_MS",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/http-embedding-body-retry.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_EMBEDDING_URL",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/http-embedding-body-retry.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_HOME",
+      "set": true,
+      "value": "/home/node/.gitnexus",
+      "readers": [
+        "gitnexus/test/unit/storage-resolver.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_MAX_CALLABLE_VALUE_TARGETS",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/src/core/ingestion/scope-resolution/passes/callable-value-flow.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_MAX_FILE_SIZE",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/max-file-size.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_MAX_INTERFACE_DISPATCH_FANOUT",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/src/core/ingestion/scope-resolution/passes/property-dispatch.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_PUBLIC_ORIGIN",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/middleware-public-origin.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_RD_FUZZ_N",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/cfg/reaching-defs-equivalence.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_STORAGE_PATH",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/storage-resolver.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_STORAGE_ROOT",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/storage-resolver.test.ts"
+      ]
+    },
+    {
+      "name": "GITNEXUS_TRUST_PROXY",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/test/unit/middleware-trust-proxy.test.ts"
+      ]
+    },
+    {
+      "name": "NODE_ENV",
+      "set": true,
+      "value": null,
+      "readers": [
+        "gitnexus/src/core/ingestion/utils/env.ts",
+        "gitnexus/test/unit/scope-resolution/reconcile-ownership.test.ts"
+      ]
+    },
+    {
+      "name": "NODE_V8_COVERAGE",
+      "set": false,
+      "value": null,
+      "readers": [
+        "node_modules/thread-stream/index.js"
+      ]
+    },
+    {
+      "name": "VALIDATE_SEMANTIC_MODEL",
+      "set": false,
+      "value": null,
+      "readers": [
+        "gitnexus/src/core/ingestion/utils/env.ts",
+        "gitnexus/test/unit/scope-resolution/reconcile-ownership.test.ts"
+      ]
+    }
+  ],
+  "accepted": {
+    "fileCount": 251,
+    "testCount": 4667,
+    "ran": 4666,
+    "skipped": 1,
+    "files": [
+      "test/unit/ai-context-read-path-must.test.ts",
+      "test/unit/ai-context-unknown-risk-policy.test.ts",
+      "test/unit/analysis-features.test.ts",
+      "test/unit/analyze-job.test.ts",
+      "test/unit/analyze-worker-ipc.test.ts",
+      "test/unit/binding-accumulator.test.ts",
+      "test/unit/c-static-linkage-side-channel.test.ts",
+      "test/unit/call-processor-routes.test.ts",
+      "test/unit/call-routing/ruby.test.ts",
+      "test/unit/cfg-callees-of-block.test.ts",
+      "test/unit/cfg/cfg-builder.test.ts",
+      "test/unit/cfg/opt-in.test.ts",
+      "test/unit/cfg/post-dominators.test.ts",
+      "test/unit/cfg/reaching-def-reason-codec.test.ts",
+      "test/unit/cfg/reaching-defs-equivalence.test.ts",
+      "test/unit/cfg/synthetic-escape.test.ts",
+      "test/unit/cjk-segmentation.test.ts",
+      "test/unit/cli-group-status-format.test.ts",
+      "test/unit/cli-i18n.test.ts",
+      "test/unit/cli-int-option.test.ts",
+      "test/unit/cli-message.test.ts",
+      "test/unit/clone-safety-cloneable.test.ts",
+      "test/unit/clone-safety-payloads.test.ts",
+      "test/unit/clone-safety.test.ts",
+      "test/unit/cobol-copy-expander.test.ts",
+      "test/unit/cobol-copy-external-imports.test.ts",
+      "test/unit/cobol-preprocessor.test.ts",
+      "test/unit/compatible-stdio-transport.test.ts",
+      "test/unit/conn-lock.test.ts",
+      "test/unit/constant-resolver.test.ts",
+      "test/unit/content-retention.test.ts",
+      "test/unit/csharp-namespace-extraction.test.ts",
+      "test/unit/csv-escaping.test.ts",
+      "test/unit/cypher-escape.test.ts",
+      "test/unit/dart-package-dependencies.test.ts",
+      "test/unit/definition-properties.test.ts",
+      "test/unit/django-root-discovery.test.ts",
+      "test/unit/embedding-checkpoint.test.ts",
+      "test/unit/embedding-count.test.ts",
+      "test/unit/embedding-dims.test.ts",
+      "test/unit/embedding-recovery.test.ts",
+      "test/unit/embedding-restore-spill.test.ts",
+      "test/unit/env.test.ts",
+      "test/unit/eval-server-bind-restriction.test.ts",
+      "test/unit/expo-routes.test.ts",
+      "test/unit/extension-load-error.test.ts",
+      "test/unit/extract-element-type-from-string.test.ts",
+      "test/unit/fastapi-router-bindings.test.ts",
+      "test/unit/fetch-reason-parsing.test.ts",
+      "test/unit/fetch-wrapper-index.test.ts",
+      "test/unit/format-elapsed.test.ts",
+      "test/unit/format-path.test.ts",
+      "test/unit/framework-route-paths.test.ts",
+      "test/unit/fts-rss-verdict.test.ts",
+      "test/unit/fts-schema.test.ts",
+      "test/unit/git-ref.test.ts",
+      "test/unit/gitnexus-rc-embeddings.test.ts",
+      "test/unit/go-route-handler.test.ts",
+      "test/unit/graph.test.ts",
+      "test/unit/group/config-parser.test.ts",
+      "test/unit/group/fs-utils.test.ts",
+      "test/unit/group/group-path-utils.test.ts",
+      "test/unit/group/group-tools.test.ts",
+      "test/unit/group/manifest-extractor.test.ts",
+      "test/unit/group/matching.test.ts",
+      "test/unit/group/service-boundary-detector.test.ts",
+      "test/unit/group/storage.test.ts",
+      "test/unit/group/types.test.ts",
+      "test/unit/hf-env.test.ts",
+      "test/unit/http-client-safe-url.test.ts",
+      "test/unit/http-embedding-body-retry.test.ts",
+      "test/unit/impact-risk.test.ts",
+      "test/unit/import-cycles.test.ts",
+      "test/unit/import-path-candidates.test.ts",
+      "test/unit/import-resolvers/csharp-csproj-parity.test.ts",
+      "test/unit/import-resolvers/suffix-index-lazy-dir-map.test.ts",
+      "test/unit/incremental-derived-writeback.test.ts",
+      "test/unit/incremental-escalation-gate.test.ts",
+      "test/unit/incremental-file-hash.test.ts",
+      "test/unit/incremental-parse-cache.test.ts",
+      "test/unit/incremental-shadow-candidates.test.ts",
+      "test/unit/incremental-subgraph-extract.test.ts",
+      "test/unit/index-freshness-graph-collapse.test.ts",
+      "test/unit/ingestion/di.test.ts",
+      "test/unit/ingestion/heritage-marker.test.ts",
+      "test/unit/ingestion/non-value-definition-keys.test.ts",
+      "test/unit/ingestion/qualified-name-utils.test.ts",
+      "test/unit/integrations/circuit-breaker.test.ts",
+      "test/unit/integrations/resilient-fetch.test.ts",
+      "test/unit/integrations/retry.test.ts",
+      "test/unit/ipynb-extractor.test.ts",
+      "test/unit/java-module-resolution.test.ts",
+      "test/unit/jcl-parser.test.ts",
+      "test/unit/kotlin-module-resolution.test.ts",
+      "test/unit/language-provider-route-constants.test.ts",
+      "test/unit/lbug-query-result-utils.test.ts",
+      "test/unit/lbug/graph-emit-sink.test.ts",
+      "test/unit/lbug/pdg-emit-sink.test.ts",
+      "test/unit/line-base-conversion.test.ts",
+      "test/unit/local-symbol-pruner.test.ts",
+      "test/unit/logger.test.ts",
+      "test/unit/max-file-size.test.ts",
+      "test/unit/mcp-output-budget.test.ts",
+      "test/unit/mcp-response-filter.test.ts",
+      "test/unit/mcp-stdout-sentinel.test.ts",
+      "test/unit/mcp-tool-arguments.test.ts",
+      "test/unit/mcp/query-process-attaches.test.ts",
+      "test/unit/method-props.test.ts",
+      "test/unit/middleware-public-origin.test.ts",
+      "test/unit/middleware-trust-proxy.test.ts",
+      "test/unit/model/field-registry.test.ts",
+      "test/unit/model/method-registry.test.ts",
+      "test/unit/model/owned-members-lookup.test.ts",
+      "test/unit/model/registration-table.test.ts",
+      "test/unit/model/semantic-model.test.ts",
+      "test/unit/model/type-registry.test.ts",
+      "test/unit/mutation/blank-assertions.test.ts",
+      "test/unit/mutation/classify-outcome.test.ts",
+      "test/unit/mutation/conformance-fingerprint.test.ts",
+      "test/unit/mutation/coverage-attribution.test.ts",
+      "test/unit/mutation/mutant-identity.test.ts",
+      "test/unit/mutation/normalise-results.test.ts",
+      "test/unit/mutation/oracle-boundary.test.ts",
+      "test/unit/mutation/oracle-classify.test.ts",
+      "test/unit/mutation/oracle-util.test.ts",
+      "test/unit/mutation/scope-file.test.ts",
+      "test/unit/mutation/sidecar.test.ts",
+      "test/unit/mutation/span-map-check.test.ts",
+      "test/unit/mutation/stryker-config.test.ts",
+      "test/unit/mutation/test-ids.test.ts",
+      "test/unit/mutation/version-guard.test.ts",
+      "test/unit/objective-c-macro-marker-preprocess.test.ts",
+      "test/unit/package-version.test.ts",
+      "test/unit/parsedfile-store.test.ts",
+      "test/unit/pdg-callee-id-capture.test.ts",
+      "test/unit/phase-timer.test.ts",
+      "test/unit/pipeline-runner.test.ts",
+      "test/unit/private-ip.test.ts",
+      "test/unit/process-detection-budget.test.ts",
+      "test/unit/python-relative-imports.test.ts",
+      "test/unit/query-batch.test.ts",
+      "test/unit/query-params.test.ts",
+      "test/unit/receiver-chain-codec.test.ts",
+      "test/unit/rel-pair-routing.test.ts",
+      "test/unit/rename-family.test.ts",
+      "test/unit/resolve-route-handler-symbols.test.ts",
+      "test/unit/result-merge.test.ts",
+      "test/unit/route-tool-detection.test.ts",
+      "test/unit/schema-fingerprint.test.ts",
+      "test/unit/schema-pair-coverage.test.ts",
+      "test/unit/schema.test.ts",
+      "test/unit/scope-extraction-failures.test.ts",
+      "test/unit/scope-index-store.test.ts",
+      "test/unit/scope-resolution/answered-receiver-drops.test.ts",
+      "test/unit/scope-resolution/c/c-header-scan.test.ts",
+      "test/unit/scope-resolution/c3-linearize-strategy.test.ts",
+      "test/unit/scope-resolution/callable-value-flow-env.test.ts",
+      "test/unit/scope-resolution/callable-value-flow-worklist.test.ts",
+      "test/unit/scope-resolution/callable-value-target-index.test.ts",
+      "test/unit/scope-resolution/cobol-import-target-parity.test.ts",
+      "test/unit/scope-resolution/cpp/cpp-adl-seq-coverage.test.ts",
+      "test/unit/scope-resolution/cpp/cpp-overload-ranking.test.ts",
+      "test/unit/scope-resolution/cpp/cpp-qualified-ns-index.test.ts",
+      "test/unit/scope-resolution/csharp/csharp-hooks.test.ts",
+      "test/unit/scope-resolution/csharp/csharp-interpret.test.ts",
+      "test/unit/scope-resolution/csharp/csharp-nullable-field-interpret.test.ts",
+      "test/unit/scope-resolution/def-index.test.ts",
+      "test/unit/scope-resolution/definition-id.test.ts",
+      "test/unit/scope-resolution/emit-references.test.ts",
+      "test/unit/scope-resolution/finalize-algorithm.test.ts",
+      "test/unit/scope-resolution/finalize-orchestrator.test.ts",
+      "test/unit/scope-resolution/free-call-fallback-guess-taint.test.ts",
+      "test/unit/scope-resolution/go/go-build-constraints.test.ts",
+      "test/unit/scope-resolution/go/go-workspace-owners-warning.test.ts",
+      "test/unit/scope-resolution/graph-bridge-label-split.test.ts",
+      "test/unit/scope-resolution/imports-to-edges-deferred.test.ts",
+      "test/unit/scope-resolution/imports-to-edges-type-only.test.ts",
+      "test/unit/scope-resolution/java/java-interpret.test.ts",
+      "test/unit/scope-resolution/lexical-name-claims.test.ts",
+      "test/unit/scope-resolution/method-dispatch-index.test.ts",
+      "test/unit/scope-resolution/module-scope-index.test.ts",
+      "test/unit/scope-resolution/name-fallback-summary.test.ts",
+      "test/unit/scope-resolution/namespace-channel-lookup.test.ts",
+      "test/unit/scope-resolution/namespace-target-cache.test.ts",
+      "test/unit/scope-resolution/namespace-targets-import-path.test.ts",
+      "test/unit/scope-resolution/overload-narrowing.test.ts",
+      "test/unit/scope-resolution/parse-worker-scope-integration.test.ts",
+      "test/unit/scope-resolution/pick-implicit-this-overload.test.ts",
+      "test/unit/scope-resolution/pick-unique-global-callable.test.ts",
+      "test/unit/scope-resolution/pick-unique-global-class.test.ts",
+      "test/unit/scope-resolution/position-index.test.ts",
+      "test/unit/scope-resolution/property-dispatch-fanout-env.test.ts",
+      "test/unit/scope-resolution/python/python-generic-annotation-reduction.test.ts",
+      "test/unit/scope-resolution/qualified-name-index.test.ts",
+      "test/unit/scope-resolution/reconcile-ownership.test.ts",
+      "test/unit/scope-resolution/references-to-edges-call-form.test.ts",
+      "test/unit/scope-resolution/registries.test.ts",
+      "test/unit/scope-resolution/resolve-ambiguous-inheritance-base.test.ts",
+      "test/unit/scope-resolution/resolve-references.test.ts",
+      "test/unit/scope-resolution/resolve-same-namespace-inheritance-base.test.ts",
+      "test/unit/scope-resolution/resolve-type-ref.test.ts",
+      "test/unit/scope-resolution/rust/rust-call-return-path.test.ts",
+      "test/unit/scope-resolution/rust/rust-dyn-type-normalization.test.ts",
+      "test/unit/scope-resolution/rust/rust-module-path.test.ts",
+      "test/unit/scope-resolution/scope-extractor.test.ts",
+      "test/unit/scope-resolution/scope-id.test.ts",
+      "test/unit/scope-resolution/scope-tree.test.ts",
+      "test/unit/scope-resolution/strip-cast-wrappers.test.ts",
+      "test/unit/scope-resolution/swift/callable-visibility.test.ts",
+      "test/unit/scope-resolution/typescript/nuxt-auto-imports.test.ts",
+      "test/unit/scope-resolution/undecided-satisfaction.test.ts",
+      "test/unit/scope-resolution/unresolved-receiver-files.test.ts",
+      "test/unit/scope-resolution/validate-bindings-immutability.test.ts",
+      "test/unit/scope-resolution/value-ref-namespace-precedence.test.ts",
+      "test/unit/scope-resolution/walkers-augmentations.test.ts",
+      "test/unit/scope-resolution/wildcard-collision-export-evidence.test.ts",
+      "test/unit/semantic-chunk-search.test.ts",
+      "test/unit/server-validation.test.ts",
+      "test/unit/shape-check.test.ts",
+      "test/unit/shard-arg.test.ts",
+      "test/unit/shared-type-extractors.test.ts",
+      "test/unit/spring-annotation-arguments.test.ts",
+      "test/unit/spring-aop.test.ts",
+      "test/unit/spring-config-drift.test.ts",
+      "test/unit/spring-destinations.test.ts",
+      "test/unit/spring-non-http-handlers.test.ts",
+      "test/unit/storage-resolver.test.ts",
+      "test/unit/storage/fs-atomic.test.ts",
+      "test/unit/structure-processor.test.ts",
+      "test/unit/suffix-index-ambiguity.test.ts",
+      "test/unit/swift-conditional-directive-preprocess.test.ts",
+      "test/unit/symbol-table.test.ts",
+      "test/unit/taint/call-summary-codec.test.ts",
+      "test/unit/taint/interproc-solver.test.ts",
+      "test/unit/taint/path-codec.test.ts",
+      "test/unit/taint/source-sink-registry.test.ts",
+      "test/unit/taint/summary-model.test.ts",
+      "test/unit/temp-dir-pool-cleanup.test.ts",
+      "test/unit/text-generator.test.ts",
+      "test/unit/topological-sort.test.ts",
+      "test/unit/trpc-route-extractor.test.ts",
+      "test/unit/utils.test.ts",
+      "test/unit/v8-sidecar.test.ts",
+      "test/unit/vendored-extension-path.test.ts",
+      "test/unit/vue-sfc-extractor.test.ts",
+      "test/unit/watch-queue.test.ts",
+      "test/unit/wiki-mermaid-sanitizer.test.ts",
+      "test/unit/windows-long-path-prefix.test.ts",
+      "test/unit/worker-entry.test.ts",
+      "test/unit/workers/quarantine.test.ts",
+      "test/unit/write-reconciliation.test.ts"
+    ]
+  },
+  "skippedOnThisPlatform": [
+    "test/unit/storage-resolver.test.ts > storage resolver > matches a registered missing repository through a Windows extended-length path"
+  ],
+  "runtimeLoads": {
+    "workerThreadsLoadedBy": [
+      "gitnexus/test/unit/ai-context-read-path-must.test.ts",
+      "gitnexus/test/unit/ai-context-unknown-risk-policy.test.ts",
+      "gitnexus/test/unit/cfg/opt-in.test.ts",
+      "gitnexus/test/unit/cli-message.test.ts",
+      "gitnexus/test/unit/cobol-copy-expander.test.ts",
+      "gitnexus/test/unit/cobol-copy-external-imports.test.ts",
+      "gitnexus/test/unit/cobol-preprocessor.test.ts",
+      "gitnexus/test/unit/group/manifest-extractor.test.ts",
+      "gitnexus/test/unit/incremental-parse-cache.test.ts",
+      "gitnexus/test/unit/ingestion/di.test.ts",
+      "gitnexus/test/unit/local-symbol-pruner.test.ts",
+      "gitnexus/test/unit/logger.test.ts",
+      "gitnexus/test/unit/max-file-size.test.ts",
+      "gitnexus/test/unit/middleware-public-origin.test.ts",
+      "gitnexus/test/unit/middleware-trust-proxy.test.ts",
+      "gitnexus/test/unit/parsedfile-store.test.ts",
+      "gitnexus/test/unit/pipeline-runner.test.ts",
+      "gitnexus/test/unit/scope-index-store.test.ts",
+      "gitnexus/test/unit/scope-resolution/cobol-import-target-parity.test.ts",
+      "gitnexus/test/unit/scope-resolution/finalize-orchestrator.test.ts",
+      "gitnexus/test/unit/scope-resolution/free-call-fallback-guess-taint.test.ts",
+      "gitnexus/test/unit/scope-resolution/name-fallback-summary.test.ts",
+      "gitnexus/test/unit/scope-resolution/namespace-target-cache.test.ts",
+      "gitnexus/test/unit/scope-resolution/parse-worker-scope-integration.test.ts",
+      "gitnexus/test/unit/scope-resolution/wildcard-collision-export-evidence.test.ts",
+      "gitnexus/test/unit/v8-sidecar.test.ts"
+    ]
+  },
+  "gate": {
+    "result": "pass",
+    "differences": []
+  }
+}

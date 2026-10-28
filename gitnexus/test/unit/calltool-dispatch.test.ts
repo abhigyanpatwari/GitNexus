@@ -2576,54 +2576,63 @@ describe('LocalBackend.callTool', () => {
 
   it('rename: a first apply-edit write failure reports status:error + failed_files (#2283)', async () => {
     // Real graph/semantic resolution produces an edit; staging its replacement fails.
-    (executeParameterized as any)
-      .mockResolvedValueOnce([
-        {
-          id: 'Function:src/target.ts:oldName',
-          name: 'oldName',
-          type: 'Function',
-          filePath: 'src/target.ts',
-          startLine: 1,
-          endLine: 1,
-        },
-      ])
-      .mockResolvedValue([]);
-    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-'));
-    (listRegisteredRepos as any).mockResolvedValue([
-      { ...MOCK_REPO_ENTRY, path: repoDir, storagePath: path.join(repoDir, '.gitnexus') },
-    ]);
-    backend = new LocalBackend();
-    await backend.init();
-
-    // Graph lines are zero-based; context presents this declaration on line 2.
-    mkdirSync(path.join(repoDir, 'src'));
-    writeFileSync(path.join(repoDir, 'src/target.ts'), '\nfunction oldName() {}\n');
-    lbugMocks.executeQuery.mockResolvedValue([
-      { id: 'File:src/target.ts', name: 'target.ts', filePath: 'src/target.ts' },
+    mockSymbolRows([
       {
         id: 'Function:src/target.ts:oldName',
         name: 'oldName',
+        type: 'Function',
         filePath: 'src/target.ts',
         startLine: 1,
         endLine: 1,
       },
     ]);
-    const writeSpy = vi
-      .spyOn(fsPromises, 'writeFile')
-      .mockRejectedValue(new Error('EACCES: permission denied'));
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-'));
     try {
-      const result = await backend.callTool('rename', {
+      (listRegisteredRepos as any).mockResolvedValue([
+        { ...MOCK_REPO_ENTRY, path: repoDir, storagePath: path.join(repoDir, '.gitnexus') },
+      ]);
+      backend = new LocalBackend();
+      await backend.init();
+
+      // Graph lines are zero-based; context presents this declaration on line 2.
+      mkdirSync(path.join(repoDir, 'src'));
+      writeFileSync(path.join(repoDir, 'src/target.ts'), '\nfunction oldName() {}\n');
+      lbugMocks.executeQuery.mockResolvedValue([
+        { id: 'File:src/target.ts', name: 'target.ts', filePath: 'src/target.ts' },
+        {
+          id: 'Function:src/target.ts:oldName',
+          name: 'oldName',
+          filePath: 'src/target.ts',
+          startLine: 1,
+          endLine: 1,
+        },
+      ]);
+      const preview = await backend.callTool('rename', {
         symbol_name: 'oldName',
         new_name: 'newName',
-        dry_run: false,
+        dry_run: true,
       });
-      expect(result.status).toBe('error');
-      expect(result.failed_files).toContain('src/target.ts');
-      expect(result.applied).toBe(false);
-      expect(result.total_edits).toBe(0);
-      expect(result.application_status).toBe('failed');
+      expect(preview.status).toBe('success');
+      expect(preview.plan_token).toEqual(expect.any(String));
+      const writeSpy = vi
+        .spyOn(fsPromises, 'writeFile')
+        .mockRejectedValue(new Error('EACCES: permission denied'));
+      try {
+        const result = await backend.callTool('rename', {
+          symbol_name: 'oldName',
+          new_name: 'newName',
+          dry_run: false,
+          plan_token: preview.plan_token,
+        });
+        expect(result.status).toBe('error');
+        expect(result.failed_files).toContain('src/target.ts');
+        expect(result.applied).toBe(false);
+        expect(result.total_edits).toBe(0);
+        expect(result.application_status).toBe('failed');
+      } finally {
+        writeSpy.mockRestore();
+      }
     } finally {
-      writeSpy.mockRestore();
       rmSync(repoDir, { recursive: true, force: true });
     }
   });
@@ -2674,6 +2683,55 @@ describe('LocalBackend.callTool', () => {
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('api_impact', { route: '/api/nonexistent' });
     expect(result.error).toContain('No routes found');
+  });
+
+  it('api_impact lists the callers of the requesting function as indirect consumers (#3644)', async () => {
+    const routeRow = (consumerName: string, consumerFile: string, fetchReason: string) => ({
+      routeId: 'Route:/api/grants',
+      routeName: '/api/grants',
+      handlerFile: 'app/api/grants/route.ts',
+      responseKeys: ['data'],
+      errorKeys: [],
+      middleware: [],
+      runtimeConfirmed: false,
+      runtimeSource: null,
+      runtimeStatus: null,
+      consumerName,
+      consumerFile,
+      fetchReason,
+    });
+    const via = 'Function:src/services/client.ts:fetchGrants';
+    const caller = (callerName: string, callerFile: string) => ({
+      viaId: via,
+      viaName: 'fetchGrants',
+      callerName,
+      callerFile,
+    });
+    (executeParameterized as any).mockImplementation(async (_repo: string, cypher: string) => {
+      if (cypher.includes("r.type = 'CALLS'")) {
+        return [
+          caller('Header', 'src/Header.tsx'),
+          caller('App', 'src/App.tsx'),
+          // Already a direct consumer file, and the handler file: neither is indirect.
+          caller('GrantsList', 'src/GrantsList.tsx'),
+          caller('GET', 'app/api/grants/route.ts'),
+        ];
+      }
+      return [
+        routeRow('client.ts', 'src/services/client.ts', `fetch-url-match|via:${via}`),
+        routeRow('GrantsList', 'src/GrantsList.tsx', 'fetch-url-match|keys:data'),
+      ];
+    });
+
+    const result = await backend.callTool('api_impact', { route: '/api/grants' });
+
+    expect(result.indirectConsumers).toEqual([
+      { name: 'App', file: 'src/App.tsx', via: 'fetchGrants' },
+      { name: 'Header', file: 'src/Header.tsx', via: 'fetchGrants' },
+    ]);
+    expect(result.impactSummary.directConsumers).toBe(2);
+    expect(result.impactSummary.indirectConsumers).toBe(2);
+    expect(result.impactSummary.riskLevel).toBe('LOW');
   });
 
   it('api_impact detects mismatches and bumps risk level', async () => {
@@ -2847,17 +2905,23 @@ describe('LocalBackend.callTool', () => {
     expect(result.routes[0].method).toBeNull();
   });
 
-  it('route_map falls back for legacy Route schemas and reports unconfirmed evidence', async () => {
-    vi.mocked(executeParameterized)
-      .mockRejectedValueOnce(
-        new Error('Binder exception: Cannot find property runtimeConfirmed for n.'),
-      )
-      .mockResolvedValueOnce([verbRow('GET', '/legacy', 'LegacyController.java')]);
+  it.each([
+    { missing: ['unverifiedConsumers'], calls: 3 },
+    { missing: ['unverifiedConsumers', 'runtimeConfirmed'], calls: 4 },
+  ])('route_map falls back for Route schemas without $missing', async ({ missing, calls }) => {
+    for (const property of missing) {
+      vi.mocked(executeParameterized).mockRejectedValueOnce(
+        new Error(`Binder exception: Cannot find property ${property} for n.`),
+      );
+    }
+    vi.mocked(executeParameterized).mockResolvedValueOnce([
+      verbRow('GET', '/legacy', 'LegacyController.java'),
+    ]);
 
     const result = await backend.callTool('route_map', { route: '/legacy' });
 
-    // Modern Route query, legacy retry, then the linked-flow batch.
-    expect(executeParameterized).toHaveBeenCalledTimes(3);
+    // One Route query per older schema, then the linked-flow batch.
+    expect(executeParameterized).toHaveBeenCalledTimes(calls);
     expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
   });
 

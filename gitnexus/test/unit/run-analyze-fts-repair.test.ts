@@ -448,6 +448,10 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         lastCommit: 'abc123',
         indexedAt: seededIndexedAt,
         stats: { files: 7, nodes: 42, edges: 10 },
+        parseCacheIdentity: {
+          base: 'sha256:previous-parser-build',
+          pdg: { identity: 'sha256:previous-pdg-build', maxFunctionLines: 2000 },
+        },
         runnerIdentity: {
           schemaVersion: 4,
           runtime: {
@@ -498,6 +502,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       expect(meta.indexedAt).toBe(seededIndexedAt);
       expect(meta.lastCommit).toBe('abc123');
       expect(meta.runnerIdentity).toEqual(seeded.runnerIdentity);
+      expect(meta.parseCacheIdentity).toEqual(seeded.parseCacheIdentity);
       expect(meta.stats).toEqual(seeded.stats);
       // graph/vectorSearch, which repair-fts also never touches, pass through.
       expect(meta.capabilities.graph).toEqual(seeded.capabilities!.graph);
@@ -2633,6 +2638,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       embeddings: [],
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      acquireInitLock: vi.fn(async () => async () => {}),
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
       getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),

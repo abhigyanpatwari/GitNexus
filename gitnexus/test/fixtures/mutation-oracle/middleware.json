@@ -1,0 +1,1427 @@
+{
+  "schemaVersion": 1,
+  "kind": "gitnexus-mutation-oracle-manifest",
+  "name": "middleware",
+  "description": "Gate 3 (U7): the oracle's frozen outcomes for the middleware scope: a seeded sample of mutants with strata top-ups, the oracle class of every mutant (U13 command run) and the per-test outcome of every sampled mutant with every test, each test launched alone (U12). Check a vitest5 runner run with `npm run test:mutation:oracle -- --scope test/fixtures/mutation-oracle/middleware.json,<results.json>` (from gitnexus/). When gate 3 reports \"re-freeze required\", run the refreeze command.",
+  "refreeze": "npm run test:mutation:oracle:freeze -- --from-manifest test/fixtures/mutation-oracle/middleware.json --seed <new seed> --work <dir outside the checkout>",
+  "scope": {
+    "testFiles": ["test/unit/middleware-public-origin.test.ts"],
+    "mutate": ["gitnexus/src/server/middleware.ts"]
+  },
+  "versions": {
+    "stryker": "10.0.0",
+    "vitest": "5.0.5",
+    "nodeMajor": 22
+  },
+  "operators": {
+    "mutator": null,
+    "names": [
+      "ArithmeticOperator",
+      "ArrowFunction",
+      "BlockStatement",
+      "BooleanLiteral",
+      "CallExpression",
+      "ConditionalExpression",
+      "EqualityOperator",
+      "LogicalOperator",
+      "MethodExpression",
+      "ObjectLiteral",
+      "OptionalChaining",
+      "Regex",
+      "StringLiteral"
+    ]
+  },
+  "inputs": {
+    "closure": {
+      "gitnexus/src/core/logger.ts": "eb73af1d85104a44070c1aeb4c6696a0e35979b443f569712ec116d83d108e9e",
+      "gitnexus/src/server/middleware.ts": "424f95b28e60eab6b2ab92b18309555b6a7b92102f716e5cc7006829fc279e8c",
+      "gitnexus/test/unit/middleware-public-origin.test.ts": "cd9986e295a22729719149feab8d58594b2bf1e3916f19ed4ee18067bf49d81b"
+    },
+    "vitestConfig": {
+      "gitnexus/test/helpers/perf-sequencer.ts": "3aeeedffc8cf940af43c54a28c142da859d78eded2c2c7881b8094175dca94f3",
+      "gitnexus/test/helpers/shard-balance.ts": "5f27cc347b560e40dd6e03d7c299afaddf02975964476187ab97a2ade816c140",
+      "gitnexus/vitest.config.ts": "bea4e1ccad48d4742325095b53b5819a480671f01a753d5cbcc65deb2fc0e609"
+    },
+    "mutationConfig": {
+      "gitnexus-shared/package.json": "a0100a5b0858d80622846788097a2e596723fdf2b86602ffd93d1076f82dee13",
+      "gitnexus/test/helpers/perf-sequencer.ts": "3aeeedffc8cf940af43c54a28c142da859d78eded2c2c7881b8094175dca94f3",
+      "gitnexus/test/helpers/shard-balance.ts": "5f27cc347b560e40dd6e03d7c299afaddf02975964476187ab97a2ade816c140",
+      "gitnexus/tools/mutation/prepare/path-map.ts": "d595cbebc2058cfbf09597b0889ae7f7cf10f46ccbc2e2900ed063fdacb5dbe7",
+      "gitnexus/tools/mutation/scope-file.ts": "2582a4071c46d7f412013cd7036bd5fbbd46d341e0f268a8fe4a93ceeaa69195",
+      "gitnexus/tools/mutation/vitest.mutation.config.ts": "9e234252881e0cd5347a3f413320135c59226ac8923465a57f58290079906585",
+      "gitnexus/vitest.config.ts": "bea4e1ccad48d4742325095b53b5819a480671f01a753d5cbcc65deb2fc0e609"
+    },
+    "prepareTool": {
+      "gitnexus/tools/mutation/prepare/blank-assertions.ts": "895eb697d123cbd915543be411945055655e39963e6abb88e221ca3b570939f1",
+      "gitnexus/tools/mutation/prepare/mutant-identity.ts": "8887c9290cca144b6e547f5f0b74bc593a9e56ba989598c09cd573f787db2943",
+      "gitnexus/tools/mutation/prepare/path-map.ts": "d595cbebc2058cfbf09597b0889ae7f7cf10f46ccbc2e2900ed063fdacb5dbe7",
+      "gitnexus/tools/mutation/prepare/prepare.ts": "a8a703718cdb99ac9af6347009a068de26b199b976b9806061f031a2982ba0bf",
+      "gitnexus/tools/mutation/prepare/span-map-check.ts": "30b768d4386631ebeb9547ca624162a034dc8fdb0bb7cbe4bbca8a86b52fa4b4"
+    }
+  },
+  "sample": {
+    "seed": "u7-gate3-1",
+    "method": "sha256(seed + \"\\n\" + globalId) ascending; the size lowest ranks, then strata top-ups",
+    "size": 100,
+    "topUpMin": 3,
+    "random": 100,
+    "topUps": [
+      {
+        "globalId": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:69:34-69:58:StringLiteral:12ae32cb1ec02d01",
+        "stratum": "static"
+      }
+    ]
+  },
+  "strata": [
+    {
+      "name": "static",
+      "construct": null,
+      "constructPresent": null,
+      "population": 3,
+      "sampled": 3,
+      "toppedUp": 1,
+      "affectedTests": 0,
+      "required": false,
+      "status": "combined"
+    },
+    {
+      "name": "hook-hit",
+      "construct": "beforeAll",
+      "constructPresent": true,
+      "population": 0,
+      "sampled": 0,
+      "toppedUp": 0,
+      "affectedTests": 31,
+      "required": false,
+      "status": "empty-population"
+    },
+    {
+      "name": "multi-killer",
+      "construct": null,
+      "constructPresent": null,
+      "population": 147,
+      "sampled": 42,
+      "toppedUp": 0,
+      "affectedTests": 0,
+      "required": false,
+      "status": "combined"
+    },
+    {
+      "name": "survived",
+      "construct": null,
+      "constructPresent": null,
+      "population": 39,
+      "sampled": 16,
+      "toppedUp": 0,
+      "affectedTests": 0,
+      "required": false,
+      "status": "combined"
+    },
+    {
+      "name": "no-coverage",
+      "construct": null,
+      "constructPresent": null,
+      "population": 72,
+      "sampled": 31,
+      "toppedUp": 0,
+      "affectedTests": 0,
+      "required": false,
+      "status": "combined"
+    },
+    {
+      "name": "each-row",
+      "construct": "each",
+      "constructPresent": true,
+      "population": 15,
+      "sampled": 7,
+      "toppedUp": 0,
+      "affectedTests": 5,
+      "required": true,
+      "status": "met"
+    }
+  ],
+  "baseline": {
+    "tests": 31,
+    "passedAlone": 31
+  },
+  "tests": [
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > admits the bound host on the bound port",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > rejects the bound host on a different port with origin_not_allowed",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > rejects the bound host on the default port when it is not the bound one",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > treats an elided default port as that port",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > matches any port when no bound port is given",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > keeps loopback port-agnostic — the dev UI runs on its own port",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits an exact scheme/host/port match on a wildcard bind",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > rejects a port mismatch with a 403 and origin_not_allowed",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > rejects a scheme mismatch when the configured value carries a scheme",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits any port for a bare configured host, but only over https",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits http for a bare host only when http:// is spelled out",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits a bracketed IPv6 literal, on any port when configured without one",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits nothing for a trailing-dot hostname",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits nothing extra when the configured value is not one reachable host",
+    "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > leaves the Origin-less passthrough alone — the CLI sends no Origin",
+    "test/unit/middleware-public-origin.test.ts#logOriginPolicy > says nothing on a specific bind with no public origin",
+    "test/unit/middleware-public-origin.test.ts#logOriginPolicy > names the resolved hostname at info when a public origin is configured",
+    "test/unit/middleware-public-origin.test.ts#logOriginPolicy > warns on a wildcard bind with no public origin, pointing at both remedies",
+    "test/unit/middleware-public-origin.test.ts#logOriginPolicy > still warns on a wildcard bind with a valid public origin, and names it",
+    "test/unit/middleware-public-origin.test.ts#logOriginPolicy > diagnoses an unusable public origin rather than reporting one",
+    "test/unit/middleware-public-origin.test.ts#logOriginPolicy > diagnoses an unusable public origin on a specific bind too",
+    "test/unit/middleware-public-origin.test.ts#logOriginPolicy > does not report a trailing-dot hostname as a working origin",
+    "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > is a no-op when no public origin is configured",
+    "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > treats a blank value (\"   \") as unset",
+    "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > treats a blank value (\"\") as unset",
+    "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > throws when a public origin is configured and no auth is",
+    "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > names the variable and the value in the failure, and points at both remedies",
+    "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > throws on an unusable value too: a.com,b.com",
+    "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > throws on an unusable value too: *",
+    "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > throws on an unusable value too: 8080",
+    "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > reports no auth configured, since serve has none"
+  ],
+  "notOracleValidated": [],
+  "mutants": [
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:100:7-100:16:BooleanLiteral:7063dece7cccf374","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:100:7-100:16:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:100:7-100:16:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:108:28-108:51:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:108:31-108:48:LogicalOperator:8e77a0551dd878d6","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:108:41-108:48:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:110:23-126:4:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:110:7-110:21:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:110:7-110:21:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:112:9-117:6:BlockStatement:44136fa355b3678a","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:116:28-116:80:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:117:13-119:6:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:124:29-124:32:StringLiteral:12ae32cb1ec02d01","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:124:9-124:32:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:124:9-124:32:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:124:9-124:32:EqualityOperator:589f4fbfbcf2b436","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:128:10-134:4:ObjectLiteral:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:12:42-15:2:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:130:14-133:77:ArrowFunction:1193b7f146e45559","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:131:7-131:35:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:131:7-131:35:EqualityOperator:f431e663688c861a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:131:7-132:43:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:131:7-132:43:LogicalOperator:af8c50a7112202d9","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:131:7-133:77:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:131:7-133:77:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:131:7-133:77:LogicalOperator:ade298b9b429a4ce","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:132:7-132:43:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:132:7-132:43:EqualityOperator:c9c81d179661beee","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:133:38-133:76:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:133:38-133:76:EqualityOperator:c6f2d2f624fa45fa","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:133:8-133:34:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:133:8-133:34:EqualityOperator:87b1664a4d468fcf","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:133:8-133:76:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:133:8-133:76:LogicalOperator:023ccf30d9e43224","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:13:7-13:15:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:13:7-13:15:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:141:89-160:2:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:142:21-142:60:Regex:0f7414d664535b52","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:142:21-142:60:Regex:4ba47c471cf35685","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:142:21-142:60:Regex:515b40b7f1a48c62","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:142:21-142:60:Regex:91ebf65ddf22b950","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:142:21-142:60:Regex:961c41d0b35a13c4","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:142:21-142:60:Regex:abe37084430d897b","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:142:21-142:60:Regex:d0d0f2a0f981e109","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:143:25-143:67:ObjectLiteral:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:143:7-143:16:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:143:7-143:16:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:146:49-148:4:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:146:7-146:47:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:146:7-146:47:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:146:7-146:47:EqualityOperator:cf9c78c8cd97889d","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:146:7-146:47:EqualityOperator:fcd6b6db761a0a8d","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:146:8-146:37:OptionalChaining:986cfabae6b60815","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:146:8-146:42:LogicalOperator:f177ba2dafc07ea6","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:147:12-147:30:Regex:7e72fc3dde62e309","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:147:12-147:30:Regex:b34f8504671675b6","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:147:12-147:30:Regex:c5b26e962e858e29","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:147:12-147:30:Regex:e43ae463e7cc8e42","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:147:49-147:75:ObjectLiteral:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:147:57-147:73:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:14:10-14:35:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:14:10-14:35:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:14:10-14:35:EqualityOperator:4947bf4c29ef494f","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:14:27-14:35:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:14:38-14:43:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:14:46-14:50:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:150:17-150:43:Regex:017e0f509058803a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:150:17-150:43:Regex:5fa3caad0367e16d","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:150:17-150:43:Regex:995742ef39d93999","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:150:17-150:43:Regex:b9954fadbee78077","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:150:17-150:43:Regex:c070ac4bcafff088","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:150:17-150:43:Regex:e6828e1370f49882","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:150:17-150:43:Regex:f94fa842e6772e0d","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:151:7-151:13:BooleanLiteral:d887db09649dab0d","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:151:7-151:13:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:151:7-151:13:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:37-158:44:Regex:2a9d1381c12c8daf","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:37-158:44:Regex:6ae98966f1c83ec0","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:37-158:44:Regex:7d91c1204a4fdbde","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:37-158:44:Regex:90cd31c07c345567","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:59-158:77:MethodExpression:f2ecabab5aa90ee0","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:7-158:22:Regex:b6b4f595145d7915","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:7-158:22:Regex:d19d62c4a768b9e5","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:7-158:55:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:7-158:55:LogicalOperator:27e5da867ec3ec64","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:7-158:77:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:7-158:77:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:7-158:77:LogicalOperator:d331ccd2701e3c2c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:73-158:76:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:159:10-159:34:ObjectLiteral:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:181:80-214:2:BlockStatement:44136fa355b3678a","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:183:31-183:54:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:183:31-183:54:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:183:31-183:54:EqualityOperator:146fcdcdb3f310c4","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:187:93-213:4:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:189:31-192:6:BlockStatement:44136fa355b3678a","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:189:9-189:29:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:189:9-189:29:ConditionalExpression:fcbcf165908dd18a","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:189:9-189:29:EqualityOperator:d87d1c381d6ce151","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:190:7-190:14:CallExpression:41b805ea7ac014e2","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:193:9-206:6:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:11-196:31:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:11-196:31:EqualityOperator:ed9a353eda4e125d","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:11-196:56:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:11-196:56:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:11-196:56:LogicalOperator:b15294d04fd9e4a8","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:24-196:31:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:35-196:56:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:35-196:56:EqualityOperator:0afb7216a4c38ed6","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:48-196:56:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:58-198:8:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:197:25-197:54:StringLiteral:12ae32cb1ec02d01","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:200:9-200:41:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:200:9-200:41:EqualityOperator:0f6957b49f77cbce","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:200:9-201:93:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:200:9-201:93:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:200:9-201:93:LogicalOperator:0aa1a3fdef70e970","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:201:10-201:43:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:201:10-201:43:EqualityOperator:77c99d25f28eef89","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:201:10-201:92:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:201:10-201:92:LogicalOperator:e258e8207785828d","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:201:47-201:92:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:201:47-201:92:EqualityOperator:198d9b40f8592e99","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:11-202:59:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:11-202:59:LogicalOperator:9728fba7913d8cfd","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:11-202:92:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:11-202:92:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:11-202:92:LogicalOperator:bac1d726523a97e1","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:63-202:84:OptionalChaining:3788c0c27623e205","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:94-205:8:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:203:9-203:16:CallExpression:41b805ea7ac014e2","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:209:26-212:6:ObjectLiteral:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:210:14-210:70:StringLiteral:12ae32cb1ec02d01","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:211:13-211:33:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:228:50-230:2:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:229:10-229:15:BooleanLiteral:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:246:56-257:2:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:247:15-247:51:OptionalChaining:4fd6736427517539","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:247:15-247:53:MethodExpression:3397143e931251e8","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:248:7-248:11:BooleanLiteral:d7439bee24773bcb","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:248:7-248:38:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:248:7-248:38:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:248:7-248:38:LogicalOperator:aadf58ae46f06b00","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:250:5-250:93:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:251:7-251:95:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:252:7-252:99:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:253:7-253:89:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:254:7-254:99:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:255:7-255:35:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:25:68-27:2:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:265:59-292:2:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:266:15-266:51:OptionalChaining:4fd6736427517539","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:266:15-266:53:MethodExpression:3397143e931251e8","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:268:21-273:4:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:268:7-268:19:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:268:7-268:19:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:10-26:34:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:10-26:34:EqualityOperator:fc3f91f5631835a1","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:10-26:62:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:10-26:62:LogicalOperator:e91dc8cc85fbced4","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:10-26:86:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:10-26:86:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:10-26:86:LogicalOperator:c5c5cbb173724f6a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:23-26:34:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:38-26:62:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:38-26:62:EqualityOperator:117c5666a98c526e","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:51-26:62:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:66-26:86:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:66-26:86:EqualityOperator:90f7aec506e80b6a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:79-26:86:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:270:7-270:68:ObjectLiteral:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:271:7-271:95:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:273:14-273:17:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:273:14-273:17:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:273:19-279:4:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:275:7-275:35:ObjectLiteral:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:276:7-276:96:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:277:9-277:89:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:281:21-281:64:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:281:21-281:64:EqualityOperator:05de228a930e1250","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:281:7-281:17:BooleanLiteral:354843e9ec3cedb9","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:281:7-281:64:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:281:7-281:64:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:281:7-281:64:LogicalOperator:3fe5d6e4a134774c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:283:7-283:94:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:284:7-284:30:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:285:7-285:99:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:286:7-286:93:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:287:7-287:55:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:289:5-289:24:ObjectLiteral:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:290:5-290:100:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:295:36-295:70:StringLiteral:12ae32cb1ec02d01","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:298:32-298:54:StringLiteral:12ae32cb1ec02d01","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:324:76-359:2:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:325:17-325:26:OptionalChaining:9b01e3189d236b9f","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:325:17-325:28:MethodExpression:d7439bee24773bcb","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:326:7-326:13:BooleanLiteral:cd42404d52ad55cc","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:326:7-326:13:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:326:7-326:13:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:328:39-335:4:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:328:7-328:25:Regex:0de49f4a7221efe2","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:328:7-328:25:Regex:49ec526fa936c76a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:328:7-328:37:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:328:7-328:37:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:331:7-331:84:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:332:9-332:95:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:333:9-333:91:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:336:47-336:52:BooleanLiteral:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:336:7-336:26:Regex:6b3407f87a3f4170","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:336:7-336:26:Regex:fe58c449c85aa018","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:336:7-336:38:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:336:7-336:38:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:338:28-348:4:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:338:7-338:14:Regex:2a9d1381c12c8daf","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:338:7-338:14:Regex:6ae98966f1c83ec0","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:338:7-338:14:Regex:7d91c1204a4fdbde","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:338:7-338:14:Regex:90cd31c07c345567","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:338:7-338:26:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:338:7-338:26:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:343:28-343:33:BooleanLiteral:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:343:9-343:19:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:343:9-343:19:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:343:9-343:19:EqualityOperator:2c23b2b4fb656128","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:346:35-346:63:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:346:35-346:63:EqualityOperator:3ff21898110ded52","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:346:35-346:63:EqualityOperator:8f7384bc95c0f195","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:346:9-346:63:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:346:9-346:63:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:346:9-346:63:LogicalOperator:7d0701aa1bb2c088","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:347:36-347:88:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:350:7-355:4:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:354:35-354:38:StringLiteral:12ae32cb1ec02d01","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:354:44-354:67:ArrowFunction:1193b7f146e45559","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:354:55-354:67:MethodExpression:923fe53966c6cd93","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:355:17-357:4:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:376:71-389:2:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:377:7-377:41:OptionalChaining:3096ba3777e7e175","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:377:7-377:43:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:377:7-377:43:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:377:7-377:43:MethodExpression:3054837045109075","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:378:7-378:17:BooleanLiteral:354843e9ec3cedb9","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:378:7-378:17:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:378:7-378:17:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:381:7-381:56:ConditionalExpression:b5bea41b6c623f7c","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:381:7-381:56:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:383:5-383:57:ObjectLiteral:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:384:5-384:97:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:385:7-385:98:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:386:7-386:100:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:387:7-387:82:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:391:66-398:2:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:393:5-393:33:ObjectLiteral:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:394:5-394:90:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:395:7-395:34:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:47:76-63:2:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:48:7-48:17:BooleanLiteral:354843e9ec3cedb9","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:48:7-48:17:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:48:7-48:17:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:51:24-51:27:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:51:32-51:58:BooleanLiteral:ff072c5f3cb7775a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:51:33-51:58:MethodExpression:faa1c3dbc55de26e","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:51:5-51:58:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:51:5-51:58:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:51:5-51:58:LogicalOperator:9e646c44776cf5cc","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:51:54-51:57:StringLiteral:12ae32cb1ec02d01","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:51:61-51:77:StringLiteral:059b850298ae3352","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:53:7-55:4:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:54:24-54:45:StringLiteral:059b850298ae3352","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:55:11-57:4:BlockStatement:44136fa355b3678a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:20-59:22:StringLiteral:35a34e489e84c0be","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:26-59:48:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:26-59:48:EqualityOperator:47c7a2050284806d","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:39-59:48:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:52-59:71:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:52-59:71:EqualityOperator:f5b719b156f4520b","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:65-59:71:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:22:ConditionalExpression:fcbcf165908dd18a","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:22:EqualityOperator:d116dac6257983c3","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:48:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:48:LogicalOperator:c3562abc1ee84c50","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:71:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:71:ConditionalExpression:fcbcf165908dd18a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:71:LogicalOperator:a1e1d4753bb7161f","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:73-61:4:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:69:34-69:58:StringLiteral:12ae32cb1ec02d01","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:89:96-135:2:BlockStatement:44136fa355b3678a","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:90:19-90:34:OptionalChaining:7b85ff3d32002b3e","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:90:19-90:36:MethodExpression:4238ca4d78472450","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:91:7-91:15:BooleanLiteral:073f3c701722d652","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:91:7-91:15:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:91:7-91:15:ConditionalExpression:fcbcf165908dd18a","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:93:18-93:35:Regex:0d604fc840a74414","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:93:18-93:35:Regex:9248d019a28e8fe5","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:93:18-93:54:OptionalChaining:385b2927819bb0f2","killed-by-test:runtime"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:93:18-93:68:MethodExpression:e07a9e35f96e6cf0","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:95:25-95:57:MethodExpression:073f3c701722d652","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:95:39-95:56:ArithmeticOperator:b0213638bba48a62","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:95:77-95:82:Regex:13da386de755eed9","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:95:84-95:86:StringLiteral:35a34e489e84c0be","survived"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:97:7-97:17:BooleanLiteral:8f76fd501bb68ef7","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:97:7-97:17:ConditionalExpression:b5bea41b6c623f7c","killed-by-test:assertion"],
+    ["gitnexus/src/server/middleware.ts@424f95b28e60eab6:97:7-97:17:ConditionalExpression:fcbcf165908dd18a","killed-by-test:runtime"]
+  ],
+  "sampled": [
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:66-26:86:ConditionalExpression:fcbcf165908dd18a",
+      "strata": [],
+      "covering": 14,
+      "outcomes": [[5,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:147:12-147:30:Regex:c5b26e962e858e29",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:200:9-200:41:EqualityOperator:0f6957b49f77cbce",
+      "strata": ["multi-killer"],
+      "covering": 14,
+      "outcomes": [[0,"killed-by-test:assertion"],[3,"killed-by-test:assertion"],[4,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:142:21-142:60:Regex:4ba47c471cf35685",
+      "strata": ["survived"],
+      "covering": 14,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:354:55-354:67:MethodExpression:923fe53966c6cd93",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:14:10-14:35:ConditionalExpression:fcbcf165908dd18a",
+      "strata": [],
+      "covering": 2,
+      "outcomes": [[3,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:26:23-26:34:StringLiteral:12ae32cb1ec02d01",
+      "strata": [],
+      "covering": 14,
+      "outcomes": [[5,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:325:17-325:28:MethodExpression:d7439bee24773bcb",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:22:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["survived"],
+      "covering": 22,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:377:7-377:41:OptionalChaining:3096ba3777e7e175",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:37-158:44:Regex:90cd31c07c345567",
+      "strata": ["multi-killer"],
+      "covering": 10,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:255:7-255:35:StringLiteral:059b850298ae3352",
+      "strata": ["survived","each-row"],
+      "covering": 5,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:37-158:44:Regex:2a9d1381c12c8daf",
+      "strata": ["survived"],
+      "covering": 10,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:336:7-336:26:Regex:6b3407f87a3f4170",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:270:7-270:68:ObjectLiteral:44136fa355b3678a",
+      "strata": [],
+      "covering": 2,
+      "outcomes": [[16,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:151:7-151:13:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["multi-killer"],
+      "covering": 13,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:324:76-359:2:BlockStatement:44136fa355b3678a",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:247:15-247:53:MethodExpression:3397143e931251e8",
+      "strata": ["each-row"],
+      "covering": 8,
+      "outcomes": [[23,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:131:7-132:43:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["multi-killer"],
+      "covering": 6,
+      "outcomes": [
+        [8,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:391:66-398:2:BlockStatement:44136fa355b3678a",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:277:9-277:89:StringLiteral:059b850298ae3352",
+      "strata": ["survived"],
+      "covering": 3,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:328:7-328:25:Regex:0de49f4a7221efe2",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:325:17-325:26:OptionalChaining:9b01e3189d236b9f",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:146:7-146:47:EqualityOperator:cf9c78c8cd97889d",
+      "strata": ["multi-killer"],
+      "covering": 13,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:35-196:56:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["multi-killer"],
+      "covering": 9,
+      "outcomes": [
+        [3,"killed-by-test:assertion"],
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:378:7-378:17:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:7-158:55:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["multi-killer"],
+      "covering": 13,
+      "outcomes": [[19,"killed-by-test:assertion"],[20,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:343:28-343:33:BooleanLiteral:b5bea41b6c623f7c",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:189:31-192:6:BlockStatement:44136fa355b3678a",
+      "strata": [],
+      "covering": 1,
+      "outcomes": [[14,"killed-by-test:runtime"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:150:17-150:43:Regex:c070ac4bcafff088",
+      "strata": ["multi-killer"],
+      "covering": 13,
+      "outcomes": [[6,"killed-by-test:assertion"],[16,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:350:7-355:4:BlockStatement:44136fa355b3678a",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:73-61:4:BlockStatement:44136fa355b3678a",
+      "strata": ["multi-killer"],
+      "covering": 13,
+      "outcomes": [
+        [17,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"],
+        [19,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:254:7-254:99:StringLiteral:059b850298ae3352",
+      "strata": ["each-row"],
+      "covering": 5,
+      "outcomes": [[26,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:201:47-201:92:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["multi-killer"],
+      "covering": 4,
+      "outcomes": [[0,"killed-by-test:assertion"],[3,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:346:9-346:63:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:298:32-298:54:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 31,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:248:7-248:11:BooleanLiteral:d7439bee24773bcb",
+      "strata": ["multi-killer","each-row"],
+      "covering": 8,
+      "outcomes": [
+        [22,"killed-by-test:assertion"],
+        [23,"killed-by-test:assertion"],
+        [24,"killed-by-test:assertion"],
+        [25,"killed-by-test:assertion"],
+        [26,"killed-by-test:assertion"],
+        [27,"killed-by-test:assertion"],
+        [28,"killed-by-test:assertion"],
+        [29,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:100:7-100:16:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["survived"],
+      "covering": 9,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:150:17-150:43:Regex:017e0f509058803a",
+      "strata": ["multi-killer"],
+      "covering": 13,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:268:21-273:4:BlockStatement:44136fa355b3678a",
+      "strata": ["multi-killer"],
+      "covering": 2,
+      "outcomes": [[16,"killed-by-test:assertion"],[18,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:124:9-124:32:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["multi-killer"],
+      "covering": 4,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:22:EqualityOperator:d116dac6257983c3",
+      "strata": ["multi-killer"],
+      "covering": 22,
+      "outcomes": [
+        [0,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"],
+        [4,"killed-by-test:assertion"],
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [15,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"],
+        [20,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:376:71-389:2:BlockStatement:44136fa355b3678a",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:63-202:84:OptionalChaining:3788c0c27623e205",
+      "strata": ["survived"],
+      "covering": 11,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:355:17-357:4:BlockStatement:44136fa355b3678a",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:331:7-331:84:StringLiteral:059b850298ae3352",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:386:7-386:100:StringLiteral:059b850298ae3352",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:336:7-336:26:Regex:fe58c449c85aa018",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:90:19-90:36:MethodExpression:4238ca4d78472450",
+      "strata": ["survived"],
+      "covering": 22,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:273:19-279:4:BlockStatement:44136fa355b3678a",
+      "strata": ["multi-killer"],
+      "covering": 3,
+      "outcomes": [
+        [19,"killed-by-test:assertion"],
+        [20,"killed-by-test:assertion"],
+        [21,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:354:35-354:38:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:295:36-295:70:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","survived"],
+      "covering": 31,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:197:25-197:54:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:183:31-183:54:ConditionalExpression:fcbcf165908dd18a",
+      "strata": [],
+      "covering": 15,
+      "outcomes": [[4,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:289:5-289:24:ObjectLiteral:44136fa355b3678a",
+      "strata": ["survived"],
+      "covering": 4,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:48:7-48:17:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["multi-killer"],
+      "covering": 22,
+      "outcomes": [
+        [0,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"],
+        [4,"killed-by-test:assertion"],
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [15,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"],
+        [20,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:11-196:56:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["survived"],
+      "covering": 14,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:11-202:92:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["multi-killer"],
+      "covering": 14,
+      "outcomes": [
+        [0,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"],
+        [4,"killed-by-test:assertion"],
+        [5,"killed-by-test:assertion"],
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:229:10-229:15:BooleanLiteral:b5bea41b6c623f7c",
+      "strata": ["multi-killer","each-row"],
+      "covering": 6,
+      "outcomes": [
+        [25,"killed-by-test:assertion"],
+        [26,"killed-by-test:assertion"],
+        [27,"killed-by-test:assertion"],
+        [28,"killed-by-test:assertion"],
+        [29,"killed-by-test:assertion"],
+        [30,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:100:7-100:16:BooleanLiteral:7063dece7cccf374",
+      "strata": ["multi-killer"],
+      "covering": 9,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:124:9-124:32:EqualityOperator:589f4fbfbcf2b436",
+      "strata": ["multi-killer"],
+      "covering": 4,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:110:7-110:21:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["multi-killer"],
+      "covering": 9,
+      "outcomes": [
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:158:59-158:77:MethodExpression:f2ecabab5aa90ee0",
+      "strata": ["multi-killer"],
+      "covering": 10,
+      "outcomes": [[12,"killed-by-test:assertion"],[21,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:394:5-394:90:StringLiteral:059b850298ae3352",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:143:7-143:16:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["multi-killer"],
+      "covering": 14,
+      "outcomes": [
+        [6,"killed-by-test:runtime"],
+        [7,"killed-by-test:runtime"],
+        [8,"killed-by-test:runtime"],
+        [9,"killed-by-test:runtime"],
+        [10,"killed-by-test:runtime"],
+        [12,"killed-by-test:runtime"],
+        [13,"killed-by-test:runtime"],
+        [14,"killed-by-test:runtime"],
+        [16,"killed-by-test:runtime"],
+        [18,"killed-by-test:runtime"],
+        [19,"killed-by-test:runtime"],
+        [20,"killed-by-test:runtime"],
+        [21,"killed-by-test:runtime"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:200:9-201:93:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["multi-killer"],
+      "covering": 14,
+      "outcomes": [[0,"killed-by-test:assertion"],[3,"killed-by-test:assertion"],[4,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:247:15-247:51:OptionalChaining:4fd6736427517539",
+      "strata": ["each-row"],
+      "covering": 8,
+      "outcomes": [[22,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:202:11-202:92:LogicalOperator:bac1d726523a97e1",
+      "strata": ["multi-killer"],
+      "covering": 14,
+      "outcomes": [
+        [0,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"],
+        [4,"killed-by-test:assertion"],
+        [5,"killed-by-test:assertion"],
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:346:35-346:63:EqualityOperator:3ff21898110ded52",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:210:14-210:70:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["survived"],
+      "covering": 10,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:130:14-133:77:ArrowFunction:1193b7f146e45559",
+      "strata": ["multi-killer"],
+      "covering": 9,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:196:11-196:56:LogicalOperator:b15294d04fd9e4a8",
+      "strata": ["multi-killer"],
+      "covering": 14,
+      "outcomes": [
+        [0,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"],
+        [4,"killed-by-test:assertion"],
+        [5,"killed-by-test:assertion"],
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:151:7-151:13:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["survived"],
+      "covering": 13,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:384:5-384:97:StringLiteral:059b850298ae3352",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:13:7-13:15:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": [],
+      "covering": 8,
+      "outcomes": [[3,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:200:9-201:93:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["multi-killer"],
+      "covering": 14,
+      "outcomes": [
+        [1,"killed-by-test:assertion"],
+        [2,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"],
+        [7,"killed-by-test:assertion"],
+        [8,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [12,"killed-by-test:assertion"],
+        [13,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:183:31-183:54:EqualityOperator:146fcdcdb3f310c4",
+      "strata": ["multi-killer"],
+      "covering": 15,
+      "outcomes": [
+        [1,"killed-by-test:assertion"],
+        [2,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"],
+        [4,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:248:7-248:38:LogicalOperator:aadf58ae46f06b00",
+      "strata": ["multi-killer","each-row"],
+      "covering": 8,
+      "outcomes": [
+        [22,"killed-by-test:assertion"],
+        [23,"killed-by-test:assertion"],
+        [24,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:146:7-146:47:EqualityOperator:fcd6b6db761a0a8d",
+      "strata": ["multi-killer"],
+      "covering": 13,
+      "outcomes": [[6,"killed-by-test:assertion"],[16,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:281:7-281:64:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["multi-killer"],
+      "covering": 7,
+      "outcomes": [
+        [17,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"],
+        [19,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:285:7-285:99:StringLiteral:059b850298ae3352",
+      "strata": ["survived"],
+      "covering": 3,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:326:7-326:13:ConditionalExpression:b5bea41b6c623f7c",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:142:21-142:60:Regex:abe37084430d897b",
+      "strata": [],
+      "covering": 14,
+      "outcomes": [[11,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:89:96-135:2:BlockStatement:44136fa355b3678a",
+      "strata": ["multi-killer"],
+      "covering": 22,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:281:7-281:64:LogicalOperator:3fe5d6e4a134774c",
+      "strata": ["multi-killer"],
+      "covering": 7,
+      "outcomes": [
+        [15,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [20,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:159:10-159:34:ObjectLiteral:44136fa355b3678a",
+      "strata": ["multi-killer"],
+      "covering": 8,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:59:7-59:48:LogicalOperator:c3562abc1ee84c50",
+      "strata": ["multi-killer"],
+      "covering": 22,
+      "outcomes": [[17,"killed-by-test:assertion"],[19,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:338:7-338:14:Regex:2a9d1381c12c8daf",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:48:7-48:17:BooleanLiteral:354843e9ec3cedb9",
+      "strata": ["multi-killer"],
+      "covering": 22,
+      "outcomes": [
+        [0,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"],
+        [4,"killed-by-test:assertion"],
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [15,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"],
+        [20,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:346:9-346:63:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:377:7-377:43:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:147:12-147:30:Regex:b34f8504671675b6",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:14:10-14:35:EqualityOperator:4947bf4c29ef494f",
+      "strata": [],
+      "covering": 2,
+      "outcomes": [[3,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:201:47-201:92:EqualityOperator:198d9b40f8592e99",
+      "strata": ["multi-killer"],
+      "covering": 4,
+      "outcomes": [
+        [0,"killed-by-test:assertion"],
+        [1,"killed-by-test:assertion"],
+        [2,"killed-by-test:assertion"],
+        [3,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:266:15-266:53:MethodExpression:3397143e931251e8",
+      "strata": ["survived"],
+      "covering": 7,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:55:11-57:4:BlockStatement:44136fa355b3678a",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:343:9-343:19:EqualityOperator:2c23b2b4fb656128",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:200:9-201:93:LogicalOperator:0aa1a3fdef70e970",
+      "strata": ["multi-killer"],
+      "covering": 14,
+      "outcomes": [[1,"killed-by-test:assertion"],[2,"killed-by-test:assertion"],[3,"killed-by-test:assertion"]],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:343:9-343:19:ConditionalExpression:fcbcf165908dd18a",
+      "strata": ["no-coverage"],
+      "covering": 0,
+      "outcomes": [],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:112:9-117:6:BlockStatement:44136fa355b3678a",
+      "strata": ["multi-killer"],
+      "covering": 4,
+      "outcomes": [
+        [6,"killed-by-test:runtime"],
+        [7,"killed-by-test:runtime"],
+        [11,"killed-by-test:runtime"],
+        [16,"killed-by-test:runtime"]
+      ],
+      "invalid": []
+    },
+    {
+      "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:69:34-69:58:StringLiteral:12ae32cb1ec02d01",
+      "strata": ["static","multi-killer"],
+      "covering": 31,
+      "outcomes": [
+        [6,"killed-by-test:assertion"],
+        [9,"killed-by-test:assertion"],
+        [10,"killed-by-test:assertion"],
+        [11,"killed-by-test:assertion"],
+        [16,"killed-by-test:assertion"],
+        [18,"killed-by-test:assertion"],
+        [19,"killed-by-test:assertion"],
+        [20,"killed-by-test:assertion"],
+        [21,"killed-by-test:assertion"],
+        [25,"killed-by-test:assertion"],
+        [26,"killed-by-test:assertion"],
+        [27,"killed-by-test:assertion"],
+        [28,"killed-by-test:assertion"],
+        [29,"killed-by-test:assertion"]
+      ],
+      "invalid": []
+    }
+  ],
+  "launches": {
+    "total": 3162,
+    "valid": 3131,
+    "invalid": 0,
+    "wallClockLimitMs": 180000
+  },
+  "warnings": [],
+  "problems": []
+}

@@ -17,7 +17,7 @@
 
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SemanticModel, SymbolTableReader } from './model/index.js';
-import { generateId } from '../../lib/utils.js';
+import { compareCodeUnits, generateId } from '../../lib/utils.js';
 import type { ParsedImport, SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
@@ -34,6 +34,7 @@ import { extractReturnTypeName } from './type-extractors/shared.js';
 import { DATA_ROUTE_TABLE_SOURCE } from './route-extractors/data-route-table.js';
 import { reconcileDispatchGuardRoutes } from './route-extractors/dispatch-guard.js';
 import { toZeroBasedLine } from './utils/line-base.js';
+import { EnclosingCallableIndex } from './enclosing-callable.js';
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -725,6 +726,41 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
   return [...keys];
 };
 
+/** Segments of a matching route that match the fetch URL by kind: static to static, dynamic to param. */
+const matchSpecificity = (fetchURL: string, routeURL: string): number => {
+  const fetchParts = fetchURL.split('/').filter(Boolean);
+  return routeURL
+    .split('/')
+    .filter(Boolean)
+    .filter(
+      (part, i) =>
+        part === fetchParts[i] || (/^[[:{]/.test(part) && fetchParts[i]?.startsWith('[')),
+    ).length;
+};
+
+/**
+ * The route node keys a normalized fetch URL links to. `[param]` matches any
+ * route segment, so `/api/analyze/[param]` matches both `/api/analyze/upload`
+ * and `/api/analyze/:jobId`: take the route whose segments match by kind most
+ * often. A tie (`/api/[param]` against `/api/foo` and `/api/bar`) has no
+ * evidence for either, so it links none.
+ */
+export const matchFetchRouteKeys = (
+  normalized: string,
+  routeUrlToKeys: Map<string, string[]>,
+): string[] | undefined => {
+  let best: string[] | undefined;
+  let bestScore = -1;
+  let tied = false;
+  for (const [routeURL, routeKeys] of routeUrlToKeys) {
+    if (!routeMatches(normalized, routeURL)) continue;
+    const score = matchSpecificity(normalized, routeURL);
+    tied = score === bestScore || (tied && score < bestScore);
+    if (score > bestScore) [best, bestScore] = [routeKeys, score];
+  }
+  return tied ? undefined : best;
+};
+
 /**
  * Create FETCHES edges from extracted fetch() calls to matching Route nodes.
  * When consumerContents is provided, extracts property access patterns from
@@ -737,6 +773,14 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
  * route URL to the list of `routeNodeKey` identities at that URL; a single-verb
  * (or method-less) URL has a one-element list, keeping edges byte-identical to
  * the pre-#2289 behavior.
+ *
+ * The edge is file-level. Its reason also names the callables that hold the
+ * request sites, one `|via:<id>` field each, under the same attribution as the
+ * R3-6 sink set (the parser's enclosing callable, else the innermost span):
+ * `api_impact` follows their CALLS edges one level up to list the callers of
+ * the requesting function (#3644). A site outside any callable adds no field,
+ * so a reason without attribution reads as before. An id that itself contains
+ * the field separator cannot be carried and is left out rather than split.
  */
 export const processNextjsFetchRoutes = (
   graph: KnowledgeGraph,
@@ -759,46 +803,65 @@ export const processNextjsFetchRoutes = (
     }
   }
 
+  const callables = new EnclosingCallableIndex(graph, new Set(fetchCalls.map((c) => c.filePath)));
+
+  // One edge per (consumer file, route node), in first-seen order. Several
+  // sites in one file for the same route share the edge, each contributing the
+  // callable that contains it.
+  const edges = new Map<
+    string,
+    { sourceId: string; targetId: string; filePath: string; via: Set<string> }
+  >();
   for (const call of fetchCalls) {
     const normalized = normalizeFetchURL(call.fetchURL);
     if (!normalized) continue;
 
-    for (const [routeURL, routeKeys] of routeUrlToKeys) {
-      if (routeMatches(normalized, routeURL)) {
-        const sourceId = generateId('File', call.filePath);
+    const routeKeys = matchFetchRouteKeys(normalized, routeUrlToKeys);
+    if (!routeKeys) continue;
+    const sourceId = generateId('File', call.filePath);
+    const callable = callables.of(call);
 
-        // Extract consumer accessed keys if file content is available
-        let reason = 'fetch-url-match';
-        if (consumerContents) {
-          const content = consumerContents.get(call.filePath);
-          if (content) {
-            const accessedKeys = extractConsumerAccessedKeys(content);
-            if (accessedKeys.length > 0) {
-              reason = `fetch-url-match|keys:${accessedKeys.join(',')}`;
-            }
-          }
-        }
+    // Connect to every Route node at this URL (one per verb).
+    for (const routeKey of routeKeys) {
+      const targetId = generateId('Route', routeKey);
+      const id = generateId('FETCHES', `${sourceId}->${targetId}`);
+      let edge = edges.get(id);
+      if (edge === undefined) {
+        edge = { sourceId, targetId, filePath: call.filePath, via: new Set<string>() };
+        edges.set(id, edge);
+      }
+      if (callable !== undefined && !callable.includes('|')) edge.via.add(callable);
+    }
+  }
 
-        // Encode multi-fetch count so downstream can set confidence
-        const fetchCount = routeCountByFile.get(call.filePath) ?? 1;
-        if (fetchCount > 1) {
-          reason = `${reason}|fetches:${fetchCount}`;
-        }
-
-        // Connect to every Route node at this URL (one per verb).
-        for (const routeKey of routeKeys) {
-          const routeNodeId = generateId('Route', routeKey);
-          graph.addRelationship({
-            id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
-            sourceId,
-            targetId: routeNodeId,
-            type: 'FETCHES',
-            confidence: 0.9,
-            reason,
-          });
-        }
-        break;
+  for (const [id, edge] of edges) {
+    // Extract consumer accessed keys if file content is available
+    let reason = 'fetch-url-match';
+    const content = consumerContents?.get(edge.filePath);
+    if (content) {
+      const accessedKeys = extractConsumerAccessedKeys(content);
+      if (accessedKeys.length > 0) {
+        reason = `${reason}|keys:${accessedKeys.join(',')}`;
       }
     }
+
+    // Encode multi-fetch count so downstream can set confidence
+    const fetchCount = routeCountByFile.get(edge.filePath) ?? 1;
+    if (fetchCount > 1) {
+      reason = `${reason}|fetches:${fetchCount}`;
+    }
+
+    for (const via of [...edge.via].sort(compareCodeUnits)) {
+      reason = `${reason}|via:${via}`;
+    }
+
+    graph.addRelationship({
+      id,
+      sourceId: edge.sourceId,
+      targetId: edge.targetId,
+      type: 'FETCHES',
+      confidence: 0.9,
+      reason,
+    });
   }
 };

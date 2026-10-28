@@ -8,6 +8,8 @@
 
 import { describe, it, expect } from 'vitest';
 import type { ScopeId } from 'gitnexus-shared';
+import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
+import { reconcileOwnership } from '../../../src/core/ingestion/scope-resolution/pipeline/reconcile-ownership.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { csharpScopeResolver } from '../../../src/core/ingestion/languages/csharp/scope-resolver.js';
 import { foldReceiverChain } from '../../../src/core/ingestion/scope-resolution/passes/compound-receiver.js';
@@ -99,15 +101,18 @@ const ctx: FoldContext = { fixture: tsFixture, inScope: tsFixture.moduleScope };
  * what makes these tests measure the same fold `emitReceiverBoundCalls` runs.
  *
  * `overrides` replaces individual flags — used to exercise the OFF branch of
- * `hoistTypeBindingsToModule` (which six wired languages: c, cobol, dart,
- * python, ruby, swift, actually run) and the no-`elementTypeOf` branch (which
+ * `hoistTypeBindingsToModule` (which c, cobol, python and ruby actually run)
+ * and the no-`elementTypeOf` branch (which
  * twelve of the fourteen do).
  */
 function foldIn(ctx: FoldContext, encoded: string, overrides: FoldOptions = {}) {
   const decoded = decodeReceiverChain(encoded);
   expect(decoded).toBeDefined();
+  const model = createSemanticModel();
+  reconcileOwnership([ctx.fixture.parsed], model);
   return foldReceiverChain(decoded!, ctx.inScope, ctx.fixture.scopes, ctx.fixture.index, {
     fieldFallback: false,
+    lookupOwnedMethods: (owner, name) => model.methods.lookupAllByOwner(owner, name),
     hoistTypeBindingsToModule: true,
     elementTypeOf: ctx.fixture.resolver.elementTypeOf,
     ...overrides,
@@ -173,6 +178,23 @@ describe('foldReceiverChain', () => {
     });
     expect(foldIn(ctx, '2|svc|cgetUser', { hoistTypeBindingsToModule: false })).toBeUndefined();
   });
+
+  // `hoistedTypeBindingsRequireOwner` joins a hoisted binding to the member that
+  // declared it. `Service` declares `getUser`, so that binding joins. `inherited`
+  // is declared by `Base`, and this unit fixture builds no MRO, so the only way
+  // `Service` ever reached it was the name-keyed walk — which the toggle refuses
+  // and the default keeps (the pipeline reaches `Base` through the MRO instead).
+  it.each([
+    { chain: '2|svc|cgetUser', requireOwner: true, expected: 'User' },
+    { chain: '2|svc|cinherited', requireOwner: true, expected: undefined },
+    { chain: '2|svc|cinherited', requireOwner: false, expected: 'User' },
+  ])(
+    'folds $chain to $expected when hoistedTypeBindingsRequireOwner is $requireOwner',
+    ({ chain, requireOwner, expected }) => {
+      const folded = foldIn(ctx, chain, { hoistedTypeBindingsRequireOwner: requireOwner });
+      expect(folded?.qualifiedName).toEqual(expected);
+    },
+  );
 });
 
 /**

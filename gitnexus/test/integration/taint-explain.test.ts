@@ -156,6 +156,8 @@ withTestLbugDB(
         expect(vuln.pathIncomplete).toBeUndefined();
         // The intra-procedural contract caveat reaches the consumer.
         expect(result.note).toMatch(/intra-procedural/i);
+        expect(result.note).toContain('Imported and wrapper validators');
+        expect(result.note).toContain('not runtime validation');
       });
 
       it('anchorless enumerate is deterministic across calls', async () => {
@@ -429,6 +431,80 @@ withTestLbugDB(
 
 const INTERPROC_FIXTURE = path.join(__dirname, 'cfg', 'fixtures', 'interproc-repo');
 
+// Real pipeline → COPY persistence → a cold reader → public explain dispatch.
+withTestLbugDB(
+  'taint-inline-handlers',
+  (handle) => {
+    it('reports inline and factory handlers, without attributing callbacks to their factories (#3489)', async () => {
+      const backend = (handle as typeof handle & { _backend: LocalBackend })._backend;
+      const first = await backend.callTool('explain', { target: 'routes.ts', limit: 100 });
+      const second = await backend.callTool('explain', { target: 'routes.ts', limit: 100 });
+      expect(second).toEqual(first);
+      const findings = first.findings.filter((f: any) => f.interprocedural);
+      expect(findings).toHaveLength(11);
+      for (const finding of findings) {
+        expect(finding.pathIncomplete).toBeUndefined();
+        expect(finding.hops.length).toBeGreaterThanOrEqual(2);
+        expect(finding.hops[0].function).toBe(finding.source.function);
+        expect(finding.hops.at(-1).function).toBe(finding.sink.function);
+      }
+      expect(
+        findings.every(
+          (f: any) =>
+            (f.sinkKind === 'command-injection' && f.sink.function === 'runGit') ||
+            (f.sinkKind === 'path-traversal' && f.sink.function === 'readSnippet') ||
+            (f.sinkKind === 'code-injection' && f.sink.function === 'compileFilter'),
+        ),
+      ).toBe(true);
+      expect(findings.map((f: any) => f.source.function)).toContain('returnedHandler');
+      expect(
+        findings.some((f: any) =>
+          [
+            'mount',
+            'makeNamed',
+            'makeAnonymous',
+            'makeExpression',
+            'makeFilterHandler',
+            'mountSnippet',
+            'mountIdentity',
+          ].includes(f.source.function),
+        ),
+      ).toBe(false);
+      expect(new Set(findings.map((f: any) => f.source.function)).size).toBe(11);
+    });
+  },
+  {
+    poolAdapter: true,
+    beforeFTS: async (dbPath) => {
+      const fixture = path.join(__dirname, 'cfg', 'fixtures', 'inline-taint-repo');
+      const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-inline-taint-'));
+      try {
+        fs.cpSync(fixture, repoDir, { recursive: true });
+        const result = await runPipelineFromRepo(repoDir, () => {}, { pdg: true });
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        await adapter.loadGraphToLbug(result.graph, repoDir, path.dirname(dbPath));
+      } finally {
+        fs.rmSync(repoDir, { recursive: true, force: true });
+      }
+    },
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'inline-taint-repo',
+          path: '/inline-taint/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'inline001',
+          stats: { files: 1, nodes: 1, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
+    },
+  },
+);
+
 withTestLbugDB(
   'taint-explain-interproc',
   (handle) => {
@@ -456,6 +532,16 @@ withTestLbugDB(
         expect(hr!.sinkKind).toBe('command-injection');
         expect(Array.isArray(hr!.hops)).toBe(true);
         expect((hr!.hops as unknown[]).length).toBeGreaterThan(0);
+        // Lines are 1-based declaration lines, as in the editor: `handle` is
+        // declared on line 7 of source.ts and `runIt` on line 6 of sink.ts
+        // (#3491 — the graph stores 0-based startLine; before the fix these
+        // read 6 and 5, one above every intra-procedural line in the same
+        // response).
+        expect(hr!.source).toEqual({ function: 'handle', line: 7 });
+        expect(hr!.sink).toEqual({ function: 'runIt', line: 6 });
+        const hops = hr!.hops as Array<{ function: string; line: number }>;
+        expect(hops[0]).toEqual({ function: 'handle', line: 7 });
+        expect(hops.at(-1)).toEqual({ function: 'runIt', line: 6 });
       });
 
       it('symbol-anchored on the sink function surfaces the cross-function finding', async () => {

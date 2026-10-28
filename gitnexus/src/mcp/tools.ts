@@ -7,6 +7,12 @@
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import { REL_TYPES } from 'gitnexus-shared';
+import { GUARD_TAINT_LIMITATION } from './taint-limitations.js';
+import {
+  CONTEXT_RELATION_TYPES,
+  CONTEXT_RESPONSE_SECTIONS,
+  QUERY_RESPONSE_SECTIONS,
+} from './response-filter.js';
 
 export interface ToolDefinition {
   name: string;
@@ -20,7 +26,9 @@ export interface ToolDefinition {
         type: string;
         description?: string;
         default?: unknown;
-        items?: { type: string };
+        items?: { type: string; enum?: string[] };
+        minItems?: number;
+        maxItems?: number;
         enum?: string[];
         const?: boolean;
         minimum?: number;
@@ -93,6 +101,8 @@ export const QUERY_DEFAULT_MAX_SYMBOLS = 25;
 /** Advertised query page maxima (schema + LocalBackend.query reject, not clamp). */
 export const QUERY_MAX_LIMIT = 100;
 export const QUERY_MAX_MAX_SYMBOLS = 200;
+/** Source preview characters shared across unique symbols on a query result page. */
+export const QUERY_CONTENT_MAX_CHARS = 16_000;
 export const CONTEXT_CHAIN_MAX_DEPTH = 3;
 
 const CWD_AWARE_REPO_OMISSION =
@@ -204,10 +214,17 @@ ${HOT_READ_STALENESS_NOTE}`,
           minimum: 1,
           maximum: QUERY_MAX_MAX_SYMBOLS,
         },
+        response_sections: {
+          type: 'array',
+          items: { type: 'string', enum: [...QUERY_RESPONSE_SECTIONS] },
+          minItems: 1,
+          maxItems: QUERY_RESPONSE_SECTIONS.length,
+          description:
+            'Optional single-repo output view: select processes, process_symbols, and/or definitions. For symbol discovery use ["process_symbols", "definitions"] with include_content:false and chain_depth:0. Warnings and staleness always remain; response_filter identifies omitted sections, not absent evidence. Does not change ranking or existing search limits. Omit for existing full output. Not supported for @group routing.',
+        },
         include_content: {
           type: 'boolean',
-          description:
-            'Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content. Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
+          description: `Include source text retained for matching symbols as previews (default: false), sharing ${QUERY_CONTENT_MAX_CHARS} characters equally across unique returned symbols per repository. content_truncated marks incomplete previews; all matches remain present. Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row. Use read_file line ranges for large sources. contentAvailability reports index retention. Query next is JSON guidance.`,
           default: false,
         },
         chain_depth: {
@@ -316,33 +333,24 @@ ${HOT_READ_STALENESS_NOTE}`,
   },
   {
     name: 'context',
-    description: `360-degree view of a single code symbol.
-Shows categorized incoming/outgoing references (calls, imports, extends, implements, methods, properties, overrides), process participation, and file location.
-Also returns (when applicable): routes: [{ url, method? }] — HTTP endpoints this symbol handles via (handler)-[HANDLES_ROUTE]->Route or a Process-linked Route-[ENTRY_POINT_OF]->Process edge; is_entry_point: true when this symbol is a process entry point; chain — layered CALLS neighbours (upstream callers + downstream callees) when chain_depth > 0.
+    description: `Inspect a symbol's references, processes, and location when query results need more detail.
+Use uid, or name with file_path/kind. Ambiguous results return ranked candidates, totalCandidates (full count), and candidatesTruncated.
 
-WHEN TO USE: After query() to understand a specific symbol in depth. When you need to know all callers, callees, and what execution flows a symbol participates in.
-AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.
+include_content returns retained source. Leave chain_depth:0 unless layered CALLS neighbours are needed. routes:[{url,method?}] and is_entry_point describe HTTP handlers and process entries. ACCESSES references carry reason "read"/"write"; CALLS can follow field and method chains.
 
-Handles disambiguation: if multiple symbols share the same name, returns ranked candidates (each with a relevance score) for you to pick from. Use uid for zero-ambiguity lookup, or narrow the search with file_path and/or kind hints. The ambiguous response carries totalCandidates — the TRUE match count, not candidates[].length — plus candidatesTruncated:true and a "(showing M)" suffix on message when candidates[] is the shorter window.
+COMPLETENESS: epistemic "lower-bound" means incoming is a floor: callers were missed OR a completeness probe failed. Read boundaries to distinguish them; branch on causes, not prose. Empty callers do not establish safety.
+- scopeExtractionFiles: files missing scope edges. Run analyze --force; inspect remaining extraction warnings.
+- receiverTyping: dropped call sites with unresolved receiver types; corroborate by text search.
+- externalBoundary: calls leaving the indexed program; not a defect, compatible with epistemic "exact".
+- dispatchBoundary: symbols across DI/interface boundaries, not sites. Runtime-proxy gaps can be uncountable (0 with lower-bound).
+- undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS edges; missing dependencies can cause this.
+- callableValueReferences: symbols holding the callable as a value via USES, without a modeled later invocation. Follow the registrations/readers. Zig registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
 
-NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).
+Older indexes can lack captures/metadata; re-analyze before trusting zero causes or exact coverage. Use impact() before edits; read gitnexus://repo/{name}/process/{processName} for a full flow.
 
-COMPLETENESS OF incoming: alongside symbol/incoming/outgoing the result carries the same epistemic envelope impact() returns:
-- epistemic: 'exact' | 'lower-bound' — 'lower-bound' means incoming is a FLOOR: either the walk provably missed callers, or a probe that would have established completeness could not run. Do not read it as proof that an omitted caller exists — read boundaries for which of the two it is.
-- boundaries: string[] — one plain-language sentence per reason. Prose for humans; branch on causes instead.
-- causes: { scopeExtractionFiles, receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction, callableValueReferences } — machine-readable WHY. Every field counts MISSING THINGS, never sentences:
-  - causes.scopeExtractionFiles (unit: files) > 0 — scope extraction still failed after the fallback pass, so scope-resolution edges from those files are absent. A value of 0 does not prove completeness when epistemic is 'lower-bound' because an older or unverified index has no measured file count. Re-run \`gitnexus analyze --force\`; if the reason persists, inspect the extraction warnings.
-  - causes.receiverTyping (unit: call sites) > 0 — RESOLVER GAP: the analyzer dropped that many call sites on this name because it could not type the receiver, so they are missing from incoming. Do not read an absent caller as proof none exists.
-  - causes.externalBoundary (unit: call sites) > 0 — the calls left the indexed program (System.out.println, fetch(...)). NOT a defect: no in-graph node could have been reached. An epistemic:'exact' result can carry this.
-  - causes.dispatchBoundary (unit: symbols) > 0 — DI or interface dispatch: that many symbols sit on or beyond a boundary static analysis cannot cross. Irreducible. A symbol count, not a site count — per-site multiplicity is not retained for these edges — so compare its magnitude with receiverTyping, not its exact value. A framework runtime-proxy boundary can make epistemic lower-bound while this value remains 0 because endpoint metadata proves the gap but cannot count omitted symbols.
-  - causes.undecidedSatisfaction (unit: unjudged interface/type pairs) > 0 — the analyzer could not decide whether a type satisfies an interface, so no IMPLEMENTS edge exists and no dispatch boundary was left for the walk to notice. Usually fixable by making the missing dependency available to analysis.
-  - causes.callableValueReferences (unit: symbols) > 0 — that many symbols name this callable as a VALUE instead of calling it (a Zig registration table or const initialiser, a JS/TS object-literal property value). A bare callback argument in JS/TS is not captured today and is not counted, so a 0 does not rule that shape out; nor does it, on an index built before the language emitted these captures — re-analyze first. The reference is in the graph as a USES edge; the call made THROUGH the value is not, because it is dispatched later from wherever the value was stored. incoming.calls is therefore a floor. Follow the USES edges to find the registration, then the code that reads it. It is 0 when the analyzer DID synthesize the dispatch through a registered property key. That exclusion is per SYMBOL, not per registration: a target with BOTH a followed registration and an unfollowed escape reads 0 here, so a 0 means 'no unfollowed registration was proven', not 'this symbol escapes nowhere'. A 0 alongside epistemic 'lower-bound' can also mean the probe itself could not run — read boundaries for which.
+GROUP MODE: repo "@<groupName>" aggregates member results; "@<groupName>/<groupRepoPath>" selects one member using group.yaml keys.
 
-REQUIRES RE-INDEX: causes.scopeExtractionFiles, causes.receiverTyping, causes.externalBoundary, causes.undecidedSatisfaction, and framework runtime-proxy boundary detection depend on index-time metadata that only a current analyzer writes. Against an older index the metadata can be absent, which is indistinguishable from "nothing was dropped" unless the schema probe detects the stale index — re-run \`gitnexus analyze\` before trusting a zero or an apparently exact result.
-
-GROUP MODE: set "repo" to "@<groupName>" to run context in each member repo (aggregated list), or "@<groupName>/<groupRepoPath>" for one member. If you use "@<groupName>" only, the member defaults to the lexicographically first key in group.yaml "repos".
-
-SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol. Ignored for a normal indexed repo name.
+SERVICE: case-sensitive path prefix in @group mode; members whose symbol is outside it return an empty payload. Ignored for a normal repository.
 
 ${HOT_READ_STALENESS_NOTE}`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -353,6 +361,22 @@ ${HOT_READ_STALENESS_NOTE}`,
         uid: {
           type: 'string',
           description: 'Direct symbol UID from prior tool results (zero-ambiguity lookup)',
+        },
+        response_sections: {
+          type: 'array',
+          items: { type: 'string', enum: [...CONTEXT_RESPONSE_SECTIONS] },
+          minItems: 1,
+          maxItems: CONTEXT_RESPONSE_SECTIONS.length,
+          description:
+            'Optional single-repo output view: select incoming, outgoing, processes, chain, routes, and/or typed_properties. The symbol and all warnings/completeness/staleness fields always remain. For callers only use ["incoming"] plus relationTypes:["CALLS"]. Omitted data is not evidence of absence; remove filters to expand. Does not change traversal or existing reference limits. Omit for existing full output. Not supported for @group routing.',
+        },
+        relationTypes: {
+          type: 'array',
+          items: { type: 'string', enum: [...CONTEXT_RELATION_TYPES] },
+          minItems: 1,
+          maxItems: CONTEXT_RELATION_TYPES.length,
+          description:
+            'Optional uppercase relationship categories to retain in the existing incoming/outgoing view, e.g. ["CALLS"] or ["CALLS", "USES"]. This filters the returned bounded reference window; it does not search for additional matches or filter chain. If response_sections is set, it must include incoming or outgoing. Omit for all existing categories. Single-repo MCP only, not @group routing.',
         },
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
         file: {
@@ -478,15 +502,20 @@ A graph too large to analyze at all returns \`{ error, truncated: true }\` with 
   },
   {
     name: 'rename',
-    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default: dry_run omitted or true never writes; dry_run:false applies exact resolved name spans after checking source snapshots. Preview first, review semantic_edits and coverage, then re-call with dry_run:false.
+    description: `Rename using the indexed graph and GitNexus's own semantic layer. Previews by default: dry_run omitted or true never writes; dry_run:false requires the plan_token returned by a successful preview and applies exactly that captured edit set after checking source snapshots and targets. Preview first, review semantic_edits and coverage, then re-call with dry_run:false and plan_token.
 Pass symbol_uid from context() to select the declaration. Unsupported syntax, ambiguous bindings, and incomplete coverage fail closed; no compiler or text-search fallback is used.
-Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Legacy graph_edits and text_search_edits are zero. Partial writes are not transactional: changes lists only landed edits, failed_files the file that failed, and unattempted_files later files never touched; review before retrying. Separate preview/apply calls recompute the plan.
+Returns result_version:2 with semantic_edits (occurrence count), exact UTF-16 spans, indexed-source coverage, and explicit planning/application status. Preview plan_token is single-use, expires after 15 minutes or a server restart, and can be evicted when retained previews reach 16 plans or 64 MiB. Apply rejects changed sources (including untracked files), source-file inventories, graph targets, repositories, and destination names; it never replans edits. Legacy graph_edits and text_search_edits are zero. Partial writes are not transactional: changes lists only landed edits, failed_files the file that failed, and unattempted_files later files never touched; reconcile and preview again before retrying.
 Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates verbatim; re-call with symbol_uid. After application, run tests and detect_changes().`,
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
         ...RENAME_PROPERTIES,
+        plan_token: {
+          type: 'string',
+          description:
+            'Opaque single-use token returned by the reviewed preview. Required with dry_run:false; keep the same repository, target, and new_name.',
+        },
         dry_run: {
           type: 'boolean',
           description:
@@ -500,58 +529,42 @@ Ambiguous symbol_name returns context()'s ranked candidates and totalCandidates 
   },
   {
     name: 'impact',
-    description: `Analyze the blast radius of changing a code symbol.
-Returns affected symbols grouped by depth, plus risk assessment, affected execution flows, and affected modules.
+    description: `Assess the blast radius before changing a symbol. Use target_uid when known, or target with file_path/kind.
+For a hub, start with summaryOnly:true, then fetch needed callers with limit/offset. Leave includeTests:false unless test callers are needed. Risk is still computed. Review direct callers before editing; use context() for unresolved details.
 
-MODE (opt-in): "callgraph" (default) walks symbol→symbol edges (CALLS/IMPORTS/EXTENDS/IMPLEMENTS) — inter-procedural, the established comparator/default behavior. "pdg" requires an index built with \`gitnexus analyze --pdg\` and returns one unified PDG-facing result: statement-level control/data dependence from the persisted PDG plus inter-procedural symbol reach. The explicit interprocedural surface is interproceduralByDepth/pdgInterprocedural; byDepth remains the compatibility symbol bucket. pdg remains incompatible with crossDepth and @group targets; relationTypes/minConfidence filter the inter-symbol reach.
+CALLGRAPH MODE (default): CALLS/IMPORTS/EXTENDS/IMPLEMENTS. Add HAS_METHOD/HAS_PROPERTY for members or ACCESSES for field usage. Confidence 1.0 is certain; <0.8 is fuzzy. d=1 callers/importers WILL BREAK, d=2 are LIKELY AFFECTED, d=3 MAY NEED TESTING.
 
-STATEMENT-ANCHORED PDG SLICE: with mode:'pdg', pass "line" (1-based source line within the target symbol) to seed the dependence slice on the statement at that line and return what depends on it in affectedStatements (line + text). Inter-procedural symbols are still reported through interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. Without "line", pdg returns whole-symbol inter-procedural reach plus local whole-symbol PDG diagnostics.
+RISK: risk is the HIGH/CRITICAL edit-gate field: LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN. Upstream zero callers is UNKNOWN with riskNote, never proof of safety; corroborate by text search. Downstream empty results describe callees, not safety.
+- riskSharedAxes compares direct/total axes; group mode adds the cross-repo crossing overlay. Never substitute it for \`risk\` when deciding whether to warn.
+- File targets lack process/community axes; their risk is not directly comparable with symbols. Web Graph-RAG expands Files to symbols.
+- riskScale.{comparableAcrossKinds,unusedAxes} identifies unavailable/skipped/failed axes, including IMPACT_MAX_CHUNKS=0 and enrichment that sampled a subset of impacted symbols. Failed/truncated counts are floors: known HIGH/CRITICAL warnings survive; otherwise risk is UNKNOWN.
 
-PDG OUTPUT CONTRACT: every mode:'pdg' result (success, empty, degraded, or error) carries pdgResultVersion:3 — a stable discriminator for external consumers that bumps on any breaking change to the PDG result shape (distinct from the DB schema version). Successful PDG results include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, interproceduralByDepth/pdgInterprocedural for cross-function reach, compatibility byDepth/byDepthCounts, risk:'UNKNOWN', and a note describing the unified contract. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', pdgResultVersion:3, target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields — never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar. Return-value-ascent coverage is published structurally at pdgEvidence.ascent — present iff the inter-procedural descent ran, including on an empty slice — with referencesScanned (DISTINCT callees scanned for a CALL_SUMMARY: a distinct-id tally, not a call-site count — two call sites to the same callee count once), returnFlowFound (whether the ascent fired anywhere in the slice), undecodableSummaryCount, examinedComplete (whether that scan covered every callee the index recorded a resolved id for on the visited blocks), incompleteReasons ('traversal-truncated' | 'callee-list-capped' | 'callee-ids-unrecorded'), and callSummaryLayerPresent. Read callSummaryLayerPresent FIRST: false ⇒ a pre-CALL_SUMMARY index, so {referencesScanned:N>0, returnFlowFound:false} is self-consistent and says nothing about the callees — the scan ran, but no layer existed in which a return-flow could be recorded (remedy: re-run gitnexus analyze --pdg). Branch on those fields; the note narrates the same facts in prose for humans and is not a stable contract.
+RESULTS: target, impactedCount, summary, affected_processes, affected_modules, byDepthCounts, and byDepth. summaryOnly omits byDepth. limit/offset apply PER DEPTH; maxDepth alone cannot bound wide hubs. Read pagination/truncated flags and totals before treating a page as complete. Ambiguous targets return ranked candidates, totalCandidates, and candidatesTruncated.
+- byDepth rows include processes:[{id,label,processType,step}]. With partial:true, processes:[] can mean capped enrichment; cross-check affected_processes.
+- staticGated:true marks a provably compile-time-unreachable edge (currently Zig); absence proves neither reachability nor coverage. Traversal/risk do not filter on it.
+- affected_routes and row routes:[{url,method?}] are callgraph-only HTTP enrichment, not risk inputs.
 
-WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
-AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
+COMPLETENESS: epistemic "lower-bound" means impactedCount is a floor: missed callers OR a failed completeness probe. Read boundaries for which; use causes for machine decisions. Ambiguous lists/group fan-out may omit this envelope.
+- scopeExtractionFiles counts files missing scope edges. Run analyze --force; inspect remaining extraction warnings.
+- receiverTyping counts dropped call sites with unresolved receiver types. Corroborate before deletion/rename.
+- externalBoundary counts calls leaving the program; not an analyzer defect or an in-graph shortfall. Compatible with epistemic "exact".
+- dispatchBoundary counts symbols beyond DI/interface boundaries, not sites. Runtime proxies can prove uncountable gaps (0 with lower-bound).
+- undecidedSatisfaction counts unjudged interface/type pairs without IMPLEMENTS edges; missing dependencies are a common fixable cause.
+- callableValueReferences counts symbols registering the callable VALUE via USES without a modeled later invocation. Follow registrations/readers; low risk/counts remain floors. Zig registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized property dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
+Older indexes can lack captures/metadata; re-analyze before trusting zero causes or apparently exact coverage from an older analyzer.
 
-Output includes:
-- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN. This is the HIGH/CRITICAL edit-gate field. File targets lack process/community membership, so their risk is not directly comparable with symbol risk; use riskSharedAxes to compare the direct/total axes common to both. Group-mode (\`repo: "@…"\`) results lift the same fields to the top-level envelope. The web Graph-RAG impact tool expands File targets to in-file symbols before enrichment, so process/cluster axes remain comparable there. An upstream walk that resolved ZERO callers reports UNKNOWN, never LOW, and carries riskNote: "safe to change" is a claim about callers and there were none to reason about, so the symbol is either genuinely unused OR reached only through a reference class the index does not record (plain-object property access, a bare-identifier read of a module-scope const). Confirm with a text search before acting on it. Downstream walks are unaffected — an empty downstream result reports resolved callees, not safety.
-- riskSharedAxes: single-repo risk computed only from direct and total impact. Group mode then applies the cross-repo crossing overlay to that local value. Suitable for comparing File and symbol targets within the same mode. Never substitute it for \`risk\` when deciding whether to warn before edits.
-- riskScale: { comparableAcrossKinds, unusedAxes } — names process/module axes that were structurally unavailable, skipped, budget-exhausted (\`IMPACT_MAX_CHUNKS=0\`), truncated (sampled a subset of impacted symbols), or failed at query time. Failed-query and truncated-sample counts are lower bounds: known HIGH/CRITICAL warnings survive, otherwise risk is UNKNOWN. Group impact copies this metadata from the local leg.
-- riskNote: string — present only when risk is UNKNOWN; states why the verdict is withheld.
-- summary: direct callers, processes affected, modules affected
-- affected_processes: which execution flows break and at which step
-- affected_modules: which functional areas are hit (direct vs indirect; classification-unavailable when that secondary query fails)
-- affected_routes (callgraph mode only): [{ url, method? }] — HTTP endpoints served by the target or any impacted symbol (via HANDLES_ROUTE). Matching callgraph byDepth items also carry routes:[{ url, method? }]. PDG results do not include route enrichment. Reported only; not counted in risk.
-- byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[{id,label,processType,step}] field listing the execution flows that symbol participates in. Empty when the symbol has no process membership. Can ALSO be empty when partial:true is set — either the process-aggregation pass hit its cap before detecting affected processes, or per-symbol enrichment was capped on a very large page. When partial:true, do NOT treat processes:[] as proof of no participation; cross-check the top-level affected_processes list. An item carries staticGated:true only when the edge that reached it is provably unreachable at compile time from the indexed source (today: Zig calls inside an 'if (CONST_FALSE)' body or the else of 'if (CONST_TRUE)'); the field is absent when the edge is live or the language does not model it. Traversal and risk do NOT filter or rank on it: it is metadata for the caller to weigh.
-- epistemic: 'exact' | 'lower-bound' — whether impactedCount is the whole story. 'lower-bound' means the count is a FLOOR: either the walk provably missed callers, or a probe that would have established completeness could not run (a failed callable-value-reference query says so in boundaries). It is not itself proof that an omitted caller exists — branch on causes and read boundaries. Absent only on skipped probes (ambiguous-candidate lists, group fan-out).
-- boundaries: string[] — one plain-language sentence per reason the count is short. Prose for humans; branch on causes instead.
-- causes: { scopeExtractionFiles, receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction, callableValueReferences } — the machine-readable split of WHY, so an agent gating its own edits can tell a fixable analyzer gap from an irreducible one. Every field counts MISSING THINGS, never sentences:
-  - causes.scopeExtractionFiles (unit: files) > 0 — scope extraction still failed after the fallback pass, so scope-resolution edges from those files are absent. A value of 0 does not prove completeness when epistemic is 'lower-bound' because an older or unverified index has no measured file count. Re-run \`gitnexus analyze --force\`; if the reason persists, inspect the extraction warnings.
-  - causes.receiverTyping (unit: call sites) > 0 — the RESOLVER GAP signal: the analyzer dropped that many call sites because it could not establish the receiver's type (unresolved constructor, factory, chained expression). Those callers are absent from byDepth. Treat the result as incomplete: grep the symbol name before deleting or renaming.
-  - causes.externalBoundary (unit: call sites) > 0 — those calls left the indexed program (System.out.println, fetch(...), os.environ.*). NOT a defect and NOT a reason the count is short: there is no in-graph node any edge could have reached. An epistemic:'exact' result can carry this.
-  - causes.dispatchBoundary (unit: symbols) > 0 — DI or interface dispatch: that many symbols sit on or beyond a boundary a static walk cannot cross. Irreducible. A symbol count, not a site count — per-site multiplicity is not retained for these edges — so compare its magnitude with receiverTyping, not its exact value. A framework runtime-proxy boundary can make epistemic lower-bound while this value remains 0 because endpoint metadata proves the gap but cannot count omitted symbols.
+PDG MODE: mode:"pdg" requires analyze --pdg; incompatible with crossDepth/@group. relationTypes/minConfidence filter inter-symbol reach. A statement-anchored slice uses a 1-based line inside the target; omit line for whole-symbol dependence.
+Every PDG result carries pdgResultVersion:3, risk:"UNKNOWN", and target metadata when resolved. Successful results include mode:"pdg", affectedStatements/affectedStatementCount, interproceduralByDepth/pdgInterprocedural, compatibility byDepth/byDepthCounts, and diagnostics. Missing-layer/degraded results keep UNKNOWN plus note/remediation; empty buckets are not safe zeros. truncatedByReasons lists simultaneous bounds while truncatedBy stays scalar.
+pdgEvidence.ascent appears when inter-procedural descent ran, including empty slices. Read callSummaryLayerPresent FIRST: false means missing CALL_SUMMARY data; re-analyze --pdg, rather than read returnFlowFound:false as no return flow. referencesScanned counts distinct callees, not sites. returnFlowFound records any ascent; undecodableSummaryCount and examinedComplete describe coverage. incompleteReasons includes traversal-truncated, callee-list-capped, and callee-ids-unrecorded. Use structured fields, not narrative notes.
 
-  - causes.undecidedSatisfaction (unit: unjudged interface/type pairs) > 0 — the analyzer could not DECIDE whether a type satisfies an interface (a type in a required signature named a package it could not resolve), so no IMPLEMENTS edge exists and no dispatch boundary was left for the walk to notice. Distinct from every cause above, which count decided facts that could not be attributed; this one counts questions never answered. It is the only cause that shortens a result WITHOUT leaving a trace in the graph, so an unhedged zero on a symbol reached only through such an interface would otherwise read as 'nobody calls this'. Usually fixable: it most often means a dependency is missing from the analyzed tree.
-  - causes.callableValueReferences (unit: symbols) > 0 — that many symbols name this callable as a VALUE rather than calling it: 'bridge.accessor(Element.getNamespaceUri, ...)' and 'pub const h = onReset;' in Zig, '{ onClick: handler }' in JS/TS. Those are the shapes actually captured today — a bare callback argument in JS/TS ('qsort'-style, 'setTimeout(tick)') is NOT one of them and is not counted, so a 0 here does not rule that shape out. The registration IS modelled (a USES edge); the invocation through the stored value is NOT, because it happens later via a struct field, a registry lookup or comptime reflection. So impactedCount is a floor and a LOW risk verdict on such a symbol is a floor too. Unlike dispatchBoundary this is often reducible — it usually means the language provider does not yet follow that store/load — but until it is, do NOT read an empty or small caller set as 'safe to change'. It is an exact count, not a capped sample. It is 0 when the analyzer DID synthesize the dispatch through a registered property key, and epistemic stays 'exact' on that account. That exclusion is symbol-level, not edge-level — the graph does not record which registration produced which synthesized call — so a symbol with a mix of followed and unfollowed registrations also reads 0: treat a 0 as 'no unfollowed registration was proven', not as proof the value escapes nowhere. A 0 alongside epistemic 'lower-bound' can instead mean the probe could not run at all, so read boundaries to tell those apart. Read from the graph, so it needs no index-time metadata BEYOND the edges being there: an index built by an analyzer that did not yet emit this language's value-ref captures has none, and reports 0. Re-analyze before reading a 0 as measured.
+GROUP MODE: repo "@<groupName>" anchors at the first lexicographic group.yaml member; "@<groupName>/<groupRepoPath>" selects one. Local traversal precedes bridge fan-out, bounded to 50 strongest-confidence crossings. fanout_status:"not_attempted" proves a repository boundary with no far symbol; empty by_depth/affected_processes is not a completed zero-impact walk. Short results carry truncated:true, truncatedRepos, riskEpistemic:"lower-bound", and truncationReason; risk is a floor.
+- 'timeout'/'partial': runtime limits; retry or increase timeoutMs.
+- 'incomplete-sync': missing/unreadable in-scope repos; run group_sync before retrying.
+- 'suppressed-stage': sync deliberately skipped a stage; re-sync without --exact-only / exactOnly. It does not mean a repository is broken.
+truncated:true does NOT always mean exhausted fan-out: structural gaps can exist even when zero crossings were attempted.
+Group results lift local risk fields to the top-level envelope.
 
-REQUIRES RE-INDEX: causes.scopeExtractionFiles, causes.receiverTyping, causes.externalBoundary, causes.undecidedSatisfaction, and framework runtime-proxy boundary detection depend on index-time metadata that only a current analyzer writes. Against an older index the metadata can be absent, which is indistinguishable from "nothing was dropped" unless the schema probe detects the stale index — re-run \`gitnexus analyze\` before trusting a zero or an apparently exact result.
-
-Depth groups:
-- d=1: WILL BREAK (direct callers/importers)
-- d=2: LIKELY AFFECTED (indirect)
-- d=3: MAY NEED TESTING (transitive)
-
-TIP: For hub symbols (base error classes, shared utilities) with many direct callers, use summaryOnly: true first to see counts and risk, then drill into specific depths with limit/offset. maxDepth alone does not bound output size when most dependents are at depth 1. limit and offset apply independently to each depth level, not to the total result set — use byDepthCounts to see totals per depth.
-
-TIP: Default traversal uses CALLS/IMPORTS/EXTENDS/IMPLEMENTS. For class members, include HAS_METHOD and HAS_PROPERTY in relationTypes. For field access analysis, include ACCESSES in relationTypes.
-
-Handles disambiguation: when multiple symbols share the target name, returns ranked candidates (each with a relevance score) instead of silently picking one. Use target_uid for zero-ambiguity lookup, or narrow with file_path and/or kind hints. totalCandidates is the TRUE match count — it reported the capped resolver window before #2787, so it can now exceed candidates.length; candidatesTruncated:true and a "(showing M of N)" suffix on message mark the shorter window.
-
-EdgeType: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES
-Confidence: 1.0 = certain, <0.8 = fuzzy match
-
-GROUP MODE: set "repo" to "@<groupName>" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml "repos"), or "@<groupName>/<groupRepoPath>" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge. A cross entry with fanout_status:"not_attempted" proves the declared repository boundary, but its far endpoint has no graph symbol; do not interpret empty by_depth or affected_processes on that entry as a completed zero-impact walk. The fan-out attempts at most 50 neighbour crossings, strongest-confidence first. Any short answer carries truncated:true, truncatedRepos, riskEpistemic:"lower-bound" AND a truncationReason — dropping a crossing can only move risk DOWN, so treat that risk as a floor, never as a verdict. truncated:true does NOT always mean the fan-out ran out of room, so branch on truncationReason: the remedy differs. 'timeout' (the fan-out's wall-clock budget expired) and 'partial' (a neighbour crossing, or the local walk, was cut short) are runtime limits — the same query can return more on a retry or with a larger timeoutMs. 'incomplete-sync' is structural: the group bridge was built by a sync that could not say which repos it read, or that could not read an in-scope repo, so those repos' contracts are absent from EVERY query against this bridge, and truncatedRepos names them even when ZERO crossings to them were attempted. Retrying returns the same floor — run group_sync (\`gitnexus group sync\`) and query again. 'suppressed-stage' is also structural but has a DIFFERENT remedy: the sync was asked to skip a matching stage (\`--exact-only\` / exactOnly), so cross-links that stage would have found are absent BY REQUEST. Re-running the sync unchanged returns the same floor — re-run it WITHOUT that flag. Do not report a repo as broken for this reason; nothing failed to read.
-
-SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", scopes the local impact walk and cross-repo symbol paths to files under that prefix; ignored for a normal indexed repo name.
+SERVICE: case-sensitive path prefix for local/group-crossing walks in @group mode; ignored for a normal repository.
 
 ${HOT_READ_STALENESS_NOTE}`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -713,9 +726,10 @@ ANCHORED ("target" = file path or symbol/function name): full hop detail for tha
 CONTRACT CAVEATS (absent flows are NOT proof of safety):
 - Cross-function flows ARE modeled (#2084 M4): a source flowing through helper functions into a sink is found, via summary composition over the call graph (context-insensitive — return/call-site merging is accepted).
 - Cross-function matching is by callee NAME (context-insensitive): when one caller invokes two distinct same-named callees, a flow into one over-attributes to both — a cross-function finding does not prove the taint reached every same-named function (sound over-report, never a missed flow).
-- Closure/callback flows are invisible in both directions (e.g. arr.forEach(() => sink(y))) — the largest false-negative class.
+- Sources read inside inline callbacks and returned handlers can flow through helper functions. Captured closure-variable flows are not modeled (e.g. const y = source(); arr.forEach(() => sink(y))).
 - Property/field flows are not tracked (obj.x = taint; sink(obj.y) has no chain).
-- Guard-style sanitizers (if (isValid(x))) and implicit/control-dependence flows are not modeled.
+- ${GUARD_TAINT_LIMITATION}
+- Implicit/control-dependence flows are not modeled.
 - CommonJS aliasing is partially modeled (require('<literal>') joins resolve; dynamic requires do not).
 - Exception-path over-approximation can produce false-positive noise.
 
@@ -870,7 +884,7 @@ Returns routes that have both detected response keys AND consumers. Shows top-le
 
 WHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend on, what response fields they access, what middleware protects the route, and what execution flows it triggers. Requires at least "route" or "file" parameter.
 
-Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate.
+Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate. When impactSummary.epistemic is "lower-bound", impactSummary.unverifiedConsumers more files pass the route's URL to a function not proven to send HTTP requests, so directConsumers is a floor; riskLevel counts proven consumers only. "indirectConsumers" lists the callers of the function that sends the request, one level up, each with that function's name in "via"; impactSummary.indirectConsumers counts their distinct files. They are reported apart from the direct consumers and do not feed riskLevel. The field is absent on an index built before the requesting function was recorded.
 
 Response shape is keyed on how many routes match, not on the data: exactly one match returns a single route object; two or more return { routes: [...], total: N }. The same URL can expose multiple HTTP verbs (e.g. GET and POST /api/orders are distinct routes that share the URL), so a bare-URL lookup may return the wrapped form — every route object carries its own "method" so verbs are distinguishable. Pass "method" to narrow to one verb; the single-object shape is returned only when exactly one route remains after filtering — a substring route/file match spanning several URLs can still return the wrapped form. A URL/file that exists but has no route for the given verb returns an error. Each route's "method" is the literal "*" for method-agnostic routes (e.g. Django function views), which match any "method" selector, or null for method-less routes (filesystem, Laravel resource), which never match a selector. Every route also carries "runtimeEvidence"; treat it as authoritative only when runtimeEvidence.confirmed is true. Combines route_map, shape_check, and impact data.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,

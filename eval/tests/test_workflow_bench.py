@@ -164,6 +164,31 @@ def test_runner_requires_a_named_model_and_supports_expensive_opt_in():
         normalized_model_identifier("   ")
 
 
+def test_default_sweep_includes_no_gitnexus_comparison_and_repeated_measurements():
+    args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "pinned-model"])
+    assert args.runs == 3
+    assert args.arms == ["workflow", "workflow_direct", "baseline", "baseline_nomcp"]
+    assert args.include_expensive is False
+
+
+def test_explicit_smoke_sweep_can_limit_the_model_budget():
+    args = build_parser().parse_args(
+        [
+            "--tasks",
+            "tasks.yaml",
+            "--model",
+            "pinned-model",
+            "--runs",
+            "1",
+            "--arms",
+            "baseline_nomcp",
+            "baseline",
+        ]
+    )
+    assert args.runs == 1
+    assert args.arms == ["baseline_nomcp", "baseline"]
+
+
 @pytest.mark.parametrize(
     "alias",
     ["Auto", "AUTO", "latest", "provider/latest", "provider:Latest", "provider@LATEST"],
@@ -185,7 +210,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         step for step in containment["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@")
     )
     claude_lock = json.loads((repo_root / ".github" / "claude-canary-runtime" / "package-lock.json").read_text())
-    setup_uv = "astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7"
+    setup_uv = "astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884"
     assert workflow.count(setup_uv) >= 3
     assert workflow.count("version: '0.11.23'") >= 3
     assert workflow.count("uv run --locked --extra dev python -m pytest") >= 3
@@ -308,11 +333,12 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
         for shard in range(1, total + 1)
     }
     assert names.isdisjoint(native_names)
-    assert set(gate["needs"]) == {"cross-platform", "test-completeness"}
+    assert set(gate["needs"]) == {"cross-platform", "test-completeness", "scope-resolution-benchmark"}
     assert gate["if"] == "always()"
     assert not gate.get("continue-on-error", False)
     assert not jobs["cross-platform"].get("continue-on-error", False)
     assert not jobs["test-completeness"].get("continue-on-error", False)
+    assert not jobs["scope-resolution-benchmark"].get("continue-on-error", False)
     assert gate["permissions"] == {}
     assert len(gate["steps"]) == 1
     step = gate["steps"][0]
@@ -322,22 +348,87 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
     assert step["env"] == {
         "NATIVE_RESULT": "${{ needs.cross-platform.result }}",
         "EXECUTION_RESULT": "${{ needs.test-completeness.result }}",
+        "SCOPE_BENCH_RESULT": "${{ needs.scope-resolution-benchmark.result }}",
     }
+
+
+def test_test_artifact_retries_cannot_hide_missing_evidence(ci_test_jobs):
+    repo_root = Path(__file__).resolve().parents[2]
+    action_path = ".github/actions/upload-test-artifact/action.yml"
+    action = yaml.safe_load((repo_root / action_path).read_text())
+    uploads = [step for step in action["runs"]["steps"] if "uses" in step]
+    assert len(uploads) == 3
+    first, second, final = uploads
+    assert first["if"] == "${{ always() }}"
+    assert second["if"] == "${{ !cancelled() && steps.first.outcome == 'failure' }}"
+    assert final["if"] == "${{ !cancelled() && steps.second.outcome == 'failure' }}"
+    assert first["id"] == "first" and second["id"] == "second"
+    assert first["continue-on-error"] is True
+    assert second["continue-on-error"] is True
+    assert not final.get("continue-on-error", False)
+    assert not first["with"].get("overwrite", False)
+    assert second["with"]["overwrite"] is True
+    assert final["with"]["overwrite"] is True
+    for step in uploads:
+        assert re.fullmatch(r"actions/upload-artifact@[a-f0-9]{40}", step["uses"])
+        assert step["with"]["if-no-files-found"] == "error"
+        for key in ("name", "path", "retention-days", "include-hidden-files"):
+            assert step["with"][key] == "${{ inputs." + key + " }}"
+
+    evidence_jobs = {
+        "tests", "coverage-merge", "cross-platform", "benchmarks",
+        "scope-resolution-benchmark", "eval-tests", "test-completeness",
+        "eval-containment-windows", "eval-containment-linux", "tool-accuracy",
+    }
+    for name in evidence_jobs:
+        job = ci_test_jobs[name]
+        reports = [
+            step for step in job["steps"]
+            if step.get("uses") == "./.github/actions/upload-test-artifact"
+        ]
+        assert reports, f"{name} must publish execution evidence"
+        assert not job.get("continue-on-error", False)
+        for step in reports:
+            assert not step.get("continue-on-error", False)
+            assert step["with"]["name"] and step["with"]["path"]
+
+    artifact_names = set()
+    for job in ci_test_jobs.values():
+        for step in job.get("steps", []):
+            assert not step.get("uses", "").startswith("actions/upload-artifact@")
+            if step.get("uses") != "./.github/actions/upload-test-artifact":
+                continue
+            name = step["with"]["name"]
+            assert name not in artifact_names, f"Retry could overwrite another job: {name}"
+            artifact_names.add(name)
+            for axis in job.get("strategy", {}).get("matrix", {}):
+                if axis not in {"include", "exclude"}:
+                    assert "${{ matrix." + axis + " }}" in name, (
+                        f"Artifact {name} must distinguish matrix axis {axis}"
+                    )
 
 
 @pytest.mark.parametrize("native_result", ["success", "failure", "cancelled", "skipped", ""])
 @pytest.mark.parametrize("execution_result", ["success", "failure", "cancelled", "skipped", ""])
-def test_required_platform_check_fails_unless_every_dependency_passed(ci_test_jobs, native_result, execution_result):
+@pytest.mark.parametrize("scope_bench_result", ["success", "failure", "cancelled", "skipped", ""])
+def test_required_platform_check_fails_unless_every_dependency_passed(
+    ci_test_jobs, native_result, execution_result, scope_bench_result
+):
     step = ci_test_jobs["protected-platform-checks"]["steps"][0]
     result = subprocess.run(
         ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
-        env={**os.environ, "NATIVE_RESULT": native_result, "EXECUTION_RESULT": execution_result},
+        env={
+            **os.environ,
+            "NATIVE_RESULT": native_result,
+            "EXECUTION_RESULT": execution_result,
+            "SCOPE_BENCH_RESULT": scope_bench_result,
+        },
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
     )
-    expected = 0 if native_result == execution_result == "success" else 1
+    expected = 0 if native_result == execution_result == scope_bench_result == "success" else 1
     assert result.returncode == expected, result.stdout + result.stderr
 
 
@@ -347,11 +438,18 @@ def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_asset
     selected, skipped = select_tasks(tasks, include_expensive=False)
     assert [task["id"] for task in selected] == [
         "trivial-status-json-alias",
-        "inv-bug-c-system-include",
+        "inv-feature-c-include-provenance",
         "inv-feature-list-repos-filter",
     ]
     assert skipped == ["cross-module-parse-retry"]
-    # v1.6.12 predates all four fixes, including the C fix already on main.
+    assert len(tasks) == 4
+    c_task = next(task for task in tasks if task["id"] == "inv-feature-c-include-provenance")
+    assert c_task["class"] == "investigation-feature"
+    assert "npx tsc --noEmit" in c_task["verify"]
+    assert "test/unit/scope-resolution/c/c-include-provenance.test.ts" in c_task["verify"]
+    assert "test/unit/scope-resolution/external-import-conformance.test.ts" in c_task["verify"]
+    assert not c_task.get("setup")
+    # v1.6.12 lacks all four requested behaviors, including retained C include provenance.
     assert {task["ref"] for task in tasks} == {"c4ecf398de637cf779ab2238e69958cfd5d601ce"}
     assert all(not task.get("sandbox_copy") for task in tasks)
     assert all(task["sandbox_dependencies"] for task in tasks)

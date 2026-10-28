@@ -35,14 +35,16 @@ import path from 'path';
 import fs from 'fs/promises';
 import { constants as fsConstants, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { retryRename } from '../storage/fs-atomic.js';
+import { assertLbugPublicationReady, consolidateLbugForPublication } from './lbug/publication.js';
 import {
   acquireIndexLock,
   requireExclusiveIndexLock,
   sweepStagingArtifacts,
 } from '../storage/index-lock.js';
 import { resolveEmbeddingRecovery } from '../storage/embedding-recovery.js';
-import { invalidateNodeWorkspacePackages } from './ingestion/import-resolvers/node-workspace-packages.js';
+import { invalidateNodeWorkspacePackages } from './ingestion/languages/typescript/workspace-packages.js';
 import {
   logNameFallbackSummary,
   summarizeNameFallback,
@@ -60,6 +62,7 @@ import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
+  acquireInitLock,
   loadGraphToLbug,
   getLbugStats,
   executeQuery,
@@ -139,6 +142,7 @@ import { resolveFtsVersionPair } from './lbug/vendored-extension-path.js';
 import {
   startWalCheckpointDriver,
   checkpointOnce,
+  runCheckpointWithRetry,
   isManualCheckpointEnabled,
   readCheckpointActivity,
   type CheckpointActivity,
@@ -247,11 +251,17 @@ import {
 } from './ingestion/process-detection-budget.js';
 import { NODE_TABLES } from './lbug/schema.js';
 import {
+  resolveParseCacheIdentity,
+  finalizeParseCacheIdentity,
+  type ParseCacheIdentity,
+  type ParseCacheIdentityResolution,
+} from './parse-cache-identity.js';
+import {
   loadParseCache,
   saveParseCache,
   pruneCache,
-  PARSE_CACHE_VERSION,
   createColdParseRebuildDir,
+  getColdParseRebuildDir,
   emptyParseCache,
   forgetCreatedParseCacheDir,
 } from '../storage/parse-cache.js';
@@ -280,6 +290,7 @@ import {
   snapshotEmbeddingDims,
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
+import { assertUniqueEmbeddingKeys, EmbeddingIntegrityError } from './embeddings/embedding-keys.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
@@ -1363,6 +1374,29 @@ async function removeColdParseRebuildDir(
   }
 }
 
+interface ParseIdentityRun {
+  resolve(): ParseCacheIdentityResolution;
+  /** Slot-owned staging parent; includes any late writes to a retired run's child. */
+  storagePath?: string;
+}
+
+function effectiveParseCacheIdentity(
+  identity: ParseCacheIdentity,
+  options: Pick<AnalyzeOptions, 'pdg' | 'pdgMaxFunctionLines'>,
+): NonNullable<RepoMeta['parseCacheIdentity']> {
+  return {
+    base: identity.base,
+    ...(options.pdg === true
+      ? {
+          pdg: {
+            identity: identity.pdg,
+            maxFunctionLines: options.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
+          },
+        }
+      : {}),
+  };
+}
+
 /**
  * Run the full analysis under an exclusive, index-directory-scoped write lock
  * (#2658). A second concurrent `analyze` on the same slot waits here for the
@@ -1400,6 +1434,11 @@ export async function runFullAnalysis(
   invalidateNodeWorkspacePackages(repoPath);
 
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
+  let parseIdentityResolution: ParseCacheIdentityResolution | undefined;
+  const parseRun: ParseIdentityRun = {
+    // Lazy so FTS-only repair neither inspects nor restamps parser provenance.
+    resolve: () => (parseIdentityResolution ??= resolveParseCacheIdentity(import.meta.url)),
+  };
   const acquireOpts = {
     log,
     // Resolve and validate the canonical slot under the lock before cleanup.
@@ -1460,8 +1499,29 @@ export async function runFullAnalysis(
           `Warning: checkout "${formatRejectedBranchForLog(writeTarget.rejectedDetectedBranch)}" is not a usable index label; continuing.`,
         );
       }
+      // Only this canonical slot is locked. Its deterministic parser stage
+      // can only belong to an interrupted predecessor; sibling stages live
+      // under their own meta directories and must remain untouched. Reclaim
+      // before freshness/FTS-only early returns as well as parsing runs.
+      await removeColdParseRebuildDir(getColdParseRebuildDir(writeTarget.metaDir), false);
       const flatShared = writeTarget.placement.branch ? undefined : writeTarget.sharedStore;
-      if (flatShared) await seedSharedSlot(flatShared, repoPath, log);
+      if (flatShared) {
+        await seedSharedSlot(flatShared, repoPath, log, (meta) => {
+          if (options.repairFts) return true;
+          const resolved = parseRun.resolve();
+          const pdg =
+            options.preserveExistingPdg && options.pdg === undefined
+              ? meta.pdg !== undefined
+              : options.pdg;
+          return (
+            resolved.ok &&
+            isDeepStrictEqual(
+              meta.parseCacheIdentity,
+              effectiveParseCacheIdentity(resolved.identity, { ...options, pdg }),
+            )
+          );
+        });
+      }
       sweepStagingArtifacts(writeTarget.metaDir, log);
       const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
       const result = await runFullAnalysisInner(
@@ -1470,6 +1530,7 @@ export async function runFullAnalysis(
         callbacks,
         writeTarget,
         contentRetention,
+        parseRun,
         runnerIdentityAtBootstrap,
       );
       if (flatShared) {
@@ -1494,6 +1555,7 @@ export async function runFullAnalysis(
       else if (options.shareWith) await setShareOptOut(repoPath, false);
       return result;
     } finally {
+      await removeColdParseRebuildDir(parseRun.storagePath, true);
       discardScopedEmbeddingSpills();
       lock.release();
     }
@@ -1506,6 +1568,7 @@ async function runFullAnalysisInner(
   callbacks: AnalyzeCallbacks,
   writeTarget: WriteTarget,
   contentRetention: ContentRetention,
+  parseRun: ParseIdentityRun,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
@@ -1585,7 +1648,6 @@ async function runFullAnalysisInner(
   };
   const ftsProfile = ftsProfileForContentRetention(contentRetention);
   const ftsIndexes = getFtsIndexes(ftsProfile);
-  let coldParseRebuildDir: string | undefined;
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
   // (e.g. the embeddings-cache open) falls back to the default until the hint is
@@ -1945,6 +2007,15 @@ async function runFullAnalysisInner(
   if (!analyzerRunnerIdentitiesEqual(runnerIdentity, runnerIdentity)) {
     throw new Error('Analyzer bootstrap supplied a malformed runner identity receipt');
   }
+  const parseIdentityResolution = parseRun.resolve();
+  const effectiveParseIdentity = parseIdentityResolution.ok
+    ? effectiveParseCacheIdentity(parseIdentityResolution.identity, options)
+    : undefined;
+  if (parseIdentityResolution.ok === false) {
+    log(
+      `Parse cache disabled: parser identity could not be verified (${parseIdentityResolution.reason}).`,
+    );
+  }
 
   let resumeEmbeddingCheckpoint = false;
   let pendingEmbeddingNodeIds = new Set<string>();
@@ -2138,6 +2209,19 @@ async function runFullAnalysisInner(
   const addGateReason = (reason: RebuildReason): void => {
     if (!priorIsFirstBuildClaim) collector.add(reason);
   };
+  if (
+    existingMeta &&
+    (effectiveParseIdentity === undefined ||
+      !isDeepStrictEqual(existingMeta.parseCacheIdentity, effectiveParseIdentity))
+  ) {
+    addGateReason({
+      key: 'parser-identity',
+      text:
+        effectiveParseIdentity === undefined
+          ? 'parser provenance is unverifiable — rebuilding without persistent parser caches.'
+          : 'parser artifacts or extraction options changed, or prior provenance is missing — rebuilding the graph.',
+    });
+  }
 
   // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
   // The incremental writeback persists only changed-file nodes, so a pdg
@@ -2716,6 +2800,23 @@ async function runFullAnalysisInner(
   // before the embedding plan, the parse cache, and the emit mode are decided.
   applyCollectedForce();
 
+  // Where the swap is allowed:
+  //  - POSIX renames an open file, so the usual skip-native-close (#2264) is
+  //    fine and the swap always applies.
+  //  - Windows can swap only when a real close is safe to release the build
+  //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
+  //    crash). Unverified on Windows CI; falls back to in-place otherwise.
+  const posixSwap = process.platform !== 'win32';
+  // #2614 Windows: the forced real-close before the rename re-bets that #2264 is
+  // --pdg-only, which is unproven (the CLI/worker skip the native close
+  // UNCONDITIONALLY) and unverifiable without a Windows runner. Keep it opt-in
+  // (GITNEXUS_ATOMIC_WINDOWS_SWAP=1) so the default Windows analyze stays on the
+  // proven in-place path; enable it only to test the Windows swap.
+  const windowsSwapOk =
+    process.platform === 'win32' &&
+    options.pdg !== true &&
+    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
+
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
   //   --embeddings              -> load cache, restore, then generate any new ones
@@ -2734,6 +2835,7 @@ async function runFullAnalysisInner(
   let cachedSnapshot: CachedEmbeddingsSnapshot = emptyCachedEmbeddingsSnapshot();
   const adoptCachedEmbeddings = (raw: CachedEmbeddingsSnapshot): void => {
     cachedSnapshot = normalizeCachedEmbeddings(raw);
+    assertUniqueEmbeddingKeys(cachedSnapshot.rows, 'Cached embedding');
   };
   const discardCachedEmbeddings = (): void => {
     disposeEmbeddingSpill(cachedSnapshot.spill);
@@ -2788,12 +2890,24 @@ async function runFullAnalysisInner(
   // possible the dirty block above already threw a LbugWipeError, so this
   // open is replay-free by construction (FIX 1 of this shipping review).
   if (shouldLoadCache && existingMeta) {
+    // Cache initialization is writable and may discard quarantined WALs.
+    // Preserve the live family before this first open, including runs whose
+    // incremental write later escalates to a staged full rebuild. Keep this
+    // outside the cache-load catch: a preservation failure must stop analysis.
+    if (posixSwap || windowsSwapOk) await consolidateLbugForPublication(lbugPath);
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initAnalysisLbug(lbugPath);
       adoptCachedEmbeddings(await loadCachedEmbeddings());
       await closeLbug();
     } catch (err: any) {
+      discardCachedEmbeddings();
+      try {
+        await closeLbug();
+      } catch {
+        /* preserve the original cache failure */
+      }
+      if (err instanceof EmbeddingIntegrityError) throw err;
       // Surface cache-load failures explicitly: silently swallowing here would
       // re-introduce the original silent-data-loss symptom (embeddings end up
       // at 0 in meta.json with no diagnostic) through a different door.
@@ -2802,12 +2916,6 @@ async function runFullAnalysisInner(
           `(${err?.message ?? String(err)}). ` +
           `Embeddings will not be preserved on this run.`,
       );
-      discardCachedEmbeddings();
-      try {
-        await closeLbug();
-      } catch {
-        /* swallow */
-      }
     }
   }
 
@@ -2867,6 +2975,7 @@ async function runFullAnalysisInner(
             `for ${recovered.embeddingNodeIds.size} node(s); unchanged content can reuse them.`,
         );
       } catch (err) {
+        if (err instanceof EmbeddingIntegrityError) throw err;
         log(
           `Warning: could not recover staged embeddings (${(err as Error).message}); ` +
             'the retry will regenerate missing chunks.',
@@ -2880,18 +2989,20 @@ async function runFullAnalysisInner(
   }
 
   // ── Load incremental parse cache ──────────────────────────────────
-  // Content-addressed: `--force` reuses parser shards; `useParseCache: false`
-  // stages a new generation under a run-unique parse-rebuild.* dir and publishes
-  // after success. Unique because index locks are per branch slot while this
-  // cache root is shared across branches.
-  if (options.useParseCache === false) {
-    coldParseRebuildDir = await createColdParseRebuildDir(cacheRoot);
-    forgetCreatedParseCacheDir(coldParseRebuildDir);
-  }
+  // Every fresh or repaired shard stays run-owned until final verification.
+  // The same directory provides bounded transient ParsedFile streaming when
+  // identity is unverifiable, without creating a reusable cache generation.
+  parseRun.storagePath = getColdParseRebuildDir(metaDir);
+  const coldParseRebuildDir = await createColdParseRebuildDir(metaDir);
+  forgetCreatedParseCacheDir(coldParseRebuildDir);
   const parseCache =
-    options.useParseCache === false
-      ? emptyParseCache(coldParseRebuildDir)
-      : await loadParseCache(cacheRoot);
+    parseIdentityResolution.ok === false
+      ? undefined
+      : options.useParseCache === false
+        ? emptyParseCache(parseIdentityResolution.identity, {
+            writeStoragePath: coldParseRebuildDir,
+          })
+        : await loadParseCache(cacheRoot, parseIdentityResolution.identity, coldParseRebuildDir);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
   // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
@@ -2949,6 +3060,8 @@ async function runFullAnalysisInner(
       },
       {
         parseCache,
+        parsedFileStorePath: coldParseRebuildDir,
+        parseWorkerUrl: parseIdentityResolution.ok ? parseIdentityResolution.workerUrl : undefined,
         workerPoolSize: options.workerPoolSize,
         maxProcesses: processDetectionBudget.maxProcesses,
         maxProcessBranching: processDetectionBudget.overridden.maxProcessBranching
@@ -3004,13 +3117,12 @@ async function runFullAnalysisInner(
     throw err;
   }
 
-  if (options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
+  if (parseCache && options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
     log(
       `Rebuilt the graph and FTS while reusing cached parser output for ` +
         `${pipelineResult.parseCacheHitFileCount} file(s) ` +
-        `(parse cache ${PARSE_CACHE_VERSION}). ` +
-        `For same-version capture/query development changes, increment SCHEMA_BUMP in ` +
-        `src/storage/parse-cache.ts to invalidate parser output.`,
+        `(parser ${parseCache.identity.base.slice(0, 19)}). ` +
+        `Parser compatibility is derived automatically from the installed artifacts.`,
     );
   }
 
@@ -3124,22 +3236,6 @@ async function runFullAnalysisInner(
   // rename on Windows. Windows keeps the current in-place behavior
   // (buildPath === lbugPath, no swap) until that is resolved (see §12/follow-up).
   const isFullRebuild = !(isIncremental && hashDiff);
-  // Where the swap is allowed:
-  //  - POSIX renames an open file, so the usual skip-native-close (#2264) is
-  //    fine and the swap always applies.
-  //  - Windows can swap only when a real close is safe to release the build
-  //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
-  //    crash). Unverified on Windows CI; falls back to in-place otherwise.
-  const posixSwap = process.platform !== 'win32';
-  // #2614 Windows: the forced real-close before the rename re-bets that #2264 is
-  // --pdg-only, which is unproven (the CLI/worker skip the native close
-  // UNCONDITIONALLY) and unverifiable without a Windows runner. Keep it opt-in
-  // (GITNEXUS_ATOMIC_WINDOWS_SWAP=1) so the default Windows analyze stays on the
-  // proven in-place path; enable it only to test the Windows swap.
-  const windowsSwapOk =
-    process.platform === 'win32' &&
-    options.pdg !== true &&
-    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
   // Incremental atomicity stages the whole index before mutation. It remains
   // opt-in for ordinary analyze runs; watch mode requests it for failure
   // preservation. The copy requests a filesystem clone and records its actual
@@ -3185,6 +3281,9 @@ async function runFullAnalysisInner(
   // valve. Nothing between here and there reads either binding except
   // `initLbug(buildPath)`, which the upgrade re-runs against the staging path.
   let useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
+  // Recover a valid live delta before staging its replacement. In-place runs
+  // retain the adapter's existing recovery path.
+  if (useAtomicSwap) await consolidateLbugForPublication(lbugPath);
   // Set only at the first operation that can mutate the live graph store.
   // Pre-write failures (config, lock, parsing, metadata, importer expansion)
   // remain retryable even when this platform cannot use an atomic swap.
@@ -3724,12 +3823,13 @@ async function runFullAnalysisInner(
             );
           }
         } catch (err: any) {
+          discardCachedEmbeddings();
+          if (err instanceof EmbeddingIntegrityError) throw err;
           log(
             `Warning: could not load cached embeddings ` +
               `(${err?.message ?? String(err)}). ` +
               `Embeddings will not be preserved on this run.`,
           );
-          discardCachedEmbeddings();
         }
       }
       // Hoisted out of the `||` below (§5.D): the size verdict has to be KNOWN
@@ -4431,6 +4531,7 @@ async function runFullAnalysisInner(
               }
               materialized = materializeCachedEmbeddings(cachedSnapshot, batch, spillReader);
             } catch (err) {
+              if (!shouldGenerateEmbeddings) throw err;
               for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not materialize ${batch.length} cached embedding(s) for restore ` +
@@ -4442,6 +4543,7 @@ async function runFullAnalysisInner(
               await batchInsert(executeWithReusedStatement, materialized);
               restoredEmbeddingCount += batch.length;
             } catch (err) {
+              if (err instanceof EmbeddingIntegrityError || !shouldGenerateEmbeddings) throw err;
               for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not restore ${batch.length} cached embedding(s) ` +
@@ -5297,7 +5399,7 @@ async function runFullAnalysisInner(
       // chunk hash touched in this scan — cache HITS included (see parse-impl
       // usedKeys.add) — so it's complete even on an incremental run. Persisted
       // so a sibling branch's prune can union it and not evict our shards.
-      cacheKeys: [...parseCache.usedKeys],
+      cacheKeys: parseCache ? [...parseCache.usedKeys] : [],
       incrementalInProgress: undefined as RepoMeta['incrementalInProgress'],
       // Cleared on a clean run; otherwise the marker Phase 4/5 minted above
       // (see the `kind` doc in repo-manager.ts).
@@ -5316,6 +5418,10 @@ async function runFullAnalysisInner(
     // graph produced by two analyzer identities. Stable-read validation lives
     // inside the resolver, and a mismatch leaves the dirty flag intact so the
     // next run takes the established full-recovery path.
+    if (parseIdentityResolution.ok) {
+      finalizeParseCacheIdentity(import.meta.url, parseIdentityResolution.identity);
+      meta.parseCacheIdentity = effectiveParseIdentity;
+    }
     meta.runnerIdentity = finalizeAnalyzerRunnerIdentity(import.meta.url, runnerIdentity);
     // #2614 F1: the freshness stamp (saveMeta) is written AFTER the atomic swap
     // below — never here — so a concurrent MCP reader can't observe
@@ -5348,6 +5454,11 @@ async function runFullAnalysisInner(
     // Stop the manual checkpoint driver before closeLbug so its
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
+    if (useAtomicSwap && !wroteChangedSubgraphOnly && !(await runCheckpointWithRetry()).flushed) {
+      // Publication requires durability even when periodic/manual checkpoints
+      // are disabled. A best-effort close cannot certify the staged file.
+      throw new Error('Cannot publish staged index: final checkpoint could not be verified.');
+    }
     // CLI callers (about to process.exit) skip the native close to dodge a
     // LadybugDB destructor double-free after --pdg writes — closeLbugBeforeExit
     // CHECKPOINTs for durability then leaves the handles for process exit to
@@ -5382,20 +5493,14 @@ async function runFullAnalysisInner(
         )
       : false;
     if (useAtomicSwap && builtDbExists) {
-      await retryRename(buildPath, lbugPath);
-      liveIndexMutationStarted = true;
-      // Clear any sidecars orphaned beside the replaced file. A cleanly-closed
-      // prior index has none; a crashed one could, and it would be replay
-      // poison next to the freshly published index. Best-effort.
-      for (const suffix of ['.wal', '.shadow', '.wal.checkpoint'] as const) {
-        await fs.rm(`${lbugPath}${suffix}`, { force: true }).catch(() => {});
-      }
-      // #2614 F4: if the final checkpoint silently failed, the build may still
-      // carry a residual .wal/.shadow under the temp name. MOVE it beside the
-      // published index (not orphan/delete it) so the next open replays the
-      // delta, rather than leaving it under a name LadybugDB never reconciles.
-      for (const suffix of ['.wal', '.shadow'] as const) {
-        await fs.rename(`${buildPath}${suffix}`, `${lbugPath}${suffix}`).catch(() => {});
+      await assertLbugPublicationReady(buildPath);
+      const releaseInitLock = await acquireInitLock(lbugPath);
+      try {
+        await assertLbugPublicationReady(lbugPath);
+        await retryRename(buildPath, lbugPath);
+        liveIndexMutationStarted = true;
+      } finally {
+        await releaseInitLock();
       }
     }
 
@@ -5505,6 +5610,7 @@ async function runFullAnalysisInner(
     // composition no longer matches anything in the current scan are dead
     // weight; the parse phase populates `usedKeys` as it processes chunks).
     const saveCaches = async (): Promise<void> => {
+      if (!parseCache) return;
       // #2106 R6: the parse cache + durable store are shared across branches.
       // Before pruning to this run's keys, fold in the OTHER branches' recorded
       // chunk keys so a branch switch doesn't evict their still-live shards.
@@ -5525,6 +5631,33 @@ async function runFullAnalysisInner(
         for (const k of folded.keys) siblingKeys.add(k);
         if (!folded.complete) complete = false;
       }
+      // Another slot may have published since this run loaded its cache.
+      // Refresh eligibility inside the publication lock for EVERY run. This
+      // is also the first persistent read for a bypass run, after parsing.
+      // Metadata alone cannot admit foreign shards, and live entries cannot
+      // replace this run's staged repairs or revive its retired chunks.
+      const retained = await loadParseCache(cacheRoot, parseCache.identity, coldParseRebuildDir);
+      parseCache.storagePath = cacheRoot;
+      parseCache.onDiskKeys = new Set();
+      for (const key of retained.onDiskKeys ?? []) {
+        if (
+          !parseCache.stagedKeys?.has(key) &&
+          !parseCache.staleKeys?.has(key) &&
+          (parseCache.usedKeys.has(key) || !complete || siblingKeys.has(key))
+        ) {
+          parseCache.onDiskKeys.add(key);
+        }
+      }
+      for (const [key, value] of retained.entries) {
+        if (
+          !parseCache.usedKeys.has(key) &&
+          !parseCache.stagedKeys?.has(key) &&
+          !parseCache.staleKeys?.has(key) &&
+          (!complete || siblingKeys.has(key))
+        ) {
+          parseCache.entries.set(key, value);
+        }
+      }
       if (complete) {
         for (const k of siblingKeys) parseCache.usedKeys.add(k);
       } else {
@@ -5532,6 +5665,7 @@ async function runFullAnalysisInner(
         // everything currently loaded rather than evict on incomplete info.
         log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
         for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
+        for (const k of parseCache.onDiskKeys ?? []) parseCache.usedKeys.add(k);
       }
       const pruned = pruneCache(parseCache, parseCache.usedKeys);
       if (pruned > 0) {
@@ -5549,8 +5683,8 @@ async function runFullAnalysisInner(
       // break an otherwise successful run (next run treats it as a miss).
       await mergeStagedDurableParsedFileStore(
         cacheRoot,
-        parseCache.storagePath ?? cacheRoot,
-        PARSE_CACHE_VERSION,
+        parseCache.writeStoragePath ?? cacheRoot,
+        parseCache.identity.base,
         new Set(savedKeys),
       );
     };

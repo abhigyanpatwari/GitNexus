@@ -1,103 +1,108 @@
-/**
- * Unit tests for the OpenCode hooks plugin
- * (`hooks/opencode/gitnexus-plugin.js`).
- *
- * Covers:
- * - extractOpenCodePattern: grep/glob/bash pattern extraction
- * - extractBashSearchPattern: rg/grep argv parsing
- * - isGitMutationCommand: git mutation detection
- * - extractAugmentContext / parseStatusPayload: CLI output parsing
- * - resolveCliInvocation: env override vs PATH fallback
- * - createAfterHook: appends augment context + stale hint, never throws
- * - GitNexusPlugin: exports the `tool.execute.after` hook
- */
-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import fs from 'fs/promises';
-import os from 'os';
-import path from 'path';
+import fs from 'node:fs';
+import { GitNexusPlugin } from '../../hooks/opencode/gitnexus-plugin.js';
 
-const spawnSyncMock = vi.fn();
+const { execFileMock } = vi.hoisted(() => ({ execFileMock: vi.fn() }));
+vi.mock('node:child_process', () => ({ execFile: execFileMock }));
 
-vi.mock('node:child_process', () => ({
-  spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
-}));
+type Callback = (error: Error | null, stdout: string, stderr: string) => void;
+const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 
-import {
-  GitNexusPlugin,
-  checkIndexStale,
-  createAfterHook,
-  extractAugmentContext,
-  extractBashSearchPattern,
-  extractOpenCodePattern,
-  isGitMutationCommand,
-  isShellMetaUnsafe,
-  parseStatusPayload,
-  resolveCliInvocation,
-  runAugment,
-  shouldSkipAugmentForShell,
-} from '../../hooks/opencode/gitnexus-plugin.js';
+async function invoke(tool: string, args: unknown, value: unknown = 'hits') {
+  const hooks = await GitNexusPlugin({ directory: '/repo' });
+  const output = { output: value };
+  await hooks['tool.execute.after']({ tool, args }, output);
+  return output.output;
+}
 
-describe('extractOpenCodePattern', () => {
-  it('extracts grep patterns of length >= 3', () => {
-    expect(extractOpenCodePattern('grep', { pattern: 'UserService' })).toBe('UserService');
-    expect(extractOpenCodePattern('grep', { pattern: 'ab' })).toBeNull();
-    expect(extractOpenCodePattern('grep', { query: 'fallback' })).toBe('fallback');
-    expect(extractOpenCodePattern('grep', {})).toBeNull();
+beforeEach(() => {
+  vi.stubEnv('GITNEXUS_HOOK_CLI_PATH', '');
+  execFileMock.mockReset();
+  execFileMock.mockImplementation(
+    (_cmd: string, argv: string[], _options: unknown, callback: Callback) => {
+      callback(
+        null,
+        argv.includes('status') ? '{"status":"up-to-date"}' : '',
+        '[GitNexus] callers: A',
+      );
+    },
+  );
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  Object.defineProperty(process, 'platform', platform);
+});
+
+describe('search augmentation through the public hook', () => {
+  it.each([
+    ['grep', { pattern: 'UserService' }, 'UserService'],
+    ['grep', { query: 'fallback' }, 'fallback'],
+    ['glob', { pattern: '**/UserService*' }, 'UserService'],
+    ['glob', { pattern: 'src/**/*.ts' }, 'src'],
+    ['glob', { pattern: '**/*.service.ts' }, 'service'],
+    ['bash', { command: 'rg --type ts UserService .' }, 'UserService'],
+    ['bash', { command: 'grep -r UserService .' }, 'UserService'],
+    ['bash', { command: 'rg -n -e UserService setup.ts' }, 'UserService'],
+    ['bash', { command: 'rg --regexp UserService .' }, 'UserService'],
+    ['bash', { command: 'grep --expression UserService .' }, 'UserService'],
+    ['bash', { command: 'rg "foo bar" .' }, 'foo bar'],
+    ['bash', { command: "grep -r 'user service' src" }, 'user service'],
+    ['bash', { command: 'rg -e "foo bar" file.ts' }, 'foo bar'],
+    ['bash', { command: 'rg --max-columns 100 UserService .' }, 'UserService'],
+    ['bash', { command: 'rg --max-columns=100 UserService .' }, 'UserService'],
+    ['bash', { command: 'rg -M 100 UserService .' }, 'UserService'],
+  ])('augments %s %j with %s', async (tool, args, pattern) => {
+    expect(await invoke(tool, args)).toBe('hits\n\n[GitNexus] callers: A');
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(execFileMock.mock.calls[0][1].slice(-3)).toEqual(['augment', '--', pattern]);
+    expect(execFileMock.mock.calls[0][2]).toMatchObject({
+      cwd: '/repo',
+      timeout: 10000,
+      maxBuffer: 1024 * 1024,
+    });
   });
 
-  it('derives a token from glob patterns', () => {
-    expect(extractOpenCodePattern('glob', { pattern: '**/UserService*' })).toBe('UserService');
-    expect(extractOpenCodePattern('glob', { pattern: 'src/**/*.ts' })).toBe('src');
-    expect(extractOpenCodePattern('glob', { pattern: '**/*.service.ts' })).toBe('service');
-    expect(extractOpenCodePattern('glob', { pattern: '**/*.{a,b}' })).toBeNull();
-    expect(extractOpenCodePattern('glob', {})).toBeNull();
+  it.each([
+    ['grep', { pattern: 'ab' }],
+    ['grep', {}],
+    ['grep', null],
+    ['grep', 'UserService'],
+    ['glob', { pattern: '**/*.{a,b}' }],
+    ['glob', {}],
+    ['bash', { command: 'rg -n "ab" .' }],
+    ['bash', { command: 'npm test' }],
+    ['bash', { command: null }],
+    ['bash', {}],
+    ['read', { filePath: 'a.ts' }],
+    ['edit', { filePath: 'a.ts' }],
+  ])('leaves %s %j untouched', async (tool, args) => {
+    expect(await invoke(tool, args)).toBe('hits');
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 
-  it('parses rg/grep out of bash commands only', () => {
-    expect(extractOpenCodePattern('bash', { command: 'rg -n "UserService" src' })).toBe(
-      'UserService',
+  it('strips diagnostics before the context marker and handles an empty tool result', async () => {
+    execFileMock.mockImplementation(
+      (_cmd: string, _argv: string[], _options: unknown, callback: Callback) =>
+        callback(null, '', 'diagnostic\n[GitNexus] callers: A\n'),
     );
-    expect(extractOpenCodePattern('bash', { command: 'ls -la' })).toBeNull();
-    expect(extractOpenCodePattern('bash', {})).toBeNull();
+    expect(await invoke('grep', { pattern: 'UserService' }, '')).toBe('[GitNexus] callers: A');
   });
 
-  it('ignores non-search tools and malformed args', () => {
-    expect(extractOpenCodePattern('read', { filePath: 'a.ts' })).toBeNull();
-    expect(extractOpenCodePattern('edit', { filePath: 'a.ts' })).toBeNull();
-    expect(extractOpenCodePattern('grep', null)).toBeNull();
-    expect(extractOpenCodePattern('grep', 'UserService')).toBeNull();
-  });
-});
-
-describe('extractBashSearchPattern', () => {
-  it('skips flags that consume a value', () => {
-    expect(extractBashSearchPattern('rg --type ts UserService .')).toBe('UserService');
-    expect(extractBashSearchPattern('grep -r UserService .')).toBe('UserService');
-  });
-
-  it('treats -e/--regexp/--expression as the pattern itself, not a value to skip', () => {
-    expect(extractBashSearchPattern('rg -e UserService .')).toBe('UserService');
-    expect(extractBashSearchPattern('grep -e UserService file.ts')).toBe('UserService');
-    expect(extractBashSearchPattern('rg --regexp UserService .')).toBe('UserService');
-    // The pattern flag must still win over a following positional filename.
-    expect(extractBashSearchPattern('rg -n -e UserService setup.ts')).toBe('UserService');
-  });
-
-  it('keeps quoted multi-word phrases intact instead of truncating at the space', () => {
-    expect(extractBashSearchPattern('rg "foo bar" .')).toBe('foo bar');
-    expect(extractBashSearchPattern("grep -r 'user service' src")).toBe('user service');
-    expect(extractBashSearchPattern('rg -e "foo bar" file.ts')).toBe('foo bar');
-  });
-
-  it('rejects short tokens and non-search commands', () => {
-    expect(extractBashSearchPattern('rg -n "ab" .')).toBeNull();
-    expect(extractBashSearchPattern('npm test')).toBeNull();
-    expect(extractBashSearchPattern(null)).toBeNull();
+  it('discards unmarked diagnostics and never coerces structured results', async () => {
+    execFileMock.mockImplementation(
+      (_cmd: string, _argv: string[], _options: unknown, callback: Callback) =>
+        callback(null, '', 'diagnostic'),
+    );
+    expect(await invoke('grep', { pattern: 'UserService' })).toBe('hits');
+    expect(await invoke('grep', { pattern: 'UserService' }, { structured: true })).toEqual({
+      structured: true,
+    });
   });
 });
 
-describe('isGitMutationCommand', () => {
+describe('stale-index hints', () => {
   it.each([
     'git commit -m x',
     'git merge main',
@@ -106,183 +111,54 @@ describe('isGitMutationCommand', () => {
     'git pull',
     'cd src && git commit -m x',
     'npm test || git pull',
-  ])('detects %s', (cmd) => expect(isGitMutationCommand(cmd)).toBe(true));
+  ])('checks %s', async (command) => {
+    execFileMock.mockImplementation(
+      (_cmd: string, _argv: string[], _options: unknown, callback: Callback) =>
+        callback(null, '{"status":"stale","index":{"commit":"abc1234567"}}', ''),
+    );
+    expect(await invoke('bash', { command })).toBe(
+      'hits\n\n[GitNexus] GitNexus index is stale (last indexed: abc1234). Run `gitnexus analyze` to update the knowledge graph.',
+    );
+    expect(execFileMock.mock.calls[0][1].slice(-2)).toEqual(['status', '--json']);
+    expect(execFileMock.mock.calls[0][2]).toMatchObject({ timeout: 15000 });
+  });
 
   it.each([
     'git status',
     'git diff',
     'git stash push',
-    'npm test',
-    '',
-    // Text that merely mentions a mutation must not count.
     "echo 'git commit'",
     "grep 'git commit' file.txt",
     'cat notes.md | grep git-pull',
-  ])('ignores %s', (cmd) => expect(isGitMutationCommand(cmd)).toBe(false));
-
-  it('rejects non-strings', () => {
-    expect(isGitMutationCommand(null)).toBe(false);
-    expect(isGitMutationCommand(undefined)).toBe(false);
+  ])('does not check %s', async (command) => {
+    await invoke('bash', { command });
+    expect(execFileMock.mock.calls.filter((call) => call[1].includes('status'))).toEqual([]);
   });
+
+  it.each(['{"status":"up-to-date"}', '{"error":"not-indexed"}', 'not json', '', 'null'])(
+    'stays silent for %s',
+    async (stdout) => {
+      execFileMock.mockImplementation(
+        (_cmd: string, _argv: string[], _options: unknown, callback: Callback) =>
+          callback(null, stdout, ''),
+      );
+      expect(await invoke('bash', { command: 'git commit -m x' })).toBe('hits');
+    },
+  );
 });
 
-describe('extractAugmentContext', () => {
-  it('keeps only the marked payload', () => {
-    expect(extractAugmentContext('noise\n[GitNexus] callers: A')).toBe('[GitNexus] callers: A');
+describe('CLI boundaries', () => {
+  it('uses the CLI override with an interpreter, never the OpenCode host binary', async () => {
+    vi.stubEnv('GITNEXUS_HOOK_CLI_PATH', '/custom/cli.js');
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    await invoke('grep', { pattern: 'UserService' });
+    expect(execFileMock.mock.calls[0].slice(0, 2)).toEqual([
+      'node',
+      ['/custom/cli.js', 'augment', '--', 'UserService'],
+    ]);
+    expect(execFileMock.mock.calls[0][2].shell).toBeUndefined();
   });
 
-  it('returns empty when the marker is absent', () => {
-    expect(extractAugmentContext('just diagnostics')).toBe('');
-    expect(extractAugmentContext('')).toBe('');
-  });
-});
-
-describe('parseStatusPayload', () => {
-  it('parses status JSON', () => {
-    const payload = parseStatusPayload(
-      JSON.stringify({ schemaVersion: 1, status: 'stale', index: { commit: 'abc1234' } }),
-    );
-    expect(payload?.status).toBe('stale');
-  });
-
-  it('returns null for non-JSON', () => {
-    expect(parseStatusPayload('not json')).toBeNull();
-    expect(parseStatusPayload('')).toBeNull();
-  });
-});
-
-describe('resolveCliInvocation', () => {
-  const saved = process.env.GITNEXUS_HOOK_CLI_PATH;
-
-  afterEach(() => {
-    if (saved === undefined) delete process.env.GITNEXUS_HOOK_CLI_PATH;
-    else process.env.GITNEXUS_HOOK_CLI_PATH = saved;
-  });
-
-  it('prefers GITNEXUS_HOOK_CLI_PATH when the file exists', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-opencode-'));
-    const cli = path.join(dir, 'index.js');
-    await fs.writeFile(cli, '// fake', 'utf-8');
-    process.env.GITNEXUS_HOOK_CLI_PATH = cli;
-    const invocation = resolveCliInvocation();
-    expect(invocation?.argv).toContain(cli);
-    await fs.rm(dir, { recursive: true, force: true });
-  });
-
-  it('prefers the built dist CLI, else falls back to a PATH binary', async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-opencode-'));
-    process.env.GITNEXUS_HOOK_CLI_PATH = path.join(dir, 'missing.js');
-    const invocation = resolveCliInvocation();
-    // Resolution depends on whether the package was built: with dist/ present
-    // (built checkout, published package) the node+dist form wins; on a fresh
-    // source checkout it falls back to `gitnexus` on PATH.
-    const distCli = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
-    let distExists = false;
-    try {
-      await fs.access(distCli);
-      distExists = true;
-    } catch {
-      distExists = false;
-    }
-    if (distExists) {
-      expect(invocation?.cmd).toBe(process.execPath);
-      expect(invocation?.argv[0]).toBe(distCli);
-    } else {
-      expect(invocation?.cmd).toBe('gitnexus');
-    }
-    await fs.rm(dir, { recursive: true, force: true });
-  });
-});
-
-describe('createAfterHook', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    delete process.env.GITNEXUS_HOOK_CLI_PATH;
-    spawnSyncMock.mockImplementation((cmd: string, argv: string[]) => {
-      if (argv.includes('augment')) {
-        return { error: undefined, status: 0, stderr: '[GitNexus] callers: A', stdout: '' };
-      }
-      if (argv.includes('status')) {
-        return {
-          error: undefined,
-          status: 0,
-          stdout: JSON.stringify({ schemaVersion: 1, status: 'up-to-date' }),
-          stderr: '',
-        };
-      }
-      return { error: undefined, status: 0, stdout: '', stderr: '' };
-    });
-  });
-
-  it('appends augment context after a grep call', async () => {
-    const after = createAfterHook('/repo');
-    const output: Record<string, unknown> = { output: 'hits' };
-    await after({ tool: 'grep', args: { pattern: 'UserService' } }, output);
-    expect(spawnSyncMock).toHaveBeenCalled();
-    expect(output.output).toBe('hits\n\n[GitNexus] callers: A');
-  });
-
-  it('stays silent when the pattern is too short', async () => {
-    const after = createAfterHook('/repo');
-    const output: Record<string, unknown> = { output: 'hits' };
-    await after({ tool: 'grep', args: { pattern: 'ab' } }, output);
-    expect(spawnSyncMock).not.toHaveBeenCalled();
-    expect(output.output).toBe('hits');
-  });
-
-  it('ignores non-search tools', async () => {
-    const after = createAfterHook('/repo');
-    const output: Record<string, unknown> = { output: 'file' };
-    await after({ tool: 'read', args: { filePath: 'a.ts' } }, output);
-    expect(spawnSyncMock).not.toHaveBeenCalled();
-    expect(output.output).toBe('file');
-  });
-
-  it('emits a stale hint after git mutations with a stale index', async () => {
-    spawnSyncMock.mockImplementation((cmd: string, argv: string[]) => {
-      if (argv.includes('status')) {
-        return {
-          error: undefined,
-          status: 0,
-          stdout: JSON.stringify({
-            schemaVersion: 1,
-            status: 'stale',
-            index: { commit: 'abc1234567' },
-          }),
-          stderr: '',
-        };
-      }
-      return { error: undefined, status: 0, stdout: '', stderr: '' };
-    });
-    const after = createAfterHook('/repo');
-    const output: Record<string, unknown> = { output: 'committed' };
-    await after({ tool: 'bash', args: { command: 'git commit -m x' } }, output);
-    expect(output.output).toContain('[GitNexus] GitNexus index is stale');
-    expect(output.output).toContain('gitnexus analyze');
-  });
-
-  it('stays silent after git mutations with a fresh index', async () => {
-    const after = createAfterHook('/repo');
-    const output: Record<string, unknown> = { output: 'committed' };
-    await after({ tool: 'bash', args: { command: 'git commit -m x' } }, output);
-    expect(output.output).toBe('committed');
-  });
-
-  it('never throws and never coerces non-string results', async () => {
-    spawnSyncMock.mockImplementation(() => {
-      throw new Error('spawn failed');
-    });
-    const after = createAfterHook('/repo');
-    const output: Record<string, unknown> = { output: { structured: true } };
-    await expect(
-      after({ tool: 'grep', args: { pattern: 'UserService' } }, output),
-    ).resolves.toBeUndefined();
-    expect(output.output).toEqual({ structured: true });
-    await expect(after(null, null)).resolves.toBeUndefined();
-  });
-});
-
-describe('isShellMetaUnsafe / shouldSkipAugmentForShell', () => {
   it.each([
     'foo & calc',
     'foo|bar',
@@ -296,52 +172,52 @@ describe('isShellMetaUnsafe / shouldSkipAugmentForShell', () => {
     'a;b',
     'a(b)',
     'a%PATH%',
-  ])('flags %s', (p) => expect(isShellMetaUnsafe(p)).toBe(true));
+    'a\nb',
+    'a\rb',
+  ])('drops unsafe Windows shell input %s', async (pattern) => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    expect(await invoke('grep', { pattern })).toBe('hits');
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
 
-  it.each(['UserService', 'std::vector', 'foo-bar_baz', 'a.b/c'])('allows %s', (p) =>
-    expect(isShellMetaUnsafe(p)).toBe(false),
+  it('quotes multi-word Windows PATH fallback arguments', async () => {
+    vi.spyOn(fs, 'existsSync').mockReturnValue(false);
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    await invoke('grep', { pattern: 'User Service' });
+    expect(execFileMock.mock.calls[0].slice(0, 2)).toEqual([
+      'gitnexus',
+      ['augment', '--', '"User Service"'],
+    ]);
+    expect(execFileMock.mock.calls[0][2].shell).toBe(true);
+  });
+
+  it('passes metacharacters literally without a shell when the CLI file exists', async () => {
+    vi.stubEnv('GITNEXUS_HOOK_CLI_PATH', '/custom/cli.js');
+    vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+    await invoke('grep', { pattern: 'foo & calc' });
+    expect(execFileMock.mock.calls[0][1].slice(-3)).toEqual(['augment', '--', 'foo & calc']);
+    expect(execFileMock.mock.calls[0][2].shell).toBeUndefined();
+  });
+
+  it.each(['timeout', 'nonzero exit', 'buffer exceeded'])(
+    'preserves output after %s',
+    async (reason) => {
+      execFileMock.mockImplementation(
+        (_cmd: string, _argv: string[], _options: unknown, callback: Callback) =>
+          callback(new Error(reason), '', '[GitNexus] incomplete'),
+      );
+      expect(await invoke('grep', { pattern: 'UserService' })).toBe('hits');
+      expect(await invoke('bash', { command: 'git commit -m x' })).toBe('hits');
+    },
   );
 
-  it('rejects non-strings', () => {
-    expect(isShellMetaUnsafe(null)).toBe(false);
-    expect(isShellMetaUnsafe(undefined)).toBe(false);
-  });
-
-  it('skips only when the invocation needs a shell', () => {
-    const shell = { cmd: 'gitnexus', argv: [], useShell: true };
-    const node = { cmd: 'node', argv: ['cli.js'], useShell: false };
-    expect(shouldSkipAugmentForShell(shell, 'foo & calc')).toBe(true);
-    expect(shouldSkipAugmentForShell(shell, 'UserService')).toBe(false);
-    expect(shouldSkipAugmentForShell(node, 'foo & calc')).toBe(false);
-    expect(shouldSkipAugmentForShell(null, 'foo & calc')).toBe(false);
-  });
-});
-
-describe('runAugment / checkIndexStale', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    delete process.env.GITNEXUS_HOOK_CLI_PATH;
-  });
-
-  it('runAugment returns empty on CLI failure', () => {
-    spawnSyncMock.mockReturnValue({ error: new Error('x'), status: 1, stderr: '', stdout: '' });
-    expect(runAugment('UserService', '/repo')).toBe('');
-  });
-
-  it('checkIndexStale returns null unless positively stale', () => {
-    spawnSyncMock.mockReturnValue({
-      error: undefined,
-      status: 0,
-      stdout: JSON.stringify({ schemaVersion: 1, error: 'not-indexed' }),
-      stderr: '',
+  it('never throws for a synchronous spawn error or malformed hook arguments', async () => {
+    execFileMock.mockImplementation(() => {
+      throw new Error('spawn failed');
     });
-    expect(checkIndexStale('/repo')).toBeNull();
-  });
-});
-
-describe('GitNexusPlugin', () => {
-  it('registers tool.execute.after', async () => {
-    const plugin = await GitNexusPlugin({ directory: '/repo' });
-    expect(typeof plugin['tool.execute.after']).toBe('function');
+    expect(await invoke('grep', { pattern: 'UserService' })).toBe('hits');
+    const hooks = await GitNexusPlugin();
+    await expect(hooks['tool.execute.after'](null, null)).resolves.toBeUndefined();
   });
 });

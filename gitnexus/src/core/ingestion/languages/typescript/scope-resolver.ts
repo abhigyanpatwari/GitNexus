@@ -24,11 +24,9 @@ import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { typescriptProvider } from '../typescript.js';
 import { typescriptModuleExports } from './module-exports.js';
+import { isCommonJsExportAssignment } from './cjs-export-receiver.js';
 import { loadTsconfigIndex, type TsconfigIndex } from './tsconfig.js';
-import {
-  loadNodeWorkspacePackages,
-  type NodeWorkspacePackages,
-} from '../../import-resolvers/node-workspace-packages.js';
+import { loadNodeWorkspacePackages, type NodeWorkspacePackages } from './workspace-packages.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { typescriptArityCompatibility, typescriptMergeBindings, resolveTsTarget } from './index.js';
 import {
@@ -78,6 +76,14 @@ function makeTsResolveImportTarget(): ScopeResolver['resolveImportTarget'] {
   };
 }
 
+async function loadResolutionConfig(repoPath: string, fresh = false) {
+  return {
+    tsconfigs: await loadTsconfigIndex(repoPath),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath, { fresh }),
+    nuxtAutoImports: await loadNuxtAutoImports(repoPath),
+  };
+}
+
 const typescriptScopeResolver: ScopeResolver = {
   populateWorkspaceReferences: (parsedFiles) =>
     canonicalizeWorkspaceBindings(parsedFiles, canonicalTypeScriptName),
@@ -104,11 +110,8 @@ const typescriptScopeResolver: ScopeResolver = {
   // workspace pass; the orchestrator awaits this once.
   // `nuxtAutoImports` is null for non-Nuxt projects (no .nuxt/imports.d.ts),
   // so this adds zero overhead to ordinary TypeScript repos.
-  loadResolutionConfig: async (repoPath: string) => ({
-    tsconfigs: await loadTsconfigIndex(repoPath),
-    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath),
-    nuxtAutoImports: await loadNuxtAutoImports(repoPath),
-  }),
+  loadResolutionConfig,
+  refreshResolutionConfig: (repoPath) => loadResolutionConfig(repoPath, true),
 
   // TypeScript declaration merging + LEGB: local > import > wildcard,
   // separated by declaration space (value / type / namespace). The
@@ -131,6 +134,8 @@ const typescriptScopeResolver: ScopeResolver = {
   // chain). This also correctly rejects identifiers that merely
   // contain the substring `super` (e.g. `superman`).
   isSuperReceiver: (text) => /^super(\s*\(|\s*\.|\s*\[|\s*$)/.test(text.trim()),
+
+  isModuleExportAssignment: isCommonJsExportAssignment,
 
   // TypeScript is statically typed — field-fallback heuristic off
   // (the type-binding layer produces precise owner types). Return-

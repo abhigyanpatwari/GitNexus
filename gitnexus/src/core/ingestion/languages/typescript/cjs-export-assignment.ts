@@ -192,7 +192,7 @@ const THIS_BINDING_NODE_TYPES = new Set([
  * `exports`/`module` reference marks it CommonJS. A file with neither signal
  * is left alone — silence is not evidence of CommonJS.
  */
-function isCommonJsModule(root: SyntaxNode, filePath?: string): boolean {
+export function isCommonJsModule(root: SyntaxNode, filePath?: string): boolean {
   // The extension settles it outright where Node itself does: `.cjs`/`.cts` are
   // CommonJS whatever the body contains, `.mjs`/`.mts` are ESM. Without this a
   // `.cjs` file whose only content is `this.x = fn` carries no AST signal and
@@ -206,19 +206,29 @@ function isCommonJsModule(root: SyntaxNode, filePath?: string): boolean {
   if (cached !== undefined) return cached;
 
   let sawCjsSignal = false;
-  const visit = (node: SyntaxNode): boolean => {
+  let sawEsmSignal = false;
+  const pending = [root];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (node === undefined) break;
     // An ESM statement settles it immediately: top-level `this` is undefined.
-    if (node.type === 'import_statement' || node.type === 'export_statement') return false;
+    if (node.type === 'import_statement' || node.type === 'export_statement') {
+      sawEsmSignal = true;
+      break;
+    }
     if (node.type === 'identifier' && (node.text === 'exports' || node.text === 'module'))
       sawCjsSignal = true;
     if (node.type === 'call_expression' && node.childForFieldName('function')?.text === 'require')
       sawCjsSignal = true;
 
-    for (const child of node.namedChildren) if (!visit(child)) return false;
-    return true;
-  };
+    const children = node.namedChildren;
+    for (let i = children.length - 1; i >= 0; i--) {
+      const child = children[i];
+      if (child !== undefined) pending.push(child);
+    }
+  }
 
-  const result = visit(root) && sawCjsSignal;
+  const result = !sawEsmSignal && sawCjsSignal;
   isCommonJsByRoot.set(root, result);
   return result;
 }

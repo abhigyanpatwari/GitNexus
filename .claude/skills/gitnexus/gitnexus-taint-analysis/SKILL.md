@@ -141,10 +141,12 @@ finding is NOT proof of safety.
   `taint/path-codec.ts`. Two hand-rolled copies of a wire format drift — never
   fork it. New metadata extends the format WITHIN the version when writer +
   reader ship together.
-- **Cache versioning.** A worker-harvest shape change bumps the parse-cache pdg
-  NAMESPACE (`pdg:N`), NOT `SCHEMA_BUMP` (which cold-invalidates every user).
-  Persisted-graph/config changes ride `RepoMeta.pdg`'s key-union mismatch →
-  full writeback. Model content rides `taintModelVersion`.
+- **Cache compatibility.** Worker-harvest changes invalidate automatically
+  through the PDG artifact identity. Keep extraction-only dependencies in the
+  PDG ownership boundary and verify that ordinary parse keys remain stable.
+  Shared parser changes belong to the base identity. Persisted-graph/config
+  changes ride `RepoMeta.pdg`'s key-union mismatch → full writeback.
+  Model content rides `taintModelVersion`.
 
 ## Adding a source / sink / sanitizer
 

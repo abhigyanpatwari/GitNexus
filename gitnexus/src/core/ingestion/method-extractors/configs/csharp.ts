@@ -16,6 +16,7 @@ import {
   collectModifierTexts,
 } from '../../field-extractors/configs/helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
+import { memoizeDeclarationFact } from '../declaration-facts.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -234,7 +235,7 @@ export const csharpMethodConfig: MethodExtractionConfig = {
     return undefined;
   },
 
-  extractParameters: extractCSharpParameters,
+  extractParameters: memoizeDeclarationFact(extractCSharpParameters),
 
   extractVisibility(node) {
     // Detect compound C# visibilities: protected internal, private protected

@@ -34,6 +34,10 @@ coverage/
 .vitest/
 .tmp-test/
 gitnexus/.tmp-test/
+# Mutation testing (gitnexus/tools/mutation). Prepared copies and run directories live
+# outside the checkout; these catch a Stryker run started inside it.
+.stryker-tmp/
+gitnexus/reports/mutation/
 
 # Misc
 *.local
@@ -87,6 +91,7 @@ gitnexus/test/fixtures/lang-resolution/**/bin
 GitNexus.sln
 # Git worktrees
 .worktrees/
+.devcontainer/generated/
 
 # Vendored tree-sitter grammar build artifacts (created at install time,
 # never committed). See docs/plans/2026-04-15-002-fix-tree-sitter-proto-vendor-deps-plan.md
