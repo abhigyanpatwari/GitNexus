@@ -84,6 +84,48 @@ export class FixtureCapture {
     };
     let total = 0;
     let visited = 0;
+    const captureFile = (file: string, relative: string, stat: fs.Stats): void => {
+      const fd = fs.openSync(
+        file,
+        fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
+      );
+      try {
+        const opened = fs.fstatSync(fd);
+        if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino) {
+          snapshot.unresolved.push(`${relative}: changed during capture`);
+          return;
+        }
+        if (opened.size >= MAX_BYTES || total + opened.size > MAX_TOTAL_BYTES) {
+          snapshot.unresolved.push(`${relative}: size limit`);
+          return;
+        }
+        // One extra byte detects growth without reading an unbounded replacement.
+        const bytes = Buffer.alloc(opened.size + 1);
+        let length = 0;
+        while (length < bytes.length) {
+          const count = fs.readSync(fd, bytes, length, bytes.length - length, length);
+          if (count === 0) break;
+          length += count;
+        }
+        const after = fs.fstatSync(fd);
+        if (
+          length !== opened.size ||
+          after.size !== opened.size ||
+          after.mtimeMs !== opened.mtimeMs ||
+          after.ctimeMs !== opened.ctimeMs
+        ) {
+          snapshot.unresolved.push(`${relative}: changed during capture`);
+          return;
+        }
+        total += length;
+        const text = bytes.subarray(0, length).toString('utf8');
+        if (text.includes('\uFFFD') || text.includes('\0')) {
+          snapshot.unresolved.push(`${relative}: binary or lossy text`);
+        } else snapshot.files.push([relative || path.basename(file), text]);
+      } finally {
+        fs.closeSync(fd);
+      }
+    };
     const visit = (file: string, relative: string, depth: number): void => {
       if (
         ++visited > 1_000 ||
@@ -113,16 +155,7 @@ export class FixtureCapture {
             snapshot.unresolved.push(`${relative}: excluded environment file`);
             return;
           }
-          if (stat.size >= MAX_BYTES || total + stat.size > MAX_TOTAL_BYTES) {
-            snapshot.unresolved.push(`${relative}: size limit`);
-            return;
-          }
-          const bytes = fs.readFileSync(file);
-          total += bytes.length;
-          const text = bytes.toString('utf8');
-          if (bytes.length >= MAX_BYTES || text.includes('\uFFFD') || text.includes('\0')) {
-            snapshot.unresolved.push(`${relative}: binary, lossy, or oversized text`);
-          } else snapshot.files.push([relative || path.basename(file), text]);
+          captureFile(file, relative, stat);
         }
       } catch {
         snapshot.unresolved.push(`${relative || '.'}: unreadable`);

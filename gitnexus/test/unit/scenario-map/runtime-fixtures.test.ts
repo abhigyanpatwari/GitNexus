@@ -1,4 +1,5 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
 import {
   mkdtempSync,
   mkdirSync,
@@ -73,6 +74,84 @@ const profile = async (raw: RawCoverageRecord, index = 0, concurrent = false) =>
 };
 const TS = 'export function twice(x: number) { return x + x; }';
 const PY = 'def twice(x):\n    return x + x\n';
+
+it('does not capture a replacement installed after the file metadata check', () => {
+  const root = repo({ 'main.ts': TS });
+  const file = path.join(root, 'main.ts');
+  const original = fs.lstatSync;
+  let replaced = false;
+  const stat = vi.spyOn(fs, 'lstatSync').mockImplementation(((...args) => {
+    const result = Reflect.apply(original, fs, args);
+    if (args[0] === file && !replaced) {
+      replaced = true;
+      fs.renameSync(file, `${file}.old`);
+      writeFileSync(file, 'replacement contents must not be retained');
+    }
+    return result;
+  }) as typeof fs.lstatSync);
+  const capture = new FixtureCapture();
+  try {
+    capture.repository(root);
+  } finally {
+    stat.mockRestore();
+  }
+  expect(replaced).toBe(true);
+  expect(JSON.stringify(capture.snapshots)).not.toContain('replacement contents');
+  expect(Object.values(capture.snapshots)[0].unresolved.join()).toMatch(/changed|unreadable/);
+});
+
+it('bounds reads when a file grows after opening and closes the descriptor', () => {
+  const root = repo({ 'main.ts': TS });
+  const original = fs.fstatSync;
+  let grew = false;
+  const stat = vi.spyOn(fs, 'fstatSync').mockImplementation(((...args) => {
+    const result = Reflect.apply(original, fs, args);
+    if (!grew) {
+      grew = true;
+      fs.appendFileSync(path.join(root, 'main.ts'), 'x'.repeat(250_000));
+    }
+    return result;
+  }) as typeof fs.fstatSync);
+  const read = vi.spyOn(fs, 'readSync');
+  const close = vi.spyOn(fs, 'closeSync');
+  const capture = new FixtureCapture();
+  try {
+    capture.repository(root);
+    expect(grew).toBe(true);
+    expect(read.mock.results.reduce((n, result) => n + result.value, 0)).toBe(
+      Buffer.byteLength(TS) + 1,
+    );
+    expect(close).toHaveBeenCalledOnce();
+    expect(Object.values(capture.snapshots)[0]).toMatchObject({
+      files: [],
+      unresolved: ['main.ts: changed during capture'],
+    });
+  } finally {
+    stat.mockRestore();
+    read.mockRestore();
+    close.mockRestore();
+  }
+});
+
+it('closes the descriptor when reading fails and marks the snapshot incomplete', () => {
+  const root = repo({ 'main.ts': TS });
+  const read = vi.spyOn(fs, 'readSync').mockImplementation(() => {
+    throw new Error('read failed');
+  });
+  const close = vi.spyOn(fs, 'closeSync');
+  const capture = new FixtureCapture();
+  try {
+    capture.repository(root);
+    expect(close).toHaveBeenCalledOnce();
+    expect(Object.values(capture.snapshots)[0]).toMatchObject({
+      files: [],
+      unresolved: ['main.ts: unreadable'],
+    });
+  } finally {
+    read.mockRestore();
+    close.mockRestore();
+  }
+});
 
 it('retains generated, deleted multilingual input contents and distinguishes control flow', async () => {
   const profiles = [];

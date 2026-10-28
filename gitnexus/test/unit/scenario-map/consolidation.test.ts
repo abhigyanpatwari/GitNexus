@@ -466,3 +466,41 @@ it('keeps negative zero distinct and locates the real assertion on a shared line
   expect(found[0].atoms[0].expected).toContain('"text":"-0"');
   expect(found[0].atoms[0].key).not.toBe(found[1].atoms[0].key);
 });
+
+it('resolves assertion aliases by lexical binding without importing nested declarations', () => {
+  const found = assertions(`
+    it('parameter', (value) => { function helper() { const value = graph.nodes.length; } expect(value).toBe(2); });
+    it('direct', () => { expect(graph.nodes.length).toBe(2); });
+    it('outer alias', () => { const value = graph.nodes.length; function helper() { const value = graph.edges.length; } expect(value).toBe(2); });
+    it('nested block', (value) => { { const value = graph.nodes.length; } expect(value).toBe(2); });
+    it.each([7])('row', (value) => { function helper() { const value = 99; } expect(result).toBe(value); });
+    it('literal row', () => { expect(result).toBe(7); });
+    it('callback', () => { const value = 'outer'; expect(items.map(value => value.name)).toEqual([]); });
+    it('renamed callback', () => { expect(items.map(item => item.name)).toEqual([]); });
+  `);
+  expect(found[0].atoms[0].key).toBeNull();
+  expect(found[2].atoms[0].key).toBe(found[1].atoms[0].key);
+  expect(found[2].atoms[0].key).toBeTruthy();
+  expect(found[3].atoms[0].key).toBeNull();
+  // The shared row parser still treats redeclarations conservatively; never import 99.
+  expect(found[4].atoms[0].key).toBeNull();
+  expect(found[5].atoms[0].key).toBeTruthy();
+  expect(found[6].atoms[0].key).toBe(found[7].atoms[0].key);
+  expect(found[6].atoms[0].key).toBeTruthy();
+});
+
+it('uses the last static value of duplicate object keys for literals and rows', () => {
+  const found = assertions(`
+    it('duplicates', () => { expect(result).toEqual({ a: 1, a: 2, nested: { x: 3, x: 4 } }); });
+    it('effective value', () => { expect(result).toEqual({ nested: { x: 4 }, a: 2 }); });
+    it.each([{ a: 1, a: 2, nested: { x: 3, x: 4 } }])('row', (value) => { expect(result).toEqual(value); });
+    it('numeric aliases', () => { expect(result).toEqual({ 1: 2, '1': 3 }); });
+    it('numeric value', () => { expect(result).toEqual({ '1': 3 }); });
+    it('different value', () => { expect(result).toEqual({ a: 1, nested: { x: 4 } }); });
+  `);
+  expect(found[0].atoms[0].key).toBeTruthy();
+  expect(found[0].atoms[0].key).toBe(found[1].atoms[0].key);
+  expect(found[2].atoms[0].key).toBe(found[1].atoms[0].key);
+  expect(found[3].atoms[0].key).toBe(found[4].atoms[0].key);
+  expect(found[5].atoms[0].key).not.toBe(found[1].atoms[0].key);
+});

@@ -1,4 +1,5 @@
 import * as t from '@babel/types';
+import traverse, { type Binding } from '@babel/traverse';
 import { generate } from '@babel/generator';
 import { resolveName } from '../../test-dupes/test-dupes.js';
 import type { RowValue } from '../types.js';
@@ -33,12 +34,14 @@ function canonicalRow(row: RowValue): unknown | undefined {
     return items.includes(undefined) ? undefined : { kind: 'array', items };
   }
   if (row.kind === 'object') {
-    const entries = row.entries
-      .map(({ key, value }) => ({ key, value: canonicalRow(value) }))
-      .sort((a, b) => a.key.localeCompare(b.key));
-    return entries.some((entry) => entry.value === undefined)
-      ? undefined
-      : { kind: 'object', entries };
+    const values = new Map<string, unknown>();
+    for (const entry of row.entries) {
+      const value = canonicalRow(entry.value);
+      if (value === undefined) return undefined;
+      values.set(entry.key, value);
+    }
+    const entries = [...values].map(([key, value]) => ({ key, value }));
+    return { kind: 'object', entries: entries.sort((a, b) => a.key.localeCompare(b.key)) };
   }
   return row;
 }
@@ -95,7 +98,7 @@ function literal(node: t.Node, scope: Scope): unknown | undefined {
     return items.includes(undefined) ? undefined : { kind: 'array', items };
   }
   if (t.isObjectExpression(node)) {
-    const entries: { key: string; value: unknown }[] = [];
+    const values = new Map<string, unknown>();
     for (const item of node.properties) {
       if (!t.isObjectProperty(item) || item.computed) return undefined;
       const key = t.isIdentifier(item.key)
@@ -105,47 +108,64 @@ function literal(node: t.Node, scope: Scope): unknown | undefined {
           : null;
       const value = literal(item.value, scope);
       if (key === null || value === undefined) return undefined;
-      entries.push({ key, value });
+      values.set(key, value);
     }
+    const entries = [...values].map(([key, value]) => ({ key, value }));
     return { kind: 'object', entries: entries.sort((a, b) => a.key.localeCompare(b.key)) };
   }
   return undefined;
 }
 
-/** Expand only single, preceding const bindings. Ambiguous scopes and mutable locals stay unknown. */
+/** Expand preceding immutable const bindings in their lexical scope. */
 function localOrigins(
   subject: CheckSubject,
   scope: Scope,
   before: number,
 ): (node: t.Node) => t.Node {
-  const declarations = new Map<string, t.Node | null>();
-  t.traverseFast(subject.record.fn.body, (node) => {
-    if (!t.isVariableDeclaration(node)) return;
-    for (const decl of node.declarations) {
-      if (!t.isIdentifier(decl.id)) continue;
-      const init = node.kind === 'const' && (decl.end ?? Infinity) < before ? decl.init : null;
-      declarations.set(decl.id.name, declarations.has(decl.id.name) ? null : (init ?? null));
-    }
+  const references = new WeakSet<t.Node>();
+  const declarations = new WeakMap<t.Node, Binding>();
+  traverse(t.file(t.program([t.expressionStatement(subject.record.fn)])), {
+    Identifier(path) {
+      if (path.isReferencedIdentifier()) references.add(path.node);
+      const binding = path.scope.getBinding(path.node.name);
+      if (binding) declarations.set(path.node, binding);
+    },
   });
   let nextBinding = 0;
   let visited = 0;
   const expand = (
     node: t.Node,
-    seen = new Set<string>(),
-    bindings = new Map<string, t.Identifier>(),
+    seen = new Set<Binding>(),
+    bindings = new Map<Binding, t.Identifier>(),
   ): t.Node => {
+    const unknown = (): t.Identifier => {
+      const marker = t.identifier('_unknown');
+      marker.name = '<unknown>';
+      return marker;
+    };
     if (++visited > 5000 || seen.size > 32) {
       scope.unresolved.add('assertion origin expansion limit reached');
-      const unknown = t.identifier('_unknown');
-      unknown.name = '<unknown>';
-      return unknown;
+      return unknown();
     }
-    const bound = t.isIdentifier(node) ? bindings.get(node.name) : undefined;
-    if (bound !== undefined) return bound;
-    if (t.isIdentifier(node) && scope.locals.has(node.name)) {
-      const init = declarations.get(node.name);
-      if (!init || seen.has(node.name)) return node;
-      return expand(init, new Set([...seen, node.name]), bindings);
+    const declaration = declarations.get(node);
+    if (references.has(node) && declaration) {
+      const bound = bindings.get(declaration);
+      if (bound) return bound;
+      // The inventory binds only the test callback's own parameters to table rows.
+      if (declaration.kind === 'param' && declaration.scope.block === subject.record.fn)
+        return node;
+      const decl = declaration.path.node;
+      if (
+        declaration.kind !== 'const' ||
+        !declaration.constant ||
+        !t.isVariableDeclarator(decl) ||
+        !t.isIdentifier(decl.id) ||
+        !decl.init ||
+        (decl.end ?? Infinity) >= before ||
+        seen.has(declaration)
+      )
+        return unknown();
+      return expand(decl.init, new Set([...seen, declaration]), bindings);
     }
     const copy = t.cloneNode(node, false);
     if (t.isFunction(copy) && copy.params.every((param) => t.isIdentifier(param))) {
@@ -153,7 +173,8 @@ function localOrigins(
       copy.params = copy.params.map((param) => {
         const marker = t.identifier('_bound');
         marker.name = `<bound:${nextBinding++}>`;
-        bindings.set((param as t.Identifier).name, marker);
+        const binding = declarations.get(param);
+        if (binding) bindings.set(binding, marker);
         return marker;
       });
     }
