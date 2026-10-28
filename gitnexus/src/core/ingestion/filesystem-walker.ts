@@ -5,6 +5,7 @@ import {
   indexableGlobPatterns,
   normalizeIncludeDotDirs,
   dotDirectoryIgnoreFilter,
+  filterDotDirectorySymlinks,
 } from './utils/include-dot-dirs.js';
 import fs from 'fs/promises';
 import { readdir } from 'node:fs';
@@ -130,7 +131,7 @@ export const walkRepositoryPaths = async (
     // directory; ENOTDIR means no matching subtree, not an unreadable one.
     (error.code === 'ENOTDIR' && includeDotDirs.includes(path.basename(String(directory))));
 
-  const filtered = (
+  const candidates = (
     await glob(patterns, {
       cwd: repoPath,
       nodir: true,
@@ -152,6 +153,8 @@ export const walkRepositoryPaths = async (
     })
   ).map((filePath) => filePath.replace(/\\/g, '/'));
   if (enumerationError !== undefined) throw enumerationError;
+  const filtered =
+    includeDotDirs.length > 0 ? await filterDotDirectorySymlinks(repoPath, candidates) : candidates;
   await options.onPathsDiscovered?.(filtered);
   const entries: ScannedFile[] = [];
   let processed = 0;

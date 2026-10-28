@@ -1,5 +1,7 @@
 import { logger } from '../../logger.js';
 import type { IgnoreLike, Path } from 'glob';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 
 /**
  * Directory names that must never be indexed, even when listed. These hold
@@ -126,8 +128,9 @@ export const dotDirectoryIgnoreFilter = (base: IgnoreLike): IgnoreLike => {
       return true;
     const name = parts[parts.length - 1];
     if (CREDENTIAL_FILES.has(name) || KEY_FILE.test(name)) return true;
-    // A literal root in a glob can traverse a symlink even with follow:false.
-    // Check ancestors too, so such a match cannot reach the content readers.
+    // Prune known links here. Glob can emit descendants before its cached
+    // parent type is known; filterDotDirectorySymlinks checks the filesystem
+    // after enumeration, before any metadata callback or content reader.
     for (let current: Path | undefined = entry; current?.relative(); current = current.parent) {
       if (current.isSymbolicLink()) return true;
     }
@@ -137,6 +140,38 @@ export const dotDirectoryIgnoreFilter = (base: IgnoreLike): IgnoreLike => {
     ignored: (entry) => protectedPath(entry) || (base.ignored?.(entry) ?? false),
     childrenIgnored: (entry) => protectedPath(entry) || (base.childrenIgnored?.(entry) ?? false),
   };
+};
+
+/** Validate actual ancestry rather than relying on glob's asynchronously populated cache. */
+export const filterDotDirectorySymlinks = async (
+  repoPath: string,
+  candidates: readonly string[],
+): Promise<string[]> => {
+  const checked = new Map<string, Promise<boolean>>();
+  const isSafe = (relativePath: string): Promise<boolean> => {
+    if (relativePath === '.') return Promise.resolve(true);
+    const cached = checked.get(relativePath);
+    if (cached) return cached;
+    const result = (async () => {
+      // Check parents first so a linked directory's descendants are never inspected.
+      if (!(await isSafe(path.dirname(relativePath)))) return false;
+      try {
+        return !(await fs.lstat(path.join(repoPath, relativePath))).isSymbolicLink();
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+        throw error;
+      }
+    })();
+    checked.set(relativePath, result);
+    return result;
+  };
+  const safe = await Promise.all(
+    candidates.map((candidate) =>
+      candidate.split(/[\\/]/).some((part) => part.startsWith('.')) ? isSafe(candidate) : true,
+    ),
+  );
+  return candidates.filter((_, index) => safe[index]);
 };
 
 /**

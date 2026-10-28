@@ -28,6 +28,7 @@ import {
   getIncludeDotDirs,
   indexableGlobPatterns,
   dotDirectoryIgnoreFilter,
+  filterDotDirectorySymlinks,
 } from '../../ingestion/utils/include-dot-dirs.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { logger } from '../../logger.js';
@@ -400,7 +401,11 @@ export class IncludeExtractor implements ContractExtractor {
     });
 
     const survivors: string[] = [];
-    for (const rel of candidates) {
+    const filtered =
+      includeDotDirs.length > 0
+        ? await filterDotDirectorySymlinks(repoPath, candidates)
+        : candidates;
+    for (const rel of filtered) {
       try {
         const stat = await fs.stat(path.join(repoPath, rel));
         if (!stat.isFile()) continue;

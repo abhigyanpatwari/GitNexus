@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   getIncludeDotDirs,
   includeDotDirsCoverage,
   indexableGlobPatterns,
   normalizeIncludeDotDirs,
+  filterDotDirectorySymlinks,
   _resetIncludeDotDirsWarnings,
 } from '../../src/core/ingestion/utils/include-dot-dirs.js';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -91,5 +95,55 @@ describe('include-dot-dirs', () => {
     normalizeIncludeDotDirs(['bad', 'bad']);
     normalizeIncludeDotDirs(['bad']);
     expect(cap.records().length).toBe(1);
+  });
+
+  it('rejects already-enumerated paths beneath directory links before content discovery', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-dot-links-'));
+    const repo = path.join(root, 'repo');
+    const external = path.join(root, 'external');
+    try {
+      await fs.mkdir(path.join(repo, '.source'), { recursive: true });
+      await fs.mkdir(path.join(external, '.source'), { recursive: true });
+      await fs.writeFile(path.join(repo, '.source', 'allowed.h'), '#pragma once');
+      await fs.writeFile(path.join(repo, 'visible.h'), '#pragma once');
+      await fs.writeFile(path.join(external, 'private.h'), 'SYNTHETIC_TEST_ONLY');
+      await fs.writeFile(path.join(external, '.source', 'private.h'), 'SYNTHETIC_TEST_ONLY');
+      const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+      await fs.symlink(external, path.join(repo, '.linked'), linkType);
+      await fs.symlink(external, path.join(repo, 'alias'), linkType);
+      // Glob can emit these descendants while its cached parent type is unknown.
+      const candidates = [
+        '.linked/private.h',
+        'alias/.source/private.h',
+        '.source/missing.h',
+        '.source/allowed.h',
+        'visible.h',
+      ];
+      if (process.platform !== 'win32') {
+        await fs.symlink(
+          path.join(external, 'private.h'),
+          path.join(repo, '.source', 'file-link.h'),
+        );
+        candidates.push('.source/file-link.h');
+      }
+      expect(await filterDotDirectorySymlinks(repo, candidates)).toEqual([
+        '.source/allowed.h',
+        'visible.h',
+      ]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when a dot-directory ancestor cannot be inspected', async () => {
+    const error = Object.assign(new Error('unreadable directory'), { code: 'EACCES' });
+    const lstat = vi.spyOn(fs, 'lstat').mockRejectedValue(error);
+    try {
+      await expect(filterDotDirectorySymlinks('/synthetic-repo', ['.source/file.h'])).rejects.toBe(
+        error,
+      );
+    } finally {
+      lstat.mockRestore();
+    }
   });
 });
