@@ -411,7 +411,7 @@ def test_test_artifact_retries_cannot_hide_missing_evidence(ci_test_jobs):
 def test_shard_plan_retry_cannot_replace_frozen_timing_input(ci_test_jobs):
     steps = ci_test_jobs["shard-plan"]["steps"]
     restore = next(step for step in steps if step.get("id") == "previous-input")
-    assert restore["if"] == "github.run_attempt > 1"
+    assert restore["if"] == "steps.execution.outputs.initialize != 'true'"
     assert not restore.get("continue-on-error", False)
     assert restore["with"]["name"] == "shard-timing-input"
 
@@ -423,7 +423,59 @@ def test_shard_plan_retry_cannot_replace_frozen_timing_input(ci_test_jobs):
         "Freeze timing input for every shard and retry",
     ):
         step = next(step for step in steps if step.get("name") == name)
-        assert step["if"] == "github.run_attempt == 1", name
+        assert step["if"] == "steps.execution.outputs.initialize == 'true'", name
+
+
+@pytest.mark.parametrize(
+    "attempt,conclusion,jobs,api_status,expected",
+    [
+        (1, "", 0, 1, "true"),
+        (2, "action_required", 0, 0, "true"),
+        (2, "action_required", 1, 0, "false"),
+        (2, "success", 0, 0, "false"),
+        (2, "failure", 0, 0, "false"),
+        (2, "cancelled", 0, 0, "false"),
+        (3, "action_required", 0, 1, "false"),
+        (2, "", 0, 1, None),
+    ],
+)
+def test_shard_plan_initializes_only_before_any_execution(
+    ci_test_jobs, tmp_path, attempt, conclusion, jobs, api_status, expected
+):
+    step = next(step for step in ci_test_jobs["shard-plan"]["steps"] if step.get("id") == "execution")
+    output = tmp_path / "output"
+    stub = """
+    gh() {
+      if [[ "$API_STATUS" != 0 ]]; then return "$API_STATUS"; fi
+      case "$2" in
+        */jobs) printf '%s\\n' "$INITIAL_JOBS" ;;
+        *) printf '%s\\n' "$INITIAL_CONCLUSION" ;;
+      esac
+    }
+    """
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", stub + step["run"]],
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(output),
+            "CI_REPOSITORY": "owner/repo",
+            "CI_RUN_ID": "123",
+            "CI_RUN_ATTEMPT": str(attempt),
+            "INITIAL_CONCLUSION": conclusion,
+            "INITIAL_JOBS": str(jobs),
+            "API_STATUS": str(api_status),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if expected is None:
+        assert result.returncode != 0
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert output.read_text() == f"initialize={expected}\n"
 
 
 @pytest.mark.parametrize("native_result", ["success", "failure", "cancelled", "skipped", ""])

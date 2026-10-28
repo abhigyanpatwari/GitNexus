@@ -266,22 +266,44 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Identify the first executing attempt
+        id: execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_REPOSITORY: ${{ github.repository }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          initialize=false
+          if [[ "$CI_RUN_ATTEMPT" == 1 ]]; then
+            initialize=true
+          elif [[ "$CI_RUN_ATTEMPT" == 2 ]]; then
+            # Fork approval increments run_attempt even though no job ran.
+            attempt="repos/$CI_REPOSITORY/actions/runs/$CI_RUN_ID/attempts/1"
+            conclusion=$(gh api "$attempt" --jq .conclusion)
+            if [[ "$conclusion" == action_required ]]; then
+              jobs=$(gh api "$attempt/jobs" --jq .total_count)
+              if [[ "$jobs" == 0 ]]; then initialize=true; fi
+            fi
+          fi
+          printf 'initialize=%s\n' "$initialize" >> "$GITHUB_OUTPUT"
       - name: Reuse this run's timing input on a retry
         id: previous-input
-        if: github.run_attempt > 1
+        if: steps.execution.outputs.initialize != 'true'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: shard-timing-input
           path: .vitest/timings
       - name: Restore last trusted timing history
-        if: github.run_attempt == 1
+        if: steps.execution.outputs.initialize == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: .vitest/timings
           key: test-timings-v1-node22-vitest5-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: test-timings-v1-node22-vitest5-
       - name: Prepare timing snapshot
-        if: github.run_attempt == 1
+        if: steps.execution.outputs.initialize == 'true'
         shell: bash
         run: |
           mkdir -p .vitest/timings
@@ -291,7 +313,7 @@ jobs:
           done
           sha256sum .vitest/timings/*.json >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze timing input for every shard and retry
-        if: github.run_attempt == 1
+        if: steps.execution.outputs.initialize == 'true'
         uses: ./.github/actions/upload-test-artifact
         with:
           name: shard-timing-input
