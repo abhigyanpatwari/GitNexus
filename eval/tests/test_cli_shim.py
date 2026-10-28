@@ -106,6 +106,13 @@ def test_sandbox_mounts_the_shim_instead_of_the_runtime_cli(tmp_path):
         shim = Path(mounts[SANDBOX_GITNEXUS_CLI])
         assert shim.read_text() == shim_source()
         assert proposer_sandbox.SANDBOX_GITNEXUS + "/dist" not in shim.read_text()
+        # Claude's Bash sandbox blocks AF_UNIX unless told otherwise; the shim needs it.
+        assert json.loads(sandbox.settings_json)["sandbox"]["network"]["allowAllUnixSockets"] is True
+    with prepare_sandbox(
+        clone=clone, claude_bin=sys.executable, bwrap_bin=sys.executable,
+        preflight=False, gitnexus_cli_available=False,
+    ) as sandbox:
+        assert json.loads(sandbox.settings_json)["sandbox"]["network"]["allowAllUnixSockets"] is False
 
 
 class _FakeMcpServer:

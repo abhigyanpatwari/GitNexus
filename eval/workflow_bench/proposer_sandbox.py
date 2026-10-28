@@ -213,6 +213,8 @@ class SandboxSession:
     read_only_mounts: tuple[ReadOnlyMount, ...]
     # Harness-authored, immutable overlays must not appear as agent work.
     synthetic_guidance_paths: tuple[str, ...] = ()
+    # The baseline_cli shim connects to the cell's MCP socket from Bash.
+    allow_unix_sockets: bool = False
 
     @property
     def require_pid_namespace(self) -> bool:
@@ -279,7 +281,9 @@ class SandboxSession:
 
     @property
     def settings_json(self) -> str:
-        return build_claude_settings(sandbox_enabled=self.backend == "bwrap")
+        return build_claude_settings(
+            sandbox_enabled=self.backend == "bwrap", allow_unix_sockets=self.allow_unix_sockets
+        )
 
     def environment(
         self,
@@ -549,12 +553,16 @@ def build_sandbox_environment(
     return env
 
 
-def build_claude_settings(*, sandbox_enabled: bool = True) -> str:
+def build_claude_settings(*, sandbox_enabled: bool = True, allow_unix_sockets: bool = False) -> str:
     """Inline settings that keep every Bash sandboxed and pre-approve the tools.
 
     Inline settings disable repository/plugin hooks even when ordinary
     CLAUDE.md startup context is loaded. Confinement rests on the sandbox
     policy below, ``--tools``/``--allowedTools``, and the bwrap mounts.
+
+    ``allow_unix_sockets`` lifts the Bash sandbox's AF_UNIX block for the
+    baseline_cli shim. The bwrap mounts still bound what it can reach: the
+    only harness socket in the agent namespace is the cell's MCP endpoint.
     """
 
     permissions = {
@@ -573,7 +581,7 @@ def build_claude_settings(*, sandbox_enabled: bool = True) -> str:
             "network": {
                 "allowedDomains": [],
                 "deniedDomains": ["*"],
-                "allowAllUnixSockets": False,
+                "allowAllUnixSockets": allow_unix_sockets,
                 "allowLocalBinding": False,
             },
             "filesystem": {
@@ -1338,6 +1346,7 @@ def prepare_sandbox(
                 for mount in baseline_mounts
                 if mount.target != f"{SANDBOX_WORKSPACE}/.gitnexus"
             ),
+            allow_unix_sockets=cli_shim,
         )
     except BaseException as exc:
         primary = exc
