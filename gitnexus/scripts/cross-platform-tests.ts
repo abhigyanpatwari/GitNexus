@@ -31,6 +31,9 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
+  'test/unit/opencode-plugin.test.ts',
+  'test/integration/opencode-plugin.test.ts',
+  'test/unit/uninstall.test.ts',
   'test/unit/resolve-invocation.test.ts',
   // CLI-spawn entry-point resolution; its path-separator assertion (cli[/\\]index)
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).

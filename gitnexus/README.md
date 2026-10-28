@@ -135,6 +135,21 @@ Add to `~/.cursor/mcp.json` (global — works for all projects):
 
 ### OpenCode
 
+`gitnexus setup -c opencode` writes the MCP entry plus skills and the hooks
+plugin (`~/.config/opencode/plugins/gitnexus.js`, auto-loaded by OpenCode —
+search augmentation via the OpenCode v1 `tool.execute.after` API and a
+stale-index hint after git mutations). Restart OpenCode after setup. Verified
+with OpenCode 1.19.5; the OpenCode v2 plugin API is not covered. Bash hooks
+recognize literal commands and known options, skip ambiguous shell constructs,
+and check the current OpenCode project's index for staleness.
+
+Bash search augmentation requires `rg` or `grep` to be the first command.
+For example, `cd src && rg UserService .` runs normally but receives no graph
+augmentation. Use a direct search command or OpenCode's `grep`/`glob` tools to
+get graph context.
+
+Manual MCP configuration:
+
 Add to `~/.config/opencode/config.json`:
 
 ```json
