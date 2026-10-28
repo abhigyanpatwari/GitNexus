@@ -20,6 +20,7 @@ import lbug from '@ladybugdb/core';
 import { isReadOnlyDbError, loadFTSExtension, loadVectorExtension } from './lbug-adapter.js';
 import { closeQueryResults } from './query-result-utils.js';
 import { warnIfQueryTextUnbounded } from './query-batch.js';
+import { queryMemoryGuard } from './query-memory-guard.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
@@ -1321,6 +1322,9 @@ export const executeParameterized = async (
   entry.lastUsed = Date.now();
   silenceStdout();
   activeQueryCount++;
+  // Exits the process if a runaway query exhausts memory (#3696).
+  const guardToken = queryMemoryGuard.begin(cypher);
+  let rowCount: number | undefined;
   let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
   try {
     const stmt = await withTimeout(conn.prepare(cypher), QUERY_TIMEOUT_MS, 'Prepare');
@@ -1331,6 +1335,7 @@ export const executeParameterized = async (
     queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
+    rowCount = rows.length;
     return rows;
   } catch (err) {
     if (isReadOnlyDbError(err)) {
@@ -1348,6 +1353,7 @@ export const executeParameterized = async (
     // Best-effort via the shared helper; never masks the query result or a real
     // error.
     if (queryResult) await closeQueryResults(queryResult);
+    queryMemoryGuard.end(guardToken, rowCount);
     activeQueryCount--;
     restoreStdout();
     checkin(entry, conn);
