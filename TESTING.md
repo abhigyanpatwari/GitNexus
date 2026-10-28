@@ -114,6 +114,9 @@ profile because native startup and coverage costs differ.
 The `shard-plan` job restores history once and uploads `shard-timing-input`.
 Every shard and report merge downloads that same snapshot. Retries reuse it,
 so a newly published history cannot change the partition halfway through a run.
+If the snapshot cannot be restored, the retry fails. If it was never uploaded,
+deleted, or expired, trigger a fresh workflow run with a new commit; rerunning
+the old run must not replace its timing input.
 With no usable history, the sequencer spreads sequential/native work using
 generic estimates; new files in an established profile use the package's median.
 

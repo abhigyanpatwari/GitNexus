@@ -269,20 +269,19 @@ jobs:
       - name: Reuse this run's timing input on a retry
         id: previous-input
         if: github.run_attempt > 1
-        continue-on-error: true
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: shard-timing-input
           path: .vitest/timings
       - name: Restore last trusted timing history
-        if: steps.previous-input.outcome != 'success'
+        if: github.run_attempt == 1
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: .vitest/timings
           key: test-timings-v1-node22-vitest5-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: test-timings-v1-node22-vitest5-
       - name: Prepare timing snapshot
-        if: steps.previous-input.outcome != 'success'
+        if: github.run_attempt == 1
         shell: bash
         run: |
           mkdir -p .vitest/timings
@@ -292,7 +291,7 @@ jobs:
           done
           sha256sum .vitest/timings/*.json >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze timing input for every shard and retry
-        if: steps.previous-input.outcome != 'success'
+        if: github.run_attempt == 1
         uses: ./.github/actions/upload-test-artifact
         with:
           name: shard-timing-input
