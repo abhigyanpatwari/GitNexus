@@ -18,7 +18,8 @@ from typing import Any
 ARMS = ("baseline_nomcp", "baseline", "baseline_cli")
 EXPOSURE = {"baseline_nomcp": "none", "baseline": "stdio-only", "baseline_cli": "stdio-only"}
 METRICS = ("cost_usd", "duration_s", "num_turns", "cache_read_input_tokens", "output_tokens")
-_CLI_COMMAND = re.compile(r"(?:^|[\s;&|(`])gitnexus\s+([a-z_-]+)")
+# Command position only: `npm --prefix gitnexus test` names this repo's package, not the CLI.
+_CLI_COMMAND = re.compile(r"(?:^|[;&|(`\n]\s*|\$\(\s*)gitnexus\s+([a-z_-]+)")
 
 
 def _rows(path: Path) -> list[dict[str, Any]]:
@@ -102,7 +103,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "## CLI-only arm (descriptive)",
         "",
         "`baseline_cli` reaches the same read-only GitNexus tools as `baseline` through a `gitnexus` shell "
-        "command, so no tool catalog enters the model context. It is not part of the release gate.",
+        + "command, so no tool catalog enters the model context. It is not part of the release gate.",
         "",
         "| Arm | Solved | Mean cost | Mean wall | Mean turns | Mean cache-read tokens | GitNexus calls/cell |",
         "| --- | --- | --- | --- | --- | --- | --- |",

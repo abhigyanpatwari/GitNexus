@@ -205,7 +205,8 @@ def test_cli_arm_report_compares_arms_and_counts_shell_calls(tmp_path):
         row("baseline_nomcp", 0, 1.0), row("baseline", 0, 1.3, gitnexus_tool_uses=3)]) + "\n")
     (cli.parent / "transcripts").mkdir()
     event = {"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "name": "Bash", "input": {"command": "gitnexus impact foo && gitnexus help"}}]}}
+        {"type": "tool_use", "name": "Bash", "input": {"command": "gitnexus impact foo && gitnexus help"}},
+        {"type": "tool_use", "name": "Bash", "input": {"command": "npm --prefix gitnexus test -- --run x"}}]}}
     (cli.parent / "transcripts/t-cli.jsonl").write_text(json.dumps(event) + "\n")
     cli.write_text(json.dumps(row("baseline_cli", 0, 1.1, transcript_artifacts=["transcripts/t-cli.jsonl"])) + "\n")
 
