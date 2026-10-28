@@ -63,7 +63,7 @@ describe('resolveQueryRssBudgetBytes', () => {
     expect(resolveQueryRssBudgetBytes(undefined, 64 * GIB)).toBe(16 * GIB);
   });
 
-  it('never defaults below 8 GiB, leaving room for the read pool page cache', () => {
+  it('defaults to 8 GiB when 25% is smaller and the host has sufficient headroom', () => {
     expect(resolveQueryRssBudgetBytes(undefined, 16 * GIB)).toBe(8 * GIB);
   });
 

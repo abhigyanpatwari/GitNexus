@@ -107,6 +107,7 @@ describe('impact: per-level frontier row cap (#3696)', () => {
     const res = await impact(backend, repoHandle);
     expect(res.impactedCount).toBe(1);
     expect(res.risk).toBe('LOW');
+    expect(res.riskSharedAxes).toBe('LOW');
     expect(res.partial).toBeUndefined();
   });
 
@@ -120,6 +121,7 @@ describe('impact: per-level frontier row cap (#3696)', () => {
     expect(res.impactedCount).toBe(1);
     expect(res.partial).toBe(true);
     expect(res.risk).toBe('UNKNOWN');
+    expect(res.riskSharedAxes).toBe('UNKNOWN');
     expect(res.riskNote).toContain('depth 1');
     expect(res.riskNote).toContain(String(IMPACT_FRONTIER_ROW_CAP));
   });
@@ -130,6 +132,7 @@ describe('impact: per-level frontier row cap (#3696)', () => {
     const res = await impact(backend, repoHandle);
     expect(res.impactedCount).toBe(300);
     expect(res.risk).toBe('CRITICAL');
+    expect(res.riskSharedAxes).toBe('CRITICAL');
     expect(res.partial).toBe(true);
   });
 
@@ -142,5 +145,6 @@ describe('impact: per-level frontier row cap (#3696)', () => {
     expect(res.impactedCount).toBe(1);
     expect(res.partial).toBe(true);
     expect(res.risk).toBe('UNKNOWN');
+    expect(res.riskSharedAxes).toBe('UNKNOWN');
   });
 });

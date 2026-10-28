@@ -9329,7 +9329,7 @@ export class LocalBackend {
     });
     const {
       risk: scoredRisk,
-      riskSharedAxes,
+      riskSharedAxes: scoredSharedAxes,
       riskScale,
     } = scoreImpactRisk({
       direction,
@@ -9341,8 +9341,10 @@ export class LocalBackend {
     });
     // Capped counts are lower bounds: keep a proven HIGH/CRITICAL, never a LOW/MEDIUM (#3442).
     const traversalCapped = traversalCappedAtDepth !== undefined;
-    const risk =
-      traversalCapped && (scoredRisk === 'LOW' || scoredRisk === 'MEDIUM') ? 'UNKNOWN' : scoredRisk;
+    const riskAfterCap = (score: typeof scoredRisk) =>
+      traversalCapped && (score === 'LOW' || score === 'MEDIUM') ? 'UNKNOWN' : score;
+    const risk = riskAfterCap(scoredRisk);
+    const riskSharedAxes = riskAfterCap(scoredSharedAxes);
 
     // Build per-depth counts (always included, even in summaryOnly mode)
     const byDepthCounts: Record<number, number> = {};

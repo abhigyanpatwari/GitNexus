@@ -225,8 +225,8 @@ The caller's 30-second read deadline covers prepare, execution, and row
 materialization. Timing out does not cancel native work: monitoring and its
 checked-out connection remain owned by that work until it settles. An impact
 frontier is separately capped at 100,000 relationship rows per depth. A capped
-walk stops, reports `partial: true`, and retains HIGH/CRITICAL risk or reports
-UNKNOWN instead of LOW/MEDIUM. This row cap does not bound the database's
+walk stops and reports `partial: true`. Both `risk` and `riskSharedAxes` retain
+HIGH/CRITICAL or report UNKNOWN instead of LOW/MEDIUM. This row cap does not bound the database's
 intermediate allocations. Narrow the target or relation filters before relying
 on a partial result.
 
