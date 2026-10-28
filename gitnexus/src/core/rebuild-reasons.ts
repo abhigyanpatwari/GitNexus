@@ -28,6 +28,7 @@ export const REBUILD_REASON_KEYS = [
   'graph-write-collapse',
   'analysis-features',
   'spring-vendor-prefixes',
+  'route-hook-config',
   'runner-identity',
   'parser-identity',
   'cjk-segmentation',

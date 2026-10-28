@@ -62,7 +62,10 @@ const FUNCTION_TYPES: ReadonlySet<string> = new Set(FUNCTION_TYPE_LIST);
 /** The framework this file routes with, when exactly one is imported. */
 function readImports(root: SyntaxNode): {
   readonly framework: Framework | null;
+  /** Every qualifier this file can call through, local name → import path. */
+  readonly imports: ReadonlyMap<string, string>;
 } {
+  const imports = new Map<string, string>();
   let gin: string | null = null;
   let echo: string | null = null;
   // Imports sit only at file scope; this runs on every Go file, so skip bodies.
@@ -77,12 +80,14 @@ function readImports(root: SyntaxNode): {
     if (explicit === '_' || explicit === '.') continue;
     const local = explicit ?? goImportPackageName(importPath);
     if (!local) continue;
+    imports.set(local, importPath);
     if (isGinImportPath(importPath)) gin = local;
     if (isEchoImportPath(importPath)) echo = local;
   }
   // Both, or neither: no way to tell which argument is the handler.
   if (gin !== null && echo === null) {
     return {
+      imports,
       framework: {
         source: GIN_ROUTE_SOURCE,
         alias: gin,
@@ -94,6 +99,7 @@ function readImports(root: SyntaxNode): {
   }
   if (echo !== null && gin === null) {
     return {
+      imports,
       framework: {
         source: ECHO_ROUTE_SOURCE,
         alias: echo,
@@ -103,7 +109,7 @@ function readImports(root: SyntaxNode): {
       },
     };
   }
-  return { framework: null };
+  return { imports, framework: null };
 }
 
 /** Named descendants of a function body, not descending into nested functions. */
@@ -169,13 +175,28 @@ function valueHint(value: SyntaxNode, bindings: GoRouteBindings): RouteHandlerRe
 const sameHint = (a: RouteHandlerReceiver, b: RouteHandlerReceiver): boolean =>
   a.kind === b.kind && a.name === b.name && a.qualifier === b.qualifier;
 
+/** What proves a router root: an engine constructor call or an engine-typed parameter. */
+interface RouterRoot {
+  /** Import local name the constructors are reached through; null when none apply. */
+  readonly alias: string | null;
+  readonly constructors: ReadonlySet<string>;
+  readonly isRootParameterType: (hint: RouteHandlerReceiver | undefined) => boolean;
+}
+
+const frameworkRoot = (fw: Framework): RouterRoot => ({
+  alias: fw.alias,
+  constructors: fw.constructors,
+  isRootParameterType: (hint) =>
+    hint?.kind === 'type' && hint.qualifier === fw.alias && hint.name === fw.engineType,
+});
+
 class RouterPrefixes {
   private readonly memo = new Map<GoRouteBinding, string | null>();
   private readonly visiting = new Set<GoRouteBinding>();
 
   constructor(
     private readonly bindings: GoRouteBindings,
-    private readonly fw: Framework,
+    private readonly root: RouterRoot,
     private readonly fn: SyntaxNode,
   ) {}
 
@@ -197,10 +218,10 @@ class RouterPrefixes {
     if (!operand || !field) return null;
     if (
       operand.type === 'identifier' &&
-      operand.text === this.fw.alias &&
+      operand.text === this.root.alias &&
       !this.bindings.lookup(operand)
     ) {
-      return this.fw.constructors.has(field) ? '' : null;
+      return this.root.constructors.has(field) ? '' : null;
     }
     if (field !== 'Group') return null;
     const path = stringLiteral(node.childForFieldName('arguments')?.namedChild(0));
@@ -218,12 +239,7 @@ class RouterPrefixes {
     this.visiting.add(binding);
     const hint = typeHint(binding.type, this.bindings);
     const candidates: (string | null)[] = [];
-    if (
-      binding.isInputParameter &&
-      hint?.kind === 'type' &&
-      hint.qualifier === this.fw.alias &&
-      hint.name === this.fw.engineType
-    ) {
+    if (binding.isInputParameter && this.root.isRootParameterType(hint)) {
       candidates.push('');
     } else if (binding.isInputParameter || binding.values.length === 0) {
       candidates.push(null);
@@ -283,6 +299,90 @@ function verbRegistration(call: SyntaxNode): VerbRegistration | null {
   return path === null ? null : { call, verb, receiver, args, path };
 }
 
+/** The handler a registration names, read from one argument of the verb call. */
+export interface GoRouteHandlerFact {
+  handlerName?: string;
+  handlerReceiver?: RouteHandlerReceiver;
+  /**
+   * `wrap(inner, …)` in the handler slot: the call's callee designator and the
+   * inner argument's handler. Only a configured wrapper is unwrapped (by the Go
+   * provider's `resolveRouteHandler`); the worker never decides that.
+   */
+  handlerWrapper?: { callee: string; handlerName: string; handlerReceiver?: RouteHandlerReceiver };
+}
+
+/** A handler designator: a bare package function or a `x.Member` selector. */
+function handlerDesignator(
+  node: SyntaxNode,
+  bindings: GoRouteBindings,
+  hints: Map<GoRouteBinding, RouteHandlerReceiver | undefined>,
+): { handlerName: string; handlerReceiver?: RouteHandlerReceiver } | undefined {
+  if (node.type === 'identifier') {
+    return bindings.lookup(node) ? undefined : { handlerName: node.text };
+  }
+  if (node.type !== 'selector_expression') return undefined;
+  const operand = node.childForFieldName('operand');
+  const field = node.childForFieldName('field');
+  if (operand?.type !== 'identifier' || !field) return undefined;
+  const hint = receiverHint(operand, bindings, hints);
+  return hint
+    ? { handlerName: `${operand.text}.${field.text}`, handlerReceiver: hint }
+    : { handlerName: `${operand.text}.${field.text}` };
+}
+
+/** `pkg.Wrap(h.Method, …)` / `Wrap(Func)` — a package-level callee wrapping a designator. */
+function wrappedHandler(
+  node: SyntaxNode,
+  bindings: GoRouteBindings,
+  hints: Map<GoRouteBinding, RouteHandlerReceiver | undefined>,
+): GoRouteHandlerFact['handlerWrapper'] {
+  if (node.type !== 'call_expression') return undefined;
+  const callee = node.childForFieldName('function');
+  if (!callee) return undefined;
+  if (callee.type === 'identifier') {
+    if (bindings.lookup(callee)) return undefined;
+  } else if (callee.type === 'selector_expression') {
+    const operand = callee.childForFieldName('operand');
+    // A local value's method (`m.Wrap`) has no stable designator to configure.
+    if (operand?.type !== 'identifier' || bindings.lookup(operand)) return undefined;
+  } else {
+    return undefined;
+  }
+  const inner = node.childForFieldName('arguments')?.namedChildren[0];
+  const designator = inner ? handlerDesignator(inner, bindings, hints) : undefined;
+  return designator ? { callee: callee.text, ...designator } : undefined;
+}
+
+function handlerFact(
+  node: SyntaxNode,
+  bindings: GoRouteBindings,
+  hints: Map<GoRouteBinding, RouteHandlerReceiver | undefined>,
+): GoRouteHandlerFact {
+  const designator = handlerDesignator(node, bindings, hints);
+  if (designator) return designator;
+  const handlerWrapper = wrappedHandler(node, bindings, hints);
+  return handlerWrapper ? { handlerWrapper } : {};
+}
+
+/** Verb registrations of every function that has some, with the file's bindings. */
+function* functionRegistrations(
+  root: SyntaxNode,
+): Generator<{ fn: SyntaxNode; registrations: VerbRegistration[]; bindings: GoRouteBindings }> {
+  let bindings: GoRouteBindings | undefined;
+  for (const fn of root.descendantsOfType(FUNCTION_TYPE_LIST)) {
+    const body = fn.childForFieldName('body');
+    if (!body) continue;
+    const registrations = bodyNodes(body).flatMap((node) => {
+      const registration = verbRegistration(node);
+      return registration === null ? [] : [registration];
+    });
+    // Most functions register nothing; skip their bindings.
+    if (registrations.length === 0) continue;
+    bindings ??= new GoRouteBindings(root);
+    yield { fn, registrations, bindings };
+  }
+}
+
 export function extractGoGinEchoRoutes(
   tree: Parser.Tree,
   filePath: string,
@@ -294,26 +394,15 @@ export function extractGoGinEchoRoutes(
 
   const out: ExtractedDecoratorRoute[] = [];
   const handlerHints = new Map<GoRouteBinding, RouteHandlerReceiver | undefined>();
-  let bindings: GoRouteBindings | undefined;
-  for (const fn of root.descendantsOfType(FUNCTION_TYPE_LIST)) {
-    const body = fn.childForFieldName('body');
-    if (!body) continue;
-    const nodes = bodyNodes(body);
-    const registrations = nodes.flatMap((node) => {
-      const registration = verbRegistration(node);
-      return registration === null ? [] : [registration];
-    });
-    // Most functions in a gin-importing file register nothing; skip their bindings.
-    if (registrations.length === 0) continue;
-    bindings ??= new GoRouteBindings(root);
-    const prefixes = new RouterPrefixes(bindings, framework, fn);
+  for (const { fn, registrations, bindings } of functionRegistrations(root)) {
+    const prefixes = new RouterPrefixes(bindings, frameworkRoot(framework), fn);
 
     for (const { call, verb, receiver, args, path } of registrations) {
       const prefix = prefixes.of(receiver);
       if (prefix === null) continue;
 
       const handler = framework.handlerArg === 'last' ? args[args.length - 1] : args[1];
-      const route: ExtractedDecoratorRoute = {
+      out.push({
         filePath,
         routePath: normalizeExtractedRoutePath(path, prefix),
         httpMethod: verb,
@@ -321,20 +410,105 @@ export function extractGoGinEchoRoutes(
         lineNumber: call.startPosition.row + 1 + lineOffset,
         prefix: null,
         source: framework.source,
-      };
-      if (handler.type === 'identifier' && !bindings.lookup(handler)) {
-        route.handlerName = handler.text;
-      } else if (handler.type === 'selector_expression') {
-        const operand = handler.childForFieldName('operand');
-        const field = handler.childForFieldName('field');
-        if (operand?.type === 'identifier' && field) {
-          route.handlerName = `${operand.text}.${field.text}`;
-          const hint = receiverHint(operand, bindings, handlerHints);
-          if (hint) route.handlerReceiver = hint;
-        }
-      }
-      out.push(route);
+        ...handlerFact(handler, bindings, handlerHints),
+      });
     }
   }
   return out;
+}
+
+/** One verb registration whose router root is a parameter of a wrapper-package type. */
+export interface GoRouteCandidate {
+  readonly routePath: string;
+  readonly httpMethod: string;
+  readonly lineNumber: number;
+  /** The handler read in gin's order (last argument). */
+  readonly gin: GoRouteHandlerFact;
+  /** The handler read in echo's order (second argument). */
+  readonly echo: GoRouteHandlerFact;
+}
+
+/**
+ * Route candidates of one file, grouped by the root parameter's declared type.
+ * The worker cannot tell whether `pkg.T` is a gin/echo engine (that is user
+ * configuration, applied on the main thread), so it records registrations
+ * under every imported, non-framework root type; nothing here is a route yet.
+ */
+export interface GoRouteCandidateFacts {
+  readonly roots: readonly {
+    readonly importPath: string;
+    readonly typeName: string;
+    readonly routes: readonly GoRouteCandidate[];
+  }[];
+}
+
+/** `*Q.T` / `Q.T` parameters of `fn`, where `Q` is an import of this file. */
+function importedRootTypes(
+  fn: SyntaxNode,
+  bindings: GoRouteBindings,
+  imports: ReadonlyMap<string, string>,
+): { importPath: string; qualifier: string; typeName: string }[] {
+  const out = new Map<string, { importPath: string; qualifier: string; typeName: string }>();
+  const parameters = fn.childForFieldName('parameters');
+  for (const declaration of parameters?.namedChildren ?? []) {
+    if (declaration.type !== 'parameter_declaration') continue;
+    const hint = typeHint(declaration.childForFieldName('type'), bindings);
+    if (hint?.kind !== 'type' || !hint.qualifier || !hint.name) continue;
+    const importPath = imports.get(hint.qualifier);
+    // Framework packages are the direct extractor's job, not a candidate.
+    if (!importPath || isGinImportPath(importPath) || isEchoImportPath(importPath)) continue;
+    out.set(`${hint.qualifier}.${hint.name}`, {
+      importPath,
+      qualifier: hint.qualifier,
+      typeName: hint.name,
+    });
+  }
+  return [...out.values()];
+}
+
+export function extractGoRouteCandidates(
+  tree: Parser.Tree,
+  lineOffset = 0,
+): GoRouteCandidateFacts | undefined {
+  const root = tree.rootNode;
+  const { imports } = readImports(root);
+  const byRoot = new Map<
+    string,
+    { importPath: string; typeName: string; routes: GoRouteCandidate[] }
+  >();
+  const handlerHints = new Map<GoRouteBinding, RouteHandlerReceiver | undefined>();
+  for (const { fn, registrations, bindings } of functionRegistrations(root)) {
+    for (const rootType of importedRootTypes(fn, bindings, imports)) {
+      const prefixes = new RouterPrefixes(
+        bindings,
+        {
+          alias: null,
+          constructors: new Set(),
+          isRootParameterType: (hint) =>
+            hint?.kind === 'type' &&
+            hint.qualifier === rootType.qualifier &&
+            hint.name === rootType.typeName,
+        },
+        fn,
+      );
+      for (const { call, verb, receiver, args, path } of registrations) {
+        const prefix = prefixes.of(receiver);
+        if (prefix === null) continue;
+        const key = `${rootType.importPath}\u0000${rootType.typeName}`;
+        let group = byRoot.get(key);
+        if (!group) {
+          group = { importPath: rootType.importPath, typeName: rootType.typeName, routes: [] };
+          byRoot.set(key, group);
+        }
+        group.routes.push({
+          routePath: normalizeExtractedRoutePath(path, prefix),
+          httpMethod: verb,
+          lineNumber: call.startPosition.row + 1 + lineOffset,
+          gin: handlerFact(args[args.length - 1], bindings, handlerHints),
+          echo: handlerFact(args[1], bindings, handlerHints),
+        });
+      }
+    }
+  }
+  return byRoot.size === 0 ? undefined : { roots: [...byRoot.values()] };
 }

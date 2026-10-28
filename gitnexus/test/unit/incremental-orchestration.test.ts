@@ -59,6 +59,7 @@ import {
   SPRING_ROUTE_BINDINGS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
 import { springVendorPrefixesKey } from '../../src/core/ingestion/frameworks/spring/vendor-prefixes.js';
+import { routeHookConfigKey } from '../../src/core/ingestion/route-hook-config.js';
 import {
   decodeSpringAopReason,
   SPRING_AOP_EVIDENCE_ID_PREFIX,
@@ -891,6 +892,41 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
         [SPRING_ROUTE_BINDINGS_FEATURE.id]: SPRING_ROUTE_BINDINGS_FEATURE.version,
       });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('rebuilds when the declared route aliases or handler wrappers change', async () => {
+    const repo = await setupSpringBeanIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const config = {
+        skipAgentsMd: true,
+        routeFrameworkAliases: [
+          { importPath: 'example.com/infra/pkg', type: 'Engine', framework: 'gin' },
+        ],
+        routeHandlerWrappers: ['common.Wrapper'],
+      };
+      await runFullAnalysis(repo.dbPath, config, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      expect((await loadMeta(storagePath))?.routeHookConfig).toBe(
+        routeHookConfigKey(config.routeFrameworkAliases, config.routeHandlerWrappers),
+      );
+
+      const steady = await runFullAnalysis(repo.dbPath, config, { onProgress: () => {} });
+      expect(steady.alreadyUpToDate).toBe(true);
+
+      const logs: string[] = [];
+      const rebuilt = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+      expect(rebuilt.alreadyUpToDate).toBeUndefined();
+      expect(rebuilt.rebuildReasons).toContain('route-hook-config');
+      expect(logs.join('\n')).toContain('no longer configured');
+      expect((await loadMeta(storagePath))?.routeHookConfig).toBe(routeHookConfigKey());
     } finally {
       await repo.cleanup();
     }

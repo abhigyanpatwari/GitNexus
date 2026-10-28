@@ -202,6 +202,8 @@ export async function resolveWatchOptions(
     maxProcessTraceDepth: processDetection.maxProcessTraceDepth,
     maxEntryPointCandidates: processDetection.maxEntryPointCandidates,
     fetchWrappers: merged.fetchWrappers,
+    routeFrameworkAliases: merged.routeFrameworkAliases,
+    routeHandlerWrappers: merged.routeHandlerWrappers,
     skipAgentsMd: true,
     skipSkills: true,
     noStats: true,

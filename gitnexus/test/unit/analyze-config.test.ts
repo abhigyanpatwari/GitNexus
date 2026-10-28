@@ -289,6 +289,91 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(/at least one string/);
   });
 
+  // ── Go route aliases and handler wrappers ──────────────────────────
+
+  const CORE = 'example.com/infra/pkg';
+
+  it('normalizes goRouterAliases and goHandlerWrappers (de-duped)', async () => {
+    await writeRc(
+      JSON.stringify({
+        goRouterAliases: [
+          { importPath: ` ${CORE} `, type: 'Engine', framework: 'gin' },
+          { importPath: CORE, type: 'Engine', framework: 'gin' },
+        ],
+        goHandlerWrappers: ['common.Wrapper', 'common.WrapperWithSuccessCode', 'common.Wrapper'],
+      }),
+    );
+    expect(loadAnalyzeConfig(dir)).toEqual({
+      routeFrameworkAliases: [{ importPath: CORE, type: 'Engine', framework: 'gin' }],
+      routeHandlerWrappers: ['common.Wrapper', 'common.WrapperWithSuccessCode'],
+    });
+  });
+
+  it.each([
+    [[{ importPath: CORE, type: 'Engine', framework: 'chi' }], /"gin" or "echo"/],
+    [[{ type: 'Engine', framework: 'gin' }], /"importPath" must be a non-empty string/],
+    [[{ importPath: CORE, type: 'Engine', framework: 'gin', extra: 1 }], /unknown field "extra"/],
+    [[{ importPath: CORE, type: '*Engine', framework: 'gin' }], /must be a Go type name/],
+    [[{ importPath: 'a b', type: 'Engine', framework: 'gin' }], /must be a Go import path/],
+    [[], /non-empty array/],
+    [['gin'], /entries must be objects/],
+  ])('rejects malformed goRouterAliases %j', async (aliases, message) => {
+    await writeRc(JSON.stringify({ goRouterAliases: aliases }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(message);
+  });
+
+  describe('GITNEXUS_RC out-of-repo config', () => {
+    let outside: string;
+    const saved = process.env.GITNEXUS_RC;
+
+    beforeEach(async () => {
+      outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rc-env-'));
+    });
+
+    afterEach(async () => {
+      if (saved === undefined) delete process.env.GITNEXUS_RC;
+      else process.env.GITNEXUS_RC = saved;
+      await fs.rm(outside, { recursive: true, force: true });
+    });
+
+    const writeEnvRc = async (contents: unknown): Promise<string> => {
+      const file = path.join(outside, 'service.json');
+      await fs.writeFile(file, JSON.stringify(contents));
+      process.env.GITNEXUS_RC = file;
+      return file;
+    };
+
+    it('applies the file when the repository has no .gitnexusrc', async () => {
+      await writeEnvRc({ goHandlerWrappers: ['common.Wrapper'] });
+      expect(loadAnalyzeConfig(dir)).toEqual({ routeHandlerWrappers: ['common.Wrapper'] });
+      await expect(loadAnalyzeConfigStrict(dir)).resolves.toEqual({
+        routeHandlerWrappers: ['common.Wrapper'],
+      });
+    });
+
+    it('overrides the repository .gitnexusrc key by key, and CLI still wins', async () => {
+      await writeRc(JSON.stringify({ defaultBranch: 'develop', skipSkills: true }));
+      await writeEnvRc({ defaultBranch: 'release' });
+      const config = loadAnalyzeConfig(dir);
+      expect(config).toEqual({ defaultBranch: 'release', skipSkills: true });
+      expect(mergeAnalyzeOptions({ skipSkills: false }, config).skipSkills).toBe(false);
+    });
+
+    it('rejects a relative path, a missing file, and invalid content', async () => {
+      process.env.GITNEXUS_RC = 'relative/rc.json';
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/must be an absolute path/);
+      process.env.GITNEXUS_RC = path.join(outside, 'missing.json');
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/Could not read GITNEXUS_RC file/);
+      await writeEnvRc({ goRouterAliases: 'gin' });
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/GITNEXUS_RC file .*non-empty array/);
+    });
+
+    it('is ignored when unset or blank', async () => {
+      process.env.GITNEXUS_RC = '  ';
+      expect(loadAnalyzeConfig(dir)).toBeUndefined();
+    });
+  });
+
   // ── Spring Actuator runtime enrichment (#2418) ────────────────────
 
   it('normalizes a Spring Actuator snapshot path', async () => {

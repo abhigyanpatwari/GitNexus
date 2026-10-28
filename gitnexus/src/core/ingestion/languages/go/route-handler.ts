@@ -2,6 +2,7 @@ import type { SymbolDefinition } from 'gitnexus-shared';
 import type { RouteHandlerResolutionHookContext } from '../../language-provider.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ExtractedDecoratorRoute } from '../../workers/parse-worker.js';
+import { logger } from '../../../logger.js';
 import { goPackageDir } from './package-clause.js';
 
 /**
@@ -22,6 +23,8 @@ export function resolveGoRouteHandler(
   route: ExtractedDecoratorRoute,
   context: RouteHandlerResolutionHookContext,
 ): string | undefined {
+  const unwrapped = unwrapConfiguredHandler(route, context);
+  if (unwrapped !== route) return unwrapped && resolveGoRouteHandler(unwrapped, context);
   const designator = route.handlerName;
   if (!designator) return undefined;
   const parts = designator.split('.');
@@ -45,6 +48,43 @@ export function resolveGoRouteHandler(
   return constructor && owner
     ? methodOfType(context, goPackageDir(constructor.filePath), owner, member)
     : undefined;
+}
+
+/** Wrapper callees already reported as unconfigured, so the debug line fires once each. */
+const reportedWrappers = new WeakMap<RouteHandlerResolutionHookContext, Set<string>>();
+
+/**
+ * A route whose handler slot was `wrap(inner)`: the route re-addressed to
+ * `inner` when `wrap` is a configured handler wrapper, `undefined` when it is
+ * not, and the route itself when nothing was wrapped.
+ */
+function unwrapConfiguredHandler(
+  route: ExtractedDecoratorRoute,
+  context: RouteHandlerResolutionHookContext,
+): ExtractedDecoratorRoute | undefined {
+  const wrapper = route.handlerWrapper;
+  if (route.handlerName || !wrapper) return route;
+  if (context.routeHandlerWrappers?.includes(wrapper.callee)) {
+    return {
+      ...route,
+      handlerName: wrapper.handlerName,
+      handlerReceiver: wrapper.handlerReceiver,
+      handlerWrapper: undefined,
+    };
+  }
+  let reported = reportedWrappers.get(context);
+  if (!reported) {
+    reported = new Set();
+    reportedWrappers.set(context, reported);
+  }
+  if (!reported.has(wrapper.callee)) {
+    reported.add(wrapper.callee);
+    logger.debug(
+      { callee: wrapper.callee, file: route.filePath, line: route.lineNumber },
+      'go routes: handler is wrapped by an unconfigured function; add it to goHandlerWrappers to resolve it',
+    );
+  }
+  return undefined;
 }
 
 type DefinitionBuckets = Map<string, SymbolDefinition[]>;

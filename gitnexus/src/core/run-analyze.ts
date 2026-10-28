@@ -51,6 +51,8 @@ import {
   countCallsByLanguage,
 } from './ingestion/scope-resolution/name-fallback-summary.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import type { RouteFrameworkAlias } from './ingestion/language-provider.js';
+import { routeHookConfigKey } from './ingestion/route-hook-config.js';
 import {
   logUnresolvedReceiverFiles,
   summarizeUnresolvedReceivers,
@@ -624,6 +626,12 @@ export interface AnalyzeOptions {
    * consumer scan unchanged.
    */
   fetchWrappers?: string[];
+  /**
+   * Declared router-framework aliases and handler-wrapper callees, forwarded to
+   * `PipelineOptions` and stamped into meta so a changed value rebuilds Routes.
+   */
+  routeFrameworkAliases?: RouteFrameworkAlias[];
+  routeHandlerWrappers?: string[];
   /**
    * Explicit local Spring Boot Actuator snapshot input (#2418), forwarded to
    * the Spring enrichment phase. Undefined keeps static-only analysis.
@@ -2358,6 +2366,26 @@ async function runFullAnalysisInner(
     });
   }
 
+  // Declared route aliases / handler wrappers change Route evidence without
+  // moving the commit or dirtying the tree, so a changed value must rebuild.
+  const currentRouteHookConfig = routeHookConfigKey(
+    options.routeFrameworkAliases,
+    options.routeHandlerWrappers,
+  );
+  const persistedRouteHookConfig = existingMeta?.routeHookConfig ?? routeHookConfigKey();
+  if (existingMeta && persistedRouteHookConfig !== currentRouteHookConfig) {
+    if (currentRouteHookConfig === routeHookConfigKey()) {
+      log(
+        'Warning: route aliases / handler wrappers used by the previous index are no longer ' +
+          'configured (was GITNEXUS_RC unset?) — Routes they produced will be removed.',
+      );
+    }
+    addGateReason({
+      key: 'route-hook-config',
+      text: 'route aliases or handler wrappers changed — persisted Route evidence will be rebuilt.',
+    });
+  }
+
   const currentSpringVendorPrefixes = springVendorPrefixesKey();
   const persistedRouteBindings = existingMeta?.analysisFeatures?.[SPRING_ROUTE_BINDINGS_FEATURE.id];
   if (
@@ -3101,6 +3129,8 @@ async function runFullAnalysisInner(
           ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
           : undefined,
         fetchWrappers: options.fetchWrappers,
+        routeFrameworkAliases: options.routeFrameworkAliases,
+        routeHandlerWrappers: options.routeHandlerWrappers,
         skipDerivedGraphPhases,
         springActuatorPath: options.springActuatorPath,
         asyncApiSpecPath: options.asyncApiSpecPath,
@@ -5375,6 +5405,7 @@ async function runFullAnalysisInner(
           : summarizeUndecidedSatisfaction(pipelineResult.undecidedSatisfaction),
       analysisFeatures: currentAnalysisFeatures,
       springVendorPrefixes: currentSpringVendorPrefixes,
+      routeHookConfig: currentRouteHookConfig,
       // Always stamped with the live resolved mode (#2331/#2339) — unlike
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.
