@@ -479,6 +479,96 @@ describe('filesystem-walker', () => {
     });
   });
 
+  describe('opt-in dot directories (GITNEXUS_INCLUDE_DOT_DIRS)', () => {
+    let dotDir: string;
+
+    beforeAll(async () => {
+      dotDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-dotdirs-'));
+      const write = async (rel: string, content: string) => {
+        await fs.mkdir(path.dirname(path.join(dotDir, rel)), { recursive: true });
+        await fs.writeFile(path.join(dotDir, rel), content);
+      };
+      await write('src/index.ts', 'export const main = () => {}');
+      await write('.scallywag/root.ts', 'export const root = 1;');
+      await write('pkg/.scallywag/unit.ts', 'export const unit = 1;');
+      await write('pkg/.scallywag/nested/testing.ts', 'export const testing = 1;');
+      await write('pkg/.scallywag/.env.local', 'SECRET=1');
+      await write('pkg/.scallywag/.cache/blob.ts', 'export const cached = 1;');
+      await write('pkg/.scallywag/generated/out.ts', 'export const generated = 1;');
+      await write('pkg/.other/hidden.ts', 'export const other = 1;');
+      await write('.git/HEAD', 'ref: refs/heads/main');
+      await write('.gitnexusignore', 'pkg/.scallywag/generated/\n');
+    });
+
+    afterAll(async () => {
+      await fs.rm(dotDir, { recursive: true, force: true });
+    });
+
+    const walkPaths = async (includeDotDirs?: readonly string[]) =>
+      (await walkRepositoryPaths(dotDir, undefined, { includeDotDirs })).map((f) => f.path);
+
+    it('skips dot directories by default', async () => {
+      const original = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      try {
+        expect(await walkPaths()).toEqual(['src/index.ts']);
+      } finally {
+        if (original !== undefined) process.env.GITNEXUS_INCLUDE_DOT_DIRS = original;
+      }
+    });
+
+    it('indexes a listed dot directory at any depth, keeping hidden files and other dot dirs out', async () => {
+      expect(await walkPaths(['.scallywag'])).toEqual([
+        '.scallywag/root.ts',
+        'pkg/.scallywag/nested/testing.ts',
+        'pkg/.scallywag/unit.ts',
+        'src/index.ts',
+      ]);
+    });
+
+    it('reads the list from GITNEXUS_INCLUDE_DOT_DIRS when no option is passed', async () => {
+      const original = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.other';
+      try {
+        expect(await walkPaths()).toEqual(['pkg/.other/hidden.ts', 'src/index.ts']);
+      } finally {
+        if (original === undefined) {
+          delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+        } else {
+          process.env.GITNEXUS_INCLUDE_DOT_DIRS = original;
+        }
+      }
+    });
+
+    it('keeps a listed directory on the built-in ignore list out until .gitnexusignore negates it', async () => {
+      const ghDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-dotdirs-github-'));
+      try {
+        await fs.mkdir(path.join(ghDir, '.github', 'scripts'), { recursive: true });
+        await fs.writeFile(path.join(ghDir, '.github', 'scripts', 'queue.mjs'), 'export {};');
+        await fs.writeFile(path.join(ghDir, 'index.ts'), 'export {};');
+        const walk = async () =>
+          (await walkRepositoryPaths(ghDir, undefined, { includeDotDirs: ['.github'] })).map(
+            (f) => f.path,
+          );
+
+        expect(await walk()).toEqual(['index.ts']);
+        await fs.writeFile(path.join(ghDir, '.gitnexusignore'), '!.github/\n');
+        expect(await walk()).toEqual(['.github/scripts/queue.mjs', 'index.ts']);
+      } finally {
+        await fs.rm(ghDir, { recursive: true, force: true });
+      }
+    });
+
+    it('never indexes .git even when listed', async () => {
+      const cap = _captureLogger();
+      try {
+        expect(await walkPaths(['.git'])).toEqual(['src/index.ts']);
+      } finally {
+        cap.restore();
+      }
+    });
+  });
+
   describe('readFileContents', () => {
     it('reads file contents by relative paths', async () => {
       const contents = await readFileContents(tmpDir, ['src/index.ts', 'src/utils.ts']);

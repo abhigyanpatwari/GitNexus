@@ -623,6 +623,27 @@ int auto_main() { return 0; }`,
         else process.env.GITNEXUS_MAX_FILE_SIZE = previous;
       }
     });
+
+    it('registers headers in a dot directory only when GITNEXUS_INCLUDE_DOT_DIRS lists it', async () => {
+      const previous = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      writeFile('.config/listed.h', '#pragma once');
+      writeFile('.cache/unlisted.h', '#pragma once');
+      try {
+        delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+        const before = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+        expect(before.map((c) => c.contractId)).not.toContain('include::.config/listed.h');
+
+        process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.config';
+        const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+        const providerIds = contracts.filter((c) => c.role === 'provider').map((p) => p.contractId);
+
+        expect(providerIds).toContain('include::.config/listed.h');
+        expect(providerIds).not.toContain('include::.cache/unlisted.h');
+      } finally {
+        if (previous === undefined) delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+        else process.env.GITNEXUS_INCLUDE_DOT_DIRS = previous;
+      }
+    });
   });
 
   describe('Windows SIGSEGV regression — large input must route through parseSourceSafe', () => {

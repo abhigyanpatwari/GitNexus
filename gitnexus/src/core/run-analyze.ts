@@ -278,6 +278,7 @@ import {
 } from '../storage/git.js';
 import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
 import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
+import { includeDotDirsCoverage } from './ingestion/utils/include-dot-dirs.js';
 import {
   cacheRowCount,
   discardScopedEmbeddingSpills,
@@ -5388,6 +5389,9 @@ async function runFullAnalysisInner(
       indexCoverage: hasGitDir(repoPath)
         ? {
             maxFileSizeBytes: getMaxFileSizeBytes(),
+            // Stamped only when set, so indexes built without the option keep
+            // their existing metadata shape.
+            ...includeDotDirsCoverage(),
             dirtyPaths: (
               listWorkingTreeDirtyPaths(repoPath) ?? Object.keys(newFileHashesRecord)
             ).filter(

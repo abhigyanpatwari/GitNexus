@@ -24,6 +24,10 @@ import { readSafe } from './fs-utils.js';
 import { buildSuffixIndex, type SuffixIndex } from '../../ingestion/utils/suffix-index.js';
 import { createIgnoreFilter } from '../../../config/ignore-service.js';
 import { getMaxFileSizeBytes } from '../../ingestion/utils/max-file-size.js';
+import {
+  getIncludeDotDirs,
+  indexableGlobPatterns,
+} from '../../ingestion/utils/include-dot-dirs.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { logger } from '../../logger.js';
 
@@ -364,6 +368,8 @@ export class IncludeExtractor implements ContractExtractor {
    *   - `createIgnoreFilter` honors `.gitignore`, `.gitnexusignore`, the
    *     hardcoded ignore list, and `.gitnexusignore` last-match-wins
    *     negation.
+   *   - `indexableGlobPatterns` adds the `GITNEXUS_INCLUDE_DOT_DIRS`
+   *     directories to the non-hidden file set.
    *   - Only regular file targets are indexable (file symlinks are retained).
    *   - `getMaxFileSizeBytes()` drops files larger than the cap so we
    *     never emit `File:<rel>` UIDs for files ingestion would skip.
@@ -382,8 +388,9 @@ export class IncludeExtractor implements ContractExtractor {
   private async discoverIndexableFiles(repoPath: string): Promise<string[]> {
     const ignoreFilter = await createIgnoreFilter(repoPath);
     const maxFileSizeBytes = getMaxFileSizeBytes();
+    const patterns = indexableGlobPatterns(getIncludeDotDirs());
 
-    const candidates = await glob('**/*', {
+    const candidates = await glob(patterns, {
       cwd: repoPath,
       nodir: true,
       dot: false,

@@ -1,5 +1,10 @@
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { DEFAULT_MAX_FILE_SIZE_BYTES, getMaxFileSizeBytes } from './utils/max-file-size.js';
+import {
+  getIncludeDotDirs,
+  indexableGlobPatterns,
+  normalizeIncludeDotDirs,
+} from './utils/include-dot-dirs.js';
 import fs from 'fs/promises';
 import { readdir } from 'node:fs';
 import path from 'path';
@@ -73,6 +78,14 @@ export interface WalkRepositoryOptions {
    * silently drop a file that the index actually covers.
    */
   maxFileSizeBytes?: number;
+  /**
+   * Dot directories to index besides the default non-hidden file set, e.g.
+   * `['.scallywag']`. Defaults to `GITNEXUS_INCLUDE_DOT_DIRS`. `status` replays
+   * the list recorded at analyze time, for the same reason as
+   * `maxFileSizeBytes`. Hidden files and other dot directories inside a listed
+   * directory stay excluded, and ignore rules still apply.
+   */
+  includeDotDirs?: readonly string[];
 }
 
 /**
@@ -103,10 +116,13 @@ export const walkRepositoryPaths = async (
   await assertWalkRootIsDirectory(repoPath);
   const ignoreFilter = await createIgnoreFilter(repoPath);
   const maxFileSizeBytes = options.maxFileSizeBytes ?? getMaxFileSizeBytes();
+  const includeDotDirs = normalizeIncludeDotDirs(options.includeDotDirs ?? getIncludeDotDirs());
   let enumerationError: NodeJS.ErrnoException | undefined;
 
+  const patterns = indexableGlobPatterns(includeDotDirs);
+
   const filtered = (
-    await glob('**/*', {
+    await glob(patterns, {
       cwd: repoPath,
       nodir: true,
       dot: false,
