@@ -237,6 +237,9 @@ export const swiftProvider = defineLanguage({
   treeSitterQueries: SWIFT_QUERIES,
   typeConfig: swiftConfig,
   exportChecker: swiftExportChecker,
+  // `swiftExportChecker` returns false only for `private` / `fileprivate`,
+  // both file-scoped; the module-wide default (`internal`) is recorded true.
+  notExportedIsFilePrivate: true,
   callExtractor: createCallExtractor(swiftCallConfig),
   fieldExtractor: createFieldExtractor(swiftFieldConfig),
   methodExtractor: createMethodExtractor({
