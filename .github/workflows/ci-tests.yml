@@ -263,6 +263,9 @@ jobs:
       cov_shards: ${{ steps.gen.outputs.cov_shards }}
       cov_total: ${{ steps.gen.outputs.cov_total }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Reuse this run's timing input on a retry
         id: previous-input
         if: github.run_attempt > 1
@@ -290,12 +293,11 @@ jobs:
           sha256sum .vitest/timings/*.json >> "$GITHUB_STEP_SUMMARY"
       - name: Freeze timing input for every shard and retry
         if: steps.previous-input.outcome != 'success'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: ./.github/actions/upload-test-artifact
         with:
           name: shard-timing-input
           path: .vitest/timings/*.json
           include-hidden-files: true
-          if-no-files-found: error
           retention-days: 30
       - id: gen
         run: |

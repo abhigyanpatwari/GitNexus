@@ -54,7 +54,7 @@ const timeoutMs =
     : DEFAULT_TIMEOUT_MIN * 60 * 1000;
 
 console.log(
-  `Running ${ALL_CROSS_PLATFORM.length} platform-sensitive test files` +
+  `Running platform-sensitive test suite (${ALL_CROSS_PLATFORM.length} files total)` +
     `${shardArg ? ` (${shardArg}, balanced by timing history)` : ''}...\n`,
 );
 

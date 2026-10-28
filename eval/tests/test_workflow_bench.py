@@ -321,7 +321,7 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
         for platform in ("windows-latest", "macos-latest")
         for check in (1, 2, 3)
     }
-    plan = jobs["shard-plan"]["steps"][0]["run"]
+    plan = next(step["run"] for step in jobs["shard-plan"]["steps"] if step.get("id") == "gen")
     total = int(re.search(r"^TOTAL=(\d+)\b", plan, re.MULTILINE)[1])
     native_names = {
         "tests / "
