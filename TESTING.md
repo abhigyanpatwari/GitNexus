@@ -104,6 +104,33 @@ The subset is defined in `gitnexus/scripts/cross-platform-tests.ts` and includes
 
 When adding a platform-sensitive test, add it to the appropriate section in `scripts/cross-platform-tests.ts`.
 
+### Automatic shard balancing
+
+CI uses `vitest-shard-balancer` to distribute test files by measured duration.
+Timing history lives in GitHub Actions storage; adding a test does not require
+editing a weight table. Windows, macOS, and Ubuntu coverage each have their own
+profile because native startup and coverage costs differ.
+
+The `shard-plan` job restores history once and uploads `shard-timing-input`.
+Every shard and report merge downloads that same snapshot. Retries reuse it,
+so a newly published history cannot change the partition halfway through a run.
+With no usable history, the sequencer spreads sequential/native work using
+generic estimates; new files in an established profile use the package's median.
+
+The merge reporter includes setup, collection, and test execution costs and
+smooths new measurements with previous ones. It rejects missing, duplicate, or
+unexpected modules and unsuccessful runs, and retains prior costs for skipped
+modules. Native blobs are merged on their originating OS. Only main-branch push
+runs that pass the execution audit publish the updated history to the Actions
+cache. Cache expiry affects balance, not test discovery or completeness.
+
+For a local reproduction, download the run's `shard-timing-input` artifact into
+`gitnexus/.vitest/timings/` and set `GITNEXUS_SHARD_PROFILE` to `windows-latest`,
+`macos-latest`, or `coverage` (the default). Then use the same `--shard=i/n`
+argument with `npm run test:cross-platform -- --shard=i/n` or `npm test -- --shard=i/n`.
+Keep `.vitest/` untracked. Bump the workflow's timing-cache schema key when a
+runner/measurement change makes the stored profiles incompatible.
+
 ### Confirming no tests are orphaned
 
 Every test file matches one of the three vitest projects. To verify:
