@@ -92,7 +92,6 @@ const PATTERN_FLAGS = new Set(['-e', '--regexp', '--expression']);
 
 /** Flags of rg/grep that consume the following argv token as a value. */
 const FLAGS_WITH_VALUES = new Set([
-  '-f',
   '-m',
   '-A',
   '-B',
@@ -110,13 +109,26 @@ const FLAGS_WITH_VALUES = new Set([
 /**
  * Split an argv string into tokens, respecting single/double quoting so a
  * multi-word search phrase stays one token: `rg "foo bar"` → [rg, foo bar].
- * Quotes are consumed (they delimit, they are not part of the token).
+ * Only inspect the first simple command; stop at unquoted shell operators.
+ * Preserve empty arguments and decline malformed or dynamically expanded input.
  */
 function tokenizeArgv(command) {
   const tokens = [];
   let current = '';
   let quote = null;
-  for (const ch of command) {
+  let started = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === '\\' && quote !== "'") {
+      const next = command[++i];
+      if (next === undefined) return [];
+      if (next === '\n') continue;
+      if (quote === '"' && !['"', '\\', '$', '`'].includes(next)) current += '\\';
+      current += next;
+      started = true;
+      continue;
+    }
+    if (quote !== "'" && (ch === '$' || ch === '`')) return [];
     if (quote) {
       if (ch === quote) quote = null;
       else current += ch;
@@ -124,18 +136,23 @@ function tokenizeArgv(command) {
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
+      started = true;
       continue;
     }
+    if (/[;&|<>\n\r]/.test(ch) || (ch === '#' && !started)) break;
     if (/\s/.test(ch)) {
-      if (current) {
+      if (started) {
         tokens.push(current);
         current = '';
+        started = false;
       }
       continue;
     }
     current += ch;
+    started = true;
   }
-  if (current) tokens.push(current);
+  if (quote) return [];
+  if (started) tokens.push(current);
   return tokens;
 }
 
@@ -146,30 +163,41 @@ function tokenizeArgv(command) {
 function extractBashSearchPattern(command) {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
   const tokens = tokenizeArgv(command);
-  let foundCmd = false;
+  if (!/(?:^|[/\\])(?:rg|grep)(?:\.exe)?$/.test(tokens[0] || '')) return null;
+  let pattern = null;
+  let explicitPattern = null;
+  let endOptions = false;
   // 'skip' = drop the next token (flag value); 'pattern' = take it as the search.
   let pending = null;
-  for (const token of tokens) {
+  for (const token of tokens.slice(1)) {
     if (pending === 'skip') {
       pending = null;
       continue;
     }
     if (pending === 'pattern') {
       pending = null;
-      return token.length >= 3 ? token : null;
-    }
-    if (!foundCmd) {
-      if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
+      explicitPattern ??= token;
       continue;
     }
-    if (token.startsWith('-')) {
+    if (!endOptions && token === '--') {
+      endOptions = true;
+      continue;
+    }
+    if (!endOptions && token.startsWith('-')) {
+      // File-backed patterns are unknown here, even if a path appeared first.
+      if (token.startsWith('-f') || token === '--file' || token.startsWith('--file=')) return null;
+      if (['--files', '--type-list', '--help', '--version'].includes(token)) return null;
       if (PATTERN_FLAGS.has(token)) pending = 'pattern';
+      else if (/^--(?:regexp|expression)=/.test(token))
+        explicitPattern ??= token.slice(token.indexOf('=') + 1);
+      else if (token.startsWith('-e')) explicitPattern ??= token.slice(2);
       else if (FLAGS_WITH_VALUES.has(token)) pending = 'skip';
       continue;
     }
-    return token.length >= 3 ? token : null;
+    pattern ??= token;
   }
-  return null;
+  const result = explicitPattern ?? pattern;
+  return !pending && result?.length >= 3 ? result : null;
 }
 
 /**
