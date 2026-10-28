@@ -36,7 +36,10 @@ export default class PerfSequencer extends BaseSequencer {
           }
           const config = spec.project.config;
           const sequential = 'fileParallelism' in config && config.fileParallelism === false;
-          return [key, (sequential ? 20_000 : 1) + sizeKb];
+          // Keep all cold weights on the same scale: 1,000 points represents
+          // 20 seconds of sequential work. A millisecond value here would
+          // dwarf file size and pile the parallel cohort onto fewer shards.
+          return [key, (sequential ? 1_000 : 1) + sizeKb];
         }),
       );
       groups = partition(keys, estimates, shard.count);

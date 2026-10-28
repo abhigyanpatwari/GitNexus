@@ -79,4 +79,35 @@ describe('timing-based CI sharding', () => {
     expect(new Set(warm.flat()).size).toBe(specs.length);
     expect(warm.flat().length).toBe(specs.length);
   });
+
+  it('spreads the parallel cohort across all cold shards when sequential counts differ', async () => {
+    const { root } = fixture();
+    const specs = Array.from({ length: 1414 }, (_, i) => {
+      const moduleId = path.join(root, `${i}.test.ts`);
+      writeFileSync(moduleId, ' '.repeat(10 * 1024));
+      const sequential = i < 94;
+      return {
+        moduleId,
+        project: {
+          name: sequential ? 'native' : 'default',
+          config: { fileParallelism: !sequential },
+        },
+      } as unknown as TestSpecification;
+    });
+    const bins = await Promise.all(
+      Array.from({ length: 8 }, (_, i) => {
+        const ctx = { config: { root, shard: { index: i + 1, count: 8 } } } as Vitest;
+        return new PerfSequencer(ctx).shard(specs);
+      }),
+    );
+    const parallelCounts = bins.map(
+      (bin) => bin.filter((spec) => spec.project.name === 'default').length,
+    );
+    // A one-file difference in sequential work must not concentrate the entire
+    // parallel cohort on two runners (660 files each in the failing CI run).
+    expect(Math.min(...parallelCounts)).toBeGreaterThan(100);
+    expect(Math.max(...parallelCounts)).toBeLessThan(250);
+    expect(new Set(bins.flat()).size).toBe(specs.length);
+    expect(bins.flat()).toHaveLength(specs.length);
+  });
 });
