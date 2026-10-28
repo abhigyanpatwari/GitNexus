@@ -106,7 +106,7 @@ describe('node-workspace-packages: entry discovery is safe under concurrent scan
 
   it("repo B finishing mid-scan does not corrupt repo A's in-flight source-entry discovery", async () => {
     const { loadNodeWorkspacePackages } =
-      await import('../../src/core/ingestion/import-resolvers/node-workspace-packages.js');
+      await import('../../src/core/ingestion/languages/typescript/workspace-packages.js');
 
     const pA = loadNodeWorkspacePackages(repoA);
     // Wait until A is blocked right before checking pkg2's real source file.

@@ -1,0 +1,21 @@
+{
+  "language": "objective-c",
+  "description": "Refuse an Objective-C initWith selector that an indexed Swift caller constructs through argument labels, until the Swift binding is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "initWithName:",
+    "kind": "Method",
+    "file": "Foo.h"
+  },
+  "newName": "initWithTitle:",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

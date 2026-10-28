@@ -2,9 +2,9 @@
 
 Measures whether the `gitnexus-plan` → `gitnexus-work` engineering workflow
 actually saves tokens versus a baseline agent on the same tasks, using real
-headless Claude Code sessions. Nothing is estimated: every number comes from
-the CLI's own final event in its parent-captured `--output-format stream-json`
-report.
+headless Claude Code sessions. Usage and reported model cost come from
+parent-captured CLI events; model cost is not a provider invoice or a measure
+of indexing, infrastructure, or subscription costs.
 
 ## What it compares
 
@@ -20,10 +20,17 @@ report.
 | `candidate_review`          | the same review with a `gitnexus-review` candidate overlay              | Paired with `review` on the same case/ref/model/runtime                                             |
 | `ce_review`                 | one pinned `ce-code-review` session over the same changes               | External comparator paired with both review arms                                                    |
 | `baseline`                  | one session with the identical task text                                | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools               |
-| `baseline_nomcp`            | one session without installed GitNexus tools, graph, or workflow skills | Separates the workflow-discipline question from the GitNexus-tools question (off by default)        |
+| `baseline_nomcp`            | one session without installed GitNexus tools, graph, or workflow skills | Measures the no-GitNexus comparator; included by default                                            |
+
+The default sweep runs `workflow`, `workflow_direct`, `baseline`, and
+`baseline_nomcp`, each three times (`--runs 3`). That is 12 cells per selected
+task; the `workflow` arm has separate planning and execution sessions.
+Budget for the complete sweep before running it. For an inexpensive smoke
+check, explicitly select `--runs 1 --arms baseline_nomcp baseline`; a smoke
+check is not evidence of savings.
 
 Every arm runs in a fresh detached git worktree of the task's `ref`, once per
-`--runs`. The model-visible `verify` command is recorded as
+repetition. The model-visible `verify` command is recorded as
 `authored_tests_passed`, but cannot certify its own solution: `resolved` also
 requires the task's harness-owned hidden behavioral oracle to pass. Token
 savings on a failed task are flagged, not celebrated, and diff churn
@@ -32,6 +39,14 @@ over-engineering proxy. Task `class` labels (trivial → investigation →
 cross-module) make the report readable as a routing table: the boundary where
 `workflow` starts beating `workflow_direct` and `baseline` is the boundary
 lfg's gate and work's direct-mode triage should encode.
+
+Compare GitNexus-enabled arms with `baseline_nomcp` to measure tool benefit.
+Compare `workflow` or `workflow_direct` with MCP-enabled `baseline` to measure
+workflow overhead. A lower model bill is only useful alongside at least the
+same solve rate: retain failed runs, report each task and repetition, and pin
+the model, source, runtime, and grader. Three repetitions are a starting point,
+not statistical proof. Smaller tool responses measure one input-cost component;
+they do not establish lower total session cost or better task accuracy.
 
 ## Quick start
 
@@ -70,6 +85,41 @@ ids for transcript drill-down) and `report.md` (medians per task per arm,
 plus a savings row: input / cache / output tokens, cost, wall time).
 
 ## Release evaluation
+
+### Measure an unmerged PR against a previous run
+
+Add **`run-cost-evaluation`** to an open PR targeting `main`:
+
+```bash
+gh pr edit 3621 --add-label run-cost-evaluation
+```
+
+Only a repository **Maintain or Admin** role's label event can request this paid
+comparison; Write, Triage and Read roles cannot. The
+trusted dispatcher pins the labeled head and selects the newest successful main
+Release evaluation with a full release artifact (searching the latest 100 runs),
+using `gpt-5.6-sol` at `xhigh`. It skips previews and runner-only probes. An
+incompatible or expired baseline fails before paid sessions; it never starts a
+fresh paid baseline automatically. The authorized request calls the reusable
+evaluator; PR inputs are absent from manual dispatch. Ordinary pushes do not
+request runs.
+Remove and re-add the label to request another measurement; rerunning the label
+dispatcher itself is ignored. The evaluator checks the live label and head on
+resolution and immediately before paid sessions. Removing the label prevents
+sessions that have not started; use Actions cancellation for a run already active.
+
+This preview measures only the PR runtime's MCP arm: all four tasks, three
+repetitions each. It reuses the selected run's MCP measurements as the historical
+comparison and does not rerun no-MCP or stable sessions. A moved PR head,
+different model/effort, changed measurement inputs, stale evidence, or incompatible
+task/oracle/dependency pins rejects the comparison. Per-task solve counts remain
+visible alongside billed model cost; incomplete evidence cannot claim savings.
+
+The harness and protected runner still execute from `main`; the PR runtime is
+built and run in the existing containment. Results use the separate
+`pr-cost-comparison-<sha>` artifact and schema, and cannot approve a release.
+Cost differences against a historical run are descriptive measurements, not
+proof of statistical significance or attribution to only that PR.
 
 ### RC regression decision
 
@@ -178,10 +228,19 @@ are disabled in the no-tool arm, and repository/plugin hooks are disabled in
 both arms. It fails closed when Bubblewrap is unavailable. It retains the repository source and
 ordinary test dependencies required by the tasks; rebuilding tools from that
 source is not prevented. The comparison therefore measures access to the
-provided GitNexus tools and their readable compiled runtime on these GitNexus
-development tasks. That runtime can contain later fixes absent from a task's
-historical base, so the comparison cannot isolate tool assistance from access
-to those implementations.
+provided GitNexus tools on these GitNexus development tasks. The MCP baseline
+receives only a per-cell Unix socket: its candidate runtime, shared package,
+registry, and host launcher are outside the agent filesystem. The host records
+`runtime_exposure: stdio-only` for this arm and `none` for the no-tool arm.
+Release and PR comparison validation reject missing or incompatible receipts.
+Older measurements exposed readable compiled runtime code, including later
+task implementations; they remain historical evidence and cannot satisfy this
+isolated comparison contract. Workflow/CLI arms retain their runtime mounts and
+are labeled `readable`.
+
+The [24 October evidence report](measurement-2026-10-24.md) retains the latest
+historical measurements, current tool-accuracy result, and post-merge rerun
+procedure. Those historical agent results do not show an accuracy or cost gain.
 
 This corpus uses a **fresh index at each task base**. A nightly stale Hermes
 index is a separate condition and must not be pooled with it. Import the
@@ -203,7 +262,9 @@ MCP configuration. Bash children do
 not inherit the model credential and their network sandbox denies all
 domains.
 
-The candidate MCP server runs in a separate nested Bubblewrap boundary. Its
+The release baseline's candidate MCP server runs in a sibling Bubblewrap
+boundary, reached by a stdio socket connector. Workflow/CLI arms retain a nested
+server boundary. In both cases its
 workspace (including the graph), registry, compiled runtime and shared package
 mounts are read-only. Its home and temporary directories are private tmpfs,
 and it has a fresh PID namespace and `/proc`, no network or capabilities, and
@@ -211,6 +272,13 @@ no model credentials or agent state. MCP startup and tool handlers therefore
 cannot write patches that would be credited to the agent; the agent retains
 its writable workspace for implementation tasks. Mutating MCP tools are not
 granted in any phase.
+
+The cell owns the socket listener and its servers through the existing managed
+process supervisor and an outer PID namespace. Each connection starts one
+server; reconnects are sequential. Server failures invalidate the cell, and
+teardown reaps detached descendants before removing the socket. Native canaries
+in `test_proposer_sandbox.py` run in the required Linux containment job; a local
+namespace skip does not prove isolation.
 
 Prebuilt task `.gitnexus` assets are rejected. For each task commit, the
 harness creates the deterministic parentless snapshot first, removes every
@@ -244,11 +312,25 @@ Every evaluated repo-local skill root is over-mounted read-only for the full
 model session, and an immutable empty user-level skills directory prevents a
 writable `$HOME` skill from shadowing it. Skill-use evidence comes only from
 the bounded stream captured directly from Claude stdout by the parent. The
-runner parses every event through EOF, requires one final result, correlates
+runner parses every event through EOF and requires a terminal result. A
+background-task completion can start another foreground turn in the pinned
+Claude CLI: those results must have distinct IDs in the same session, complete
+per-turn usage, successful outcomes, and nondecreasing cumulative cost. The
+runner sums their tokens and turn counts, takes the last cumulative cost, and
+measures the whole process duration including the background wait. Missing,
+replayed, mismatched, or unsuccessful continuations remain excluded. It correlates
 an exact Skill request ID with one later successful result, structurally
 redacts the event objects, and stores the canonical redacted JSONL with a
 digest. Files written beneath the agent's `$HOME` are never trusted as
 evidence.
+
+Release evaluation allows 3600 seconds per session in both runtimes and arms.
+Run `38873262106` hit the former 1800-second limit twice while still editing
+and testing; the longer ceiling gives those sessions headroom, not a guarantee
+of completion. The overall deadline and 5400-second evidence/cleanup reserve
+remain enforced. Treat this ceiling and the result-accounting change as harness
+differences when comparing against older runs; invalid historical measurements
+are not repaired retroactively.
 
 Sessions use a private home without stored Claude login/keychain state, and
 do not inherit `ANTHROPIC_AUTH_TOKEN`. Supply an Anthropic API key
@@ -327,11 +409,11 @@ the paid job. Only these watchdogs have Actions write permission.
 The protected `gitnexus-evolution` environment holds these four settings
 (configured and verified by the live probes below):
 
-| Setting | Kind | Purpose |
-| --- | --- | --- |
-| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN` | Secret | AWS role assumed through GitHub OIDC |
-| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID` | Secret | Dedicated runner instance |
-| `GITNEXUS_EVOLUTION_AWS_REGION` | Variable | Instance region |
+| Setting                                | Kind     | Purpose                                         |
+| -------------------------------------- | -------- | ----------------------------------------------- |
+| `GITNEXUS_EVOLUTION_AWS_ROLE_ARN`      | Secret   | AWS role assumed through GitHub OIDC            |
+| `GITNEXUS_EVOLUTION_EC2_INSTANCE_ID`   | Secret   | Dedicated runner instance                       |
+| `GITNEXUS_EVOLUTION_AWS_REGION`        | Variable | Instance region                                 |
 | `GITNEXUS_EVOLUTION_STOP_SCHEDULE_UTC` | Variable | Actual weekly EventBridge stop, `DAY HH:MM` UTC |
 
 No long-lived AWS credential is stored. The AWS action obtains short-lived
@@ -694,11 +776,10 @@ What the ground base says, honestly:
   predate the intent-to-add/exclude-plans churn fix, so they are not
   comparable across arms and are omitted above.
 
-Routing implication (to revisit as cells fill in): for tasks up to this
-size, `gitnexus-work` direct mode or a plain agent is the cost-optimal
-route; reserve full `gitnexus-plan` → `gitnexus-work` for cross-module work,
-multi-session execution, or when the plan document itself is a deliverable.
-If a future run shows the workflow flattering itself here, distrust the run.
+These historical cells suggest measuring direct execution before adding a
+planning session for small tasks. They do not establish an optimal routing
+policy. A plan may be useful for multi-session execution or as a deliverable;
+its extra cost must be included in the comparison.
 
 ### Cross-module cell (same day, optimized skills, n=1)
 
@@ -714,17 +795,15 @@ seams, transient-vs-deterministic classification:
 (The workflow_direct row is the clean re-run under clone isolation — the
 original was contaminated, see the integrity note below.)
 
-**This is the cell where the discipline pays.** `workflow_direct` — the
-execution skill without a planning pass — beat a plain agent by **47% cost
-and 56% wall time** on the hardest class while resolving: impact-first
-navigation and gated commits prevented the flailing that baseline's 98
-turns represent. The full workflow's premium vanished (−1.6% vs baseline;
-−211%..−333% on smaller classes) — fixed costs amortize here, with a less
-destructive diff and a durable plan artifact — but it didn't beat direct
-mode on any measured axis with the plan consumed only once. Resolve rate
-stayed tied across all cells; the savings story belongs to the execution
-discipline, and the planning pass is bought for its artifact (multi-session
-reuse, review, handoff), not for same-session token savings.
+**Historical observation only: unnamed model, n=1 per arm.** In this cell,
+`workflow_direct` recorded **47% lower model cost and 56% less wall time**
+than the **MCP-enabled `baseline`**. Both agents already had GitNexus; this
+does not measure GitNexus versus no GitNexus. All three arms solved this one
+task. The measurements cannot attribute the difference to workflow discipline
+or predict savings for other users, tasks, or models. The full workflow cost
+slightly more than baseline ($18.32 versus $18.03). A current named-model
+comparison with repeated runs and `baseline_nomcp` is needed before making a
+current savings claim.
 
 **Benchmark integrity note (why churn earns its keep):** the original
 `workflow_direct` cell reported an impossible 28-turn/$4.71 solve with churn
@@ -771,6 +850,49 @@ run only files staged beneath `$GITNEXUS_BENCH_ORACLE_ROOT`; for Vitest, include
 the shared `vitest.config.mts` as an oracle file and pass it explicitly with
 `--config`. Prefer `verify` commands that use the repo's own npm scripts (they
 carry build pre-hooks).
+
+The C scenario is `inv-feature-c-include-provenance`. At its pinned task
+commit, ingestion drops literal system includes before resolution. The task
+requires retaining the header identity and enough provenance to prevent
+unconfigured system includes from matching unrelated repository headers,
+while keeping quoted local and relative includes resolvable. Computed macro
+includes remain outside this task's scope. Its hidden oracle parses real C
+source and passes the resulting import through the decomposer, interpreter,
+and resolver; it does not require a particular metadata field or encoding.
+
+Offline controls must show that the untouched task base fails the intended
+behavioral assertion and that two independent, type-correct repairs pass both
+the hidden oracle and the complete authored verification command. Negative
+controls also reject dropped imports, lost header identity, and false system
+header matches. These controls run with the pinned task dependencies through
+`test_shipped_oracles_reject_task_base_and_accept_reference_fixes`.
+
+This replaces `inv-bug-c-system-include`, whose oracle constructed an import
+state the pinned parser did not produce and constrained the repair's internal
+representation. Historical scores for that task are not valid evidence of C
+ingestion quality and are not comparable with the replacement task. The new
+task ID, prompt, verification command, and oracle bytes produce a new task
+digest. Old agent patches are not available for rescoring; keep historical
+measurements unchanged and compare only runs with matching task contracts.
+
+## MCP response cost
+
+With `include_content: true`, queries share a 16,000-character preview allowance
+equally across unique symbols on the returned page. The database returns only
+those prefixes, after ranking and pagination. `content_truncated: true` marks
+incomplete source; every match remains present. Use `context` for a full symbol
+or `read_file` for a bounded file range. This applies to CLI, HTTP, and MCP
+queries; group queries already request no source content.
+
+MCP query guidance lives in the JSON `next` field. Explicit `maxTokens` retains
+its existing final text cap, which can truncate JSON; it does not change the
+query preview allowance. Payload reductions alone do not establish agent cost
+or completion-time improvements: previews can require follow-up reads.
+
+MCP tool schemas expose the configured default repository name and path. The
+sandbox already configures `/workspace` as its default, so the schema identifies
+`benchmark-target` without adding benchmark-specific instructions to task prompts.
+Compare stable and candidate runtimes using the same harness revision.
 
 ## Relation to the SWE-bench harness
 

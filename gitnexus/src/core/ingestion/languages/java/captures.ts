@@ -217,6 +217,7 @@ export function emitJavaScopeCaptures(
 
     const typeDeclaration = [
       nodeMap['@declaration.class'],
+      nodeMap['@declaration.annotation'],
       nodeMap['@declaration.enum'],
       nodeMap['@declaration.record'],
       nodeMap['@declaration.interface'],
@@ -263,12 +264,12 @@ export function emitJavaScopeCaptures(
     // matches ALL method_invocations as @reference.call.free (without
     // negation) because tree-sitter-java's query engine drops !object
     // patterns when a positive object: pattern exists for the same node
-    // type. Filter here: if the match has @reference.call.free but also
-    // has @reference.receiver, it's a member call — skip the free match
+    // type. The free pattern has no receiver capture, so inspect its AST
+    // object field instead. A qualified call belongs only to the member match
     // (the separate @reference.call.member match covers it).
     if (
       grouped['@reference.call.free'] !== undefined &&
-      grouped['@reference.receiver'] !== undefined
+      nodeMap['@reference.call.free']?.childForFieldName('object')
     ) {
       continue;
     }

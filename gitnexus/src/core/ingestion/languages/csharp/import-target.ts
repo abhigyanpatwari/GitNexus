@@ -21,18 +21,18 @@
 
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import type { CSharpProjectConfig, CSharpNamespaceEvidence } from '../../language-config.js';
-import { resolveCSharpImportInternal } from '../../import-resolvers/csharp.js';
+import { resolveCSharpImportInternal } from './import-helpers.js';
 import {
   getWorkspaceFileIndex,
   type WorkspaceFileIndex,
-} from '../../import-resolvers/workspace-file-index.js';
+} from '../../utils/workspace-file-index.js';
 import {
   buildPackageDirIndex,
   firstFileDirectlyInPkgDir,
   type PackageDirIndex,
-} from '../../import-resolvers/package-dir-index.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { csharpSuffixFallbackAllowed } from '../../csharp-namespace-gate.js';
+} from '../../utils/package-dir-index.js';
+import { perFileSet } from '../../utils/per-file-set.js';
+import { csharpSuffixFallbackAllowed } from './namespace-gate.js';
 
 export interface CsharpResolveContext {
   readonly fromFile: string;
@@ -44,7 +44,7 @@ export interface CsharpResolveContext {
 /**
  * Namespace-directory index over the `.cs` files, memoized on the Set's
  * identity. Feeds `firstFileDirectlyInPkgDir` (in
- * `import-resolvers/package-dir-index.ts`), which the no-csproj path calls once
+ * `utils/package-dir-index.ts`), which the no-csproj path calls once
  * for the direct match and then up to once per stripped namespace prefix.
  */
 const getCsharpDirIndex = perFileSet(
@@ -74,8 +74,7 @@ export function resolveCsharpImportTarget(
       evidence,
     );
     if (fromCsproj.length > 0) return fromCsproj[0]!;
-    // csproj configs are authoritative: mirror legacy `configs/csharp.ts`,
-    // which returns an empty result to STOP the chain. Falling through to the
+    // csproj configs are authoritative. Falling through to the
     // ungated `resolveDirectMatch` would re-introduce the BCL→local match the
     // internal resolver's gate just suppressed (#1881 parity, #2).
     return null;
@@ -87,10 +86,8 @@ export function resolveCsharpImportTarget(
   // Gate the WHOLE no-csproj path on declared in-repo namespaces — the direct
   // path/suffix match INCLUDED — so a BCL using can't resolve to a
   // coincidentally path-aligned local file (e.g. `Legacy/System/Threading/
-  // Tasks.cs` satisfying `using System.Threading.Tasks;`). Running the gate
-  // before `resolveDirectMatch` mirrors the legacy leg's gate-first ordering
-  // (`import-resolvers/configs/csharp.ts`), so the two legs are equivalent
-  // (#1881 parity, Codex F2). The gate keeps its fail-open for
+  // Tasks.cs` satisfying `using System.Threading.Tasks;`). The gate runs
+  // before `resolveDirectMatch` and keeps its fail-open for
   // undefined/truncated evidence, so legitimate edges in unscanned repos are
   // unaffected.
   if (!csharpSuffixFallbackAllowed(targetRaw, evidence)) {

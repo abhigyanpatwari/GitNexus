@@ -23,7 +23,7 @@ export interface MethodInfo {
   name: string;
   receiverType: string | null;
   returnType: string | null;
-  parameters: ParameterInfo[];
+  parameters: readonly Readonly<ParameterInfo>[];
   visibility: MethodVisibility;
   isStatic: boolean;
   isAbstract: boolean;
@@ -79,7 +79,12 @@ export interface MethodExtractor {
   extractFunctionName?(
     node: SyntaxNode,
     filePath?: string,
-  ): { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
+  ): {
+    funcName: string | null;
+    label: import('gitnexus-shared').NodeLabel;
+    /** Source identity name; null preserves anonymous positional identity when funcName is synthetic. */
+    identityName?: string | null;
+  } | null;
 }
 
 export interface MethodExtractionConfig {
@@ -95,7 +100,7 @@ export interface MethodExtractionConfig {
    *  name is the file stem, so `fn incr(counter: *Counter)` in `Counter.zig`
    *  is a method only when the file is known. Same optional-trailing-argument
    *  shape as `extractOwnerName`; every other config ignores it. */
-  extractParameters: (node: SyntaxNode, filePath?: string) => ParameterInfo[];
+  extractParameters: (node: SyntaxNode, filePath?: string) => readonly Readonly<ParameterInfo>[];
   extractVisibility: (node: SyntaxNode) => MethodVisibility;
   isStatic: (node: SyntaxNode, filePath?: string) => boolean;
   isAbstract: (node: SyntaxNode, ownerNode: SyntaxNode) => boolean;
@@ -124,5 +129,9 @@ export interface MethodExtractionConfig {
   extractFunctionName?: (
     node: SyntaxNode,
     filePath?: string,
-  ) => { funcName: string | null; label: import('gitnexus-shared').NodeLabel } | null;
+  ) => {
+    funcName: string | null;
+    label: import('gitnexus-shared').NodeLabel;
+    identityName?: string | null;
+  } | null;
 }

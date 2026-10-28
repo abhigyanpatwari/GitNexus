@@ -419,6 +419,58 @@
     "captureGroups": 21,
     "digest": "6373f13321137c00923fdef141121e13013a8ef5ed31928d957dc146e95b87d2"
   },
+  "php-qualified-function-factory/lib/decoy.php": {
+    "captureGroups": 7,
+    "digest": "cdb9f71aa8530eda1b0615dfbe1afb982b4b8fee190ccc37a7d55cd87d364cea"
+  },
+  "php-qualified-function-factory/lib/dup-a.php": {
+    "captureGroups": 7,
+    "digest": "5063b2414abef7146797f6287ae0ff5afa3e29d297927cdb20351773ea898063"
+  },
+  "php-qualified-function-factory/lib/dup-b.php": {
+    "captureGroups": 7,
+    "digest": "5063b2414abef7146797f6287ae0ff5afa3e29d297927cdb20351773ea898063"
+  },
+  "php-qualified-function-factory/lib/functions.php": {
+    "captureGroups": 9,
+    "digest": "2e90c15878b8c48edda39eb1c7cb146cabb41fba5180ca76204484945e5afc6e"
+  },
+  "php-qualified-function-factory/src/App/Callers.php": {
+    "captureGroups": 36,
+    "digest": "781ed4bebea8b5aa90a7347628d16ff2645bc907e4460827d7f3ff4e33c81036"
+  },
+  "php-qualified-function-factory/src/App/Named.php": {
+    "captureGroups": 8,
+    "digest": "7ebd5c95e0428ded85e86c0bc03c94f423df1f2dbcb7d697704be6c1bc51f7fc"
+  },
+  "php-qualified-function-factory/src/Entry.php": {
+    "captureGroups": 7,
+    "digest": "1e95af134ed94b73c91fbb92808fb815b97d612a4cd0d3dae1bd21883790ab4c"
+  },
+  "php-qualified-function-factory/src/Ext/Calls.php": {
+    "captureGroups": 18,
+    "digest": "4064e994401132e0339a926e9c397324c9a4c4d51e66d2774af46945a961ef65"
+  },
+  "php-qualified-function-factory/src/Ext/Shadows.php": {
+    "captureGroups": 11,
+    "digest": "2109281e6100c98d89eaa02bd433ce314e4c30f8945016c56046318c26b70894"
+  },
+  "php-qualified-function-factory/src/Mod/Local.php": {
+    "captureGroups": 7,
+    "digest": "6335dca7c7f6adfa7dc4e294cf5942cd3cc43050c37e89cdf04244566a4d82f0"
+  },
+  "php-qualified-function-factory/src/Mod/QffFactory.php": {
+    "captureGroups": 8,
+    "digest": "201766a214776045984e6536c6a0bcbd17773caab18ab1c9ea49de2358e4320e"
+  },
+  "php-qualified-function-factory/src/Mod/QffGadget.php": {
+    "captureGroups": 7,
+    "digest": "3ea5bd22c2645df6162f08e46639a4fb72c3c4a51d16b56c4085cc93d649b321"
+  },
+  "php-qualified-function-factory/src/Mod/QffWidget.php": {
+    "captureGroups": 7,
+    "digest": "0394adb6e9a478294d4ae6809c7f7669405164547c066a30e37f1e8a4eb0cc56"
+  },
   "php-receiver-resolution/app/Models/Repo.php": {
     "captureGroups": 7,
     "digest": "44921bb2ae5aba27957cd45a7d3e515425f27f8e93af5d6285125b94f5d9ba88"
@@ -528,8 +580,8 @@
     "digest": "474a7bac44ce6026b3cb4489d8d3d8e359959c32f43a10b32e006a1869ff0995"
   },
   "php-use-function-const/app/Config/constants.php": {
-    "captureGroups": 2,
-    "digest": "c045ce0a40c3396cdfbbf0fbbe24792fe2bba6dfba14f739b15a4bb5ae90a778"
+    "captureGroups": 3,
+    "digest": "f140ba6989fa70597842fb7f3115563a863c8542adcd4a5dac9ee79d6f0e3afc"
   },
   "php-use-function-const/app/Models/User.php": {
     "captureGroups": 10,

@@ -13,7 +13,9 @@ import {
   edgeSet,
   getResolutionOutcomes,
   runPipelineFromRepo,
+  suppressionReasonsAt,
   writeFixtureRepo,
+  type OutcomeSite,
   type PipelineResult,
 } from './helpers.js';
 
@@ -3213,6 +3215,20 @@ describe('TS dynamic-this receiver seeding guard', () => {
     const calls = getRelationships(result, 'CALLS');
     expect(calls.some((c) => c.target === 'go' && c.source === 'onClick')).toBe(false);
   });
+
+  // Both sites on `this.route.go()` are lost for ONE reason: the object-literal
+  // method owns `this` and gives it no type. The call's receiver is the chain
+  // `this.route`, and the owned-receiver check was asked about that whole text
+  // — which no scope owns — instead of its base `this`. So the call went on to
+  // the compound fold and was filed as a generic `receiver-unresolved` drop,
+  // or, when the read beside it (same start column) was handled first, as
+  // nothing at all.
+  it.each<readonly [OutcomeSite, readonly string[]]>([
+    [['app.ts', 17, 6, 'route', 'read'], ['receiver-owned-but-unbound']],
+    [['app.ts', 17, 6, 'go', 'call'], ['receiver-owned-but-unbound']],
+  ])('records %j under its real reason', (site, reasons) => {
+    expect(suppressionReasonsAt(result, site)).toEqual(reasons);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3317,10 +3333,8 @@ describe('TypeScript inline constructor receiver resolution', () => {
 // method call. Anything measuring resolver gaps has to tell those apart, and
 // the site kind is the only authoritative signal for it.
 //
-// Both shapes below are empirically confirmed drops: `!` produces a reference
-// site that reaches Case 0. (`?.` and explicit type arguments do NOT record a
-// drop at all — they are invisible to this recorder, which is a property of the
-// capture layer, not of this field.)
+// Both negative cases use untyped receivers, so their drops do not depend on
+// an unsupported expression shape. A typed write is the positive control.
 // ---------------------------------------------------------------------------
 
 describe('TypeScript receiver-unresolved drops carry their site kind (#2744)', () => {
@@ -3359,9 +3373,13 @@ export async function droppedCall(svc): Promise<void> {
   svc.getUser().save();
 }
 
-export function droppedWrite(svc: Service | null): void {
-  // A write receiver mints no chain at all (the emitter gates on CALL_TAGS),
-  // so this keeps dropping and stays separable from the call above.
+export function droppedWrite(svc): void {
+  // The unannotated receiver has no type proof, even though writes now
+  // carry the same structural receiver chains as calls.
+  svc!.getUser().name = 'x';
+}
+
+export function resolvedWrite(svc: Service | null): void {
   svc!.getUser().name = 'x';
 }
 `,
@@ -3385,6 +3403,17 @@ export function droppedWrite(svc: Service | null): void {
       (outcome) => outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved',
     );
     expect(drops).toContainEqual(expect.objectContaining({ name: 'name', siteKind: 'write' }));
+  });
+
+  it('resolves the typed compound write while retaining the untyped write drop', () => {
+    const accesses = getRelationships(result, 'ACCESSES').filter((edge) => edge.target === 'name');
+    expect(accesses).toHaveLength(1);
+    expect(accesses[0]).toMatchObject({
+      source: 'resolvedWrite',
+      target: 'name',
+      targetFilePath: 'models.ts',
+      rel: { targetId: 'Property:models.ts:User.name' },
+    });
   });
 
   // The origin travels with the drop too, and its value here is the whole
@@ -3667,5 +3696,99 @@ describe('TypeScript chain-typed receiver folding to an interface (Case 3b, #283
     );
     expect(runCalls.map((e) => e.rel.reason).filter((r) => r === 'interface-dispatch')).toEqual([]);
     expect(runCalls.map((e) => basename(e.targetFilePath))).toEqual(['plain-cache.ts']);
+  });
+});
+
+// #3498: `ns.make()` takes `make`'s return annotation from the namespace's
+// module. A class method of the same name hoists its return type to the module
+// under that name, so the lookup must stay anchored on the module function and
+// fail closed instead of typing the receiver as the method's return.
+describe('TypeScript namespace factory result types (#3498)', () => {
+  let result: PipelineResult;
+  let repoDir: string;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-namespace-factory-'));
+    writeFixtureRepo(repoDir, {
+      'src/mod.ts': `export class C {
+  m(): number {
+    return 1;
+  }
+}
+
+export class Other {
+  m(): number {
+    return 2;
+  }
+}
+
+export function make(): C {
+  return new C();
+}
+`,
+      'src/hoist.ts': `import { C, Other } from './mod';
+
+export function build(): C {
+  return new C();
+}
+
+export class Builder {
+  build(): Other {
+    return new Other();
+  }
+}
+`,
+      'src/callers.ts': `import * as rp from './mod';
+import * as hz from './hoist';
+
+export function aliasCall() {
+  const x = rp.make();
+  return x.m();
+}
+
+export function inlineCall() {
+  return rp.make().m();
+}
+
+export function hoistedCall() {
+  const y = hz.build();
+  return y.m();
+}
+
+export function hoistedInline() {
+  return hz.build().m();
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { source: 'aliasCall', targets: ['Method:src/mod.ts:C.m#0'] },
+    { source: 'inlineCall', targets: ['Method:src/mod.ts:C.m#0'] },
+    { source: 'hoistedCall', targets: [] },
+    { source: 'hoistedInline', targets: [] },
+  ])('resolves m called from $source to $targets', ({ source, targets }) => {
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((edge) => edge.source === source && edge.target === 'm')
+        .map((edge) => edge.rel.targetId),
+    ).toEqual(targets);
+  });
+
+  it('records the hoisted sites as dropped instead of an exact miss', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter(
+        (outcome) =>
+          outcome.reason === 'receiver-unresolved' && outcome.filePath === 'src/callers.ts',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(dropped).toEqual(['15:m', '19:m']);
   });
 });

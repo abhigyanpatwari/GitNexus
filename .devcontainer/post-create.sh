@@ -3,8 +3,8 @@
 # created. devcontainer.json wires it up via `postCreateCommand`. Workspace
 # dependencies are installed elsewhere, in install-deps.sh (`updateContentCommand`).
 # That script runs BEFORE this one — that is the order the devcontainer spec
-# defines. This script does one job: sync the AI CLI credentials and identity
-# from the host.
+# defines. This script prepares AI CLI binaries and syncs configuration from
+# the host into the container's own volumes.
 
 set -euo pipefail
 
@@ -67,8 +67,14 @@ for d in "${DIRS[@]}"; do
     # devcontainer.json without its matching DIRS entry being removed too — then
     # provisioning skips it instead of failing before credentials ever sync.
     [ -d "$d" ] || continue
-    sudo find "$d" -xdev -exec chown -h node:node {} +
+    # Avoid chown syscalls for the already-correct entries on reused volumes.
+    sudo find "$d" -xdev \( ! -user node -o ! -group node \) -exec chown -h node:node {} +
 done
+
+# The standalone installer stores Codex under ~/.codex, which a reused config
+# volume hides. Restore the image's native package without downloading it again
+# or overwriting a working standalone installation already in that volume.
+bash "$SCRIPT_DIR/seed-codex.sh"
 
 echo "[post-create] 2/4: sync AI CLI credentials + identity from host"
 # Clean up after an older devcontainer design (Option B). Back then these paths

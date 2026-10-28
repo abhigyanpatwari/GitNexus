@@ -1,0 +1,35 @@
+{
+  "language": "c",
+  "description": "Unrelated interoperating source names, comments and strings do not block a proven rename.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "api.c"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "use",
+        "kind": "Function",
+        "file": "api.c"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "api.c"
+      }
+    }
+  ],
+  "exactOutgoing": true
+}

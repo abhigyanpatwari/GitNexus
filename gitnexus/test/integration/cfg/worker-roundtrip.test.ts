@@ -1,4 +1,5 @@
-import { createHash } from 'crypto';
+import { TEST_PARSE_IDENTITY } from '../../helpers/cache-identity.js';
+import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../../../src/core/ingestion/cfg/collect.js';
 import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
@@ -28,17 +29,18 @@ const tsVisitor = (): CfgVisitor<SyntaxNode> => {
   return v;
 };
 
-describe('CFG provider gate — a cfgVisitor enables the worker CFG path', () => {
-  it('TS and JS providers carry a cfgVisitor', () => {
-    expect(getProvider(SupportedLanguages.TypeScript).cfgVisitor).toBeDefined();
-    expect(getProvider(SupportedLanguages.JavaScript).cfgVisitor).toBeDefined();
-  });
+describe('CFG provider gate', () => {
+  it.each(Object.values(SupportedLanguages))(
+    '%s provides AST or source-backed flow extraction',
+    (language) => {
+      const provider = getProvider(language);
+      expect(provider.cfgVisitor ?? provider.collectSourceCfgs).toBeDefined();
+    },
+  );
 
-  it('a non-CFG language (COBOL) has no cfgVisitor ⇒ worker emits no cfgSideChannel', () => {
-    // `provider.cfgVisitor &&` short-circuits in the worker → no CFG, no field.
-    // COBOL is the deliberate non-goal of the PDG-language rollout (#2195) —
-    // every other supported language now carries a cfgVisitor.
+  it('standalone source extraction does not require a synthetic tree visitor', () => {
     expect(getProvider(SupportedLanguages.Cobol).cfgVisitor).toBeUndefined();
+    expect(getProvider(SupportedLanguages.Cobol).collectSourceCfgs).toBeTypeOf('function');
   });
 });
 
@@ -198,22 +200,48 @@ describe('U3 — parse-cache key folds the --pdg flag (R4, #2038-class guard)', 
   ];
 
   it('pdg-on and pdg-off produce DIFFERENT chunk keys', () => {
-    expect(computeChunkHash(entries, false)).not.toBe(computeChunkHash(entries, true));
+    expect(computeChunkHash(entries, TEST_PARSE_IDENTITY, false)).not.toBe(
+      computeChunkHash(entries, TEST_PARSE_IDENTITY, {
+        pdg: true,
+        maxFunctionLines: DEFAULT_PDG_MAX_FUNCTION_LINES,
+      }),
+    );
   });
 
   it('the same flag value is stable and order-independent', () => {
     const reordered = [...entries].reverse();
-    expect(computeChunkHash(entries, true)).toBe(computeChunkHash(reordered, true));
-    expect(computeChunkHash(entries, false)).toBe(computeChunkHash(reordered, false));
+    expect(
+      computeChunkHash(entries, TEST_PARSE_IDENTITY, {
+        pdg: true,
+        maxFunctionLines: DEFAULT_PDG_MAX_FUNCTION_LINES,
+      }),
+    ).toBe(
+      computeChunkHash(reordered, TEST_PARSE_IDENTITY, {
+        pdg: true,
+        maxFunctionLines: DEFAULT_PDG_MAX_FUNCTION_LINES,
+      }),
+    );
+    expect(computeChunkHash(entries, TEST_PARSE_IDENTITY, false)).toBe(
+      computeChunkHash(reordered, TEST_PARSE_IDENTITY, false),
+    );
   });
 
   it('default (no flag arg) equals the explicit pdg-off key — warm caches survive the change', () => {
-    expect(computeChunkHash(entries)).toBe(computeChunkHash(entries, false));
+    expect(computeChunkHash(entries, TEST_PARSE_IDENTITY)).toBe(
+      computeChunkHash(entries, TEST_PARSE_IDENTITY, false),
+    );
   });
 
-  it('the boolean form equals the object form with the same flag (back-compat)', () => {
-    expect(computeChunkHash(entries, true)).toBe(computeChunkHash(entries, { pdg: true }));
-    expect(computeChunkHash(entries, false)).toBe(computeChunkHash(entries, { pdg: false }));
+  it('requires the resolved line cap for enabled PDG', () => {
+    expect(() => computeChunkHash(entries, TEST_PARSE_IDENTITY, true)).toThrow(
+      /resolved function-line cap/,
+    );
+    expect(() => computeChunkHash(entries, TEST_PARSE_IDENTITY, { pdg: true })).toThrow(
+      /resolved function-line cap/,
+    );
+    expect(computeChunkHash(entries, TEST_PARSE_IDENTITY, false)).toBe(
+      computeChunkHash(entries, TEST_PARSE_IDENTITY, { pdg: false }),
+    );
   });
 
   it('the worker-side line cap is folded into the key — a different maxFunctionLines re-dispatches', () => {
@@ -221,13 +249,18 @@ describe('U3 — parse-cache key folds the --pdg flag (R4, #2038-class guard)', 
     // built under one maxFunctionLines must NOT be served to a --pdg run with
     // a different cap (the cached cfgSideChannel differs — the worker skips
     // different functions). Different cap value ⇒ different key.
-    const base = computeChunkHash(entries, { pdg: true });
-    expect(computeChunkHash(entries, { pdg: true, maxFunctionLines: 500 })).not.toBe(base);
+    const base = computeChunkHash(entries, TEST_PARSE_IDENTITY, {
+      pdg: true,
+      maxFunctionLines: DEFAULT_PDG_MAX_FUNCTION_LINES,
+    });
+    expect(
+      computeChunkHash(entries, TEST_PARSE_IDENTITY, { pdg: true, maxFunctionLines: 500 }),
+    ).not.toBe(base);
     // Same cap values ⇒ same key (deterministic, order-independent).
     const reordered = [...entries].reverse();
-    expect(computeChunkHash(entries, { pdg: true, maxFunctionLines: 500 })).toBe(
-      computeChunkHash(reordered, { pdg: true, maxFunctionLines: 500 }),
-    );
+    expect(
+      computeChunkHash(entries, TEST_PARSE_IDENTITY, { pdg: true, maxFunctionLines: 500 }),
+    ).toBe(computeChunkHash(reordered, TEST_PARSE_IDENTITY, { pdg: true, maxFunctionLines: 500 }));
   });
 
   it('the EMIT-time edge cap does NOT perturb the key — cached worker output is identical across it (#2099 F3)', () => {
@@ -235,12 +268,16 @@ describe('U3 — parse-cache key folds the --pdg flag (R4, #2038-class guard)', 
     // thread; the worker never sees it, so the cached shard is byte-identical
     // across cap values. Folding it in (a prior review round did) only forced
     // a spurious full re-parse + durable-store rewrite on every cap change.
-    const base = computeChunkHash(entries, { pdg: true });
+    const base = computeChunkHash(entries, TEST_PARSE_IDENTITY, {
+      pdg: true,
+      maxFunctionLines: DEFAULT_PDG_MAX_FUNCTION_LINES,
+    });
     expect(
-      computeChunkHash(entries, {
+      computeChunkHash(entries, TEST_PARSE_IDENTITY, {
         pdg: true,
+        maxFunctionLines: DEFAULT_PDG_MAX_FUNCTION_LINES,
         maxEdgesPerFunction: 100,
-      } as Parameters<typeof computeChunkHash>[1]),
+      } as Parameters<typeof computeChunkHash>[2]),
     ).toBe(base);
   });
 });
@@ -258,9 +295,13 @@ describe('#2082 M2 — the REACHING_DEF emit cap does NOT perturb the chunk key'
     // a spurious full re-parse on every cap change. PdgCacheKey simply has no
     // field for it — this test pins that the key API surface stays that way
     // (the object form ignores unknown extras rather than hashing them).
-    const base = computeChunkHash(entries, { pdg: true });
-    const withExtra = computeChunkHash(entries, {
+    const base = computeChunkHash(entries, TEST_PARSE_IDENTITY, {
       pdg: true,
+      maxFunctionLines: DEFAULT_PDG_MAX_FUNCTION_LINES,
+    });
+    const withExtra = computeChunkHash(entries, TEST_PARSE_IDENTITY, {
+      pdg: true,
+      maxFunctionLines: DEFAULT_PDG_MAX_FUNCTION_LINES,
       // @ts-expect-error — deliberately passing an unknown field: the key must ignore it
       maxReachingDefEdgesPerFunction: 1,
     });
@@ -322,58 +363,25 @@ describe('#2083 M3 U1 — taint sites cross the worker/store boundary intact', (
   });
 });
 
-describe('#2083 M3 U1 — pdg chunk-key namespace version (flag-off keys untouched)', () => {
-  const entries = [
-    { filePath: 'b.ts', contentHash: 'h2' },
-    { filePath: 'a.ts', contentHash: 'h1' },
-  ];
+describe('parser components bind the physical worker cache key', () => {
+  const entries = [{ filePath: 'a.ts', contentHash: 'h1' }];
+  const pdg = { pdg: true, maxFunctionLines: DEFAULT_PDG_MAX_FUNCTION_LINES };
 
-  it('flag-off chunk keys are BYTE-IDENTICAL across the M3 namespace bump (pinned hash)', () => {
-    // Independent reconstruction of the pre-namespace key format: pdg-off
-    // keys are sha256 over the sorted filePath:contentHash lines and NOTHING
-    // else. This pin fails if the version token ever leaks into non-pdg keys
-    // (which would force a cold re-parse on every flag-off user).
-    const expected = createHash('sha256').update(Buffer.from('a.ts:h1\nb.ts:h2')).digest('hex');
-    expect(computeChunkHash(entries, false)).toBe(expected);
-    expect(computeChunkHash(entries)).toBe(expected);
-  });
-
-  it('pdg-mode keys CHANGED from the M2-era namespace (v1 chunks invalidate on upgrade)', () => {
-    // The M2-era pdg namespace was `pdg:1;maxFn=<v>` — an M3 binary must not
-    // serve a v1 chunk (its cfgSideChannel lacks `sites`, so taint would
-    // silently no-op on warm caches).
-    const joined = 'a.ts:h1\nb.ts:h2';
-    const m2Key = createHash('sha256')
-      .update(Buffer.from(`pdg:1;maxFn=def\n${joined}`))
-      .digest('hex');
-    expect(computeChunkHash(entries, { pdg: true })).not.toBe(m2Key);
-    // and the v2 key is still deterministic + order-independent
-    expect(computeChunkHash([...entries].reverse(), { pdg: true })).toBe(
-      computeChunkHash(entries, { pdg: true }),
+  it('a base change invalidates ordinary and PDG shards', () => {
+    const changed = { ...TEST_PARSE_IDENTITY, base: 'c'.repeat(64) };
+    expect(computeChunkHash(entries, changed)).not.toBe(
+      computeChunkHash(entries, TEST_PARSE_IDENTITY),
+    );
+    expect(computeChunkHash(entries, changed, pdg)).not.toBe(
+      computeChunkHash(entries, TEST_PARSE_IDENTITY, pdg),
     );
   });
 
-  it('pdg-mode keys CHANGED from prior namespaces AND pin the current pdg:6 (embedded call anchors)', () => {
-    // The pdg namespace bumps whenever the worker `cfgSideChannel` SHAPE changes:
-    // U1 added `SiteRecord.at` (pdg:2→3), U4 added the Rust struct-literal
-    // `kind:'new'` site (pdg:3→4), and the FU-C call-summary soundness fix added
-    // `BindingEntry.formalIndex` on param bindings (pdg:4→5) so return-flow keys on
-    // the enclosing formal position, not the flattened binding ordinal. A stale
-    // prior shard lacks the new field, so the call-summary harvest would route to
-    // its conservative empty-summary fallback on a warm cache. Assert prior chunks
-    // are NOT served, and PIN the current pdg:6 namespace so an accidental revert
-    // of the token re-introduces the stale-shape bug.
-    // pdg:5→6 restores embedded parse-buffer call anchors for the callee-id join.
-    const joined = 'a.ts:h1\nb.ts:h2';
-    const keyOf = (token: string) =>
-      createHash('sha256')
-        .update(Buffer.from(`${token};maxFn=def\n${joined}`))
-        .digest('hex');
-    const current = computeChunkHash(entries, { pdg: true });
-    expect(current).not.toBe(keyOf('pdg:2'));
-    expect(current).not.toBe(keyOf('pdg:3'));
-    expect(current).not.toBe(keyOf('pdg:4'));
-    expect(current).not.toBe(keyOf('pdg:5'));
-    expect(current).toBe(keyOf('pdg:6'));
+  it('a PDG-only change leaves ordinary shards eligible', () => {
+    const changed = { ...TEST_PARSE_IDENTITY, pdg: 'c'.repeat(64) };
+    expect(computeChunkHash(entries, changed)).toBe(computeChunkHash(entries, TEST_PARSE_IDENTITY));
+    expect(computeChunkHash(entries, changed, pdg)).not.toBe(
+      computeChunkHash(entries, TEST_PARSE_IDENTITY, pdg),
+    );
   });
 });

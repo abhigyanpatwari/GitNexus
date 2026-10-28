@@ -132,6 +132,24 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     expect(opts.skipSkills).toBe(true);
   });
 
+  it('indexOnly suppresses a selected custom context file', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, { indexOnly: true, contextFile: '.claude/CLAUDE.md' });
+
+    expect(runFullAnalysisMock).toHaveBeenCalledTimes(1);
+    expect(runFullAnalysisMock.mock.calls[0][1]).toMatchObject({
+      contextFile: '.claude/CLAUDE.md',
+      skipAgentsMd: true,
+      skipSkills: true,
+    });
+    expect(refreshBaseRefLineMock.mock.calls[0][2]).toMatchObject({ skipAgentsMd: true });
+    expect(generateAIContextFilesMock).not.toHaveBeenCalled();
+    await expect(fs.readFile(path.join(dir, '.claude/CLAUDE.md'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('uses .gitnexusrc defaultBranch for generated context', async () => {
     await writeRc({ defaultBranch: 'develop' });
     const { analyzeCommand } = await import('../../src/cli/analyze.js');

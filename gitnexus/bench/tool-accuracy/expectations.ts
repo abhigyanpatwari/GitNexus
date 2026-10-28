@@ -6,14 +6,24 @@
  */
 export const FIXTURE_ANCHORS = {
   writerCloseDeclaration: { file: 'rename/writer.ts', line: 2, text: 'close(): void {}' },
-  writerCloseCall: { file: 'rename/writer.ts', line: 8, text: 'writer.close();' },
-  callerCloseCall: { file: 'rename/caller.ts', line: 3, text: 'writer.close();' },
+  writerCloseCall: { file: 'rename/writer.ts', line: 9, text: 'writer.close();' },
+  callerCloseCall: { file: 'rename/caller.ts', line: 4, text: 'writer.close();' },
   writerComment: {
     file: 'rename/writer.ts',
-    line: 10,
+    line: 11,
     text: '// close is a comment, not a reference.',
   },
-  writerString: { file: 'rename/writer.ts', line: 11, text: "export const title = 'close';" },
+  writerString: { file: 'rename/writer.ts', line: 12, text: "export const title = 'close';" },
+  typedWriterFlushDeclaration: {
+    file: 'rename/typed-writer.ts',
+    line: 2,
+    text: 'flush(): void {}',
+  },
+  typedWriterFlushCall: {
+    file: 'rename/typed-writer.ts',
+    line: 5,
+    text: 'writer.flush();',
+  },
   runGit: {
     file: 'src/security.ts',
     line: 4,
@@ -81,6 +91,16 @@ export const EXPECTATIONS = [
     expected: [],
   },
   {
+    id: 'rename.typed-parameter-refusal',
+    issue: 3486,
+    title: 'A structural parameter receiver blocks rename without edits or source changes',
+    expected: [
+      'status=error planning=unsupported application=not_started code=ambiguous_reference',
+      'edits=0 semantic=0 graph=0 text_search=0 files=0 applied=false changes=0',
+      'sources=unchanged',
+    ],
+  },
+  {
     id: 'routes.production-handler',
     issue: 3487,
     title: 'Test stub cannot replace the server handler',
@@ -97,7 +117,9 @@ export const EXPECTATIONS = [
     id: 'routes.helper-registration',
     issue: 3487,
     title: 'Literal route forwarded through a local helper',
-    expected: ['GET /api/progress src/server/api.ts'],
+    // Like every Express route, it belongs to the file of its `app.get` call,
+    // which is also where its handler and response keys are.
+    expected: ['GET /api/progress src/server/progress.ts'],
   },
   {
     id: 'api.template-wrapper',

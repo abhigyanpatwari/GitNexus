@@ -1,0 +1,8 @@
+{
+  "language": "typescript",
+  "description": "Refuse a computed access through a subclass that can select an inherited renamed method.",
+  "categories": ["member-keys", "inheritance", "negative", "unchanged-on-error"],
+  "target": { "name": "close", "kind": "Method", "file": "model.ts", "startLine": 0 },
+  "newName": "finish",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" }
+}

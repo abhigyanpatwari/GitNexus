@@ -63,8 +63,11 @@ def test_signal_cancels_active_wave_before_assets_are_released(tmp_path, signum)
     ready = tmp_path / "child-pid"
     assets = tmp_path / "assets"
     assets.write_text("shared")
+    # Publish readiness only after the complete PID is visible to the parent.
     command = (
-        f"import os,time; from pathlib import Path; Path({str(ready)!r}).write_text(str(os.getpid())); time.sleep(60)"
+        f"import os,time; from pathlib import Path; ready=Path({str(ready)!r}); "
+        "staged=ready.with_suffix('.tmp'); staged.write_text(str(os.getpid())); "
+        "staged.replace(ready); time.sleep(60)"
     )
     script = f"""
 import json,sys

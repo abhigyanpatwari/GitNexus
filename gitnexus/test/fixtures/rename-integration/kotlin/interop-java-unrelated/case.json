@@ -1,0 +1,35 @@
+{
+  "language": "kotlin",
+  "description": "Unrelated interoperating source names, comments and strings do not block a proven rename.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "close",
+    "kind": "Method",
+    "file": "Writer.kt"
+  },
+  "newName": "finish",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "use",
+        "kind": "Method",
+        "file": "Writer.kt"
+      },
+      "to": {
+        "name": "close",
+        "kind": "Method",
+        "file": "Writer.kt"
+      }
+    }
+  ],
+  "exactOutgoing": true
+}

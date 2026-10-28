@@ -1,0 +1,66 @@
+name: Upload test artifact
+description: Upload required CI evidence with bounded transport retries
+
+inputs:
+  name:
+    description: Unique artifact name for this job
+    required: true
+  path:
+    description: Files to upload
+    required: true
+  retention-days:
+    description: Artifact retention in days
+    default: '5'
+  include-hidden-files:
+    description: Include explicitly selected hidden report directories
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Upload
+      id: first
+      if: ${{ always() }}
+      continue-on-error: true
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        retention-days: ${{ inputs.retention-days }}
+        include-hidden-files: ${{ inputs.include-hidden-files }}
+        if-no-files-found: error
+
+    - name: Wait before retry
+      if: ${{ !cancelled() && steps.first.outcome == 'failure' }}
+      shell: bash
+      run: sleep 10
+
+    - name: Retry upload
+      id: second
+      if: ${{ !cancelled() && steps.first.outcome == 'failure' }}
+      continue-on-error: true
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        retention-days: ${{ inputs.retention-days }}
+        include-hidden-files: ${{ inputs.include-hidden-files }}
+        if-no-files-found: error
+        # A failed request may already have created an incomplete artifact.
+        overwrite: true
+
+    - name: Wait before final attempt
+      if: ${{ !cancelled() && steps.second.outcome == 'failure' }}
+      shell: bash
+      run: sleep 30
+
+    - name: Final upload attempt
+      if: ${{ !cancelled() && steps.second.outcome == 'failure' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        retention-days: ${{ inputs.retention-days }}
+        include-hidden-files: ${{ inputs.include-hidden-files }}
+        if-no-files-found: error
+        overwrite: true

@@ -30,6 +30,34 @@ on:
         type: choice
         default: xhigh
         options: [low, medium, high, xhigh, max]
+  # PR preview inputs are available only to the maintainer-authorized label
+  # workflow. Manual dispatch cannot select an unmerged PR runtime.
+  workflow_call:
+    secrets:
+      GITNEXUS_EVOLUTION_AWS_ROLE_ARN:
+        required: true
+      GITNEXUS_EVOLUTION_EC2_INSTANCE_ID:
+        required: true
+      GITNEXUS_BENCH_OPENAI_API_KEY:
+        required: true
+      GITNEXUS_BENCH_ANTHROPIC_API_KEY:
+        required: false
+    inputs:
+      candidate_pr:
+        type: string
+        required: true
+      expected_pr_sha:
+        type: string
+        required: true
+      comparison_run_id:
+        type: string
+        required: true
+      model:
+        type: string
+        default: gpt-5.6-sol
+      effort:
+        type: string
+        default: xhigh
 
 concurrency:
   group: gitnexus-evolution-runner
@@ -44,6 +72,7 @@ jobs:
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ubuntu-latest
     environment: gitnexus-evolution
@@ -75,6 +104,7 @@ jobs:
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ubuntu-latest
     environment: gitnexus-evolution
@@ -106,6 +136,7 @@ jobs:
       github.repository == 'abhigyanpatwari/GitNexus' &&
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     # Partial reruns reuse successful startup outputs after cleanup stopped EC2.
     runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
@@ -158,6 +189,7 @@ jobs:
       github.ref == 'refs/heads/main' &&
       inputs.runner_only != true &&
       (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request_target' && inputs.candidate_pr != '') ||
        (vars.GITNEXUS_EVOLUTION_ENABLED == 'true' && vars.GITNEXUS_EVOLUTION_WORKERS == '3'))
     runs-on: ${{ fromJSON(needs.start-runner.outputs.run_attempt == github.run_attempt && '["self-hosted", "linux", "x64", "gitnexus-evolution"]' || '["ubuntu-latest"]') }}
     # Reuse the main-only protected model-secret environment. No tag/fork code
@@ -166,8 +198,13 @@ jobs:
     timeout-minutes: 1260
     permissions:
       contents: read
+      actions: read # Authenticate and download the explicitly selected historical measurement.
+      pull-requests: read
     env:
       INPUT_REF: ${{ inputs.candidate_ref || 'latest-rc' }}
+      INPUT_PR: ${{ inputs.candidate_pr }}
+      INPUT_PR_SHA: ${{ inputs.expected_pr_sha }}
+      COMPARISON_RUN_ID: ${{ inputs.comparison_run_id }}
       MODEL: ${{ inputs.model || 'gpt-5.6-sol' }}
       EFFORT: ${{ inputs.effort || 'xhigh' }}
     steps:
@@ -184,10 +221,18 @@ jobs:
           fetch-depth: 0
       - name: Resolve immutable runtime revision
         id: resolve
+        working-directory: eval
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [[ -n "$INPUT_PR" ]]; then
+            [[ "$COMPARISON_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo '::error::PR preview requires comparison_run_id.'; exit 1; }
+            python3 -m workflow_bench.pr_evaluation resolve \
+              --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR" --sha "$INPUT_PR_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ -z "$INPUT_PR_SHA" && -z "$COMPARISON_RUN_ID" ]] || { echo '::error::PR preview inputs require candidate_pr.'; exit 1; }
           # Resolve last stable once; both runtimes use the same trusted tasks.
           stable="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"
           [[ "$stable" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo '::error::No stable release found.'; exit 1; }
@@ -220,6 +265,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.candidate_pr == ''
         with:
           ref: ${{ steps.resolve.outputs.stable_sha }}
           path: stable
@@ -229,17 +275,27 @@ jobs:
         run: |
           rm -rf "$RUNNER_TEMP/release-evaluation"
           mkdir -p "$RUNNER_TEMP/release-evaluation/public"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22.18.0'
           cache: npm
           cache-dependency-path: candidate/gitnexus/package-lock.json
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: '0.11.23'
           python-version: '3.13'
           enable-cache: true
           cache-dependency-glob: eval/uv.lock
+      - name: Authenticate historical PR comparison evidence
+        if: inputs.candidate_pr != ''
+        working-directory: eval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          uv run --locked --extra dev python -m workflow_bench.pr_evaluation baseline \
+            --repo "$GITHUB_REPOSITORY" --run-id "$COMPARISON_RUN_ID" \
+            --harness-sha "$GITHUB_SHA" --env-out "$GITHUB_ENV" \
+            --out "$RUNNER_TEMP/release-evaluation/previous.json"
       # Both runtimes grade the pinned task source against one dependency tree
       # built from that commit's lockfile, never the runtime under test's.
       - name: Resolve pinned task revision
@@ -275,6 +331,7 @@ jobs:
         run: |
           set -euo pipefail
           for checkout in tasks-base stable candidate; do
+            if [[ -n "$INPUT_PR" && "$checkout" == stable ]]; then continue; fi
             uv run --locked --extra dev python -m workflow_bench.release_build \
               --repo "$GITHUB_WORKSPACE/$checkout"
           done
@@ -283,29 +340,48 @@ jobs:
         run: |
           set -euo pipefail
           for runtime in stable candidate; do
+            if [[ -n "$INPUT_PR" && "$runtime" == stable ]]; then continue; fi
             uv run --locked --extra dev python -m workflow_bench.release_report prepare \
               --repo "$GITHUB_WORKSPACE/$runtime" --task-repo "$GITHUB_WORKSPACE/tasks-base" \
               --out "$RUNNER_TEMP/release-evaluation/$runtime" \
               --model "$MODEL" --effort "$EFFORT" --runs 3
           done
+      - name: Require historical task dependencies before paid PR sessions
+        if: inputs.candidate_pr != ''
+        working-directory: eval
+        run: |
+          uv run --locked --extra dev python -m workflow_bench.pr_evaluation dependencies \
+            --tasks "$RUNNER_TEMP/release-evaluation/candidate/tasks.yaml" \
+            --baseline "$RUNNER_TEMP/release-evaluation/previous.json"
       - name: Require real containment before paid sessions
         working-directory: eval
         env:
           GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
           GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
-        run: uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py -q
+        run: >-
+          uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py
+          tests/test_workflow_bench_sessions.py::test_real_cli_background_completion_is_one_complete_measurement -q
       - name: Materialize both release graphs before paid sessions
         timeout-minutes: 120
         working-directory: eval
         run: |
           set -euo pipefail
           for runtime in stable candidate; do
+            if [[ -n "$INPUT_PR" && "$runtime" == stable ]]; then continue; fi
             uv run --locked --extra dev python -m workflow_bench.release_preflight \
               --tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml" \
               --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
           done
+      - name: Recheck PR opt-in and pinned head immediately before paid sessions
+        if: inputs.candidate_pr != ''
+        working-directory: eval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -m workflow_bench.pr_evaluation resolve \
+            --repo "$GITHUB_REPOSITORY" --pr "$INPUT_PR" --sha "$INPUT_PR_SHA"
       - name: Run repeated paired agent sessions
         timeout-minutes: 1140
         working-directory: eval
@@ -314,15 +390,18 @@ jobs:
           GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
         run: |
           set -euo pipefail
+          arms=(baseline_nomcp baseline)
+          if [[ -n "$INPUT_PR" ]]; then arms=(baseline); fi
           for runtime in stable candidate; do
+            if [[ -n "$INPUT_PR" && "$runtime" == stable ]]; then continue; fi
             remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
             (( remaining > 0 )) || { echo '::error::No time remains before the stop and evidence reserve.'; exit 1; }
             timeout --signal=TERM --kill-after=60 "${remaining}s" \
               uv run --locked --extra dev python -m workflow_bench.runner \
               --tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml" \
               --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
-              --arms baseline_nomcp baseline --runs 3 --include-expensive \
-              --workers 3 --timeout 1800 --model "$MODEL" --effort "$EFFORT" \
+              --arms "${arms[@]}" --runs 3 --include-expensive \
+              --workers 3 --timeout 3600 --model "$MODEL" --effort "$EFFORT" \
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
               --out "$RUNNER_TEMP/release-evaluation/$runtime/raw"
           done
@@ -330,6 +409,15 @@ jobs:
         if: ${{ always() && steps.resolve.outputs.sha != '' }}
         working-directory: eval
         run: |
+          if [[ -n "$INPUT_PR" ]]; then
+            uv run --locked --extra dev python -m workflow_bench.pr_evaluation summarize \
+              --results "$RUNNER_TEMP/release-evaluation/candidate/raw/results.jsonl" \
+              --metadata "$RUNNER_TEMP/release-evaluation/candidate/metadata.json" \
+              --baseline "$RUNNER_TEMP/release-evaluation/previous.json" \
+              --sha '${{ steps.resolve.outputs.sha }}' --pr "$INPUT_PR" --run-id "$COMPARISON_RUN_ID" \
+              --out "$RUNNER_TEMP/release-evaluation/public"
+            exit 0
+          fi
           failed=0
           for runtime in stable candidate; do
             if [[ -f "$RUNNER_TEMP/release-evaluation/$runtime/metadata.json" ]]; then
@@ -344,7 +432,7 @@ jobs:
           done
           exit "$failed"
       - name: Require complete paired evidence and no task regression
-        if: ${{ always() && steps.resolve.outputs.sha != '' }}
+        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' }}
         working-directory: eval
         run: |
           uv run --locked --extra dev python -m workflow_bench.release_gate \
@@ -359,6 +447,10 @@ jobs:
           set -euo pipefail
           public="$RUNNER_TEMP/release-evaluation/public"
           mkdir -p "$public"
+          if [[ -n "$INPUT_PR" ]]; then
+            if [[ -f "$public/pr-cost-comparison.md" ]]; then cat "$public/pr-cost-comparison.md" >> "$GITHUB_STEP_SUMMARY"; fi
+            exit 0
+          fi
           for extension in json md; do
             candidate="$RUNNER_TEMP/release-evaluation/candidate/public/agent-evaluation.$extension"
             stable="$RUNNER_TEMP/release-evaluation/stable/public/agent-evaluation.$extension"
@@ -369,8 +461,8 @@ jobs:
             if [[ -f "$public/$report.md" ]]; then cat "$public/$report.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
       - name: Upload sanitized release evidence
-        if: ${{ always() && steps.resolve.outputs.sha != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-agent-evaluation-${{ steps.resolve.outputs.sha }}
           path: |
@@ -380,6 +472,16 @@ jobs:
             ${{ runner.temp }}/release-evaluation/public/stable-agent-evaluation.md
             ${{ runner.temp }}/release-evaluation/public/release-quality-gate.json
             ${{ runner.temp }}/release-evaluation/public/release-quality-gate.md
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload sanitized PR cost comparison
+        if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-cost-comparison-${{ steps.resolve.outputs.sha }}
+          path: |
+            ${{ runner.temp }}/release-evaluation/public/pr-cost-comparison.json
+            ${{ runner.temp }}/release-evaluation/public/pr-cost-comparison.md
           if-no-files-found: error
           retention-days: 30
 

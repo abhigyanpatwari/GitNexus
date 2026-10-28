@@ -65,7 +65,7 @@ export interface AnalyzeOptions {
   /**
    * Opt-in auto-commit of generated context changes this `analyze` run
    * makes. Scoped to only the selected context target(s) (never `git add -A`); no-ops
-   * silently if neither exists, neither changed, or the commit step itself
+   * silently if no selected targets exist, none changed, or the commit step itself
    * fails (e.g. no git identity configured). See #2639.
    */
   selfCommit?: boolean;

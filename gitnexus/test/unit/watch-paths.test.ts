@@ -151,6 +151,7 @@ describe('watch path selection', () => {
       [{ embeddings: true }, '--embeddings'],
       [{ defaultBranch: 'develop' }, '--default-branch'],
       [{ skipAgentsMd: true }, '--skip-agents-md'],
+      [{ contextFile: '.claude/CLAUDE.md' }, '--context-file'],
       [{ skipSkills: true }, '--skip-skills'],
       [{ stats: false }, '--no-stats'],
       [{ springActuator: './actuator' }, '--spring-actuator'],

@@ -70,7 +70,9 @@ describe('deterministic tool-accuracy scoring and release gate', () => {
       recall: 0,
     });
     const markdown = formatAccuracyMarkdown(report);
-    expect(markdown).toContain('30/31 fixed answers pass');
+    expect(markdown).toContain(
+      `${EXPECTATIONS.length - 1}/${EXPECTATIONS.length} fixed answers pass`,
+    );
     expect(markdown).toContain('1 fail');
     expect(markdown).toContain('Regression gate: **PASS**');
     expect(markdown).toContain(`Source SHA: \`${SOURCE.sha}\``);

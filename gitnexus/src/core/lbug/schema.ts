@@ -260,6 +260,7 @@ CREATE NODE TABLE Route (
   runtimeConfirmed BOOLEAN,
   runtimeSource STRING,
   runtimeStatus STRING,
+  unverifiedConsumers INT64,
   PRIMARY KEY (id)
 )`;
 
@@ -339,6 +340,7 @@ CREATE NODE TABLE BasicBlock (
   text STRING,
   callees STRING,
   calleeIds STRING,
+  ownerId STRING,
   PRIMARY KEY (id)
 )`;
 

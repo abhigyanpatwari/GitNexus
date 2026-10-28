@@ -35,14 +35,16 @@ import path from 'path';
 import fs from 'fs/promises';
 import { constants as fsConstants, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { retryRename } from '../storage/fs-atomic.js';
+import { assertLbugPublicationReady, consolidateLbugForPublication } from './lbug/publication.js';
 import {
   acquireIndexLock,
   requireExclusiveIndexLock,
   sweepStagingArtifacts,
 } from '../storage/index-lock.js';
 import { resolveEmbeddingRecovery } from '../storage/embedding-recovery.js';
-import { invalidateNodeWorkspacePackages } from './ingestion/import-resolvers/node-workspace-packages.js';
+import { invalidateNodeWorkspacePackages } from './ingestion/languages/typescript/workspace-packages.js';
 import {
   logNameFallbackSummary,
   summarizeNameFallback,
@@ -60,6 +62,7 @@ import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
+  acquireInitLock,
   loadGraphToLbug,
   getLbugStats,
   executeQuery,
@@ -94,6 +97,11 @@ import {
   estimateBufferPool,
   setBufferPoolSizeHint,
   resolveNativeSafeStorageDir,
+  getEffectiveBufferPoolSize,
+  LBUG_MAX_DB_SIZE,
+  maxDbSizeReachedRemedy,
+  pastEofReadRemedy,
+  type StagedBuildMode,
 } from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import { chunk } from '../lib/utils.js';
@@ -134,14 +142,19 @@ import { resolveFtsVersionPair } from './lbug/vendored-extension-path.js';
 import {
   startWalCheckpointDriver,
   checkpointOnce,
+  runCheckpointWithRetry,
   isManualCheckpointEnabled,
+  readCheckpointActivity,
+  type CheckpointActivity,
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import {
+  describeFileEvidence,
   ftsCrashParkFailureMessage,
   quarantineSidecarsForDirtyRecovery,
   inspectLbugSidecars,
 } from './lbug/sidecar-recovery.js';
+import { collectFailureEvidence, type FailureEvidenceTargets } from './lbug/failure-evidence.js';
 import type { EmbeddingIdentity } from './embeddings/embedding-identity.js';
 // Type-only (erased at compile time), so the lazy-embeddings convention
 // (#2370: no embeddings module loads unless a run actually needs one) holds.
@@ -153,6 +166,8 @@ import {
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  readRegistry,
+  findRegistryEntryByRepoPath,
   setShareOptOut,
   adoptFlatBranchLabel,
   isReadOnlyFilesystemError,
@@ -221,6 +236,7 @@ import {
   type PersistedSpringConfigConsumerRow,
 } from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
+import { collectResolutionGroupFiles } from './incremental/resolution-groups.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
 import {
   ftsTablesAmong,
@@ -237,11 +253,17 @@ import {
 } from './ingestion/process-detection-budget.js';
 import { NODE_TABLES } from './lbug/schema.js';
 import {
+  resolveParseCacheIdentity,
+  finalizeParseCacheIdentity,
+  type ParseCacheIdentity,
+  type ParseCacheIdentityResolution,
+} from './parse-cache-identity.js';
+import {
   loadParseCache,
   saveParseCache,
   pruneCache,
-  PARSE_CACHE_VERSION,
   createColdParseRebuildDir,
+  getColdParseRebuildDir,
   emptyParseCache,
   forgetCreatedParseCacheDir,
 } from '../storage/parse-cache.js';
@@ -270,7 +292,8 @@ import {
   snapshotEmbeddingDims,
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
-import { generateAIContextFiles } from '../cli/ai-context.js';
+import { assertUniqueEmbeddingKeys, EmbeddingIntegrityError } from './embeddings/embedding-keys.js';
+import { contextFileNeedsGeneration, generateAIContextFiles } from '../cli/ai-context.js';
 import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
   EMBEDDING_TABLE_NAME,
@@ -639,6 +662,106 @@ function recordLiveIndexMutationRisk(error: unknown): void {
   if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
     liveIndexMutationRisks.add(error);
   }
+}
+
+/**
+ * `String(value)` for a thrown value that never throws: the failure handler runs it
+ * before any cleanup, and an exotic throw (a null-prototype object, a throwing
+ * `toString`) must not abort that cleanup or mask the original failure.
+ */
+function describeThrown(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return '[unprintable thrown value]';
+  }
+}
+
+/**
+ * Where a failing write was going (#3530). A staged build is `staged-incremental`
+ * only while it is an atomic-incremental write: the #2409/#2841 escalation wipes
+ * the staging file and re-COPYs into it, which is a rebuild, and it stages with
+ * `GITNEXUS_ATOMIC_INCREMENTAL=0` as well — so naming the off-switch there would
+ * point at a knob with no effect.
+ */
+const stagedBuildModeOf = (staged: boolean, atomicIncrementalWrite: boolean): StagedBuildMode =>
+  !staged ? 'in-place' : atomicIncrementalWrite ? 'staged-incremental' : 'staged-rebuild';
+
+/**
+ * The diagnosis (#3529, #3530) for a classified analyze failure — its remedy and
+ * `Failure evidence — ` lines — or undefined when `failureMessage` is not one of
+ * those failures, so nothing else pays for the stats. Measures the index files,
+ * so call it BEFORE the database closes: closing can checkpoint the staging file,
+ * and a later stat would record the post-close size and make genuine growth look
+ * like a short file — the misreading the evidence exists to settle. Never throws.
+ */
+async function diagnoseClassifiedFailure(
+  failureMessage: string,
+  buildMode: StagedBuildMode,
+  targets: FailureEvidenceTargets,
+  checkpointsSince: CheckpointActivity,
+): Promise<string | undefined> {
+  const remedy =
+    maxDbSizeReachedRemedy(failureMessage, buildMode) ??
+    pastEofReadRemedy(failureMessage, buildMode);
+  if (!remedy) return undefined;
+  const evidenceLines = await collectFailureEvidence(targets, checkpointsSince);
+  // 0 is the pass-through sentinel for LadybugDB's native default, not a size.
+  const bufferPool = getEffectiveBufferPoolSize();
+  const configuredLine =
+    `configured max DB size ${LBUG_MAX_DB_SIZE} B, ` +
+    `buffer pool ${bufferPool === 0 ? "LadybugDB's native 80%-of-RAM default" : `${bufferPool} B`}`;
+  return [
+    remedy,
+    ...[...evidenceLines, configuredLine].map((line) => `Failure evidence — ${line}`),
+  ].join('\n');
+}
+
+/**
+ * What an analyze failure rethrows: `err` with `diagnosis` appended to its
+ * message, or a wrapper carrying it when `err` is not an Error.
+ *
+ * The message is the one channel every caller surfaces: `analyze --watch` wires
+ * no log sink unless GITNEXUS_VERBOSE=1 and the auto-sync worker launcher drops
+ * progress messages, yet both print the rethrown message. Appended in place, so
+ * the error keeps its identity and prototype (`instanceof` checks and live-mutation
+ * tracking key on the object), and after the native text, so classifiers anchored
+ * on it still match. Call it once per error so the diagnosis is appended once.
+ * Best effort: a throwing log sink or an unwritable `message` never replaces `err`.
+ */
+function attachFailureDiagnosis(
+  err: unknown,
+  failureMessage: string,
+  diagnosis: string | undefined,
+  log: (msg: string) => void,
+): unknown {
+  let failure: unknown = err;
+  const bestEffort = (deliver: () => void): void => {
+    try {
+      deliver();
+    } catch {
+      /* swallow — the caller rethrows `failure` */
+    }
+  };
+  if (diagnosis) {
+    bestEffort(() => {
+      const text = stripControlCharacters(diagnosis);
+      if (err instanceof Error) err.message = `${err.message}\n${text}`;
+      // A non-Error has no message to extend; wrap it so the diagnosis still travels.
+      else failure = new Error(`${failureMessage}\n${text}`, { cause: err });
+    });
+  } else if (
+    /max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(failureMessage)
+  ) {
+    // A max-size message the engine worded differently keeps the generic hint.
+    bestEffort(() =>
+      log(
+        'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
+          'byte limit before retrying analyze; retained complete embeddings can be reused.',
+      ),
+    );
+  }
+  return failure;
 }
 
 function formatMetaWriteFailureReason(err: unknown): string {
@@ -1255,6 +1378,29 @@ async function removeColdParseRebuildDir(
   }
 }
 
+interface ParseIdentityRun {
+  resolve(): ParseCacheIdentityResolution;
+  /** Slot-owned staging parent; includes any late writes to a retired run's child. */
+  storagePath?: string;
+}
+
+function effectiveParseCacheIdentity(
+  identity: ParseCacheIdentity,
+  options: Pick<AnalyzeOptions, 'pdg' | 'pdgMaxFunctionLines'>,
+): NonNullable<RepoMeta['parseCacheIdentity']> {
+  return {
+    base: identity.base,
+    ...(options.pdg === true
+      ? {
+          pdg: {
+            identity: identity.pdg,
+            maxFunctionLines: options.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
+          },
+        }
+      : {}),
+  };
+}
+
 /**
  * Run the full analysis under an exclusive, index-directory-scoped write lock
  * (#2658). A second concurrent `analyze` on the same slot waits here for the
@@ -1292,6 +1438,11 @@ export async function runFullAnalysis(
   invalidateNodeWorkspacePackages(repoPath);
 
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
+  let parseIdentityResolution: ParseCacheIdentityResolution | undefined;
+  const parseRun: ParseIdentityRun = {
+    // Lazy so FTS-only repair neither inspects nor restamps parser provenance.
+    resolve: () => (parseIdentityResolution ??= resolveParseCacheIdentity(import.meta.url)),
+  };
   const acquireOpts = {
     log,
     // Resolve and validate the canonical slot under the lock before cleanup.
@@ -1352,8 +1503,29 @@ export async function runFullAnalysis(
           `Warning: checkout "${formatRejectedBranchForLog(writeTarget.rejectedDetectedBranch)}" is not a usable index label; continuing.`,
         );
       }
+      // Only this canonical slot is locked. Its deterministic parser stage
+      // can only belong to an interrupted predecessor; sibling stages live
+      // under their own meta directories and must remain untouched. Reclaim
+      // before freshness/FTS-only early returns as well as parsing runs.
+      await removeColdParseRebuildDir(getColdParseRebuildDir(writeTarget.metaDir), false);
       const flatShared = writeTarget.placement.branch ? undefined : writeTarget.sharedStore;
-      if (flatShared) await seedSharedSlot(flatShared, repoPath, log);
+      if (flatShared) {
+        await seedSharedSlot(flatShared, repoPath, log, (meta) => {
+          if (options.repairFts) return true;
+          const resolved = parseRun.resolve();
+          const pdg =
+            options.preserveExistingPdg && options.pdg === undefined
+              ? meta.pdg !== undefined
+              : options.pdg;
+          return (
+            resolved.ok &&
+            isDeepStrictEqual(
+              meta.parseCacheIdentity,
+              effectiveParseCacheIdentity(resolved.identity, { ...options, pdg }),
+            )
+          );
+        });
+      }
       sweepStagingArtifacts(writeTarget.metaDir, log);
       const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
       const result = await runFullAnalysisInner(
@@ -1362,10 +1534,14 @@ export async function runFullAnalysis(
         callbacks,
         writeTarget,
         contentRetention,
+        parseRun,
         runnerIdentityAtBootstrap,
       );
       if (flatShared) {
-        await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log);
+        await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log, {
+          name: options.registryName,
+          allowDuplicateName: options.allowDuplicateName,
+        });
       } else if (!writeTarget.sharedStore) {
         // Also for a `--branch` run routed to a local branch sub-slot: the
         // checkout still leaves the store.
@@ -1383,6 +1559,7 @@ export async function runFullAnalysis(
       else if (options.shareWith) await setShareOptOut(repoPath, false);
       return result;
     } finally {
+      await removeColdParseRebuildDir(parseRun.storagePath, true);
       discardScopedEmbeddingSpills();
       lock.release();
     }
@@ -1395,6 +1572,7 @@ async function runFullAnalysisInner(
   callbacks: AnalyzeCallbacks,
   writeTarget: WriteTarget,
   contentRetention: ContentRetention,
+  parseRun: ParseIdentityRun,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
@@ -1474,7 +1652,6 @@ async function runFullAnalysisInner(
   };
   const ftsProfile = ftsProfileForContentRetention(contentRetention);
   const ftsIndexes = getFtsIndexes(ftsProfile);
-  let coldParseRebuildDir: string | undefined;
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
   // (e.g. the embeddings-cache open) falls back to the default until the hint is
@@ -1834,6 +2011,15 @@ async function runFullAnalysisInner(
   if (!analyzerRunnerIdentitiesEqual(runnerIdentity, runnerIdentity)) {
     throw new Error('Analyzer bootstrap supplied a malformed runner identity receipt');
   }
+  const parseIdentityResolution = parseRun.resolve();
+  const effectiveParseIdentity = parseIdentityResolution.ok
+    ? effectiveParseCacheIdentity(parseIdentityResolution.identity, options)
+    : undefined;
+  if (parseIdentityResolution.ok === false) {
+    log(
+      `Parse cache disabled: parser identity could not be verified (${parseIdentityResolution.reason}).`,
+    );
+  }
 
   let resumeEmbeddingCheckpoint = false;
   let pendingEmbeddingNodeIds = new Set<string>();
@@ -2027,6 +2213,19 @@ async function runFullAnalysisInner(
   const addGateReason = (reason: RebuildReason): void => {
     if (!priorIsFirstBuildClaim) collector.add(reason);
   };
+  if (
+    existingMeta &&
+    (effectiveParseIdentity === undefined ||
+      !isDeepStrictEqual(existingMeta.parseCacheIdentity, effectiveParseIdentity))
+  ) {
+    addGateReason({
+      key: 'parser-identity',
+      text:
+        effectiveParseIdentity === undefined
+          ? 'parser provenance is unverifiable — rebuilding without persistent parser caches.'
+          : 'parser artifacts or extraction options changed, or prior provenance is missing — rebuilding the graph.',
+    });
+  }
 
   // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
   // The incremental writeback persists only changed-file nodes, so a pdg
@@ -2478,6 +2677,15 @@ async function runFullAnalysisInner(
       if (!dirty && !indexedContentChanged && !healUnregistered) {
         const processDetectionStamp =
           existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget);
+        const registeredContextName =
+          options.contextFile && !options.registryName
+            ? findRegistryEntryByRepoPath(await readRegistry(), repoPath)?.name
+            : undefined;
+        const repoName =
+          options.registryName ??
+          registeredContextName ??
+          getInferredRepoName(repoPath) ??
+          path.basename(resolveRepoIdentityRoot(repoPath));
         if (options.registryName) {
           await registerRepo(repoPath, existingMeta, {
             name: options.registryName,
@@ -2487,12 +2695,21 @@ async function runFullAnalysisInner(
             branch: placement.branch,
             storagePath,
           });
-          if (!placement.branch) {
-            try {
+        }
+        if (!placement.branch) {
+          try {
+            // A new target needs an initial block even without --name. Existing
+            // blocks stay on the CLI's surgical refresh path to preserve skill rows.
+            if (
+              options.registryName ||
+              (!options.skipAgentsMd &&
+                options.contextFile &&
+                (await contextFileNeedsGeneration(repoPath, options.contextFile)))
+            ) {
               await generateAIContextFiles(
                 repoPath,
                 storagePath,
-                options.registryName,
+                repoName,
                 existingMeta.stats ?? {},
                 undefined,
                 {
@@ -2507,9 +2724,9 @@ async function runFullAnalysisInner(
                   hasSpringActuator: existingMeta.springActuator?.enabled === true,
                 },
               );
-            } catch {
-              /* best-effort — never fail the fast path over a context refresh */
             }
+          } catch {
+            /* best-effort — never fail the fast path over a context refresh */
           }
         }
         // ── #2354: restamp the workspace label on a same-commit branch flip ──
@@ -2575,10 +2792,7 @@ async function runFullAnalysisInner(
           // `resolveRepoIdentityRoot` collapses worktree roots to the
           // canonical repo basename (#1259) but leaves arbitrary subdirs
           // and `--skip-git` paths unchanged (#1232/#1233 intent preserved).
-          repoName:
-            options.registryName ??
-            getInferredRepoName(repoPath) ??
-            path.basename(resolveRepoIdentityRoot(repoPath)),
+          repoName,
           repoPath,
           storagePath,
           stats: existingMeta.stats ?? {},
@@ -2606,6 +2820,23 @@ async function runFullAnalysisInner(
   // before the embedding plan, the parse cache, and the emit mode are decided.
   applyCollectedForce();
 
+  // Where the swap is allowed:
+  //  - POSIX renames an open file, so the usual skip-native-close (#2264) is
+  //    fine and the swap always applies.
+  //  - Windows can swap only when a real close is safe to release the build
+  //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
+  //    crash). Unverified on Windows CI; falls back to in-place otherwise.
+  const posixSwap = process.platform !== 'win32';
+  // #2614 Windows: the forced real-close before the rename re-bets that #2264 is
+  // --pdg-only, which is unproven (the CLI/worker skip the native close
+  // UNCONDITIONALLY) and unverifiable without a Windows runner. Keep it opt-in
+  // (GITNEXUS_ATOMIC_WINDOWS_SWAP=1) so the default Windows analyze stays on the
+  // proven in-place path; enable it only to test the Windows swap.
+  const windowsSwapOk =
+    process.platform === 'win32' &&
+    options.pdg !== true &&
+    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
+
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
   //   --embeddings              -> load cache, restore, then generate any new ones
@@ -2624,6 +2855,7 @@ async function runFullAnalysisInner(
   let cachedSnapshot: CachedEmbeddingsSnapshot = emptyCachedEmbeddingsSnapshot();
   const adoptCachedEmbeddings = (raw: CachedEmbeddingsSnapshot): void => {
     cachedSnapshot = normalizeCachedEmbeddings(raw);
+    assertUniqueEmbeddingKeys(cachedSnapshot.rows, 'Cached embedding');
   };
   const discardCachedEmbeddings = (): void => {
     disposeEmbeddingSpill(cachedSnapshot.spill);
@@ -2678,12 +2910,24 @@ async function runFullAnalysisInner(
   // possible the dirty block above already threw a LbugWipeError, so this
   // open is replay-free by construction (FIX 1 of this shipping review).
   if (shouldLoadCache && existingMeta) {
+    // Cache initialization is writable and may discard quarantined WALs.
+    // Preserve the live family before this first open, including runs whose
+    // incremental write later escalates to a staged full rebuild. Keep this
+    // outside the cache-load catch: a preservation failure must stop analysis.
+    if (posixSwap || windowsSwapOk) await consolidateLbugForPublication(lbugPath);
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initAnalysisLbug(lbugPath);
       adoptCachedEmbeddings(await loadCachedEmbeddings());
       await closeLbug();
     } catch (err: any) {
+      discardCachedEmbeddings();
+      try {
+        await closeLbug();
+      } catch {
+        /* preserve the original cache failure */
+      }
+      if (err instanceof EmbeddingIntegrityError) throw err;
       // Surface cache-load failures explicitly: silently swallowing here would
       // re-introduce the original silent-data-loss symptom (embeddings end up
       // at 0 in meta.json with no diagnostic) through a different door.
@@ -2692,12 +2936,6 @@ async function runFullAnalysisInner(
           `(${err?.message ?? String(err)}). ` +
           `Embeddings will not be preserved on this run.`,
       );
-      discardCachedEmbeddings();
-      try {
-        await closeLbug();
-      } catch {
-        /* swallow */
-      }
     }
   }
 
@@ -2757,6 +2995,7 @@ async function runFullAnalysisInner(
             `for ${recovered.embeddingNodeIds.size} node(s); unchanged content can reuse them.`,
         );
       } catch (err) {
+        if (err instanceof EmbeddingIntegrityError) throw err;
         log(
           `Warning: could not recover staged embeddings (${(err as Error).message}); ` +
             'the retry will regenerate missing chunks.',
@@ -2770,18 +3009,20 @@ async function runFullAnalysisInner(
   }
 
   // ── Load incremental parse cache ──────────────────────────────────
-  // Content-addressed: `--force` reuses parser shards; `useParseCache: false`
-  // stages a new generation under a run-unique parse-rebuild.* dir and publishes
-  // after success. Unique because index locks are per branch slot while this
-  // cache root is shared across branches.
-  if (options.useParseCache === false) {
-    coldParseRebuildDir = await createColdParseRebuildDir(cacheRoot);
-    forgetCreatedParseCacheDir(coldParseRebuildDir);
-  }
+  // Every fresh or repaired shard stays run-owned until final verification.
+  // The same directory provides bounded transient ParsedFile streaming when
+  // identity is unverifiable, without creating a reusable cache generation.
+  parseRun.storagePath = getColdParseRebuildDir(metaDir);
+  const coldParseRebuildDir = await createColdParseRebuildDir(metaDir);
+  forgetCreatedParseCacheDir(coldParseRebuildDir);
   const parseCache =
-    options.useParseCache === false
-      ? emptyParseCache(coldParseRebuildDir)
-      : await loadParseCache(cacheRoot);
+    parseIdentityResolution.ok === false
+      ? undefined
+      : options.useParseCache === false
+        ? emptyParseCache(parseIdentityResolution.identity, {
+            writeStoragePath: coldParseRebuildDir,
+          })
+        : await loadParseCache(cacheRoot, parseIdentityResolution.identity, coldParseRebuildDir);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
   // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
@@ -2839,6 +3080,8 @@ async function runFullAnalysisInner(
       },
       {
         parseCache,
+        parsedFileStorePath: coldParseRebuildDir,
+        parseWorkerUrl: parseIdentityResolution.ok ? parseIdentityResolution.workerUrl : undefined,
         workerPoolSize: options.workerPoolSize,
         maxProcesses: processDetectionBudget.maxProcesses,
         maxProcessBranching: processDetectionBudget.overridden.maxProcessBranching
@@ -2894,13 +3137,12 @@ async function runFullAnalysisInner(
     throw err;
   }
 
-  if (options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
+  if (parseCache && options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
     log(
       `Rebuilt the graph and FTS while reusing cached parser output for ` +
         `${pipelineResult.parseCacheHitFileCount} file(s) ` +
-        `(parse cache ${PARSE_CACHE_VERSION}). ` +
-        `For same-version capture/query development changes, increment SCHEMA_BUMP in ` +
-        `src/storage/parse-cache.ts to invalidate parser output.`,
+        `(parser ${parseCache.identity.base.slice(0, 19)}). ` +
+        `Parser compatibility is derived automatically from the installed artifacts.`,
     );
   }
 
@@ -3014,31 +3256,34 @@ async function runFullAnalysisInner(
   // rename on Windows. Windows keeps the current in-place behavior
   // (buildPath === lbugPath, no swap) until that is resolved (see §12/follow-up).
   const isFullRebuild = !(isIncremental && hashDiff);
-  // Where the swap is allowed:
-  //  - POSIX renames an open file, so the usual skip-native-close (#2264) is
-  //    fine and the swap always applies.
-  //  - Windows can swap only when a real close is safe to release the build
-  //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
-  //    crash). Unverified on Windows CI; falls back to in-place otherwise.
-  const posixSwap = process.platform !== 'win32';
-  // #2614 Windows: the forced real-close before the rename re-bets that #2264 is
-  // --pdg-only, which is unproven (the CLI/worker skip the native close
-  // UNCONDITIONALLY) and unverifiable without a Windows runner. Keep it opt-in
-  // (GITNEXUS_ATOMIC_WINDOWS_SWAP=1) so the default Windows analyze stays on the
-  // proven in-place path; enable it only to test the Windows swap.
-  const windowsSwapOk =
-    process.platform === 'win32' &&
-    options.pdg !== true &&
-    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
   // Incremental atomicity stages the whole index before mutation. It remains
   // opt-in for ordinary analyze runs; watch mode requests it for failure
   // preservation. The copy requests a filesystem clone and records its actual
   // duration, while Node falls back to a normal copy where reflinks are absent.
+  // `GITNEXUS_ATOMIC_INCREMENTAL=0` is the operator's off-switch and beats a
+  // caller's request (watch and auto-sync cannot be reconfigured, #3530). It
+  // only governs this opt-in staging: a full rebuild and the #2841 escalation
+  // below still stage because they set `useAtomicSwap` independently.
+  const atomicIncrementalEnv = process.env.GITNEXUS_ATOMIC_INCREMENTAL;
+  const atomicIncrementalEligible = isIncremental && !!hashDiff && process.platform !== 'win32';
   const wantAtomicIncremental =
-    isIncremental &&
-    !!hashDiff &&
-    process.platform !== 'win32' &&
-    (options.atomicIncremental === true || process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1');
+    atomicIncrementalEligible &&
+    atomicIncrementalEnv !== '0' &&
+    (options.atomicIncremental === true || atomicIncrementalEnv === '1');
+  if (
+    atomicIncrementalEligible &&
+    atomicIncrementalEnv === '0' &&
+    options.atomicIncremental === true
+  ) {
+    // The off-switch trades failure safety for in-place speed; say so once, since
+    // watch and auto-sync (the callers that request staging) never show the operator
+    // why their runs stopped staging.
+    log(
+      'atomic-incremental: disabled by GITNEXUS_ATOMIC_INCREMENTAL=0 although the caller requested ' +
+        'staging; a failed write will leave the live index partly written and the next run will ' +
+        'rebuild it in full',
+    );
+  }
   // #2614 F3: the copy-then-swap stages ONLY the main lbug file, so a live index
   // carrying an orphan .wal/.shadow (a silently-failed prior checkpoint) would
   // be copied incompletely and lose that delta. Only take the atomic path when
@@ -3056,6 +3301,9 @@ async function runFullAnalysisInner(
   // valve. Nothing between here and there reads either binding except
   // `initLbug(buildPath)`, which the upgrade re-runs against the staging path.
   let useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
+  // Recover a valid live delta before staging its replacement. In-place runs
+  // retain the adapter's existing recovery path.
+  if (useAtomicSwap) await consolidateLbugForPublication(lbugPath);
   // Set only at the first operation that can mutate the live graph store.
   // Pre-write failures (config, lock, parsing, metadata, importer expansion)
   // remain retryable even when this platform cannot use an atomic swap.
@@ -3104,7 +3352,8 @@ async function runFullAnalysisInner(
       await fs.copyFile(lbugPath, buildPath, fsConstants.COPYFILE_FICLONE);
       log(
         `atomic-incremental: staged ${lbugPath} in ${Date.now() - copyStartedAt}ms ` +
-          '(copy-on-write requested; filesystem fallback is allowed)',
+          '(copy-on-write requested; filesystem fallback is allowed); ' +
+          (await describeFileEvidence('staging copy', buildPath)),
       );
     }
   } else {
@@ -3170,14 +3419,29 @@ async function runFullAnalysisInner(
     ),
   );
 
+  // The checkpoint counters are process-global (`analyze --watch` reruns analyze in
+  // one process), so a failure report counts only this run's from here (#3530).
+  const checkpointsAtRunStart = readCheckpointActivity();
   // Full rebuild (POSIX) builds into the temp `buildPath`; incremental and
   // Windows use `buildPath === lbugPath` in place.
   try {
     await initAnalysisLbug(buildPath);
   } catch (error) {
+    // Opening a truncated staging copy or an oversized index fails with the same
+    // classified messages a write does, so it carries the same diagnosis (#3530).
+    // No checkpoint driver has started yet, so nothing can touch the files mid-stat.
+    const stagedBuild = buildPath !== lbugPath;
+    const failureMessage = describeThrown(error);
+    const diagnosis = await diagnoseClassifiedFailure(
+      failureMessage,
+      stagedBuildModeOf(stagedBuild, atomicIncremental),
+      { liveIndex: lbugPath, ...(stagedBuild ? { stagingCopy: buildPath } : {}) },
+      checkpointsAtRunStart,
+    );
     discardCachedEmbeddingSpill();
-    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
-    throw error;
+    const failure = attachFailureDiagnosis(error, failureMessage, diagnosis, log);
+    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(failure);
+    throw failure;
   }
 
   // Manual WAL checkpoint driver (#1741): periodically drain the WAL
@@ -3191,18 +3455,19 @@ async function runFullAnalysisInner(
   // `let`: the incremental branch's escalation valve (#2409) stops this driver
   // around its close→wipe→reopen strategy switch and starts a fresh one.
   let walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
+  // #2409 escalation valve outcome, hoisted above the incremental branch so
+  // the vector-index recreation seam in Phase 4 below can tell "surgical
+  // incremental" (DB files survived — the HNSW index with them) apart from
+  // "escalated full write" (DB wiped, index destroyed) — tri-review
+  // 4669518496 P1. Hoisted again above the `try` so the failure handler can
+  // classify an escalated run as a rebuild (#3530).
+  let escalatedFullWrite = false;
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
     // must be released to avoid blocking subsequent invocations.
 
     let lbugMsgCount = 0;
-    // #2409 escalation valve outcome, hoisted above the incremental branch so
-    // the vector-index recreation seam in Phase 4 below can tell "surgical
-    // incremental" (DB files survived — the HNSW index with them) apart from
-    // "escalated full write" (DB wiped, index destroyed) — tri-review
-    // 4669518496 P1.
-    let escalatedFullWrite = false;
     let incrementalStats: AnalyzeResult['incrementalStats'];
     // Phase 3.5's restore scope (FIX 3 of this shipping review): on the
     // SURGICAL write plan this is the exact file set whose rows
@@ -3271,6 +3536,21 @@ async function runFullAnalysisInner(
       // in incremental/escalation-gate.ts (pure predicate, boundary-tested).
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
+      // Resolution groups can change edges between unchanged files without an
+      // import or a new-graph edge touching the changed/deleted member. Expand
+      // before the importer walk so dependents of these siblings refresh too.
+      for (const filePath of collectResolutionGroupFiles(
+        [...hashDiff.toWrite, ...hashDiff.deleted],
+        allFilePaths,
+      )) {
+        writableFiles.add(filePath);
+      }
+      const resolutionGroupExpansion = writableFiles.size - directlyChangedCount;
+      if (resolutionGroupExpansion > 0) {
+        log(
+          `Incremental: +${resolutionGroupExpansion} resolution sibling(s) added to writable set`,
+        );
+      }
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
       // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
       // importer-BFS chunks whose IMPORTS query failed across ALL depths
@@ -3336,7 +3616,7 @@ async function runFullAnalysisInner(
         // used to cost ~700 sequential lock-taking round-trips (~5.6s). The
         // closure is identical: importers already in writableFiles are not
         // re-frontiered, exactly like the per-file loop's membership check.
-        let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted, ...shadowSeed];
+        let frontier: string[] = [...writableFiles, ...hashDiff.deleted, ...shadowSeed];
         for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
           const importers = await queryImportersBatch(frontier, {
             onChunkFailure: () => {
@@ -3353,11 +3633,12 @@ async function runFullAnalysisInner(
           frontier = nextFrontier;
         }
       }
-      const importerExpansion = writableFiles.size - directlyChangedCount;
+      const importerExpansion =
+        writableFiles.size - directlyChangedCount - resolutionGroupExpansion;
       incrementalStats = {
         changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
         reparsedFiles: pipelineResult.reparsedFileCount,
-        affectedDependents: importerExpansion,
+        affectedDependents: resolutionGroupExpansion + importerExpansion,
         deletedFiles: hashDiff.deleted.length,
         writeMode: 'incremental',
       };
@@ -3376,9 +3657,9 @@ async function runFullAnalysisInner(
 
       // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
       //    composed:
-      //      (a) `writableFiles` — toWrite ∪ transitive importers of
-      //          changed/deleted files (the bounded BFS above, reading
-      //          IMPORTS from the pre-pipeline DB).
+      //      (a) `writableFiles` — toWrite ∪ resolution siblings ∪ transitive
+      //          importers of changed/deleted files and their siblings (the
+      //          bounded BFS above, reading IMPORTS from the pre-pipeline DB).
       //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
       //          edges and pulls in any unchanged-side file that sits
       //          on a writable-boundary-crossing edge (catches refined
@@ -3562,12 +3843,13 @@ async function runFullAnalysisInner(
             );
           }
         } catch (err: any) {
+          discardCachedEmbeddings();
+          if (err instanceof EmbeddingIntegrityError) throw err;
           log(
             `Warning: could not load cached embeddings ` +
               `(${err?.message ?? String(err)}). ` +
               `Embeddings will not be preserved on this run.`,
           );
-          discardCachedEmbeddings();
         }
       }
       // Hoisted out of the `||` below (§5.D): the size verdict has to be KNOWN
@@ -4269,6 +4551,7 @@ async function runFullAnalysisInner(
               }
               materialized = materializeCachedEmbeddings(cachedSnapshot, batch, spillReader);
             } catch (err) {
+              if (!shouldGenerateEmbeddings) throw err;
               for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not materialize ${batch.length} cached embedding(s) for restore ` +
@@ -4280,6 +4563,7 @@ async function runFullAnalysisInner(
               await batchInsert(executeWithReusedStatement, materialized);
               restoredEmbeddingCount += batch.length;
             } catch (err) {
+              if (err instanceof EmbeddingIntegrityError || !shouldGenerateEmbeddings) throw err;
               for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not restore ${batch.length} cached embedding(s) ` +
@@ -4492,6 +4776,18 @@ async function runFullAnalysisInner(
       existingMeta?.graphWriteCollapsed,
     );
     if (graphWriteCollapsed) {
+      if (useAtomicSwap) {
+        // A collapsed staging DB can be discarded before it replaces the live
+        // index. In-place writes below still need their incomplete stamp.
+        throw new Error(
+          `Graph write incomplete — the pipeline produced ${expectedRelationships} ` +
+            `relationships but only ${persistedRelationships} are readable from the staged index. ` +
+            `Analysis aborted before publication; the previous index, if any, is left intact. ` +
+            `Review COPY warnings and available memory and disk space. If the native buffer pool ` +
+            `was exhausted, set GITNEXUS_LBUG_BUFFER_POOL_SIZE to a larger byte value that fits ` +
+            `available memory, then re-run \`gitnexus analyze --force\`.`,
+        );
+      }
       log(
         `Warning: graph write incomplete — the pipeline produced ${expectedRelationships} ` +
           `relationships but only ${persistedRelationships} are readable from the index. Recording the ` +
@@ -5123,7 +5419,7 @@ async function runFullAnalysisInner(
       // chunk hash touched in this scan — cache HITS included (see parse-impl
       // usedKeys.add) — so it's complete even on an incremental run. Persisted
       // so a sibling branch's prune can union it and not evict our shards.
-      cacheKeys: [...parseCache.usedKeys],
+      cacheKeys: parseCache ? [...parseCache.usedKeys] : [],
       incrementalInProgress: undefined as RepoMeta['incrementalInProgress'],
       // Cleared on a clean run; otherwise the marker Phase 4/5 minted above
       // (see the `kind` doc in repo-manager.ts).
@@ -5142,6 +5438,10 @@ async function runFullAnalysisInner(
     // graph produced by two analyzer identities. Stable-read validation lives
     // inside the resolver, and a mismatch leaves the dirty flag intact so the
     // next run takes the established full-recovery path.
+    if (parseIdentityResolution.ok) {
+      finalizeParseCacheIdentity(import.meta.url, parseIdentityResolution.identity);
+      meta.parseCacheIdentity = effectiveParseIdentity;
+    }
     meta.runnerIdentity = finalizeAnalyzerRunnerIdentity(import.meta.url, runnerIdentity);
     // #2614 F1: the freshness stamp (saveMeta) is written AFTER the atomic swap
     // below — never here — so a concurrent MCP reader can't observe
@@ -5174,6 +5474,11 @@ async function runFullAnalysisInner(
     // Stop the manual checkpoint driver before closeLbug so its
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
+    if (useAtomicSwap && !wroteChangedSubgraphOnly && !(await runCheckpointWithRetry()).flushed) {
+      // Publication requires durability even when periodic/manual checkpoints
+      // are disabled. A best-effort close cannot certify the staged file.
+      throw new Error('Cannot publish staged index: final checkpoint could not be verified.');
+    }
     // CLI callers (about to process.exit) skip the native close to dodge a
     // LadybugDB destructor double-free after --pdg writes — closeLbugBeforeExit
     // CHECKPOINTs for durability then leaves the handles for process exit to
@@ -5208,20 +5513,14 @@ async function runFullAnalysisInner(
         )
       : false;
     if (useAtomicSwap && builtDbExists) {
-      await retryRename(buildPath, lbugPath);
-      liveIndexMutationStarted = true;
-      // Clear any sidecars orphaned beside the replaced file. A cleanly-closed
-      // prior index has none; a crashed one could, and it would be replay
-      // poison next to the freshly published index. Best-effort.
-      for (const suffix of ['.wal', '.shadow', '.wal.checkpoint'] as const) {
-        await fs.rm(`${lbugPath}${suffix}`, { force: true }).catch(() => {});
-      }
-      // #2614 F4: if the final checkpoint silently failed, the build may still
-      // carry a residual .wal/.shadow under the temp name. MOVE it beside the
-      // published index (not orphan/delete it) so the next open replays the
-      // delta, rather than leaving it under a name LadybugDB never reconciles.
-      for (const suffix of ['.wal', '.shadow'] as const) {
-        await fs.rename(`${buildPath}${suffix}`, `${lbugPath}${suffix}`).catch(() => {});
+      await assertLbugPublicationReady(buildPath);
+      const releaseInitLock = await acquireInitLock(lbugPath);
+      try {
+        await assertLbugPublicationReady(lbugPath);
+        await retryRename(buildPath, lbugPath);
+        liveIndexMutationStarted = true;
+      } finally {
+        await releaseInitLock();
       }
     }
 
@@ -5332,6 +5631,7 @@ async function runFullAnalysisInner(
     // composition no longer matches anything in the current scan are dead
     // weight; the parse phase populates `usedKeys` as it processes chunks).
     const saveCaches = async (): Promise<void> => {
+      if (!parseCache) return;
       // #2106 R6: the parse cache + durable store are shared across branches.
       // Before pruning to this run's keys, fold in the OTHER branches' recorded
       // chunk keys so a branch switch doesn't evict their still-live shards.
@@ -5352,6 +5652,33 @@ async function runFullAnalysisInner(
         for (const k of folded.keys) siblingKeys.add(k);
         if (!folded.complete) complete = false;
       }
+      // Another slot may have published since this run loaded its cache.
+      // Refresh eligibility inside the publication lock for EVERY run. This
+      // is also the first persistent read for a bypass run, after parsing.
+      // Metadata alone cannot admit foreign shards, and live entries cannot
+      // replace this run's staged repairs or revive its retired chunks.
+      const retained = await loadParseCache(cacheRoot, parseCache.identity, coldParseRebuildDir);
+      parseCache.storagePath = cacheRoot;
+      parseCache.onDiskKeys = new Set();
+      for (const key of retained.onDiskKeys ?? []) {
+        if (
+          !parseCache.stagedKeys?.has(key) &&
+          !parseCache.staleKeys?.has(key) &&
+          (parseCache.usedKeys.has(key) || !complete || siblingKeys.has(key))
+        ) {
+          parseCache.onDiskKeys.add(key);
+        }
+      }
+      for (const [key, value] of retained.entries) {
+        if (
+          !parseCache.usedKeys.has(key) &&
+          !parseCache.stagedKeys?.has(key) &&
+          !parseCache.staleKeys?.has(key) &&
+          (!complete || siblingKeys.has(key))
+        ) {
+          parseCache.entries.set(key, value);
+        }
+      }
       if (complete) {
         for (const k of siblingKeys) parseCache.usedKeys.add(k);
       } else {
@@ -5359,6 +5686,7 @@ async function runFullAnalysisInner(
         // everything currently loaded rather than evict on incomplete info.
         log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
         for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
+        for (const k of parseCache.onDiskKeys ?? []) parseCache.usedKeys.add(k);
       }
       const pruned = pruneCache(parseCache, parseCache.usedKeys);
       if (pruned > 0) {
@@ -5376,8 +5704,8 @@ async function runFullAnalysisInner(
       // break an otherwise successful run (next run treats it as a miss).
       await mergeStagedDurableParsedFileStore(
         cacheRoot,
-        parseCache.storagePath ?? cacheRoot,
-        PARSE_CACHE_VERSION,
+        parseCache.writeStoragePath ?? cacheRoot,
+        parseCache.identity.base,
         new Set(savedKeys),
       );
     };
@@ -5412,10 +5740,23 @@ async function runFullAnalysisInner(
         : undefined,
     };
   } catch (err) {
-    // Ensure LadybugDB is closed even on error. Stop the driver first
-    // so its retry loop cannot extend an already-failing analyze.
+    const stagedBuild = useAtomicSwap && buildPath !== lbugPath;
+    const failureMessage = describeThrown(err);
+    // Ensure LadybugDB is closed even on error. Stop the driver first so its retry
+    // loop cannot extend an already-failing analyze. `stop()` clears the tick timer
+    // before its first `await`, so starting it here keeps any new checkpoint from
+    // touching the staging files while the evidence below is measured; a checkpoint
+    // already in flight is recorded in that evidence's snapshot (#3530).
+    const driverStopped = walCheckpointDriver.stop();
+    // Before the database closes — see diagnoseClassifiedFailure.
+    const diagnosis = await diagnoseClassifiedFailure(
+      failureMessage,
+      stagedBuildModeOf(stagedBuild, atomicIncremental && !escalatedFullWrite),
+      { liveIndex: lbugPath, ...(stagedBuild ? { stagingCopy: buildPath } : {}) },
+      checkpointsAtRunStart,
+    );
     try {
-      await walCheckpointDriver.stop();
+      await driverStopped;
     } catch {
       /* swallow — surface path is the rethrow below */
     }
@@ -5441,7 +5782,7 @@ async function runFullAnalysisInner(
     // differs from `lbugPath` exactly when the atomic-swap plan is in effect,
     // and the live index is never that path. Best-effort by construction — the
     // rethrow below is the surface, and the lock's sweep remains the backstop.
-    if (useAtomicSwap && buildPath !== lbugPath) {
+    if (stagedBuild) {
       try {
         const recovery = resolveEmbeddingRecovery(
           metaDir,
@@ -5456,17 +5797,11 @@ async function runFullAnalysisInner(
     }
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
     discardCachedEmbeddingSpill();
-    if (liveIndexMutationStarted) {
-      // Preserve the original error identity/prototype: callers distinguish
-      // IndexLockTimeoutError and other domain failures with `instanceof`.
-      recordLiveIndexMutationRisk(err);
-    }
-    if (/max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(String(err))) {
-      log(
-        'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
-          'byte limit before retrying analyze; retained complete embeddings can be reused.',
-      );
-    }
-    throw err;
+    // What the caller sees: `err` itself (identity and prototype preserved, callers
+    // tell IndexLockTimeoutError and other domain failures apart with `instanceof`),
+    // or a wrapper when `err` is not an Error.
+    const failure = attachFailureDiagnosis(err, failureMessage, diagnosis, log);
+    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(failure);
+    throw failure;
   }
 }

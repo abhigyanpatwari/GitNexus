@@ -8,6 +8,7 @@ import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-fea
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
 import { RebuildReasonCollector } from '../../src/core/rebuild-reasons.js';
 import type { EmbeddingCheckpoint } from '../../src/core/embedding-checkpoint.js';
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   ensurePrivateSharedGraph,
@@ -20,6 +21,7 @@ import {
   getStoragePaths,
   listRegisteredRepos,
   loadMeta,
+  registerRepo,
   saveMeta,
 } from '../../src/storage/repo-manager.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
@@ -316,10 +318,53 @@ describe('publishSharedGraph race (#3352)', () => {
         storagePath: slot,
         lastCommit: head,
         indexedAt: new Date().toISOString(),
+        parseCacheIdentity: { base: (await runtimeParseIdentity()).base },
       });
     }
     return { checkouts: [main, wt], head };
   };
+
+  it.each(['main', 'custom-alias'])(
+    'preserves explicit registry name %s after shared-store registration',
+    async (registryName) => {
+      const { checkouts, head } = await setup();
+      const [main] = checkouts;
+      const layout = layoutOf(main);
+      const meta = await loadMeta(layout.checkoutSlot);
+      if (!meta) throw new Error('Shared-store fixture is missing metadata');
+      git(main, 'remote', 'add', 'origin', 'https://example.com/team/remote-name.git');
+      await registerRepo(main, meta, { name: registryName, storagePath: layout.checkoutSlot });
+
+      await publishSharedGraph(layout, main, head, () => {}, { name: registryName });
+
+      const entry = (await listRegisteredRepos()).find((repo) => repo.path === main);
+      expect(entry?.name).toBe(registryName);
+      expect(entry?.storagePath).toBe(layout.checkoutSlot);
+    },
+  );
+
+  it('keeps an explicitly permitted duplicate name through shared publication', async () => {
+    const { checkouts, head } = await setup();
+    for (const checkout of checkouts) {
+      const slot = layoutOf(checkout).checkoutSlot;
+      const meta = await loadMeta(slot);
+      if (!meta) throw new Error('Shared-store fixture is missing metadata');
+      await registerRepo(checkout, meta, {
+        name: 'shared-alias',
+        allowDuplicateName: true,
+        storagePath: slot,
+      });
+    }
+
+    const checkout = checkouts[1];
+    await publishSharedGraph(layoutOf(checkout), checkout, head, () => {}, {
+      name: 'shared-alias',
+      allowDuplicateName: true,
+    });
+
+    const entry = (await listRegisteredRepos()).find((repo) => repo.path === checkout);
+    expect(entry?.name).toBe('shared-alias');
+  });
 
   it('Covers AE6: two checkouts publishing one new commit produce exactly one graph', async () => {
     const { checkouts } = await setup();
@@ -575,6 +620,7 @@ describe('up-to-date fast path over a missing shared graph (#3374)', () => {
       lastCommit: git(wt, 'rev-parse', 'HEAD'),
       indexedAt: new Date().toISOString(),
       schemaFingerprint: SCHEMA_FINGERPRINT,
+      parseCacheIdentity: { base: (await runtimeParseIdentity()).base },
       analysisFeatures: {
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
       },

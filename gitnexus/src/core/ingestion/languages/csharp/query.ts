@@ -133,11 +133,12 @@ const CSHARP_SCOPE_QUERY = `
 (indexer_declaration) @declaration.property
 
 ;; Fields — \`int x;\` at class scope. variable_declarator inside
-;; field_declaration carries the name.
+;; field_declaration carries the name. Fields are addressable members, like
+;; properties; local variables remain lexical bindings below.
 (field_declaration
   (variable_declaration
     (variable_declarator
-      name: (identifier) @declaration.name))) @declaration.variable
+      name: (identifier) @declaration.name))) @declaration.property
 
 ;; Local variables — \`int x = 1;\` inside a method body
 (local_declaration_statement
@@ -163,6 +164,10 @@ const CSHARP_SCOPE_QUERY = `
 
 (parameter
   type: (nullable_type) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
+(parameter
+  type: (predefined_type) @type-binding.type
   name: (identifier) @type-binding.name) @type-binding.parameter
 
 ;; Type bindings — local variable annotations: \`User u = new User();\`
@@ -313,6 +318,14 @@ const CSHARP_SCOPE_QUERY = `
     type: (qualified_name) @type-binding.type
     (variable_declarator
       name: (identifier) @type-binding.name))) @type-binding.annotation
+
+;; \`private User? _user;\` — same nullable_type shape that parameters and
+;; properties already bind. Preserve this field's written type ownership.
+(field_declaration
+  (variable_declaration
+    type: (nullable_type) @type-binding.type
+    (variable_declarator
+      name: (identifier) @type-binding.name))) @type-binding.annotation @type-binding.nullable-field
 
 ;; Type bindings — property declaration: \`public User Owner { get; set; }\`.
 (property_declaration

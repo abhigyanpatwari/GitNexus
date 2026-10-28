@@ -30,7 +30,7 @@ errors always exit nonzero. `--check` additionally enforces the regression gate.
 
 | Fixture / checks                             | Public repro                                                                                                                                                                                         | Fixed-answer contract                                                                                                                                                                        |
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rename/`                                    | [#3486](https://github.com/abhigyanpatwari/GitNexus/issues/3486)                                                                                                                                     | All three Writer.close references; zero edits to comments, strings or unrelated homonyms.                                                                                                    |
+| `rename/`                                    | [#3486](https://github.com/abhigyanpatwari/GitNexus/issues/3486)                                                                                                                                     | All three Writer.close references; zero edits to comments, strings or unrelated homonyms; typed DeferredWriter.flush parameters refuse without edits or source changes.                      |
 | `src/server/`, `test/stub.test.ts`           | [#3487](https://github.com/abhigyanpatwari/GitNexus/issues/3487)                                                                                                                                     | Server beats a same-path test stub; `app.all` has method `*`; Map.get is absent; helper-registered literal route is present.                                                                 |
 | `src/web/`                                   | [#3488](https://github.com/abhigyanpatwari/GitNexus/issues/3488)                                                                                                                                     | Both the base-URL template passed to a configured wrapper and a direct literal fetch link their consumer files.                                                                              |
 | `src/security.ts`, `src/server/inline.ts`    | [#3489](https://github.com/abhigyanpatwari/GitNexus/issues/3489), [#3490](https://github.com/abhigyanpatwari/GitNexus/issues/3490), [#3491](https://github.com/abhigyanpatwari/GitNexus/issues/3491) | Named and inline unsafe handlers reach the sink; guarded and constant commands have zero taint; statement and function-hop lines are 1-based.                                                |
@@ -45,6 +45,18 @@ the cap/consumer contract without requiring 501 parser fixtures. It does not
 claim parser coverage for those synthetic records. Python checks read actual
 `context.outgoing.calls` symbol UIDs, preserving lexical/class ownership.
 
+Rename's positive fixtures construct each `Writer` receiver directly, including
+the imported class. A separate `DeferredWriter.flush` fixture exercises a typed
+parameter: a TypeScript annotation alone cannot prove which structurally compatible
+runtime object owns the method. The public `rename` tool (`dry_run: true`) must refuse it with
+`planning_status: "unsupported"` and `code: "ambiguous_reference"`, zero edits,
+and unchanged source files. This safety check has no known-gap allowance.
+Fixture line anchors are updated together; the three exact semantic answers and
+the same-named method/function, comment and string controls remain required.
+The runner validates v2 semantic provenance, exact UTF-16 spans and before/after
+source lines, then scores the whole `after` line. Semantic rename does not use
+ripgrep or text-search edits.
+
 ## Known gaps and repairs
 
 The initial source baseline is
@@ -53,8 +65,11 @@ Main at `50aa4be3b2c2c9a1561fc44878e5d8f87b99d16e` repaired three #3487 route
 checks and all four #3499 checks, and their allowances were removed: **18/31
 pass, 13 fail**.
 The JSON report records every desired and actual answer independently of gate
-status. Callback and guard taint findings are currently documented limitations;
-their stronger desired answers remain visible as known gaps.
+status. Inline-callback taint now passes and its allowance is removed. Guard
+taint now passes for the modeled immutable SHA predicate and Git data-argument
+use (#3490), and its allowance is removed. The current corpus passes **32/32**
+fixed answers with no known-gap allowances. Unsupported guard forms remain
+conservative findings; this does not claim complete guard coverage.
 
 `known-gaps.json` is an explicit, reviewed list of failing check IDs with issue,
 reason and observed baseline answers. There is no wildcard, skip, automatic

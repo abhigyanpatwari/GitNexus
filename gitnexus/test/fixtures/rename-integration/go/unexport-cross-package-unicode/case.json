@@ -1,0 +1,16 @@
+{
+  "language": "go",
+  "description": "Export is decided by the Unicode uppercase category, not ASCII A-Z: a non-ASCII uppercase initial is exported and a caseless letter (CJK) is not, so this rename hides the function from the caller.",
+  "categories": ["cross-file", "visibility", "unicode", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "Ünicode",
+    "kind": "Function",
+    "file": "api/api.go"
+  },
+  "newName": "日本",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

@@ -1,3 +1,6 @@
+import express from 'express';
+const app = express();
+
 function realInfo() { return 'info'; }
 function realQuery() { return 'query'; }
 function mcp() { return 'mcp'; }
@@ -5,6 +8,8 @@ function mcp() { return 'mcp'; }
 app.get('/api/info', realInfo);
 app.post('/api/query', realQuery);
 app.all('/api/mcp', mcp);
+app.use('/api/mcp', middleware);
+app.get(/^\/web(?:\/|$)/, realInfo);
 app.route('/api/chained').get(realInfo);
 app.route('/api/chained-post').post(realQuery);
 app.route('/api/chained-multi').get(realInfo).post(realQuery);
@@ -22,3 +27,7 @@ counts.get('/ghost-block-comment' /* cached key */);
 counts.get(
   '/ghost-line-comment', // cached key
 );
+
+function inspectRoute(route) {
+  return route.routePath === '/comparison-ghost';
+}

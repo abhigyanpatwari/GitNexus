@@ -1,0 +1,16 @@
+{
+  "language": "cobol",
+  "description": "Rename a nested data item through OF/IN qualifier chains, distinguishing same-named sibling groups and case-insensitive references.",
+  "categories": ["public-field", "deep-chain", "qualified-data"],
+  "target": {
+    "name": "ITEM-CODE",
+    "kind": "Property",
+    "file": "demo.cbl",
+    "startLine": 7
+  },
+  "newName": "PRODUCT-CODE",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  }
+}

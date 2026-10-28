@@ -17,10 +17,10 @@
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import type { ImportResolutionContext } from '../../scope-resolution/contract/scope-resolver.js';
-import { resolvePhpImportInternal } from '../../import-resolvers/php.js';
-import type { SuffixIndex } from '../../import-resolvers/utils.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
+import { resolvePhpImportInternal } from './import-helpers.js';
+import type { SuffixIndex } from '../../utils/suffix-index.js';
+import { perFileSet } from '../../utils/per-file-set.js';
+import { getWorkspaceFileIndex } from '../../utils/workspace-file-index.js';
 import {
   mergeComposerConfigs,
   parseComposerConfig,
@@ -28,6 +28,75 @@ import {
 } from '../../language-config.js';
 import { readdirSync, readFileSync, type Dirent } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+import { getPhpParser } from './query.js';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+
+interface PhpImportSpellings {
+  readonly source: string;
+  readonly functions: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly types: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+// One plain-name inventory per target file in the current resolution pass.
+// Source equality also invalidates the inventory for rename's updated snapshot.
+const importSpellingsByFile = new Map<string, PhpImportSpellings>();
+
+export function clearPhpImportSpellings(): void {
+  importSpellingsByFile.clear();
+}
+
+function phpImportSpellings(file: string, source: string): PhpImportSpellings {
+  const cached = importSpellingsByFile.get(file);
+  if (cached?.source === source) return cached;
+  const functions = new Map<string, Set<string>>();
+  const types = new Map<string, Set<string>>();
+  const tree = parseSourceSafe(getPhpParser(), source);
+  if (tree && !tree.rootNode.hasError) {
+    for (const declaration of tree.rootNode.descendantsOfType([
+      'function_definition',
+      'class_declaration',
+      'interface_declaration',
+      'trait_declaration',
+      'enum_declaration',
+    ])) {
+      const name = declaration.childForFieldName('name')?.text;
+      if (!name) continue;
+      const names = declaration.type === 'function_definition' ? functions : types;
+      const key = name.toLowerCase();
+      const spellings = names.get(key) ?? new Set<string>();
+      spellings.add(name);
+      names.set(key, spellings);
+    }
+  }
+  const inventory = { source, functions, types };
+  importSpellingsByFile.set(file, inventory);
+  return inventory;
+}
+
+/** Keep the local binding canonical while matching the export's written spelling. */
+export function resolvePhpImportBinding(
+  parsedImport: ParsedImport,
+  resolveTargetFiles: () => readonly string[],
+  sourceTextFor: (filePath: string) => string | undefined,
+): ParsedImport {
+  if (
+    (parsedImport.kind !== 'named' && parsedImport.kind !== 'alias') ||
+    parsedImport.importedSymbolKind === 'const'
+  )
+    return parsedImport;
+  const spellings = new Set<string>();
+  for (const file of resolveTargetFiles()) {
+    const source = sourceTextFor(file);
+    if (source === undefined) continue;
+    const inventory = phpImportSpellings(file, source);
+    const names =
+      parsedImport.importedSymbolKind === 'function' ? inventory.functions : inventory.types;
+    for (const name of names.get(parsedImport.importedName.toLowerCase()) ?? [])
+      spellings.add(name);
+  }
+  const spelling = spellings.size === 1 ? spellings.values().next().value : undefined;
+  return spelling ? { ...parsedImport, importedName: spelling } : parsedImport;
+}
 
 export interface PhpResolveContext {
   readonly fromFile: string;
@@ -236,7 +305,7 @@ const getPhpWorkspaceIndex = perFileSet((allFilePaths: ReadonlySet<string>): Php
    *
    * DEFERRED for the same reason as the shared `dirMap` (#2903), and here the
    * case is stronger: `getFilesInDir` has exactly one caller,
-   * `import-resolvers/php.ts`'s PSR-4 function/constant fallback, and that
+   * `import-helpers.ts`'s PSR-4 function/constant fallback, and that
    * caller sits inside `if (composerConfig) { … }`. `resolvePhpImportTarget`
    * hard-codes `composerConfig: null`, so on the LanguageProvider path the map
    * is statically unreachable; on the ScopeResolver path it is reachable only
@@ -456,20 +525,26 @@ export function resolvePhpImportTargetInternal(
       }),
     ),
   ];
-  const expectedType = symbolKind === 'function' ? 'Function' : 'Variable';
   const declaringFiles = candidateFiles.filter((parsed) =>
     parsed.localDefs.some((def) => {
-      if (def.type !== expectedType) return false;
+      if (
+        symbolKind === 'function'
+          ? def.type !== 'Function'
+          : def.type !== 'Const' && def.type !== 'Variable'
+      )
+        return false;
       const simpleName = (def.qualifiedName ?? '').split(/[\\.]/).at(-1);
-      return simpleName === importedName;
+      return symbolKind === 'function'
+        ? simpleName?.toLowerCase() === importedName.toLowerCase()
+        : simpleName === importedName;
     }),
   );
 
   if (declaringFiles.length > 1) return null;
   if (declaringFiles.length === 1) return declaringFiles[0].filePath;
 
-  // PHP constants are not currently emitted as local definitions. A single
-  // file in the namespace directory is still unambiguous; multiple files must
+  // Legacy captures may omit constants. A single file in the namespace
+  // directory is still unambiguous; multiple files must
   // fail closed rather than inheriting Set iteration order.
   if (symbolKind === 'const' && candidateFiles.length === 1) return candidateFiles[0].filePath;
   return resolved;

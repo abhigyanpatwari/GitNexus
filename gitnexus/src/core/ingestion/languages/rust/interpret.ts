@@ -11,7 +11,7 @@ const ENUM_VARIANT_NAMES = new Set(['Some', 'None', 'Ok', 'Err']);
 // the principal trait name. Reference/pointer sigils are stripped by the
 // caller first; wrapper unwrapping (Box<T> etc.) runs before this so the
 // unwrapped inner text still gets the same treatment.
-function stripDynBound(t: string): string {
+export function stripDynBound(t: string): string {
   if (!DYN_PREFIX_RE.test(t)) return t;
   t = t.replace(DYN_PREFIX_RE, '');
   const plus = t.indexOf('+');
@@ -46,9 +46,17 @@ export function interpretRustImport(captures: CaptureMatch): ParsedImport | null
   // kind === 'named'
   if (name === undefined) return null;
   const originalName = captures['@import.original-name']?.text;
+  if (alias !== undefined)
+    return {
+      kind: 'alias',
+      localName: alias,
+      importedName: originalName ?? name,
+      alias,
+      targetRaw: source,
+    };
   return {
     kind: 'named',
-    localName: alias ?? name,
+    localName: name,
     importedName: originalName ?? name,
     targetRaw: source,
   };
@@ -150,8 +158,16 @@ function findTopLevelComma(text: string): number {
   return -1;
 }
 
+// Preserve possible module-function paths until finalized type bindings can
+// distinguish module factories from associated functions. Casing is a lint.
+const RUST_MODULE_FN_PATH_RE =
+  /^(?:(?:r#)?[_\p{XID_Start}][\p{XID_Continue}]*::)+(?:r#)?[_\p{XID_Start}][\p{XID_Continue}]*$/u;
+
 function normalizeRustCallReturnType(text: string): string {
-  let t = text.trim();
+  let t = text.trim().replace(/\s*::\s*/g, '::');
+  // Kept whole so `resolveQualifiedCallee` can read the function's return
+  // annotation; the head alone would name the module, not a type (#3498).
+  if (!t.startsWith('Self::') && RUST_MODULE_FN_PATH_RE.test(t)) return t;
   // For scoped calls like `Foo::new()`, extract the type part before `::`
   const scopeIdx = t.indexOf('::');
   if (scopeIdx !== -1) {

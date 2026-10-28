@@ -213,6 +213,36 @@ describe('Pass 1: scope tree', () => {
 // ─── §Pass 2: declarations + local bindings ────────────────────────────────
 
 describe('Pass 2: declarations + local bindings', () => {
+  it.each([undefined, 'visible', ''])(
+    'retains graph identity with binding-name override %j',
+    (bindingName) => {
+      const extras =
+        bindingName === undefined
+          ? {}
+          : {
+              '@declaration.binding-name': cap(
+                '@declaration.binding-name',
+                5,
+                0,
+                10,
+                0,
+                bindingName,
+              ),
+            };
+      const result = extract(
+        [scopeMatch('module', 1, 0, 100, 0), declMatch('function', 'display', 5, 0, 10, 0, extras)],
+        'a.ts',
+        mockProvider(),
+      );
+      const module = result.scopes[0]!;
+      expect(result.localDefs).toHaveLength(1);
+      expect(module.ownedDefs).toEqual(result.localDefs);
+      expect(result.localDefs[0]!.nodeId).toBe('def:a.ts#5:0:Function:display');
+      expect([...module.bindings.keys()]).toEqual(
+        bindingName === '' ? [] : [bindingName ?? 'display'],
+      );
+    },
+  );
   it('routes one multi-topic match through both scope and declaration passes', () => {
     const result = extract(
       [

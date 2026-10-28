@@ -36,7 +36,10 @@ USAGE_FIELDS = (
     "cache_read_input_tokens",
     "output_tokens",
 )
-MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+# A successful 142-turn release session exceeded 8 MiB (#3500, run
+# 40181565589). Keep capture, redacted artifacts, and reuse bounded together,
+# with headroom for verbose tool results in the three concurrent paid cells.
+MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 # Wall-clock ceiling for one headless session, shared by the runner and the
 # evolution loop so both CLIs kill a session at the same point. 3600s was too
 # tight for the `workflow` arm: run 29907431284 lost two investigation-task
@@ -619,6 +622,85 @@ def skill_was_invoked_events(events: Sequence[dict[str, Any]], skill_name: str) 
     return successful
 
 
+def _session_result(events: list[dict[str, Any]], duration_s: float) -> tuple[dict[str, Any], int]:
+    """Reduce proven background continuations, retaining one session's full accounting.
+
+    Claude Code 2.1.214 emits a result per foreground turn, including a turn
+    started by a background task notification. Usage/turns are per-turn; cost
+    is cumulative. The real-CLI canary pins these different scopes.
+    """
+    indexes = [index for index, event in enumerate(events) if event.get("type") == "result"]
+    if not indexes:
+        raise ValueError("expected a final result event, observed 0")
+    final_index = indexes[-1]
+    if any(event.get("type") != "system" for event in events[final_index + 1 :]):
+        raise ValueError("final result event is not the last event in the captured stream")
+    final = events[final_index]
+    if len(indexes) == 1:
+        return final, final_index
+
+    session_id = final.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        raise ValueError("background continuation has no session identity")
+    total_usage = dict.fromkeys(USAGE_FIELDS, 0)
+    turns = 0
+    cost = 0.0
+    result_ids: set[str] = set()
+    pending_notifications: deque[int] = deque()
+    previous_index = -1
+    for index in indexes:
+        result = events[index]
+        uuid = result.get("uuid")
+        if result.get("session_id") != session_id:
+            raise ValueError("background continuation changed session identity")
+        if not isinstance(uuid, str) or not uuid or uuid in result_ids:
+            raise ValueError("background continuation has a missing or repeated result id")
+        result_ids.add(uuid)
+        if result.get("subtype") != "success" or result.get("is_error") is not False:
+            raise ValueError("background continuation contains an unsuccessful result")
+        usage = result.get("usage")
+        if not isinstance(usage, dict) or any(
+            type(usage.get(field)) is not int or usage[field] < 0 for field in USAGE_FIELDS
+        ):
+            raise ValueError("background continuation has incomplete or invalid usage")
+        count = result.get("num_turns")
+        if type(count) is not int or count < 1:
+            raise ValueError("background continuation has invalid turn count")
+        next_cost = measured_cost(result.get("total_cost_usd"))
+        if next_cost is None or next_cost < cost:
+            raise ValueError("background continuation has missing or decreasing cumulative cost")
+        segment = events[previous_index + 1 : index]
+        if any(event.get("session_id", session_id) != session_id for event in segment):
+            raise ValueError("background continuation changed session identity")
+        pending_notifications.extend(
+            previous_index + 1 + i
+            for i, event in enumerate(segment)
+            if event.get("type") == "system" and event.get("subtype") == "task_notification"
+        )
+        if previous_index >= 0:
+            # The CLI can announce completion before the preceding result.
+            # Consume each pending notification only once, before a fresh turn.
+            init = next(
+                (i for i, e in enumerate(segment) if e.get("type") == "system" and e.get("subtype") == "init"), None
+            )
+            if (
+                not pending_notifications
+                or init is None
+                or pending_notifications[0] >= previous_index + 1 + init
+                or not any(e.get("type") == "assistant" for e in segment[init + 1 :])
+            ):
+                raise ValueError("additional result lacks a background completion turn")
+            pending_notifications.popleft()
+        for field in USAGE_FIELDS:
+            total_usage[field] += usage[field]
+        turns += count
+        cost = next_cost
+        previous_index = index
+    # Per-turn duration_ms excludes time waiting for background work. Use the
+    # trusted parent's elapsed time for the whole process, including that wait.
+    return {**final, "usage": total_usage, "num_turns": turns, "duration_ms": duration_s * 1000}, final_index
+
+
 def run_claude(
     prompt: str,
     cwd: Path,
@@ -718,19 +800,13 @@ def run_claude(
         if proc.stdout_capture_overflow:
             raise ValueError(f"parent-captured event stream exceeds {MAX_TRANSCRIPT_BYTES} bytes")
         events = _parse_parent_event_stream(proc.stdout_capture)
-        result_indexes = [index for index, event in enumerate(events) if event.get("type") == "result"]
-        if len(result_indexes) != 1:
-            raise ValueError(f"expected exactly one final result event, observed {len(result_indexes)}")
-        result_index = result_indexes[0]
-        data = events[result_index]
+        data, result_index = _session_result(events, proc.duration_s)
         # A session that used a background task drains its bookkeeping after
         # the final result event (`background_tasks_changed`, `task_updated`,
         # `task_notification` — all `type: "system"`), so the result is last
         # only among the events that carry evidence. `system` events hold no
         # tool_use/tool_result/usage payload and so cannot forge skill or cost
         # evidence; any other event after the result still fails closed.
-        if any(event.get("type") != "system" for event in events[result_index + 1 :]):
-            raise ValueError("final result event is not the last event in the captured stream")
         # Nothing after the result is evidence. Cut the window here so that is
         # a property of what the evidence readers below can see, rather than an
         # assumption that a `system` event never carries a tool_use block.

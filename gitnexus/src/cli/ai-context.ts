@@ -119,6 +119,15 @@ export function markdownSafeBranch(branch: string): string {
   return branch.replace(/`/g, '');
 }
 
+function regressionReviewGuidance(defaultBranch: string, runner?: string): string {
+  const safeBranch = markdownSafeBranch(defaultBranch);
+  const target = JSON.stringify(safeBranch);
+  const cliFallback = runner
+    ? ` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\``
+    : '';
+  return `For regression review, fetch target branch ${target} from its remote; compute its merge base with the reviewed HEAD and pass that SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
+}
+
 /** Options for {@link generateGitNexusContent} (collapsed from positional
  *  params, #2188 review — six `undefined`s to reach `hasPdg` was the smell). */
 export interface GitNexusContentOptions {
@@ -131,9 +140,9 @@ export interface GitNexusContentOptions {
    *  the available runner (global `gitnexus` → `pnpm dlx` → `bunx` → `npx`) at
    *  call time. */
   runnerPath?: string;
-  /** Default branch for the regression-compare example (#243). Configurable so
-   *  projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
-   *  back over their fix on every analyze. The value is embedded inside a
+  /** Default target branch for the regression-review guidance (#243, #3509).
+   *  This is a target hint only: compare scope must receive the exact merge-base
+   *  SHA, never the moving branch tip. The value is embedded inside a
    *  Markdown inline-code span: validateBranchName rejects backticks upstream,
    *  and `markdownSafeBranch` strips any remaining backtick here as defense in
    *  depth, so JSON.stringify's quote/escape handling is sufficient and the
@@ -205,8 +214,8 @@ ${tableBody}`
   // bun-only machine has no npm, npx or pnpm at all, and the npx-only note left
   // it with a bootstrap command it could not run.
   const bootstrapNote =
-    `No \`${runnerPath}\` yet? Bootstrap with \`npx\`, \`bunx\`, or \`pnpm dlx\` — ` +
-    'e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).';
+    `No \`${runnerPath}\`? Bootstrap with \`npx\`, \`bunx\`, or \`pnpm dlx\`; ` +
+    'e.g. `bunx gitnexus@latest analyze` (#1939).';
 
   // This block is injected into every user's repo and its total size is capped
   // by test (ai-context.test.ts, #856) — a new bullet or clause has to be paid
@@ -224,17 +233,17 @@ ${tableBody}`
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}.
 
-> Index stale? Run \`${runner} analyze --index-only\` from the project root — it auto-selects an available runner. ${bootstrapNote}
+> Index stale? Run \`${runner} analyze --index-only\`. ${bootstrapNote}
 > On query/context/impact/cypher object results, read staleness.status and branch/lastCommit. Re-analyze only for behind or diverged — current is clone HEAD, not main.
 
 ## Always Do
 
-- **MUST run impact before editing.** Use \`impact({target: "symbolName", direction: "upstream"})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers, processes, and risk. Never substitute grep for graph analysis.${
+- **MUST run impact before editing.** Use \`impact({target: "symbolName", direction: "upstream"})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers/processes/risk. Never substitute grep for graph analysis.${
     hasPdg
       ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
       : ''
   }
-- **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\` or \`${runner} detect-changes --scope compare --base-ref ${JSON.stringify(markdownSafeBranch(defaultBranch))} --repo .\`.
+- **MUST analyze changes before commit.** Run \`detect_changes({scope: "all"})\` or \`${runner} detect-changes --scope all --repo .\`. \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. ${regressionReviewGuidance(defaultBranch, runner)}
 - MUST warn on HIGH/CRITICAL \`risk\` pre-edit; never use \`riskSharedAxes\` to waive a HIGH/CRITICAL \`risk\` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
 - **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
 - **MUST use \`query({search_query: "concept"})\` for concepts/flows, \`context({name: "symbolName"})\` for a named symbol, or \`impact\` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/\`UNKNOWN\`/literals.${
@@ -252,7 +261,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 
 - NEVER edit a function, class, or method before MCP/CLI impact analysis.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read \`UNKNOWN\` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
-- NEVER rename symbols with find-and-replace — use \`rename\` which understands the call graph.
+- NEVER rename symbols with find-and-replace — use \`rename\` with \`dry_run: true\`, review semantic spans and coverage, then apply with \`dry_run: false\` and its \`plan_token\`.
 - NEVER commit before MCP/CLI graph change analysis.
 
 ## Resources
@@ -340,7 +349,24 @@ async function upsertGitNexusSection(
     return 'created';
   }
 
-  const existingContent = await fs.readFile(filePath, 'utf-8');
+  // The block is generated with LF. A file checked out with CRLF (Windows,
+  // `core.autocrlf`) used to get the block written in LF inside its CRLF
+  // prose, so git saw mixed endings and a dirty tree after every reindex
+  // (#3688). The file's own ending is kept: the content is normalised to LF
+  // for the marker search and the comparisons below, and written back in the
+  // ending it had.
+  const rawContent = await fs.readFile(filePath, 'utf-8');
+  const eol = detectLineEnding(rawContent);
+  const existingContent = rawContent.replace(/\r\n/g, '\n');
+  // A file the previous writer left with mixed endings (CRLF prose, LF block)
+  // compares equal once normalised, so the paths below that keep the file as
+  // it is would leave the mixed bytes in place. Such a file is written back
+  // once, in its own ending, with its text untouched.
+  const repairLineEndings = async (): Promise<'updated' | 'preserved'> => {
+    if (rawContent === toLineEnding(existingContent, eol)) return 'preserved';
+    await writeWithLineEnding(filePath, existingContent, eol);
+    return 'updated';
+  };
 
   // Check if GitNexus section already exists. Matching is restricted
   // to markers that occupy their own line so that inline prose
@@ -400,35 +426,54 @@ async function upsertGitNexusSection(
         // Count-only delta — leave the committed lean block alone (#2907). A
         // project rename, or --no-stats dropping the parenthetical, still writes.
         if (stripVolatileCounts(updatedSection) === stripVolatileCounts(existingSection)) {
-          return 'preserved';
+          return repairLineEndings();
         }
         const before = existingContent.substring(0, startIdx);
         const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-        await fs.writeFile(filePath, (before + updatedSection + after).trim() + '\n', 'utf-8');
+        await writeWithLineEnding(filePath, (before + updatedSection + after).trim() + '\n', eol);
         return 'updated';
       }
       // Keep marker present but no stats line matched. Section is preserved
       // unchanged on disk; return a distinct status so callers/CLI output
       // don't mis-report this as 'updated' (which would imply a write).
-      return 'preserved';
+      return repairLineEndings();
     }
 
     // No keep marker — replace existing section with full verbose content,
     // unless the counts are the only thing that moved (#2907).
     if (stripVolatileCounts(existingSection) === stripVolatileCounts(content)) {
-      return 'preserved';
+      return repairLineEndings();
     }
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
     const newContent = before + content + after;
-    await fs.writeFile(filePath, newContent.trim() + '\n', 'utf-8');
+    await writeWithLineEnding(filePath, newContent.trim() + '\n', eol);
     return 'updated';
   }
 
   // Append new section
   const newContent = existingContent.trim() + '\n\n' + content + '\n';
-  await fs.writeFile(filePath, newContent, 'utf-8');
+  await writeWithLineEnding(filePath, newContent, eol);
   return 'appended';
+}
+
+/** The line ending of the first line break in `content`; LF when there is none. */
+function detectLineEnding(content: string): '\n' | '\r\n' {
+  const firstBreak = content.indexOf('\n');
+  return firstBreak > 0 && content[firstBreak - 1] === '\r' ? '\r\n' : '\n';
+}
+
+function toLineEnding(lfContent: string, eol: '\n' | '\r\n'): string {
+  return eol === '\n' ? lfContent : lfContent.replace(/\n/g, eol);
+}
+
+/** Write LF text in the file's own line ending. */
+async function writeWithLineEnding(
+  filePath: string,
+  lfContent: string,
+  eol: '\n' | '\r\n',
+): Promise<void> {
+  await fs.writeFile(filePath, toLineEnding(lfContent, eol), 'utf-8');
 }
 
 /**
@@ -604,6 +649,24 @@ Use GitNexus tools to accomplish this task.
   };
 }
 
+/** Whether a selected target needs its initial GitNexus block on an up-to-date run. */
+export async function contextFileNeedsGeneration(
+  repoPath: string,
+  contextFile: string,
+): Promise<boolean> {
+  const { relative, absolute } = resolveContextFileTarget(repoPath, contextFile);
+  await assertContextFileTargetSafe(repoPath, relative);
+  let content: string;
+  try {
+    content = await fs.readFile(absolute, 'utf-8');
+  } catch (err) {
+    if (isEnoent(err)) return true;
+    throw err;
+  }
+  const start = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
+  return start === -1 || findSectionMarkerIndex(content, GITNEXUS_END_MARKER, start) === -1;
+}
+
 /**
  * Generate AI context files after indexing
  */
@@ -723,8 +786,8 @@ export async function generateAIContextFiles(
 }
 
 /**
- * Refresh only the `base_ref: "..."` value inside an already-generated
- * context file, in place (#1996 tri-review P2).
+ * Refresh the regression-review target inside the GitNexus block of an
+ * already-generated context file, in place (#1996 P2, #3509).
  *
  * The `alreadyUpToDate` analyze fast path returns before the normal
  * {@link generateAIContextFiles} call, so a changed `.gitnexusrc` defaultBranch
@@ -733,8 +796,10 @@ export async function generateAIContextFiles(
  * block — including community-skill rows written by a prior `--skills` run —
  * rather than regenerating (which would drop those rows on a no-`--skills` run).
  *
- * Best-effort: missing files, a missing/blank block, or a block with no
- * `base_ref` line (e.g. a user-trimmed keep block) are silently skipped. Writes
+ * Legacy blocks that passed the branch tip as `base_ref` are migrated to the
+ * merge-base guidance at the same time. Best-effort: missing files, a
+ * missing/blank block, or a block with no generated regression sentence are
+ * silently skipped. Writes
  * only when the value actually changes, so a routine up-to-date run is a no-op.
  */
 export async function refreshBaseRefLine(
@@ -743,7 +808,6 @@ export async function refreshBaseRefLine(
   options?: { skipAgentsMd?: boolean; contextFile?: string },
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
-  const replacement = `base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}`;
   const updated: string[] = [];
   for (const target of options?.contextFile ? [options.contextFile] : ['AGENTS.md', 'CLAUDE.md']) {
     const { relative: name, absolute: filePath } = resolveContextFileTarget(repoPath, target);
@@ -761,9 +825,36 @@ export async function refreshBaseRefLine(
     if (endIdx === -1 || endIdx <= startIdx) continue;
     const blockEnd = endIdx + GITNEXUS_END_MARKER.length;
     const block = content.substring(startIdx, blockEnd);
-    // Only the generated regression example carries a base_ref line, and only
-    // one per block; replace its quoted value while leaving the rest untouched.
-    const newBlock = block.replace(/base_ref: "(?:[^"\\]|\\.)*"/, replacement);
+    // Preserve the runner emitted with the block. Its location follows the
+    // configured storage path, so assuming `.gitnexus/run.cjs` would break the
+    // CLI fallback when migrating guidance generated for an external store.
+    const legacyRunner = block.match(
+      /or `([^`\n]+?) detect-changes --scope compare --base-ref\b/,
+    )?.[1];
+    const mergeBaseGuidance = regressionReviewGuidance(defaultBranch, legacyRunner);
+    let newBlock = block;
+    if (!block.includes(mergeBaseGuidance) && block.includes('base_ref: "<merge-base SHA>"')) {
+      newBlock = block.replace(
+        /(?:(?:For (?:regression review of )?)?target branch "(?:[^"\\]|\\.)*": `git fetch origin -- [^`\n]+`; pass `git merge-base [^`\n]+ HEAD`'s SHA|Regression base: (?:PR GitHub `baseRefOid`\/`headRefOid`|exact PR base\/head commits from host metadata); target branch "(?:[^"\\]|\\.)*" via tracking remote\. Fetch both; pass merge-base SHA|For regression review, fetch target branch "(?:[^"\\]|\\.)*" from its remote; compute its merge base with the reviewed HEAD and pass that SHA) to `detect_changes\(\{scope: "compare", base_ref: "<merge-base SHA>"\}\)`(?: or `[^`\n]+? detect-changes --scope compare --base-ref "<merge-base SHA>" --repo \.\`)?\./,
+        mergeBaseGuidance,
+      );
+    }
+    if (newBlock === block) {
+      // Migrate the legacy generated sentence.
+      newBlock = block.replace(
+        /For regression review: `detect_changes\(\{scope: "compare", base_ref: "(?:[^"\\]|\\.)*"\}\)`(?: or `[^`\n]+? detect-changes --scope compare --base-ref "(?:[^"\\]|\\.)*" --repo \.\`)?\./,
+        mergeBaseGuidance,
+      );
+    }
+    if (newBlock === block) {
+      // Older compact blocks used this exact generated bullet rather than the
+      // prose sentence. Keep the anchor narrow so user-authored compare calls
+      // elsewhere in the managed block remain untouched.
+      newBlock = block.replace(
+        /- run detect_changes\(\{scope: "compare", base_ref: "(?:[^"\\]|\\.)*"\}\)(?=\s*(?:\n|$))/,
+        `- ${mergeBaseGuidance}`,
+      );
+    }
     if (newBlock === block) continue; // no base_ref line present, or already current
     const newContent = content.substring(0, startIdx) + newBlock + content.substring(blockEnd);
     try {

@@ -1,0 +1,49 @@
+{
+  "language": "swift",
+  "description": "Retain raw member declaration keys alongside canonical escaped lexical receivers.",
+  "categories": [
+    "escaped-identifier",
+    "call-graph"
+  ],
+  "target": {
+    "name": "`read`",
+    "kind": "Function",
+    "file": "worker.swift"
+  },
+  "newName": "fetch",
+  "expectedTargetName": "`fetch`",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "worker.swift"
+      },
+      "to": {
+        "name": "`read`",
+        "kind": "Function",
+        "file": "worker.swift"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "worker.swift"
+      },
+      "to": {
+        "name": "Worker",
+        "kind": "Class",
+        "file": "worker.swift"
+      }
+    }
+  ],
+  "exactOutgoing": true,
+  "warmParseCache": true
+}

@@ -48,6 +48,11 @@ import {
   recordPythonSimplePositionalCall,
   recordPythonSubtypeMethodShape,
 } from './subtype-dispatch.js';
+import {
+  beginPythonModuleAccessorCapture,
+  recordPythonModuleAccessor,
+  synthesizePythonCallResultAssignment,
+} from './module-accessors.js';
 
 const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_definition', 'lambda']),
@@ -91,6 +96,7 @@ export function emitPythonScopeCaptures(
   },
 ): readonly CaptureMatch[] {
   beginPythonSubtypeDispatchCapture(filePath);
+  beginPythonModuleAccessorCapture(filePath);
   let parseText = sourceText;
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   let notebookSegments: readonly NotebookLineSegment[] | undefined;
@@ -154,6 +160,16 @@ export function emitPythonScopeCaptures(
 
     recordPythonSubtypeCallShape(grouped, nodeMap, filePath, subtypeLineMapper);
 
+    const assignedNode = nodeMap['@declaration.variable'];
+    if (assignedNode !== undefined) {
+      const assignment = synthesizePythonCallResultAssignment(
+        assignedNode,
+        filePath,
+        subtypeLineMapper,
+      );
+      if (assignment !== undefined) out.push(assignment);
+    }
+
     const declarationNode = nodeMap['@declaration.function'] ?? nodeMap['@declaration.class'];
     const declarationName = grouped['@declaration.name']?.text;
     if (
@@ -206,6 +222,7 @@ export function emitPythonScopeCaptures(
       const scopeNode = nodeMap['@scope.function']!;
       const fnNode = scopeNode.type === 'function_definition' ? scopeNode : null;
       if (fnNode !== null) {
+        recordPythonModuleAccessor(filePath, fnNode, subtypeLineMapper);
         const parameterNames = computePythonArityMetadata(fnNode).parameterNames;
         if (parameterNames.length > 0) {
           grouped['@scope.lexical-names'] = syntheticCapture(

@@ -677,6 +677,8 @@ app.add_url_rule('/api/users', view_func=list_users)
         path.join(dir, 'cmd/server.go'),
         `package main
 
+import "net/http"
+
 func main() {
   http.HandleFunc("/api/inline", func(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte("ok"))
@@ -684,8 +686,8 @@ func main() {
 }
 `,
       );
-      // main() spans source lines 3-7 → 0-based [2,6]; the HandleFunc
-      // registration and its anonymous func are on line 4 (row 3), inside span.
+      // main() spans source lines 5-9 → 0-based [4,8]; the HandleFunc
+      // registration and its anonymous func are on line 6 (row 5), inside span.
       const mockDbExecutor = async (
         query: string,
         params?: Record<string, unknown>,
@@ -696,8 +698,8 @@ func main() {
               uid: 'fn-main',
               name: 'main',
               filePath: 'cmd/server.go',
-              startLine: 2,
-              endLine: 6,
+              startLine: 4,
+              endLine: 8,
               labels: ['Function'],
             },
           ];
@@ -706,7 +708,7 @@ func main() {
       };
       const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
       const provider = contracts.find(
-        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/inline',
+        (c) => c.role === 'provider' && c.contractId === 'http::*::/api/inline',
       );
       expect(provider).toMatchObject({
         symbolUid: 'fn-main',
@@ -764,6 +766,8 @@ func registerRoutes(r *gin.Engine) {
         path.join(dir, 'cmd/server.go'),
         `package main
 
+import "net/http"
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {}
 
 func main() {
@@ -783,16 +787,16 @@ func main() {
               uid: 'fn-healthHandler',
               name: 'healthHandler',
               filePath: 'cmd/server.go',
-              startLine: 2,
-              endLine: 2,
+              startLine: 4,
+              endLine: 4,
               labels: ['Function'],
             },
             {
               uid: 'fn-main',
               name: 'main',
               filePath: 'cmd/server.go',
-              startLine: 4,
-              endLine: 6,
+              startLine: 6,
+              endLine: 8,
               labels: ['Function'],
             },
           ];
@@ -801,7 +805,7 @@ func main() {
       };
       const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
       const provider = contracts.find(
-        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/health',
+        (c) => c.role === 'provider' && c.contractId === 'http::*::/api/health',
       );
       expect(provider).toMatchObject({
         symbolUid: 'fn-healthHandler',
@@ -1394,6 +1398,8 @@ public class UserController {
         `
 package main
 
+import "net/http"
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {}
 
 func main() {
@@ -1439,7 +1445,7 @@ func main() {
       expect(graphRouteMatches[0].symbolUid).toBe('uid-ctrl-list');
       expect(graphRouteMatches[0].meta.extractionStrategy).toBe('graph_assisted');
 
-      const sourceRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      const sourceRoute = providers.find((c) => c.contractId === 'http::*::/api/health');
       expect(sourceRoute).toBeDefined();
       expect(sourceRoute?.symbolName).toBe('healthHandler');
       expect(sourceRoute?.meta.extractionStrategy).toBe('source_scan');
@@ -2537,12 +2543,14 @@ export default router;
       fs.writeFileSync(
         path.join(dir, 'src/routes/health-a.ts'),
         `
+import { Router } from 'express'; const router = Router();
 router.get('/api/health', healthA);
 `,
       );
       fs.writeFileSync(
         path.join(dir, 'src/routes/health-b.ts'),
         `
+import { Router } from 'express'; const router = Router();
 router.get('/api/health', healthB);
 `,
       );
@@ -2596,6 +2604,8 @@ func main() {
         `
 package main
 
+import "net/http"
+
 func healthHandler(w http.ResponseWriter, r *http.Request) {}
 
 func main() {
@@ -2607,7 +2617,7 @@ func main() {
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const providers = contracts.filter((c) => c.role === 'provider');
 
-      const healthRoute = providers.find((c) => c.contractId === 'http::GET::/api/health');
+      const healthRoute = providers.find((c) => c.contractId === 'http::*::/api/health');
       expect(healthRoute).toBeDefined();
       expect(healthRoute?.symbolName).toBe('healthHandler');
     });
@@ -2936,6 +2946,61 @@ def create_order():
         consumers.find((c) => c.contractId === 'http::POST::/api/orders/{param}'),
       ).toBeDefined();
     });
+
+    it('reads prefixed Python literals and f-string URLs as paths (#1675)', async () => {
+      const dir = path.join(tmpDir, 'python-prefixed-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'client.py'),
+        `
+import requests
+
+BASE = "https://svc.local"
+
+def calls(svc, item_id):
+    requests.get(f"{BASE}/api/items")
+    requests.get(F"/api/items/{item_id:d}")
+    requests.post(rf"/api/raw")
+    requests.put(b"/api/bytes")
+    requests.delete(u'/api/legacy')
+    requests.request("PATCH", f"https://svc.local/api/abs/{item_id!r}")
+    requests.get(url=f"""{BASE}/api/keyword""")
+    requests.get(f"{BASE}api/relative")
+    requests.get(f"/api/odd/{ {} }")
+    uri = f"{BASE}/api/wrapped/{item_id}"
+    svc.fetch(uri=uri)
+    relative = "api/v1/relative"
+    svc.fetch(uri=relative)
+    root = f"{BASE}/"
+    svc.fetch(uri=root)
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumerIds = contracts
+        .filter((c) => c.role === 'consumer')
+        .map((c) => c.contractId)
+        .sort();
+
+      // A leading interpolation followed by `/` is a host binding, as for a JS
+      // template (#3111); one with no `/` after it is not a routable path, and
+      // a variable url that is only the host is skipped like a literal root.
+      expect(consumerIds).toEqual(
+        [
+          'http::DELETE::/api/legacy',
+          'http::GET::/api/items',
+          'http::GET::/api/items/{param}',
+          'http::GET::/api/keyword',
+          'http::GET::/api/odd/{param}',
+          'http::GET::/api/v1/relative',
+          'http::GET::/api/wrapped/{param}',
+          'http::PATCH::/api/abs/{param}',
+          'http::POST::/api/raw',
+          'http::PUT::/api/bytes',
+        ].sort(),
+      );
+    });
+
     it('extracts Python httpx.AsyncClient calls assigned to attributes or aliases', async () => {
       const dir = path.join(tmpDir, 'python-httpx-consumer');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
@@ -7566,7 +7631,11 @@ export async function fetchHealth() {
     it('handles graph queries that throw gracefully', async () => {
       const dir = path.join(tmpDir, 'graph-error');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/routes.ts'), `router.get('/api/health', handler);`);
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express'; const router = Router();
+router.get('/api/health', handler);`,
+      );
 
       const throwingExecutor = async () => {
         throw new Error('DB unavailable');
@@ -7586,6 +7655,7 @@ export async function fetchHealth() {
       fs.writeFileSync(
         path.join(dir, 'src/router.ts'),
         `
+import { Router } from 'express'; const router = Router();
 router.get('/api/users/', handler);
 `,
       );
@@ -7601,6 +7671,7 @@ router.get('/api/users/', handler);
       fs.writeFileSync(
         path.join(dir, 'src/router.ts'),
         `
+import { Router } from 'express'; const router = Router();
 router.get('/api/users/:id', handler1);
 router.get('/api/posts/{postId}', handler2);
 `,

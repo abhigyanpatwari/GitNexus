@@ -21,7 +21,7 @@ try {
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
-import { buildSuffixIndex, type SuffixIndex } from '../../ingestion/import-resolvers/utils.js';
+import { buildSuffixIndex, type SuffixIndex } from '../../ingestion/utils/suffix-index.js';
 import { createIgnoreFilter } from '../../../config/ignore-service.js';
 import { getMaxFileSizeBytes } from '../../ingestion/utils/max-file-size.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
@@ -364,6 +364,7 @@ export class IncludeExtractor implements ContractExtractor {
    *   - `createIgnoreFilter` honors `.gitignore`, `.gitnexusignore`, the
    *     hardcoded ignore list, and `.gitnexusignore` last-match-wins
    *     negation.
+   *   - Only regular file targets are indexable (file symlinks are retained).
    *   - `getMaxFileSizeBytes()` drops files larger than the cap so we
    *     never emit `File:<rel>` UIDs for files ingestion would skip.
    *
@@ -372,7 +373,7 @@ export class IncludeExtractor implements ContractExtractor {
    * and parallelism gains are not worth the import-graph weight.
    *
    * MAINTENANCE: if `walkRepositoryPaths` changes its glob options, ignore
-   * filter shape, or size-cap logic, mirror those changes here. The two
+   * filter shape, regular-file rule, or size-cap logic, mirror those changes here. The two
    * implementations exist because the consumers need different return
    * shapes (string[] vs ScannedFile[]) and different concurrency, but
    * they MUST agree on which files are reachable — that is what makes
@@ -393,6 +394,7 @@ export class IncludeExtractor implements ContractExtractor {
     for (const rel of candidates) {
       try {
         const stat = await fs.stat(path.join(repoPath, rel));
+        if (!stat.isFile()) continue;
         if (stat.size > maxFileSizeBytes) continue;
         survivors.push(rel);
       } catch (err) {

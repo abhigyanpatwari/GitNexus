@@ -127,7 +127,10 @@ describe('dedicated runner readiness', () => {
     }
     const releaseDocument = load(release) as typeof workflowDocument;
     expect(Object.keys(releaseDocument.jobs?.evaluate?.env ?? {}).sort()).toEqual([
+      'COMPARISON_RUN_ID',
       'EFFORT',
+      'INPUT_PR',
+      'INPUT_PR_SHA',
       'INPUT_REF',
       'MODEL',
     ]);
@@ -658,7 +661,7 @@ exit 1`);
 
   it('labels the upload-artifact pin with its real version', () => {
     expect(workflow).toContain(
-      'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1',
+      'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2',
     );
     expect(workflow).not.toContain('# v6.0.0');
   });

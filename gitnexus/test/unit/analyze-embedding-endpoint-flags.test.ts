@@ -6,6 +6,13 @@ vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: runFullAnalysisMock,
 }));
 
+// Flag validation must not install the optional runtime from the npm registry.
+// Runtime readiness and installation have their own analyze-local-embedding-error tests.
+vi.mock('../../src/core/embeddings/runtime-support.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/embeddings/runtime-support.js')>()),
+  assessLocalEmbeddingRuntime: () => ({ status: 'ready' }),
+}));
+
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
   closeLbugBeforeExit: vi.fn(async () => undefined),

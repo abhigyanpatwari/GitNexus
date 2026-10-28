@@ -1,15 +1,15 @@
 {
   "name": "tree-sitter-proto",
-  "version": "0.6.0-gd7d1542",
+  "version": "0.6.0-g1836649",
   "description": "tree-sitter grammar for protobuf — ABI 14 build from coder3101/tree-sitter-proto latest grammar.js, compatible with tree-sitter 0.25",
   "repository": "https://github.com/coder3101/tree-sitter-proto",
   "license": "MIT",
   "main": "bindings/node",
-  "_vendoredBy": "gitnexus — upstream generated src/ and bindings/node/binding.cc copied byte-for-byte from https://github.com/coder3101/tree-sitter-proto@d7d15427321da271cb1c25c12735e180ef981473. GitNexus keeps its synchronous CommonJS loader and hardened binding.gyp. Prebuilds are rebuilt from these sources by build-tree-sitter-prebuilds.yml. Do not edit generated C by hand.",
+  "_vendoredBy": "gitnexus - re-vendored from coder3101/tree-sitter-proto@18366491f37d43d6d5d02cbb1e79b650b5728145 by grammar-update-monitor on ABI 15. Source-build inputs (parser.c/scanner.c/src/) refreshed; the GitNexus-hardened binding.gyp + synchronous loader + vendor README + prebuilds are preserved (prebuilds are rebuilt by build-tree-sitter-prebuilds.yml on this version change). No scripts/dependencies here (#836/#1728).",
   "peerDependencies": {
     "tree-sitter": "0.25.1"
   },
-  "_upstreamCommit": "d7d15427321da271cb1c25c12735e180ef981473",
+  "_upstreamCommit": "18366491f37d43d6d5d02cbb1e79b650b5728145",
   "peerDependenciesMeta": {
     "tree-sitter": {
       "optional": true

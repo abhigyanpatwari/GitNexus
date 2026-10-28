@@ -53,6 +53,43 @@ def enclosing():
 class Parent: pass
 class Child(Parent): pass
 `,
+  'accessor.py': `def lazy_module():
+    import target as namespace
+    return namespace
+def direct_accessor():
+    return lazy_module().run()
+def assigned_accessor():
+    module = lazy_module()
+    return module.run()
+class Receiver:
+    def run(self): return 1
+`,
+  'accessor_caller.py': `from accessor import lazy_module as imported_module
+def imported_direct():
+    return imported_module().run()
+def imported_assigned():
+    module = imported_module()
+    return module.run()
+`,
+  'assignment_branches.py': `from accessor import lazy_module as first
+from other import lazy_module as second
+def conditional_module(flag):
+    if flag:
+        module = first()
+    else:
+        module = second()
+    return module.run()
+def conditional_builtin(flag):
+    if flag:
+        module = first()
+    else:
+        module = list()
+    return module.run()
+def sequential():
+    module = first()
+    module = second()
+    return module.run()
+`,
   'typescript.ts': `${loaderSource}\nfunction typed(value: Child): Parent { return value; }`,
   'typescript.tsx': `${loaderSource}\nconst element = <Child />;`,
   'javascript.js': loaderSource,
@@ -219,6 +256,80 @@ await import(${JSON.stringify(realWorker.href)});
     expect(site!.inScope).toBe(parsed.moduleScope);
     expect(site!.callerScope).not.toBe(site!.inScope);
     expect(parsed.scopes.find((scope) => scope.id === site!.callerScope)?.kind).toBe('Function');
+  });
+
+  it('transports accessor proofs and exact assigned calls alongside subtype-dispatch facts', () => {
+    const accessor = workerFiles.get('accessor.py')!;
+    expect(accessor.captureSideChannel).toEqual(
+      expect.objectContaining({
+        kind: 'python-capture',
+        moduleAccessors: expect.arrayContaining([
+          {
+            definitionLine: 1,
+            definitionColumn: 0,
+            status: 'accepted',
+            returnedName: 'namespace',
+            returnLine: 3,
+            returnColumn: 11,
+          },
+          expect.objectContaining({ status: 'declined' }),
+        ]),
+        subtypeDispatch: expect.objectContaining({
+          kind: 'python-subtype-dispatch',
+          simplePositionalCalls: expect.arrayContaining([expect.any(Array)]),
+          positionalCapacities: expect.arrayContaining([expect.any(Array)]),
+        }),
+      }),
+    );
+    for (const [filePath, callee, assignmentLine] of [
+      ['accessor.py', 'lazy_module', 7],
+      ['accessor_caller.py', 'imported_module', 5],
+    ] as const) {
+      const parsed = workerFiles.get(filePath)!;
+      const assignments = parsed.callResultAssignmentSites ?? [];
+      expect(assignments).toHaveLength(1);
+      const assignment = assignments[0]!;
+      expect(assignment.lhs).toBe('module');
+      expect(assignment.callSite.startLine).toBe(assignmentLine);
+      expect(parsed.captureSideChannel).toEqual(
+        expect.objectContaining({
+          callResultAssignments: [
+            {
+              callLine: assignment.callSite.startLine,
+              callColumn: assignment.callSite.startCol,
+              straightLine: true,
+            },
+          ],
+        }),
+      );
+      expect(parsed.referenceSites).toContainEqual(
+        expect.objectContaining({
+          kind: 'call',
+          name: callee,
+          inScope: assignment.inScope,
+          atRange: assignment.callSite,
+        }),
+      );
+    }
+  });
+
+  it('preserves branch provenance without dropping generic call-result assignments', () => {
+    const parsed = workerFiles.get('assignment_branches.py')!;
+    const assignments = parsed.callResultAssignmentSites ?? [];
+    expect(assignments.map((assignment) => assignment.callSite.startLine)).toEqual([
+      5, 7, 11, 13, 16, 17,
+    ]);
+    expect(assignments.every((assignment) => assignment.lhs === 'module')).toBe(true);
+    expect(parsed.captureSideChannel).toEqual(
+      expect.objectContaining({
+        kind: 'python-capture',
+        callResultAssignments: assignments.map((assignment, index) => ({
+          callLine: assignment.callSite.startLine,
+          callColumn: assignment.callSite.startCol,
+          straightLine: index >= 4,
+        })),
+      }),
+    );
   });
 
   it('derives identical finalized ImportEdge positions from transported facts', () => {

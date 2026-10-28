@@ -439,7 +439,7 @@ function resolveRuntimeVariant(): RuntimeVariant {
 
 function snapshotReadableFile(candidate: string): ReadableFileState {
   const link = lstatSync(candidate, { bigint: true });
-  const target = statSync(candidate, { bigint: true });
+  const target = link.isFile() ? link : statSync(candidate, { bigint: true });
   if (!target.isFile()) throw new Error(`Analyzer identity input is not a file: ${candidate}`);
   return {
     link: statState(link),
@@ -1199,7 +1199,9 @@ function collectRuntimePackages(
   edges: RuntimeDependencyEdge[];
 } {
   const rootManifestPath = path.join(packageRoot, 'package.json');
-  recordDirectoryGuard(directoryGuards, packageRoot);
+  // The package root also contains reports and temporary test output. Its
+  // inventory is not runtime input: the manifest, dependency resolution paths,
+  // build tree and vendored payloads each have their own guards.
   const rootRead = readManifest(rootManifestPath, options, budget, limits);
   const rootPackage: RuntimePackage = {
     root: packageRoot,
@@ -1421,6 +1423,7 @@ function collectArtifacts(
 function collectVendoredGrammarInputs(
   packageRoot: string,
   directoryGuards: Map<string, DependencyDirectoryGuard>,
+  pathGuards: Map<string, DependencyPathGuardResult>,
   options: AnalyzerIdentityResolveOptions,
   budget: RuntimeArtifactScanBudget,
   limits: AnalyzerIdentityTraversalLimits,
@@ -1429,8 +1432,8 @@ function collectVendoredGrammarInputs(
   artifacts: RuntimeArtifact[];
 } {
   const vendorRoot = path.join(packageRoot, 'vendor');
+  recordDependencyPathGuard(pathGuards, vendorRoot);
   if (!existsSync(vendorRoot) || !lstatSync(vendorRoot).isDirectory()) {
-    recordDirectoryGuard(directoryGuards, packageRoot);
     return { manifests: [], artifacts: [] };
   }
 
@@ -1505,6 +1508,7 @@ function collectDependencyInputs(
   const vendored = collectVendoredGrammarInputs(
     packageRoot,
     directoryGuards,
+    pathGuards,
     options,
     artifactScanBudget,
     limits,
@@ -2237,8 +2241,13 @@ function loadIdentityCache(
 }
 
 const CACHE_GUARD_PROBE_SCRIPT = String.raw`
-const fs = require('node:fs/promises');
+const fs = require('node:fs');
+const { performance } = require('node:perf_hooks');
 const crypto = require('node:crypto');
+const syncFs = {
+  lstat: fs.lstatSync, stat: fs.statSync,
+  readlink: fs.readlinkSync, readdir: fs.readdirSync,
+};
 const state = (value) => ({
   dev: String(value.dev), ino: String(value.ino), mode: String(value.mode),
   nlink: String(value.nlink), size: String(value.size),
@@ -2268,30 +2277,30 @@ const inventoryDigest = (entries) => {
   for (const entry of normalized) frame(hash, [entry.name, entry.kind]);
   return 'sha256:' + hash.digest('hex');
 };
-const probe = async (request) => {
+const probe = async (request, io) => {
   try {
-    const link = await fs.lstat(request.absolutePath, { bigint: true });
+    const link = await io.lstat(request.absolutePath, { bigint: true });
     const type = link.isDirectory() ? 'directory'
       : link.isFile() ? 'file'
       : link.isSymbolicLink() ? 'symlink' : 'other';
     if (request.mode === 'link') return {
       type,
       state: state(link),
-      ...(type === 'symlink' ? { symlinkTarget: await fs.readlink(request.absolutePath) } : {}),
+      ...(type === 'symlink' ? { symlinkTarget: await io.readlink(request.absolutePath) } : {}),
     };
     if (request.mode === 'directory-inventory') {
       if (!link.isDirectory() || link.isSymbolicLink()) return null;
       const entriesDigest = inventoryDigest(
-        await fs.readdir(request.absolutePath, { withFileTypes: true }),
+        await io.readdir(request.absolutePath, { withFileTypes: true }),
       );
-      const after = await fs.lstat(request.absolutePath, { bigint: true });
+      const after = await io.lstat(request.absolutePath, { bigint: true });
       if (JSON.stringify(state(link)) !== JSON.stringify(state(after))) return null;
       return { type: 'directory-inventory', state: state(after), entriesDigest };
     }
-    const target = await fs.stat(request.absolutePath, { bigint: true });
+    const target = link.isFile() ? link : await io.stat(request.absolutePath, { bigint: true });
     if (!target.isFile()) return null;
     const result = { type: 'readable-file', state: { link: state(link), target: state(target) } };
-    if (link.isSymbolicLink()) result.state.symlinkTarget = await fs.readlink(request.absolutePath);
+    if (link.isSymbolicLink()) result.state.symlinkTarget = await io.readlink(request.absolutePath);
     return result;
   } catch { return null; }
 };
@@ -2301,9 +2310,29 @@ process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', async () => {
   try {
     const requests = JSON.parse(input);
-    const results = [];
-    for (let offset = 0; offset < requests.length; offset += 512) {
-      results.push(...await Promise.all(requests.slice(offset, offset + 512).map(probe)));
+    const results = new Array(requests.length);
+    // Local stats are cheaper without thread-pool dispatch. Sample across the
+    // install tree so slow dependency mounts still use concurrent async I/O.
+    const sampleCount = Math.min(16, requests.length);
+    const started = performance.now();
+    for (let sample = 0; sample < sampleCount; sample += 1) {
+      const index = Math.floor(sample * requests.length / sampleCount);
+      results[index] = await probe(requests[index], syncFs);
+      if (performance.now() - started >= 8) break;
+    }
+    const useSync = performance.now() - started < 8;
+    if (useSync) {
+      for (let index = 0; index < requests.length; index += 1) {
+        if (results[index] === undefined) results[index] = await probe(requests[index], syncFs);
+      }
+    } else {
+      for (let offset = 0; offset < requests.length; offset += 512) {
+        await Promise.all(requests.slice(offset, offset + 512).map(async (request, index) => {
+          if (results[offset + index] === undefined) {
+            results[offset + index] = await probe(request, fs.promises);
+          }
+        }));
+      }
     }
     process.stdout.write(JSON.stringify(results));
   } catch { process.exitCode = 1; }
@@ -2874,3 +2903,15 @@ export function finalizeAnalyzerRunnerIdentity(
   }
   return finalIdentity;
 }
+
+/** Narrow, non-loading artifact primitives shared by parser identity.
+ * The analyzer receipt and its existing cache retain their separate contract. */
+export const analyzerIdentityArtifacts = {
+  hashCanonicalFrames,
+  hashStableFile,
+  snapshotReadableFile,
+  snapshotDirectoryInventory,
+  resolveBuildRoot,
+  resolveRuntimeVariant,
+  isInside,
+};

@@ -21,7 +21,11 @@ import {
   weightOf,
   WINDOWS_WEIGHTS_SEC,
 } from '../../scripts/cross-platform-shard.js';
-import { ALL_CROSS_PLATFORM, WORKER_THREADS } from '../../scripts/cross-platform-tests.js';
+import {
+  ALL_CROSS_PLATFORM,
+  LBUG_NATIVE,
+  WORKER_THREADS,
+} from '../../scripts/cross-platform-tests.js';
 
 // Replay the actual CI partition, including shard-count changes as the suite grows.
 const workflow = readFileSync(
@@ -35,6 +39,19 @@ const allShards = (files: readonly string[], total: number): readonly (readonly 
   Array.from({ length: total }, (_unused, i) => shardFiles(files, i + 1, total));
 
 describe('cross-platform shard partition', () => {
+  it('selects the native inline-handler proofs exactly once across the CI shards', () => {
+    const proofs = [
+      [LBUG_NATIVE, 'test/integration/taint-explain.test.ts'],
+      [WORKER_THREADS, 'test/integration/cfg/interproc-taint.test.ts'],
+      [WORKER_THREADS, 'test/integration/function-local-identity.test.ts'],
+    ] as const;
+    const selected = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).flat();
+    for (const [category, file] of proofs) {
+      expect(category.filter((candidate) => candidate === file)).toEqual([file]);
+      expect(selected.filter((candidate) => candidate === file)).toEqual([file]);
+    }
+  });
+
   it('selects both real-worker local-import proofs exactly once across the CI shards', () => {
     const proofs = [
       'test/integration/local-import-worker-parity.test.ts',
@@ -89,6 +106,52 @@ describe('cross-platform shard partition', () => {
 
     expect(seen.slice().sort()).toEqual([...ALL_CROSS_PLATFORM].sort());
     expect(new Set(seen).size).toBe(ALL_CROSS_PLATFORM.length);
+  });
+
+  it('leaves watchdog headroom for the recorded October Windows workload', () => {
+    // Run 38697469283 exhausted the 20-minute watchdog before cli-e2e
+    // finished. Its preceding serialized suites were undercharged or absent
+    // from the weight table. The CLI and Zig timings below come from the
+    // preceding successful run 38693066214; the other timings are from the
+    // failing run. Keep this replay independent of the scheduling table.
+    const observed: Readonly<Record<string, number>> = {
+      'test/integration/cli-e2e.test.ts': 563,
+      'test/integration/mcp-index-generation.test.ts': 201,
+      'test/integration/rename-provider-objective-c.test.ts': 285,
+      'test/integration/rename-provider-zig.test.ts': 183,
+      'test/integration/rename-provider-go.test.ts': 221,
+      'test/integration/worker-pool.test.ts': 254,
+      'test/integration/rename-provider-swift.test.ts': 300,
+      'test/integration/rename-provider-c.test.ts': 202,
+      'test/unit/incremental-dirty-recovery.test.ts': 76,
+    };
+    const floor = weightOf('test/unmeasured.test.ts');
+    const loads = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).map((files) =>
+      files.reduce((sum, file) => sum + Math.max(weightOf(file), (observed[file] ?? 0) + floor), 0),
+    );
+    // Leave at least three minutes for hosted-runner variation. Merely
+    // fitting under 20 minutes left the previous partition prone to timeout.
+    expect(Math.max(...loads)).toBeLessThanOrEqual(17 * 60);
+  });
+
+  it('leaves watchdog headroom for the October 23 native-suite timeout', () => {
+    // Windows run 39934695864: shard 10 timed out with Kotlin still pending.
+    // Use its completed suite times, plus the October 25 green run 40172490240
+    // for query-symbol-integrity and incremental-dirty-recovery. These measured
+    // costs must remain independent of the scheduling hints being tested.
+    const observed: Readonly<Record<string, number>> = {
+      'test/integration/rename-provider-objective-c.test.ts': 385.174,
+      'test/integration/rename-provider-csharp.test.ts': 265.99,
+      'test/integration/incremental-method-integrity.test.ts': 144.974,
+      'test/integration/fts-repair-warm-session.test.ts': 61.015,
+      'test/integration/query-symbol-integrity.test.ts': 33.892,
+      'test/unit/incremental-dirty-recovery.test.ts': 127.8,
+    };
+    const floor = weightOf('test/unmeasured.test.ts');
+    const loads = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).map((files) =>
+      files.reduce((sum, file) => sum + Math.max(weightOf(file), (observed[file] ?? 0) + floor), 0),
+    );
+    expect(Math.max(...loads)).toBeLessThanOrEqual(17 * 60);
   });
 
   it('keeps each shard within a shard of the ideal weight', () => {

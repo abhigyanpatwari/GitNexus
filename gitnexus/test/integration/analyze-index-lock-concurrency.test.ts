@@ -59,6 +59,44 @@ afterEach(() => {
 });
 
 describe('index lock across processes (#2658)', () => {
+  it('publishes the held marker only after its PID is written', async () => {
+    // Observe the create/write boundary deterministically inside the real child.
+    const observePidWrite = `
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const original = fs.writeFileSync;
+      fs.writeFileSync = (file, data, options) => {
+        if (data === String(process.pid)) {
+          fs.closeSync(fs.openSync(file, 'w'));
+          fs.writeSync(1, JSON.stringify({ markerVisible: fs.existsSync(process.env.MARKER) }) + '\\n');
+        }
+        return original(file, data, options);
+      };
+      syncBuiltinESMExports();
+    `;
+    child = spawn(
+      process.execPath,
+      ['--import', `data:text/javascript,${encodeURIComponent(observePidWrite)}`, childScript],
+      {
+        env: {
+          ...process.env,
+          LOCK_MODULE: lockModule,
+          LOCK_DIR: dir,
+          MARKER: marker,
+          GITNEXUS_INDEX_LOCK_BACKEND: 'file',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    let stdout = '';
+    child.stdout?.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    await waitFor(() => stdout.includes('\n') && existsSync(marker), 40_000);
+    expect(JSON.parse(stdout.trim())).toEqual({ markerVisible: false });
+    expect(Number(readFileSync(marker, 'utf8'))).toBe(child.pid);
+  }, 60_000);
+
   it.each(['EEXIST', 'ENOENT'])(
     'reports sentinel-create %s distinctly from other failures',
     async (code) => {

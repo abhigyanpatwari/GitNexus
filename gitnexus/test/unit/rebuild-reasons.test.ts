@@ -298,6 +298,7 @@ const REBUILD_REASON_COVERAGE = [
   { key: 'analysis-features', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'spring-vendor-prefixes', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'runner-identity', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'parser-identity', file: 'test/integration/parse-cache-identity-lifecycle.test.ts' },
   { key: 'cjk-segmentation', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'embedding-dims', file: 'test/unit/embedding-dims-guard.test.ts' },
   { key: 'spring-actuator', file: 'test/unit/incremental-orchestration.test.ts' },

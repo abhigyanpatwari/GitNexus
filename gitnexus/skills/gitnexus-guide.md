@@ -11,7 +11,7 @@ Quick reference for all GitNexus MCP tools, resources, and the knowledge graph s
 
 For any task involving code understanding, debugging, impact analysis, or refactoring:
 
-1. **Read `gitnexus://repo/{name}/context`** — codebase overview + check index freshness
+1. **Bind the repository once** — use a confirmed registry name/path or configured default; call `list_repos` if unknown. Read hot-tool `staleness`; use `gitnexus://repo/{name}/context` when an overview is needed.
 2. **Match your task to a skill below** and **read that skill file**
 3. **Follow the skill's workflow and checklist**
 
@@ -38,7 +38,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `impact`         | Symbol blast radius — what breaks at depth 1/2/3 with confidence         |
 | `trace`          | Shortest path between two symbols — "how does A reach B?" in one call     |
 | `detect_changes` | Git-diff impact — what do your current changes affect                    |
-| `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
+| `rename`         | Semantic rename: previews by default (`dry_run` omitted/true), applies with `dry_run: false` and the preview's `plan_token`; inspect application status and failures |
 | `cypher`         | Raw graph queries (read `gitnexus://repo/{name}/schema` first)           |
 | `explain`        | Persisted taint findings — source→sink data flows (needs `analyze --pdg`) |
 | `pdg_query`      | Control/data dependence — what gates X (CDG) / where Y flows (REACHING_DEF); needs `analyze --pdg` |
@@ -50,6 +50,39 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `group_list`     | List configured multi-repo groups, or one group's config                 |
 | `group_sync`     | Rebuild a group's Contract Registry (cross-repo HTTP contract links); run after `group.yaml` changes or member re-index |
 | `list_repos`     | Discover indexed repos (paginated — `limit`/`offset`)                    |
+
+### Choose a focused response
+
+Use the connected server's schema; older servers may not advertise the new
+filters. All options below are explicit: omitting them preserves existing output.
+Use filters for bulky unwanted sections; on an already-small response, omission
+metadata can outweigh the bytes saved.
+
+| Question | Options |
+| --- | --- |
+| Which symbols implement this? | `query`: `limit: 3`, `max_symbols: 3`, `include_content: false`, `chain_depth: 0`, `response_sections: ["process_symbols", "definitions"]` |
+| Which execution flows match? | `query`: keep `processes` in `response_sections`; join its `id` to `process_symbols[].process_id` |
+| Who calls this exact symbol? | `context`: `uid`, `response_sections: ["incoming"]`, `relationTypes: ["CALLS"]` |
+| What does it call, with source? | `context`: `uid`, `include_content: true`, `response_sections: ["outgoing"]`, `relationTypes: ["CALLS"]` |
+| What is the impact summary? | `impact`: `direction: "upstream"`, `summaryOnly: true`; risk calculation and totals are retained |
+| Which affected symbols need inspection? | `impact`: `limit: 10`, `offset: 0`; page as indicated by the response |
+| How does A reach B? | `trace`: `from_uid`, `to_uid` |
+
+`response_sections` selects data sections for single-repository MCP `query` or
+`context` (not `@group` routes). Query choices: `processes`, `process_symbols`,
+`definitions`. Context choices: `incoming`, `outgoing`, `processes`, `chain`,
+`routes`, `typed_properties`; the selected symbol always remains. Context
+`relationTypes` accepts uppercase relationship names advertised by its schema
+and filters only the existing incoming/outgoing categories. It does not change
+ranking, traversal, source retention or the bounded candidate/reference windows.
+
+Filters add `response_filter` with the selection and omitted fields/categories.
+Warnings, ambiguity, staleness and completeness metadata always remain. An empty
+filtered view is not proof of absence. Omit filters to expand, and never waive
+impact checks because a selected category is empty. `maxTokens` is a byte cutoff,
+not pagination: it can cut JSON. Prefer these filters, small result counts, and
+source/chain expansion for a selected symbol rather than a large search result.
+Stop once enough evidence answers the question; do not run every tool by default.
 
 ### Paginating `list_repos`
 

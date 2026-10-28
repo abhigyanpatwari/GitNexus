@@ -33,10 +33,11 @@ import {
   type PythonResolveContext,
 } from './index.js';
 import {
-  applyPythonSubtypeDispatchSideChannel,
   pythonSubtypeCallPositionalCount,
   pythonSubtypePositionalCapacity,
 } from './subtype-dispatch.js';
+import { applyPythonCaptureSideChannel } from './module-accessors.js';
+import { createPythonReceiverNamespaceResolver } from './module-accessor-resolution.js';
 
 /**
  * Python subtype dispatch is deliberately limited to instance receiver facts.
@@ -86,6 +87,7 @@ const pythonScopeResolver: ScopeResolver = {
   filterWildcardNames: (scope, names, files) => expandPythonWildcardNames(scope, files, names),
   namespaceBindingIdentity: pythonNamespaceBindingIdentity,
   namespaceSkipsEnclosingClasses: true,
+  createReceiverNamespaceResolver: createPythonReceiverNamespaceResolver,
   ownedMembersBindAtModuleScope: false,
   suppressReceiverLookup: (typeRef) => typeRef.source === 'decorator-unknown',
   languageProvider: pythonProvider,
@@ -137,7 +139,7 @@ const pythonScopeResolver: ScopeResolver = {
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 
-  applyCaptureSideChannel: applyPythonSubtypeDispatchSideChannel,
+  applyCaptureSideChannel: applyPythonCaptureSideChannel,
 
   isSuperReceiver: (text) => /^super\s*\(/.test(text),
 

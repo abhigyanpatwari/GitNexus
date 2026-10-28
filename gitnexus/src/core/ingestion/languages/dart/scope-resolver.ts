@@ -210,6 +210,8 @@ export const dartScopeResolver: ScopeResolver = {
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveDartImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
 
+  isNamespaceImport: (parsedImport) => parsedImport.kind === 'namespace',
+
   // Dart `import` is whole-library: every public top-level symbol of the
   // target enters scope. Enumerating them lets `propagateImportedReturnTypes`
   // mirror imported functions' return types into the importer.
@@ -238,6 +240,15 @@ export const dartScopeResolver: ScopeResolver = {
   // Dart is statically typed — the field-fallback heuristic over-connects.
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
+
+  // `dartBindingScopeFor` hoists every method's return-type binding out of
+  // its class body onto the Module scope (as C# does), so the text cascade
+  // must walk up there to type `svc.getUser().save()`. Those bindings are
+  // keyed by bare name, so the walk only accepts one a member of the
+  // receiver's own class declared: a same-named method of another class in
+  // the file, or an imported top-level function, must not answer.
+  hoistTypeBindingsToModule: true,
+  hoistedTypeBindingsRequireOwner: true,
 
   // No `new`: bare `Foo()` resolves to the type; with cross-file imports the
   // callee is reachable workspace-wide.

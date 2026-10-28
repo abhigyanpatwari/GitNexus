@@ -365,7 +365,7 @@
  * toward the noise floor would only buy flaky CI; see `_blind_spot` in
  * baselines.json. PR #2911 is the proof that this blind spot is real rather
  * than theoretical: JavaScript's missing index was a scan of
- * `ImportPassCache.normalizedFileList` on EVERY import, which the Set counter
+ * a cached normalized file array on EVERY import, which the Set counter
  * could not see, and it took a differential parity test over 211 200 pairs plus
  * this bench's arrival to pin it.
  *
@@ -479,14 +479,13 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { resolveGoImportTarget } from '../../src/core/ingestion/languages/go/import-target.ts';
 import { resolveDartImportTarget } from '../../src/core/ingestion/languages/dart/import-target.ts';
 import { resolveRubyImportTarget } from '../../src/core/ingestion/languages/ruby/import-target.ts';
-import { resolveCsharpImportTarget } from '../../src/core/ingestion/languages/csharp/import-target.ts';
 import { kotlinScopeResolver } from '../../src/core/ingestion/languages/kotlin/scope-resolver.ts';
 import { resolvePhpImportTargetInternal } from '../../src/core/ingestion/languages/php/import-target.ts';
 import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope-resolver.ts';
 import { cobolScopeResolver } from '../../src/core/ingestion/languages/cobol/scope-resolver.ts';
 import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swift/import-target.ts';
 import { resolveRustImportTarget } from '../../src/core/ingestion/languages/rust/import-target.ts';
-import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.ts';
+import { resolveZigImportInternal } from '../../src/core/ingestion/languages/zig/import-helpers.ts';
 import { resolvePythonImportTarget } from '../../src/core/ingestion/languages/python/import-target.ts';
 import { makeJsResolveImportTarget } from '../../src/core/ingestion/languages/javascript/import-target.ts';
 import { makeVueResolveImportTarget } from '../../src/core/ingestion/languages/vue/import-target.ts';
@@ -495,6 +494,7 @@ import { typescriptScopeResolver } from '../../src/core/ingestion/languages/type
 import { cScopeResolver } from '../../src/core/ingestion/languages/c/scope-resolver.ts';
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.ts';
 import { objectiveCScopeResolver } from '../../src/core/ingestion/languages/objective-c/scope-resolver.ts';
+import { csharpScopeResolver } from '../../src/core/ingestion/languages/csharp/scope-resolver.ts';
 // `SCOPE_RESOLVERS` is NOT imported here — see the inventory arm at the bottom,
 // which loads it dynamically. Statically it costs 6-10 s of module load
 // depending on the box (measured both ways there), because reaching the
@@ -634,7 +634,18 @@ const HEAP_BUDGETED = [
  * parameters cannot observe a context and are not listed, so their timed
  * numbers stay on the three-argument shape.
  */
-const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift', 'rust', 'c', 'cpp'];
+const CONTEXT_LANGS = [
+  'php',
+  'java',
+  'kotlin',
+  'python',
+  'swift',
+  'rust',
+  'c',
+  'cpp',
+  'csharp',
+  'csharp_csproj',
+];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -664,7 +675,17 @@ function mix(n) {
   return (x ^ (x >>> 16)) >>> 0;
 }
 
-const GO_MODULE = { modulePath: 'example.com/mod' };
+/**
+ * The prefix the go arm's import paths share. Deliberately NOT a go.mod: the arm
+ * hands the resolver no module config, so every import takes the GOPATH suffix
+ * match. Under a go.mod a module-relative import names ONE directory below the
+ * module root, an exact map read; the suffix match is the leg that walks
+ * `PackageDirIndex` buckets once per path segment and merges same-tail
+ * directories — the costs and the #2881 nested-repeat rule the layouts below
+ * are built to reach. The answers are the ones the module leg gave while it
+ * still matched by suffix, so the fingerprints did not move with it.
+ */
+const GO_IMPORT_PREFIX = 'example.com/mod';
 /**
  * The `csharp_csproj` arm's project configs — the whole reason that arm exists.
  *
@@ -1186,7 +1207,7 @@ function kotlinBenchmarkPackage(filePath) {
 }
 
 /**
- * The `ParsedFile[]` the orchestrator threads beside the path set, for the three
+ * The `ParsedFile[]` the orchestrator threads beside the path set, for the
  * languages whose hook declares a `context` — see `CONTEXT_LANGS`.
  *
  * Two defs per file, and both are real shapes rather than padding. PHP keeps
@@ -1245,7 +1266,7 @@ function buildParsedFiles(lang, files) {
 function uniqueTarget(lang, { local, r, d, j, dirs }) {
   if (lang === 'go') {
     return local
-      ? `${GO_MODULE.modulePath}/src/pkg${d}`
+      ? `${GO_IMPORT_PREFIX}/src/pkg${d}`
       : (r >>> 3) % 2 === 0
         ? ['fmt', 'os', 'net/http', 'encoding/json'][(r >>> 4) % 4]
         : `github.com/org/repo${(r >>> 4) % 97}/pkg/util`;
@@ -1458,10 +1479,10 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
   if (lang === 'go') {
     return local
       ? // The replicated package is addressed by the path it shares, so the
-        // module leg matches every service at once (`dirCount > 1`).
+        // suffix match takes every service at once (`dirCount > 1`).
         d % 5 === 1 && d % 7 !== 0
-        ? `${GO_MODULE.modulePath}/internal/shared`
-        : `${GO_MODULE.modulePath}/svc${d}/internal`
+        ? `${GO_IMPORT_PREFIX}/internal/shared`
+        : `${GO_IMPORT_PREFIX}/svc${d}/internal`
       : (r >>> 3) % 2 === 0
         ? ['fmt', 'os', 'net/http', 'encoding/json'][(r >>> 4) % 4]
         : // Ends in the shared segment, so the GOPATH fallback walks the whole
@@ -1715,7 +1736,7 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
  * `resolutionConfig` the orchestrator threads beside it.
  *
  * `allFilePaths` is a FRESH Set per pass on purpose — every per-file-set memo
- * in `import-resolvers/per-file-set.ts` is keyed on that object's identity, so
+ * in `utils/per-file-set.ts` is keyed on that object's identity, so
  * reusing one Set across passes would hide the index build after the first and
  * let a rebuilt-per-import index look free from rep 2 onward.
  *
@@ -1780,7 +1801,12 @@ function newPass(lang, files, pad = 0) {
     restoreBenchmarkSideChannels(lang, parsedFiles);
     return {
       allFilePaths: new Set(parsedFiles.map((f) => f.filePath)),
-      config: lang === 'php' ? phpComposerConfigFor(pad) : undefined,
+      config:
+        lang === 'php'
+          ? phpComposerConfigFor(pad)
+          : lang === 'csharp_csproj'
+            ? { csharpConfigs: CSPROJ_CONFIGS }
+            : undefined,
       parsedFiles,
     };
   }
@@ -1822,7 +1848,7 @@ function resolveAll(lang, files, imports, pad = 0) {
 
 function resolveOne(lang, from, target, pass) {
   const allFilePaths = pass.allFilePaths;
-  if (lang === 'go') return resolveGoImportTarget(target, from, allFilePaths, GO_MODULE);
+  if (lang === 'go') return resolveGoImportTarget(target, from, allFilePaths);
   if (lang === 'dart') return resolveDartImportTarget(target, from, allFilePaths, pass.config);
   if (lang === 'ruby') return resolveRubyImportTarget(target, from, allFilePaths);
   if (lang === 'kotlin') {
@@ -1901,8 +1927,8 @@ function resolveOne(lang, from, target, pass) {
       contextFor(pass, { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target }),
     );
   }
-  // Quotes already stripped — `configs/zig.ts` strips them before this call in
-  // production too. `null` build config: this arm pins the path walk alone
+  // Quotes are already stripped from the parsed import target.
+  // `null` build config: this arm pins the path walk alone
   // (see the header); the config legs are gated by their own unit tests.
   if (lang === 'zig') return resolveZigImportInternal(from, target, allFilePaths, null);
   if (lang === 'python') {
@@ -1967,15 +1993,12 @@ function resolveOne(lang, from, target, pass) {
     return objectiveCScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
   }
   if (lang === 'csharp' || lang === 'csharp_csproj') {
-    return resolveCsharpImportTarget(
-      { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target },
-      {
-        fromFile: from,
-        allFilePaths,
-        // The ONLY difference between the two C# arms. Present, the adapter
-        // takes the csproj branch and never falls through to the no-csproj legs.
-        ...(lang === 'csharp_csproj' ? { csharpConfigs: CSPROJ_CONFIGS } : {}),
-      },
+    return csharpScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target }),
     );
   }
   throw unwiredLanguage('resolveOne', lang);
@@ -2196,7 +2219,7 @@ const HEAP_PROBE_TARGET = {
   // budgeted ones above, except `dart`: a spelling `uniqueTarget` already mints, and
   // one that MISSES, so the reading is the index and the cascade runs to the
   // end. Chosen from the miss family that reaches furthest into each cascade:
-  //   - `go` names a missing package inside GO_MODULE, which reaches the
+  //   - `go` names a missing package under GO_IMPORT_PREFIX, which reaches the
   //     package-directory lookup and forces `PackageDirIndex`;
   //   - `dart` is a relative miss (`./src/thing.dart`), not a `uniqueTarget`
   //     spelling. No timing arm exercises the relative suffix fallback; this
@@ -2310,6 +2333,24 @@ function measureHeap(lang) {
  * argument at all.
  */
 const CONTEXT_PROBE = {
+  // Declaration identity wins even when no filename matches the using target.
+  // Both C# arms pass through the registered five-argument provider hook.
+  csharp: {
+    from: 'app/Main.cs',
+    target: 'App.Service',
+    parsedFiles: [
+      probeFile('app/Main.cs', []),
+      probeFile('src/odd/Bundle.cs', [['Class', 'App.Service']]),
+    ],
+  },
+  csharp_csproj: {
+    from: 'app/Main.cs',
+    target: 'App.Service',
+    parsedFiles: [
+      probeFile('app/Main.cs', []),
+      probeFile('src/odd/Bundle.cs', [['Class', 'App.Service']]),
+    ],
+  },
   // A declared sibling module outranks a crate-root file with the same name.
   // Empty module tables on the scaling corpora keep their existing target set;
   // this probe witnesses the lexical branch that reads the workspace index.
@@ -2455,7 +2496,12 @@ const CONTEXT_PROBE = {
 function measureContext(lang) {
   const { from, target, parsedFiles } = CONTEXT_PROBE[lang];
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
-  const config = lang === 'php' ? phpComposerConfigFor(0) : undefined;
+  const config =
+    lang === 'php'
+      ? phpComposerConfigFor(0)
+      : lang === 'csharp_csproj'
+        ? { csharpConfigs: CSPROJ_CONFIGS }
+        : undefined;
   const answer = (files) => {
     restoreBenchmarkSideChannels(lang, files ?? []);
     const pass = { allFilePaths, config, parsedFiles: files };

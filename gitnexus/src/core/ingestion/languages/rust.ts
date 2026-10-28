@@ -1,3 +1,4 @@
+import { rustRenameProvider } from './rust/rename.js';
 /**
  * Rust Language Provider
  *
@@ -16,8 +17,6 @@ import { defineLanguage } from '../language-provider.js';
 import { createLeadingDocDescriptionExtractor, type SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rustConfig } from '../type-extractors/rust.js';
 import { rustExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { rustImportConfig } from '../import-resolvers/configs/rust.js';
 import { RUST_QUERIES } from '../tree-sitter-queries.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -126,6 +125,7 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const rustProvider = defineLanguage({
+  rename: rustRenameProvider,
   id: SupportedLanguages.Rust,
   extensions: ['.rs'],
   entryPointPatterns: [/^(get|post|put|delete)_handler$/i, /^handle_/, /^new$/, /^run$/, /^spawn/],
@@ -166,7 +166,6 @@ export const rustProvider = defineLanguage({
   treeSitterQueries: RUST_QUERIES,
   typeConfig: rustConfig,
   exportChecker: rustExportChecker,
-  importResolver: createImportResolver(rustImportConfig),
   mroStrategy: 'qualified-syntax',
   callExtractor: createCallExtractor(rustCallConfig),
   fieldExtractor: createFieldExtractor(rustFieldConfig),

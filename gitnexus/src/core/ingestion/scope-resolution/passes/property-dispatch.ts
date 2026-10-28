@@ -51,7 +51,7 @@ import { tryEmitEdge, type CalleeIdCaptureCtx } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
-  findCallableBindingInScope,
+  findAllCallableBindingCandidatesInScope,
   findClassBindingInScope,
   findOwnedMember,
   isNamespaceNameShadowed,
@@ -65,6 +65,10 @@ import {
 import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import { CALL_TARGET_TYPES } from '../../model/symbol-table.js';
+import {
+  sourceBindingForDefinition,
+  type SourceBindingRecorder,
+} from '../source-binding-resolution.js';
 
 /**
  * Keys registered by more than this many distinct functions are skipped —
@@ -156,13 +160,26 @@ export function resolveValueRefTarget(
   model: SemanticModel,
   publishesImportedNames: boolean,
   namespaceOptions?: NamespaceTargetOptions,
+  recordSourceBinding?: SourceBindingRecorder,
 ): SymbolDefinition | undefined {
   const receiverName = site.explicitReceiver?.name;
   if (receiverName === undefined) {
-    return findCallableBindingInScope(site.inScope, site.name, scopes, {
+    const candidates = findAllCallableBindingCandidatesInScope(site.inScope, site.name, scopes, {
       position: site.atRange,
       purpose: 'value',
     });
+    const first = candidates[0];
+    recordSourceBinding?.(
+      site,
+      candidates.length === 1 && first !== undefined
+        ? sourceBindingForDefinition(first.def, 'value-reference', first.bindings, site.inScope)
+        : {
+            status: candidates.length > 1 ? 'ambiguous' : 'unresolved',
+            targetDefIds: candidates.map((candidate) => candidate.def.nodeId),
+            basis: 'value-reference',
+          },
+    );
+    return first?.def;
   }
   // NAMESPACE FIRST, and the order is load-bearing. `findClassBindingInScope`
   // does not stop at the scope chain: when its `isClassLike` walk misses — and a
@@ -189,6 +206,12 @@ export function resolveValueRefTarget(
     namespaceOptions,
   );
   if (viaNamespace !== undefined) {
+    recordSourceBinding?.(
+      site,
+      viaNamespace === 'owned'
+        ? { status: 'blocked', targetDefIds: [], basis: 'namespace-value-reference' }
+        : sourceBindingForDefinition(viaNamespace, 'namespace-value-reference'),
+    );
     // `'owned'` is NOT "no answer" — it is "this receiver is a namespace handle
     // this file wrote, and it names no callable member". The two must not be
     // conflated, because falling through from the second one reaches
@@ -208,7 +231,14 @@ export function resolveValueRefTarget(
     return viaNamespace === 'owned' ? undefined : viaNamespace;
   }
 
+  let groundedOwner = true;
   const owner = findClassBindingInScope(site.inScope, receiverName, scopes, undefined, {
+    onNameFallback:
+      recordSourceBinding === undefined
+        ? undefined
+        : () => {
+            groundedOwner = false;
+          },
     position: site.atRange,
     purpose: 'value',
   });
@@ -234,6 +264,16 @@ export function resolveValueRefTarget(
       return undefined;
     const member = findOwnedMember(owner.nodeId, site.name, model);
     if (member === undefined || !CALL_TARGET_TYPES.has(member.type)) return undefined;
+    recordSourceBinding?.(
+      site,
+      groundedOwner
+        ? sourceBindingForDefinition(member, 'qualified-value-reference')
+        : {
+            status: 'unresolved',
+            targetDefIds: [member.nodeId],
+            basis: 'value-reference-name-fallback',
+          },
+    );
     return member;
   }
   return undefined;
@@ -385,6 +425,7 @@ export function emitPropertyDispatchCalls(
    */
   publishesImportedNames = false,
   namespaceOptions?: NamespaceTargetOptions,
+  recordSourceBinding?: SourceBindingRecorder,
 ): {
   usesEmitted: number;
   callsEmitted: number;
@@ -407,6 +448,7 @@ export function emitPropertyDispatchCalls(
         model,
         publishesImportedNames,
         namespaceOptions,
+        recordSourceBinding,
       );
       if (def === undefined) continue;
 

@@ -51,6 +51,7 @@ import {
 import { createFieldExtractor } from '../../src/core/ingestion/field-extractors/generic.js';
 import { zigFieldConfig } from '../../src/core/ingestion/field-extractors/configs/zig.js';
 import { zigProvider } from '../../src/core/ingestion/languages/zig.js';
+import { zigScopeResolver } from '../../src/core/ingestion/languages/zig/scope-resolver.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import { extract as extractScopes } from '../../src/core/ingestion/scope-extractor.js';
 import { populateClassOwnedMembers } from '../../src/core/ingestion/scope-resolution/scope/walkers.js';
@@ -372,7 +373,9 @@ describeZig('Zig scope captures — `@import` in TYPE position is not an import 
     const importNames = matches
       .filter((m) => m['@import.name'] !== undefined)
       .map((m) => `${m['@import.name']!.text}<-${m['@import.imported']?.text ?? '*'}`);
-    expect(importNames).toEqual(['z<-T']);
+    // `z`'s value reads `T` off `@import("n.zig")`, so that module is bound
+    // under its own text too (#3498 F-A); the type-position one is not.
+    expect(importNames).toEqual(['@import("n.zig")<-*', 'z<-T']);
     const variables = matches
       .filter((m) => m['@declaration.variable'] !== undefined)
       .map((m) => m['@declaration.name']!.text);
@@ -831,6 +834,15 @@ test {
         importedName: 'Counter',
         targetRaw: 'net/counter.zig',
       },
+      // The module a one-member import reads its member off, bound under the
+      // builtin's own text so the `.Counter` / `.Same` reads resolve through
+      // it (#3498 F-A) — once per distinct source per scope.
+      {
+        kind: 'namespace',
+        localName: '@import("counter.zig")',
+        importedName: 'counter',
+        targetRaw: 'counter.zig',
+      },
       {
         kind: 'alias',
         localName: 'Renamed',
@@ -962,6 +974,72 @@ pub fn f() !void {
       '@import("../id.zig")',
       '@import("x.zig").Foo',
     ]);
+  });
+
+  it.each([
+    [
+      'a file-level re-export',
+      'pub const Thing = @import("thing.zig").Thing;\n',
+      'Thing',
+      'thing.zig',
+      'Thing',
+    ],
+    [
+      'a renaming alias',
+      'const Gauge = @import("dom_utils.zig").DEFAULT_NS;\n',
+      'Gauge',
+      'dom_utils.zig',
+      'DEFAULT_NS',
+    ],
+    [
+      'a fn-local alias',
+      'fn f() void {\n    const Counter = @import("counter.zig").Counter;\n    _ = Counter;\n}\n',
+      'Counter',
+      'counter.zig',
+      'Counter',
+    ],
+  ])(
+    'binds the module of a one-member import (%s) under its own text, as the deep form already is',
+    (_shape, src, alias, file, member) => {
+      // `const X = @import("f.zig").X;` reads `X` off an `@import(…)` receiver.
+      // The named-import rule claims that builtin, so the receiver binding the
+      // deep form (`@import("lib.zig").B.work`) gets was never emitted and the
+      // read was a receiver drop (#3498 triage, F-A). The named import itself
+      // is unchanged; the module handle is added beside it.
+      const groups = emitZigScopeCaptures(src, 'x.zig');
+      const handle = `@import("${file}")`;
+      const imports = groups
+        .filter((m) => m['@import.source'] !== undefined)
+        .map((m) => `${m['@import.name']?.text}<-${m['@import.imported']?.text ?? '*'}`);
+      expect(imports.sort()).toEqual([`${handle}<-*`, `${alias}<-${member}`]);
+      const reads = groups
+        .filter((m) => m['@reference.read'] !== undefined && m['@reference.name']?.text === member)
+        .map((m) => m['@reference.receiver']?.text);
+      expect(reads).toEqual([handle]);
+    },
+  );
+
+  it('binds the namespace receiver of an explicitly typed member alias', () => {
+    const source = 'const Thing: type = @import("thing.zig").Thing;';
+    const groups = emitZigScopeCaptures(source, 'main.zig');
+    const handles = groups
+      .map(interpretZigImport)
+      .filter((imp) => imp?.kind === 'namespace')
+      .map((imp) => imp?.localName);
+    expect(handles).toEqual(['@import("thing.zig")']);
+  });
+
+  it('keeps both namespace handles when repeated inline imports use different whitespace', () => {
+    const source = `pub fn entry() void {
+      const Counter = @import("lib.zig").Counter;
+      _ = Counter;
+      @import( "lib.zig" ).work();
+    }`;
+    const handles = emitZigScopeCaptures(source, 'main.zig')
+      .map(interpretZigImport)
+      .filter((imp) => imp?.kind === 'namespace')
+      .map((imp) => imp?.localName);
+    expect(handles.sort()).toEqual(['@import( "lib.zig" )', '@import("lib.zig")'].sort());
   });
 
   it('a function-scoped @import is not deferred: Zig imports are compile-time (importsExecuteWhereWritten: false)', () => {
@@ -1666,6 +1744,22 @@ const R = struct { pub fn go(self: *R) void { const q = self.current(); } };
     ]);
   });
 
+  it.each([
+    ['Stack', true],
+    ['util.List', true],
+    ['@import("x.zig").Foo', true],
+    ['makeThing', false],
+    ['std.mem.eql', false],
+    ['self.items', false],
+  ])(
+    'the resolver reads a receiver call of `%s` as a type application: %s (#3498 F-D)',
+    (callee, expected) => {
+      // The text twin of `isZigTypeConstructorCall`, for the compound
+      // resolver: `Stack(u8).init()` calls `init` on the TYPE `Stack(u8)`.
+      expect(zigScopeResolver.isTypeApplicationCall?.(callee)).toBe(expected);
+    },
+  );
+
   it('emits nothing for a TitleCase callee (type constructor), a decl literal, an identifier or a field chain', () => {
     const src = `
 fn f() void {
@@ -1707,6 +1801,45 @@ pub fn make3() !List(u8) {}
       ret('make3', 'List'),
     ]);
   });
+
+  it.each([
+    [
+      'a same-file constructor',
+      'pub fn Bridge(comptime T: type) type {\n    return Builder(T);\n}\n',
+      [ret('Bridge', 'Builder')],
+    ],
+    [
+      'a qualified constructor, past a comment',
+      'pub fn Bridge(comptime T: type) type {\n    // forwards\n    return other.Builder(T);\n}\n',
+      [ret('Bridge', 'other.Builder')],
+    ],
+    [
+      'a body that is more than the return',
+      'pub fn Bridge(comptime T: type) type {\n    const U = T;\n    return Builder(U);\n}\n',
+      [],
+    ],
+    [
+      'a value call (camelCase callee)',
+      'pub fn Bridge(comptime T: type) type {\n    return make(T);\n}\n',
+      [],
+    ],
+    [
+      'a call of a parameter',
+      'pub fn Apply(comptime F: fn (type) type) type {\n    return F(u8);\n}\n',
+      [],
+    ],
+    ['a container return', 'pub fn List(comptime T: type) type {\n    return struct {};\n}\n', []],
+  ])(
+    'binds a FORWARDING type constructor to the type it forwards to — %s',
+    (_shape, src, expected) => {
+      // `fn Bridge(comptime T: type) type { return Builder(T); }` (Lightpanda's
+      // `js.Bridge(T)`) names no container of its own: `type` returns bind
+      // nothing, so a receiver typed `Bridge(X)` reached a Function that owns
+      // no members (#3498 triage, F-B). `Bridge(X)` IS `Builder(X)`, so the
+      // return binding names the callee, declared in Bridge's own scope.
+      expect(bindingsOf(src)).toEqual(expected);
+    },
+  );
 
   it('a file-struct’s `@This()` return names the file stem', () => {
     const src = `
@@ -1906,6 +2039,34 @@ test "Page: local state" {
     expect(lts.every((d) => d.ownerId !== undefined)).toBe(true);
   });
 
+  it('a member read off an anonymous container names it by its identity and sits at the member (#3498 F-C)', () => {
+    // `struct { fn lessThan … }.lessThan`: the receiver capture was the whole
+    // container body, which names nothing, and the site's anchor started at
+    // `struct` — INSIDE the container's own Class scope, so the read was
+    // attributed to the container itself. The receiver is the identity the
+    // container is minted under, and the site is anchored on the member, which
+    // is evaluated in the enclosing scope.
+    const sites = emitZigScopeCaptures(src, 'src/Page.zig')
+      .map((m) => ({ m, kind: ['@reference.read', '@reference.value-ref'].find((k) => k in m) }))
+      .filter(
+        ({ m, kind }) =>
+          kind !== undefined && ['lessThan', 'it'].includes(m['@reference.name']?.text ?? ''),
+      )
+      .map(({ m, kind }) => ({
+        site: `${kind} ${m['@reference.receiver']?.text} . ${m['@reference.name']?.text}`,
+        atMember:
+          JSON.stringify(m[kind ?? '']?.range) === JSON.stringify(m['@reference.name']?.range),
+      }));
+    expect(sites.map((s) => s.site).sort()).toEqual([
+      '@reference.read Page$1 . it',
+      '@reference.read Page.sortBoth$1 . lessThan',
+      '@reference.read Page.sortBoth$2 . lessThan',
+      '@reference.value-ref Page.sortBoth$1 . lessThan',
+      '@reference.value-ref Page.sortBoth$2 . lessThan',
+    ]);
+    expect(sites.every((s) => s.atMember)).toBe(true);
+  });
+
   it('a `@This()` alias inside a local container rewrites to the BINDING name (`R`), which is what the scope binds', () => {
     const localAliasSrc = `
 pub fn string() void {
@@ -1993,7 +2154,11 @@ fn f_sib_b() void {
       .map((m) => m['@import.name']!.text);
     expect(importNames).toEqual(['std', 'm', 'm']);
     const receivers = matches
-      .filter((m) => m['@reference.receiver'] !== undefined)
+      .filter(
+        (m) =>
+          m['@reference.receiver'] !== undefined &&
+          Object.keys(m).some((key) => key.startsWith('@reference.call.')),
+      )
       .map((m) => `${m['@reference.receiver']!.text}.${m['@reference.name']!.text}`);
     expect(receivers).toEqual(['m.Thing', 't.go', 'm.hello', 'm.hello']);
     const tBinding = matches.find(
@@ -2051,7 +2216,11 @@ fn f() void {
       },
     ]);
     const sites = matches
-      .filter((m) => m['@reference.receiver'] !== undefined)
+      .filter(
+        (m) =>
+          m['@reference.receiver'] !== undefined &&
+          Object.keys(m).some((key) => key.startsWith('@reference.call.')),
+      )
       .map(
         (m) =>
           `${m['@reference.call.member'] !== undefined ? 'call' : 'ctor'} ${m['@reference.receiver']!.text} . ${m['@reference.name']!.text}`,
@@ -2060,6 +2229,16 @@ fn f() void {
       'call @import("lib.zig").B . work',
       'call lib.B . work',
       'ctor lib.Outer . Inner',
+    ]);
+    expect(
+      matches.filter((m) => m['@reference.read']).map((m) => m['@reference.read']!.text),
+    ).toEqual([
+      '@import("lib.zig").B',
+      '@import("lib.zig").B.work',
+      'lib.B',
+      'lib.B.work',
+      'lib.Outer',
+      'lib.Outer.Inner',
     ]);
     // No free-call site named `chosen` survives to be resolved by simple name.
     expect(
