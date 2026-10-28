@@ -120,6 +120,11 @@ export const walkRepositoryPaths = async (
   let enumerationError: NodeJS.ErrnoException | undefined;
 
   const patterns = indexableGlobPatterns(includeDotDirs);
+  // A listed dot directory may be absent from this repo; glob still reads its
+  // root-level pattern, and that ENOENT means "no files", not lost metadata.
+  const optionalRoots = new Set(includeDotDirs.map((dir) => path.join(repoPath, dir)));
+  const isAbsentListedRoot = (directory: unknown, error: NodeJS.ErrnoException): boolean =>
+    error.code === 'ENOENT' && optionalRoots.has(path.resolve(repoPath, String(directory)));
 
   const filtered = (
     await glob(patterns, {
@@ -135,7 +140,7 @@ export const walkRepositoryPaths = async (
           : {
               readdir(directory, readOptions, callback) {
                 readdir(directory, readOptions, (error, entries) => {
-                  if (error) enumerationError ??= error;
+                  if (error && !isAbsentListedRoot(directory, error)) enumerationError ??= error;
                   callback(error, entries);
                 });
               },

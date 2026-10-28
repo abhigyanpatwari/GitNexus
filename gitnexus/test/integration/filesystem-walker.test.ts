@@ -559,6 +559,26 @@ describe('filesystem-walker', () => {
       }
     });
 
+    it('treats a listed dot directory absent from the repo as empty, even in strict enumeration', async () => {
+      const discovered: string[] = [];
+      const paths = (
+        await walkRepositoryPaths(dotDir, undefined, {
+          includeDotDirs: ['.absent', '.scallywag'],
+          onPathsDiscovered: async (found) => {
+            discovered.push(...found);
+          },
+        })
+      ).map((f) => f.path);
+
+      expect(paths).toEqual([
+        '.scallywag/root.ts',
+        'pkg/.scallywag/nested/testing.ts',
+        'pkg/.scallywag/unit.ts',
+        'src/index.ts',
+      ]);
+      expect(discovered.length).toBeGreaterThan(0);
+    });
+
     it('never indexes .git even when listed', async () => {
       const cap = _captureLogger();
       try {
