@@ -22,6 +22,8 @@
 
 OpenCode's plugin uses the v1 `tool.execute.after` API: it enriches search results and adds a stale-index hint after git mutations. The integration is verified with OpenCode 1.19.5; OpenCode v2 uses a different plugin API.
 
+For Bash tools, the hooks recognize literal commands and known options; ambiguous shell constructs are skipped. Stale-index hints concern the current OpenCode project.
+
 <a id="fn-antigravity-hooks"></a>
 
 > ¹ **Antigravity hooks** follow the [Gemini CLI hooks reference](https://geminicli.com/docs/hooks/reference/) (Antigravity 2.0 is the documented successor to Gemini CLI). Augmentation runs in `AfterTool` because `BeforeTool` has no context-injection channel in the Gemini contract — the agent sees graph context appended to the tool result via `hookSpecificOutput.additionalContext`. Stale-index hints land in the same channel after a successful `git commit/merge/rebase/cherry-pick/pull`. The schema may evolve if Antigravity-specific hook docs diverge from Gemini CLI's; the implementation will track those changes.

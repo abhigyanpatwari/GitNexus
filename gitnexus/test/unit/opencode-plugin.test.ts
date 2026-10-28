@@ -67,6 +67,8 @@ describe('search augmentation through the public hook', () => {
     ['bash', { command: "rg '$literal' src" }, '$literal'],
     ['bash', { command: 'rg UserService # comment' }, 'UserService'],
     ['bash', { command: 'rg \\\nUserService src' }, 'UserService'],
+    ['bash', { command: 'rg -r replacement UserService src' }, 'UserService'],
+    ['bash', { command: 'rg --hidden -i UserService src' }, 'UserService'],
   ])('augments %s %j with %s', async (tool, args, pattern) => {
     expect(await invoke(tool, args)).toBe('hits\n\n[GitNexus] callers: A');
     expect(execFileMock).toHaveBeenCalledTimes(1);
@@ -104,6 +106,10 @@ describe('search augmentation through the public hook', () => {
     ['bash', { command: 'rg `query` src' }],
     ['bash', { command: 'rg UserService\\' }],
     ['bash', { command: 'rg -n # UserService' }],
+    ['bash', { command: 'rg --unknown-option value UserService src' }],
+    ['bash', { command: 'rg --sort path UserService src' }],
+    ['bash', { command: 'rg --iglob "*.ts" UserService src' }],
+    ['bash', { command: 'rg -rreplacement UserService src' }],
     ['bash', { command: null }],
     ['bash', {}],
     ['read', { filePath: 'a.ts' }],

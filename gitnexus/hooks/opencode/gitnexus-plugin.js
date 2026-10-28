@@ -106,6 +106,40 @@ const FLAGS_WITH_VALUES = new Set([
   '--exclude',
 ]);
 
+/** Known switches without values; unfamiliar options make the query ambiguous. */
+const SEARCH_SWITCHES = new Set([
+  '-n',
+  '-i',
+  '-s',
+  '-S',
+  '-F',
+  '-w',
+  '-x',
+  '-v',
+  '-c',
+  '-l',
+  '-q',
+  '-o',
+  '-H',
+  '-u',
+  '-U',
+  '-a',
+  '-I',
+  '-P',
+  '--hidden',
+  '--no-ignore',
+  '--line-number',
+  '--column',
+  '--smart-case',
+  '--ignore-case',
+  '--fixed-strings',
+  '--word-regexp',
+  '--invert-match',
+  '--with-filename',
+  '--no-heading',
+  '--pcre2',
+]);
+
 /**
  * Split an argv string into tokens, respecting single/double quoting so a
  * multi-word search phrase stays one token: `rg "foo bar"` → [rg, foo bar].
@@ -164,6 +198,7 @@ function extractBashSearchPattern(command) {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
   const tokens = tokenizeArgv(command);
   if (!/(?:^|[/\\])(?:rg|grep)(?:\.exe)?$/.test(tokens[0] || '')) return null;
+  const isGrep = /(?:^|[/\\])grep(?:\.exe)?$/.test(tokens[0]);
   let pattern = null;
   let explicitPattern = null;
   let endOptions = false;
@@ -192,6 +227,12 @@ function extractBashSearchPattern(command) {
         explicitPattern ??= token.slice(token.indexOf('=') + 1);
       else if (token.startsWith('-e')) explicitPattern ??= token.slice(2);
       else if (FLAGS_WITH_VALUES.has(token)) pending = 'skip';
+      else if (!isGrep && token === '-r') pending = 'skip';
+      else if (isGrep && ['-r', '-R', '-h', '--recursive'].includes(token)) continue;
+      else if (SEARCH_SWITCHES.has(token)) continue;
+      else if (token.includes('=') && FLAGS_WITH_VALUES.has(token.slice(0, token.indexOf('='))))
+        continue;
+      else return null;
       continue;
     }
     pattern ??= token;

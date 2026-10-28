@@ -139,8 +139,11 @@ Add to `~/.cursor/mcp.json` (global — works for all projects):
 plugin (`~/.config/opencode/plugins/gitnexus.js`, auto-loaded by OpenCode —
 search augmentation via the OpenCode v1 `tool.execute.after` API and a
 stale-index hint after git mutations). Restart OpenCode after setup. Verified
-with OpenCode 1.19.5; the OpenCode v2 plugin API is not covered. Manual MCP
-configuration:
+with OpenCode 1.19.5; the OpenCode v2 plugin API is not covered. Bash hooks
+recognize literal commands and known options, skip ambiguous shell constructs,
+and check the current OpenCode project's index for staleness.
+
+Manual MCP configuration:
 
 Add to `~/.config/opencode/config.json`:
 
