@@ -144,6 +144,16 @@ describe('stale-index hints', () => {
     'npm test || git pull',
     'git status\ngit commit -m x',
     'git status\r\ngit merge main',
+    'git -C /repo commit -m x',
+    'git -C/repo -c user.name=Agent commit -m x',
+    'git -cuser.name=Agent --no-pager commit -m x',
+    'git --git-dir /repo/.git --work-tree=/repo commit -m x',
+    'git --config-env user.name=GIT_AUTHOR_NAME commit -m x',
+    'git commit -m "$MESSAGE"',
+    'git commit -m "text; no second command"',
+    'echo "text;git status"; git commit -m x',
+    'git \\\ncommit -m x',
+    '/usr/bin/git commit -m x',
   ])('checks %s', async (command) => {
     execFileMock.mockImplementation(
       (_cmd: string, _argv: string[], _options: unknown, callback: Callback) =>
@@ -163,6 +173,18 @@ describe('stale-index hints', () => {
     "echo 'git commit'",
     "grep 'git commit' file.txt",
     'cat notes.md | grep git-pull',
+    "echo 'text;git commit -m x'",
+    'echo "text|git commit -m x"',
+    "echo 'text\ngit commit -m x'",
+    'echo text\\;git commit -m x',
+    'echo text # ; git commit -m x',
+    'cat <<EOF\ngit commit -m x\nEOF',
+    'git -C commit',
+    'git -c alias.ship=commit status',
+    'git --git-dir commit status',
+    'git --help commit',
+    'git --version commit',
+    'git -C "$OTHER_REPO" commit -m x',
   ])('does not check %s', async (command) => {
     await invoke('bash', { command });
     expect(execFileMock.mock.calls.filter((call) => call[1].includes('status'))).toEqual([]);

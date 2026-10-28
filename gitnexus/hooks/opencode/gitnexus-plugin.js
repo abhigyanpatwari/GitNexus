@@ -112,7 +112,7 @@ const FLAGS_WITH_VALUES = new Set([
  * Only inspect the first simple command; stop at unquoted shell operators.
  * Preserve empty arguments and decline malformed or dynamically expanded input.
  */
-function tokenizeArgv(command) {
+function tokenizeArgv(command, allowDynamicTail = false) {
   const tokens = [];
   let current = '';
   let quote = null;
@@ -128,7 +128,7 @@ function tokenizeArgv(command) {
       started = true;
       continue;
     }
-    if (quote !== "'" && (ch === '$' || ch === '`')) return [];
+    if (quote !== "'" && (ch === '$' || ch === '`')) return allowDynamicTail ? tokens : [];
     if (quote) {
       if (ch === quote) quote = null;
       else current += ch;
@@ -231,17 +231,89 @@ function extractOpenCodePattern(tool, args) {
   return null;
 }
 
-/**
- * True for the git commands that move HEAD (same set as the Claude adapter).
- * Segments are checked after splitting on shell separators and each must
- * START with `git`, so `echo 'git commit'` or `grep 'git commit' file` don't
- * count as mutations while `cd x && git commit` still does.
- */
+/** Split simple shell commands without treating quoted text as commands. */
+function splitShellCommands(command) {
+  const segments = [];
+  let current = '';
+  let quote = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === '\\' && quote !== "'") {
+      if (i + 1 === command.length) return [];
+      current += ch + command[++i];
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    // Heredoc bodies require a full shell parser; do not infer commands from them.
+    if (ch === '<' && command[i + 1] === '<') return [];
+    if (ch === '#' && (!current || /\s$/.test(current))) {
+      while (i < command.length && command[i] !== '\n') i++;
+      i--;
+      continue;
+    }
+    if (/[;&|\r\n]/.test(ch)) {
+      segments.push(current);
+      current = '';
+    } else current += ch;
+  }
+  if (quote) return [];
+  segments.push(current);
+  return segments;
+}
+
+const GIT_OPTIONS_WITH_VALUES = new Set([
+  '-C',
+  '-c',
+  '--git-dir',
+  '--work-tree',
+  '--namespace',
+  '--config-env',
+]);
+const GIT_SWITCHES = new Set([
+  '-p',
+  '-P',
+  '--paginate',
+  '--no-pager',
+  '--no-replace-objects',
+  '--bare',
+  '--literal-pathspecs',
+  '--glob-pathspecs',
+  '--noglob-pathspecs',
+  '--icase-pathspecs',
+  '--no-optional-locks',
+  '--no-lazy-fetch',
+  '--no-advice',
+]);
+
+/** Recognize literal Git mutation commands; the hint concerns the OpenCode project index. */
 function isGitMutationCommand(command) {
   if (typeof command !== 'string') return false;
-  return command
-    .split(/&&|\|\||;|\||[\r\n]/)
-    .some((seg) => /^\s*git\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(seg));
+  return splitShellCommands(command).some((segment) => {
+    // A dynamic commit message does not change the already-literal subcommand.
+    const tokens = tokenizeArgv(segment, true);
+    if (!/(?:^|[/\\])git(?:\.exe)?$/.test(tokens[0] || '')) return false;
+    for (let i = 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (GIT_OPTIONS_WITH_VALUES.has(token)) {
+        if (++i === tokens.length) return false;
+        continue;
+      }
+      if (GIT_SWITCHES.has(token) || /^-[Cc].+/.test(token)) continue;
+      const equals = token.indexOf('=');
+      if (
+        equals > 0 &&
+        (GIT_OPTIONS_WITH_VALUES.has(token.slice(0, equals)) || token.startsWith('--exec-path='))
+      )
+        continue;
+      return /^(commit|merge|rebase|cherry-pick|pull)$/.test(token);
+    }
+    return false;
+  });
 }
 
 /**
