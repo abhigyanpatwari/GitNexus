@@ -92,6 +92,14 @@ import {
 import { ascending, byText, sortedUnique, toPosixSeparators } from '../util.js';
 import { findCandidates, type CandidateResult, type CandidateTest } from './candidates.js';
 import { copyBuildOutput, partitionFiles, sequentialMatcherFor } from './partitions.js';
+import { fixtureCapturePlugin } from './fixture-plugin.js';
+import {
+  profileRuntimeFixtures,
+  runtimeFixtureFor,
+  type RuntimeFixtureProfiles,
+} from '../facet/runtime-fixtures.js';
+import type { FixtureProfile } from '../facet/fixture-profile.js';
+import { capturedFixtureSources, type FixtureSources } from '../consolidation/fixture-sources.js';
 import {
   COVERAGE_KEY,
   RAW_RECORD_PREFIX,
@@ -147,6 +155,8 @@ export interface CoverageTest {
   blocks: number[];
   suiteBlocks: number[];
   provenance: Provenance;
+  /** Observed inputs; absent in archived coverage captured before fixture instrumentation. */
+  runtimeFixture?: FixtureProfile | null;
 }
 
 export interface CoverageFile {
@@ -159,6 +169,9 @@ export interface CoverageFile {
 
 export interface CoverageWorkFile {
   schemaVersion: typeof WORK_FILE_SCHEMA_VERSION;
+  /** Pipeline instrumentation changes V8 offsets; do not mix with uninstrumented slices. */
+  fixtureCaptureVersion?: 1;
+  fixtureSources?: FixtureSources;
   mode: RunMode['kind'];
   extraRoots: string[];
   repeats: number;
@@ -194,6 +207,7 @@ export interface WorkFileInput {
   modules: readonly RuntimeModule[];
   raws: readonly RawCoverageRecord[];
   unhandledErrors: readonly string[];
+  fixtureProfiles?: RuntimeFixtureProfiles;
 }
 
 /** Where the workers ran: the prepared root and its path map. */
@@ -392,7 +406,20 @@ export function buildWorkFile(input: WorkFileInput): CoverageWorkFile {
       const suiteRaw = concurrent ? [] : blockWindows.flatMap(({ window }) => window.blocks);
       const ownRaw = concurrent ? [] : rawTest.warm.blocks;
       drafts.push({
-        test: { ...base, provenance },
+        test: {
+          ...base,
+          provenance,
+          ...(raw.fixtureSnapshots === undefined
+            ? {}
+            : {
+                runtimeFixture: runtimeFixtureFor(
+                  raw,
+                  rawTest,
+                  input.fixtureProfiles?.get(raw),
+                  concurrent,
+                ),
+              }),
+        },
         own: idsOf(translated, ownRaw),
         suite: idsOf(translated, suiteRaw),
       });
@@ -600,6 +627,7 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
       raws: [],
       unhandledErrors: [],
     });
+    work.fixtureCaptureVersion = 1;
     writeFileSync(layout.workFile, JSON.stringify(work));
     return { work, workFile: layout.workFile, wallClockMs: 0 };
   }
@@ -653,7 +681,10 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
           maxWorkers: partition.maxWorkers,
           repeats: COVERAGE_REPEATS,
         }),
-        { cacheDir: path.join(layout.cacheDir, partition.name) },
+        {
+          cacheDir: path.join(layout.cacheDir, partition.name),
+          plugins: [fixtureCapturePlugin(path.join(packageDir, 'src/core/ingestion/pipeline.ts'))],
+        },
       );
       try {
         if (vitest.projects.length !== 1) {
@@ -714,15 +745,20 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
       else process.env[name] = value;
     }
   }
+  const raws = readRawRecords(layout.rawDir);
+  const fixtureProfiles = await profileRuntimeFixtures(raws);
   const work = buildWorkFile({
     mode: options.mode,
     preparedRoot,
     repeats: COVERAGE_REPEATS,
     modules,
-    raws: readRawRecords(layout.rawDir),
+    raws,
+    fixtureProfiles,
     unhandledErrors,
   });
   const wallClockMs = Math.round(performance.now() - started);
+  work.fixtureCaptureVersion = 1;
+  work.fixtureSources = capturedFixtureSources(raws);
   writeFileSync(layout.workFile, JSON.stringify(work));
   return { work, workFile: layout.workFile, wallClockMs };
 }

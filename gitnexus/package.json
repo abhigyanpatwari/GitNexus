@@ -147,6 +147,7 @@
     "@types/proxy-addr": "^2.0.3",
     "@vitest/coverage-v8": "^5.0.0",
     "gitnexus-shared": "file:../gitnexus-shared",
+    "jscpd": "5.4.2",
     "jsdom": "26.1.0",
     "tsx": "^4.0.0",
     "typescript": "^7.0.2",

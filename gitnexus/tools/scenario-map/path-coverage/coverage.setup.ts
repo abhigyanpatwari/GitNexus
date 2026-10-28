@@ -31,6 +31,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { WorkerOptions } from 'node:worker_threads';
+import { FixtureCapture } from './fixture-capture.js';
 import {
   TestRunner,
   aroundAll,
@@ -65,9 +66,10 @@ if (context === undefined || context === null) {
 // reference to `self` while this local binding is still being initialized in jsdom.
 const hookFile = fileURLToPath(import.meta.url);
 const self = new Set(
-  [hookFile, path.join(path.dirname(hookFile), 'records.ts')].map(
-    (file) => scriptPath(file) ?? file,
-  ),
+  [
+    hookFile,
+    ...['records.ts', 'fixture-capture.ts'].map((name) => path.join(path.dirname(hookFile), name)),
+  ].map((file) => scriptPath(file) ?? file),
 );
 const isSelf = (file: string): boolean => self.has(file);
 
@@ -131,10 +133,12 @@ await session.post('Profiler.startPreciseCoverage', { callCount: true, detailed:
 
 const interner = new CoverageInterner(context.blockRoots, self);
 const attributor = new CoverageAttributor();
+const fixtures = new FixtureCapture();
+const restoreFixtureCapture = fixtures.install();
 
 async function take(): Promise<WindowDelta> {
   const { result } = await session.post('Profiler.takePreciseCoverage');
-  return interner.summarize(result, drainEvents());
+  return { ...interner.summarize(result, drainEvents()), fixtures: fixtures.drain() };
 }
 
 /** Suite task ids from the file down to the test's parent, each once. */
@@ -147,20 +151,33 @@ function suiteChain(test: RunnerTestCase): string[] {
   return [...new Set(chain.reverse())];
 }
 
+/** Tag setup reads precisely even when several nested beforeAll hooks share a V8 window. */
+function captureSuiteSetup(suite: RunnerTestSuite): void {
+  const hooks = TestRunner.getSuiteHooks(suite);
+  hooks.beforeAll = hooks.beforeAll.map(
+    (hook) =>
+      function (...args) {
+        return fixtures.inSuite(suite.id, () => Reflect.apply(hook, this, args));
+      },
+  );
+  for (const task of suite.tasks) if (task.type === 'suite') captureSuiteSetup(task);
+}
+
 // The `{}` is required: Vitest parses this parameter as a fixture pattern.
 aroundAll(async (runSuite, {}, suite) => {
   attributor.load(await take());
+  captureSuiteSetup(suite);
   try {
     await runSuite();
   } finally {
     attributor.finish(await take());
     const file = suite.file.filepath;
     const digest = createHash('sha256').update(file).digest('hex').slice(0, 16);
-    writeRawRecord(
-      context.outDir,
-      rawRecordName(file, process.pid, digest),
-      attributor.record(file, interner),
-    );
+    writeRawRecord(context.outDir, rawRecordName(file, process.pid, digest), {
+      ...attributor.record(file, interner),
+      fixtureSnapshots: fixtures.snapshots,
+    });
+    restoreFixtureCapture();
   }
 });
 

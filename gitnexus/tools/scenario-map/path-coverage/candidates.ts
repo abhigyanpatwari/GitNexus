@@ -1,7 +1,7 @@
 /**
  * Layer 1 candidate retrieval of the scenario map (U4, R3, KTD5, KTD17, design §5.2).
  *
- * Three sources make a pair of tests a candidate:
+ * Four sources make a pair of tests a candidate:
  *  - `jaccard`: exact Jaccard similarity of their V8 block sets (the work file's block indices,
  *    run-coverage.ts) of at least {@link JACCARD_THRESHOLD}, checked in integers. All pairs are
  *    found without comparing every pair: blocks are ordered rarest first (by how many tests cover
@@ -14,6 +14,8 @@
  *    `checksContextKey`), whatever their blocks;
  *  - `body`: identical callback text, even when setup/import context and blocks differ. This
  *    source only retrieves review leads; it cannot prove equal inputs or expectations.
+ *  - `fixture`: source fixtures have similar provider/CFG profiles and assertion-only keys match.
+ *    This includes cross-language review leads, never proof of input equivalence.
  *
  * Each pair records its exact Jaccard (null when a set is empty), whether the block sets are
  * identical (KTD5: a pair that is not caps at weak evidence) and whether it is path-unattributable
@@ -26,11 +28,16 @@
  * Library only; pure. The scenario-map CLI (U14) and run-coverage.ts call {@link findCandidates}.
  */
 import { ascending, byText, sha1 } from '../util.js';
+import {
+  compareFixtureProfiles,
+  type FixtureProfile,
+  type FixtureSimilarity,
+} from '../facet/fixture-profile.js';
 
 /** Jaccard >= 99 / 100 makes a candidate (R3). */
 export const JACCARD_THRESHOLD = Object.freeze({ numerator: 99, denominator: 100 });
 
-export type CandidateSource = 'jaccard' | 'checks-context' | 'body';
+export type CandidateSource = 'jaccard' | 'checks-context' | 'body' | 'fixture';
 
 export interface CandidateTest {
   /** Phase 0 test id. */
@@ -42,13 +49,16 @@ export interface CandidateTest {
   checksContext: string | null;
   /** Same callback text, independent of surrounding setup. Retrieval only, never proof. */
   bodyKey?: string | null;
+  /** Fixture retrieval also requires a known, equal assertion-only key. */
+  checks?: string | null;
+  fixture?: FixtureProfile | null;
 }
 
 export interface CandidatePair {
   /** The smaller test id. */
   a: string;
   b: string;
-  /** In the order `jaccard`, `checks-context`, `body`. */
+  /** In the order `jaccard`, `checks-context`, `body`, `fixture`. */
   sources: CandidateSource[];
   /** Exact Jaccard of the block sets; null when either set is empty. */
   jaccard: number | null;
@@ -58,6 +68,8 @@ export interface CandidatePair {
   pathUnattributable: boolean;
   /** Id of the pair's group. */
   group: string;
+  /** Review evidence only. Exact input identity is checked separately by Layer 2. */
+  fixtureSimilarity?: FixtureSimilarity;
 }
 
 export interface CandidateGroup {
@@ -72,8 +84,14 @@ export interface CandidateStats {
   /** Tests given. */
   tests: number;
   pairs: number;
-  /** Disjoint counts: Jaccard only, checks/context only, both, or any body match. */
-  bySource: { jaccard: number; checksContext: number; both: number; body: number };
+  /** Disjoint counts: fixture takes precedence over body, then the original three buckets. */
+  bySource: {
+    jaccard: number;
+    checksContext: number;
+    both: number;
+    body: number;
+    fixture?: number;
+  };
   groups: number;
   /** The group with the most tests, then the most pairs, then the smallest id. */
   largestGroup: { id: string; tests: number; pairs: number } | null;
@@ -253,6 +271,49 @@ export function findCandidates(
   add(checksContextPairs(items), 'checks-context');
   add(checksContextPairs(items, 'bodyKey'), 'body');
 
+  // Bucket by assertions and compare each distinct fixture profile once. Many tests share
+  // beforeAll fixtures; do not re-parse/re-score them for every test pair.
+  const fixtureMatches = new Map<string, FixtureSimilarity>();
+  const fixtureBuckets = new Map<string, Map<string, number[]>>();
+  for (let index = 0; index < items.length; index++) {
+    const { checks, fixture } = items[index].test;
+    if (checks == null || fixture == null || fixture.files.length === 0) continue;
+    const key = JSON.stringify([
+      fixture.contentKey,
+      fixture.features,
+      fixture.unresolved,
+      fixture.languages,
+    ]);
+    const bucket = fixtureBuckets.get(checks) ?? new Map<string, number[]>();
+    const group = bucket.get(key) ?? [];
+    group.push(index);
+    bucket.set(key, group);
+    fixtureBuckets.set(checks, bucket);
+  }
+  const scores = new Map<string, FixtureSimilarity | null>();
+  for (const bucket of fixtureBuckets.values()) {
+    const entries = [...bucket];
+    for (let x = 0; x < entries.length; x++)
+      for (let y = x; y < entries.length; y++) {
+        const [aKey, a] = entries[x];
+        const [bKey, b] = entries[y];
+        const aProfile = items[a[0]].test.fixture;
+        const bProfile = items[b[0]].test.fixture;
+        if (aProfile == null || bProfile == null) continue;
+        const key = JSON.stringify([aKey, bKey].sort());
+        if (!scores.has(key)) scores.set(key, compareFixtureProfiles(aProfile, bProfile));
+        const similarity = scores.get(key);
+        if (similarity == null) continue;
+        for (let ai = 0; ai < a.length; ai++)
+          for (let bi = x === y ? ai + 1 : 0; bi < b.length; bi++) {
+            const [i, j] = [a[ai], b[bi]].sort(ascending);
+            if (!focus(items[i].test.id) && !focus(items[j].test.id)) continue;
+            add([[i, j]], 'fixture');
+            fixtureMatches.set(`${i}:${j}`, similarity);
+          }
+      }
+  }
+
   const raw = [...sources.values()]
     .sort((p, q) => p.i - q.i || p.j - q.j)
     .filter(({ i, j }) => focus(items[i].test.id) || focus(items[j].test.id))
@@ -264,7 +325,12 @@ export function findCandidates(
       return {
         a: x.test.id,
         b: y.test.id,
-        sources: (['jaccard', 'checks-context', 'body'] as const).filter((s) => found.has(s)),
+        sources: (['jaccard', 'checks-context', 'body', 'fixture'] as const).filter((s) =>
+          found.has(s),
+        ),
+        ...(fixtureMatches.has(`${i}:${j}`)
+          ? { fixtureSimilarity: fixtureMatches.get(`${i}:${j}`) }
+          : {}),
         jaccard: empty ? null : shared / union,
         identicalBlocks: shared === x.blocks.length && shared === y.blocks.length,
         pathUnattributable: x.test.concurrent || y.test.concurrent,
@@ -299,7 +365,10 @@ export function findCandidates(
         jaccard: count(['jaccard']),
         checksContext: count(['checks-context']),
         both: count(['jaccard', 'checks-context']),
-        body: pairs.filter((pair) => pair.sources.includes('body')).length,
+        body: pairs.filter(
+          (pair) => pair.sources.includes('body') && !pair.sources.includes('fixture'),
+        ).length,
+        ...(fixtureMatches.size > 0 ? { fixture: fixtureMatches.size } : {}),
       },
       groups: groups.length,
       largestGroup:

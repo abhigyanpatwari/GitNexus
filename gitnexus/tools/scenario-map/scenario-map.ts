@@ -293,6 +293,11 @@ import {
   type ScenarioRunManifest,
 } from './mutation/run-group.js';
 import { bodyKeyOf } from './facet/body-key.js';
+import { FixtureInputs, withFixtureIdentity } from './facet/fixture-inputs.js';
+import { fixtureSimilarityReport, type FixtureProfile } from './facet/fixture-profile.js';
+import { assertionEvidence, type AssertionEvidence } from './consolidation/assertions.js';
+import { runConsolidation } from './consolidation/run.js';
+import { renderConsolidationReport } from './consolidation/report.js';
 import { coverageInventory } from './inventory/coverage-inventory.js';
 import { findCandidates, type CandidatePair } from './path-coverage/candidates.js';
 import {
@@ -898,6 +903,9 @@ export interface Layer2Test {
   /** Assertion-only key and body retrieval hint; absent in older work files. */
   checks?: string | null;
   bodyKey?: string | null;
+  /** Fixture content and structural retrieval evidence; absent in older artifacts. */
+  fixture?: FixtureProfile | null;
+  assertionEvidence?: AssertionEvidence;
   unsupportedForms: UnsupportedForm[];
   unresolvedSelectors: string[];
   facet: InputFacet | null;
@@ -1783,8 +1791,10 @@ async function computeLayer2(repoRoot: string, work: CoverageWorkFile): Promise<
     verdicts,
   });
   const provenance = new Map(work.tests.map((test) => [test.id, test.provenance]));
+  const runtimeFixtures = new Map(work.tests.map((test) => [test.id, test.runtimeFixture]));
   const subjects = new Map<string, FacetSubject>();
   const tests: Layer2Test[] = [];
+  const fixtureInputs = new FixtureInputs(fsFacetSources(repoRoot));
   for (const instance of instances) {
     const checkSubject = subjectOf(instance);
     const checks = checkSubject === null ? null : computeChecks(checkSubject, checkOptions);
@@ -1792,6 +1802,28 @@ async function computeLayer2(repoRoot: string, work: CoverageWorkFile): Promise<
       checks !== null && (checks.checks.length > 0 || checks.unsupported.length > 0);
     const facetSubject = facetSubjectOf(instance, provenance.get(instance.id) ?? null);
     if (facetSubject !== null) subjects.set(instance.id, facetSubject);
+    const staticFixture = facetSubject === null ? null : await fixtureInputs.profile(facetSubject);
+    const runtimeFixture = runtimeFixtures.get(instance.id) ?? null;
+    const fixture = runtimeFixture ?? staticFixture;
+    let facet =
+      facetSubject === null
+        ? null
+        : withFixtureIdentity(await computeFacet(facetSubject, facetContext), staticFixture);
+    if (facet !== null && runtimeFixture !== null) {
+      facet = withFixtureIdentity(facet, runtimeFixture);
+      // Runtime observation retrieves inputs static analysis cannot name. It does not
+      // prove every input API (streams, descriptors, child processes) was observed.
+      if (
+        staticFixture?.contentKey == null ||
+        staticFixture.contentKey !== runtimeFixture.contentKey ||
+        staticFixture.unresolved.length > 0
+      ) {
+        facet.unresolved = sortedUnique([
+          ...facet.unresolved,
+          'fixture: runtime input coverage is not exhaustive',
+        ]);
+      }
+    }
     tests.push({
       id: instance.id,
       file: instance.file,
@@ -1805,7 +1837,11 @@ async function computeLayer2(repoRoot: string, work: CoverageWorkFile): Promise<
       bodyKey: checkSubject === null || !hasChecks ? null : bodyKeyOf(checkSubject.record),
       unsupportedForms: checks?.unsupported ?? [],
       unresolvedSelectors: checks?.unresolved ?? [],
-      facet: facetSubject === null ? null : await computeFacet(facetSubject, facetContext),
+      fixture,
+      ...(checkSubject === null || checks === null
+        ? {}
+        : { assertionEvidence: assertionEvidence(checkSubject, checks) }),
+      facet,
     });
   }
   return { tests, facetContext, subjects, verdicts };
@@ -2114,14 +2150,37 @@ export async function runPlanStage(
   writeScenarioRunManifest(layout.root, manifest);
 
   const layer2 = await timed('layer 2', () => computeLayer2(repoRoot, work));
+  const consolidation = await timed('fixture consolidation', () =>
+    runConsolidation(work, layer2.tests, path.join(layout.root, 'fixture-clones')),
+  );
+  writeJson(path.join(layout.root, 'consolidation.json'), consolidation);
+  writeFileSync(
+    path.join(layout.root, 'consolidation.html'),
+    renderConsolidationReport(consolidation),
+  );
+  log(
+    `plan: consolidation: ${consolidation.summary.opportunities} groups representing ${consolidation.summary.representedPairs} pairs; ${consolidation.summary.eligibleTests} cases have fixture/path/assertion evidence`,
+  );
   const { facets, checksContext, bodyKeys } = layer2Maps(layer2.tests);
+  const fixtureTests = new Map(layer2.tests.map((test) => [test.id, test]));
   const candidates = await timed('candidates', () =>
     findCandidates(
-      candidateTestsOf(work, checksContext, bodyKeys),
+      candidateTestsOf(work, checksContext, bodyKeys).map((test) => ({
+        ...test,
+        checks: fixtureTests.get(test.id)?.checks,
+        fixture: fixtureTests.get(test.id)?.fixture,
+      })),
       (id) => changed === null || changed.has(parseTestId(id).file),
     ),
   );
   writeJson(layout.candidates, { schemaVersion: WORK_FILE_SCHEMA_VERSION, ...candidates });
+  const fixtureReport = fixtureSimilarityReport(layer2.tests, candidates.pairs);
+  writeJson(path.join(layout.root, 'fixtures.json'), fixtureReport);
+  log(
+    `plan: fixture similarity: ${fixtureReport.summary.withFixtureInputs} tests with inputs, ` +
+      `${fixtureReport.summary.matches} pairs (${fixtureReport.summary.crossLanguageMatches} cross-language), ` +
+      `${fixtureReport.summary.unresolvedTests} tests with unresolved inputs`,
+  );
 
   const scopes = await timed('scopes', () => {
     // The verdicts layer 2 classified (the same test files).

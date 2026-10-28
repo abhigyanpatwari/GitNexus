@@ -11,6 +11,8 @@
 import { checksContextKey, fsModuleReader, fsSnapshotReader } from '../facet/checks.js';
 import { bodyKeyOf } from '../facet/body-key.js';
 import { loadStaticInventory } from '../inventory/cases.js';
+import { FixtureInputs } from '../facet/fixture-inputs.js';
+import { fsFacetSources } from '../facet/input-facet.js';
 
 /** Matchers that read a `.snap` file entry named after the runtime test name. */
 const FILE_SNAPSHOT = /\.(?:toMatchSnapshot|toMatchFileSnapshot|toThrowErrorMatchingSnapshot)\(/;
@@ -38,6 +40,7 @@ export function layer1Files(
 ): Layer1Files {
   const inventory = loadStaticInventory(repoRoot, files);
   const options = { snapshots: fsSnapshotReader(repoRoot), modules: fsModuleReader(repoRoot) };
+  const fixtureInputs = new FixtureInputs(fsFacetSources(repoRoot));
   // Files with a test of no static key: it can pair with any test.
   const unknown = new Set([...inventory.skipped, ...inventory.incomplete]);
   const keys: { file: string; key: string }[] = [];
@@ -47,6 +50,16 @@ export function layer1Files(
       continue;
     }
     for (const instance of site.instances) {
+      const fixtures = fixtureInputs.resolve({
+        id: '',
+        file: site.file,
+        record: site.record,
+        instance,
+        executedFiles: null,
+      });
+      // Source-language similarity is only available after parsing. Keep these files so
+      // a diff run cannot discard a fixture partner on static context uniqueness alone.
+      if (fixtures.roots.length > 0 || fixtures.unresolved.length > 0) unknown.add(site.file);
       const key = checksContextKey(
         { record: site.record, instance, fullName: site.fullName },
         options,
