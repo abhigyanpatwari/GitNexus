@@ -81,6 +81,17 @@ describe('resolveQueryRssBudgetBytes', () => {
       expect(resolveQueryRssBudgetBytes(raw, 64 * GIB)).toBe(16 * GIB);
     }
   });
+
+  it('rejects overflowing and sub-byte budgets', () => {
+    for (const raw of ['1e308', '1e-20']) {
+      expect(resolveQueryRssBudgetBytes(raw, 64 * GIB)).toBe(16 * GIB);
+    }
+  });
+
+  it('leaves headroom on small hosts and constrained runtimes', () => {
+    expect(resolveQueryRssBudgetBytes(undefined, 8 * GIB)).toBe(6 * GIB);
+    expect(resolveQueryRssBudgetBytes(undefined, 2 * GIB)).toBe(1.5 * GIB);
+  });
 });
 
 describe('queryLabel', () => {
@@ -95,6 +106,21 @@ describe('queryLabel', () => {
 });
 
 describe('createQueryMemoryGuard', () => {
+  it('checks the budget before starting even a short query', () => {
+    const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' });
+    h.setRss(1500);
+    h.guard.begin('RETURN 1');
+    expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks memory growth when a query ends between sampler ticks', () => {
+    const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' });
+    const t = h.guard.begin('RETURN 1');
+    h.setRss(1500);
+    h.guard.end(t, 1);
+    expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+  });
+
   it('reports a breach with every running query once RSS passes the budget', () => {
     const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' });
     h.guard.begin('MATCH (caller)-[r]->(n) RETURN caller');
@@ -267,6 +293,40 @@ describe('createQueryMemoryGuard: physical footprint (macOS)', () => {
     release(50 * GIB);
     await flush();
     expect(h.deps.onBreach).not.toHaveBeenCalled();
+  });
+
+  it('does not charge a stale footprint to a later query', async () => {
+    let release!: (bytes: number | null) => void;
+    const pending = new Promise<number | null>((resolve) => {
+      release = resolve;
+    });
+    const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' }, 64 * GIB, () => pending);
+    const old = h.guard.begin('old');
+    h.advance(FOOTPRINT_INTERVAL_MS);
+    h.tick();
+    h.guard.end(old);
+    const next = h.guard.begin('next');
+    release(50 * GIB);
+    await flush();
+    expect(h.deps.onBreach).not.toHaveBeenCalled();
+    h.guard.end(next);
+  });
+
+  it('retains a footprint while a query present at sampling still runs', async () => {
+    let release!: (bytes: number | null) => void;
+    const pending = new Promise<number | null>((resolve) => {
+      release = resolve;
+    });
+    const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' }, 64 * GIB, () => pending);
+    const first = h.guard.begin('first');
+    const second = h.guard.begin('second');
+    h.advance(FOOTPRINT_INTERVAL_MS);
+    h.tick();
+    h.guard.end(first);
+    release(50 * GIB);
+    await flush();
+    expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+    h.guard.end(second);
   });
 
   it('treats an unavailable footprint as no signal', async () => {

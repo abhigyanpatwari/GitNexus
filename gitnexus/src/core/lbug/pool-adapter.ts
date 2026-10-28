@@ -1322,42 +1322,46 @@ export const executeParameterized = async (
   entry.lastUsed = Date.now();
   silenceStdout();
   activeQueryCount++;
-  // Exits the process if a runaway query exhausts memory (#3696).
   const guardToken = queryMemoryGuard.begin(cypher);
   let rowCount: number | undefined;
   let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-  try {
-    const stmt = await withTimeout(conn.prepare(cypher), QUERY_TIMEOUT_MS, 'Prepare');
-    if (!stmt.isSuccess()) {
-      const errMsg = await stmt.getErrorMessage();
-      throw new Error(`Prepare failed: ${errMsg}`);
+  const nativeQuery = (async () => {
+    try {
+      const stmt = await conn.prepare(cypher);
+      if (!stmt.isSuccess()) {
+        const errMsg = await stmt.getErrorMessage();
+        throw new Error(`Prepare failed: ${errMsg}`);
+      }
+      queryResult = await conn.execute(stmt, params);
+      const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+      const rows = await result.getAll();
+      rowCount = rows.length;
+      return rows;
+    } catch (err) {
+      if (isReadOnlyDbError(err)) {
+        // Preserve the native error as `cause` so the original frame/message is
+        // not lost behind the friendly read-only message (#2068 follow-up).
+        throw new Error('Write operations are not allowed. The pool adapter is read-only.', {
+          cause: err,
+        });
+      }
+      throw err;
+    } finally {
+      // Close the native QueryResult cursor(s) before returning the connection —
+      // getAll() drains rows but does not release the native cursor, so without
+      // this the cursor leaks for the connection's lifetime (#2068 follow-up).
+      // Best-effort via the shared helper; never masks the query result or a real
+      // error.
+      if (queryResult) await closeQueryResults(queryResult);
+      queryMemoryGuard.end(guardToken, rowCount);
+      activeQueryCount--;
+      restoreStdout();
+      checkin(entry, conn);
     }
-    queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
-    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-    const rows = await result.getAll();
-    rowCount = rows.length;
-    return rows;
-  } catch (err) {
-    if (isReadOnlyDbError(err)) {
-      // Preserve the native error as `cause` so the original frame/message is
-      // not lost behind the friendly read-only message (#2068 follow-up).
-      throw new Error('Write operations are not allowed. The pool adapter is read-only.', {
-        cause: err,
-      });
-    }
-    throw err;
-  } finally {
-    // Close the native QueryResult cursor(s) before returning the connection —
-    // getAll() drains rows but does not release the native cursor, so without
-    // this the cursor leaks for the connection's lifetime (#2068 follow-up).
-    // Best-effort via the shared helper; never masks the query result or a real
-    // error.
-    if (queryResult) await closeQueryResults(queryResult);
-    queryMemoryGuard.end(guardToken, rowCount);
-    activeQueryCount--;
-    restoreStdout();
-    checkin(entry, conn);
-  }
+  })();
+  // A JS timeout cannot cancel native work. Keep its guard, cursor and checked-out
+  // connection until that work settles, including results delivered after timeout.
+  return withTimeout(nativeQuery, QUERY_TIMEOUT_MS, 'Query');
 };
 
 /**

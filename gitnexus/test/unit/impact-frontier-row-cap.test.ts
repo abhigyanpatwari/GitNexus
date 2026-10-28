@@ -85,8 +85,8 @@ function setupFrontier(rowCount: number, distinctCallers: number): string[] {
   return frontierQueries;
 }
 
-const impact = (backend: any, repoHandle: any) =>
-  backend._impactImpl(repoHandle, { target: 'HubSymbol', direction: 'upstream', maxDepth: 3 });
+const impact = (backend: any, repoHandle: any, direction = 'upstream') =>
+  backend._impactImpl(repoHandle, { target: 'HubSymbol', direction, maxDepth: 3 });
 
 describe('impact: per-level frontier row cap (#3696)', () => {
   beforeEach(() => {
@@ -131,5 +131,16 @@ describe('impact: per-level frontier row cap (#3696)', () => {
     expect(res.impactedCount).toBe(300);
     expect(res.risk).toBe('CRITICAL');
     expect(res.partial).toBe(true);
+  });
+
+  it('also bounds downstream traversal and reports its truncated counts', async () => {
+    const { backend, repoHandle } = makeBackend();
+    const queries = setupFrontier(IMPACT_FRONTIER_ROW_CAP + 1, 1);
+    const res = await impact(backend, repoHandle, 'downstream');
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toContain(`LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`);
+    expect(res.impactedCount).toBe(1);
+    expect(res.partial).toBe(true);
+    expect(res.risk).toBe('UNKNOWN');
   });
 });

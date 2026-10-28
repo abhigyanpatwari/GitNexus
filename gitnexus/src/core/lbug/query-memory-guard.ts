@@ -9,8 +9,8 @@
  * so queries running longer than 1 s also read the physical footprint.
  *
  * `GITNEXUS_QUERY_MAX_RSS_MB`: limit in MiB, `0` disables. Default is
- * max(8 GiB, 25% of RAM); the floor leaves room for the read pool's own
- * buffer pools (up to 5 databases × 2 GiB).
+ * max(8 GiB, 25% of available RAM), capped at 75% of available RAM.
+ * Container memory constraints count toward available RAM.
  * `GITNEXUS_QUERY_TRACE=1`: one stderr line per query with duration, rows and
  * memory.
  */
@@ -42,9 +42,13 @@ export function resolveQueryRssBudgetBytes(
   if (trimmed) {
     const mb = Number(trimmed);
     if (mb === 0) return null;
-    if (Number.isFinite(mb) && mb > 0) return Math.floor(mb * MIB);
+    const bytes = Math.floor(mb * MIB);
+    if (Number.isSafeInteger(bytes) && bytes > 0) return bytes;
   }
-  return Math.max(MIN_DEFAULT_BUDGET_BYTES, Math.floor(totalMemBytes * DEFAULT_RAM_FRACTION));
+  return Math.min(
+    Math.floor(totalMemBytes * 0.75),
+    Math.max(MIN_DEFAULT_BUDGET_BYTES, Math.floor(totalMemBytes * DEFAULT_RAM_FRACTION)),
+  );
 }
 
 /** One-line, length-bounded query label. Never includes bound parameters. */
@@ -140,10 +144,11 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
     if (now - oldest < FOOTPRINT_INTERVAL_MS) return;
     footprintInFlight = true;
     lastFootprintAt = now;
+    const sampledQueries = [...active];
     deps.readFootprint().then(
       (bytes) => {
         footprintInFlight = false;
-        if (bytes !== null) observe(bytes);
+        if (bytes !== null && sampledQueries.some((q) => active.has(q))) observe(bytes);
       },
       () => {
         footprintInFlight = false;
@@ -164,6 +169,7 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
         budgetBytes = resolveQueryRssBudgetBytes(env[QUERY_MAX_RSS_ENV], deps.totalMem());
         tracing = env[QUERY_TRACE_ENV] === '1';
       }
+      if (budgetBytes === null && !tracing) return {};
       const rss = deps.readRss();
       const q: ActiveQuery = {
         label: queryLabel(cypher),
@@ -172,7 +178,8 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
         peakBytes: rss,
       };
       active.add(q);
-      if (!stopSampler && (budgetBytes !== null || tracing)) {
+      observe(rss);
+      if (!stopSampler) {
         stopSampler = deps.startSampler(sample);
       }
       return q;
@@ -180,9 +187,11 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
 
     end(token: object, rowCount?: number): void {
       const q = token as ActiveQuery;
-      if (!active.delete(q)) return;
+      if (!active.has(q)) return;
+      const endRss = deps.readRss();
+      observe(endRss);
+      active.delete(q);
       if (tracing) {
-        const endRss = deps.readRss();
         const mb = (n: number) => Math.round(n / MIB);
         deps.writeStderr(
           `[query-trace] ms=${deps.now() - q.startedAt} rows=${rowCount ?? '?'} ` +
@@ -223,7 +232,7 @@ export const queryMemoryGuard: QueryMemoryGuard = createQueryMemoryGuard({
   readRss: () => process.memoryUsage.rss(),
   ...(process.platform === 'darwin' ? { readFootprint: readDarwinFootprint } : {}),
   env: () => process.env,
-  totalMem: () => os.totalmem(),
+  totalMem: () => Math.min(os.totalmem(), process.constrainedMemory() || Number.POSITIVE_INFINITY),
   now: () => Date.now(),
   writeStderr: (line) => {
     realStderrWrite(line);
