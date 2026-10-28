@@ -53,7 +53,8 @@ describe('pooled query native lifetime', () => {
         release = resolve;
       });
       const close = vi.fn();
-      const result = { getAll: async () => [{ n: 1 }], close };
+      const getAll = vi.fn(async () => [{ n: 1 }]);
+      const result = { getAll, close };
       if (stage === 'prepare') prepare.mockReturnValueOnce(pending);
       else if (stage === 'execute') execute.mockReturnValueOnce(pending);
       else execute.mockResolvedValueOnce({ getAll: () => pending, close });
@@ -70,6 +71,8 @@ describe('pooled query native lifetime', () => {
       expect(error).toBeInstanceOf(Error);
       expect(error.message).toContain('timed out');
       expect(end).toHaveBeenCalledTimes(1);
+      if (stage === 'prepare') expect(execute).not.toHaveBeenCalled();
+      if (stage === 'execute') expect(getAll).not.toHaveBeenCalled();
       if (stage !== 'prepare') expect(close).toHaveBeenCalledTimes(1);
       await expect(executeParameterized('query-lifetime', 'RETURN 1 AS n', {})).resolves.toEqual([
         { n: 1 },

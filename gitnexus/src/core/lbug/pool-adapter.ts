@@ -1325,14 +1325,22 @@ export const executeParameterized = async (
   const guardToken = queryMemoryGuard.begin(cypher);
   let rowCount: number | undefined;
   let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+  const deadline = performance.now() + QUERY_TIMEOUT_MS;
+  const checkDeadline = () => {
+    if (performance.now() >= deadline) {
+      throw new Error(`Query timed out after ${QUERY_TIMEOUT_MS}ms`);
+    }
+  };
   const nativeQuery = (async () => {
     try {
       const stmt = await conn.prepare(cypher);
+      checkDeadline();
       if (!stmt.isSuccess()) {
         const errMsg = await stmt.getErrorMessage();
         throw new Error(`Prepare failed: ${errMsg}`);
       }
       queryResult = await conn.execute(stmt, params);
+      checkDeadline();
       const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
       const rows = await result.getAll();
       rowCount = rows.length;
