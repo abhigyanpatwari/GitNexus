@@ -24,6 +24,8 @@ OpenCode's plugin uses the v1 `tool.execute.after` API: it enriches search resul
 
 For Bash tools, the hooks recognize literal commands and known options; ambiguous shell constructs are skipped. Stale-index hints concern the current OpenCode project.
 
+Bash search augmentation requires `rg` or `grep` to be the first command. A search preceded by `cd`, such as `cd src && rg UserService .`, runs normally but receives no graph augmentation. Use a direct search command or OpenCode's `grep`/`glob` tools to get graph context.
+
 <a id="fn-antigravity-hooks"></a>
 
 > ¹ **Antigravity hooks** follow the [Gemini CLI hooks reference](https://geminicli.com/docs/hooks/reference/) (Antigravity 2.0 is the documented successor to Gemini CLI). Augmentation runs in `AfterTool` because `BeforeTool` has no context-injection channel in the Gemini contract — the agent sees graph context appended to the tool result via `hookSpecificOutput.additionalContext`. Stale-index hints land in the same channel after a successful `git commit/merge/rebase/cherry-pick/pull`. The schema may evolve if Antigravity-specific hook docs diverge from Gemini CLI's; the implementation will track those changes.
