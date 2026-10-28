@@ -41,6 +41,7 @@ REUSABLE_COMPARATOR_ARMS = frozenset(
         "ce_workflow",
         "ce_workflow_direct",
         "baseline",
+        "baseline_cli",
         "baseline_nomcp",
     }
 )

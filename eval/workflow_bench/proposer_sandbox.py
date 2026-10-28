@@ -1221,8 +1221,14 @@ def prepare_sandbox(
     backend: str = "bwrap",
     gitnexus_available: bool = True,
     gitnexus_cli_available: bool = True,
+    gitnexus_cli_shim: bool = False,
 ) -> Iterator[SandboxSession]:
-    """Create private host backing dirs and one virtualized command."""
+    """Create private host backing dirs and one virtualized command.
+
+    ``gitnexus_cli_shim`` mounts the baseline_cli arm's MCP-forwarding
+    `gitnexus` command in place of the pinned CLI; it needs the per-cell MCP
+    socket among ``read_only_mounts`` and never exposes the runtime itself.
+    """
 
     # Validate the lexical path before resolving it. Resolving first would
     # erase the evidence that the caller supplied a symlinked clone root.
@@ -1264,7 +1270,8 @@ def prepare_sandbox(
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)
     cli_available = gitnexus_available and gitnexus_cli_available
-    shell_prefix = _create_shell_prefix_wrapper(private_root, gitnexus_available=cli_available)
+    cli_shim = gitnexus_available and gitnexus_cli_shim and not cli_available
+    shell_prefix = _create_shell_prefix_wrapper(private_root, gitnexus_available=cli_available or cli_shim)
     python3_wrapper = _create_python3_wrapper(private_root)
     git_excludes = _create_git_excludes(private_root)
     # Claude may discover user-level skills below HOME.  Keep the rest of HOME
@@ -1280,6 +1287,17 @@ def prepare_sandbox(
         else:
 
             baseline_mounts = baseline_gitnexus_mounts(clone, private_root)
+        if cli_available:
+            cli_mounts: tuple[ReadOnlyMount, ...] = (
+                ReadOnlyMount(source=_create_gitnexus_wrapper(private_root), target=SANDBOX_GITNEXUS_CLI),
+            )
+        elif cli_shim:
+            # Imported here: cli_shim reads this module's sandbox paths.
+            from .cli_shim import create_cli_shim
+
+            cli_mounts = (ReadOnlyMount(source=create_cli_shim(private_root), target=SANDBOX_GITNEXUS_CLI),)
+        else:
+            cli_mounts = baseline_mounts
         protected_mounts = (
             *read_only_mounts,
             *(
@@ -1290,11 +1308,7 @@ def prepare_sandbox(
             ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
             ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
             ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
-            *(
-                (ReadOnlyMount(source=_create_gitnexus_wrapper(private_root), target=SANDBOX_GITNEXUS_CLI),)
-                if cli_available
-                else baseline_mounts
-            ),
+            *cli_mounts,
             ReadOnlyMount(source=git_excludes, target=SANDBOX_GIT_EXCLUDES),
         )
         command_prefix = (
