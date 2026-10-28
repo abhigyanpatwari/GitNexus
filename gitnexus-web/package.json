@@ -42,7 +42,7 @@
     "lru-cache": "^11.5.3",
     "lucide-react": "^1.46.0",
     "mermaid": "^12.2.0",
-    "mnemonist": "^0.40.4",
+    "mnemonist": "^0.40.6",
     "pandemonium": "^2.4.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
