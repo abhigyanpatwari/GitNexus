@@ -561,7 +561,11 @@ export function resolveRouteHandlerSymbols(
     return routeContext.resolveImportTargets(parsedImport, fromFile);
   };
 
-  const providerContext = { model, importTargetsFor, ...routeContext?.routeHookConfig };
+  const providerContext = {
+    model,
+    importTargetsFor,
+    routeHookConfig: routeContext?.routeHookConfig,
+  };
   const decoratorHandlerId = (dr: ExtractedDecoratorRoute): string | undefined => {
     if (dr.source === DATA_ROUTE_TABLE_SOURCE) return dataHandlerByRoute.get(dr);
     const providerHandler = routeContext?.providerRouteHandler?.(dr.filePath);

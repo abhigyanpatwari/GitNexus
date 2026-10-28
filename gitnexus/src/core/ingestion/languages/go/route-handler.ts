@@ -64,7 +64,7 @@ function unwrapConfiguredHandler(
 ): ExtractedDecoratorRoute | undefined {
   const wrapper = route.handlerWrapper;
   if (route.handlerName || !wrapper) return route;
-  if (context.routeHandlerWrappers?.includes(wrapper.callee)) {
+  if (context.routeHookConfig?.routeHandlerWrappers?.includes(wrapper.callee)) {
     return {
       ...route,
       handlerName: wrapper.handlerName,

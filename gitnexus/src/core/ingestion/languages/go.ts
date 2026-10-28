@@ -25,7 +25,6 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { goMethodConfig } from '../method-extractors/configs/go.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { goVariableConfig } from '../variable-extractors/configs/go.js';
-import { extractGoGinEchoRoutes } from '../route-extractors/go-gin-echo.js';
 import { resolveGoRouteHandler } from './go/route-handler.js';
 import { extractGoRouteFacts, resolveGoRouteFacts } from './go/route-facts.js';
 import { goPackageDir } from './go/package-clause.js';
@@ -163,11 +162,8 @@ export const goProvider = defineLanguage({
     wrapperNodeTypes: ['type_declaration'],
   }),
   builtInNames: GO_BUILT_INS,
-  // gin / echo verb registrations with in-function Group prefixes (#3402).
-  extractDecoratorRoutes: extractGoGinEchoRoutes,
   resolveRouteHandler: resolveGoRouteHandler,
-  // Registrations on a wrapper-package router type; promoted to gin/echo
-  // routes on the main thread only when declared in `goRouterAliases`.
+  // One config-free collection for direct engines and wrapper-package roots.
   extractRouteFacts: extractGoRouteFacts,
   resolveRouteFacts: resolveGoRouteFacts,
 

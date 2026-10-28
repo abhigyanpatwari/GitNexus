@@ -4,30 +4,28 @@ import { compareCodeUnits } from '../../../../lib/utils.js';
 import { logger } from '../../../logger.js';
 import type { LanguageProvider } from '../../language-provider.js';
 import {
-  ECHO_ROUTE_SOURCE,
-  extractGoRouteCandidates,
-  GIN_ROUTE_SOURCE,
+  collectGoRouteFacts,
+  goRouteFramework,
+  materializeGoRoute,
   type GoRouteCandidateFacts,
-  type GoRouteHandlerFact,
 } from '../../route-extractors/go-gin-echo.js';
 import type { ExtractedDecoratorRoute } from '../../workers/parse-worker.js';
 
 /**
- * Routes registered on a router whose type comes from a wrapper package
+ * Direct framework routes and registrations on a wrapper package's router
  * (`func Init(s *core.Engine)`, where `core.Engine = gin.Engine` in a
  * dependency the indexer cannot read).
  *
  * The worker records every such registration as a configuration-free
- * candidate (`extractGoRouteCandidates`), so the parse cache never depends on
- * user config. Here, on the main thread, a candidate becomes a gin/echo route
- * only when the user declared its root type in `goRouterAliases`; everything
- * else is dropped, exactly as before the candidates existed.
+ * candidate (`collectGoRouteFacts`), so the parse cache never depends on
+ * user config. Direct roots already identify their framework. Other roots
+ * become routes only when declared in `goRouterAliases` on the main thread.
  */
 export const extractGoRouteFacts = (
   tree: Parser.Tree,
   _parsedFile: ParsedFile,
   lineOffset: number,
-): GoRouteCandidateFacts | undefined => extractGoRouteCandidates(tree, lineOffset);
+): GoRouteCandidateFacts | undefined => collectGoRouteFacts(tree, lineOffset);
 
 const isCandidateFacts = (facts: unknown): facts is GoRouteCandidateFacts =>
   typeof facts === 'object' &&
@@ -42,8 +40,8 @@ export const resolveGoRouteFacts: NonNullable<LanguageProvider['resolveRouteFact
   context,
 ) => {
   const aliases = new Map<string, string>();
-  for (const alias of context.routeFrameworkAliases ?? []) {
-    aliases.set(`${alias.importPath}.${alias.type}`, alias.framework);
+  for (const alias of context.routeHookConfig?.routeFrameworkAliases ?? []) {
+    aliases.set(`${alias.importPath}\u0000${alias.type}`, alias.framework);
   }
   const out: ExtractedDecoratorRoute[] = [];
   const emittedByRoot = new Map<string, number>();
@@ -53,32 +51,25 @@ export const resolveGoRouteFacts: NonNullable<LanguageProvider['resolveRouteFact
     if (!isCandidateFacts(facts)) continue;
     for (const root of facts.roots) {
       const rootKey = `${root.importPath}.${root.typeName}`;
-      candidates += root.routes.length;
-      const framework = aliases.get(rootKey);
-      if (framework !== 'gin' && framework !== 'echo') {
+      const frameworkName =
+        root.framework ?? aliases.get(`${root.importPath}\u0000${root.typeName}`);
+      const framework = frameworkName && goRouteFramework(frameworkName);
+      if (!root.framework) candidates += root.routes.length;
+      if (!framework) {
         droppedByRoot.set(rootKey, (droppedByRoot.get(rootKey) ?? 0) + root.routes.length);
         continue;
       }
-      emittedByRoot.set(rootKey, (emittedByRoot.get(rootKey) ?? 0) + root.routes.length);
+      if (!root.framework)
+        emittedByRoot.set(rootKey, (emittedByRoot.get(rootKey) ?? 0) + root.routes.length);
       for (const candidate of root.routes) {
-        const handler: GoRouteHandlerFact = framework === 'gin' ? candidate.gin : candidate.echo;
-        out.push({
-          filePath,
-          routePath: candidate.routePath,
-          httpMethod: candidate.httpMethod,
-          decoratorName: candidate.httpMethod,
-          lineNumber: candidate.lineNumber,
-          prefix: null,
-          source: framework === 'gin' ? GIN_ROUTE_SOURCE : ECHO_ROUTE_SOURCE,
-          ...handler,
-        });
+        out.push(materializeGoRoute(filePath, candidate, framework));
       }
     }
   }
 
   for (const [rootKey, count] of emittedByRoot) {
     logger.debug(
-      { rootType: rootKey, framework: aliases.get(rootKey), routes: count },
+      { rootType: rootKey, routes: count },
       'go routes: emitted routes through a configured router alias',
     );
   }
@@ -90,7 +81,7 @@ export const resolveGoRouteFacts: NonNullable<LanguageProvider['resolveRouteFact
     logger.info(
       {
         candidates,
-        emitted: out.length,
+        emitted: [...emittedByRoot.values()].reduce((sum, count) => sum + count, 0),
         unconfiguredRootTypes: droppedByRoot.size,
         top,
       },

@@ -32,7 +32,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MAX_REPO_CONTROL_FILE_BYTES, readRepoControlFile } from '../config/repo-control-file.js';
 import { logger } from '../core/logger.js';
-import type { RouteFrameworkAlias } from '../core/ingestion/language-provider.js';
+import { normalizeRouterAliases } from '../core/ingestion/languages/go/route-config.js';
 import {
   InvalidBranchError,
   sanitizeDetectedBranch,
@@ -312,72 +312,16 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
       );
     }
     case 'router-aliases':
-      return normalizeRouterAliases(value, source);
+      try {
+        return normalizeRouterAliases(value, source);
+      } catch (error) {
+        throw new GitNexusRcError((error as Error).message);
+      }
     default:
       // Exhaustive — kept for forward-compat if a new kind is added.
       throw new GitNexusRcError(`${source}: unsupported config value kind.`);
   }
 };
-
-const ROUTER_ALIAS_FRAMEWORKS: ReadonlySet<string> = new Set(['gin', 'echo']);
-const ROUTER_ALIAS_FIELDS: ReadonlySet<string> = new Set(['importPath', 'type', 'framework']);
-
-/**
- * `[{ importPath, type, framework }]` — every field required, no extras, so a
- * typo fails closed instead of silently declaring nothing.
- */
-function normalizeRouterAliases(value: unknown, source: string): RouteFrameworkAlias[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new GitNexusRcError(`${source} must be a non-empty array of alias objects.`);
-  }
-  const out = new Map<string, RouteFrameworkAlias>();
-  for (const entry of value) {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-      throw new GitNexusRcError(
-        `${source} entries must be objects like {"importPath": "...", "type": "Engine", "framework": "gin"}.`,
-      );
-    }
-    const record = entry as Record<string, unknown>;
-    for (const key of Object.keys(record)) {
-      if (!ROUTER_ALIAS_FIELDS.has(key)) {
-        throw new GitNexusRcError(`${source} entry has unknown field "${key}".`);
-      }
-    }
-    const field = (name: string, pattern: RegExp, hint: string): string => {
-      const raw = record[name];
-      if (typeof raw !== 'string' || !raw.trim()) {
-        throw new GitNexusRcError(`${source} entry field "${name}" must be a non-empty string.`);
-      }
-      const trimmed = raw.trim();
-      assertNoHiddenChars(trimmed, source);
-      if (!pattern.test(trimmed)) {
-        throw new GitNexusRcError(`${source} entry field "${name}" ${hint}.`);
-      }
-      return trimmed;
-    };
-    const importPath = field(
-      'importPath',
-      /^[A-Za-z0-9._~-]+(\/[A-Za-z0-9._~-]+)*$/,
-      'must be a Go import path (e.g. "example.com/org/pkg")',
-    );
-    const type = field('type', /^[A-Za-z_][A-Za-z0-9_]*$/, 'must be a Go type name');
-    const framework = field('framework', /^[a-z]+$/, 'must be "gin" or "echo"');
-    if (!ROUTER_ALIAS_FRAMEWORKS.has(framework)) {
-      throw new GitNexusRcError(`${source} entry field "framework" must be "gin" or "echo".`);
-    }
-    const key = `${importPath}\u0000${type}`;
-    const previous = out.get(key);
-    // Two frameworks for one type would make the handler argument order depend
-    // on declaration order; fail closed instead.
-    if (previous && previous.framework !== framework) {
-      throw new GitNexusRcError(
-        `${source} declares ${importPath}.${type} as both "${previous.framework}" and "${framework}".`,
-      );
-    }
-    out.set(key, { importPath, type, framework });
-  }
-  return [...out.values()].slice(0, 100);
-}
 
 /**
  * Normalize one level (flat top-level or the nested `analyze` block) into a

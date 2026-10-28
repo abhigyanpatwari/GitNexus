@@ -76,7 +76,8 @@ export interface RouteHookConfig {
 }
 
 /** What a provider's {@link LanguageProviderConfig.resolveRouteHandler} can see. */
-export interface RouteHandlerResolutionHookContext extends RouteHookConfig {
+export interface RouteHandlerResolutionHookContext {
+  readonly routeHookConfig?: RouteHookConfig;
   /** The model after every file has been parsed; scope resolution has not run. */
   readonly model: SemanticModel;
   /**
@@ -665,7 +666,8 @@ interface LanguageProviderConfig {
    * callback uses the language's configured ScopeResolver module resolution. */
   readonly resolveRouteFacts?: (
     files: readonly { filePath: string; facts: unknown }[],
-    context: RouteHookConfig & {
+    context: {
+      readonly routeHookConfig?: RouteHookConfig;
       resolveImportTargets: (fromFile: string, moduleSpecifier: string) => readonly string[];
     },
   ) => ExtractedDecoratorRoute[];

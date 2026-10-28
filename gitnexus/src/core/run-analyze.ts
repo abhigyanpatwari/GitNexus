@@ -51,7 +51,7 @@ import {
   countCallsByLanguage,
 } from './ingestion/scope-resolution/name-fallback-summary.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
-import type { RouteFrameworkAlias } from './ingestion/language-provider.js';
+import type { RouteHookConfig } from './ingestion/language-provider.js';
 import { routeHookConfigKey } from './ingestion/route-hook-config.js';
 import {
   logUnresolvedReceiverFiles,
@@ -630,8 +630,7 @@ export interface AnalyzeOptions {
    * Declared router-framework aliases and handler-wrapper callees, forwarded to
    * `PipelineOptions` and stamped into meta so a changed value rebuilds Routes.
    */
-  routeFrameworkAliases?: RouteFrameworkAlias[];
-  routeHandlerWrappers?: string[];
+  routeHookConfig?: RouteHookConfig;
   /**
    * Explicit local Spring Boot Actuator snapshot input (#2418), forwarded to
    * the Spring enrichment phase. Undefined keeps static-only analysis.
@@ -2368,10 +2367,7 @@ async function runFullAnalysisInner(
 
   // Declared route aliases / handler wrappers change Route evidence without
   // moving the commit or dirtying the tree, so a changed value must rebuild.
-  const currentRouteHookConfig = routeHookConfigKey(
-    options.routeFrameworkAliases,
-    options.routeHandlerWrappers,
-  );
+  const currentRouteHookConfig = routeHookConfigKey(options.routeHookConfig);
   const persistedRouteHookConfig = existingMeta?.routeHookConfig ?? routeHookConfigKey();
   if (existingMeta && persistedRouteHookConfig !== currentRouteHookConfig) {
     if (currentRouteHookConfig === routeHookConfigKey()) {
@@ -3129,8 +3125,7 @@ async function runFullAnalysisInner(
           ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
           : undefined,
         fetchWrappers: options.fetchWrappers,
-        routeFrameworkAliases: options.routeFrameworkAliases,
-        routeHandlerWrappers: options.routeHandlerWrappers,
+        routeHookConfig: options.routeHookConfig,
         skipDerivedGraphPhases,
         springActuatorPath: options.springActuatorPath,
         asyncApiSpecPath: options.asyncApiSpecPath,

@@ -328,7 +328,7 @@ describe('resolveGoRouteHandler', () => {
         resolveGoRouteHandler(route(wrapped), {
           model: model(),
           importTargetsFor: (_from, name) => imports[name as keyof typeof imports] ?? [],
-          routeHandlerWrappers: ['common.Wrapper'],
+          routeHookConfig: { routeHandlerWrappers: ['common.Wrapper'] },
         }),
       ).toBe('Method:app/api/job.go:API.CreateJob');
     });
@@ -344,7 +344,7 @@ describe('resolveGoRouteHandler', () => {
         resolveGoRouteHandler(route({ ...wrapped, handlerName: 'Direct' }), {
           model: m,
           importTargetsFor: () => [],
-          routeHandlerWrappers: ['common.Wrapper'],
+          routeHookConfig: { routeHandlerWrappers: ['common.Wrapper'] },
         }),
       ).toBe(`Function:${ROUTER}:Direct`);
     });

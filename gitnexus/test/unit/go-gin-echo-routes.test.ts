@@ -426,7 +426,10 @@ describe('wrapper-package route candidates', () => {
     expect(facts?.roots).toHaveLength(1);
     expect(facts?.roots[0]).toMatchObject({ importPath: CORE_PATH, typeName: 'Engine' });
     expect(
-      facts?.roots[0].routes.map((r) => ({ route: `${r.httpMethod} ${r.routePath}`, gin: r.gin })),
+      facts?.roots[0].routes.map((r) => ({
+        route: `${r.httpMethod} ${r.routePath}`,
+        gin: r.handlers.at(-1),
+      })),
     ).toEqual([
       {
         route: 'GET /console/v1/oauth/iam/oauthback',
@@ -450,9 +453,9 @@ describe('wrapper-package route candidates', () => {
 
   it('records the echo-order handler too, without deciding the framework', () => {
     const facts = candidates(`func R(s *core.Engine) { s.GET("/x", First, mw.Log()) }`);
-    expect(facts?.roots[0].routes[0].echo).toEqual({ handlerName: 'First' });
+    expect(facts?.roots[0].routes[0].handlers[0]).toEqual({ handlerName: 'First' });
     // gin order reads the trailing middleware call: no designator, no wrapper.
-    expect(facts?.roots[0].routes[0].gin).toEqual({});
+    expect(facts?.roots[0].routes[0].handlers.at(-1)).toEqual({});
   });
 
   it('emits no candidate for a direct gin engine or an unimported type', () => {
@@ -462,6 +465,6 @@ describe('wrapper-package route candidates', () => {
 
   it('does not treat a wrapper on a local value as configurable', () => {
     const facts = candidates(`func R(s *core.Engine, m Wrapper) { s.GET("/x", m.Wrap(H)) }`);
-    expect(facts?.roots[0].routes[0].gin).toEqual({});
+    expect(facts?.roots[0].routes[0].handlers.at(-1)).toEqual({});
   });
 });

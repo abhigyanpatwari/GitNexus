@@ -1623,10 +1623,7 @@ export async function runChunkedParseAndResolve(
   // User route configuration is applied here, on the main thread: workers only
   // emit configuration-free candidates, so a config change never stales the
   // parse cache.
-  const routeHookConfig = {
-    routeFrameworkAliases: options?.routeFrameworkAliases ?? [],
-    routeHandlerWrappers: options?.routeHandlerWrappers ?? [],
-  };
+  const routeHookConfig = options?.routeHookConfig;
 
   // A resolver's identity defines a fact family, including providers sharing
   // one language implementation. Shared ingestion never inspects the payload.
@@ -1645,7 +1642,7 @@ export async function runChunkedParseAndResolve(
   for (const [resolve, files] of routeFactGroups) {
     for (const route of resolve(files, {
       resolveImportTargets: resolveRouteModuleTargets,
-      ...routeHookConfig,
+      routeHookConfig,
     })) {
       const routes = resolvedRoutesByFile.get(route.filePath) ?? [];
       routes.push(route);

@@ -903,15 +903,17 @@ describe('runFullAnalysis — incremental orchestration', () => {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const config = {
         skipAgentsMd: true,
-        routeFrameworkAliases: [
-          { importPath: 'example.com/infra/pkg', type: 'Engine', framework: 'gin' },
-        ],
-        routeHandlerWrappers: ['common.Wrapper'],
+        routeHookConfig: {
+          routeFrameworkAliases: [
+            { importPath: 'example.com/infra/pkg', type: 'Engine', framework: 'gin' },
+          ],
+          routeHandlerWrappers: ['common.Wrapper'],
+        },
       };
       await runFullAnalysis(repo.dbPath, config, { onProgress: () => {} });
       const { storagePath } = getStoragePaths(repo.dbPath);
       expect((await loadMeta(storagePath))?.routeHookConfig).toBe(
-        routeHookConfigKey(config.routeFrameworkAliases, config.routeHandlerWrappers),
+        routeHookConfigKey(config.routeHookConfig),
       );
 
       const steady = await runFullAnalysis(repo.dbPath, config, { onProgress: () => {} });
