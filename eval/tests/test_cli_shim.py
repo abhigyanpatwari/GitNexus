@@ -40,6 +40,8 @@ IMPACT = {
         "required": ["target"],
     },
 }
+# The real impact contract (gitnexus/src/mcp/tools.ts): direction required, target optional beside target_uid.
+REAL_IMPACT = {**IMPACT, "inputSchema": {**IMPACT["inputSchema"], "required": ["direction"]}}
 RENAME = {"name": "rename", "description": "Mutating.", "inputSchema": {"type": "object", "properties": {}}}
 
 
@@ -75,10 +77,9 @@ def test_shim_maps_positionals_and_flags_to_the_tool_schema():
     # An explicit empty value is forwarded, not mistaken for a missing one.
     assert parse(IMPACT, ["--direction=", "qux"]) == {"direction": "", "target": "qux"}
     # The real impact schema requires only direction; the symbol is still positional.
-    real_impact = {**IMPACT, "inputSchema": {**IMPACT["inputSchema"], "required": ["direction"]}}
-    assert parse(real_impact, ["statusCommand", "--direction", "upstream"]) == {
+    assert parse(REAL_IMPACT, ["statusCommand", "--direction", "upstream"]) == {
         "target": "statusCommand", "direction": "upstream"}
-    assert parse(real_impact, ["statusCommand", "upstream"]) == {"target": "statusCommand", "direction": "upstream"}
+    assert parse(REAL_IMPACT, ["statusCommand", "upstream"]) == {"target": "statusCommand", "direction": "upstream"}
     # A boolean switch before the positional leaves the positional alone.
     assert parse(IMPACT, ["--include-tests", "foo"]) == {"includeTests": True, "target": "foo"}
     assert parse(IMPACT, ["--include-tests", "false", "foo"]) == {"includeTests": False, "target": "foo"}
@@ -236,12 +237,15 @@ const tool = TOOL;
 readline.createInterface({input: process.stdin}).on('line', line => {
   const message = JSON.parse(line);
   if (message.id === undefined) return;
+  const args = (message.params || {}).arguments || {};
+  const missing = (tool.inputSchema.required || []).filter(name => !(name in args));
   const result = message.method === 'initialize' ? {protocolVersion: '2025-06-18', capabilities: {}}
     : message.method === 'tools/list' ? {tools: [tool]}
-    : {content: [{type: 'text', text: 'impact of ' + message.params.arguments.target}]};
+    : missing.length ? {isError: true, content: [{type: 'text', text: 'missing ' + missing.join(',')}]}
+    : {content: [{type: 'text', text: 'impact of ' + args.target + ' ' + args.direction}]};
   process.stdout.write(JSON.stringify({jsonrpc: '2.0', id: message.id, result}) + '\\n');
 });
-""".replace("TOOL", json.dumps(IMPACT)))
+""".replace("TOOL", json.dumps(REAL_IMPACT)))
     bwrap = preflight_bubblewrap()
     mounts = [ReadOnlyMount(runtime, proposer_sandbox.SANDBOX_GITNEXUS)]
     with isolated_mcp(clone=clone, mounts=mounts, bwrap_bin=bwrap) as endpoint:
@@ -251,8 +255,10 @@ readline.createInterface({input: process.stdin}).on('line', line => {
         ) as sandbox:
             script = (
                 "test ! -e /opt/gitnexus && test ! -e /opt/gitnexus-registry && "
-                "gitnexus help | grep -q impact && gitnexus impact parseFile && gitnexus impact second"
+                "gitnexus help | grep -q impact && gitnexus impact parseFile --direction upstream && "
+                "gitnexus impact second downstream && ! gitnexus impact missingDirection"
             )
             result = sandbox.run(["/bin/bash", "-c", script], timeout=60, env=build_sandbox_environment())
             assert result.ok, result.stderr_tail
-            assert "impact of parseFile" in result.stdout_tail and "impact of second" in result.stdout_tail
+            assert "impact of parseFile upstream" in result.stdout_tail
+            assert "impact of second downstream" in result.stdout_tail
