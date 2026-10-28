@@ -136,7 +136,7 @@
     "@babel/parser": "^8.0.0",
     "@babel/traverse": "^8.0.0",
     "@babel/types": "^8.0.0",
-    "@mermaid-js/tiny": "11.17.2",
+    "@mermaid-js/tiny": "12.0.0",
     "@stryker-mutator/api": "10.0.0",
     "@stryker-mutator/core": "10.0.0",
     "@types/busboy": "^1.5.4",
@@ -147,10 +147,11 @@
     "@types/proxy-addr": "^2.0.3",
     "@vitest/coverage-v8": "^5.0.0",
     "gitnexus-shared": "file:../gitnexus-shared",
-    "jsdom": "26.1.0",
+    "jsdom": "30.1.1",
     "tsx": "^4.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "vitest-shard-balancer": "0.1.0"
   },
   "overrides": {
     "adm-zip": ">=0.6.0",
