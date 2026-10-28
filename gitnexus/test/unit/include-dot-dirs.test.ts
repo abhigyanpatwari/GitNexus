@@ -47,6 +47,24 @@ describe('include-dot-dirs', () => {
     expect(messages.some((m) => m.includes('".hg"'))).toBe(true);
   });
 
+  it.each(['.GIT', '.SvN', '.HG', '.Bzr', '.ssh', '.AWS', '.azure', '.kube', '.gnupg', '.docker'])(
+    'refuses the protected directory %s regardless of case',
+    (entry) => {
+      expect(normalizeIncludeDotDirs([entry])).toEqual([]);
+    },
+  );
+
+  it.each(['...', '.git.', '.ssh.'])('rejects Windows path aliases such as %s', (entry) => {
+    expect(normalizeIncludeDotDirs([entry])).toEqual([]);
+  });
+
+  it('does not echo invalid environment values into logs', () => {
+    const invalid = 'SYNTHETIC_PRIVATE_VALUE\nforged log entry';
+    normalizeIncludeDotDirs([invalid]);
+    expect(cap.records()).toHaveLength(1);
+    expect(JSON.stringify(cap.records())).not.toContain(invalid.split('\n')[0]);
+  });
+
   it.each(['scallywag', '.', '..', 'a/.b', '.a/b', '.a\\b', '.{a,b}', '.a*', '.[ab]', '!.a'])(
     'rejects %j as not a plain dot-directory name',
     (entry) => {

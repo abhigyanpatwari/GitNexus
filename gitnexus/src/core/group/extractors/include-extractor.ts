@@ -27,6 +27,7 @@ import { getMaxFileSizeBytes } from '../../ingestion/utils/max-file-size.js';
 import {
   getIncludeDotDirs,
   indexableGlobPatterns,
+  dotDirectoryIgnoreFilter,
 } from '../../ingestion/utils/include-dot-dirs.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { logger } from '../../logger.js';
@@ -388,13 +389,14 @@ export class IncludeExtractor implements ContractExtractor {
   private async discoverIndexableFiles(repoPath: string): Promise<string[]> {
     const ignoreFilter = await createIgnoreFilter(repoPath);
     const maxFileSizeBytes = getMaxFileSizeBytes();
-    const patterns = indexableGlobPatterns(getIncludeDotDirs());
+    const includeDotDirs = getIncludeDotDirs();
+    const patterns = indexableGlobPatterns(includeDotDirs);
 
     const candidates = await glob(patterns, {
       cwd: repoPath,
       nodir: true,
       dot: false,
-      ignore: ignoreFilter,
+      ignore: includeDotDirs.length > 0 ? dotDirectoryIgnoreFilter(ignoreFilter) : ignoreFilter,
     });
 
     const survivors: string[] = [];

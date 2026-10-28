@@ -4,6 +4,7 @@ import {
   getIncludeDotDirs,
   indexableGlobPatterns,
   normalizeIncludeDotDirs,
+  dotDirectoryIgnoreFilter,
 } from './utils/include-dot-dirs.js';
 import fs from 'fs/promises';
 import { readdir } from 'node:fs';
@@ -122,16 +123,19 @@ export const walkRepositoryPaths = async (
   const patterns = indexableGlobPatterns(includeDotDirs);
   // A listed dot directory may be absent from this repo; glob still reads its
   // root-level pattern, and that ENOENT means "no files", not lost metadata.
-  const optionalRoots = new Set(includeDotDirs.map((dir) => path.join(repoPath, dir)));
+  const optionalRoots = new Set(includeDotDirs.map((dir) => path.resolve(repoPath, dir)));
   const isAbsentListedRoot = (directory: unknown, error: NodeJS.ErrnoException): boolean =>
-    error.code === 'ENOENT' && optionalRoots.has(path.resolve(repoPath, String(directory)));
+    (error.code === 'ENOENT' && optionalRoots.has(path.resolve(repoPath, String(directory)))) ||
+    // A dotfile can share a listed directory's name. Glob probes it as a
+    // directory; ENOTDIR means no matching subtree, not an unreadable one.
+    (error.code === 'ENOTDIR' && includeDotDirs.includes(path.basename(String(directory))));
 
   const filtered = (
     await glob(patterns, {
       cwd: repoPath,
       nodir: true,
       dot: false,
-      ignore: ignoreFilter,
+      ignore: includeDotDirs.length > 0 ? dotDirectoryIgnoreFilter(ignoreFilter) : ignoreFilter,
       // glob treats unreadable directories as empty. Required metadata must
       // not silently lose declarations, so retain the first enumeration error.
       fs:

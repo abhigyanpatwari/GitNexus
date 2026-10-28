@@ -865,7 +865,11 @@ export GITNEXUS_INCLUDE_DOT_DIRS=.scallywag,.config
 npx gitnexus analyze
 ```
 
-Each name matches that directory at any depth (`pkg/.scallywag/` too). Hidden files and other dot directories inside it stay excluded, ignore rules still apply (the built-in list covers `.github/`, so also add `!.github/` to `.gitnexusignore` to index it), and version-control directories such as `.git` are refused. The list is recorded with the index, so `status` compares against the same file set even if the variable changes later.
+Each name matches that directory at any depth (`pkg/.scallywag/` too). Hidden files and other dot directories inside it stay excluded. Ignore rules still apply (the built-in list covers `.github/`, so also add `!.github/` to `.gitnexusignore` to index it). Changing or removing the list takes effect on the next `analyze`, even on a clean checkout. The list is recorded with the index, so `status` compares against the same file set even if the variable changes later.
+
+Version-control and credential directories are refused case-insensitively, including `.git`, `.ssh`, `.aws`, `.azure`, `.kube`, `.gnupg`, and `.docker`. Inside opted-in directories, known credential files, key/certificate files, and credential stores such as `.config/gcloud/` and `.config/gh/` stay excluded even when ignore rules negate their exclusions. Symlink files and directory links under these paths are excluded, including a listed directory that is itself a symlink. These checks run before content or resolution metadata is read.
+
+This is path-based protection, not secret-content scanning. List only directories whose contents you trust to expose through GitNexus's code tools; a hardcoded secret in an otherwise allowed source file can still be indexed. Use `.gitnexusignore` for project-specific secret paths.
 
 ### Process detection reports missing flows
 
