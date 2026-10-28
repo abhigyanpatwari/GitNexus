@@ -74,6 +74,11 @@ def test_shim_maps_positionals_and_flags_to_the_tool_schema():
     assert parse(IMPACT, ["baz", "--json", '{"maxDepth": 1}']) == {"target": "baz", "maxDepth": 1}
     # An explicit empty value is forwarded, not mistaken for a missing one.
     assert parse(IMPACT, ["--direction=", "qux"]) == {"direction": "", "target": "qux"}
+    # The real impact schema requires only direction; the symbol is still positional.
+    real_impact = {**IMPACT, "inputSchema": {**IMPACT["inputSchema"], "required": ["direction"]}}
+    assert parse(real_impact, ["statusCommand", "--direction", "upstream"]) == {
+        "target": "statusCommand", "direction": "upstream"}
+    assert parse(real_impact, ["statusCommand", "upstream"]) == {"target": "statusCommand", "direction": "upstream"}
     # A boolean switch before the positional leaves the positional alone.
     assert parse(IMPACT, ["--include-tests", "foo"]) == {"includeTests": True, "target": "foo"}
     assert parse(IMPACT, ["--include-tests", "false", "foo"]) == {"includeTests": False, "target": "foo"}

@@ -157,12 +157,12 @@ def describe(tool):
 
 
 def positional_names(schema):
-    properties = list((schema.get("properties") or {}).keys())
-    required = [name for name in schema.get("required", []) if name in properties]
-    if required:
-        return required
-    strings = [n for n in properties if "string" in types_of(schema["properties"][n])]
-    return strings[:1]
+    # The first property names the subject (target, name, search_query, from);
+    # it comes first even when optional, as impact's target is, then required ones.
+    properties = schema.get("properties") or {}
+    subject = [name for name in list(properties)[:1] if "string" in types_of(properties[name])]
+    required = [name for name in schema.get("required", []) if name in properties and name not in subject]
+    return subject + required
 
 
 def parse(tool, argv):
