@@ -1,5 +1,6 @@
 import type Parser from 'tree-sitter';
 import type { ParsedFile } from 'gitnexus-shared';
+import { compareCodeUnits } from '../../../../lib/utils.js';
 import { logger } from '../../../logger.js';
 import type { LanguageProvider } from '../../language-provider.js';
 import {
@@ -83,7 +84,7 @@ export const resolveGoRouteFacts: NonNullable<LanguageProvider['resolveRouteFact
   }
   if (droppedByRoot.size > 0) {
     const top = [...droppedByRoot.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .sort((a, b) => b[1] - a[1] || compareCodeUnits(a[0], b[0]))
       .slice(0, SUMMARY_LIMIT)
       .map(([rootType, dropped]) => ({ rootType, dropped }));
     logger.info(

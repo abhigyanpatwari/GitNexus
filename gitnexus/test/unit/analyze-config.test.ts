@@ -311,6 +311,13 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
 
   it.each([
     [[{ importPath: CORE, type: 'Engine', framework: 'chi' }], /"gin" or "echo"/],
+    [
+      [
+        { importPath: CORE, type: 'Engine', framework: 'gin' },
+        { importPath: CORE, type: 'Engine', framework: 'echo' },
+      ],
+      /as both "gin" and "echo"/,
+    ],
     [[{ type: 'Engine', framework: 'gin' }], /"importPath" must be a non-empty string/],
     [[{ importPath: CORE, type: 'Engine', framework: 'gin', extra: 1 }], /unknown field "extra"/],
     [[{ importPath: CORE, type: '*Engine', framework: 'gin' }], /must be a Go type name/],

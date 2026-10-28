@@ -365,7 +365,16 @@ function normalizeRouterAliases(value: unknown, source: string): RouteFrameworkA
     if (!ROUTER_ALIAS_FRAMEWORKS.has(framework)) {
       throw new GitNexusRcError(`${source} entry field "framework" must be "gin" or "echo".`);
     }
-    out.set(`${importPath}\u0000${type}`, { importPath, type, framework });
+    const key = `${importPath}\u0000${type}`;
+    const previous = out.get(key);
+    // Two frameworks for one type would make the handler argument order depend
+    // on declaration order; fail closed instead.
+    if (previous && previous.framework !== framework) {
+      throw new GitNexusRcError(
+        `${source} declares ${importPath}.${type} as both "${previous.framework}" and "${framework}".`,
+      );
+    }
+    out.set(key, { importPath, type, framework });
   }
   return [...out.values()].slice(0, 100);
 }

@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../lib/utils.js';
 import type { RouteFrameworkAlias } from './language-provider.js';
 
 /**
@@ -10,6 +11,6 @@ export function routeHookConfigKey(
 ): string {
   const aliasKeys = aliases
     .map((alias) => [alias.importPath, alias.type, alias.framework])
-    .sort((a, b) => a.join('\u0000').localeCompare(b.join('\u0000')));
-  return JSON.stringify([aliasKeys, [...new Set(wrappers)].sort()]);
+    .sort((a, b) => compareCodeUnits(a.join('\u0000'), b.join('\u0000')));
+  return JSON.stringify([aliasKeys, [...new Set(wrappers)].sort(compareCodeUnits)]);
 }

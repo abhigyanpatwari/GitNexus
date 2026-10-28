@@ -8,6 +8,7 @@ import Go from 'tree-sitter-go';
 import { extractGoRouteCandidates } from '../../src/core/ingestion/route-extractors/go-gin-echo.js';
 import { resolveGoRouteFacts } from '../../src/core/ingestion/languages/go/route-facts.js';
 import type { RouteFrameworkAlias } from '../../src/core/ingestion/language-provider.js';
+import { routeHookConfigKey } from '../../src/core/ingestion/route-hook-config.js';
 
 const parser = new Parser();
 parser.setLanguage(Go);
@@ -66,5 +67,25 @@ describe('resolveGoRouteFacts', () => {
         resolveImportTargets: () => [],
       }),
     ).toEqual([]);
+  });
+});
+
+describe('routeHookConfigKey', () => {
+  it('is independent of declaration order and uses code-unit order', () => {
+    const a = { importPath: 'example.com/a', type: 'Engine', framework: 'gin' };
+    const b = { importPath: 'example.com/B', type: 'Engine', framework: 'echo' };
+    expect(routeHookConfigKey([a, b], ['z.Wrap', 'Z.Wrap'])).toBe(
+      routeHookConfigKey([b, a], ['Z.Wrap', 'z.Wrap']),
+    );
+    // Uppercase sorts before lowercase by code unit, regardless of host locale.
+    expect(routeHookConfigKey([a, b], ['z.Wrap', 'Z.Wrap'])).toBe(
+      JSON.stringify([
+        [
+          ['example.com/B', 'Engine', 'echo'],
+          ['example.com/a', 'Engine', 'gin'],
+        ],
+        ['Z.Wrap', 'z.Wrap'],
+      ]),
+    );
   });
 });
