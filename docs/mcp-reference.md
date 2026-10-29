@@ -77,6 +77,17 @@ Set `GITNEXUS_MCP_READ_ONLY=1` before starting the MCP server to expose only the
 
 The default is unchanged when the variable is unset or `0`. Any other value fails server startup rather than silently weakening the policy.
 
+## MCP index refresh
+
+A local server started with `GITNEXUS_MCP_ENABLE_REFRESH=1` also lists `refresh_index`, which rebuilds one registered repository's index from its working tree. It is meant for agents that can see a stale index (`staleness.status` of `behind` or `diverged`) but cannot run `gitnexus analyze` themselves.
+
+- **Index-only.** The rebuild runs in the same forked analyze worker auto-sync uses, with `--skip-agents-md --skip-skills`: no `AGENTS.md`, `CLAUDE.md`, skill, hook, or other repository file is written. It is incremental where it can be and keeps existing embeddings and PDG mode.
+- **Local only.** `gitnexus serve` (and so the Docker `/api/mcp` surface) never lists it, whatever its environment. With `GITNEXUS_MCP_READ_ONLY=1` it is hidden from discovery and rejected before dispatch.
+- **Bounded.** Repositories whose last index recorded more than `GITNEXUS_MCP_REFRESH_MAX_FILES` files (default `5000`; `0` for no limit), or no count at all, are refused. After `GITNEXUS_MCP_REFRESH_TIMEOUT_MS` (default ten minutes) the call stops waiting and returns an error. The analyze worker never interrupts an analysis it has started, so it finishes in the background and keeps the index lock until then; a later refresh waits on that lock. Cancelling the request does not stop a started rebuild either: it finishes and publishes, and until it does a new call gets "already running" and `dry_run` reports `inProgress`. Only one refresh per repository runs at a time. The file limit does not bound embedding generation, which `.gitnexusrc` can request.
+- **Observable.** `dry_run: true` reports staleness, the indexed file count, whether `.gitnexusrc` makes the rebuild generate embeddings, and whether a refresh would run. A real call waits for the rebuild and returns `indexedAt`, `lastCommit`, `stats`, and `staleness`, with the values before the refresh under `previous`. A rebuild whose graph write collapsed is reported as an error, as `gitnexus analyze` and `serve` report it. Clients that send a progress token receive progress notifications; the MCP TypeScript SDK client gives up on a request after 60 seconds by default unless it resets that timeout on progress.
+
+The tool takes `repo` and `dry_run` only. Like an applied `rename`, it needs an explicit `repo` unless one repository is indexed or an MCP default is configured.
+
 ## MCP repository policy
 
 Set `GITNEXUS_MCP_ALLOWED_REPOS` to a comma-separated list of canonical registry names or absolute indexed paths. Entries are trimmed, resolved against the registry, and deduplicated at startup. When exactly one repository is allowed it becomes the implicit default; when several are allowed, callers must select one unless `GITNEXUS_MCP_DEFAULT_REPO` is also set.
@@ -201,7 +212,7 @@ affected_processes: [LoginFlow, RegistrationFlow, ...]
 ### Rename (Graph and Semantic Layer)
 
 ```js
-rename({symbol_name: "validateUser", new_name: "verifyUser", repo: "my-app", dry_run: true})
+rename({ symbol_name: 'validateUser', new_name: 'verifyUser', repo: 'my-app', dry_run: true });
 // Omitting dry_run also previews. For an ambiguous name, repeat with the symbol_uid from context().
 ```
 

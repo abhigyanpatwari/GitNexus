@@ -39,6 +39,40 @@ describe('auto-sync analysis worker', () => {
     expect(child.stderr.resume).toHaveBeenCalled();
   });
 
+  it('passes a collapsed graph write through with the stats', async () => {
+    const child = createChild();
+    const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
+    const result = run('/tmp/repo', {}, 50);
+    const graphWriteCollapsed = { expected: 930, persisted: 12 };
+    child.emit('message', {
+      type: 'complete',
+      result: { stats: { files: 3 }, graphWriteCollapsed },
+    });
+    child.emit('exit', 0, null);
+    await expect(result).resolves.toEqual({ stats: { files: 3 }, graphWriteCollapsed });
+  });
+
+  it('reports progress until the terminal message, and a throwing listener changes nothing', async () => {
+    const child = createChild();
+    const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
+    const onProgress = vi.fn().mockImplementationOnce(() => {
+      throw new Error('listener failed');
+    });
+
+    const result = run('/tmp/repo', {}, 50, undefined, undefined, undefined, onProgress);
+    child.emit('message', { type: 'progress', phase: 'parsing', percent: 20, message: 'Parsing' });
+    child.emit('message', { type: 'progress', phase: 'graph', percent: 60, message: 'Graph' });
+    child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
+    child.emit('message', { type: 'progress', phase: 'late', percent: 99, message: 'Late' });
+    child.emit('exit', 0, null);
+
+    await expect(result).resolves.toEqual({ stats: { files: 3 } });
+    expect(onProgress.mock.calls).toEqual([
+      [20, 'Parsing'],
+      [60, 'Graph'],
+    ]);
+  });
+
   it('rejects on a worker error even when no exit event follows', async () => {
     const child = createChild();
     const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });

@@ -9,7 +9,7 @@
  * actually reads.
  */
 
-import { GITNEXUS_TOOLS } from './tools.js';
+import { findToolDefinition } from './tools.js';
 
 /** Legacy MCP names that reuse another tool's advertised schema. */
 export const LEGACY_TOOL_SCHEMA_SOURCE: Readonly<Record<string, string>> = {
@@ -53,7 +53,7 @@ export function schemaSourceToolName(toolName: string): string {
 
 export function advertisedToolPropertyNames(toolName: string): string[] | undefined {
   const source = schemaSourceToolName(toolName);
-  const tool = GITNEXUS_TOOLS.find((entry) => entry.name === source);
+  const tool = findToolDefinition(source);
   if (!tool) return undefined;
   return Object.keys(tool.inputSchema.properties);
 }
