@@ -31,7 +31,11 @@ PREVIEW_PATHS = {
 }
 EVALUATION_WORKFLOW = ".github/workflows/release-evaluation.yml"
 # Exact `if:` gates of the dispatch-only descriptive arms (never PR previews).
-OPT_IN_ARM_CONDITIONS = frozenset({"env.CLI_ARM == 'true'", "env.CODE_ARM == 'true'"})
+OPT_IN_ARM_CONDITIONS = frozenset({
+    "env.CLI_ARM == 'true'",
+    "env.CODE_ARM == 'true'",
+    "inputs.mcp_tool_loading == true && inputs.candidate_pr == ''",
+})
 MEASUREMENT_PATHS = ("eval/", ".github/claude-canary-runtime/", EVALUATION_WORKFLOW)
 
 

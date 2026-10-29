@@ -17,6 +17,10 @@ on:
         description: Start, probe, and stop EC2 without paid model calls
         type: boolean
         default: false
+      mcp_tool_loading:
+        description: Add candidate deferred-MCP experiment (12 extra paid cells)
+        type: boolean
+        default: false
       candidate_ref:
         description: 'Full commit SHA or version tag to evaluate; latest-rc resolves the newest published RC'
         type: string
@@ -380,6 +384,14 @@ jobs:
               --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
           done
+      - name: Require offline deferred-tool compatibility before paid sessions
+        if: inputs.mcp_tool_loading == true
+        working-directory: eval
+        env:
+          GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
+          CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+        run: >-
+          uv run --locked --extra dev python -m pytest tests/test_mcp_tool_loading.py -q
       - name: Recheck PR opt-in and pinned head immediately before paid sessions
         if: inputs.candidate_pr != ''
         working-directory: eval
@@ -406,7 +418,7 @@ jobs:
               uv run --locked --extra dev python -m workflow_bench.runner \
               --tasks "$RUNNER_TEMP/release-evaluation/$runtime/tasks.yaml" \
               --gitnexus-root "$GITHUB_WORKSPACE/$runtime" \
-              --arms "${arms[@]}" --runs 3 --include-expensive \
+              --arms "${arms[@]}" --runs 3 --include-expensive --mcp-tool-loading eager \
               --workers 3 --timeout 3600 --model "$MODEL" --effort "$EFFORT" \
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
               --out "$RUNNER_TEMP/release-evaluation/$runtime/raw"
@@ -433,6 +445,25 @@ jobs:
             --workers 3 --timeout 3600 --model "$MODEL" --effort "$EFFORT" \
             --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
             --out "$RUNNER_TEMP/release-evaluation/candidate/cli-raw"
+      - name: Measure candidate with deferred MCP descriptions
+        if: inputs.mcp_tool_loading == true && inputs.candidate_pr == ''
+        timeout-minutes: 360
+        working-directory: eval
+        env:
+          GITNEXUS_BENCH_OPENAI_API_KEY: ${{ secrets.GITNEXUS_BENCH_OPENAI_API_KEY }}
+          GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
+          (( remaining > 0 )) || { echo '::error::No time remains for deferred sessions before the evidence reserve.'; exit 1; }
+          timeout --signal=TERM --kill-after=60 "${remaining}s" \
+            uv run --locked --extra dev python -m workflow_bench.runner \
+            --tasks "$RUNNER_TEMP/release-evaluation/candidate/tasks.yaml" \
+            --gitnexus-root "$GITHUB_WORKSPACE/candidate" \
+            --arms baseline --mcp-tool-loading deferred --runs 3 --include-expensive \
+            --workers 3 --timeout 3600 --model "$MODEL" --effort "$EFFORT" \
+            --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
+            --out "$RUNNER_TEMP/release-evaluation/candidate/deferred"
       - name: Summarize complete or incomplete measurements
         if: ${{ always() && steps.resolve.outputs.sha != '' }}
         working-directory: eval
@@ -469,6 +500,15 @@ jobs:
             --stable "$RUNNER_TEMP/release-evaluation/stable/public/agent-evaluation.json" \
             --stable-sha '${{ steps.resolve.outputs.stable_sha }}' \
             --out "$RUNNER_TEMP/release-evaluation/public"
+      - name: Summarize matched MCP loading experiment
+        if: ${{ always() && inputs.mcp_tool_loading == true && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' }}
+        working-directory: eval
+        run: |
+          uv run --locked --extra dev python -m workflow_bench.mcp_loading_report \
+            --eager "$RUNNER_TEMP/release-evaluation/candidate/raw/results.jsonl" \
+            --deferred "$RUNNER_TEMP/release-evaluation/candidate/deferred/results.jsonl" \
+            --metadata "$RUNNER_TEMP/release-evaluation/candidate/metadata.json" \
+            --out "$RUNNER_TEMP/release-evaluation/public"
       - name: Collect sanitized evidence and publish summary
         if: ${{ always() && steps.resolve.outputs.sha != '' }}
         run: |
@@ -485,7 +525,7 @@ jobs:
             if [[ -f "$candidate" ]]; then cp "$candidate" "$public/agent-evaluation.$extension"; fi
             if [[ -f "$stable" ]]; then cp "$stable" "$public/stable-agent-evaluation.$extension"; fi
           done
-          for report in release-quality-gate agent-evaluation; do
+          for report in release-quality-gate agent-evaluation mcp-tool-loading; do
             if [[ -f "$public/$report.md" ]]; then cat "$public/$report.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
       - name: Summarize the opt-in CLI-only arm
@@ -511,6 +551,8 @@ jobs:
             ${{ runner.temp }}/release-evaluation/public/stable-agent-evaluation.md
             ${{ runner.temp }}/release-evaluation/public/release-quality-gate.json
             ${{ runner.temp }}/release-evaluation/public/release-quality-gate.md
+            ${{ runner.temp }}/release-evaluation/public/mcp-tool-loading.json
+            ${{ runner.temp }}/release-evaluation/public/mcp-tool-loading.md
           if-no-files-found: error
           retention-days: 30
       - name: Upload the opt-in CLI-only arm comparison
