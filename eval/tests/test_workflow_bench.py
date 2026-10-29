@@ -210,7 +210,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         step for step in containment["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@")
     )
     claude_lock = json.loads((repo_root / ".github" / "claude-canary-runtime" / "package-lock.json").read_text())
-    setup_uv = "astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884"
+    setup_uv = "astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa"
     assert workflow.count(setup_uv) >= 3
     assert workflow.count("version: '0.11.23'") >= 3
     assert workflow.count("uv run --locked --extra dev python -m pytest") >= 3
