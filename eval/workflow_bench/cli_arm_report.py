@@ -41,9 +41,14 @@ def cli_commands(row: dict[str, Any], results_dir: Path) -> Counter:
     """Count `gitnexus <command>` invocations in a cell's Bash tool calls."""
 
     counts: Counter = Counter()
-    for name in row.get("transcript_artifacts", []):
-        path = results_dir / name
-        if not path.is_file():
+    root = results_dir.resolve()
+    # Each entry is the record runner_sessions persists: {"path", "sha256", "bytes", "source"}.
+    for artifact in row.get("transcript_artifacts", []):
+        relative = artifact.get("path") if isinstance(artifact, dict) else None
+        if not isinstance(relative, str):
+            continue
+        path = (results_dir / relative).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
             continue
         for line in path.read_text(errors="replace").splitlines():
             try:

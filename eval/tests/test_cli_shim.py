@@ -211,8 +211,15 @@ def test_cli_arm_report_compares_arms_and_counts_shell_calls(tmp_path):
     paired, cli = _write_results(
         tmp_path,
         [_report_row("baseline_nomcp", 0, 1.0), _report_row("baseline", 0, 1.3, gitnexus_tool_uses=3)],
-        [_report_row("baseline_cli", 0, 1.1, transcript_artifacts=["transcripts/t-cli.jsonl"])],
+        # The record shape runner_sessions._persist_parent_event_stream writes into result rows.
+        [_report_row("baseline_cli", 0, 1.1, transcript_artifacts=[
+            {"path": "transcripts/t-cli.jsonl", "sha256": "0" * 64, "bytes": 1,
+             "source": "parent-captured-stream-json"},
+            {"path": "../outside.jsonl", "sha256": "0" * 64, "bytes": 1, "source": "parent-captured-stream-json"}])],
     )
+    (tmp_path / "outside.jsonl").write_text(json.dumps(
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "gitnexus query x"}}]}}) + "\n")
     (cli.parent / "transcripts").mkdir()
     event = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "Bash", "input": {"command": "gitnexus impact foo && gitnexus help"}},
