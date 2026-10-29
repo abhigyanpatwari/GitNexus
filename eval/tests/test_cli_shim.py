@@ -189,34 +189,93 @@ def test_shim_round_trips_through_a_fake_mcp_endpoint(tmp_path):
         server.close()
 
 
+def _report_row(arm: str, run: int, cost: float | None, task: str = "t", **extra) -> dict:
+    exposure = "none" if arm == "baseline_nomcp" else "stdio-only"
+    return {"task": task, "run": run, "arm": arm, "ok": True, "sandbox_backend": "bwrap",
+            "runtime_exposure": exposure, "error_kind": None, "resolved": True,
+            "transcript_missing": False, "cost_usd": cost, "duration_s": 10.0, "num_turns": 4,
+            "cache_read_input_tokens": 1000, "output_tokens": 50, **extra}
+
+
+def _write_results(tmp_path: Path, paired_rows: list[dict], cli_rows: list[dict]) -> tuple[Path, Path]:
+    paired, cli = tmp_path / "raw/results.jsonl", tmp_path / "cli-raw/results.jsonl"
+    for path, rows in ((paired, paired_rows), (cli, cli_rows)):
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    return paired, cli
+
+
 def test_cli_arm_report_compares_arms_and_counts_shell_calls(tmp_path):
     from workflow_bench.cli_arm_report import build_report, render_markdown
 
-    def row(arm: str, run: int, cost: float, **extra) -> dict:
-        exposure = "none" if arm == "baseline_nomcp" else "stdio-only"
-        return {"task": "t", "run": run, "arm": arm, "ok": True, "sandbox_backend": "bwrap",
-                "runtime_exposure": exposure, "error_kind": None, "resolved": True,
-                "transcript_missing": False, "cost_usd": cost, "duration_s": 10.0, "num_turns": 4,
-                "cache_read_input_tokens": 1000, "output_tokens": 50, **extra}
-
-    paired, cli = tmp_path / "raw/results.jsonl", tmp_path / "cli-raw/results.jsonl"
-    paired.parent.mkdir()
-    cli.parent.mkdir()
-    paired.write_text("\n".join(json.dumps(r) for r in [
-        row("baseline_nomcp", 0, 1.0), row("baseline", 0, 1.3, gitnexus_tool_uses=3)]) + "\n")
+    paired, cli = _write_results(
+        tmp_path,
+        [_report_row("baseline_nomcp", 0, 1.0), _report_row("baseline", 0, 1.3, gitnexus_tool_uses=3)],
+        [_report_row("baseline_cli", 0, 1.1, transcript_artifacts=["transcripts/t-cli.jsonl"])],
+    )
     (cli.parent / "transcripts").mkdir()
     event = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "Bash", "input": {"command": "gitnexus impact foo && gitnexus help"}},
         {"type": "tool_use", "name": "Bash", "input": {"command": "npm --prefix gitnexus test -- --run x"}}]}}
     (cli.parent / "transcripts/t-cli.jsonl").write_text(json.dumps(event) + "\n")
-    cli.write_text(json.dumps(row("baseline_cli", 0, 1.1, transcript_artifacts=["transcripts/t-cli.jsonl"])) + "\n")
 
     report = build_report(paired, cli)
     assert not report["problems"]
     assert report["arms"]["baseline_cli"]["gitnexus_commands"] == {"impact": 1, "help": 1}
-    assert round(report["changes"]["baseline_cli vs baseline_nomcp: cost_usd"], 1) == 10.0
-    assert round(report["changes"]["baseline_cli vs baseline: cost_usd"], 1) == -15.4
-    assert "| baseline_cli | 1/1 | $1.1000" in render_markdown(report)
+    assert round(report["changes"]["baseline_cli vs baseline_nomcp: cost_usd"]["percent"], 1) == 10.0
+    assert round(report["changes"]["baseline_cli vs baseline: cost_usd"]["percent"], 1) == -15.4
+    markdown = render_markdown(report)
+    assert "| baseline_cli | 1/1 | $1.1000" in markdown
+    assert "baseline_cli vs baseline: cost_usd: -15.4% (1/1 pairs)" in markdown
+
+
+def _two_task_paired() -> list[dict]:
+    return [_report_row(arm, 0, cost, task=task)
+            for arm in ("baseline_nomcp", "baseline") for task, cost in (("cheap", 1.0), ("dear", 9.0))]
+
+
+def test_cli_arm_report_compares_an_interrupted_sweep_on_matched_pairs_only(tmp_path):
+    from workflow_bench.cli_arm_report import build_report, render_markdown
+
+    # The CLI sweep stopped after the $1 task; per-arm means alone would read as an 80% saving.
+    paired, cli = _write_results(tmp_path, _two_task_paired(), [_report_row("baseline_cli", 0, 1.0, task="cheap")])
+
+    report = build_report(paired, cli)
+    change = report["changes"]["baseline_cli vs baseline: cost_usd"]
+    assert change == {"percent": 0.0, "pairs": 1, "expected_pairs": 2}
+    assert "baseline_cli vs baseline: 1 of 2 task/run pair(s) matched; deltas use matched pairs only" in report["problems"]
+    assert "baseline_cli vs baseline: cost_usd: +0.0% (1/2 pairs, partial)" in render_markdown(report)
+
+
+def test_cli_arm_report_treats_missing_billing_as_incomplete(tmp_path):
+    from workflow_bench.cli_arm_report import build_report, render_markdown
+
+    # run_claude can return a successful session with cost_usd=None.
+    paired, cli = _write_results(tmp_path, _two_task_paired(), [
+        _report_row("baseline_cli", 0, None, task="cheap"), _report_row("baseline_cli", 0, 9.0, task="dear")])
+
+    report = build_report(paired, cli)
+    arm = report["arms"]["baseline_cli"]
+    assert arm["mean_cost_usd"] is None and arm["incomplete_metrics"] == ["cost_usd"]
+    assert "baseline_cli: cost_usd missing on 1 of 2 cell(s)" in report["problems"]
+    assert report["changes"]["baseline_cli vs baseline: cost_usd"] == {"percent": 0.0, "pairs": 1, "expected_pairs": 2}
+    assert report["changes"]["baseline_cli vs baseline: num_turns"]["pairs"] == 2
+    markdown = render_markdown(report)
+    assert "| baseline_cli | 2/2 | incomplete |" in markdown
+    assert "cost_usd: +0.0% (1/2 pairs, partial)" in markdown
+
+
+def test_cli_arm_report_excludes_duplicate_pairs_from_deltas(tmp_path):
+    from workflow_bench.cli_arm_report import build_report
+
+    paired, cli = _write_results(tmp_path, _two_task_paired(), [
+        _report_row("baseline_cli", 0, 1.0, task="cheap"),
+        _report_row("baseline_cli", 0, 5.0, task="cheap"),
+        _report_row("baseline_cli", 0, 9.0, task="dear")])
+
+    report = build_report(paired, cli)
+    assert any("duplicate task/run pair(s)" in problem and "cheap" in problem for problem in report["problems"])
+    assert report["changes"]["baseline_cli vs baseline: cost_usd"] == {"percent": 0.0, "pairs": 1, "expected_pairs": 2}
 
 
 @pytest.mark.skipif(

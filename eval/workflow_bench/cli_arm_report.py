@@ -60,22 +60,46 @@ def cli_commands(row: dict[str, Any], results_dir: Path) -> Counter:
     return counts
 
 
+def _measured(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def build_report(paired: Path, cli: Path) -> dict[str, Any]:
     rows = [(row, paired.parent) for row in _rows(paired) if row.get("arm") in ("baseline_nomcp", "baseline")]
     rows += [(row, cli.parent) for row in _rows(cli) if row.get("arm") == "baseline_cli"]
     report: dict[str, Any] = {"schema": "gitnexus.cli-arm-comparison/v1", "arms": {}, "problems": []}
+    # Deltas compare the same (task, run) pairs; per-arm means alone hide interrupted sweeps.
+    expected: dict[str, set[tuple[Any, Any]]] = {}
+    trusted: dict[str, dict[tuple[Any, Any], dict[str, Any]]] = {}
     for arm in ARMS:
         cells = [(row, where) for row, where in rows if row["arm"] == arm]
         valid = [(row, where) for row, where in cells if _trustworthy(row)]
+        pairs = Counter((row.get("task"), row.get("run")) for row, _ in cells)
+        duplicates = sorted((pair for pair, count in pairs.items() if count > 1), key=str)
+        if duplicates:
+            report["problems"].append(f"{arm}: duplicate task/run pair(s) {duplicates}; excluded from deltas")
+        expected[arm] = set(pairs)
+        trusted[arm] = {
+            (row.get("task"), row.get("run")): row
+            for row, _ in valid
+            if pairs[(row.get("task"), row.get("run"))] == 1
+        }
         if len(valid) != len(cells):
             report["problems"].append(f"{arm}: {len(cells) - len(valid)} of {len(cells)} cell(s) untrustworthy")
         if not valid:
             report["problems"].append(f"{arm}: no trustworthy cells")
             continue
         summary: dict[str, Any] = {"cells": len(valid), "solved": sum(row["resolved"] for row, _ in valid)}
+        summary["incomplete_metrics"] = []
         for metric in METRICS:
-            values = [row[metric] for row, _ in valid if isinstance(row.get(metric), (int, float))]
-            summary[f"mean_{metric}"] = statistics.mean(values) if values else None
+            values = [row[metric] for row, _ in valid if _measured(row.get(metric))]
+            if len(values) == len(valid):
+                summary[f"mean_{metric}"] = statistics.mean(values)
+                continue
+            # A mean over the measured subset would read as the arm's mean; leave it unknown.
+            summary[f"mean_{metric}"] = None
+            summary["incomplete_metrics"].append(metric)
+            report["problems"].append(f"{arm}: {metric} missing on {len(valid) - len(values)} of {len(valid)} cell(s)")
         if arm == "baseline_cli":
             per_cell = [cli_commands(row, where) for row, where in valid]
             summary["mean_gitnexus_calls"] = statistics.mean(sum(c.values()) for c in per_cell)
@@ -86,15 +110,32 @@ def build_report(paired: Path, cli: Path) -> dict[str, Any]:
         report["arms"][arm] = summary
     report["changes"] = {}
     for reference in ("baseline_nomcp", "baseline"):
-        base = report["arms"].get(reference)
         for arm in ARMS:
-            current = report["arms"].get(arm)
-            if arm == reference or not base or not current:
+            if arm == reference or arm not in report["arms"] or reference not in report["arms"]:
                 continue
+            pairs = expected[arm] | expected[reference]
+            shared = [pair for pair in pairs if pair in trusted[arm] and pair in trusted[reference]]
+            if len(shared) < len(pairs):
+                report["problems"].append(
+                    f"{arm} vs {reference}: {len(shared)} of {len(pairs)} task/run pair(s) matched; "
+                    + "deltas use matched pairs only"
+                )
             for metric in ("cost_usd", "duration_s", "cache_read_input_tokens", "num_turns"):
-                b, v = base.get(f"mean_{metric}"), current.get(f"mean_{metric}")
-                if b and v is not None:
-                    report["changes"][f"{arm} vs {reference}: {metric}"] = 100 * (v - b) / b
+                matched = [
+                    pair
+                    for pair in shared
+                    if _measured(trusted[arm][pair].get(metric)) and _measured(trusted[reference][pair].get(metric))
+                ]
+                if not matched:
+                    continue
+                b = statistics.mean(trusted[reference][pair][metric] for pair in matched)
+                v = statistics.mean(trusted[arm][pair][metric] for pair in matched)
+                if b:
+                    report["changes"][f"{arm} vs {reference}: {metric}"] = {
+                        "percent": 100 * (v - b) / b,
+                        "pairs": len(matched),
+                        "expected_pairs": len(pairs),
+                    }
     return report
 
 
@@ -112,6 +153,8 @@ def render_markdown(report: dict[str, Any]) -> str:
 
         def show(metric: str, pattern: str) -> str:
             value = values.get(metric)
+            if metric.removeprefix("mean_") in values.get("incomplete_metrics", ()):
+                return "incomplete"
             return "-" if value is None else pattern.format(value)
 
         lines.append(
@@ -120,7 +163,12 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"| {show('mean_cache_read_input_tokens', '{:,.0f}')} | {show('mean_gitnexus_calls', '{:.1f}')} |"
         )
     if report["changes"]:
-        lines += ["", *[f"- {name}: {value:+.1f}%" for name, value in report["changes"].items()]]
+        lines.append("")
+        for name, change in report["changes"].items():
+            sample = f"{change['pairs']}/{change['expected_pairs']} pairs"
+            if change["pairs"] < change["expected_pairs"]:
+                sample += ", partial"
+            lines.append(f"- {name}: {change['percent']:+.1f}% ({sample})")
     cli = report["arms"].get("baseline_cli")
     if cli:
         lines += ["", f"CLI usage: {cli['cells_using_gitnexus']}/{cli['cells']} cells; commands {cli['gitnexus_commands']}."]
