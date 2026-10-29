@@ -138,6 +138,7 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
+import { dropDanglingInFileOwnerEdges } from './owner-edge-guard.js';
 import { defaultExportNameCollides } from '../languages/typescript/cjs-export-assignment.js';
 import {
   extractVueScript,
@@ -1614,7 +1615,22 @@ const processFileGroup = (
     return;
   }
 
+  // Settled when the next file starts (or after the loop), so every `continue`
+  // below still gets its file's member edges checked.
+  let openFile: { path: string; nodeStart: number; relStart: number } | null = null;
+  const settleOpenFile = (): void => {
+    if (openFile === null) return;
+    dropDanglingInFileOwnerEdges(result, openFile.path, openFile.nodeStart, openFile.relStart);
+    openFile = null;
+  };
+
   for (const file of files) {
+    settleOpenFile();
+    openFile = {
+      path: file.path,
+      nodeStart: result.nodes.length,
+      relStart: result.relationships.length,
+    };
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
 
@@ -3425,6 +3441,7 @@ const processFileGroup = (
       }
     }
   }
+  settleOpenFile();
 };
 
 // ============================================================================
