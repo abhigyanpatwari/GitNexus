@@ -190,17 +190,30 @@ def test_report_marks_missing_billing_incomplete(tmp_path):
     assert "| gitnexus | 2/2 | incomplete |" in report.render_markdown(result)
 
 
+def test_report_survives_an_arm_that_never_produced_a_job(tmp_path):
+    _trial(tmp_path / "b", "x__1", "x")
+    result = report.build_report({"baseline": tmp_path / "b", "gitnexus": tmp_path / "never-created"})
+    assert any(problem.startswith("gitnexus: no trial results") for problem in result["problems"])
+    assert result["pairs"] == {"graded_in_both": 0, "expected": 1} and result["changes"] == {}
+    assert "| gitnexus | 0/0 |" in report.render_markdown(result)
+
+
 def test_scripts_pin_the_same_versions_and_fill_every_bootstrap_placeholder():
     run_sh = (DEEPSWE_DIR / "run.sh").read_text()
     bootstrap = (DEEPSWE_DIR / "ec2" / "bootstrap.sh").read_text()
     launch = (DEEPSWE_DIR / "ec2" / "launch.sh").read_text()
 
     def pin(text: str, name: str) -> str:
-        match = re.search(rf"^{name}=(\S+)$", text, re.MULTILINE)
+        match = re.search(rf"^{name}=(\S+)", text, re.MULTILINE)
         assert match, name
         return match.group(1)
 
     assert pin(run_sh, "PIER_VERSION") == pin(bootstrap, "PIER_VERSION")
+    # The gateway and the optional mini-swe-agent use the versions eval/ is locked to.
+    lock = (DEEPSWE_DIR.parent / "uv.lock").read_text()
+    for package, name in (("litellm", "LITELLM_VERSION"), ("mini-swe-agent", "MINI_SWE_AGENT_VERSION")):
+        assert f'name = "{package}"\nversion = "{pin(run_sh, name)}"' in lock, package
+    assert re.fullmatch(r"\d+\.\d+\.\d+", pin(run_sh, "CLAUDE_CODE_VERSION"))
     assert pin(bootstrap, "NODE_VERSION") == prepare.NODE_VERSION
     assert re.fullmatch(r"[0-9a-f]{40}", pin(run_sh, "DEEP_SWE_COMMIT"))
     placeholders = set(re.findall(r"@([A-Z_]+)@", bootstrap))

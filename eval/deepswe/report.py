@@ -85,6 +85,8 @@ def load_trial(trial_dir: Path) -> dict[str, Any] | None:
 
 
 def load_job(job_dir: Path) -> list[dict[str, Any]]:
+    if not job_dir.is_dir():
+        return []
     trials = [load_trial(path) for path in sorted(job_dir.iterdir()) if path.is_dir()]
     return [trial for trial in trials if trial is not None]
 
@@ -105,6 +107,8 @@ def build_report(jobs: dict[str, Path]) -> dict[str, Any]:
     keyed: dict[str, dict[tuple[str, int], dict[str, Any]]] = {}
     for arm in ARMS:
         trials = load_job(jobs[arm])
+        if not trials:
+            report["problems"].append(f"{arm}: no trial results under {jobs[arm]}")
         keyed[arm] = _keyed(trials)
         graded = [row for row in trials if row["graded"]]
         ungraded = [row for row in trials if not row["graded"]]

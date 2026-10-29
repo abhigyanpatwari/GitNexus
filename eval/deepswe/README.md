@@ -42,6 +42,8 @@ cd ~/GitNexus && eval/deepswe/run.sh --n-tasks 10 --concurrency 4
 
 It prints the `scp` and `terminate-instances` commands for when you're done.
 
+Task images are about 4 GB each, plus pier's agent layer and the GitNexus layer, so 400 GB fits roughly 40–50 tasks across both arms. For all 113 tasks, pass `--volume-gb 1000` or run `docker image prune -a` between batches.
+
 `run.sh` performs these steps:
 
 1. Pins `deep-swe` to a commit.
