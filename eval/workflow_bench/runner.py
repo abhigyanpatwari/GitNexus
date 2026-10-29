@@ -110,6 +110,7 @@ from .review_scoring import (
     score_review,
 )
 from .baseline_guidance import GITNEXUS_UNAVAILABLE_NOTE
+from .cli_shim import GITNEXUS_CLI_NOTE
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS as SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
@@ -656,6 +657,23 @@ def run_arm(
                 },
             )
         )
+    elif arm == "baseline_cli":
+        # Same graph and read-only tools as baseline, reached through the
+        # `gitnexus` shell command instead of MCP: no tool schema in context.
+        sessions.append(
+            run_claude(
+                BASELINE_PROMPT.format(task=task["prompt"]) + "\n\n" + GITNEXUS_CLI_NOTE,
+                worktree,
+                disallowed_tools=["Skill", "mcp__gitnexus"],
+                **{
+                    **common,
+                    "mcp_config_json": '{"mcpServers":{}}',
+                    "allowed_tools": [
+                        tool for tool in allowed_agent_tools(implementation=True, include_mcp=False) if tool != "Skill"
+                    ],
+                },
+            )
+        )
     else:
         sessions.append(
             run_claude(
@@ -1193,10 +1211,13 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
     cleanup_error: OSError | None = None
     execution_arm = CANDIDATE_ARMS.get(arm, arm)
     gitnexus_available = execution_arm != "baseline_nomcp"
-    isolated_baseline = execution_arm == "baseline" and ctx.sandbox_backend == "bwrap"
+    # baseline_cli reaches the same isolated endpoint through its shim.
+    isolated_baseline = execution_arm in ("baseline", "baseline_cli") and ctx.sandbox_backend == "bwrap"
     runtime_exposure = "none" if not gitnexus_available else "readable"
     resources = ExitStack()
     try:
+        if execution_arm == "baseline_cli" and not isolated_baseline:
+            raise RuntimeError("baseline_cli requires Bubblewrap: its CLI forwards to the isolated MCP endpoint")
         if ctx.asset_snapshot_error is not None:
             raise RuntimeError(f"task asset snapshot preparation failed: {ctx.asset_snapshot_error}")
         if gitnexus_available:
@@ -1248,6 +1269,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             backend=ctx.sandbox_backend,
             gitnexus_available=gitnexus_available,
             gitnexus_cli_available=not isolated_baseline,
+            gitnexus_cli_shim=execution_arm == "baseline_cli",
         ) as sandbox:
             # Capture the BASE (pre-overlay) skill digest — identical
             # for the incumbent and candidate arms — then run the
@@ -1977,6 +1999,7 @@ def build_parser() -> argparse.ArgumentParser:
             "review",
             "ce_review",
             "baseline",
+            "baseline_cli",
             "baseline_nomcp",
         ],
         help="arms to compare (default: workflow, workflow_direct, baseline, baseline_nomcp)",
