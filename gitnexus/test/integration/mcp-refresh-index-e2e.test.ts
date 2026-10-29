@@ -2,8 +2,9 @@
  * #3524, end to end: a real analyze, a new commit that leaves the index behind,
  * then `refresh_index` through LocalBackend with the real analyze worker. The
  * refresh must bring the index to HEAD without touching anything git tracks or
- * creating the agent files a plain `gitnexus analyze` writes. The repository
- * has no `.gitignore`, so a clean `git status` also covers `.gitnexus/`.
+ * creating the agent files a plain `gitnexus analyze` writes. analyze hides
+ * its own storage, `.gitnexus/`, through `.git/info/exclude`, so the check also
+ * lists ignored paths and allows none outside that directory.
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -102,6 +103,11 @@ describe('refresh_index through a real analyze worker (#3524)', () => {
     });
 
     expect(git(repo, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+    const ignored = git(repo, 'status', '--porcelain', '--ignored', '--untracked-files=all')
+      .split('\n')
+      .filter(Boolean);
+    expect(ignored.length).toBeGreaterThan(0);
+    expect(ignored.filter((line) => !line.startsWith('!! .gitnexus/'))).toEqual([]);
     expect(await fs.readFile(path.join(repo, 'CLAUDE.md'), 'utf-8')).toBe(CLAUDE_MD);
     expect(existsSync(path.join(repo, 'AGENTS.md'))).toBe(false);
     expect(existsSync(path.join(repo, '.claude'))).toBe(false);
