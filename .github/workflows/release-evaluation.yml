@@ -30,6 +30,10 @@ on:
         type: choice
         default: xhigh
         options: [low, medium, high, xhigh, max]
+      cli_arm:
+        description: 'Also run baseline_cli (same tools via a gitnexus shell command, no MCP catalog) on the candidate; adds 12 paid cells, descriptive only, never gates'
+        type: boolean
+        default: false
   # PR preview inputs are available only to the maintainer-authorized label
   # workflow. Manual dispatch cannot select an unmerged PR runtime.
   workflow_call:
@@ -207,6 +211,8 @@ jobs:
       COMPARISON_RUN_ID: ${{ inputs.comparison_run_id }}
       MODEL: ${{ inputs.model || 'gpt-5.6-sol' }}
       EFFORT: ${{ inputs.effort || 'xhigh' }}
+      # Manual dispatch only; schedules and PR previews never pay for the extra arm.
+      CLI_ARM: ${{ inputs.cli_arm == true && inputs.candidate_pr == '' && 'true' || 'false' }}
     steps:
       - name: Require startup in this run attempt
         run: |
@@ -360,7 +366,7 @@ jobs:
           GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
         run: >-
-          uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py
+          uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py tests/test_cli_shim.py
           tests/test_workflow_bench_sessions.py::test_real_cli_background_completion_is_one_complete_measurement -q
       - name: Materialize both release graphs before paid sessions
         timeout-minutes: 120
@@ -405,6 +411,28 @@ jobs:
               --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
               --out "$RUNNER_TEMP/release-evaluation/$runtime/raw"
           done
+      # Descriptive only: its own output directory leaves the paired evidence
+      # that release_report and release_gate read exactly as without the opt-in.
+      - name: Run the opt-in CLI-only arm on the candidate
+        if: env.CLI_ARM == 'true'
+        continue-on-error: true
+        timeout-minutes: 600
+        working-directory: eval
+        env:
+          GITNEXUS_BENCH_OPENAI_API_KEY: ${{ secrets.GITNEXUS_BENCH_OPENAI_API_KEY }}
+          GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          remaining=$(( ${{ needs.start-runner.outputs.stop_deadline_epoch }} - $(date +%s) - 5400 ))
+          (( remaining > 0 )) || { echo '::warning::No time remains for the CLI-only arm.'; exit 1; }
+          timeout --signal=TERM --kill-after=60 "${remaining}s" \
+            uv run --locked --extra dev python -m workflow_bench.runner \
+            --tasks "$RUNNER_TEMP/release-evaluation/candidate/tasks.yaml" \
+            --gitnexus-root "$GITHUB_WORKSPACE/candidate" \
+            --arms baseline_cli --runs 3 --include-expensive \
+            --workers 3 --timeout 3600 --model "$MODEL" --effort "$EFFORT" \
+            --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
+            --out "$RUNNER_TEMP/release-evaluation/candidate/cli-raw"
       - name: Summarize complete or incomplete measurements
         if: ${{ always() && steps.resolve.outputs.sha != '' }}
         working-directory: eval
@@ -460,6 +488,17 @@ jobs:
           for report in release-quality-gate agent-evaluation; do
             if [[ -f "$public/$report.md" ]]; then cat "$public/$report.md" >> "$GITHUB_STEP_SUMMARY"; fi
           done
+      - name: Summarize the opt-in CLI-only arm
+        if: ${{ always() && env.CLI_ARM == 'true' && steps.resolve.outputs.sha != '' }}
+        continue-on-error: true
+        working-directory: eval
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/release-evaluation/candidate"
+          uv run --locked --extra dev python -m workflow_bench.cli_arm_report \
+            --paired "$candidate/raw/results.jsonl" --cli "$candidate/cli-raw/results.jsonl" \
+            --out "$RUNNER_TEMP/release-evaluation/public"
+          cat "$RUNNER_TEMP/release-evaluation/public/cli-arm-comparison.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload sanitized release evidence
         if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr == '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -473,6 +512,16 @@ jobs:
             ${{ runner.temp }}/release-evaluation/public/release-quality-gate.json
             ${{ runner.temp }}/release-evaluation/public/release-quality-gate.md
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload the opt-in CLI-only arm comparison
+        if: ${{ always() && env.CLI_ARM == 'true' && steps.resolve.outputs.sha != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-cli-arm-${{ steps.resolve.outputs.sha }}
+          path: |
+            ${{ runner.temp }}/release-evaluation/public/cli-arm-comparison.json
+            ${{ runner.temp }}/release-evaluation/public/cli-arm-comparison.md
+          if-no-files-found: warn
           retention-days: 30
       - name: Upload sanitized PR cost comparison
         if: ${{ always() && steps.resolve.outputs.sha != '' && inputs.candidate_pr != '' }}
