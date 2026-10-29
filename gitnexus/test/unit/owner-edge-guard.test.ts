@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { dropDanglingInFileOwnerEdges } from '../../src/core/ingestion/workers/owner-edge-guard.js';
+import {
+  createOwnerEdgeGuard,
+  dropDanglingInFileOwnerEdges,
+} from '../../src/core/ingestion/workers/owner-edge-guard.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
 type Slice = Pick<ParseWorkerResult, 'nodes' | 'relationships'>;
@@ -98,5 +101,48 @@ describe('dropDanglingInFileOwnerEdges', () => {
     };
     dropDanglingInFileOwnerEdges(slice, 'cur.ts', 0, 0);
     expect(summarize(slice)).toEqual(['HAS_METHOD Class:cur.ts:Foo -> Method:cur.ts:Foo.m']);
+  });
+});
+
+describe('createOwnerEdgeGuard', () => {
+  it('settles the previous file when the next one opens', () => {
+    const slice: Slice = { nodes: [], relationships: [] };
+    const guard = createOwnerEdgeGuard(slice);
+    guard.open('a.ts');
+    slice.nodes.push(node('Method:a.ts:m'));
+    slice.relationships.push(rel('HAS_METHOD', 'Const:a.ts:Gone', 'Method:a.ts:m'));
+    guard.open('b.ts');
+    expect(summarize(slice)).toEqual(['DEFINES File:a.ts -> Method:a.ts:m']);
+  });
+
+  it('settles a file whose processing threw', () => {
+    const slice: Slice = { nodes: [], relationships: [] };
+    const guard = createOwnerEdgeGuard(slice);
+    expect(() => {
+      try {
+        guard.open('a.ts');
+        slice.nodes.push(node('Function:a.ts:X.k'));
+        slice.relationships.push(rel('HAS_METHOD', 'Const:a.ts:X', 'Function:a.ts:X.k'));
+        throw new Error('extractor failed after member edges were appended');
+      } finally {
+        guard.settle();
+      }
+    }).toThrow('extractor failed');
+    expect(summarize(slice)).toEqual(['DEFINES File:a.ts -> Function:a.ts:X.k']);
+  });
+
+  it('settles each file once', () => {
+    const slice: Slice = { nodes: [], relationships: [] };
+    const guard = createOwnerEdgeGuard(slice);
+    guard.open('a.ts');
+    slice.nodes.push(node('Method:a.ts:m'));
+    slice.relationships.push(rel('HAS_METHOD', 'Const:a.ts:Gone', 'Method:a.ts:m'));
+    guard.settle();
+    slice.relationships.push(rel('HAS_METHOD', 'Const:a.ts:Late', 'Method:a.ts:m'));
+    guard.settle();
+    expect(summarize(slice)).toEqual([
+      'DEFINES File:a.ts -> Method:a.ts:m',
+      'HAS_METHOD Const:a.ts:Late -> Method:a.ts:m',
+    ]);
   });
 });

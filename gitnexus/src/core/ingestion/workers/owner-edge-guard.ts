@@ -76,3 +76,34 @@ export const dropDanglingInFileOwnerEdges = (
   }
   rels.length = write;
 };
+
+/** Tracks the file whose slice of a worker result is still being appended. */
+export interface OwnerEdgeGuard {
+  /** Settle the previous file, then start tracking what `filePath` appends. */
+  open(filePath: string): void;
+  /** Settle the tracked file, if any. Safe to call more than once. */
+  settle(): void;
+}
+
+export const createOwnerEdgeGuard = (
+  result: Pick<ParseWorkerResult, 'nodes' | 'relationships'>,
+): OwnerEdgeGuard => {
+  let current: { path: string; nodeStart: number; relStart: number } | null = null;
+  const settle = (): void => {
+    if (current === null) return;
+    const file = current;
+    current = null;
+    dropDanglingInFileOwnerEdges(result, file.path, file.nodeStart, file.relStart);
+  };
+  return {
+    open(filePath: string): void {
+      settle();
+      current = {
+        path: filePath,
+        nodeStart: result.nodes.length,
+        relStart: result.relationships.length,
+      };
+    },
+    settle,
+  };
+};
