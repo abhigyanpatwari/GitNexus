@@ -123,7 +123,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         cost = f"{change:+.1f}%" if change is not None else "undefined (zero control cost)"
         lines += ["", f"{label}: cost {cost}; solved delta {pair['solve_delta']:+d}."]
     lines += ["", "All completed repairs, including failed solutions, remain in the denominator. "
-              "Three repetitions per task are descriptive, not a significance claim.", ""]
+              + "Three repetitions per task are descriptive, not a significance claim.", ""]
     return "\n".join(lines)
 
 

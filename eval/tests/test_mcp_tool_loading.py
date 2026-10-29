@@ -61,7 +61,8 @@ def test_pinned_cli_discovers_only_selected_mcp_tool_through_gateway(tmp_path, m
     root = Path(__file__).resolve().parents[2]
     manifest = json.loads((root / ".github/claude-canary-runtime/package.json").read_text())
     version = manifest["dependencies"]["@anthropic-ai/claude-code"]
-    assert subprocess.check_output([cli, "--version"], text=True).strip() == f"{version} (Claude Code)"
+    actual_version = subprocess.check_output([cli, "--version"], text=True).strip()
+    assert actual_version == f"{version} (Claude Code)"
     mcp = tmp_path / "mcp.py"
     mcp.write_text('''import json, sys
 for line in sys.stdin:
