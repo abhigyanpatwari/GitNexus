@@ -24,6 +24,7 @@ if (values.check) {
     '--check requires the baseline workload',
   );
 }
+// Each receiver takes the next class in the ring; null keeps calls type-correct.
 const files = Array.from({ length: count }, (_, i) => ({
   path: `src/p${i}/Service${i}.java`,
   content: `package p${i};
@@ -33,7 +34,7 @@ ${Array.from(
   { length: methods },
   (_, m) => `
   public Service${i} method${m}(Service${(i + 1) % count} other) {
-${Array.from({ length: calls }, (_, c) => `    var value${c} = other.method${(m + c) % methods}(this);`).join('\n')}
+${Array.from({ length: calls }, (_, c) => `    var value${c} = other.method${(m + c) % methods}(null);`).join('\n')}
     return this;
   }`,
 ).join('\n')}

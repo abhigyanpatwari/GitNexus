@@ -108,7 +108,9 @@ per-stage heap samples and a fingerprint of complete nodes and relationships.
 Before and after the change it produced 66,300 nodes and 126,600 relationships,
 with fingerprint `3209302e91e7023328464540ec7d0ac72ac03bf49fa73303817a56ed3d415ef5`.
 It uses the in-memory graph helper, so its RSS is not a measurement of the CLI's
-streaming graph sink. The generated sources exercise analysis, not compilation.
+streaming graph sink. Calls pass `null` to match each receiver's parameter type;
+the 300-file workload compiles with `javac --release 17`. The probe measures
+analysis and does not execute the generated Java.
 
 `GITNEXUS_DEBUG_HEAP=1` now adds `sr-emit-*` checkpoints after receiver calls,
 free calls, replay, references, property passes, callable flow, imports and
