@@ -100,7 +100,7 @@ from .oracle_assets import (
     staged_task_oracle,
     with_hidden_harness_apply_exclude,
 )
-from .process_control import cancellation_scope, ManagedProcessError
+from .process_control import cancellation_scope, ManagedProcessError, run_checked
 from .promotion_apply import committed_destination_base_digests
 from .review_scoring import (
     REVIEW_OUTPUT,
@@ -475,6 +475,14 @@ def run_arm(
         model=args.model,
         build_sandbox_environment=environment_builder,
     )
+    baseline_tools = allowed_agent_tools(implementation=True)
+    if arm == "baseline":
+        # Explicit host setting: never inherit ENABLE_TOOL_SEARCH from the
+        # operator. ToolSearch must be in --tools as well as --allowedTools.
+        deferred = getattr(args, "mcp_tool_loading", "eager") == "deferred"
+        env["ENABLE_TOOL_SEARCH"] = "true" if deferred else "false"
+        if deferred:
+            baseline_tools.append("ToolSearch")
     # All arms load ordinary repository context (CLAUDE.md) through the same
     # startup mode. The no-MCP arm instead disables skills/commands and
     # restricts its exact tool surface, with an empty MCP config and no
@@ -680,7 +688,7 @@ def run_arm(
                 BASELINE_PROMPT.format(task=task["prompt"]),
                 worktree,
                 disallowed_tools=["Skill"],
-                **{**common, "allowed_tools": allowed_agent_tools(implementation=True)},
+                **{**common, "allowed_tools": baseline_tools},
             )
         )
     record = sum_sessions(sessions)
@@ -1452,6 +1460,11 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             "run": run_idx,
             "sandbox_backend": ctx.sandbox_backend,
             "runtime_exposure": runtime_exposure,
+            **getattr(args, "measurement_revisions", {}),
+            "mcp_tool_loading": (
+                getattr(args, "mcp_tool_loading", "eager") if execution_arm == "baseline"
+                else "none" if execution_arm == "baseline_nomcp" else None
+            ),
             "task_asset_snapshot_digest": (ctx.asset_snapshot.digest if ctx.asset_snapshot is not None else None),
             "task_asset_manifest_digest": (
                 ctx.asset_snapshot.manifest_digest if ctx.asset_snapshot is not None else None
@@ -2006,6 +2019,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument(
+        "--mcp-tool-loading",
+        choices=("eager", "deferred"),
+        default="eager",
+        help="MCP catalog loading for the baseline arm only (default: eager); other arms are unchanged",
+    )
+    parser.add_argument(
         "--gitnexus-root",
         type=Path,
         default=HARNESS_ROOT,
@@ -2195,7 +2214,15 @@ def main() -> None:
             sandbox_backend = "bwrap"
             require_claude_sandbox_helpers()
         runtime_mounts = trusted_gitnexus_runtime_mounts(root=args.gitnexus_root)
-    except SandboxError as exc:
+        args.measurement_revisions = {}
+        for field, root in (("runtime_sha", args.gitnexus_root), ("harness_sha", HARNESS_ROOT)):
+            sha = run_checked(
+                ["git", "-C", str(root.expanduser().resolve()), "rev-parse", "HEAD^{commit}"], timeout=60,
+            ).stdout_tail.strip()
+            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                raise SandboxError(f"cannot pin {field} for measurement")
+            args.measurement_revisions[field] = sha
+    except (SandboxError, ManagedProcessError) as exc:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
     gateway = attach_openai_gateway(args)
