@@ -886,6 +886,21 @@ npx gitnexus analyze
 
 Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
 
+### Code under a dot directory is missing
+
+The walker skips hidden paths, so symbols defined under a directory such as `.scallywag/` or `.config/` never reach the graph: `impact` and `context` answer `Target not found`, and `detect_changes` reports no changed symbols for a diff that only touches them. To index specific dot directories, list their names (comma-separated) and re-run `analyze`:
+
+```bash
+export GITNEXUS_INCLUDE_DOT_DIRS=.scallywag,.config
+npx gitnexus analyze
+```
+
+Each name matches that directory at any depth (`pkg/.scallywag/` too). Hidden files and other dot directories inside it stay excluded. Ignore rules still apply (the built-in list covers `.github/`, so also add `!.github/` to `.gitnexusignore` to index it). Changing or removing the list takes effect on the next `analyze`, even on a clean checkout. The list is recorded with the index, so `status` compares against the same file set even if the variable changes later.
+
+Version-control and credential directories are refused case-insensitively, including `.git`, `.ssh`, `.aws`, `.azure`, `.kube`, `.gnupg`, and `.docker`. Inside opted-in directories, known credential files, key/certificate files, and credential stores such as `.config/gcloud/` and `.config/gh/` stay excluded even when ignore rules negate their exclusions. Symlink files and directory links under these paths are excluded, including a listed directory that is itself a symlink. These checks run before content or resolution metadata is read.
+
+This is path-based protection, not secret-content scanning. List only directories whose contents you trust to expose through GitNexus's code tools; a hardcoded secret in an otherwise allowed source file can still be indexed. Use `.gitnexusignore` for project-specific secret paths.
+
 ### Process detection reports missing flows
 
 On a large repository, `analyze` may warn that `[processes] … whole flows are MISSING`. That means ranked entry points or completed flows were sampled away by the analyze-time detection budget — not that the code path is absent, and not the query-time `IMPACT_MAX_CHUNKS` cap.

@@ -403,6 +403,11 @@ export interface RepoMeta {
    */
   indexCoverage?: {
     maxFileSizeBytes: number;
+    /**
+     * Dot directories indexed via `GITNEXUS_INCLUDE_DOT_DIRS`. Absent means
+     * none: the index predates the option or was built without it.
+     */
+    includeDotDirs?: string[];
     dirtyPaths?: string[];
   };
   /**
