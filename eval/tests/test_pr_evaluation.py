@@ -463,6 +463,11 @@ def test_workflow_protocol_ignores_opt_in_arms_after_the_paid_step(workflow_prot
         (None, {"if": "env.CLI_ARM == 'true'", "run": "python -m workflow_bench.runner\npython -m workflow_bench.runner"},
          "must follow"),
         (None, {"if": "env.OTHER == 'true'", "run": "python -m workflow_bench.runner"}, "one paid"),
+        (0, {"if": "inputs.mcp_tool_loading == true && inputs.candidate_pr == ''",
+             "run": "python -m workflow_bench.runner"}, "must follow"),
+        (None, {"if": "inputs.mcp_tool_loading == true && inputs.candidate_pr == ''",
+                "run": "python -m workflow_bench.runner\npython -m workflow_bench.runner"}, "must follow"),
+        (None, {"if": "inputs.mcp_tool_loading == true", "run": "python -m workflow_bench.runner"}, "one paid"),
     ],
 )
 def test_workflow_protocol_rejects_misplaced_or_unlisted_extra_arms(workflow_protocol_pair, position, step, message):

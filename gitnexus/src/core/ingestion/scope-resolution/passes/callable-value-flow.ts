@@ -123,13 +123,21 @@ export function collectDeferredIndirectSites(
   return collectDeferredIndirectCollection(parsedFiles, scopes).sites;
 }
 
-/** One `referenceSites` walk for deferred keys and call-signature evidence. */
+/** Collect signatures only for argument facts consumed by indirect-call flow. */
 export function collectDeferredIndirectCollection(
   parsedFiles: readonly ParsedFile[],
   scopes?: ScopeResolutionIndexes,
 ): DeferredIndirectCollection {
   const out = new Set<string>();
   const callSignaturesBySite = new Map<string, CallableFlowExpectedSignature>();
+  // Ordinary methods also produce formal/argument facts. Without an invoke
+  // there is no indirect edge to resolve; indexing every direct call here kept
+  // an otherwise unused signature object and position string per call (#3695).
+  if (
+    !parsedFiles.some((parsed) => parsed.callableFlowSites?.some((site) => site.kind === 'invoke'))
+  ) {
+    return { sites: out, callSignaturesBySite };
+  }
   const flowCells = new Set<string>();
   if (scopes !== undefined) {
     for (const parsed of parsedFiles) {
@@ -144,11 +152,21 @@ export function collectDeferredIndirectCollection(
     }
   }
   for (const parsed of parsedFiles) {
+    const invokeKeys = new Set<string>();
+    const argumentKeys = new Set<string>();
+    for (const site of parsed.callableFlowSites ?? []) {
+      if (site.kind === 'invoke')
+        invokeKeys.add(callableFlowSiteKey(parsed.filePath, site.callSite));
+      if (site.kind === 'argument')
+        argumentKeys.add(callableFlowSiteKey(parsed.filePath, site.callSite));
+    }
+    if (invokeKeys.size === 0 && argumentKeys.size === 0) continue;
     const canonical = new Set<string>();
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call') continue;
       const key = callableFlowSiteKey(parsed.filePath, site.atRange);
-      canonical.add(key);
+      if (invokeKeys.has(key)) canonical.add(key);
+      if (!argumentKeys.has(key)) continue;
       const signature: CallableFlowExpectedSignature = {
         ...(site.arity !== undefined ? { parameterCount: site.arity } : {}),
         ...(site.argumentTypes !== undefined ? { parameterTypes: site.argumentTypes } : {}),
@@ -175,6 +193,7 @@ export function collectDeferredIndirectCollection(
       }
     }
   }
+  if (out.size === 0) callSignaturesBySite.clear();
   return { sites: out, callSignaturesBySite };
 }
 
@@ -213,7 +232,9 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
       }
     }
   }
-  if (facts.length === 0 && invokes.length === 0) {
+  // Facts propagate values only to the fixed set of canonical invokes. If it
+  // is empty, building whole-workspace callable indexes cannot emit an edge.
+  if (invokes.length === 0) {
     return { emitted: 0, resolvedInvokes: 0, ambiguousInvokes: 0, unmatchedInvokes, iterations: 0 };
   }
 
