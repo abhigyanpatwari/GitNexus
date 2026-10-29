@@ -68,7 +68,10 @@ def load_trial(trial_dir: Path) -> dict[str, Any] | None:
     agent = result.get("agent_result") or {}
     rewards = (result.get("verifier_result") or {}).get("rewards") or {}
     reward = rewards.get("reward")
-    graded = result.get("exception_info") is None and reward in (0, 1)
+    # Graded means the verifier produced a 0/1 reward. A trial whose agent hit the
+    # cost cap or exited nonzero is still graded on its patch; dropping it would
+    # hide expensive failures. -1 (the grader's crash sentinel) or no reward is not.
+    graded = reward in (0, 1) and not isinstance(reward, bool)
     row = {
         "task": task_id(str(result.get("task_name", trial_dir.name))),
         "trial": result.get("trial_name") or trial_dir.name,
@@ -115,6 +118,12 @@ def build_report(jobs: dict[str, Path]) -> dict[str, Any]:
         if ungraded:
             kinds = Counter(row["error"] or "no reward" for row in ungraded)
             report["problems"].append(f"{arm}: {len(ungraded)} of {len(trials)} trial(s) ungraded ({dict(kinds)})")
+        agent_errors = Counter(row["error"] for row in graded if row["error"])
+        if agent_errors:
+            report["problems"].append(
+                f"{arm}: {sum(agent_errors.values())} graded trial(s) ended with an agent error "
+                + f"({dict(agent_errors)}), e.g. the cost cap; their patches were still graded"
+            )
         summary: dict[str, Any] = {"trials": len(trials), "graded": len(graded),
                                    "resolved": sum(row["resolved"] for row in graded), "incomplete_metrics": []}
         for metric in METRICS:

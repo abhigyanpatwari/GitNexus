@@ -111,7 +111,7 @@ def test_prepare_copies_baseline_unchanged_and_layers_gitnexus(tmp_path):
     assert "{" not in dockerfile.replace("${", "")  # every template field was filled
     assert (derived / "environment" / prepare.PACKAGE_FILE).read_bytes() == b"tarball"
     instruction = (derived / "instruction.md").read_text()
-    assert instruction.startswith("Implement the thing.\n") and instruction.endswith(prepare.GITNEXUS_NOTE)
+    assert instruction.startswith("Implement the thing.\n") and instruction.endswith(prepare.GUIDANCE["product"])
     assert (derived / "tests" / "test.sh").read_bytes() == (tasks / "alpha-task" / "tests" / "test.sh").read_bytes()
 
 
@@ -127,10 +127,24 @@ def test_gitnexus_arm_requires_a_package_and_a_prebuilt_image(tmp_path):
                       "--gitnexus-package", str(package)])
 
 
-def test_gitnexus_note_names_only_real_cli_commands():
-    commands = set(re.findall(r"`gitnexus ([a-z-]+)", prepare.GITNEXUS_NOTE)) - {"<command>"}
+@pytest.mark.parametrize("guidance", sorted(prepare.GUIDANCE))
+def test_gitnexus_guidance_names_only_real_cli_commands(guidance):
+    note = prepare.GUIDANCE[guidance]
+    commands = set(re.findall(r"`gitnexus ([a-z-]+)", note)) - {"<command>"}
     assert commands == {"query", "context", "impact", "detect-changes"}
-    assert len(prepare.GITNEXUS_NOTE.encode()) < 700
+    assert len(note.encode()) < 1000
+
+
+def test_prepare_records_the_guidance_variant(tmp_path):
+    _task(tmp_path / "deep-swe" / "tasks", "delta-task")
+    package = tmp_path / "p.tgz"
+    package.write_bytes(b"x")
+    prepare.main(["--deep-swe", str(tmp_path / "deep-swe"), "--out", str(tmp_path / "o"), "--arms", "gitnexus",
+                  "--gitnexus-package", str(package), "--guidance", "optional"])
+    assert json.loads((tmp_path / "o" / "manifest.json").read_text())["guidance"] == "optional"
+    assert (tmp_path / "o" / "gitnexus" / "delta-task" / "instruction.md").read_text().endswith(
+        prepare.GUIDANCE["optional"]
+    )
 
 
 def _trial(job: Path, name: str, task: str, *, reward=1, cost=1.0, steps=10, exception=None, commands=()):
@@ -158,20 +172,24 @@ def test_report_pairs_on_task_id_and_compares_matched_pairs_only(tmp_path):
            commands=["gitnexus query parse && gitnexus impact Foo", "ls gitnexus/ && cat gitnexus.json"])
     _trial(gitnexus, "b__1", "beta-gitnexus", cost=9.0, reward=-1)  # grader crash sentinel
     # gamma never ran in the gitnexus arm (interrupted sweep)
+    _trial(base, "d__1", "delta", cost=3.0, reward=0, exception={"exception_type": "NonZeroAgentExitCodeError"})
+    _trial(gitnexus, "d__1", "delta-gitnexus", cost=4.0, reward=1)
     (base / "config.json").write_text("{}")  # job-level files are not trials
 
     result = report.build_report({"baseline": base, "gitnexus": gitnexus})
 
-    assert result["pairs"] == {"graded_in_both": 1, "expected": 3}
-    assert result["changes"]["cost_usd"] == {"percent": 100.0, "pairs": 1, "expected_pairs": 3}
-    assert result["paired_resolved"] == {"baseline": 1, "gitnexus": 1}
-    assert result["arms"]["baseline"]["resolved"] == 2 and result["arms"]["baseline"]["graded"] == 3
+    # The capped baseline trial (agent error, reward 0) is graded and paired, not dropped.
+    assert result["pairs"] == {"graded_in_both": 2, "expected": 4}
+    assert result["changes"]["cost_usd"] == {"percent": 50.0, "pairs": 2, "expected_pairs": 4}
+    assert result["paired_resolved"] == {"baseline": 1, "gitnexus": 2}
+    assert result["arms"]["baseline"]["resolved"] == 2 and result["arms"]["baseline"]["graded"] == 4
     assert result["arms"]["gitnexus"]["gitnexus_commands"] == {"query": 1, "impact": 1}
     assert result["arms"]["gitnexus"]["trials_using_gitnexus"] == 1
-    assert any("gitnexus: 1 of 2 trial(s) ungraded" in problem for problem in result["problems"])
-    assert any("1 of 3 task/attempt pair(s) graded in both arms" in problem for problem in result["problems"])
+    assert any("gitnexus: 1 of 3 trial(s) ungraded" in problem for problem in result["problems"])
+    assert any("2 of 4 task/attempt pair(s) graded in both arms" in problem for problem in result["problems"])
+    assert any("baseline: 1 graded trial(s) ended with an agent error" in problem for problem in result["problems"])
     markdown = report.render_markdown(result)
-    assert "gitnexus vs baseline: cost_usd: +100.0% (1/3 pairs, partial)" in markdown
+    assert "gitnexus vs baseline: cost_usd: +50.0% (2/4 pairs, partial)" in markdown
     assert result["per_task"]["gamma#0"]["gitnexus"] is None
 
 

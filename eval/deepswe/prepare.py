@@ -26,7 +26,24 @@ NODE_VERSION = "22.18.0"  # gitnexus/package.json engines: ^22.18.0
 PACKAGE_FILE = "gitnexus.tgz"
 MIN_BUILD_TIMEOUT_SEC = 3600.0  # the index is built inside the image build
 
-GITNEXUS_NOTE = """
+# Appended to the gitnexus arm's instruction. "product" is the CLI form of the
+# rules GitNexus ships in AGENTS.md (graph first, impact before edits,
+# detect-changes before committing), as the release evaluation's arms load.
+# "optional" only lists the commands, for an ablation.
+GUIDANCE = {
+    "product": """
+
+## GitNexus
+
+A GitNexus code graph of `/app` (indexed at the starting commit) is installed; the `gitnexus` command works offline. Follow GitNexus's agent rules:
+
+- Explore with `gitnexus query "<concept>"` for concepts and execution flows, and `gitnexus context <symbol>` for a named symbol's callers, callees and flows. Graph first; use text search for literals or when the graph has no answer.
+- Before editing a function, class or method, run `gitnexus impact <symbol> --direction upstream` and check its callers and risk. An empty result is not proof that nothing depends on it.
+- Before committing, run `gitnexus detect-changes` to see which symbols and flows your edits affect.
+
+Run `gitnexus <command> --help` for options.
+""",
+    "optional": """
 
 ## GitNexus
 
@@ -38,7 +55,8 @@ A GitNexus code graph of `/app` (indexed at the starting commit) is installed. T
 - `gitnexus detect-changes`: symbols and flows touched by your uncommitted edits
 
 Run `gitnexus <command> --help` for options. Using it is optional.
-"""
+""",
+}
 
 DOCKERFILE = """FROM {image}
 
@@ -125,7 +143,7 @@ def gitnexus_task_toml(task_toml: str) -> str:
     return rewritten
 
 
-def prepare_task(source: Path, dest: Path, *, arm: str, package: Path | None) -> None:
+def prepare_task(source: Path, dest: Path, *, arm: str, package: Path | None, guidance: str = "product") -> None:
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(source, dest)
@@ -143,20 +161,22 @@ def prepare_task(source: Path, dest: Path, *, arm: str, package: Path | None) ->
     shutil.copyfile(package, environment / PACKAGE_FILE)
     (dest / "task.toml").write_text(gitnexus_task_toml(task_toml), encoding="utf-8")
     instruction = dest / "instruction.md"
-    instruction.write_text(instruction.read_text(encoding="utf-8").rstrip() + "\n" + GITNEXUS_NOTE, encoding="utf-8")
+    instruction.write_text(instruction.read_text(encoding="utf-8").rstrip() + "\n" + GUIDANCE[guidance], encoding="utf-8")
 
 
 def prepare(
-    *, tasks_root: Path, out: Path, arms: list[str], selected: list[str], package: Path | None
+    *, tasks_root: Path, out: Path, arms: list[str], selected: list[str], package: Path | None,
+    guidance: str = "product",
 ) -> dict[str, Any]:
     for arm in arms:
         for task in selected:
-            prepare_task(tasks_root / task, out / arm / task, arm=arm, package=package)
+            prepare_task(tasks_root / task, out / arm / task, arm=arm, package=package, guidance=guidance)
     manifest = {
         "schema": "gitnexus.deepswe-prepare/v1",
         "arms": arms,
         "tasks": selected,
         "gitnexus_task_suffix": GITNEXUS_TASK_SUFFIX,
+        "guidance": guidance,
         "node_version": NODE_VERSION,
         "gitnexus_package": package.name if package else None,
     }
@@ -173,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", action="append", dest="include", help="task id; repeatable")
     parser.add_argument("--n-tasks", type=int, help="seeded random subset size (default: all tasks)")
     parser.add_argument("--sample-seed", type=int, default=0)
+    parser.add_argument("--guidance", choices=sorted(GUIDANCE), default="product",
+                        help="note appended to the gitnexus arm's instruction (default: product)")
     args = parser.parse_args(argv)
     tasks_root = args.deep_swe / "tasks"
     available = task_ids(tasks_root)
@@ -182,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--gitnexus-package must name an existing `npm pack` tarball for the gitnexus arm")
     selected = select_tasks(available, include=args.include, n_tasks=args.n_tasks, seed=args.sample_seed)
     manifest = prepare(tasks_root=tasks_root, out=args.out, arms=args.arms, selected=selected,
-                       package=args.gitnexus_package)
+                       package=args.gitnexus_package, guidance=args.guidance)
     print(f"prepared {len(selected)} task(s) x {len(manifest['arms'])} arm(s) under {args.out}")
     return 0
 

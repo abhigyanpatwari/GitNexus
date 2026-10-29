@@ -7,9 +7,21 @@
 | `baseline` | The DeepSWE task, unchanged |
 | `gitnexus` | The same task, plus the `gitnexus` CLI and an index of `/app` built into the image, and a short note on the CLI appended to the instruction |
 
-The default agent is `mini-swe-agent`, which the leaderboard uses. It is bash-only, so GitNexus is reached through the real CLI (`gitnexus query`, `context`, `impact`, `detect-changes`) rather than MCP. The arms differ only in that layer and that note.
+The default agent is Claude Code (pier's `claude-code`, pinned to the release evaluation's CLI). GitNexus is reached through the real CLI (`gitnexus query`, `context`, `impact`, `detect-changes`) rather than MCP. The arms differ only in that layer and that note.
 
-The workflow_bench `baseline_cli` arm points the same way: on the small release tasks, a shell command cost far less than the MCP tool catalog.
+- **Toolset.** Claude Code gets only `Read`, `Edit`, `Write` and `Bash`, matching the release evaluation's single-agent toolset. Subagents, background tasks, skills and web tools are disallowed, and pier's forced background-task env is switched off. Without this, one smoke trial ran 237 background agents past its budget cap.
+- **Guidance.** The note (`--guidance product`, the default) is the CLI form of the rules GitNexus ships in AGENTS.md: graph first, `impact` before editing a symbol, `detect-changes` before committing. In the release evaluation, arms load those directives the same way. `--guidance optional` only lists the commands; in a smoke trial the agent then never used them.
+
+The workflow_bench `baseline_cli` arm points the same way: on the small release tasks, a shell command cost far less than the MCP tool catalog. `--agent mini-swe-agent`, the leaderboard's agent, also works.
+
+### Model access
+
+- **Non-Claude models** (default `gpt-5.6-sol`, `OPENAI_API_KEY`): `run.sh` starts a LiteLLM gateway container. It is routed like `workflow_bench.model_gateway`, with Claude Code's Anthropic Messages served from OpenAI's Responses API, a random master key, and the LiteLLM version from `eval/uv.lock`.
+  - It listens on host port 80, because pier's egress proxy only allows ports 80 and 443. Keep that port closed to the outside; `launch.sh`'s security group only opens SSH.
+  - Trials reach it as `host.docker.internal` on Docker Desktop, or as the EC2 private DNS name.
+- **Claude models** (`--model anthropic/<model>`): use `ANTHROPIC_API_KEY` directly.
+
+Costs come from Claude Code's own per-session accounting (`total_cost_usd`). Through the gateway that is Claude Code's price table applied to a non-Claude model, so it is consistent across arms but is not the provider's invoice.
 
 ## How the GitNexus arm is built
 
@@ -57,7 +69,7 @@ The main options are listed below; `run.sh --help` shows them all.
 | Option | Default | Notes |
 | --- | --- | --- |
 | `--n-tasks`, `--seed`, `--task` | 10, 0 | `--task` (repeatable) overrides the sample; `--n-tasks 0` runs all 113 |
-| `--agent`, `--model`, `--effort` | `mini-swe-agent`, `openai/gpt-5.6-sol`, `low` | `--agent claude-code` also works with `ANTHROPIC_API_KEY` |
+| `--agent`, `--model`, `--effort` | `claude-code`, `gpt-5.6-sol`, `low` | `--model anthropic/<model>` skips the gateway. `--agent mini-swe-agent` takes litellm names such as `openai/gpt-5.6-sol`. |
 | `--cost-limit` | `5` | Per-trial agent cost cap in USD, the same for both arms. A capped trial ends unsolved. |
 | `--concurrency` | `2` | Trials per arm at once. Each needs 2 CPUs and 8 GB. |
 | `--package` | build from checkout | Pass a prebuilt `npm pack` tarball to skip the build |
@@ -68,6 +80,7 @@ The main options are listed below; `run.sh --help` shows them all.
 
 - Deltas use only pairs graded in both arms with the metric measured in both.
 - Ungraded trials, interrupted sweeps and missing cost are listed under **Problems**. A grader crash writes reward `-1`, which counts as ungraded.
+- A trial whose agent hit `--cost-limit` or exited nonzero still had its patch graded. It counts as an unresolved attempt, listed as an agent error, not dropped.
 - `GitNexus usage` counts `gitnexus <command>` calls at command position in the ATIF trajectories.
 
 ```bash

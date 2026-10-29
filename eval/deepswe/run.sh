@@ -18,6 +18,10 @@ LITELLM_VERSION=1.100.4       # eval/uv.lock
 MINI_SWE_AGENT_VERSION=2.2.7  # eval/uv.lock
 GATEWAY_CONTAINER=deepswe-litellm-gateway
 GATEWAY_PORT=80               # pier's egress proxy only allows ports 80 and 443
+# Everything CLI 2.1.214 offers beyond Read/Edit/Write/Bash, matching the release
+# evaluation's single-agent toolset. Subagents and background tasks otherwise fan
+# out unbounded: one smoke trial ran 237 background agents past its budget cap.
+CLAUDE_DISALLOWED_TOOLS="EnterPlanMode Task Agent TaskCreate TaskGet TaskList TaskOutput TaskStop TaskUpdate SendMessage Skill Workflow CronCreate CronDelete CronList ScheduleWakeup EnterWorktree ExitWorktree NotebookEdit ReportFindings WebFetch WebSearch"
 
 AGENT=claude-code
 MODEL=gpt-5.6-sol
@@ -29,6 +33,7 @@ COST_LIMIT=5
 WORK="$HOME/deepswe-work"
 PACKAGE=""
 GATEWAY_HOST=""
+GUIDANCE=product
 TASKS=()
 ARMS=(baseline gitnexus)
 
@@ -47,6 +52,7 @@ Usage: $0 [options]
   --package TGZ       prebuilt \`npm pack\` tarball of gitnexus/ (default: build from this checkout)
   --gateway-host H    hostname the trial egress proxy uses to reach this host's gateway
                       (default: host.docker.internal if it resolves, else the EC2 private DNS name)
+  --guidance G        note for the gitnexus arm: product (GitNexus's agent rules, default) or optional
   --arms "A B"        arms to run (default: "${ARMS[*]}")
   --work DIR          working directory (default $WORK)
 EOF
@@ -64,6 +70,7 @@ while [ $# -gt 0 ]; do
     --cost-limit) COST_LIMIT="$2"; shift 2 ;;
     --package) PACKAGE="$2"; shift 2 ;;
     --gateway-host) GATEWAY_HOST="$2"; shift 2 ;;
+    --guidance) GUIDANCE="$2"; shift 2 ;;
     --arms) read -r -a ARMS <<<"$2"; shift 2 ;;
     --work) WORK="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -85,7 +92,10 @@ agent_args=(--agent "$AGENT" --model "$MODEL")
 use_gateway=0
 case "$AGENT" in
   claude-code)
-    agent_args+=(--ak "version=$CLAUDE_CODE_VERSION" --ak "reasoning_effort=$EFFORT")
+    agent_args+=(--ak "version=$CLAUDE_CODE_VERSION" --ak "reasoning_effort=$EFFORT"
+                 --ak "disallowed_tools=$CLAUDE_DISALLOWED_TOOLS"
+                 # pier forces both on; --ae is merged last, so these win.
+                 --ae ENABLE_BACKGROUND_TASKS=0 --ae FORCE_AUTO_BACKGROUND_TASKS=0)
     [ "$COST_LIMIT" != 0 ] && agent_args+=(--ak "max_budget_usd=$COST_LIMIT")
     case "$MODEL" in
       anthropic/*|claude-*) : "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required for $MODEL}" ;;
@@ -183,7 +193,7 @@ fi
 package_args=()
 [ -n "$PACKAGE" ] && package_args+=(--gitnexus-package "$PACKAGE")
 (cd "$EVAL_DIR" && python3 -m deepswe.prepare --deep-swe "$WORK/deep-swe" --out "$WORK/tasks" \
-  --arms "${ARMS[@]}" "${package_args[@]}" "${select_args[@]}")
+  --arms "${ARMS[@]}" --guidance "$GUIDANCE" "${package_args[@]}" "${select_args[@]}")
 
 [ "$use_gateway" = 1 ] && start_gateway
 
