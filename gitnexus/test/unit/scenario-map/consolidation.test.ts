@@ -390,6 +390,92 @@ function assertions(source: string) {
   );
 }
 
+it('does not consolidate assertions on same-named file-level constants with different values', () => {
+  const found = expandCases(
+    [1, 2].map((value) => ({
+      path: `gitnexus/test/unit/constant-${value}.test.ts`,
+      source: `const result = ${value}; it('rule', () => expect(result).toBeGreaterThan(0));`,
+    })),
+  ).sites.map((site) => {
+    const subject = {
+      record: site.record,
+      instance: site.instances?.[0] ?? null,
+      fullName: site.fullName,
+    };
+    return assertionEvidence(subject, computeChecks(subject));
+  });
+  expect(found[0].atoms[0].key).toBeTruthy();
+  expect(found[1].atoms[0].key).not.toBe(found[0].atoms[0].key);
+  expect(
+    report([test('a'), test('b')], [detail('a', found[0]), detail('b', found[1])]).opportunities,
+  ).toEqual([]);
+});
+
+it.each([
+  'const result = compute();',
+  'let result = 1; result++;',
+  'const original = 1; const result = original;',
+  'const { result } = { result: 1 };',
+  'const result = { count: 1 }; result.count++;',
+])('case %#: keeps enclosing value origins scoped: %s', (declaration) => {
+  const found = assertions(`
+    describe('outer', () => {
+      ${declaration}
+      it('direct', () => { expect(result).toBeDefined(); });
+      it('alias', () => { const actual = result; expect(actual).toBeDefined(); });
+    });
+    describe('other', () => {
+      ${declaration}
+      it('same name', () => { expect(result).toBeDefined(); });
+    });
+  `);
+  expect(found[0].atoms[0].key).toBeTruthy();
+  expect(found[1].atoms[0].key).toBe(found[0].atoms[0].key);
+  expect(found[2].atoms[0].key).not.toBe(found[0].atoms[0].key);
+});
+
+it('retains partial shared checks without matching different file-level bindings', () => {
+  const found = expandCases(
+    [1, 2].map((value) => ({
+      path: `gitnexus/test/unit/partial-${value}.test.ts`,
+      source: `const result = ${value};
+      it('rule', () => {
+        expect(result).toBeGreaterThan(0);
+        expect(graph.nodes.length).toBe(2);
+      });`,
+    })),
+  ).sites.map((site) => {
+    const subject = {
+      record: site.record,
+      instance: site.instances?.[0] ?? null,
+      fullName: site.fullName,
+    };
+    return assertionEvidence(subject, computeChecks(subject));
+  });
+  const [opportunity] = report(
+    [test('a'), test('b')],
+    [detail('a', found[0]), detail('b', found[1])],
+  ).opportunities;
+  expect(opportunity).toMatchObject({
+    kind: 'extract-shared-scenario',
+    assertions: { shared: 1, totalA: 2, totalB: 2 },
+  });
+  expect(opportunity.onlyAssertionsA).toHaveLength(1);
+  expect(opportunity.onlyAssertionsB).toHaveLength(1);
+});
+
+it('preserves consolidation of checks against the same suite-level pipeline result', () => {
+  const [a, b] = assertions(`
+    let count = 0;
+    async function ingest() { count = (await runPipeline()).graph.nodeCount; }
+    it('a', async () => { await ingest(); expect(count).toBeGreaterThan(0); });
+    it('b', async () => { await ingest(); expect(count).toBeGreaterThan(0); });
+  `);
+  expect(
+    report([test('a'), test('b')], [detail('a', a), detail('b', b)]).opportunities[0],
+  ).toMatchObject({ assertions: { shared: 1, coverageA: 1, coverageB: 1 } });
+});
+
 it('does not conflate same-named file-local assertion helpers from different engines', () => {
   const found = ['fingerprint', 'mutation'].map((engine) => {
     const [site] = expandCases([

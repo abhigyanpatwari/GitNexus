@@ -113,6 +113,9 @@ Assertions retain exact expected literals, row values, snapshots, negation and
 selectors. Single preceding `const` bindings and scoped callback parameters are
 traced, so `find(edge => edge.target === 'save')` does not equal a `getName` query.
 Unknown expected values or local origins cannot become equal assertion atoms.
+File- and suite-level values retain their declaration's file and scope identity.
+Repeated reads of the same binding can match; equivalence between separate bindings
+remains unproven because scope frames do not establish their values or immutability.
 File-local callable identities also remain distinct across files. Fingerprint verdicts
 use this detailed evidence to reject unrelated assertion subjects or literal expectations
 even when the coarse matcher shape agrees.

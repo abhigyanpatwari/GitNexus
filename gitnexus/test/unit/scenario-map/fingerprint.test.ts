@@ -130,6 +130,28 @@ const CASES: { rule: FingerprintRule; verdict: FingerprintVerdict; edit: WorldEd
 ];
 
 describe('fingerprint rules', () => {
+  it('does not confirm unresolved file-level subjects through equal coarse checks and clean traces', () => {
+    const evidence = expandCases(
+      [1, 2].map((value) => ({
+        path: `gitnexus/test/unit/constant-${value}.test.ts`,
+        source: `const result = ${value}; it('rule', () => expect(result).toBeGreaterThan(0));`,
+      })),
+    ).sites.map((site) => {
+      const subject = {
+        record: site.record,
+        instance: site.instances?.[0] ?? null,
+        fullName: site.fullName,
+      };
+      return assertionEvidence(subject, computeChecks(subject));
+    });
+    expect(
+      verdictOf({
+        a: { checks: 'same-check', assertionEvidence: evidence[0] },
+        b: { checks: 'same-check', assertionEvidence: evidence[1] },
+      }),
+    ).toMatchObject({ verdict: 'possible-duplicate', rule: 'input-unresolved' });
+  });
+
   it.each([
     ['roundScore(2.4)', 'roundScore(2.5)'],
     ['roundScore({ scores: [2.4] })', 'roundScore({ scores: [2.5] })'],

@@ -267,6 +267,11 @@ function preserveValues(node: t.Node, scope: Scope, abstractInputs = false): t.N
             : `<helper:${identity}>`;
         return marker;
       }
+      // Frames do not prove constant values or immutability. Preserve the binding,
+      // so repeated reads can match without equating names in different scopes.
+      const marker = t.identifier('_local');
+      marker.name = `<local:${scope.record.file}:${decl.node.start}:${node.name}>`;
+      return marker;
     }
   }
   if (t.isTemplateLiteral(node)) {

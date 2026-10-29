@@ -42,7 +42,7 @@ import { byText, sortedUnique } from '../util.js';
 import { facetRelation, type VerdictPairInput, type VerdictTestInput } from './verdict.js';
 
 /** Folded into the report: a rule change resurfaces every pair it reclassifies. */
-export const FINGERPRINT_ENGINE_VERSION = 4;
+export const FINGERPRINT_ENGINE_VERSION = 5;
 
 export type FingerprintVerdict =
   | 'duplicate'
@@ -357,7 +357,7 @@ function factsOf(
   const unresolved = sortedUnique([
     ...unresolvedOf(a),
     ...unresolvedOf(b),
-    ...(helperBindingsDiffer ? ['assertion helper equivalence is unresolved'] : []),
+    ...(helperBindingsDiffer ? ['assertion binding equivalence is unresolved'] : []),
   ]);
   const evidence: FingerprintEvidence = {
     path: pair.identicalBlocks ? 'same' : 'differs',
