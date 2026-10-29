@@ -275,6 +275,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
         # set only on this job. Omitted from this list it skipped everywhere.
         "tests/test_mock_provider.py",
+        "tests/test_mcp_tool_loading.py",
         # Paired prepare/session/oracle/report composition uses that same native
         # CLI and containment; it must execute here rather than skip everywhere.
         "tests/test_release_evaluation_smoke.py",
