@@ -20,6 +20,7 @@ of indexing, infrastructure, or subscription costs.
 | `candidate_review`          | the same review with a `gitnexus-review` candidate overlay              | Paired with `review` on the same case/ref/model/runtime                                             |
 | `ce_review`                 | one pinned `ce-code-review` session over the same changes               | External comparator paired with both review arms                                                    |
 | `baseline`                  | one session with the identical task text                                | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools               |
+| `baseline_cli`              | one session with the same read-only tools behind a `gitnexus` command   | No MCP tools, so no tool catalog in context; opt-in, Bubblewrap only (see below)                     |
 | `baseline_nomcp`            | one session without installed GitNexus tools, graph, or workflow skills | Measures the no-GitNexus comparator; included by default                                            |
 
 The default sweep runs `workflow`, `workflow_direct`, `baseline`, and
@@ -47,6 +48,24 @@ same solve rate: retain failed runs, report each task and repetition, and pin
 the model, source, runtime, and grader. Three repetitions are a starting point,
 not statistical proof. Smaller tool responses measure one input-cost component;
 they do not establish lower total session cost or better task accuracy.
+
+### CLI-only arm
+
+`baseline_cli` asks how much of `baseline`'s extra cost is the MCP tool
+catalog, which the client re-sends on every turn whether or not a tool is
+called. The agent has no MCP tools; `gitnexus` on its `PATH` is a
+standard-library shim that forwards one call per invocation to the same
+per-cell isolated MCP endpoint `baseline` uses, restricted to the same
+read-only tools. Tool output is the server's own text, so the arms differ only
+in how tools are described: always (MCP catalog) or on demand (`gitnexus help`,
+`gitnexus help <command>`). The prompt adds one short note naming the command.
+The candidate runtime stays in the sibling server sandbox, as for `baseline`.
+
+Compare `baseline_cli` with `baseline` for the catalog's share of the cost and
+with `baseline_nomcp` for what remains. It is not a release gate input: the
+Release evaluation workflow runs it only when dispatched with `cli_arm: true`,
+into its own output directory, and publishes a descriptive
+`cli-arm-comparison` summary (`python -m workflow_bench.cli_arm_report`).
 
 ## Quick start
 

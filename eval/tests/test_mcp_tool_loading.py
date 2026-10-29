@@ -15,7 +15,7 @@ from tests.test_workflow_bench_sessions import _probe_cell_provisioning, bench_a
 
 
 @pytest.mark.parametrize("mode", ["eager", "deferred"])
-@pytest.mark.parametrize("arm", ["baseline", "baseline_nomcp", "workflow_direct"])
+@pytest.mark.parametrize("arm", ["baseline", "baseline_nomcp", "baseline_cli", "workflow_direct"])
 def test_loading_switch_reaches_only_the_baseline_session(monkeypatch, tmp_path, mode, arm):
     captured = []
     monkeypatch.setenv("ENABLE_TOOL_SEARCH", "ambient-value-must-not-leak")
@@ -33,6 +33,8 @@ def test_loading_switch_reaches_only_the_baseline_session(monkeypatch, tmp_path,
     else:
         assert "ENABLE_TOOL_SEARCH" not in session["env"]
         assert "ToolSearch" not in session["allowed_tools"]
+        if arm in ("baseline_cli", "baseline_nomcp"):
+            assert json.loads(session["mcp_config_json"]) == {"mcpServers": {}}
 
 
 def test_loading_default_preserves_eager_catalog():

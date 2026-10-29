@@ -1532,6 +1532,7 @@ jobs:
           uv run --locked --extra dev python -m pytest
           tests/test_process_control.py
           tests/test_proposer_sandbox.py
+          tests/test_cli_shim.py
           tests/test_workflow_bench_sessions.py
           tests/test_ce_plugin_runtime.py
           tests/test_offline_sweep_integration.py

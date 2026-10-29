@@ -267,6 +267,8 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         "pytest",
         "tests/test_process_control.py",
         "tests/test_proposer_sandbox.py",
+        # Real-Bubblewrap baseline_cli shim canary; skipped everywhere else.
+        "tests/test_cli_shim.py",
         "tests/test_workflow_bench_sessions.py",
         "tests/test_ce_plugin_runtime.py",
         # The offline sweep, run here with nothing stubbed: this job is the only
@@ -296,7 +298,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         for path in (repo_root / "eval" / "tests").glob("test_*.py")
         if bwrap_canary_marker.search(path.read_text())
     )
-    assert bwrap_canary_files == ["test_proposer_sandbox.py", "test_workflow_bench_sessions.py"]
+    assert bwrap_canary_files == ["test_cli_shim.py", "test_proposer_sandbox.py", "test_workflow_bench_sessions.py"]
     assert all(f"tests/{name}" in selected_containment_tests for name in bwrap_canary_files)
     assert "eval-containment-windows:" in workflow
 
