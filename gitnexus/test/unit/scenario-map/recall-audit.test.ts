@@ -30,7 +30,7 @@ describe('manual recall audit: candidate retrieval', () => {
   });
 
   it.each(audit.positives)(
-    'retrieves $a and $b without relying on warm setup coverage',
+    'case %#: retrieves $a and $b without relying on warm setup coverage',
     ({ a, b }) => {
       const tests = [a, b].map((id) => {
         const site = sites.get(id);

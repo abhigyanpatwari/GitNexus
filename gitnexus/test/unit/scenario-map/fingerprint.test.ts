@@ -168,7 +168,7 @@ describe('fingerprint rules', () => {
     ['getNodes({ patterns: [/save/] })', 'getNodes({ patterns: [/load/] })'],
     ['getNodes(2).length', 'getEdges(2).length'],
     ['getNodes(2).length', 'getNodes(2).size'],
-  ])('preserves queried subjects when comparing %s', (left, right) => {
+  ])('case %#: preserves queried subjects when comparing %s', (left, right) => {
     const evidence = expandCases([
       {
         path: 'gitnexus/test/unit/queried-subjects.test.ts',
