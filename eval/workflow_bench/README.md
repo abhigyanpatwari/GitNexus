@@ -186,6 +186,40 @@ every repetition, solve counts, cost and agent wall time. Failed
 solutions stay in the denominator. Infrastructure/session failures, missing
 costs, incomplete pairs or failed containment make evidence incomplete.
 
+To isolate MCP description overhead, enable the manual `mcp_tool_loading`
+input (off by default). The normal candidate/stable pairs retain eager loading;
+an additional candidate sweep runs `baseline` with `--mcp-tool-loading deferred`
+(12 extra paid cells for the current four-task suite). Before any paid session,
+an offline canary drives the pinned Claude CLI through the real LiteLLM gateway:
+the initial request must omit MCP descriptions, discovery must load and execute
+the selected tool, and an unused tool's description must remain absent.
+
+The switch explicitly sets `ENABLE_TOOL_SEARCH` and includes `ToolSearch` in
+both CLI tool lists. Merely improving agent instructions cannot change an eager
+catalog. Hooks remain disabled and prompts, read-only MCP tools, model, effort,
+and outputs remain the same. Each sweep rebuilds its graph from the same
+sanitized task commit using the same runtime. The additional discovery turn may
+offset catalog savings; the benchmark measures the net result.
+
+The separate `mcp-tool-loading.json` / `.md` report requires all three modes'
+task/run cells, matching runtime/harness revisions, prompts, dependencies and
+sanitized task commits. It retains failed repairs and rejects missing cells,
+duplicate cells, missing counters and infrastructure failures before calculating
+savings. It reports solved counts, costs, time, turns and cache/output tokens.
+This is a descriptive experiment, not release approval or statistical proof.
+The workflow runs the deferred sweep after the existing pairs; repeat with
+reversed order before interpreting a small difference as a reliable gain.
+
+For local paired sweeps, use `--arms baseline_nomcp baseline --mcp-tool-loading
+eager` followed by `--arms baseline --mcp-tool-loading deferred` with the same
+pinned inputs and separate output directories. Summarize with:
+
+```bash
+uv run --locked --extra dev python -m workflow_bench.mcp_loading_report \
+  --eager candidate/raw/results.jsonl --deferred candidate/deferred/results.jsonl \
+  --metadata candidate/metadata.json --out public
+```
+
 Stable publishing requires a successful default-branch evaluation for that
 **exact commit, measured by main's current evaluator**, no more than seven days
 old. The publish job loads `eval/` from main's head rather than the release
