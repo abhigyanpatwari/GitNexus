@@ -53,6 +53,9 @@ describe('LocalBackend refresh_index (#3524)', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    // The assertions use the defaults, so an inherited setting must not leak in.
+    vi.stubEnv('GITNEXUS_MCP_REFRESH_MAX_FILES', undefined);
+    vi.stubEnv('GITNEXUS_MCP_REFRESH_TIMEOUT_MS', undefined);
     mocks.listRegisteredRepos.mockResolvedValue([entry()]);
     mocks.embeddingsFromGitnexusRc.mockResolvedValue({});
     mocks.checkStalenessAsync.mockImplementation(async (_path: string, commit: string) =>

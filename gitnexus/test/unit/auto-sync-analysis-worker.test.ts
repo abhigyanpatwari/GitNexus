@@ -52,7 +52,7 @@ describe('auto-sync analysis worker', () => {
     await expect(result).resolves.toEqual({ stats: { files: 3 }, graphWriteCollapsed });
   });
 
-  it('reports progress until the terminal message, and a throwing listener changes nothing', async () => {
+  it('reports progress until the terminal message, skipping worker log lines; a throwing listener changes nothing', async () => {
     const child = createChild();
     const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
     const onProgress = vi.fn().mockImplementationOnce(() => {
@@ -61,6 +61,8 @@ describe('auto-sync analysis worker', () => {
 
     const result = run('/tmp/repo', {}, 50, undefined, undefined, undefined, onProgress);
     child.emit('message', { type: 'progress', phase: 'parsing', percent: 20, message: 'Parsing' });
+    // A worker log line, not progress.
+    child.emit('message', { type: 'progress', phase: 'log', percent: -1, message: 'warn: x' });
     child.emit('message', { type: 'progress', phase: 'graph', percent: 60, message: 'Graph' });
     child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
     child.emit('message', { type: 'progress', phase: 'late', percent: 99, message: 'Late' });

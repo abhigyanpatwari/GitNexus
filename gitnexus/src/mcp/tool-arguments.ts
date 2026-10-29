@@ -100,8 +100,9 @@ function formatUnknownArgumentError(
  * Reject top-level tool arguments that are neither advertised nor an
  * unpublished handler alias. `advertisedProperties` should be the schema the
  * caller actually saw (`tools/list` after read-only / repository-policy
- * scrubbing). When it is omitted, the canonical `GITNEXUS_TOOLS` schema is
- * used. Tools with no schema (legacy `overview`) are left unchecked.
+ * scrubbing). When it is omitted, the tool's canonical schema is used
+ * (`findToolDefinition`: `GITNEXUS_TOOLS`, plus the opt-in `refresh_index`).
+ * Tools with no schema (legacy `overview`) are left unchecked.
  */
 export function assertKnownMcpToolArguments(
   toolName: string,

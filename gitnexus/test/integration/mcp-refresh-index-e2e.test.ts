@@ -41,6 +41,8 @@ describe('refresh_index through a real analyze worker (#3524)', () => {
     vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
     vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
     vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '1');
+    vi.stubEnv('GITNEXUS_MCP_REFRESH_MAX_FILES', undefined);
+    vi.stubEnv('GITNEXUS_MCP_REFRESH_TIMEOUT_MS', undefined);
     repo = path.join(root, 'repo');
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.writeFile(

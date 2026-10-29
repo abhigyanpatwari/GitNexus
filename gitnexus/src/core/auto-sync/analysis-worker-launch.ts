@@ -190,7 +190,10 @@ export function createAutoSyncAnalysisRunner(
         // result. A terminal IPC can already be queued behind cancellation.
         if (terminalOutcome || terminationError) return;
         if (message.type === 'progress') {
-          // A listener's failure must not decide the run's outcome.
+          // The worker also sends its log lines as progress with percent -1;
+          // those are not progress. A listener's failure must not decide the
+          // run's outcome.
+          if (message.percent < 0) return;
           try {
             onProgress?.(message.percent, message.message);
           } catch {
