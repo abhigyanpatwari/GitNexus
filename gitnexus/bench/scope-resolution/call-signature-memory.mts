@@ -3,10 +3,16 @@
  * Compare in fresh processes on each revision; heap figures exclude the input.
  */
 import assert from 'node:assert/strict';
+import { parseArgs } from 'node:util';
 import type { ParsedFile, ScopeId } from 'gitnexus-shared';
 import { collectDeferredIndirectCollection } from '../../src/core/ingestion/scope-resolution/passes/callable-value-flow.js';
 
-const total = Number(process.argv[2] ?? 500_000);
+const { values, positionals } = parseArgs({
+  options: { check: { type: 'boolean', default: false } },
+  allowPositionals: true,
+});
+assert.ok(positionals.length <= 1, 'Expected at most one call count');
+const total = Number(positionals[0] ?? 500_000);
 assert.ok(Number.isSafeInteger(total) && total > 0);
 assert.ok(global.gc, 'Run with --expose-gc to measure retained heap');
 const callsPerFile = 1_000;
@@ -48,3 +54,6 @@ console.log(
     inputStillLive: files.reduce((n, file) => n + file.referenceSites.length, 0),
   }),
 );
+if (values.check) {
+  assert.equal(result.callSignaturesBySite.size, 0, 'Ordinary calls retained unused signatures');
+}

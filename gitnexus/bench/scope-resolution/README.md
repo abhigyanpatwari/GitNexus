@@ -84,6 +84,15 @@ node --expose-gc --import tsx bench/scope-resolution/call-signature-memory.mts 5
 GITNEXUS_DEBUG_HEAP=1 node --import tsx bench/scope-resolution/dense-java.mts 300 20 10
 ```
 
+CI runs both probes once with `--check` in the existing
+`scope-resolution-benchmark` job, alongside its all-language measurements.
+The ordinary-call check rejects any retained signatures. The dense Java check
+requires the default 300/20/10 workload and its reviewed full graph fingerprint
+below. Heap and timing remain measurements, without absolute thresholds.
+Both outputs join the existing `scope-resolution-benchmark` artifact: the
+collector's JSON and dense Java's log, including `sr-emit-*` heap checkpoints.
+Omit `--check` for comparisons against older revisions or custom workloads.
+
 The first probe isolates ordinary calls with no indirect-call facts. Previously
 the deferred-call collector retained a signature object and position key for
 every call even though none could be consumed. At 500,000 calls, three fresh
