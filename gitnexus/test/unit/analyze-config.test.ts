@@ -329,6 +329,18 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(message);
   });
 
+  it('rejects more router aliases than the cap instead of truncating', async () => {
+    const alias = (i: number) => ({ importPath: `${CORE}${i}`, type: 'Engine', framework: 'gin' });
+    await writeRc(
+      JSON.stringify({ goRouterAliases: Array.from({ length: 100 }, (_, i) => alias(i)) }),
+    );
+    expect(loadAnalyzeConfig(dir)?.routeFrameworkAliases).toHaveLength(100);
+    await writeRc(
+      JSON.stringify({ goRouterAliases: Array.from({ length: 101 }, (_, i) => alias(i)) }),
+    );
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/declares 101 aliases; at most 100/);
+  });
+
   describe('GITNEXUS_RC out-of-repo config', () => {
     let outside: string;
     const saved = process.env.GITNEXUS_RC;
@@ -373,6 +385,15 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
       expect(() => loadAnalyzeConfig(dir)).toThrow(/Could not read GITNEXUS_RC file/);
       await writeEnvRc({ goRouterAliases: 'gin' });
       expect(() => loadAnalyzeConfig(dir)).toThrow(/GITNEXUS_RC file .*non-empty array/);
+    });
+
+    it('rejects a directory and an oversized file', async () => {
+      process.env.GITNEXUS_RC = outside;
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/not a regular file/);
+      const big = path.join(outside, 'big.json');
+      await fs.writeFile(big, `{"skipSkills": true}${' '.repeat(MAX_REPO_CONTROL_FILE_BYTES)}`);
+      process.env.GITNEXUS_RC = big;
+      expect(() => loadAnalyzeConfig(dir)).toThrow(/larger than/);
     });
 
     it('is ignored when unset or blank', async () => {

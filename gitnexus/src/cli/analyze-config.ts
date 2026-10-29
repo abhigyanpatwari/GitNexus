@@ -412,12 +412,23 @@ function withEnvConfig(
   }
   let raw: string;
   try {
-    const stat = fs.statSync(envPath);
-    if (!stat.isFile()) throw new Error('not a regular file');
-    if (stat.size > MAX_REPO_CONTROL_FILE_BYTES) {
+    // Check and read through one descriptor, so the file cannot be swapped
+    // between the type/size check and the read.
+    const fd = fs.openSync(envPath, 'r');
+    try {
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile()) throw new Error('not a regular file');
+      if (stat.size > MAX_REPO_CONTROL_FILE_BYTES) {
+        throw new Error(`larger than ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
+      }
+      raw = fs.readFileSync(fd, 'utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+    // A file that grew after fstat is still bounded.
+    if (Buffer.byteLength(raw) > MAX_REPO_CONTROL_FILE_BYTES) {
       throw new Error(`larger than ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
     }
-    raw = fs.readFileSync(envPath, 'utf-8');
   } catch (err) {
     throw new GitNexusRcError(`Could not read ${label}: ${(err as Error).message}`);
   }

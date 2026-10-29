@@ -3,6 +3,9 @@ import { goRouteFramework } from '../../route-extractors/go-gin-echo.js';
 
 const FIELDS = new Set(['importPath', 'type', 'framework']);
 
+/** Upper bound on declared aliases; a longer list is rejected, never truncated. */
+export const MAX_ROUTER_ALIASES = 100;
+
 /** Validate the Go-owned alias syntax before analysis starts. */
 export function normalizeRouterAliases(value: unknown, source: string): RouteFrameworkAlias[] {
   if (!Array.isArray(value) || value.length === 0) {
@@ -47,5 +50,10 @@ export function normalizeRouterAliases(value: unknown, source: string): RouteFra
     }
     out.set(key, { importPath, type, framework });
   }
-  return [...out.values()].slice(0, 100);
+  if (out.size > MAX_ROUTER_ALIASES) {
+    throw new Error(
+      `${source} declares ${out.size} aliases; at most ${MAX_ROUTER_ALIASES} are allowed.`,
+    );
+  }
+  return [...out.values()];
 }

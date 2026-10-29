@@ -3,6 +3,9 @@
  * Run after building both checkouts:
  * node --expose-gc --import tsx scripts/bench/go-route-facts.ts /baseline/gitnexus/dist
  *
+ * The baseline must already expose the Go provider's `resolveRouteFacts` hook
+ * (e.g. an earlier commit of this feature), not a build from before it.
+ *
  * Parsing and module startup are excluded. Nine batches alternate build order;
  * serialized bytes measure the worker payload, not heap or whole-index memory.
  */
