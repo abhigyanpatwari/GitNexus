@@ -267,9 +267,9 @@ jobs:
     needs: plan
     if: ${{ !cancelled() && needs.plan.outputs.artifact != '' }}
     runs-on: ubuntu-latest
-    # Locally: PDG index about 3 min (peak RSS about 8.4 GB of the runner's 16 GB), the whole
-    # stage about 5 min.
-    timeout-minutes: 60
+    # Full-suite tracing runs candidate files twice, including their runnable siblings.
+    # The 31k-case inventory exceeded 50 minutes; leave room for both passes and uploads.
+    timeout-minutes: 100
     continue-on-error: true
     permissions:
       contents: read
@@ -289,7 +289,7 @@ jobs:
           name: ${{ needs.plan.outputs.artifact }}
           path: ${{ runner.temp }}/scenario-map
       - name: Run value flow
-        timeout-minutes: 50
+        timeout-minutes: 90
         env:
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '120000'
         run: |
