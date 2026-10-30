@@ -5,6 +5,9 @@
  * dupe-ok keep list, the orientation and determinism.
  */
 import { describe, expect, it } from 'vitest';
+import { assertionEvidence } from '../../../tools/scenario-map/consolidation/assertions.js';
+import { computeChecks } from '../../../tools/scenario-map/facet/checks.js';
+import { expandCases } from '../../../tools/scenario-map/inventory/cases.js';
 import type { InputFacet } from '../../../tools/scenario-map/facet/input-facet.js';
 import {
   FINGERPRINT_ENGINE_VERSION,
@@ -127,6 +130,233 @@ const CASES: { rule: FingerprintRule; verdict: FingerprintVerdict; edit: WorldEd
 ];
 
 describe('fingerprint rules', () => {
+  it('does not confirm unresolved file-level subjects through equal coarse checks and clean traces', () => {
+    const evidence = expandCases(
+      [1, 2].map((value) => ({
+        path: `gitnexus/test/unit/constant-${value}.test.ts`,
+        source: `const result = ${value}; it('rule', () => expect(result).toBeGreaterThan(0));`,
+      })),
+    ).sites.map((site) => {
+      const subject = {
+        record: site.record,
+        instance: site.instances?.[0] ?? null,
+        fullName: site.fullName,
+      };
+      return assertionEvidence(subject, computeChecks(subject));
+    });
+    expect(
+      verdictOf({
+        a: { checks: 'same-check', assertionEvidence: evidence[0] },
+        b: { checks: 'same-check', assertionEvidence: evidence[1] },
+      }),
+    ).toMatchObject({ verdict: 'possible-duplicate', rule: 'input-unresolved' });
+  });
+
+  it.each([
+    ['roundScore(2.4)', 'roundScore(2.5)'],
+    ['roundScore({ scores: [2.4] })', 'roundScore({ scores: [2.5] })'],
+  ])('keeps changed literal inputs to %s as table rows', (left, right) => {
+    const evidence = expandCases([
+      {
+        path: 'gitnexus/test/unit/input-shapes.test.ts',
+        source: `import { roundScore } from './scores.js';
+          it('left', () => { const actual = ${left}; expect(actual).toBe(2); });
+          it('right', () => { const actual = ${right}; expect(actual).toBe(3); });`,
+      },
+    ]).sites.map((site) => {
+      const subject = {
+        record: site.record,
+        instance: site.instances![0],
+        fullName: site.fullName,
+      };
+      return assertionEvidence(subject, computeChecks(subject));
+    });
+    expect(evidence.every((item) => item.atoms[0].key !== null)).toBe(true);
+    expect(evidence[0].atoms[0].key).not.toBe(evidence[1].atoms[0].key);
+    const inputs = {
+      a: { checks: 'same-check', assertionEvidence: evidence[0], facet: facet(['2.4', '2']) },
+      b: { checks: 'same-check', assertionEvidence: evidence[1], facet: facet(['2.5', '3']) },
+    };
+    expect(verdictOf(inputs)).toMatchObject({ verdict: 'table-row', rule: 'input-values-differ' });
+  });
+
+  it.each([
+    [
+      "getNodes(result).find(n => n.name === 'save')",
+      "getNodes(result).find(n => n.name === 'load')",
+    ],
+    ["getNodes(result, 'CALLS')", "getNodes(result, 'IMPORTS')"],
+    ['getNodes(/save/)', 'getNodes(/load/)'],
+    ['getNodes({ patterns: [/save/] })', 'getNodes({ patterns: [/load/] })'],
+    ['getNodes(2).length', 'getEdges(2).length'],
+    ['getNodes(2).length', 'getNodes(2).size'],
+  ])('case %#: preserves queried subjects when comparing %s', (left, right) => {
+    const evidence = expandCases([
+      {
+        path: 'gitnexus/test/unit/queried-subjects.test.ts',
+        source: `import { getNodes, getEdges } from './graph.js';
+          it('left', () => { const actual = ${left}; expect(actual).toBeDefined(); });
+          it('right', () => { const actual = ${right}; expect(actual).toBeDefined(); });`,
+      },
+    ]).sites.map((site) => {
+      const subject = {
+        record: site.record,
+        instance: site.instances![0],
+        fullName: site.fullName,
+      };
+      return assertionEvidence(subject, computeChecks(subject));
+    });
+    expect(
+      verdictOf({
+        a: { checks: 'coarse', assertionEvidence: evidence[0] },
+        b: { checks: 'coarse', assertionEvidence: evidence[1] },
+      }),
+    ).toMatchObject({ verdict: 'distinct', rule: 'checks-differ' });
+  });
+
+  it('does not promote different assertion subjects or literals through a coarse checks key', () => {
+    const assertions = (shapeKey: string, expected: string, known = true) => ({
+      atoms: [
+        {
+          line: 1,
+          shape: 'expect(<v1>).toContain(<string>)',
+          shapeKey,
+          key: known ? `${shapeKey}:${expected}` : null,
+          expected,
+        },
+      ],
+      unresolved: known ? [] : ['asserted local origin is unresolved'],
+    });
+    const a = { checks: 'coarse', facet: null, assertionEvidence: assertions('nodes', 'greet') };
+    for (const b of [assertions('text', 'greet'), assertions('nodes', 'function twice', false)]) {
+      expect(
+        verdictOf({
+          a,
+          b: { checks: 'coarse', checksContext: 'other', facet: null, assertionEvidence: b },
+        }),
+      ).toMatchObject({ verdict: 'distinct', rule: 'checks-differ' });
+    }
+    expect(verdictOf({ a, b: { ...a, checksContext: 'other' } }).verdict).toBe(
+      'possible-duplicate',
+    );
+  });
+
+  it('retains existing table rows outside the actionable pair list without hiding other declarations', () => {
+    const result = computeFingerprints({
+      tests: [
+        testInput(A, { declarationKey: 'same-table', facet: null }),
+        testInput(B, { declarationKey: 'same-table', facet: null }),
+      ],
+      pairs: [pairInput()],
+    });
+    expect(result.pairs).toEqual([]);
+    expect(result.kept[0].keep[0].reason).toContain('already parameterized');
+    expect(
+      verdictOf({ a: { declarationKey: 'first' }, b: { declarationKey: 'second' } }).verdict,
+    ).toBe('duplicate');
+  });
+  it('leaves proven duplicate rows actionable and uncertain helper equivalence unresolved', () => {
+    const identical = computeFingerprints({
+      tests: [
+        testInput(A, { declarationKey: 'same-table' }),
+        testInput(B, { declarationKey: 'same-table' }),
+      ],
+      pairs: [pairInput()],
+    });
+    expect(identical.pairs[0]?.verdict).toBe('duplicate');
+    expect(identical.kept).toEqual([]);
+    const evidence = (file: string) => ({
+      atoms: [
+        {
+          line: 1,
+          shape: 'expect(run()).toBe(1)',
+          shapeKey: file,
+          key: file,
+          expected: '1',
+          observed: `<local:${file}:1:run>()`,
+        },
+      ],
+      unresolved: [],
+    });
+    expect(
+      verdictOf({
+        a: { assertionEvidence: evidence('a') },
+        b: { assertionEvidence: evidence('b') },
+      }).verdict,
+    ).toBe('possible-duplicate');
+  });
+  it.each(['a', 'b'] as const)(
+    'does not compare an assertion-only key on side %s with a legacy combined key',
+    (side) => {
+      const pair = verdictOf({ [side]: { checks: 'checks-toBe' } });
+      expect([pair.verdict, pair.rule, pair.evidence.checks]).toEqual([
+        'possible-duplicate',
+        'checks-unknown',
+        'missing',
+      ]);
+    },
+  );
+
+  it('keeps equal assertions with different setup as a review lead, not different checks', () => {
+    const pair = verdictOf({
+      a: { checks: 'same-expectation' },
+      b: { checks: 'same-expectation', checksContext: 'cleanup-context' },
+    });
+    expect([pair.verdict, pair.rule, pair.evidence.checks]).toEqual([
+      'possible-duplicate',
+      'context-differs',
+      'same',
+    ]);
+  });
+
+  it('cannot confirm a duplicate when assertion-only keys exist but context is missing', () => {
+    const pair = verdictOf({
+      a: { checks: 'same-expectation', checksContext: null },
+      b: { checks: 'same-expectation', checksContext: null },
+    });
+    expect([pair.verdict, pair.rule]).toEqual(['possible-duplicate', 'context-unknown']);
+  });
+
+  it('retains known input differences when setup also differs', () => {
+    const pair = verdictOf({
+      a: { checks: 'same-expectation' },
+      b: {
+        checks: 'same-expectation',
+        checksContext: 'other-setup',
+        facet: facet(['Number[]', 'Number']),
+      },
+    });
+    expect([pair.verdict, pair.rule]).toEqual(['table-row', 'input-values-differ']);
+  });
+
+  it.each(['args-differ', 'receiver-differs'] as const)(
+    'retains a proven runtime value difference (%s) when setup also differs',
+    (reason) => {
+      const pair = verdictOf({
+        a: { checks: 'same-expectation' },
+        b: { checks: 'same-expectation', checksContext: 'other-setup' },
+        pair: { trace: { status: 'veto', reasons: [reason] } },
+      });
+      expect([pair.verdict, pair.rule]).toEqual(['table-row', 'runtime-values-differ']);
+    },
+  );
+
+  it('does not prove distinctness from incomplete native/worker paths', () => {
+    const pair = verdictOf({
+      a: { provenance: { known: true, nativeEntries: ['tree-sitter.node'], workerSpawns: [] } },
+      pair: { identicalBlocks: false },
+    });
+    expect([pair.verdict, pair.rule]).toEqual(['possible-duplicate', 'path-incomplete']);
+  });
+
+  it.each(['asymmetric-sites', 'asymmetric-counts'] as const)(
+    'does not call a cold/warm trace difference (%s) different input values',
+    (reason) => {
+      const pair = verdictOf({ pair: { trace: { status: 'veto', reasons: [reason] } } });
+      expect([pair.verdict, pair.rule]).toEqual(['possible-duplicate', 'trace-unknown']);
+    },
+  );
+
   it.each(CASES)('rule $rule decides $verdict', ({ rule, verdict, edit }) => {
     const decided = verdictOf(edit);
     expect([decided.verdict, decided.rule]).toEqual([verdict, rule]);

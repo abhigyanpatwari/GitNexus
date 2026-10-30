@@ -45,6 +45,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readJsonFile } from '../../mutation/shared/fs.js';
 import type { Finding, Kind } from '../../test-dupes/test-dupes.js';
+import type { CoverageInventory } from '../inventory/coverage-inventory.js';
 import {
   MAIN_LINEAGE,
   comparePair,
@@ -296,7 +297,9 @@ export interface ReportInput {
   seed: string;
   provenance: CollectedProvenance;
   eligibility: Eligibility;
-  /** How many test files Layer 1 was given (the work file's files; E7 skips the rest). */
+  /** All collected runtime cases, including tests that formed no candidate pair. */
+  inventory?: CoverageInventory;
+  /** How many test files Layer 1 was given (every fingerprint file for a whole-suite run). */
   layer1Files: number;
   /** How many of them wrote no record: a failed run, or a coverage slice that did not report. */
   unrecordedFiles: number;
@@ -441,6 +444,7 @@ export interface FingerprintSection {
 }
 
 export interface ScenarioMapReport {
+  inventory: CoverageInventory | null;
   schemaVersion: number;
   engineVersion: number;
   run: RunInfo;
@@ -460,8 +464,7 @@ export interface ScenarioMapReport {
     /** How many test files the fingerprint covers. */
     fingerprintFiles: number;
     /**
-     * How many of them Layer 1 ran; the others hold only tests whose checks-and-context key no
-     * other test shares (path-coverage/prefilter.ts).
+     * How many of them Layer 1 ran. A diff scope can select fewer; omitted tests were not compared.
      */
     layer1Files: number;
     /** How many of those wrote no record (a failed run, or a coverage slice that did not report). */
@@ -942,6 +945,7 @@ export function buildReport(input: ReportInput): ScenarioMapReport {
 
   return {
     schemaVersion: SCENARIO_MAP_SCHEMA_VERSION,
+    inventory: input.inventory ?? null,
     engineVersion,
     run: { ...input.run },
     seed: input.seed,
