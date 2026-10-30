@@ -66,6 +66,10 @@ def _validated_cells(plan_path: Path, runtime: Path) -> tuple[dict[str, Any], li
         tasks = document.get("tasks") if isinstance(document, dict) else None
         if not isinstance(tasks, list) or len(tasks) != 1 or not isinstance(tasks[0], dict) or tasks[0].get("id") != TASK:
             raise ValueError("trial manifest must contain only the authorized task")
+        task_repo = tasks[0].get("repo")
+        if (not isinstance(task_repo, str) or task_repo != plan.get("task_repository")
+                or _head(Path(task_repo)) != tasks[0].get("ref")):
+            raise ValueError("task source and dependencies must come from the pinned task checkout")
         if output.exists() or output.is_symlink() or ledger.exists() or ledger.is_symlink():
             raise ValueError("trial results already exist; refusing to repeat paid work")
     return plan, cells

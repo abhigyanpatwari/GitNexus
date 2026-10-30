@@ -39,6 +39,7 @@ def prepared(monkeypatch, tmp_path):
     monkeypatch.setattr(release_preflight, "preflight_bubblewrap", lambda: Path("/fake/bwrap"))
     monkeypatch.setattr(release_preflight, "require_claude_sandbox_helpers", lambda: None)
     monkeypatch.setattr(release_preflight, "trusted_gitnexus_runtime_mounts", lambda **_: ())
+    monkeypatch.setattr(release_preflight, "check_task_controls", lambda *_a, **_kw: None)
     monkeypatch.setattr(task_assets, "_try_reflink", lambda *_: False)
 
     # Only graph construction/containment are substituted. Binding resolution,
@@ -101,3 +102,18 @@ def test_preflight_rejects_task_assets_that_replace_the_graph(prepared, tmp_path
         release_preflight.preflight_release(
             [{**task, "sandbox_copy": [".gitnexus/meta.json"]}], gitnexus_root=tmp_path, claude_bin=Path("claude"),
         )
+
+
+def test_grading_control_failure_stops_preflight_with_captured_task_dependencies(prepared, monkeypatch, tmp_path):
+    task, _, _ = prepared
+    calls = []
+
+    def reject(task_arg, **kwargs):
+        calls.append(kwargs)
+        assert task_arg == task and kwargs["assets"].dependency_content_digest
+        raise SandboxError("reference grading control failed")
+
+    monkeypatch.setattr(release_preflight, "check_task_controls", reject)
+    with pytest.raises(SandboxError, match="reference grading control failed"):
+        release_preflight.preflight_release([task], gitnexus_root=tmp_path, claude_bin=Path("claude"), grading_controls=True)
+    assert len(calls) == 1 and calls[0]["sha"] == task["ref"]

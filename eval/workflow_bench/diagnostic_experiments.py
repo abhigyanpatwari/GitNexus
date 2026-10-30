@@ -103,6 +103,7 @@ def prepare_plan(
     return {
         "schema": "gitnexus.diagnostic-experiments/v1", "execution": "not_started",
         "harness_sha": harness_sha, "runtime_sha": runtime_sha, "seed": seed,
+        "task_repository": repository,
         "model": model, "effort": effort, "repeats": repeats, "workers": 1,
         "max_budget_usd_per_cell": max_budget_usd,
         "planned_cli_budget_usd": len(cells) * max_budget_usd if max_budget_usd is not None else None,

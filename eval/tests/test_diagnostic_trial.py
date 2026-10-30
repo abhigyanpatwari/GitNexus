@@ -24,16 +24,19 @@ SHA = "a" * 40
 def trial_plan(tmp_path, monkeypatch):
     runtime = tmp_path / "candidate"
     runtime.mkdir()
+    task_repo = tmp_path / "tasks-base"
+    task_repo.mkdir()
     output = tmp_path / "release-evaluation" / "trial"
     monkeypatch.setattr(sys, "argv", [
         "prepare", "--tasks", str(ROOT / "eval/workflow_bench/tasks.scenarios.yaml"),
-        "--repository", str(runtime), "--runtime", str(runtime), "--runtime-sha", SHA,
+        "--repository", str(task_repo), "--runtime", str(runtime), "--runtime-sha", SHA,
         "--harness-sha", SHA, "--model", diagnostic_trial.MODEL, "--repeats", "1",
         "--variants", "no_graph", "mcp_eager", "--task-ids", diagnostic_trial.TASK,
         "--max-budget-usd", "5", "--out", str(output),
     ])
     diagnostic_experiments.main()
-    monkeypatch.setattr(diagnostic_trial, "_head", lambda repository: SHA)
+    monkeypatch.setattr(diagnostic_trial, "_head", lambda repository:
+                        "c4ecf398de637cf779ab2238e69958cfd5d601ce" if repository == task_repo else SHA)
     return output / "plan.json", runtime
 
 

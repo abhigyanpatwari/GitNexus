@@ -13,10 +13,11 @@ from typing import Any
 
 from .provider_usage import NormalizedUsage, UsageSemanticsError, normalize_usage
 from .session_diagnostics import CELL_PHASES, public_diagnostics, render_diagnostics
+from .verification_diagnostics import public_verification
 
 NUMERIC = ("cost_usd", "duration_s", "cell_duration_s", "num_turns", "diff_insertions", "diff_deletions", "diff_files",
            "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
-COHORT = ("model", "effort", "task_base_sha", "task_prompt_digest", "runtime_digest", "mcp_tool_loading",
+COHORT = ("model", "effort", "task_base_sha", "task_prompt_digest", "runtime_sha", "harness_sha", "runtime_digest", "mcp_tool_loading",
           "sandbox_dependency_content_digest", "oracle_digest", "max_budget_usd")
 REQUEST_METRICS = ("messages_bytes", "tools_bytes", "system_bytes", "messages_count", "tools_count",
                    "duration_s", "proxy_estimated_cost_usd")
@@ -90,6 +91,9 @@ def provider_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "requests_with_session_id": sum(isinstance(e.get("session_id"), str) and bool(e["session_id"]) for e in unique),
         "unique_actual_models": len({e["actual_model"] for e in unique if isinstance(e.get("actual_model"), str)}),
         "token_totals": token_totals,
+        "request_tokens": {field: distribution([
+            row.get(field) if not conflicts and not unidentified else None for row in normalized
+        ]) for field in token_fields},
         "request_metrics": {field: distribution([m.get(field) for m in metrics]) for field in REQUEST_METRICS},
         "identity_complete": bool(unique) and not conflicts and unidentified == 0,
         "attribution": "ledger_only_no_cell_join",
@@ -131,7 +135,15 @@ def build_cost_report(rows: list[dict[str, Any]], provider_events: list[dict[str
             "diagnostic_group": len(summaries) + 1,
             "arm": arm, "task": task, "cells": len(cells), "solved": solved,
             "cohort": dict(zip(COHORT, cohort, strict=True)),
-            "provenance_complete": all(cohort),
+            # runtime_digest is a legacy evolution launcher field. Release
+            # measurements bind the actual runtime and harness commits instead.
+            "provenance_complete": all(value for field, value in zip(COHORT, cohort, strict=True)
+                                       if field != "runtime_digest"),
+            "verification": {
+                phase: [public_verification(row.get("verification_diagnostics", {}).get(phase))
+                        for row in cells if isinstance(row.get("verification_diagnostics"), dict)]
+                for phase in ("authored", "hidden")
+            },
             "quality_missing": sum(type(row.get("resolved")) is not bool for row in cells),
             "failed_cells": sum(row.get("ok") is False for row in cells),
             "diagnostic_cells": sum(bool(public_diagnostics(row.get("session_diagnostics"))) for row in cells),
@@ -197,6 +209,27 @@ def render_markdown(report: dict[str, Any]) -> str:
                     for field, value in group["cohort"].items()], "",
                   *table(group["metrics"]), "", "Cell phases (seconds; agent_and_verification includes grading):", "",
                   *table(group["cell_phases"]), "", "</details>", ""]
+        lines += ["Grading checks (failure markers are observations, not proven root causes):", "",
+                  "| Check | Passed | Exit code | State | Seconds | Observed failure markers |",
+                  "| --- | --- | --- | --- | ---: | --- |"]
+        for phase, checks in group["verification"].items():
+            for check in checks:
+                markers = ", ".join(field for field in ("assertion_failure", "startup_failure", "permission_failure", "typecheck_failure")
+                                    if check.get(field) is True)
+                lines.append(f"| {phase} | {check.get('passed', 'unknown')} | {check.get('exit_code')} | "
+                             f"{check.get('state', 'unknown')} | {number(check.get('duration_s'))} | {markers or 'none observed'} |")
+        lines += [""]
+    timing = report.get("sweep_timing")
+    if timing:
+        lines += ["### Runner setup and wall time", "",
+                  f"Complete sweep: {'yes' if timing['complete'] else 'no'}; workers: {number(timing['workers'])}.",
+                  "Times overlap: before-first-cell includes dependency and foreground graph setup. "
+                  "Graph time includes foreground waits; background indexing can overlap cells. "
+                  "Total excludes CLI/proxy startup and report rendering.", "",
+                  "| Measurement | Seconds |", "| --- | ---: |",
+                  *[f"| {field} | {number(timing[field])} |" for field in (
+                      "total_s", "before_first_cell_s", "dependency_setup_s", "foreground_graph_setup_s",
+                  )], ""]
     provider = report["provider"]
     lines += ["### Provider requests", ""]
     if provider is None:
@@ -211,6 +244,8 @@ def render_markdown(report: dict[str, Any]) -> str:
                   "| Provider token field | Observed total |", "| --- | ---: |",
                   *[f"| {field} | {number(value)} |" for field, value in provider["token_totals"].items()], "",
                   *table(provider["request_metrics"]), "",
+                  "Provider-reported tokens per request (includes cached input; independent of CLI context snapshots):", "",
+                  *table(provider["request_tokens"]), "",
                   *provider["limitations"], ""]
     lines += [report["tool_markdown"], "", *report["limitations"], ""]
     return "\n".join(lines)
@@ -265,6 +300,23 @@ def main() -> None:
             provider = None
         problems += provider_problems
     report = build_cost_report(rows, provider)
+    timing_path = args.results.parent / "sweep-timing.json"
+    report["sweep_timing"] = None
+    if timing_path.is_file():
+        try:
+            timing = json.loads(timing_path.read_text())
+        except (OSError, ValueError):
+            if not args.allow_incomplete:
+                raise
+            timing = None
+            problems.append("Sweep timing file is unreadable.")
+        if isinstance(timing, dict):
+            report["sweep_timing"] = {
+                "complete": timing.get("complete") is True,
+                **{field: timing.get(field) if _number(timing.get(field)) else None for field in (
+                    "total_s", "before_first_cell_s", "dependency_setup_s", "foreground_graph_setup_s", "workers",
+                )},
+            }
     if report["provider"] is not None:
         report["provider"]["ledger_complete"] = not provider_problems
         if provider_problems:

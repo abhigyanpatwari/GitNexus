@@ -172,6 +172,7 @@ from .runner_sessions import (
     sandbox_mcp_config,
     sum_sessions,
 )
+from .verification_diagnostics import verification_metrics
 from .runner_tasks import (
     normalized_model_identifier,
     resolve_task_bindings,
@@ -333,6 +334,8 @@ def _run_hidden_oracle(
     worktree: Path,
     args: argparse.Namespace,
     sandbox: SandboxSession,
+    *,
+    diagnostics: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     """Stage a captured oracle after the model exits, execute it, then erase it."""
 
@@ -355,22 +358,24 @@ def _run_hidden_oracle(
             # credited patch is captured.
             oracle_mount = f"{SANDBOX_WORKSPACE}/{mount_name}"
             oracle_env[ORACLE_ENV_VAR] = str(stage_root) if host_unsafe else oracle_mount
-            passed, _output = _verification_outcome(
-                run_verify(
-                    snapshot.command,
-                    sandbox.clone,
-                    args.timeout,
-                    command_prefix=sandbox.command_prefix_for(
-                        read_only_workspace=True,
-                        unshare_network=True,
-                        extra_read_only_mounts=()
-                        if host_unsafe
-                        else (ReadOnlyMount(source=stage_root, target=oracle_mount),),
-                    ),
-                    env=oracle_env,
-                    require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
-                )
+            started = time.monotonic()
+            result = run_verify(
+                snapshot.command,
+                sandbox.clone,
+                args.timeout,
+                command_prefix=sandbox.command_prefix_for(
+                    read_only_workspace=True,
+                    unshare_network=True,
+                    extra_read_only_mounts=()
+                    if host_unsafe
+                    else (ReadOnlyMount(source=stage_root, target=oracle_mount),),
+                ),
+                env=oracle_env,
+                require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
             )
+            if diagnostics is not None:
+                diagnostics.update(verification_metrics(result, time.monotonic() - started))
+            passed, _output = _verification_outcome(result)
             # Candidate code executes in this process. Never persist its stdout
             # or stderr: it can read the mounted hidden test bytes and print them.
             return passed, "hidden oracle passed" if passed else "hidden oracle failed"
@@ -467,6 +472,12 @@ def run_arm(
     mcp_config_json: str | None = None,
 ) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
+    if arm != "baseline_nomcp":
+        task = {**task, "prompt": task["prompt"] + (
+            "\n\nBenchmark environment: the isolated GitNexus repository is registered as "
+            "benchmark-target. Use that repo name, or omit repo to use the default. "
+            "Repository aliases in checked-in guidance refer to the original checkout."
+        )}
     environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
     host_text = getattr(sandbox, "host_text", _unchanged)
     host_path = getattr(sandbox, "host_path", lambda value: str(value))
@@ -709,20 +720,23 @@ def run_arm(
         verify_mounts = (
             ReadOnlyMount(source=review_artifact.parent, target=SANDBOX_REVIEW_OUTPUT),
         )
-    authored_tests_passed, authored_test_output = _verification_outcome(
-        run_verify(
-            task["verify"],
-            worktree,
-            args.timeout,
-            command_prefix=sandbox.command_prefix_for(
-                read_only_workspace=True,
-                unshare_network=True,
-                extra_read_only_mounts=verify_mounts,
-            ),
-            env=verify_env,
-            require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
-        )
+    verification_started = time.monotonic()
+    authored_result = run_verify(
+        task["verify"],
+        worktree,
+        args.timeout,
+        command_prefix=sandbox.command_prefix_for(
+            read_only_workspace=True,
+            unshare_network=True,
+            extra_read_only_mounts=verify_mounts,
+        ),
+        env=verify_env,
+        require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
     )
+    record["verification_diagnostics"] = {
+        "authored": verification_metrics(authored_result, time.monotonic() - verification_started),
+    }
+    authored_tests_passed, authored_test_output = _verification_outcome(authored_result)
     review_score: dict[str, Any] | None = None
     if arm in ("review", "ce_review"):
         try:
@@ -751,12 +765,15 @@ def run_arm(
         )
         oracle_output = "hidden review labels matched" if oracle_passed else "hidden review labels not fully matched"
     else:
+        hidden_diagnostics: dict[str, Any] = {}
         oracle_passed, oracle_output = _run_hidden_oracle(
             oracle_snapshot,
             worktree,
             args,
             sandbox,
+            diagnostics=hidden_diagnostics,
         )
+        record["verification_diagnostics"]["hidden"] = hidden_diagnostics
     record["authored_tests_passed"] = authored_tests_passed
     record["authored_test_output"] = authored_test_output
     record["oracle_passed"] = oracle_passed
@@ -1489,6 +1506,11 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             "run": run_idx,
             "sandbox_backend": ctx.sandbox_backend,
             "runtime_exposure": runtime_exposure,
+            "max_budget_usd": getattr(args, "max_budget_usd", None),
+            "model": args.model,
+            "effort": args.effort,
+            "task_base_sha": ctx.task_sha,
+            "task_prompt_digest": task_prompt_digest(task),
             **getattr(args, "measurement_revisions", {}),
             "mcp_tool_loading": (
                 getattr(args, "mcp_tool_loading", "eager") if execution_arm == "baseline"
@@ -2566,6 +2588,11 @@ def _run_sweep(
     total_cells = len(tasks) * args.runs * len(args.arms)
     started_cells = 0
     sweep_started = time.monotonic()
+    timing: dict[str, Any] = {"complete": False, "workers": args.workers, "total_s": None,
+                              "before_first_cell_s": None, "dependency_setup_s": None,
+                              "foreground_graph_setup_s": 0.0}
+    timing_path = out_dir / "sweep-timing.json"
+    timing_path.write_text(json.dumps(timing) + "\n")
     with (
         tempfile.TemporaryDirectory(prefix="wfbench-trees-") as trees,
         TaskAssetCache(Path(trees) / ".task-assets") as task_asset_cache,
@@ -2603,6 +2630,8 @@ def _run_sweep(
             except (OSError, SandboxError, ValueError) as exc:
                 asset_snapshot_errors[str(_task["id"])] = exc
 
+        timing["dependency_setup_s"] = time.monotonic() - sweep_started
+        timing_path.write_text(json.dumps(timing) + "\n")
         reuse_source = args.reuse_results.expanduser().resolve() if args.reuse_results is not None else None
         reusable_rows: dict[tuple[str, str, int], dict[str, Any]] = {}
         if reuse_source is not None:
@@ -2695,12 +2724,15 @@ def _run_sweep(
                 asset_snapshot = asset_snapshots.get(str(task["id"]))
                 asset_snapshot_error: BaseException | None = asset_snapshot_errors.get(str(task["id"]))
                 graph_key = (str(repo), task_sha)
+                graph_started = time.monotonic()
                 if graph_prefetch is not None and graph_prefetch.key == graph_key:
                     _join_graph_prefetch()
                 if paid_cells:
                     ensure_task_graph(
                         task=task, repo=repo, task_sha=task_sha, graph_key=graph_key, env=graph_env
                     )
+                timing["foreground_graph_setup_s"] += time.monotonic() - graph_started
+                timing_path.write_text(json.dumps(timing) + "\n")
                 graph_snapshot = graph_env.graph_snapshots.get(graph_key)
                 graph_snapshot_error = graph_env.graph_snapshot_errors.get(graph_key)
                 clone_template, template_head = graph_env.clone_templates.get(graph_key, (None, None))
@@ -2728,6 +2760,9 @@ def _run_sweep(
 
                 def announce(run_idx: int, arm: str) -> None:
                     nonlocal started_cells
+                    if timing["before_first_cell_s"] is None:
+                        timing["before_first_cell_s"] = time.monotonic() - sweep_started
+                        timing_path.write_text(json.dumps(timing) + "\n")
                     started_cells += 1
                     print(
                         f"[{task['id']}][{arm}][run {run_idx}] starting "
@@ -2792,6 +2827,8 @@ def _run_sweep(
         finally:
             _join_graph_prefetch()
 
+    timing.update(complete=not outage_tripped and not cancel_event.is_set(), total_s=time.monotonic() - sweep_started)
+    timing_path.write_text(json.dumps(timing) + "\n")
     selection_report = [
         "## Run provenance",
         "",
