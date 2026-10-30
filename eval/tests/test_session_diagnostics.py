@@ -141,6 +141,27 @@ def test_cli_attribution_only_covers_standalone_shim_commands(command, tool):
     assert command not in json.dumps(report)
 
 
+@pytest.mark.parametrize("mask", range(1, 8))
+@pytest.mark.parametrize("has_hit", [False, True])
+def test_empty_query_signals_cover_every_selected_response_section(mask, has_hit):
+    sections = [name for bit, name in enumerate(("processes", "process_symbols", "definitions")) if mask & (1 << bit)]
+    body = dict.fromkeys(sections, [])
+    if has_hit:
+        body[sections[0]] = [{"name": "found"}]
+    events = [use(), result(body), use("Read", tool_id="read", args={"file_path": "src/a.ts"}),
+              result("source", tool_id="read")]
+    report = diagnostics.diagnose_session(events, None, 5)
+    tool = report["tools"]["mcp__gitnexus__query"]
+    assert tool["empty"] == int(not has_hit)
+    assert tool["source_followups"] == int(not has_hit)
+
+
+@pytest.mark.parametrize("body", [{}, {"definitions": None}, {"timing": {"wall": 1}}])
+def test_absent_or_invalid_query_sections_are_not_evidence_of_an_empty_result(body):
+    report = diagnostics.diagnose_session([use(), result(body)], None, 5)
+    assert report["tools"]["mcp__gitnexus__query"]["empty"] == 0
+
+
 def test_usage_snapshots_are_deduplicated_and_no_cost_is_fabricated():
     event = use()
     event["message"].update(id="message", usage={"input_tokens": 10, "output_tokens": 2, "secret": "hidden"})

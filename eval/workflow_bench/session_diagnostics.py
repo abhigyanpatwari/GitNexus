@@ -136,7 +136,8 @@ def _result_signals(content: Any) -> dict[str, Any]:
     signals["not_found"] = body.get("status") == "not_found" or isinstance(error, str) and "not found" in error.lower()
     signals["ambiguous"] = body.get("status") == "ambiguous"
     signals["unknown_risk"] = body.get("risk") == "UNKNOWN"
-    signals["empty"] = all(body.get(key) == [] for key in ("processes", "process_symbols", "definitions"))
+    sections = [body[key] for key in ("processes", "process_symbols", "definitions") if key in body]
+    signals["empty"] = bool(sections) and all(section == [] for section in sections)
     signals["truncated"] = body.get("truncated") is True or body.get("partial") is True
     signals["lower_bound"] = body.get("epistemic") == "lower-bound"
     timing = body.get("timing")
