@@ -37,7 +37,7 @@
  * loads nothing heavy before the test file.
  */
 import { createHash } from 'node:crypto';
-import { renameSync, writeFileSync } from 'node:fs';
+import { Dirent, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { types } from 'node:util';
 import { buildPathMap, toRepoPath } from '../../mutation/prepare/path-map.js';
@@ -73,6 +73,8 @@ export interface TraceContext {
   preparedRoot: string;
   /** Extra path-map roots (controls mode). */
   extraRoots: string[];
+  /** Candidate Vitest task ids from the baseline collection; siblings still execute. */
+  taskIds: string[];
   /** The wrap list (builtins.ts `wrapListOf`). */
   wrap: WrapEntry[];
 }
@@ -205,6 +207,7 @@ export interface Serialized {
 
 interface WalkState {
   known: ReadonlyMap<object, string>;
+  fixtureRoots: ReadonlyMap<string, string>;
   seen: Set<object>;
   nodes: number;
   complete: boolean;
@@ -279,10 +282,27 @@ function ownEntries(
     const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || descriptor.enumerable !== true) continue;
     const label = typeof key === 'symbol' ? `[${walk(key, state, depth + 1)}]` : quote(key);
-    const text = 'value' in descriptor ? walk(descriptor.value, state, depth + 1) : '<accessor>';
+    const item =
+      'value' in descriptor &&
+      (key === 'parentPath' || key === 'path') &&
+      Reflect.getPrototypeOf(value) === Dirent.prototype
+        ? fixtureDirectory(descriptor.value, state.fixtureRoots)
+        : descriptor.value;
+    const text = 'value' in descriptor ? walk(item, state, depth + 1) : '<accessor>';
     parts.push(`${label}:${text}`);
   }
   return parts;
+}
+
+/** Only native directory-entry metadata under a fully captured input root is relocatable. */
+function fixtureDirectory(value: unknown, roots: ReadonlyMap<string, string>): unknown {
+  if (typeof value !== 'string') return value;
+  const directory = value.replace(/\\/g, '/');
+  let match = '';
+  for (const root of roots.keys())
+    if ((directory === root || directory.startsWith(`${root}/`)) && root.length > match.length)
+      match = root;
+  return match ? `<${roots.get(match)}>${directory.slice(match.length)}` : value;
 }
 
 const ARRAY_INDEX = /^(?:0|[1-9]\d*)$/;
@@ -397,8 +417,9 @@ function walkObject(value: object, state: WalkState, depth: number): string {
 export function serializeValue(
   value: unknown,
   known: ReadonlyMap<object, string> = new Map(),
+  fixtureRoots: ReadonlyMap<string, string> = new Map(),
 ): Serialized {
-  const state: WalkState = { known, seen: new Set(), nodes: 0, complete: true };
+  const state: WalkState = { known, fixtureRoots, seen: new Set(), nodes: 0, complete: true };
   try {
     return { text: walk(value, state, 0), complete: state.complete };
   } catch {
@@ -528,6 +549,8 @@ export interface RecorderDeps {
   currentTest: () => CurrentTest | null;
   /** Repo path of a production script, else null ({@link productionResolver}). */
   production: (script: string) => string | null;
+  /** Current attempt's repository roots, identified by exact captured bytes and layout. */
+  fixtureRoots?: ReadonlyMap<string, string>;
 }
 
 interface TestState {
@@ -674,7 +697,7 @@ export class TraceRecorder {
   }
 
   #serialize(value: unknown): Serialized {
-    return serializeValue(value, this.#known);
+    return serializeValue(value, this.#known, this.#deps.fixtureRoots);
   }
 
   #productionOf(file: string): string | null {
@@ -710,7 +733,7 @@ export class TraceRecorder {
         this.#positions.set(at, position);
       }
       const recv = receiver();
-      const list = serializeValue(args, this.#known);
+      const list = this.#serialize(args);
       this.#add(test, {
         site: `${chosen.repoPath}:${position}`,
         api,

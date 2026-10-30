@@ -1,24 +1,18 @@
 /**
  * The test files Layer 1 must run for the fingerprint (fingerprint plan E7).
  *
- * Past the path rule, a pair is a duplicate, a possible duplicate or a table row only when both
- * tests have the same checks-and-context key or a key is unknown: `checks-differ` makes every other
- * pair Distinct unless its inputs are equal (verdict/fingerprint.ts). The key is static (KTD5,
- * facet/checks.ts over the static inventory), so a file whose every test has a key no other test
- * shares needs no run. A file stays when one of its tests has a key another test shares or no key,
- * when a call's instance count is not static, when a body reads a file snapshot (the runtime full
- * name picks the entry, and the static one may differ), when it may register tests the inventory
- * cannot see (inventory/cases.ts `incomplete`: a helper such as
- * test/helpers/rename-integration-cases.ts `defineRenameFixtureTests`), or when it did not parse.
- *
- * Given up: `different-checks` (the same path and input, other checks) between a test of a skipped
- * file and any other test; the last full run over the unit tests had none in 6,264 candidate pairs.
- * The plan and coverage stages apply it unless mutation scope is `all` or the run is the controls.
+ * Used only for diff-scoped runs. Keep files sharing an assertion/context key or an exact
+ * callback-body key, plus files whose test inventory or checks are unknown. Body matches are
+ * retrieval hints: setup, inputs, paths and trace evidence still decide the verdict. Whole-suite
+ * runs execute every fingerprint file so a unique static context cannot hide a runtime match.
  *
  * Library only; it reads the test files and their snapshot and helper modules.
  */
 import { checksContextKey, fsModuleReader, fsSnapshotReader } from '../facet/checks.js';
+import { bodyKeyOf } from '../facet/body-key.js';
 import { loadStaticInventory } from '../inventory/cases.js';
+import { FixtureInputs } from '../facet/fixture-inputs.js';
+import { fsFacetSources } from '../facet/input-facet.js';
 
 /** Matchers that read a `.snap` file entry named after the runtime test name. */
 const FILE_SNAPSHOT = /\.(?:toMatchSnapshot|toMatchFileSnapshot|toThrowErrorMatchingSnapshot)\(/;
@@ -27,7 +21,7 @@ export interface Layer1Files {
   /** The files Layer 1 runs, in input order. */
   files: string[];
   /**
-   * The others: every test has a checks-and-context key no other test shares, or (diff scope) a
+   * The others: every test has static retrieval keys no other test shares, or (diff scope) a
    * static key, none of which a changed file's test has.
    */
   skipped: string[];
@@ -46,6 +40,7 @@ export function layer1Files(
 ): Layer1Files {
   const inventory = loadStaticInventory(repoRoot, files);
   const options = { snapshots: fsSnapshotReader(repoRoot), modules: fsModuleReader(repoRoot) };
+  const fixtureInputs = new FixtureInputs(fsFacetSources(repoRoot));
   // Files with a test of no static key: it can pair with any test.
   const unknown = new Set([...inventory.skipped, ...inventory.incomplete]);
   const keys: { file: string; key: string }[] = [];
@@ -55,12 +50,26 @@ export function layer1Files(
       continue;
     }
     for (const instance of site.instances) {
+      const fixtures = fixtureInputs.resolve({
+        id: '',
+        file: site.file,
+        record: site.record,
+        instance,
+        executedFiles: null,
+      });
+      // Source-language similarity is only available after parsing. Keep these files so
+      // a diff run cannot discard a fixture partner on static context uniqueness alone.
+      if (fixtures.roots.length > 0 || fixtures.unresolved.length > 0) unknown.add(site.file);
       const key = checksContextKey(
         { record: site.record, instance, fullName: site.fullName },
         options,
       );
       if (key === null) unknown.add(site.file);
-      else keys.push({ file: site.file, key });
+      else
+        keys.push(
+          { file: site.file, key: `context:${key}` },
+          { file: site.file, key: `body:${bodyKeyOf(site.record)}` },
+        );
     }
   }
   const count = new Map<string, number>();
