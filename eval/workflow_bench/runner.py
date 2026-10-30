@@ -456,6 +456,13 @@ def _unchanged(value: Any) -> Any:
     return value
 
 
+MCP_REPOSITORY_PROMPT = (
+    "\n\nBenchmark environment: the isolated GitNexus repository is registered as "
+    "benchmark-target. Use that repo name, or omit repo to use the default. "
+    "Repository aliases in checked-in guidance refer to the original checkout."
+)
+
+
 def run_arm(
     arm: str,
     task: dict[str, Any],
@@ -473,11 +480,7 @@ def run_arm(
 ) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
     if arm != "baseline_nomcp":
-        task = {**task, "prompt": task["prompt"] + (
-            "\n\nBenchmark environment: the isolated GitNexus repository is registered as "
-            "benchmark-target. Use that repo name, or omit repo to use the default. "
-            "Repository aliases in checked-in guidance refer to the original checkout."
-        )}
+        task = {**task, "prompt": task["prompt"] + MCP_REPOSITORY_PROMPT}
     environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
     host_text = getattr(sandbox, "host_text", _unchanged)
     host_path = getattr(sandbox, "host_path", lambda value: str(value))
@@ -853,7 +856,10 @@ def task_prompt_digest(task: Mapping[str, Any]) -> str:
     stop rows matching, or match rows that should not.
     """
 
-    return hashlib.sha256(str(task["prompt"]).encode()).hexdigest()
+    # Bind the conditional harness instruction as well as the task text. Both
+    # arms retain the same experiment identity; old raw-prompt hashes expire.
+    payload = {"task": str(task["prompt"]), "mcp_environment": MCP_REPOSITORY_PROMPT}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 # A sustained upstream outage shows up as a run of session/infra/cleanup

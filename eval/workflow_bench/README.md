@@ -1020,17 +1020,24 @@ uv run --locked python -m workflow_bench.diagnostic_experiments \
   --harness-sha FULL_HARNESS_SHA --runtime-sha FULL_RUNTIME_SHA \
   --model gpt-5.6-sol --effort xhigh --seed 3762 --repeats 1 \
   --variants no_graph mcp_eager --task-ids trivial-status-json-alias \
-  --max-budget-usd 5 --out /tmp/gitnexus-diagnostics-trial
+  --max-budget-usd 5 --bind-task-dependencies --out /tmp/gitnexus-diagnostics-trial
 ```
 
 `--repository` must be the checkout built at the task's pinned commit, including
 its dependency trees. `--runtime` is the separately built GitNexus candidate.
-The trial executor rejects a task checkout whose HEAD differs from the task ref.
+`--bind-task-dependencies` requires a clean tracked checkout at the task ref and
+records the built dependency contents. The trial executor rejects missing bindings,
+dirty tracked files, a different HEAD, or dependency drift. Each runner receives
+the saved bindings and checks its captured dependencies again before model calls.
 The release workflow also runs offline negative and reference grading controls
 with those dependency snapshots and the runner's read-only verifier sandbox.
 The unmodified source must fail a behavioral assertion; the reference repair
 must pass the hidden oracle and TypeScript. A setup crash is not a negative
 control. These checks make no model requests.
+
+The recorded task prompt digest includes the conditional MCP environment
+instruction. Comparator reuse rejects older raw-prompt hashes and changes to
+that instruction, while keeping the two arms under the same task identity.
 
 The runner forwards `--max-budget-usd` to Claude Code and accepts it only for
 single-session baseline arms. The default remains uncapped. Budget-stopped

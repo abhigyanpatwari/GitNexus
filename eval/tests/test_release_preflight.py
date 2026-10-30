@@ -106,11 +106,20 @@ def test_preflight_rejects_task_assets_that_replace_the_graph(prepared, tmp_path
 
 def test_grading_control_failure_stops_preflight_with_captured_task_dependencies(prepared, monkeypatch, tmp_path):
     task, _, _ = prepared
+    dependency = Path(task["repo"]) / "node_modules" / "fixture"
+    dependency.mkdir(parents=True)
+    (dependency / "index.js").write_bytes(b"module.exports = 'pinned dependency';\n")
+    task["sandbox_dependencies"] = [{"source": "node_modules", "target": "node_modules"}]
     calls = []
 
     def reject(task_arg, **kwargs):
         calls.append(kwargs)
-        assert task_arg == task and kwargs["assets"].dependency_content_digest
+        assets = kwargs["assets"]
+        assert task_arg == task
+        assert assets.dependency_declarations == (("node_modules", "node_modules"),)
+        assert len(assets.dependencies) == 1
+        captured = assets.root / assets.dependencies[0].snapshot_path / "fixture/index.js"
+        assert captured.read_bytes() == b"module.exports = 'pinned dependency';\n"
         raise SandboxError("reference grading control failed")
 
     monkeypatch.setattr(release_preflight, "check_task_controls", reject)

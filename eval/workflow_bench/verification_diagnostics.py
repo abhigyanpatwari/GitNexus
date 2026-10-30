@@ -34,7 +34,7 @@ def public_verification(value: Any) -> dict[str, Any]:
     return {
         "exit_code": code if type(code) is int and -255 <= code <= 255 else None,
         "duration_s": elapsed if type(elapsed) in (int, float) and 0 <= elapsed <= 10**12 else None,
-        "state": state if state in ("exited", "timeout", "cancelled", "spawn-failure", "forced-kill",
+        "state": state if state in ("exited", "timeout", "cancelled", "input-failure", "spawn-failure", "forced-kill",
                                      "ownership-failure", "reap-failure", "cleanup-failure", "unknown") else "unknown",
         **{field: value.get(field) if type(value.get(field)) is bool else None
            for field in ("passed", *MARKERS)},

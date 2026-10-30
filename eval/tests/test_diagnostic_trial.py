@@ -26,13 +26,14 @@ def trial_plan(tmp_path, monkeypatch):
     runtime.mkdir()
     task_repo = tmp_path / "tasks-base"
     task_repo.mkdir()
+    monkeypatch.setattr(diagnostic_experiments, "trial_task_bindings", lambda tasks, expected=None: [{"id": tasks[0]["id"]}])
     output = tmp_path / "release-evaluation" / "trial"
     monkeypatch.setattr(sys, "argv", [
         "prepare", "--tasks", str(ROOT / "eval/workflow_bench/tasks.scenarios.yaml"),
         "--repository", str(task_repo), "--runtime", str(runtime), "--runtime-sha", SHA,
         "--harness-sha", SHA, "--model", diagnostic_trial.MODEL, "--repeats", "1",
         "--variants", "no_graph", "mcp_eager", "--task-ids", diagnostic_trial.TASK,
-        "--max-budget-usd", "5", "--out", str(output),
+        "--max-budget-usd", "5", "--bind-task-dependencies", "--out", str(output),
     ])
     diagnostic_experiments.main()
     monkeypatch.setattr(diagnostic_trial, "_head", lambda repository:

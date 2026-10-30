@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from tests.test_diagnostic_trial import trial_plan, workflow  # noqa: F401
+from tests import test_diagnostic_trial
 from tests.test_workflow_bench_sessions import _probe_cell_provisioning
 from workflow_bench import cost_diagnostics, diagnostic_experiments, diagnostic_trial, runner
 from workflow_bench.process_control import ManagedProcessResult
@@ -18,9 +18,11 @@ from workflow_bench.runner_sessions import allowed_agent_tools
 from workflow_bench.session_diagnostics import diagnose_session, public_cell_diagnostics
 from workflow_bench.verification_diagnostics import public_verification, verification_metrics
 
+trial_plan = test_diagnostic_trial.trial_plan
+
 
 def test_real_trial_planner_command_keeps_task_dependencies_separate_from_runtime(tmp_path, monkeypatch):
-    step = next(s for s in workflow()["jobs"]["evaluate"]["steps"] if s.get("name") == "Prepare the capped diagnostic trial")
+    step = next(s for s in test_diagnostic_trial.workflow()["jobs"]["evaluate"]["steps"] if s.get("name") == "Prepare the capped diagnostic trial")
     capture = tmp_path / "argv.json"
     uv = tmp_path / "uv"
     uv.write_text(f"#!{sys.executable}\nimport json,os,sys\nopen(os.environ['CAPTURE'],'w').write(json.dumps(sys.argv[1:]))\n")
@@ -31,6 +33,8 @@ def test_real_trial_planner_command_keeps_task_dependencies_separate_from_runtim
         "GITHUB_SHA": "a" * 40, "RUNTIME_SHA": "b" * 40, "MODEL": diagnostic_trial.MODEL, "EFFORT": "xhigh",
     })
     argv = json.loads(capture.read_text())
+    assert "--bind-task-dependencies" in argv
+    monkeypatch.setattr(diagnostic_experiments, "trial_task_bindings", lambda tasks: [{"id": tasks[0]["id"]}])
     manifest = Path(argv[argv.index("--tasks") + 1])
     manifest.parent.mkdir(parents=True)
     source = Path(__file__).parents[1] / "workflow_bench/tasks.scenarios.yaml"
@@ -47,7 +51,7 @@ def test_real_trial_planner_command_keeps_task_dependencies_separate_from_runtim
         assert cell["argv"][cell["argv"].index("--gitnexus-root") + 1] == str(tmp_path / "candidate")
 
 
-def test_old_candidate_dependency_override_fails_before_paid_executor(trial_plan, monkeypatch):  # noqa: F811
+def test_old_candidate_dependency_override_fails_before_paid_executor(trial_plan, monkeypatch):
     path, runtime = trial_plan
     plan = json.loads(path.read_text())
     plan["task_repository"] = str(runtime)
@@ -137,7 +141,7 @@ def test_cost_summary_displays_setup_grading_and_provider_tokens(tmp_path, monke
 
 
 def test_release_preflight_requires_grading_controls_in_both_workflow_paths():
-    step = next(s for s in workflow()["jobs"]["evaluate"]["steps"] if s.get("name") == "Materialize both release graphs before paid sessions")
+    step = next(s for s in test_diagnostic_trial.workflow()["jobs"]["evaluate"]["steps"] if s.get("name") == "Materialize both release graphs before paid sessions")
     assert step["run"].count("workflow_bench.release_preflight") == step["run"].count("--grading-controls") == 2
 
 

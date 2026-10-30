@@ -223,9 +223,9 @@ def render_markdown(report: dict[str, Any]) -> str:
     if timing:
         lines += ["### Runner setup and wall time", "",
                   f"Complete sweep: {'yes' if timing['complete'] else 'no'}; workers: {number(timing['workers'])}.",
-                  "Times overlap: before-first-cell includes dependency and foreground graph setup. "
+                  ("Times overlap: before-first-cell includes dependency and foreground graph setup. "
                   "Graph time includes foreground waits; background indexing can overlap cells. "
-                  "Total excludes CLI/proxy startup and report rendering.", "",
+                  "Total excludes CLI/proxy startup and report rendering."), "",
                   "| Measurement | Seconds |", "| --- | ---: |",
                   *[f"| {field} | {number(timing[field])} |" for field in (
                       "total_s", "before_first_cell_s", "dependency_setup_s", "foreground_graph_setup_s",
