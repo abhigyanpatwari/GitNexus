@@ -255,6 +255,9 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         "npm ci",
         "npm run build",
     ]
+    task_build = containment_steps["Build the pinned task toolchain that grades release evaluation"]["run"]
+    assert "python -m workflow_bench.release_build" in task_build
+    assert '--repo "${RUNNER_TEMP}/tasks-base"' in task_build
     selected_containment_tests = containment_steps["Prove process-tree and sandbox containment"]["run"].split()
     assert selected_containment_tests == [
         "uv",
