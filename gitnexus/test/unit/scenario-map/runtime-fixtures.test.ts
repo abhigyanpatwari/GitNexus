@@ -75,6 +75,28 @@ const profile = async (raw: RawCoverageRecord, index = 0, concurrent = false) =>
 const TS = 'export function twice(x: number) { return x + x; }';
 const PY = 'def twice(x):\n    return x + x\n';
 
+it('preserves reads and repository snapshots when the test replaces JSON.stringify', () => {
+  const root = repo({ 'main.ts': TS });
+  const capture = new FixtureCapture();
+  const restore = capture.install();
+  const stringify = vi.spyOn(JSON, 'stringify').mockImplementation(() => {
+    throw new Error('test-controlled serialization failure');
+  });
+  let read: string;
+  try {
+    read = readFileSync(path.join(root, 'main.ts'), 'utf8');
+    capture.repository(root);
+  } finally {
+    stringify.mockRestore();
+    restore();
+  }
+  expect(read).toBe(TS);
+  expect(Object.values(capture.snapshots).map((snapshot) => snapshot.files)).toEqual([
+    [['main.ts', TS]],
+    [['main.ts', TS]],
+  ]);
+});
+
 it('does not capture a replacement installed after the file metadata check', () => {
   const root = repo({ 'main.ts': TS });
   const file = path.join(root, 'main.ts');

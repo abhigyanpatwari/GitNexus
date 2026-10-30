@@ -14,8 +14,9 @@
  *      package, through the Vitest Node API with the environment `vitest run` sets, under
  *      tools/mutation/vitest.mutation.config.ts (project `mutation`) or, in controls mode, the
  *      fixture project's own vitest.config.ts, with at most `maxWorkers` worker processes
- *      (`--concurrency`; the scenario-map CLI passes its own). Every test runs twice (`repeats: 1`,
- *      design §5.2: the warm run gives the blocks). The coverage hook (coverage.setup.ts) is put first among the
+ *      (`--concurrency`; the scenario-map CLI passes its own). Tests retain their ordinary
+ *      lifecycle: forcing per-test repeats corrupts suite state and module caches. The coverage
+ *      hook (coverage.setup.ts) is put first among the
  *      setup files and writes one raw record per test file (records.ts).
  *   4. The raw records become the work file `<out>/coverage.json` ({@link buildWorkFile}).
  *   5. The tests are joined to the static inventory (inventory/identity.ts), their
@@ -35,7 +36,7 @@
  *     id                        Phase 0 test id (tools/mutation/runner/test-ids.ts)
  *     taskId, file, fullName, location   what inventory/identity.ts `joinRuntime` takes
  *     state, concurrent, attempts        Vitest result; concurrent task; windows seen (0: not run)
- *     blocks: number[]          indices into `blocks`: the warm attempt's own blocks and those of
+ *     blocks: number[]          indices into `blocks`: the last attempt's own blocks and those of
  *                               the `beforeAll` windows of its suites; empty for a concurrent test,
  *                               whose windows interleave with its siblings' (path unattributable)
  *     suiteBlocks: number[]     the part of `blocks` that came from its suites' `beforeAll`
@@ -111,8 +112,8 @@ import {
 } from './records.js';
 
 export const WORK_FILE_SCHEMA_VERSION = 1;
-/** Vitest `repeats` of the coverage run: each test runs twice, the second (warm) run is kept. */
-export const COVERAGE_REPEATS = 1;
+/** Do not inject repeats into tests that were not written to repeat within the same suite. */
+export const COVERAGE_REPEATS = 0;
 /** The default controls fixture project (Phase 1 U17). */
 export const DEFAULT_FIXTURE_ROOT = 'gitnexus/test/fixtures/mutation-scenario-map';
 /** Marks an output directory as created by this tool, so a re-run may replace it. */
@@ -148,6 +149,8 @@ export interface CoverageTest {
   fullName: string;
   location: TestLocation | null;
   state: TestState;
+  /** Assertion or runtime failures; absent on passing tests and in older captures. */
+  errors?: string[];
   concurrent: boolean;
   /** Configured retries, even if no retry ran; absent in older version 1 work files. */
   retry?: number;
@@ -187,6 +190,7 @@ export interface RuntimeTest {
   fullName: string;
   location: TestLocation | undefined;
   state: TestState;
+  errors?: string[];
   concurrent: boolean;
   retry?: number | { count?: number };
 }
@@ -383,6 +387,7 @@ export function buildWorkFile(input: WorkFileInput): CoverageWorkFile {
         fullName: portableTestName(test.fullName, packageDir),
         location: test.location ?? null,
         state: test.state,
+        ...(test.errors?.length ? { errors: [...test.errors] } : {}),
         concurrent,
         retry: typeof test.retry === 'number' ? test.retry : (test.retry?.count ?? 0),
         attempts,
@@ -727,6 +732,9 @@ export async function runCoverage(options: CoverageOptions): Promise<CoverageRun
                     fullName: test.fullName,
                     location: test.location,
                     state: test.result().state,
+                    errors: (test.result().errors ?? []).map(
+                      (error) => error.stack ?? errorText(error),
+                    ),
                     concurrent: test.options.concurrent === true,
                     retry: test.options.retry,
                   })),

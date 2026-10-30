@@ -12,6 +12,8 @@ const MAX_BYTES = 200_000;
 const MAX_TOTAL_BYTES = 2_000_000;
 const MAX_RECORD_BYTES = 20_000_000;
 const MAX_EVENTS = 2_000;
+// Tests may replace JSON.stringify. Observation must not call their mock or change read results.
+const stringify = JSON.stringify;
 const posix = (value: string): string => value.replace(/\\/g, '/');
 const excluded = (name: string): boolean =>
   /^\.env(?:\.|$)/.test(name) && !name.endsWith('.example');
@@ -54,7 +56,7 @@ export class FixtureCapture {
         unresolved: ['runtime capture event limit'],
       };
     }
-    let key = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+    let key = createHash('sha256').update(stringify(snapshot)).digest('hex');
     if (this.snapshots[key] === undefined) {
       const size = snapshot.files.reduce((n, [, text]) => n + Buffer.byteLength(text), 0);
       if (this.bytes + size > MAX_RECORD_BYTES) {
@@ -63,7 +65,7 @@ export class FixtureCapture {
           files: [],
           unresolved: [...snapshot.unresolved, 'runtime capture byte limit'],
         };
-        key = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+        key = createHash('sha256').update(stringify(snapshot)).digest('hex');
       } else this.bytes += size;
       this.snapshots[key] = snapshot;
     }

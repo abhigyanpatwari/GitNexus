@@ -47,8 +47,11 @@ for (let i = 0; i < names.length; i++)
 const exact = pair('exact A', 'exact B');
 assert(exact);
 assert.equal(exact.fixture.kind, 'content');
-assert.equal(exact.path.coverageA, 1);
-assert.equal(exact.path.coverageB, 1);
+// A cold first call may initialize a grammar. Preserve that real path difference, while
+// requiring full containment and allowing only grammar-loading blocks outside the overlap.
+assert.equal(Math.max(exact.path.coverageA, exact.path.coverageB), 1);
+for (const block of [...exact.onlyBlocksA, ...exact.onlyBlocksB])
+  assert.match(block, /^gitnexus\/src\/core\/tree-sitter\/(?:grammar-sources|parser-loader)\.ts#/);
 assert.equal(exact.assertions.coverageA, 1);
 assert.equal(exact.assertions.coverageB, 1);
 // Capturing inputs is not exhaustive proof; native execution and static gaps remain visible.

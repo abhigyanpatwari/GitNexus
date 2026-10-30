@@ -3079,17 +3079,27 @@ export interface ValueFlowStageOptions {
 }
 
 /**
- * Retries make a trace inconclusive even when coverage passed. Full mutation runs still admit
- * non-passing tests to investigate order dependence; fingerprint runs cannot promote them.
+ * Retries make a trace inconclusive even when coverage passed. Trace runs need every runnable
+ * sibling, so keep the whole file inconclusive if one uses retries. Full mutation runs still
+ * admit non-passing tests to investigate order dependence; fingerprint runs cannot promote them.
  */
 export function passingTracePairs<T extends { a: string; b: string }>(
   tests: readonly Pick<CoverageTest, 'id' | 'state' | 'retry'>[],
   pairs: readonly T[],
   mutation: MutationScope = 'none',
 ): T[] {
+  const retryFiles = new Set(
+    tests
+      .filter((test) => test.state !== 'skipped' && (test.retry ?? 0) > 0)
+      .map((test) => parseTestId(test.id).file),
+  );
   const eligible = new Set(
     tests
-      .filter((test) => (mutation === 'all' || test.state === 'passed') && (test.retry ?? 0) === 0)
+      .filter(
+        (test) =>
+          (mutation === 'all' || test.state === 'passed') &&
+          !retryFiles.has(parseTestId(test.id).file),
+      )
       .map((test) => test.id),
   );
   return pairs.filter((pair) => eligible.has(pair.a) && eligible.has(pair.b));
@@ -3218,6 +3228,7 @@ export async function runValueFlowStage(
     workDir: layout.root,
     manifest,
     pairs: tracePairs.map(({ a, b }) => ({ a, b })),
+    skippedTestIds: work.tests.filter((test) => test.state === 'skipped').map((test) => test.id),
     opaqueCallees: sortedUnique(
       staticRun.pairs.flatMap((pair) => pair.opaqueSinks.map((sink) => sink.callee)),
     ),
@@ -3444,6 +3455,12 @@ export async function runMergeStage(
     incomplete.push({
       shard: 'coverage',
       reason: `${missingCoverage.length} files missing or errored; ${work.unhandledErrors.length} unhandled errors`,
+    });
+  }
+  if (inventory.tests.failed > 0 || inventory.tests.pending > 0) {
+    incomplete.push({
+      shard: 'coverage tests',
+      reason: `${inventory.tests.failed} failed; ${inventory.tests.pending} unfinished`,
     });
   }
 

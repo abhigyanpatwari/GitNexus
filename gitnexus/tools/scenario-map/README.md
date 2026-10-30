@@ -158,6 +158,14 @@ evidence are preserved. Baseline comparison and the CI issue update use
 validating the whole file. A failed runtime trace still produces a partial report
 and cannot confirm duplicates.
 
+Capture preserves the suite's normal lifecycle and does not add per-test repeats:
+repeating a destructive test or a cache assertion within one suite changes its input.
+Tracing includes runnable siblings in each candidate file in both passes, preserving
+setup performed by earlier tests; only candidate tests are compared. Explicitly skipped
+siblings stay out. If a runnable sibling uses retries, the file's pairs remain inconclusive.
+Failed captures retain their error details in `coverage.json` and keep the report
+partial even when every file was collected.
+
 The acceptance command checks all 28 pairs among eight real pipeline controls:
 15 exact/renamed/partial/cross-language opportunities and 13 negative pairs. It
 also checks that unique evidence and runtime limitations survive in the report.

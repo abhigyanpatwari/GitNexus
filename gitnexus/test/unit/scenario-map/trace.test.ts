@@ -1025,6 +1025,53 @@ async function runWith(
 }
 
 describe('runTrace', () => {
+  it('retains failed-test diagnostics while keeping an invalid run inconclusive', async () => {
+    const baseline: VitestRunResult = {
+      ...vitestResult(['killed-by-test:assertion', 'survived']),
+      status: 'killed',
+      outcome: 'killed-by-test:assertion',
+    };
+    baseline.tests[0].message = 'expected an existing index';
+    const { result } = await runWith(fakeRun([], [], { baseline }));
+    expect(result.baseline?.failures).toEqual([
+      { id: A, outcome: 'killed-by-test:assertion', message: 'expected an existing index' },
+    ]);
+    expect(result.issues.length).toBeGreaterThan(0);
+    expect(result.pairs[0].status).toBe('inconclusive');
+  });
+
+  it('runs sibling tests in both passes while comparing only the candidate tests', async () => {
+    const fake = fakeRun([ROUND('[2]')], [ROUND('[2]')]);
+    const manifestRoot = tempDir();
+    writeTree(manifestRoot, '');
+    const sibling = `${PACKAGE_FILE}#suite setup in an earlier test`;
+    const skipped = `${PACKAGE_FILE}#platform-specific test`;
+    const unrelated = 'test/unit/unrelated.test.ts#unrelated';
+    const manifest = buildRunManifest({
+      preparedRoot: manifestRoot,
+      mode: { kind: 'normal' },
+      tests: [A, B, sibling, skipped, unrelated],
+    });
+    const result = await runTrace(
+      {
+        repoRoot: tempDir(),
+        workDir: tempDir(),
+        manifest,
+        pairs: [{ a: A, b: B }],
+        // A candidate erroneously marked skipped must still fail closed if it does not run.
+        skippedTestIds: [skipped, A],
+        opaqueCallees: [],
+      },
+      fake.deps,
+    );
+    expect(fake.calls.map((call) => [...call.testIds].sort())).toEqual([
+      [A, B, sibling].sort(),
+      [A, B, sibling].sort(),
+    ]);
+    expect(result.tests.map((test) => test.id)).toEqual([A, B]);
+    expect(result.pairs.map((pair) => pair.status)).toEqual(['clean']);
+  });
+
   it('runs a baseline and a traced run of the same tests and vetoes differing calls', async () => {
     const fake = fakeRun([ROUND('[2.4]')], [ROUND('[2.5]')]);
     const { result, workDir } = await runWith(fake, ['Array.join', 'Map.set']);
