@@ -76,8 +76,8 @@
       "apiKeyPlaceholder": "输入 MiniMax API Key",
       "helperText": "从这里获取 API Key：",
       "helperLinkLabel": "MiniMax Platform",
-      "modelPlaceholder": "例如：MiniMax-M3 或 MiniMax-M2.7",
-      "helperModel": "可用：MiniMax-M3（默认）和 MiniMax-M2.7",
+      "modelPlaceholder": "例如：MiniMax-M3.1-Flash 或 MiniMax-M3",
+      "helperModel": "可用：MiniMax-M3.1-Flash（默认）和 MiniMax-M3",
       "endpoint": "区域端点",
       "endpoints": {
         "global": "全球（api.minimax.io）",
